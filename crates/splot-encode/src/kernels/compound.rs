@@ -8,9 +8,12 @@
 //! `Σd² - 2·Σm·d·e / 64 + Σm²·e² / 4096`: every weight, wedge and difference
 //! mask is scored from the per-sample terms `d·e` and `e²` without blending.
 
-use std::simd::cmp::SimdOrd as _;
-use std::simd::num::{SimdInt, SimdUint as _};
-use std::simd::{Simd, u16x8};
+use fearless_simd::{
+    Level, Simd, SimdBase, SimdIntWiden as _, SimdNarrow as _, SimdWiden as _, dispatch, i32x8,
+    i64x4, u16x8,
+};
+
+use super::load_u16_as_i32;
 
 const LANES: usize = 8;
 /// `38` of the § 7.13.3.28 difference weight.
@@ -56,34 +59,52 @@ pub(crate) fn terms_simd(
     de: &mut [i32],
     ee: &mut [i32],
 ) -> [i64; 3] {
+    dispatch!(Level::baseline(), simd => terms_kernel(simd, s, (p0, p1), de, ee))
+}
+
+#[inline]
+fn terms_kernel<S: Simd>(
+    simd: S,
+    s: &[u16],
+    (p0, p1): (&[u16], &[u16]),
+    de: &mut [i32],
+    ee: &mut [i32],
+) -> [i64; 3] {
     let len = s
         .len()
         .min(p0.len())
         .min(p1.len())
         .min(de.len())
         .min(ee.len());
-    let mut acc = [Simd::<i64, LANES>::splat(0); 3];
-    let mut start = 0;
-    while start + LANES <= len {
-        let src: Simd<i32, LANES> = u16x8::from_slice(&s[start..]).cast();
-        let pred1: Simd<i32, LANES> = u16x8::from_slice(&p1[start..]).cast();
-        let diff = src - pred1;
-        let gap = u16x8::from_slice(&p0[start..]).cast::<i32>() - pred1;
+    let mut acc = [i64x4::splat(simd, 0); 3];
+    let samples = s[..len].as_chunks::<LANES>().0.iter();
+    let preds = p0[..len]
+        .as_chunks::<LANES>()
+        .0
+        .iter()
+        .zip(p1[..len].as_chunks::<LANES>().0);
+    let terms = de[..len].as_chunks_mut::<LANES>().0.iter_mut();
+    let terms = terms.zip(ee[..len].as_chunks_mut::<LANES>().0);
+    for ((s, (p0, p1)), (de, ee)) in samples.zip(preds).zip(terms) {
+        let pred1 = load_u16_as_i32(simd, p1);
+        let diff = load_u16_as_i32(simd, s) - pred1;
+        let gap = load_u16_as_i32(simd, p0) - pred1;
         let (dd, dev, eev) = (diff * diff, diff * gap, gap * gap);
-        dev.copy_to_slice(&mut de[start..start + LANES]);
-        eev.copy_to_slice(&mut ee[start..start + LANES]);
-        acc[0] += dd.cast();
-        acc[1] += dev.cast();
-        acc[2] += eev.cast();
-        start += LANES;
+        dev.store_slice(de);
+        eev.store_slice(ee);
+        for (acc, term) in acc.iter_mut().zip([dd, dev, eev]) {
+            let (lo, hi) = term.widen();
+            *acc += lo + hi;
+        }
     }
+    let start = len - len % LANES;
     let tail = terms_tail(
         &s[start..len],
         (&p0[start..len], &p1[start..len]),
         &mut de[start..len],
         &mut ee[start..len],
     );
-    let sums = acc.map(SimdInt::reduce_sum);
+    let sums = acc.map(SimdBase::reduce_sum);
     [sums[0] + tail[0], sums[1] + tail[1], sums[2] + tail[2]]
 }
 
@@ -97,21 +118,29 @@ pub(crate) fn mask_moments_scalar(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 
 /// [`mask_moments_scalar`] in eight lanes. Every product is of two values
 /// that fit `i32` (`m·m` is below `2^16`), so it is one widening multiply.
 pub(crate) fn mask_moments_simd(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3] {
+    dispatch!(Level::baseline(), simd => mask_moments_kernel(simd, mask, de, ee))
+}
+
+#[inline]
+fn mask_moments_kernel<S: Simd>(simd: S, mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3] {
     let len = mask.len().min(de.len()).min(ee.len());
-    let wide = |v: Simd<i32, LANES>| v.cast::<i64>();
-    let mut acc = [Simd::<i64, LANES>::splat(0); 3];
+    let mut acc = [i64x4::splat(simd, 0); 3];
     let mut i = 0;
     while i + LANES <= len {
-        let m: Simd<i32, LANES> = Simd::<u8, LANES>::from_slice(&mask[i..]).cast();
-        let d = Simd::<i32, LANES>::from_slice(&de[i..]);
-        let e = Simd::<i32, LANES>::from_slice(&ee[i..]);
-        acc[0] += wide(m) * wide(d);
-        acc[1] += wide(m) * wide(e);
-        acc[2] += wide(m * m) * wide(e);
+        let m = i32x8::from_fn(simd, |k| i32::from(mask[i + k]));
+        let d = i32x8::from_slice(simd, &de[i..i + LANES]);
+        let e = i32x8::from_slice(simd, &ee[i..i + LANES]);
+        for (acc, (lo, hi)) in acc.iter_mut().zip([
+            m.widening_mul(d),
+            m.widening_mul(e),
+            (m * m).widening_mul(e),
+        ]) {
+            *acc += lo + hi;
+        }
         i += LANES;
     }
     let tail = mask_moments_tail(&mask[i..len], &de[i..len], &ee[i..len]);
-    let sums = acc.map(SimdInt::reduce_sum);
+    let sums = acc.map(SimdBase::reduce_sum);
     [sums[0] + tail[0], sums[1] + tail[1], sums[2] + tail[2]]
 }
 
@@ -140,21 +169,25 @@ pub(crate) fn diff_mask_scalar(p0: &[u16], p1: &[u16], shift: u32, out: &mut [u8
 
 /// [`diff_mask_scalar`] in eight lanes.
 pub(crate) fn diff_mask_simd(p0: &[u16], p1: &[u16], shift: u32, out: &mut [u8]) {
+    dispatch!(Level::baseline(), simd => diff_mask_kernel(simd, p0, p1, shift, out));
+}
+
+#[inline]
+fn diff_mask_kernel<S: Simd>(simd: S, p0: &[u16], p1: &[u16], shift: u32, out: &mut [u8]) {
     let len = p0.len().min(p1.len()).min(out.len());
-    let shift = u16x8::splat((shift + 4) as u16);
+    let shift = shift + 4;
     let mut i = 0;
     while i + LANES <= len {
-        let a = u16x8::from_slice(&p0[i..]);
-        let b = u16x8::from_slice(&p1[i..]);
-        let diff = a.simd_max(b) - a.simd_min(b);
-        let weight = (u16x8::splat(DIFF_BASE) + (diff >> shift)).simd_min(u16x8::splat(MASK_ONE));
-        let weight: Simd<u8, LANES> = weight.cast();
-        weight.copy_to_slice(&mut out[i..i + LANES]);
+        let a = u16x8::from_slice(simd, &p0[i..i + LANES]);
+        let b = u16x8::from_slice(simd, &p1[i..i + LANES]);
+        let diff = a.max(b) - a.min(b);
+        let weight = ((diff >> shift) + DIFF_BASE).min(MASK_ONE);
+        out[i..i + LANES].copy_from_slice(&weight.narrow(weight).as_slice()[..LANES]);
         i += LANES;
     }
     for j in i..len {
         let diff = p0[j].abs_diff(p1[j]);
-        out[j] = (DIFF_BASE + (diff >> shift[0])).min(MASK_ONE) as u8;
+        out[j] = (DIFF_BASE + (diff >> shift)).min(MASK_ONE) as u8;
     }
 }
 

@@ -9,11 +9,11 @@
 //! form takes eight samples at a time in `i32` lanes, carries them across the
 //! rows of a unit, and moves them to `i64` sums before they can overflow.
 
-use std::simd::Simd;
-use std::simd::num::{SimdInt as _, SimdUint as _};
+use fearless_simd::{Level, Simd, SimdBase, dispatch, i32x4, i32x8};
+
+use super::load_u16_as_i32;
 
 const LANES: usize = 8;
-type V = Simd<i32, LANES>;
 
 /// The normal-equation sums of a set of samples over `n` coefficients.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,11 +85,45 @@ pub(crate) fn accumulate_scalar(features: &[&[i32]], target: &[i32], stats: &mut
     accumulate_samples(features, target, 0..target.len(), stats);
 }
 
+/// Adds `f[i] * t` and `f[i] * f[j]` (`i <= j`) of the `L` samples at `x`
+/// to the lane sums.
+#[inline]
+fn add_products<S, V, const L: usize, const N: usize>(
+    simd: S,
+    (pairs, cross): (&mut [[[i32; L]; N]; N], &mut [[i32; L]; N]),
+    features: &[&[i32]; N],
+    target: &[i32],
+    x: usize,
+) where
+    S: Simd,
+    V: SimdBase<S, Element = i32, Array = [i32; L]>,
+{
+    let add = |lanes: &mut [i32; L], product: V| {
+        (V::load_array_ref(simd, lanes) + product).store_slice(lanes);
+    };
+    let f: [V; N] = core::array::from_fn(|k| V::from_slice(simd, &features[k][x..x + L]));
+    let t = V::from_slice(simd, &target[x..x + L]);
+    for i in 0..N {
+        add(&mut cross[i], f[i] * t);
+        for j in i..N {
+            add(&mut pairs[i][j], f[i] * f[j]);
+        }
+    }
+}
+
+/// The `i64` sum of `lanes`, which it zeroes.
+fn drain<const L: usize>(lanes: &mut [i32; L]) -> i64 {
+    core::mem::replace(lanes, [0; L])
+        .iter()
+        .map(|&lane| i64::from(lane))
+        .sum()
+}
+
 /// The SIMD accumulation over `N` coefficients: `i32` lane sums carried
 /// across rows, moved to `i64` before a lane can overflow.
 pub(crate) struct WienerAccumulator<const N: usize> {
-    pairs: [[V; N]; N],
-    cross: [V; N],
+    pairs: [[[i32; LANES]; N]; N],
+    cross: [[i32; LANES]; N],
     chunks: usize,
     budget: usize,
 }
@@ -99,8 +133,8 @@ impl<const N: usize> WienerAccumulator<N> {
     /// `max_product` in magnitude.
     pub(crate) fn new(max_product: u64) -> Self {
         Self {
-            pairs: [[V::splat(0); N]; N],
-            cross: [V::splat(0); N],
+            pairs: [[[0; LANES]; N]; N],
+            cross: [[0; LANES]; N],
             chunks: 0,
             budget: (i32::MAX as u64 / max_product.max(1)).max(1) as usize,
         }
@@ -112,21 +146,15 @@ impl<const N: usize> WienerAccumulator<N> {
         let len = target.len();
         let mut x = 0;
         stats.samples += (len - len % LANES) as u64;
-        while x + LANES <= len {
+        dispatch!(Level::baseline(), simd => while x + LANES <= len {
             if self.chunks == self.budget {
                 self.flush(stats);
             }
-            let f: [V; N] = core::array::from_fn(|k| V::from_slice(&features[k][x..x + LANES]));
-            let t = V::from_slice(&target[x..x + LANES]);
-            for i in 0..N {
-                self.cross[i] += f[i] * t;
-                for j in i..N {
-                    self.pairs[i][j] += f[i] * f[j];
-                }
-            }
+            let lanes = (&mut self.pairs, &mut self.cross);
+            add_products::<_, i32x8<_>, LANES, N>(simd, lanes, features, target, x);
             x += LANES;
             self.chunks += 1;
-        }
+        });
         accumulate_samples(features, target, x..len, stats);
     }
 
@@ -134,11 +162,9 @@ impl<const N: usize> WienerAccumulator<N> {
     pub(crate) fn flush(&mut self, stats: &mut WienerStats) {
         let mut pair = 0;
         for i in 0..N {
-            stats.b[i] += self.cross[i].cast::<i64>().reduce_sum();
-            self.cross[i] = V::splat(0);
+            stats.b[i] += drain(&mut self.cross[i]);
             for j in i..N {
-                stats.a[pair] += self.pairs[i][j].cast::<i64>().reduce_sum();
-                self.pairs[i][j] = V::splat(0);
+                stats.a[pair] += drain(&mut self.pairs[i][j]);
                 pair += 1;
             }
         }
@@ -146,7 +172,6 @@ impl<const N: usize> WienerAccumulator<N> {
     }
 }
 
-type V4 = Simd<i32, CELL>;
 /// Samples of a row that share a § 7.20.4 class: one 4x4 cell.
 const CELL: usize = 4;
 
@@ -154,8 +179,8 @@ const CELL: usize = 4;
 /// run of four samples of one cell adds to its class's `i32` lanes, which
 /// move to `i64` before they can overflow.
 pub(crate) struct WienerClassAccumulator<const N: usize> {
-    pairs: Vec<[[V4; N]; N]>,
-    cross: Vec<[V4; N]>,
+    pairs: Vec<[[[i32; CELL]; N]; N]>,
+    cross: Vec<[[i32; CELL]; N]>,
     chunks: Vec<usize>,
     touched: Vec<usize>,
     budget: usize,
@@ -166,8 +191,8 @@ impl<const N: usize> WienerClassAccumulator<N> {
     /// are at most `max_product` in magnitude.
     pub(crate) fn new(classes: usize, max_product: u64) -> Self {
         Self {
-            pairs: vec![[[V4::splat(0); N]; N]; classes],
-            cross: vec![[V4::splat(0); N]; classes],
+            pairs: vec![[[[0; CELL]; N]; N]; classes],
+            cross: vec![[[0; CELL]; N]; classes],
             chunks: vec![0; classes],
             touched: Vec::new(),
             budget: (i32::MAX as u64 / max_product.max(1)).max(1) as usize,
@@ -185,27 +210,21 @@ impl<const N: usize> WienerClassAccumulator<N> {
         stats: &mut [WienerStats],
     ) {
         let len = target.len();
-        for (i, &class) in cells.iter().enumerate().take(len / CELL) {
-            let class = usize::from(class);
-            if self.chunks[class] == self.budget {
-                self.flush_class(class, stats);
-            }
-            if self.chunks[class] == 0 {
-                self.touched.push(class);
-            }
-            let x = i * CELL;
-            let f: [V4; N] = core::array::from_fn(|k| V4::from_slice(&features[k][x..x + CELL]));
-            let t = V4::from_slice(&target[x..x + CELL]);
-            let (pairs, cross) = (&mut self.pairs[class], &mut self.cross[class]);
-            for i in 0..N {
-                cross[i] += f[i] * t;
-                for j in i..N {
-                    pairs[i][j] += f[i] * f[j];
+        dispatch!(Level::baseline(), simd => {
+            for (i, &class) in cells.iter().enumerate().take(len / CELL) {
+                let class = usize::from(class);
+                if self.chunks[class] == self.budget {
+                    self.flush_class(class, stats);
                 }
+                if self.chunks[class] == 0 {
+                    self.touched.push(class);
+                }
+                let lanes = (&mut self.pairs[class], &mut self.cross[class]);
+                add_products::<_, i32x4<_>, CELL, N>(simd, lanes, features, target, i * CELL);
+                self.chunks[class] += 1;
+                stats[class].samples += CELL as u64;
             }
-            self.chunks[class] += 1;
-            stats[class].samples += CELL as u64;
-        }
+        });
         let tail = len - len % CELL;
         if let Some(&class) = cells.get(tail / CELL).filter(|_| tail < len) {
             accumulate_samples(features, target, tail..len, &mut stats[usize::from(class)]);
@@ -232,11 +251,9 @@ impl<const N: usize> WienerClassAccumulator<N> {
         );
         let mut pair = 0;
         for i in 0..N {
-            stats.b[i] += cross[i].cast::<i64>().reduce_sum();
-            cross[i] = V4::splat(0);
+            stats.b[i] += drain(&mut cross[i]);
             for lanes in &mut pairs[i][i..] {
-                stats.a[pair] += lanes.cast::<i64>().reduce_sum();
-                *lanes = V4::splat(0);
+                stats.a[pair] += drain(lanes);
                 pair += 1;
             }
         }
@@ -253,10 +270,14 @@ pub(crate) fn pair_features(plus: &[u16], minus: &[u16], centre: &[u16], out: &m
     let (p, p_tail) = plus[..n].as_chunks::<16>();
     let (m, m_tail) = minus[..n].as_chunks::<16>();
     let (c, c_tail) = centre[..n].as_chunks::<16>();
-    let wide = |v: &[u16; 16]| Simd::from_array(*v).cast::<i32>();
-    for ((p, m), c) in p.iter().zip(m).zip(c) {
-        out.extend_from_slice(&(wide(p) + wide(m) - wide(c) * Simd::splat(2)).to_array());
-    }
+    dispatch!(Level::baseline(), simd => for ((p, m), c) in p.iter().zip(m).zip(c) {
+        let mut lanes = [0; 16];
+        for (half, lanes) in lanes.chunks_exact_mut(LANES).enumerate() {
+            let wide = |v: &[u16; 16]| load_u16_as_i32(simd, &v[half * LANES..]);
+            (wide(p) + wide(m) - wide(c) * 2).store_slice(lanes);
+        }
+        out.extend_from_slice(&lanes);
+    });
     out.extend(
         p_tail
             .iter()
@@ -284,10 +305,14 @@ pub(crate) fn differences(a: &[u16], b: &[u16], out: &mut Vec<i32>) {
     out.reserve(n);
     let (a, a_tail) = a[..n].as_chunks::<16>();
     let (b, b_tail) = b[..n].as_chunks::<16>();
-    for (a, b) in a.iter().zip(b) {
-        let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
-        out.extend_from_slice(&(a.cast::<i32>() - b.cast::<i32>()).to_array());
-    }
+    dispatch!(Level::baseline(), simd => for (a, b) in a.iter().zip(b) {
+        let mut lanes = [0; 16];
+        for (half, lanes) in lanes.chunks_exact_mut(LANES).enumerate() {
+            let wide = |v: &[u16; 16]| load_u16_as_i32(simd, &v[half * LANES..]);
+            (wide(a) - wide(b)).store_slice(lanes);
+        }
+        out.extend_from_slice(&lanes);
+    });
     out.extend(
         a_tail
             .iter()

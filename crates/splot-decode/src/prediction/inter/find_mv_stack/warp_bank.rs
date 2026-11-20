@@ -4,8 +4,9 @@
 //! AV2 § 7.12.2 warp-parameter bank and the WRL warp-parameter stack.
 
 use super::{
-    DEFAULT_WARP_PARAMS, MAX_WARP_REF_CANDIDATES, MvBlockContext, NeighbourCell, NeighbourMvGrid,
-    bank_ring_update, seed_walk_from_row_above,
+    DEFAULT_WARP_PARAMS, MAX_WARP_REF_CANDIDATES, MvBlockContext, NeighbourMvGrid, ProbedLeaf,
+    bank_ring_update, generate_points_from_corners, mv_stack_spatial_probes,
+    seed_walk_from_row_above, superblock_of, visit_mv_stack_column,
 };
 
 const WARP_PARAM_BANK_SIZE: usize = 4;
@@ -32,6 +33,7 @@ impl WarpParamBank {
         }
     }
 
+    #[inline]
     pub(crate) fn reset_for_leaf(
         &mut self,
         grid: &NeighbourMvGrid,
@@ -39,10 +41,13 @@ impl WarpParamBank {
         mi_col: usize,
         sb_size4: usize,
     ) {
-        let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
-        if self.current_sb == Some(sb) {
-            return;
+        let sb = superblock_of(mi_row, mi_col, sb_size4);
+        if self.current_sb != Some(sb) {
+            self.enter_superblock(grid, sb, sb_size4);
         }
+    }
+
+    fn enter_superblock(&mut self, grid: &NeighbourMvGrid, sb: (usize, usize), sb_size4: usize) {
         let new_sb_row = self.current_sb.is_none_or(|(row, _)| row != sb.0);
         self.current_sb = Some(sb);
         self.sb_hits = 0;
@@ -54,7 +59,7 @@ impl WarpParamBank {
             if cell.flags.is_warp()
                 && let Some(params) = cell.motion.warp_params()
             {
-                self.update(cell.flags.ref_frame0, params);
+                self.update(cell.flags.ref_frame0(), params);
             }
         });
     }
@@ -93,6 +98,42 @@ impl WarpParamBank {
             warp.insert(self.entries[ref_idx][idx]);
         }
     }
+
+    /// Finds the § 7.12.2 warp candidate read by WARPMV. Candidate order
+    /// follows the shared spatial probes and the bank's newest-first order.
+    pub(crate) fn find_candidate(
+        &self,
+        grid: &NeighbourMvGrid,
+        block: &MvBlockContext,
+        global: [i32; 6],
+        index: usize,
+    ) -> [i32; 6] {
+        if index >= MAX_WARP_REF_CANDIDATES {
+            return DEFAULT_WARP_PARAMS;
+        }
+        let mut warp = WarpParamStack::new();
+        generate_points_from_corners(grid, block, &mut warp);
+        if warp.num_found > index {
+            return warp.slots[index];
+        }
+        for probe in mv_stack_spatial_probes(block).into_iter().flatten() {
+            let (row, col, _) = probe.adjusted_target(block);
+            if let Some(leaf) = grid.probe(row, col) {
+                warp.insert_neighbour(block.ref_frame0, leaf);
+                if warp.num_found > index {
+                    return warp.slots[index];
+                }
+            }
+        }
+        visit_mv_stack_column(grid, block, -3, |_, leaf| {
+            warp.insert_neighbour(block.ref_frame0, leaf);
+        });
+        if warp.num_found <= index {
+            self.fill(block.ref_frame0, &mut warp);
+            warp.insert(global);
+        }
+        warp.slots[index]
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,13 +157,17 @@ impl WarpParamStack {
         }
     }
 
-    pub(super) fn add_scan_point(&mut self, cell: NeighbourCell, block: &MvBlockContext) {
-        if cell.flags.is_inter()
-            && cell.flags.is_warp()
-            && cell.flags.ref_frame0 == block.ref_frame0
-            && let Some(params) = cell.motion.warp_params()
+    pub(super) fn insert_neighbour(&mut self, reference: i8, leaf: ProbedLeaf<'_>) {
+        let flags = leaf.flags();
+        if flags.is_inter()
+            && flags.is_warp()
+            && flags.ref_frame0() == reference
+            && let Some(params) = leaf.stored_warp()
         {
             self.insert(params);
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

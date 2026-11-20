@@ -34,8 +34,9 @@
 //! `T1 = BitDepth + p + log2w + log2h + 2 * EXTRA_BITS + odd - 18` (`p` counts
 //! the pair-summed sides), no sum leaves `i32`.
 
-use std::simd::Simd;
 use std::sync::LazyLock;
+
+use fearless_simd::{Level, Simd, SimdBase, SimdFrom as _, SimdInt, dispatch, i32x4, i32x8};
 
 use splot_recon::{
     BitDepth, InverseTransform1dType, InverseTransform2dDim, inverse_transform_1d, transform_shift,
@@ -288,25 +289,30 @@ fn pair_sum_scalar(tx: &ForwardTransform2d, residual: &[i32], out: &mut [i32]) {
 /// [`pair_sum_scalar`] in 4-lane vectors: add the source rows of one output
 /// row, then add the even and odd lanes when the width is paired.
 fn pair_sum_simd(tx: &ForwardTransform2d, residual: &[i32], out: &mut [i32]) {
+    dispatch!(Level::baseline(), simd => pair_sum_kernel(simd, tx, residual, out));
+}
+
+#[inline]
+fn pair_sum_kernel<S: Simd>(simd: S, tx: &ForwardTransform2d, residual: &[i32], out: &mut [i32]) {
     let w = tx.coeff_width();
     let span = w << usize::from(tx.pair_width);
     let rows = residual.chunks_exact(span << usize::from(tx.pair_height));
     for (dst, src) in out.chunks_exact_mut(w).zip(rows) {
-        let mut sum = [Simd::<i32, 4>::splat(0); 2 * MAX_DIM / 4];
+        let mut sum = [i32x4::splat(simd, 0); 2 * MAX_DIM / 4];
         for row in src.chunks_exact(span) {
             for (acc, v) in sum.iter_mut().zip(row.as_chunks::<4>().0) {
-                *acc += Simd::from_array(*v);
+                *acc += i32x4::simd_from(simd, *v);
             }
         }
         let dst = dst.as_chunks_mut::<4>().0;
         if tx.pair_width {
             for (d, pair) in dst.iter_mut().zip(sum.as_chunks::<2>().0) {
                 let (even, odd) = pair[0].deinterleave(pair[1]);
-                *d = (even + odd).to_array();
+                (even + odd).store_slice(d);
             }
         } else {
             for (d, s) in dst.iter_mut().zip(sum) {
-                *d = s.to_array();
+                s.store_slice(d);
             }
         }
     }
@@ -359,45 +365,48 @@ pub(super) fn forward_simd(
 ) -> Result<(), KernelError> {
     let mut scratch = None;
     let input = tx.input(residual, coeffs, &mut scratch, pair_sum_simd)?;
-    match tx.coeff_width() {
-        4 => forward_lanes::<4>(tx, input, coeffs),
-        8 => forward_lanes::<8>(tx, input, coeffs),
-        16 => forward_lanes::<16>(tx, input, coeffs),
-        _ => forward_lanes::<32>(tx, input, coeffs),
-    }
+    dispatch!(Level::baseline(), simd => forward_kernel(simd, tx, input, coeffs));
     Ok(())
 }
 
-/// Both passes with one `W`-lane vector per row (`W` is the coefficient
-/// width): the row pass accumulates `sample * matrix row`, the column pass
-/// `matrix weight * intermediate row`.
-fn forward_lanes<const W: usize>(tx: &ForwardTransform2d, input: &[i32], coeffs: &mut [i32]) {
-    let h = tx.coeff_height();
-    let rows = tx.row.as_chunks::<W>().0;
-    let mut tmp = [Simd::<i32, W>::splat(0); MAX_DIM];
-    let row_round = Simd::splat(if tx.row_shift == 0 {
-        0
+#[inline]
+fn forward_kernel<S: Simd>(simd: S, tx: &ForwardTransform2d, input: &[i32], coeffs: &mut [i32]) {
+    if tx.coeff_width() == 4 {
+        forward_lanes::<S, i32x4<S>, 4>(simd, tx, input, coeffs);
     } else {
-        1 << (tx.row_shift - 1)
-    });
-    for (slot, x_row) in tmp.iter_mut().zip(input.as_chunks::<W>().0) {
-        let mut acc = Simd::splat(0);
-        for (&sample, m_row) in x_row.iter().zip(rows) {
-            acc += Simd::splat(sample) * Simd::from_array(*m_row);
-        }
-        *slot = (acc + row_round) >> Simd::splat(tx.row_shift as i32);
+        forward_lanes::<S, i32x8<S>, 8>(simd, tx, input, coeffs);
     }
-    let col_round = Simd::splat(if tx.col_shift == 0 {
-        0
-    } else {
-        1 << (tx.col_shift - 1)
-    });
-    for (i, out) in coeffs.as_chunks_mut::<W>().0.iter_mut().enumerate() {
-        let mut acc = Simd::splat(0);
-        for (y, &row) in tmp.iter().take(h).enumerate() {
-            acc += Simd::splat(tx.col[y * h + i]) * row;
+}
+
+/// Both passes over each `L`-column strip with one `L`-lane vector per row:
+/// the row pass accumulates `sample * matrix row`, the column pass
+/// `matrix weight * intermediate row`, and neither mixes columns.
+#[inline]
+fn forward_lanes<S: Simd, V: SimdInt<S, Element = i32>, const L: usize>(
+    simd: S,
+    tx: &ForwardTransform2d,
+    input: &[i32],
+    coeffs: &mut [i32],
+) {
+    let (w, h) = (tx.coeff_width(), tx.coeff_height());
+    let round = |shift: u32| if shift == 0 { 0 } else { 1 << (shift - 1) };
+    let (row_round, col_round) = (round(tx.row_shift), round(tx.col_shift));
+    for strip in (0..w).step_by(L) {
+        let mut tmp = [V::splat(simd, 0); MAX_DIM];
+        for (slot, x_row) in tmp.iter_mut().zip(input.chunks_exact(w)) {
+            let mut acc = V::splat(simd, 0);
+            for (&sample, m_row) in x_row.iter().zip(tx.row.chunks_exact(w)) {
+                acc += V::from_slice(simd, &m_row[strip..strip + L]) * sample;
+            }
+            *slot = (acc + row_round) >> tx.row_shift;
         }
-        *out = ((acc + col_round) >> Simd::splat(tx.col_shift as i32)).to_array();
+        for (i, out) in coeffs.chunks_exact_mut(w).enumerate() {
+            let mut acc = V::splat(simd, 0);
+            for (y, &row) in tmp.iter().take(h).enumerate() {
+                acc += row * tx.col[y * h + i];
+            }
+            ((acc + col_round) >> tx.col_shift).store_slice(&mut out[strip..strip + L]);
+        }
     }
 }
 

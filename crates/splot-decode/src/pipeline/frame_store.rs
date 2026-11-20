@@ -133,18 +133,14 @@ impl RetainedDecode {
             width,
             pools: RowPools::new(depth.get(), width, &buffers),
             ring: InflightRing::new(depth, buffers, width),
-            frames: FrameStore::new(false, depth.get()),
+            frames: FrameStore::new(depth.get()),
             input_scratch: crate::bitstream::byte_stream::InputScratch::default(),
         }
     }
 
     /// Opens the state for a new decode: the last decode's frames retire into
     /// their slots.
-    pub(super) fn begin(&mut self, retain: bool) {
-        let depth = self.ring.capacity();
-        if retain || self.frames.retain {
-            self.frames = FrameStore::new(retain, depth);
-        }
+    pub(super) fn begin(&mut self) {
         for entry in &mut self.frames.entries {
             if let Some(frame) = entry.frame.take() {
                 entry.retired = Some(self.ring.keep_frame_planes(frame.frame));
@@ -167,20 +163,14 @@ pub(crate) struct FrameEntry {
 pub(crate) struct FrameStore {
     pub(super) entries: Vec<FrameEntry>,
     count: usize,
-    retain: bool,
     reserved: Option<usize>,
     pub(super) detach_held: bool,
 }
 
 impl FrameStore {
-    pub(super) fn new(retain: bool, depth: usize) -> Self {
-        let slots = if retain {
-            0
-        } else {
-            2 * MAX_REF_FRAMES + depth + 1
-        };
+    pub(super) fn new(depth: usize) -> Self {
         Self {
-            entries: (0..slots)
+            entries: (0..=2 * MAX_REF_FRAMES + depth)
                 .map(|_| FrameEntry {
                     index: 0,
                     frame: None,
@@ -191,7 +181,6 @@ impl FrameStore {
                 })
                 .collect(),
             count: 0,
-            retain,
             reserved: None,
             detach_held: false,
         }
@@ -202,29 +191,18 @@ impl FrameStore {
     }
 
     pub(super) fn has_space(&mut self) -> bool {
-        self.reserved.is_some() || self.retain || self.entries.iter_mut().any(FrameEntry::available)
+        self.reserved.is_some() || self.entries.iter_mut().any(FrameEntry::available)
     }
 
     pub(super) fn reserve(&mut self) -> Result<usize> {
         if let Some(index) = self.reserved {
             return Ok(index);
         }
-        let index = if self.retain {
-            self.entries.push(FrameEntry {
-                index: self.count,
-                frame: None,
-                motion: None,
-                products: None,
-                core: None,
-                retired: None,
-            });
-            self.entries.len() - 1
-        } else {
-            self.entries
-                .iter_mut()
-                .position(FrameEntry::available)
-                .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?
-        };
+        let index = self
+            .entries
+            .iter_mut()
+            .position(FrameEntry::available)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         self.reserved = Some(index);
         Ok(index)
     }
@@ -280,29 +258,10 @@ impl FrameStore {
     }
 
     pub(crate) fn get(&self, index: usize) -> Option<&PipelineFrame> {
-        if self.retain {
-            return self
-                .entries
-                .get(index)
-                .and_then(|entry| entry.frame.as_ref());
-        }
         self.entries
             .iter()
             .find(|entry| entry.index == index && entry.frame.is_some())
             .and_then(|entry| entry.frame.as_ref())
-    }
-
-    pub(super) fn take(&mut self, index: usize) -> Option<PipelineFrame> {
-        if self.retain {
-            return self
-                .entries
-                .get_mut(index)
-                .and_then(|entry| entry.frame.take());
-        }
-        self.entries
-            .iter_mut()
-            .find(|entry| entry.index == index && entry.frame.is_some())
-            .and_then(|entry| entry.frame.take())
     }
 
     pub(super) fn push(&mut self, frame: PipelineFrame) -> Result<()> {
@@ -333,7 +292,6 @@ impl From<Vec<Option<PipelineFrame>>> for FrameStore {
                     retired: None,
                 })
                 .collect(),
-            retain: true,
             reserved: None,
             detach_held: false,
         }

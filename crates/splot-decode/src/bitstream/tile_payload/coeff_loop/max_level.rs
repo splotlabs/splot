@@ -34,6 +34,7 @@ pub(crate) struct CoeffMaxLevelConfig {
     pub(crate) is_hidden: bool,
 }
 
+#[inline]
 pub(crate) fn derive_coeff_max_level(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) -> u32 {
     let is_low_frequency = coeff_is_low_frequency(entry, config.plane, config.tx_class);
     if config.is_hidden && entry.scan_index() == 0 {
@@ -53,6 +54,7 @@ pub(crate) const fn visible_max_level(is_low_frequency: bool, plane: usize) -> u
     }
 }
 
+#[inline]
 pub(crate) fn coeff_is_low_frequency(
     entry: CoeffScanEntry,
     plane: usize,

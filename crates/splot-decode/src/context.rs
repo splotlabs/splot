@@ -19,6 +19,11 @@ trait ReadSend: Read + Send {}
 
 impl<R: Read + Send + ?Sized> ReadSend for R {}
 
+/// A decode output sink.
+trait WriteSend: std::io::Write + Send {}
+
+impl<W: std::io::Write + Send + ?Sized> WriteSend for W {}
+
 /// A decode context.
 ///
 /// Owns the decode threads, plans bounded stream metadata from raw Annex
@@ -159,8 +164,8 @@ impl DecodeContext {
     /// Decodes the supported envelope and discards each displayed frame.
     ///
     /// Plans and reads the input like [`Self::decode_hash_report_reader`] and
-    /// waits for each displayed frame to settle, but does not hash or
-    /// serialize its samples.
+    /// does all the work of raw output, film grain included, but does not
+    /// hash or serialize the samples.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
@@ -176,7 +181,7 @@ impl DecodeContext {
 
     fn decode_discard(&self, reader: &mut dyn ReadSend, options: DecodeOptions) -> Result<()> {
         Self::run(reader, &options, |source| {
-            crate::pipeline::emit_frames(source, &options, &self.session, |_| Ok(()), |_| Ok(()))
+            crate::output::raw::discard_raw_stream_from_plan(source, &options, &self.session)
         })
     }
 
@@ -208,36 +213,19 @@ impl DecodeContext {
         &self,
         mut reader: R,
         options: DecodeOptions,
-        writer: W,
+        mut writer: W,
     ) -> Result<()> {
-        Self::run(&mut reader, &options, |source| {
-            crate::output::raw::write_raw_stream_from_plan(source, &options, &self.session, writer)
-        })
+        self.decode_raw(&mut reader, options, &mut writer)
     }
 
-    /// Decodes raw output through output-effect materialization without
-    /// serializing its sample bytes.
-    ///
-    /// This is the raw-output equivalent of writing to a platform null device:
-    /// displayed frames and output-only effects are still resolved, but no
-    /// temporary sample-byte buffer is produced.
-    ///
-    /// # Errors
-    /// Returns [`crate::DecodeError`] for read failures, malformed sources,
-    /// unsupported structures, runtime-tier rejections, resource-limit
-    /// failures, thread failures, reconstruction model errors, or
-    /// output-effect errors.
-    pub fn decode_raw_discard_reader<R: Read + Send>(
+    fn decode_raw(
         &self,
-        mut reader: R,
+        reader: &mut dyn ReadSend,
         options: DecodeOptions,
+        writer: &mut dyn WriteSend,
     ) -> Result<()> {
-        self.decode_raw_discard(&mut reader, options)
-    }
-
-    fn decode_raw_discard(&self, reader: &mut dyn ReadSend, options: DecodeOptions) -> Result<()> {
         Self::run(reader, &options, |source| {
-            crate::output::raw::discard_raw_stream_from_plan(source, &options, &self.session)
+            crate::output::raw::write_raw_stream_from_plan(source, &options, &self.session, writer)
         })
     }
 
@@ -269,11 +257,19 @@ impl DecodeContext {
         &self,
         mut reader: R,
         options: DecodeOptions,
-        writer: W,
+        mut writer: W,
     ) -> Result<()> {
-        Self::run(&mut reader, &options, |source| {
+        self.decode_y4m(&mut reader, options, &mut writer)
+    }
+
+    fn decode_y4m(
+        &self,
+        reader: &mut dyn ReadSend,
+        options: DecodeOptions,
+        writer: &mut dyn WriteSend,
+    ) -> Result<()> {
+        Self::run(reader, &options, |source| {
             crate::output::y4m::write_y4m_stream_to_writer(source, &options, &self.session, writer)
-                .map(drop)
         })
     }
 

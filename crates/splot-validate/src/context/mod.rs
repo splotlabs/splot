@@ -49,7 +49,7 @@ use splot_core::hls::{
     MAX_MFH_NUM, MfhId, MultiFrameHeaderRecord, MultistreamDecoderOperation, parse_msdo,
     parse_multi_frame_header,
 };
-use splot_core::obu::finish_obu_payload;
+use splot_core::obu::{ObuHeader, finish_obu_payload};
 use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::tile::{MAX_TILE_COLS, MAX_TILE_ROWS};
 use splot_core::types::{
@@ -472,10 +472,10 @@ pub(crate) struct ValidatorContext {
     /// coded-frame UNIT closes. § 7.23 runs at `decode_frame_wrapup` AFTER the frame is
     /// decoded, so the update must land before any *later* frame's reference checks read
     /// the buffer but after the current frame's own reference checks. The pending update
-    /// (and its extended layer) is committed when the segmenter reports the next frame
+    /// (and its OBU header) is committed when the segmenter reports the next frame
     /// `OpensNewUnit` for that layer, or at the end-of-bitstream flush (no trailing
     /// delimiter). `None` between a commit and the next frame's parse.
-    pending_ref_update: Option<(ExtendedLayerId, FrameRefUpdate)>,
+    pending_ref_update: Option<(ObuHeader, bool, FrameRefUpdate)>,
 }
 
 impl ValidatorContext {

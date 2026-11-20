@@ -26,9 +26,9 @@
 //! `floor(t) - 1 ..= floor(t) + 2` (`floor(t) + 3` when the `Clip3` bound
 //! saturates it); it tests the six levels above `estimate - 2`.
 
-use std::simd::num::{SimdFloat as _, SimdInt as _, SimdUint as _};
-use std::simd::{
-    Mask, Select as _, Simd, cmp::SimdOrd as _, cmp::SimdPartialEq as _, cmp::SimdPartialOrd as _,
+use fearless_simd::{
+    Bytes as _, Level, Select as _, Simd, SimdBase as _, SimdCvtFloat as _, SimdCvtTruncate as _,
+    SimdInt as _, SimdMask as _, dispatch, f32x8, i32x8, u32x8,
 };
 
 use splot_recon::BitDepth;
@@ -190,52 +190,42 @@ pub(super) fn quantize_scalar(
 }
 
 /// Per-lane [`Step`] fields.
-struct StepLanes {
-    q2: Simd<u32, LANES>,
-    denom_shift: Simd<u32, LANES>,
-    max_level: Simd<u32, LANES>,
-    limit: Simd<u32, LANES>,
-    reciprocal: Simd<f32, LANES>,
+struct StepLanes<S: Simd> {
+    q2: u32x8<S>,
+    denom_shift: u32x8<S>,
+    max_level: u32x8<S>,
+    limit: u32x8<S>,
+    reciprocal: f32x8<S>,
     /// `ceil((256 - rounding) * r(1) / 256)`: a magnitude below it is below
     /// `r(1)` and does not round up, so it quantizes to level 0.
-    zero_below: Simd<u32, LANES>,
+    zero_below: u32x8<S>,
 }
 
 const LANES: usize = 8;
 
-impl StepLanes {
-    /// Lane 0 takes `first`, the other lanes `rest`.
-    fn new(first: Step, rest: Step, rounding_q8: u32) -> Self {
-        let pick = |f: fn(Step) -> u32| {
-            Simd::from_array(core::array::from_fn(|i| {
-                f(if i == 0 { first } else { rest })
-            }))
-        };
+impl<S: Simd> StepLanes<S> {
+    /// Lane 0 takes `first` and the other lanes `rest`.
+    fn new(simd: S, first: Step, rest: Step, rounding_q8: u32) -> Self {
+        let step = |i: usize| if i == 0 { first } else { rest };
+        let pick = |f: fn(Step) -> u32| u32x8::from_fn(simd, |i| f(step(i)));
         Self {
             q2: pick(|s| s.q2),
             denom_shift: pick(|s| s.denom_shift),
             max_level: pick(|s| s.max_level),
             limit: pick(|s| s.limit),
-            zero_below: Simd::from_array(core::array::from_fn(|i| {
-                let step = if i == 0 { first } else { rest };
-                ((256 - rounding_q8) * step.recon(1)).div_ceil(256)
-            })),
-            reciprocal: Simd::from_array(core::array::from_fn(|i| {
-                if i == 0 {
-                    first.reciprocal
-                } else {
-                    rest.reciprocal
-                }
-            })),
+            zero_below: u32x8::from_fn(simd, |i| {
+                ((256 - rounding_q8) * step(i).recon(1)).div_ceil(256)
+            }),
+            reciprocal: f32x8::from_fn(simd, |i| step(i).reciprocal),
         }
     }
 
-    fn raw(&self, level: Simd<u32, LANES>) -> Simd<u32, LANES> {
-        ((level * self.q2 + Simd::splat(4)) >> Simd::splat(3)) >> self.denom_shift
+    fn raw(&self, level: u32x8<S>) -> u32x8<S> {
+        ((level * self.q2 + 4) >> 3) >> self.denom_shift
     }
 
-    fn recon(&self, level: Simd<u32, LANES>) -> Simd<u32, LANES> {
-        self.raw(level).simd_min(self.limit)
+    fn recon(&self, level: u32x8<S>) -> u32x8<S> {
+        self.raw(level).min(self.limit)
     }
 }
 
@@ -246,26 +236,40 @@ pub(super) fn quantize_simd(
     dequant: &mut [i32],
 ) -> Result<usize, KernelError> {
     check_lengths(coeffs, levels, dequant)?;
+    dispatch!(Level::baseline(), simd => quantize_kernel(simd, quantizer, coeffs, levels, dequant))
+}
+
+#[inline]
+fn quantize_kernel<S: Simd>(
+    simd: S,
+    quantizer: &Quantizer,
+    coeffs: &[i32],
+    levels: &mut [i32],
+    dequant: &mut [i32],
+) -> Result<usize, KernelError> {
     let (c_chunks, c_tail) = coeffs.as_chunks::<LANES>();
     let (l_chunks, l_tail) = levels.as_chunks_mut::<LANES>();
     let (d_chunks, d_tail) = dequant.as_chunks_mut::<LANES>();
-    let first = StepLanes::new(quantizer.dc, quantizer.ac, quantizer.rounding_q8);
-    let rest = StepLanes::new(quantizer.ac, quantizer.ac, quantizer.rounding_q8);
-    let mut nonzero = Simd::<u32, LANES>::splat(0);
+    let first = StepLanes::new(simd, quantizer.dc, quantizer.ac, quantizer.rounding_q8);
+    let rest = StepLanes::new(simd, quantizer.ac, quantizer.ac, quantizer.rounding_q8);
+    let mut count = 0;
     for (i, ((c, l), d)) in c_chunks.iter().zip(l_chunks).zip(d_chunks).enumerate() {
         let steps = if i == 0 { &first } else { &rest };
-        let c = Simd::from_array(*c);
-        if c.abs().cast::<u32>().simd_lt(steps.zero_below).all() {
+        let c = i32x8::load_array_ref(simd, c);
+        if c.abs()
+            .bitcast::<u32x8<S>>()
+            .simd_lt(steps.zero_below)
+            .all_true()
+        {
             (*l, *d) = ([0; LANES], [0; LANES]);
             continue;
         }
         let (level, dq) = quantize_lanes(quantizer, steps, c);
-        nonzero += level.simd_ne(Simd::splat(0)).to_simd().cast::<u32>() & Simd::splat(1);
-        *l = level.to_array();
-        *d = dq.to_array();
+        count += level.simd_ne(0).to_bitmask().count_ones() as usize;
+        level.store_slice(l);
+        dq.store_slice(d);
     }
     let tail_start = coeffs.len() - c_tail.len();
-    let mut count = nonzero.reduce_sum() as usize;
     if tail_start == 0 {
         count += quantize_scalar(quantizer, c_tail, l_tail, d_tail)?;
     } else {
@@ -278,38 +282,38 @@ pub(super) fn quantize_simd(
     Ok(count)
 }
 
-fn quantize_lanes(
+#[inline]
+fn quantize_lanes<S: Simd>(
     quantizer: &Quantizer,
-    steps: &StepLanes,
-    c: Simd<i32, LANES>,
-) -> (Simd<i32, LANES>, Simd<i32, LANES>) {
-    let a = c.abs().cast::<u32>();
-    let estimate = (a.cast::<f32>() * steps.reciprocal)
-        .cast::<u32>()
-        .simd_min(steps.max_level);
-    let base = estimate.saturating_sub(Simd::splat(2));
+    steps: &StepLanes<S>,
+    c: i32x8<S>,
+) -> (i32x8<S>, i32x8<S>) {
+    let a = c.abs().bitcast::<u32x8<S>>();
+    let estimate =
+        u32x8::truncate_from(f32x8::float_from(a) * steps.reciprocal).min(steps.max_level);
+    let base = estimate.saturating_sub(2);
     let mut lo = base;
     for offset in 1..=6 {
-        let candidate = (base + Simd::splat(offset)).simd_min(steps.max_level);
+        let candidate = (base + offset).min(steps.max_level);
         lo = steps
             .recon(candidate)
             .simd_le(a)
-            .select(lo.simd_max(candidate), lo);
+            .select(lo.max(candidate), lo);
     }
     let r_lo = steps.recon(lo);
     let below_max = lo.simd_lt(steps.max_level);
-    let next = (lo + Simd::splat(1)).simd_min(steps.max_level);
+    let next = (lo + 1).min(steps.max_level);
     let gap = steps.recon(next) - r_lo;
-    let distance = a.saturating_sub(r_lo).simd_min(gap);
-    let up = below_max
-        & (distance * Simd::splat(256)).simd_gt(gap * Simd::splat(256 - quantizer.rounding_q8));
-    let magnitude = lo + (up.to_simd().cast::<u32>() & Simd::splat(1));
+    let distance = a.saturating_sub(r_lo).min(gap);
+    let up = below_max & (distance * 256).simd_gt(gap * (256 - quantizer.rounding_q8));
+    let magnitude = lo + (up.to_vector().bitcast::<u32x8<S>>() & 1);
     let r = steps.raw(magnitude);
-    let negative: Mask<i32, LANES> = c.simd_lt(Simd::splat(0));
-    let level = negative.select(-magnitude.cast::<i32>(), magnitude.cast::<i32>());
+    let negative = c.simd_lt(0);
+    let magnitude = magnitude.bitcast::<i32x8<S>>();
+    let level = negative.select(-magnitude, magnitude);
     let dq = negative.select(
-        -r.simd_min(Simd::splat(quantizer.bound)).cast::<i32>(),
-        r.simd_min(Simd::splat(quantizer.bound - 1)).cast::<i32>(),
+        -r.min(quantizer.bound).bitcast::<i32x8<S>>(),
+        r.min(quantizer.bound - 1).bitcast::<i32x8<S>>(),
     );
     (level, dq)
 }

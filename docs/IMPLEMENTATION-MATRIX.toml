@@ -4160,7 +4160,7 @@ module = "crates/splot-validate/src/reference_state.rs"
 change_id = "frame-reference-state-model"
 owner = "validator"
 risk = "high"
-notes = "ReferenceStateTracker maintains per-extended-layer Unknown/ProvenInvalid/Valid slots with order hints, dimensions, quantizers, output flags, long-term ids, and frame counters. Updates are deferred to the next decided frame boundary or EOF; continuations do not re-update. Key/switch refreshes validate only the lowest refreshed slot, CLK resets active slots, and unconfirmed effects poison state. The parser and validator consume this state for inter references, sizes, TIP quantization, and selected-slot checks. Mid-stream joins remain unknown. Reconstruction-only stores remain in the decoder; full shown/output-buffer semantics are not claimed by this validator tracker."
+notes = "ReferenceStateTracker maintains per-extended-layer Unknown/ProvenInvalid/Valid slots with order hints, dimensions, quantizers, output flags, long-term ids, § 5.18.9.1 global-motion saved state, and frame counters. Updates are deferred to the next decided frame boundary or EOF; continuations do not re-update. Key/switch refreshes validate only the lowest refreshed slot, CLK resets active slots, and unconfirmed effects poison state. The parser and validator consume this state for inter references, sizes, TIP quantization, and selected-slot checks. Mid-stream joins remain unknown; a buffer with any Unknown slot below NumRefFrames is withheld from the parser. Reconstruction-only stores remain in the decoder; full shown/output-buffer semantics are not claimed by this validator tracker."
 
 [feature.status]
 mapped = "done"
@@ -4175,7 +4175,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/reference_state.rs::tests", "crates/splot-validate/src/reference_state.rs::tests::refresh_stores_facts_into_set_slots_only", "crates/splot-validate/src/reference_state.rs::tests::key_switch_first_rule_validates_only_lowest_refreshed_slot", "crates/splot-validate/src/reference_state.rs::tests::clk_reset_invalidates_then_refreshes", "crates/splot-validate/src/reference_state.rs::tests::clk_reset_with_all_frames_mask_validates_only_lowest", "crates/splot-validate/src/reference_state.rs::tests::sef_does_not_update", "crates/splot-validate/src/reference_state.rs::tests::poison_all_makes_every_slot_unknown", "crates/splot-validate/src/reference_state.rs::tests::view_into_reflects_slot_validity", "crates/splot-validate/src/reference_state.rs::tests::apply_never_panics", "crates/splot-validate/src/reference_state.rs::tests::refresh_validates_exactly_set_bits", "crates/splot-validate/src/reference_state.rs::tests::poison_all_dominates", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_proven_invalid_slot_fires", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_valid_slot_is_silent", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_poisoned_slot_drops_to_silence", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_inter_frame_poisons_then_sef_is_silent", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_invalid_then_inter_then_sef_silent_proves_poison_lifetime", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_clk_reset_across_cvs_revalidates_only_slot_zero", "crates/splot-validate/src/reference_state.rs::tests::slot_long_term_id_reads_only_valid_slots", "crates/splot-validate/src/reference_state.rs::tests::slot_facts_requires_order_hint_and_dims_but_not_long_term_id"]
+tests = ["crates/splot-validate/src/reference_state.rs::tests", "crates/splot-validate/src/reference_state.rs::tests::refresh_stores_facts_into_set_slots_only", "crates/splot-validate/src/reference_state.rs::tests::key_switch_first_rule_validates_only_lowest_refreshed_slot", "crates/splot-validate/src/reference_state.rs::tests::clk_reset_invalidates_then_refreshes", "crates/splot-validate/src/reference_state.rs::tests::clk_reset_with_all_frames_mask_validates_only_lowest", "crates/splot-validate/src/reference_state.rs::tests::sef_does_not_update", "crates/splot-validate/src/reference_state.rs::tests::poison_all_makes_every_slot_unknown", "crates/splot-validate/src/reference_state.rs::tests::view_into_reflects_slot_validity", "crates/splot-validate/src/reference_state.rs::tests::view_into_withholds_a_partially_unknown_buffer", "crates/splot-validate/src/validator/tests/frame_header_core.rs::validator_threads_saved_global_motion_state", "crates/splot-validate/src/reference_state.rs::tests::apply_never_panics", "crates/splot-validate/src/reference_state.rs::tests::refresh_validates_exactly_set_bits", "crates/splot-validate/src/reference_state.rs::tests::poison_all_dominates", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_proven_invalid_slot_fires", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_valid_slot_is_silent", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_poisoned_slot_drops_to_silence", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_inter_frame_poisons_then_sef_is_silent", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_sef_invalid_then_inter_then_sef_silent_proves_poison_lifetime", "crates/splot-validate/src/validator/tests/reference_state.rs::ref_state_clk_reset_across_cvs_revalidates_only_slot_zero", "crates/splot-validate/src/reference_state.rs::tests::slot_long_term_id_reads_only_valid_slots", "crates/splot-validate/src/reference_state.rs::tests::slot_facts_requires_order_hint_and_dims_but_not_long_term_id"]
 commands = ["cargo test -p splot-validate reference_state", "cargo test -p splot-validate ref_state"]
 fixtures = []
 diagnostics = ["frame-header/show-existing-frame-invalid-slot"]
@@ -7249,13 +7249,16 @@ name = "Public AV2 vector corpus integration"
 category = "conformance"
 kind = "conformance"
 spec_sections = ["5.18.4.4", "7.13.2.1", "7.13.2.7", "7.14.3", "7.14.6", "7.17.2", "7.20.2", "7.23"]
-sources = ["https://github.com/EwoutH/AV2/tree/6b5210a15d015421ada90da846f4660745583a21/samples"]
+sources = [
+    "https://github.com/EwoutH/AV2/tree/6b5210a15d015421ada90da846f4660745583a21/samples",
+    "https://github.com/EwoutH/AV2/releases/tag/hd-streams-2026-10",
+]
 crate = "xtask"
 module = "scripts/check-external-vectors.py"
 change_id = "fetch-public-vectors"
 owner = "conformance"
 risk = "medium"
-notes = "CI fetches sixteen EwoutH/AV2 IVF samples at a pinned revision, from 270x480 to 1920x1080, 8-bit and 10-bit. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revision. The local AVM oracle reproduces every MD5 in the upstream samples/manifest.txt. The shared external runner checks complete output at 1 and 8 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external."
+notes = "CI fetches 88 EwoutH/AV2 IVF samples (16 pinned repo samples and 72 hd-streams-2026-10 release streams), from 270x480 to 2048x1080, 8-bit and 10-bit. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revisions. The local AVM oracle reproduces every MD5 in the upstream manifests. The shared external runner checks complete output at 1 and 8 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external."
 
 [feature.status]
 mapped = "done"
@@ -7958,7 +7961,6 @@ tests = [
     "crates/splot-recon/src/intra_ibp_dc.rs::tests",
     "crates/splot-recon/src/intra_smooth.rs::tests",
     "crates/splot-recon/src/workspace_tests.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
 ]
 commands = [
     "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
@@ -7968,7 +7970,6 @@ commands = [
     "cargo test -p splot-recon intra_directional --locked",
     "cargo test -p splot-recon intra_directional_angle --locked",
     "cargo test -p splot-recon intra --locked",
-    "cargo test -p splot-recon workspace_intra_directional_angle --locked",
     "cargo test -p splot-recon workspace --locked",
     "cargo +nightly fuzz run recon_intra_prediction_bytes (local/nightly; CI fuzz smoke runs every target)",
 ]
@@ -7978,8 +7979,6 @@ fixtures = [
     "crates/splot-recon/src/intra_directional_angle_tests.rs",
     "crates/splot-recon/src/intra_ibp_dc.rs",
     "crates/splot-recon/src/workspace_intra_dc.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
 ]
 diagnostics = []
 
@@ -8670,7 +8669,7 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/util.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
     "crates/splot-recon/src/intra_directional_angle.rs",
     "tools/comments/budget.toml",
@@ -9383,8 +9382,6 @@ tests = [
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_basic.rs::tests::paeth_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_paeth_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_paeth_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon --locked",
@@ -9450,7 +9447,6 @@ tests = [
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_subsampled_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_top_left_uses_midpoint_without_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_uses_available_edge_without_synthesizing_missing_edge",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_subsampled_dc_rejects_missing_plane_and_out_of_bounds_target",
 ]
 commands = [
     "cargo test -p splot-recon intra_dc_subsampled --locked",
@@ -9514,8 +9510,6 @@ tests = [
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_smooth.rs::tests::smooth_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_rectangular_smooth_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_smooth_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon --locked",
@@ -9577,8 +9571,6 @@ tests = [
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_sample_type_against_bit_depth",
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_validates_output_stride_and_length",
     "crates/splot-recon/src/intra_directional.rs::tests::cardinal_prediction_rejects_overflowing_output_shape",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_cardinal_directional_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_cardinal_directional_rejects_missing_prepared_edges",
 ]
 commands = [
     "cargo test -p splot-recon intra_directional --locked",
@@ -9729,71 +9721,6 @@ fixtures = [
 diagnostics = []
 
 [[feature]]
-id = "RECON-WORKSPACE-DIRECTIONAL-ANGLE-PREDICTION"
-name = "Workspace directional-angle intra prediction"
-category = "infrastructure"
-kind = "infrastructure"
-spec_sections = ["4.8", "7.13.2.1", "7.13.2.7", "7.13.2.8", "9.2"]
-sources = [
-    "docs/spec/av2/1.0.0/04-conventions.md#s-4-8",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
-    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
-    "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md#s-9-2",
-]
-crate = "splot-recon"
-module = "crates/splot-recon/src/workspace_intra_directional_angle.rs"
-change_id = "recon-workspace-directional-angle-prediction"
-owner = "decoder"
-risk = "medium"
-notes = "Workspace directional helpers gather available in-storage edges and select bilinear chroma or IDIF luma prediction. Luma edge extension includes corner fallback. Decoded-neighbor availability and syntax-driven prediction selection remain with decoder callers."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "done"
-write = "not-applicable"
-encode = "not-applicable"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = [
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_one_sided_directional_angle_from_in_storage_above_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_one_sided_directional_angle_from_in_storage_left_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_middle_directional_angle_from_in_storage_edges",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_accepts_10_bit_u16_samples",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_luma_one_sided_idif_from_in_storage_above_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_predicts_luma_one_sided_idif_from_in_storage_left_edge",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_luma_one_sided_idif_uses_own_edge_sample_when_corner_is_out_of_frame",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_rejects_missing_prepared_edges",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_rejects_missing_plane_and_out_of_bounds_target",
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs::tests::workspace_directional_angle_invalid_edge_sample_does_not_mutate_target",
-]
-commands = [
-    "cargo test -p splot-recon workspace_intra_directional_angle --locked",
-    "cargo check --manifest-path fuzz/Cargo.toml --bins --locked",
-    "cargo xtask check-fuzz-targets",
-    "cargo clippy -p splot-recon --all-targets --locked -- -D warnings",
-    "cargo xtask check-source-lines",
-    "cargo xtask check-decoder-support",
-    "cargo xtask check-decoder-conformance-coverage",
-    "cargo xtask check-feature-status",
-]
-fixtures = [
-    "crates/splot-recon/src/workspace_intra_directional_angle.rs",
-    "crates/splot-recon/src/workspace_intra_directional_angle_tests.rs",
-    "crates/splot-recon/src/workspace.rs",
-    "crates/splot-recon/src/error.rs",
-    "crates/splot-recon/src/lib.rs",
-    "fuzz/fuzz_targets/recon_intra_prediction_bytes.rs",
-]
-diagnostics = []
-
-[[feature]]
 id = "RECON-INTRA-IBP-DC-PREDICTION"
 name = "IBP DC intra prediction"
 category = "infrastructure"
@@ -9840,7 +9767,6 @@ tests = [
     "crates/splot-recon/src/intra_ibp_dc.rs::tests::ibp_dc_rejects_invalid_output_shape",
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_ibp_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target",
 ]
 commands = [
@@ -9906,7 +9832,6 @@ tests = [
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_subsampled_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_predicts_ibp_dc_from_in_storage_edges",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges",
-    "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_rejects_missing_plane_and_out_of_bounds_target",
     "crates/splot-recon/src/workspace_tests.rs::workspace_ibp_dc_invalid_edge_sample_does_not_mutate_target",
 ]
 commands = [
@@ -13584,7 +13509,7 @@ module = "crates/splot-recon/src/lib.rs"
 change_id = "zero-copy-media-policy"
 owner = "decoder"
 risk = "medium"
-notes = "Media buffers use borrowed views, explicit shared ownership, and marked materialization boundaries. check-zero-copy-policy rejects forbidden media clones/copies and byte-layout bypasses; approved zerocopy use is limited to private fixed-layout wire views. The policy is enforced by the existing CI gate."
+notes = "Media buffers use borrowed views, explicit shared ownership, and marked materialization boundaries. check-zero-copy-policy rejects forbidden media clones/copies and byte-layout crates such as zerocopy. The policy is enforced by the existing CI gate."
 
 [feature.status]
 mapped = "done"
@@ -14761,7 +14686,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs"
 change_id = "coeff-eob-size-context"
 owner = "decoder"
 risk = "medium"
-notes = "read_nonzero_coeff_eob_from_context derives EOB size/context from transform dimensions, plane, inter state, and quantizer context before ordinary or FSC decoding."
+notes = "read_nonzero_coeff_block_start derives EOB size/context from the TX_GEOMETRY entry, plane, inter state, and quantizer context before ordinary or FSC decoding."
 
 [feature.status]
 mapped = "done"
@@ -14776,7 +14701,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop_tests.rs::live_eob_read_uses_selected_cdfs_and_literal_refinement", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop_tests.rs::live_eob_read_uses_selected_cdfs_and_literal_refinement", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -14803,7 +14728,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs"
 change_id = "coeff-eob-derived-symbol-read"
 owner = "decoder"
 risk = "medium"
-notes = "read_nonzero_coeff_eob_from_context composes checked transform facts with EOB syntax selection. Focused EOB and staged-coefficient tests cover the shared path."
+notes = "read_nonzero_coeff_block_start composes checked transform facts with EOB syntax selection. Focused EOB and staged-coefficient tests cover the shared path."
 
 [feature.status]
 mapped = "done"
@@ -14818,7 +14743,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop_tests.rs::live_eob_read_uses_selected_cdfs_and_literal_refinement", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop_tests.rs::live_eob_read_uses_selected_cdfs_and_literal_refinement", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -14902,7 +14827,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_preflights_geometry_and_bounds_without_consumption", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_at_payload_end_decodes_without_panicking_and_cleans_the_grid"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17861,7 +17786,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_at_payload_end_decodes_without_panicking_and_cleans_the_grid"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
@@ -17944,7 +17869,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::saved_copy_and_average_are_exact_for_supported_subset", "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::frame_end_update_copies_saved_rows_and_scales_counts", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::saved_copy_and_average_are_exact_for_supported_subset", "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::frame_end_update_copies_saved_rows_and_scales_counts", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf.rs",
@@ -17968,7 +17893,7 @@ sources = [
     "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_level_pass.rs"
+module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs"
 change_id = "coeff-fsc-level-pass"
 owner = "decoder"
 risk = "medium"
@@ -17987,11 +17912,11 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_at_payload_end_decodes_without_panicking_and_cleans_the_grid"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_level_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
@@ -18010,7 +17935,7 @@ sources = [
     "docs/spec/av2/1.0.0/09-additional-tables/09-03-default-cdf-tables.md#s-9-3",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_sign_pass.rs"
+module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs"
 change_id = "coeff-fsc-sign-pass"
 owner = "decoder"
 risk = "medium"
@@ -18029,12 +17954,11 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_level_pass.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_sign_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
@@ -18051,7 +17975,7 @@ sources = [
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs"
+module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs"
 change_id = "coeff-fsc-quant-pass"
 owner = "decoder"
 risk = "medium"
@@ -18070,13 +17994,11 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_level_pass.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_sign_pass.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/read_quant.rs",
@@ -18095,7 +18017,7 @@ sources = [
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs"
+module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs"
 change_id = "coeff-fsc-context-commit"
 owner = "decoder"
 risk = "medium"
@@ -18114,12 +18036,12 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_context_commit_failure_preserves_context"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_overlong_remainder_fails_and_leaves_the_grid_and_context_clean"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_level_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/quant_state.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
 ]
@@ -18137,7 +18059,7 @@ sources = [
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs"
+module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs"
 change_id = "coeff-fsc-branch-handoff"
 owner = "decoder"
 risk = "medium"
@@ -18156,12 +18078,12 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_at_payload_end_decodes_without_panicking_and_cleans_the_grid"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_level_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/scan_walk.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
 ]
@@ -18180,7 +18102,7 @@ sources = [
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-2-5",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs"
+module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs"
 change_id = "coeff-fsc-branch-seg-eob-handoff"
 owner = "decoder"
 risk = "medium"
@@ -18199,10 +18121,10 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_at_payload_end_decodes_without_panicking_and_cleans_the_grid"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/scan_walk.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
@@ -18222,7 +18144,7 @@ sources = [
     "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs"
+module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs"
 change_id = "coeff-fsc-branch-scan-order-handoff"
 owner = "decoder"
 risk = "medium"
@@ -18241,10 +18163,10 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_at_payload_end_decodes_without_panicking_and_cleans_the_grid"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/scan_walk.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
@@ -18265,7 +18187,7 @@ sources = [
     "docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md",
 ]
 crate = "splot-decode"
-module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs"
+module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs"
 change_id = "coeff-fsc-branch-tx-size-handoff"
 owner = "decoder"
 risk = "medium"
@@ -18284,10 +18206,10 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_preflights_selector_geometry_and_plane_without_consumption"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_at_payload_end_decodes_without_panicking_and_cleans_the_grid"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/scan_walk.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
@@ -18308,7 +18230,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-branch-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs selects the FSC or ordinary coefficient path from the shared transform-tool facts."
+notes = "decode_nonzero_plane_coeffs selects the FSC or ordinary coefficient path from the shared transform-tool facts."
 
 [feature.status]
 mapped = "done"
@@ -18327,7 +18249,7 @@ tests = ["crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_fsc_
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
@@ -18347,7 +18269,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-condition-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs applies the FSC condition before selecting the coefficient branch."
+notes = "decode_nonzero_plane_coeffs applies the FSC condition before selecting the coefficient branch."
 
 [feature.status]
 mapped = "done"
@@ -18365,7 +18287,7 @@ perf = "not-applicable"
 tests = ["crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_fsc_d135_10bit_frame_decodes_to_oracle", "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_nonzero_intra_frame_decodes_to_oracle"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
@@ -18386,7 +18308,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-shared-facts-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "The FSC and ordinary branches receive the same frame and transform-tool facts from decode_staged_transform_tool_nonzero_coeffs."
+notes = "The FSC and ordinary branches receive the same frame and transform-tool facts from decode_nonzero_plane_coeffs."
 
 [feature.status]
 mapped = "done"
@@ -18404,7 +18326,7 @@ perf = "not-applicable"
 tests = ["crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_fsc_d135_10bit_frame_decodes_to_oracle", "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_nonzero_intra_frame_decodes_to_oracle"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
-    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass.rs",
+    "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
@@ -18440,7 +18362,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::coeff_cdf_q_context_boundaries_select_expected_contexts", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs::coeff_cdf_q_context_boundaries_select_expected_contexts", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_block_tests.rs::fsc_block_reads_bob_idtx_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf.rs",
@@ -18465,7 +18387,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-frame-facts-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs reads frame coefficient facts directly from the tile work unit."
+notes = "decode_nonzero_plane_coeffs reads frame coefficient facts directly from the tile work unit."
 
 [feature.status]
 mapped = "done"
@@ -19062,7 +18984,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pas
 change_id = "coeff-ordinary-pass-compose"
 owner = "decoder"
 risk = "medium"
-notes = "apply_staged_nonzero_coeff_ordinary_branch_from_lossless composes geometry derivation, ordinary level/sign/quantization reads and context commit."
+notes = "decode_ordinary_transform_block composes geometry derivation, ordinary level/sign/quantization reads and context commit."
 
 [feature.status]
 mapped = "done"
@@ -19292,7 +19214,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pas
 change_id = "coeff-ordinary-branch-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "apply_staged_nonzero_coeff_ordinary_branch_from_lossless is the ordinary nonzero coefficient entry point, including geometry preflight and context commit."
+notes = "decode_ordinary_transform_block is the ordinary nonzero coefficient entry point, including geometry preflight and context commit."
 
 [feature.status]
 mapped = "done"
@@ -20388,7 +20310,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs"
 change_id = "tile-partition-traversal-boundary"
 owner = "decoder"
 risk = "medium"
-notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. Unsupported restoration combinations and BRU/bridge paths remain explicit gates."
+notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. BRU superblocks read bru_mode, infer PARTITION_NONE and skip region_type when not BRU_ACTIVE, and decode their leaves through § 5.20.5.2 bru_mode_info; unsupported restoration combinations remain explicit gates."
 
 [feature.status]
 mapped = "done"
@@ -20406,6 +20328,10 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_lr_symbol_precedes_partition_read",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::bru_inactive_superblock_reads_mode_then_infers_partition_none",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::bru_active_superblock_reads_its_partition",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::inactive_bru_tile_reads_no_mode_symbol",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::walk_reads_intra_region_type_then_luma_tree_then_chroma_block",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::inactive_frame_level_wiener_ns_advances_current_cursor_without_source_output",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::current_cursor_advances_every_covered_inactive_wiener_ns_unit",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read",
@@ -20774,7 +20700,7 @@ module = "crates/splot-cli/src/commands/decode.rs"
 change_id = "decode-hash-output-cli-contract"
 owner = "cli"
 risk = "medium"
-notes = "--output-format hash emits deterministic decoded-frame hashes; null settles requested frames without hashing or serialization. Neither requires an output file. -o alone selects Y4M; raw and Y4M require a path. All modes use the supported decoder runtime."
+notes = "--output-format hash emits deterministic decoded-frame hashes; null decodes requested frames, film grain included, without hashing or serialization. Neither requires an output file. -o alone selects Y4M; raw and Y4M require a path. All modes use the supported decoder runtime."
 
 [feature.status]
 mapped = "done"
@@ -21178,7 +21104,7 @@ tests = [
     "crates/splot-decode/src/filters/source_tests.rs::invalid_direct_u8_geometry_drops_without_publication_and_releases_lease",
     "crates/splot-decode/src/pipeline/frame_progress_tests.rs::direct_stripes_write_the_canonical_allocation_and_publish_out_of_order",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly",
-    "crates/splot-recon/src/wienerns_filter.rs::tests::direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::direct_u8_output_matches_runtime_class_counts_and_shapes",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_direct_tests.rs::terminal_luma_direct_u8_eligibility_keeps_every_non_class_a_fallback",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_direct_tests.rs::direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write",
@@ -21228,8 +21154,8 @@ tests = [
 commands = [
     "cargo test -p splot-recon wiener --locked",
     "cargo build --release --locked",
-    "./target/release/splot decode --quiet --output-format raw --limit=1 -o /tmp/splot-first-frame-1.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
-    "./target/release/splot decode --quiet --output-format hash --limit=1 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --output-format raw --limit=1 -o /tmp/splot-first-frame-1.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --output-format hash --limit=1 $SPLOT_LOCAL_DECODER_MISSION_IVF",
 ]
 fixtures = []
 diagnostics = []
@@ -21287,7 +21213,7 @@ commands = [
     "cargo test -p splot-decode --locked",
     "cargo test -p splot-cli --test decoder_oracle sequence_sb256_intra --locked",
     "cargo build --release --locked",
-    "./target/release/splot decode --quiet --threads 10 --output-format raw --limit=1 -o /tmp/splot-t10.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --threads 10 --output-format raw --limit=1 -o /tmp/splot-t10.raw $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "./target/release/splot decode --threads 1 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
     "./target/release/splot decode --threads 10 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
 ]
@@ -21715,7 +21641,7 @@ module = "xtask/src/perf.rs"
 change_id = "perf-regression-gate"
 owner = "automation"
 risk = "low"
-notes = "cargo xtask perf compares single-threaded executed-instruction counts of the splot binary (DynamoRIO with the atomic xtask/perf-client counter, null output, smallest of 3 runs) for committed fixtures against tests/perf/baseline.toml and fails above 0.5% regression. --bless rewrites baselines. The separate CI job installs a pinned, checksummed DynamoRIO release; the slow gate is outside cargo xtask ci. Without DYNAMORIO_HOME ordinary checks skip but --bless fails. Counts depend on the binary and measurement environment; they are CPU-work evidence rather than wall-clock timing."
+notes = "cargo xtask perf --base REV builds the head and base splot binaries and compares their single-threaded executed-instruction counts (DynamoRIO with the atomic xtask/perf-client counter, null output, smallest of 3 runs) on 5 pinned EwoutH release streams fetched and SHA-256-checked by scripts/check-external-vectors.py. It fails when a stream rises above max(0.10%, 5 x the A/A spread of the base runs) or the total above 0.05%, and warns above 0.03%. A Perf-Accept: <stream|all> +X% <reason> commit trailer raises that limit. The CI perf job measures the PR merge commit against its first parent, restores the base binary from a cache that only main pushes save, and only reports on main. Without DYNAMORIO_HOME the command fails."
 replaces = []
 
 [feature.status]
@@ -21733,16 +21659,12 @@ perf = "done"
 [feature.proof]
 tests = [
     "xtask/src/perf.rs",
-    "tests/perf/baseline.toml",
 ]
 commands = [
-    "cargo xtask perf",
-    "cargo xtask perf --bless",
+    "cargo xtask perf --base origin/main",
 ]
 fixtures = [
-    "tests/perf/baseline.toml",
-    "tests/conformance/vectors/valid/syn-gdf-intra-128x128.ivf",
-    "tests/conformance/vectors/valid/syn-warp-inter-128x128.ivf",
+    "tests/conformance/ewouth-av2.toml",
     ".github/workflows/ci.yml",
 ]
 diagnostics = []

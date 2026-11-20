@@ -125,7 +125,7 @@ impl CoeffLevels {
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] outside the grid.
     pub fn set_sign(&mut self, row: usize, col: usize, negative: bool) -> Result<()> {
-        self.state.ensure_quant_sign().map_err(rule("FSC signs"))?;
+        self.state.ensure_quant_sign();
         self.state
             .set_quant_sign(row, col, if negative { -1 } else { 1 })
             .map_err(rule("FSC signs"))

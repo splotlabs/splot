@@ -9,13 +9,17 @@ const SB_SIZE4: usize = 16;
 
 impl TileBlockDecodedState {
     fn flag(&self, plane: usize, x: isize, y: isize) -> bool {
-        self.planes[plane].get(x, y)
+        match (usize::try_from(x), usize::try_from(y)) {
+            (_, Err(_)) => x < self.above_len[plane] as isize,
+            (Err(_), Ok(y)) => y < self.left_len[plane],
+            (Ok(x), Ok(y)) => {
+                x < MAX_CELLS && y < self.plane_rows[plane] && self.rows[plane][y] >> x & 1 != 0
+            }
+        }
     }
 
-    fn force_decoded(&mut self, plane: usize, x: isize, y: isize) {
-        if let Some(index) = self.planes[plane].index(x, y) {
-            self.planes[plane].cells[index] = true;
-        }
+    fn force_decoded(&mut self, plane: usize, x: usize, y: usize) {
+        self.rows[plane][y] |= 1 << x;
     }
 }
 
@@ -117,6 +121,21 @@ fn set_block_marks_thin_subsampled_chroma_transform_unit() {
 }
 
 #[test]
+fn wide_superblock_runs_fill_whole_row_words() {
+    let mut state = TileBlockDecodedState::new(1, 0, 0, 64, 192, 64).unwrap();
+    state.clear_superblock(0, 0);
+    assert_eq!(state.count_top_right_avail(0, 0, 0, 64), 64);
+    assert_eq!(state.count_top_right_avail(0, 32, 0, 32), 32);
+    state.set_block(0, 0, 0, 64, 1);
+    assert!(state.flag(0, 0, 0) && state.flag(0, 63, 0) && !state.flag(0, 64, 0));
+    assert_eq!(state.count_top_right_avail(0, 0, 1, 60), 4);
+    assert_eq!(state.count_top_right_avail(0, 32, 1, 32), 0);
+    state.set_block(0, 1, 0, 64, 63);
+    assert_eq!(state.count_bottom_left_avail(0, 1, 0, 32), 32);
+    assert_eq!(state.count_bottom_left_avail(0, 1, 32, 32), 0);
+}
+
+#[test]
 fn count_bottom_left_scans_left_column_below() {
     let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 16, 16).unwrap();
     state.clear_superblock(0, 0);
@@ -145,12 +164,10 @@ fn clear_overrides_below_left_corner_for_interior_superblock() {
 }
 
 #[test]
-fn tile_slot_reset_and_commit_copy_reuse_grids_without_stale_flags() {
+fn tile_slot_reset_and_commit_copy_drop_stale_flags() {
     let mut prepass = TileBlockDecodedState::new(3, 1, 1, 32, 64, 64).unwrap();
     let mut commit = prepass.clone();
-    let prepass_addresses = prepass.planes.each_ref().map(|plane| plane.cells.as_ptr());
-    let commit_addresses = commit.planes.each_ref().map(|plane| plane.cells.as_ptr());
-    for iteration in 0..1200 {
+    for iteration in 0..4 {
         let size = if iteration % 2 == 0 { 16 } else { 32 };
         commit.clear_superblock(0, 0);
         commit.force_decoded(0, 0, 0);
@@ -160,14 +177,30 @@ fn tile_slot_reset_and_commit_copy_reuse_grids_without_stale_flags() {
             commit,
             TileBlockDecodedState::new(3, 1, 1, size, 48, 48).unwrap()
         );
-        assert_eq!(
-            prepass.planes.each_ref().map(|plane| plane.cells.as_ptr()),
-            prepass_addresses
-        );
-        assert_eq!(
-            commit.planes.each_ref().map(|plane| plane.cells.as_ptr()),
-            commit_addresses
-        );
         assert!(!commit.flag(0, 0, 0));
+    }
+}
+
+#[test]
+fn set_leaf_matches_set_block_on_each_plane() {
+    for (sub_x, sub_y) in [(1, 1), (1, 0), (0, 0)] {
+        for planes in [0..3, 0..1, 1..3] {
+            for (r, c, w4, h4) in [(0, 0, 1, 1), (3, 5, 1, 2), (4, 8, 8, 4), (0, 12, 4, 16)] {
+                let mut leaf =
+                    TileBlockDecodedState::new(3, sub_x, sub_y, SB_SIZE4, 64, 64).unwrap();
+                let mut blocks = leaf.clone();
+                leaf.set_leaf(planes.clone(), r, c, w4, h4);
+                for plane in planes.clone() {
+                    blocks.set_block(
+                        plane,
+                        r,
+                        c,
+                        (w4 >> blocks.subsampling(plane).0).max(1),
+                        (h4 >> blocks.subsampling(plane).1).max(1),
+                    );
+                }
+                assert_eq!(leaf, blocks, "{sub_x} {sub_y} {planes:?} {r} {c} {w4} {h4}");
+            }
+        }
     }
 }

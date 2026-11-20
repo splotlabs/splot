@@ -3,8 +3,10 @@
 
 //! One chroma row of luma down-sampled by a § 7.13.5 CfL filter.
 
-use std::simd::Simd;
-use std::simd::num::SimdUint as _;
+use fearless_simd::{
+    Bytes as _, Level, Simd, SimdBase as _, SimdCombine as _, SimdWiden as _, dispatch, i32x8,
+    u16x8,
+};
 
 const LANES: usize = 8;
 
@@ -32,6 +34,16 @@ pub(crate) fn downsample_scalar(weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out:
 
 /// [`downsample_scalar`] in eight lanes where no column clamps.
 pub(crate) fn downsample_simd(weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {
+    dispatch!(Level::baseline(), simd => downsample_kernel(simd, weights, rows, out));
+}
+
+#[inline]
+fn downsample_kernel<S: Simd>(
+    simd: S,
+    weights: &[[i32; 3]; 3],
+    rows: [&[u16]; 3],
+    out: &mut [i32],
+) {
     let len = rows.iter().map(|row| row.len()).min().unwrap_or(0);
     let mut i = 0;
     while i < out.len() {
@@ -40,20 +52,23 @@ pub(crate) fn downsample_simd(weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &
             i += 1;
             continue;
         }
-        let mut sum = Simd::<i32, LANES>::splat(0);
-        for (row, [left, centre, right]) in rows.iter().zip(weights) {
+        let mut sum = i32x8::splat(simd, 0);
+        for (row, &[left, centre, right]) in rows.iter().zip(weights) {
             let load = |at: usize| {
-                let lo = Simd::<u16, LANES>::from_slice(&row[at..at + LANES]);
-                let hi = Simd::<u16, LANES>::from_slice(&row[at + LANES..at + 2 * LANES]);
+                let lo = u16x8::from_slice(simd, &row[at..at + LANES]);
+                let hi = u16x8::from_slice(simd, &row[at + LANES..at + 2 * LANES]);
+                let wide = |v: u16x8<S>| {
+                    let (lo, hi) = v.widen();
+                    lo.combine(hi).bitcast::<i32x8<S>>()
+                };
                 let (even, odd) = lo.deinterleave(hi);
-                (even.cast::<i32>(), odd.cast::<i32>())
+                (wide(even), wide(odd))
             };
             let (prev, _) = load(2 * i - 1);
             let (even, odd) = load(2 * i);
-            sum +=
-                Simd::splat(*left) * prev + Simd::splat(*centre) * even + Simd::splat(*right) * odd;
+            sum += prev * left + even * centre + odd * right;
         }
-        sum.copy_to_slice(&mut out[i..i + LANES]);
+        sum.store_slice(&mut out[i..i + LANES]);
         i += LANES;
     }
 }

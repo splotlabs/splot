@@ -9,7 +9,7 @@ use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
-use splot_core::tables::conversion::MAX_TX_SIZE_RECT;
+use splot_core::tables::conversion::{MAX_TX_SIZE_RECT, TX_WIDTH_LOG2};
 
 use super::*;
 use crate::bitstream::tile_payload::TileCoeffFrameFacts;
@@ -107,11 +107,12 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -149,11 +150,12 @@ fn reconstruct_into_reuses_rectangular_u16_output_storage() {
         quant[0] = 1;
         let block = LumaCoeffBlock {
             eob: 1,
-            quant_range: 0..quant.len(),
+            quant_start: 0,
+            quant_len: quant.len() as u16,
             zero_tail: 0,
             intra_ist: None,
             cctx_type: None,
-            plane_tx_type: DCT_DCT,
+            plane_tx_type: DCT_DCT as u8,
             use_tcq: false,
             lossless: false,
         };
@@ -190,11 +192,12 @@ fn reconstruct_into_supports_maximum_u8_transform_geometry() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -228,11 +231,12 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     quant[0] = 1;
     let invalid_quant = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -261,7 +265,7 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     assert_eq!(out, vec![91; 7]);
 
     let mut valid_quant = invalid_quant;
-    valid_quant.quant_range = 0..quant.len();
+    valid_quant.quant_len = quant.len() as u16;
     let prediction_result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         valid_quant.view(&quant),
         &prediction[..15],
@@ -323,7 +327,7 @@ fn split_luma_transform_partition_records_follow_raster_order() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Split).unwrap();
     let coords: Vec<(usize, usize, usize)> = records
-        .iter()
+        .clone()
         .map(|record| (record.x, record.y, record.tx_size))
         .collect();
 
@@ -343,7 +347,7 @@ fn five_way_luma_transform_partition_fills_bounded_storage() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Horz5).unwrap();
     let geometry: Vec<_> = records
-        .iter()
+        .clone()
         .map(|record| (record.x, record.y, record.middle))
         .collect();
 
@@ -425,7 +429,7 @@ fn every_transform_partition_has_spec_geometry_order_and_middle_flags() {
     for &(partition, expected) in cases {
         let records = luma_transform_records_for_partition(64, 32, TX_16X16, partition).unwrap();
         let actual: Vec<_> = records
-            .iter()
+            .clone()
             .map(|record| {
                 let (width, height) = tx_size_dimensions(record.tx_size).unwrap();
                 (record.x, record.y, width, height, record.middle)
@@ -437,20 +441,19 @@ fn every_transform_partition_has_spec_geometry_order_and_middle_flags() {
 
 #[test]
 fn luma_transform_partition_storage_has_only_syntax_cardinalities() {
-    for (units, expected) in [
-        (LumaTransformPartitionUnits::one(0), vec![0]),
-        (LumaTransformPartitionUnits::two([0, 1]), vec![0, 1]),
-        (
-            LumaTransformPartitionUnits::four([0, 1, 2, 3]),
-            vec![0, 1, 2, 3],
-        ),
-        (
-            LumaTransformPartitionUnits::five([0, 1, 2, 3, 4]),
-            vec![0, 1, 2, 3, 4],
-        ),
+    for (partition, count) in [
+        (LumaTxPartition::None, 1),
+        (LumaTxPartition::Split, 4),
+        (LumaTxPartition::Horz, 2),
+        (LumaTxPartition::Vert, 2),
+        (LumaTxPartition::Horz4, 4),
+        (LumaTxPartition::Vert4, 4),
+        (LumaTxPartition::Horz5, 5),
+        (LumaTxPartition::Vert5, 5),
     ] {
-        assert_eq!(units.len(), expected.len());
-        assert!(units.iter().copied().eq(expected));
+        let units = luma_transform_records_for_partition(0, 0, TX_16X16, partition).unwrap();
+        assert_eq!(units.len(), count);
+        assert_eq!(units.count(), count);
     }
 }
 
@@ -572,13 +575,13 @@ fn sequence_partition_and_frame_transform_type_reductions_are_independent() {
     let mut input = frame_facts_input();
     input.reduced_tx_set = 3;
     let frame_type_reduced = input;
-    assert_eq!(frame_type_reduced.reduced_tx_set(), 3);
+    assert_eq!(frame_type_reduced.reduced_tx_set, 3);
     assert!(!frame_type_reduced.reduced_tx_part_set());
 
     input.reduced_tx_set = 0;
     input.reduced_tx_part_set = true;
     let sequence_partition_reduced = input;
-    assert_eq!(sequence_partition_reduced.reduced_tx_set(), 0);
+    assert_eq!(sequence_partition_reduced.reduced_tx_set, 0);
     assert!(sequence_partition_reduced.reduced_tx_part_set());
 }
 
@@ -645,34 +648,13 @@ fn writer_produced_narrow_four_and_five_way_partitions_are_nonconforming() {
 }
 
 #[test]
-fn sparse_partition_filter_keeps_record_order_and_original_count() {
-    let records =
-        luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
-    let record_count = records.len();
-    let visible = records
-        .try_filter_map::<_, ()>(|record| {
-            Ok(luma_transform_record_starts_in_frame(&record, 352, 288).then_some(record))
-        })
-        .unwrap();
-
-    assert_eq!(record_count, 4);
-    assert_eq!(visible.len(), 2);
-    assert!(
-        visible
-            .iter()
-            .map(|record| (record.x, record.y))
-            .eq([(320, 64), (320, 96),])
-    );
-}
-
-#[test]
 fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Split).unwrap();
     assert!(!luma_partition_record_fills_block(
         true,
         records.len(),
-        *records.iter().next().unwrap(),
+        records.clone().next().unwrap(),
         64,
         32
     ));
@@ -698,8 +680,9 @@ fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
 fn partitioned_luma_transform_records_skip_units_starting_outside_frame() {
     let records =
         luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
+    assert_eq!(records.len(), 4);
     let visible: Vec<(usize, usize)> = records
-        .iter()
+        .clone()
         .filter(|record| luma_transform_record_starts_in_frame(record, 352, 288))
         .map(|record| (record.x, record.y))
         .collect();
@@ -781,9 +764,10 @@ fn assert_missing_luma_context_is_atomic(
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane: 0,
             tx_size,
+            tx_set: transform_set(&facts, 0, tx_size, false).unwrap_or(0),
             is_inter: false,
             lossless: false,
             fsc_mode: false,
@@ -841,9 +825,10 @@ fn ensure_with_test_payload_fsc_and_policy(
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane,
             tx_size,
+            tx_set: transform_set(&facts, plane, tx_size, is_inter).unwrap_or(0),
             is_inter,
             lossless: facts
                 .lossless_for_segment(current_frame_qm_segment_id())
@@ -872,9 +857,10 @@ fn lossless_intra_transform_handoff_forces_dct_without_tx_type_or_ist_reads() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: lossless_frame_facts(),
+            frame_facts: &lossless_frame_facts(),
             plane: 0,
             tx_size: TX_8X8,
+            tx_set: 0,
             is_inter: false,
             lossless: true,
             fsc_mode: false,
@@ -900,9 +886,10 @@ fn lossless_fsc_luma_transform_handoff_retains_idtx_without_tx_type_read() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: lossless_frame_facts(),
+            frame_facts: &lossless_frame_facts(),
             plane: 0,
             tx_size: TX_8X8,
+            tx_set: 0,
             is_inter: false,
             lossless: true,
             fsc_mode: true,
@@ -927,9 +914,10 @@ fn lossless_fsc_chroma_transform_handoff_follows_luma_idtx() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: lossless_frame_facts(),
+            frame_facts: &lossless_frame_facts(),
             plane: 1,
             tx_size: TX_4X4,
+            tx_set: 0,
             is_inter: false,
             lossless: true,
             fsc_mode: true,
@@ -1059,14 +1047,15 @@ fn invalid_ist_shape_is_reconstruction_state() {
     let quant = vec![0; 16];
     let block = LumaCoeffBlock {
         eob: 2,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: Some(IntraIstSyntax {
             sec_tx_type: 1,
             most_probable_stx_set: Some(0),
         }),
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -1139,6 +1128,39 @@ fn inter_tx_set_ctx_for_frontier_block_is_zero() {
         inter_tx_type_long_ctx(INTER_SET_TX_SIZE, INTER_SET_EOB).unwrap(),
         0
     );
+}
+
+#[test]
+fn inter_transform_context_uses_adjusted_geometry() {
+    for ((tx_size, (width, height)), width_log2) in TX_WIDTH
+        .into_iter()
+        .zip(TX_HEIGHT)
+        .enumerate()
+        .zip(TX_WIDTH_LOG2)
+    {
+        let max_diag = (width.min(32) + height.min(32) - 4) as usize;
+        let width = width.min(32) as usize;
+        let height = height.min(32) as usize;
+        for eob in 1..=width * height {
+            let y = (eob - 1) >> width_log2.min(5);
+            let x = (eob - 1) % width;
+            let diag = x + y;
+            assert_eq!(
+                inter_tx_type_long_ctx(tx_size, eob).unwrap(),
+                if diag < 2 {
+                    1
+                } else if diag > max_diag {
+                    2
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                inter_ist_can_read_sec_tx(tx_size, eob).unwrap(),
+                width >= 16 && height >= 16 && eob <= ist_eob_limit(tx_size, DCT_DCT).unwrap()
+            );
+        }
+    }
 }
 
 #[test]
@@ -1404,7 +1426,7 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
 
     let config = staged_transform_tool_lossless_base_config(
-        frame_facts(false, false, false),
+        &frame_facts(false, false, false),
         0,
         0,
         0,
@@ -1424,12 +1446,10 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
 fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
         plane: 0,
-        start_x: 0,
-        start_y: 0,
         tx_size: TX_8X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         0,
         0,
         0,
@@ -1442,7 +1462,7 @@ fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
     );
 
     assert_eq!(
-        staged_transform_tool_plane_tx_type(geometry, false, true, base_config).unwrap(),
+        staged_transform_tool_plane_tx_type(geometry, false, true, 0, base_config).unwrap(),
         IDTX
     );
 }
@@ -1451,12 +1471,10 @@ fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
 fn lossless_inter_staged_plane_tx_type_remains_idtx() {
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
         plane: 0,
-        start_x: 0,
-        start_y: 0,
         tx_size: TX_4X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         0,
         0,
         0,
@@ -1469,7 +1487,7 @@ fn lossless_inter_staged_plane_tx_type_remains_idtx() {
     );
 
     assert_eq!(
-        staged_transform_tool_plane_tx_type(geometry, true, true, base_config).unwrap(),
+        staged_transform_tool_plane_tx_type(geometry, true, true, 0, base_config).unwrap(),
         IDTX
     );
 }
@@ -1478,12 +1496,10 @@ fn lossless_inter_staged_plane_tx_type_remains_idtx() {
 fn lossless_inter_chroma_staged_plane_tx_type_uses_colocated_luma_tx_type() {
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
         plane: 1,
-        start_x: 0,
-        start_y: 0,
         tx_size: TX_4X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
-        lossless_frame_facts(),
+        &lossless_frame_facts(),
         1,
         0,
         0,
@@ -1493,7 +1509,7 @@ fn lossless_inter_chroma_staged_plane_tx_type_uses_colocated_luma_tx_type() {
     );
 
     assert_eq!(
-        staged_transform_tool_plane_tx_type(geometry, true, true, base_config).unwrap(),
+        staged_transform_tool_plane_tx_type(geometry, true, true, 0, base_config).unwrap(),
         IDTX
     );
 }
@@ -1506,7 +1522,7 @@ fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
         (V_DCT, true, false),
     ] {
         let config = staged_transform_tool_lossless_base_config(
-            frame_facts_with_coeff_tools(true, true),
+            &frame_facts_with_coeff_tools(true, true),
             0,
             0,
             0,
@@ -1537,9 +1553,10 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane: 1,
             tx_size: TX_8X8,
+            tx_set: 0,
             is_inter: false,
             lossless: true,
             fsc_mode: false,
@@ -1569,9 +1586,10 @@ fn chroma_transform_handoff_skips_cctx_read_when_geometry_disallows() {
                 &mut cdfs,
                 &mut symbols,
                 TransformToolResidualInput {
-                    frame_facts: facts,
+                    frame_facts: &facts,
                     plane: 1,
                     tx_size: TX_32X32,
+                    tx_set: transform_set(&facts, 1, TX_32X32, is_inter).unwrap_or(0),
                     is_inter,
                     lossless: false,
                     fsc_mode: false,
@@ -1611,9 +1629,10 @@ fn lossless_inter_luma_transform_handoff_reads_tx_type_metadata() {
             &mut cdfs,
             &mut symbols,
             TransformToolResidualInput {
-                frame_facts: facts,
+                frame_facts: &facts,
                 plane: 0,
                 tx_size: TX_4X4,
+                tx_set: 0,
                 is_inter: true,
                 lossless: true,
                 fsc_mode: false,
@@ -1639,9 +1658,10 @@ fn lossless_inter_luma_transform_handoff_large_tx_implies_idtx_without_symbol() 
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane: 0,
             tx_size: TX_8X8,
+            tx_set: 0,
             is_inter: true,
             lossless: true,
             fsc_mode: false,
@@ -1667,9 +1687,10 @@ fn lossless_inter_chroma_transform_handoff_skips_tx_type_metadata() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane: 1,
             tx_size: TX_4X4,
+            tx_set: 0,
             is_inter: true,
             lossless: true,
             fsc_mode: false,
@@ -1774,11 +1795,12 @@ fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
     let quant = vec![0, 0, 0, 3, 0, 0, 2, 9, 0, 0, 0, 6, 0, 0, 0, 6];
     let block = LumaCoeffBlock {
         eob: 16,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: IDTX,
+        plane_tx_type: IDTX as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -1882,21 +1904,23 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     let quant = vec![-2, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
     let u_block = LumaCoeffBlock {
         eob: 7,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: Some(5),
-        plane_tx_type: DCT_ADST,
+        plane_tx_type: DCT_ADST as u8,
         use_tcq: false,
         lossless: false,
     };
     let v_block = LumaCoeffBlock {
         eob: 0,
-        quant_range: 0..0,
+        quant_start: 0,
+        quant_len: 0,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -1944,11 +1968,12 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[5] = 9;
         let block = LumaCoeffBlock {
             eob: 6,
-            quant_range: 0..quant.len(),
+            quant_start: 0,
+            quant_len: quant.len() as u16,
             zero_tail: 0,
             intra_ist: None,
             cctx_type: None,
-            plane_tx_type: DCT_DCT,
+            plane_tx_type: DCT_DCT as u8,
             use_tcq: false,
             lossless: false,
         };
@@ -1976,11 +2001,12 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[9] = 61;
         let block = LumaCoeffBlock {
             eob: 10,
-            quant_range: 0..quant.len(),
+            quant_start: 0,
+            quant_len: quant.len() as u16,
             zero_tail: 0,
             intra_ist: None,
             cctx_type: None,
-            plane_tx_type: DCT_DCT,
+            plane_tx_type: DCT_DCT as u8,
             use_tcq: false,
             lossless: false,
         };
@@ -2098,13 +2124,11 @@ fn compact_coefficient_tails_restore_dense_values_and_validate_spans() {
         let len = side * side;
         for last in [None, Some(0), Some(len / 2), Some(len - 1)] {
             let mut dense = vec![0; len];
-            let mut state = TransformCoeffBlockState::new(side, side).unwrap();
             if let Some(last) = last {
                 dense[last] = -17;
-                state.set_quant(last, -17).unwrap();
             }
-            let block = LumaCoeffBlock::empty(DCT_DCT, false).with_coeffs(&mut arena, &state);
-            assert_eq!(block.quant_range.len(), last.map_or(0, |i| i + 1));
+            let block = LumaCoeffBlock::empty(DCT_DCT, false).with_coeffs(&mut arena, &dense);
+            assert_eq!(block.quant_range().len(), last.map_or(0, |i| i + 1));
             let view = CoeffBlock::new(&block, &arena).unwrap();
             assert_eq!(view.dense_len(), len);
             let (coded, tail) = dense.split_at(view.quant.len());
@@ -2113,12 +2137,49 @@ fn compact_coefficient_tails_restore_dense_values_and_validate_spans() {
         }
     }
     let mut invalid = LumaCoeffBlock::empty(DCT_DCT, false);
-    invalid.quant_range = arena.len()..arena.len() + 1;
+    (invalid.quant_start, invalid.quant_len) = (arena.len() as u32, 1);
     assert!(CoeffBlock::new(&invalid, &arena).is_err());
-    invalid.quant_range = 0..0;
-    invalid.zero_tail = usize::MAX;
+    invalid.quant_len = 0;
+    invalid.zero_tail = u16::MAX;
     assert_eq!(
         CoeffBlock::new(&invalid, &arena).unwrap().dense_len(),
-        usize::MAX
+        usize::from(u16::MAX)
     );
+}
+
+#[test]
+fn cached_quantizers_follow_the_installed_frame_deltas() {
+    let deltas = |offset: i32| QuantizerDeltas {
+        y_dc: offset,
+        u_dc: 2 * offset,
+        v_dc: -offset,
+        u_ac: 3 * offset,
+        v_ac: -2 * offset,
+    };
+    let expect = |plane, qindex, deltas| {
+        (
+            dc_quantizer(plane, qindex, deltas, BitDepth::Eight),
+            ac_quantizer(plane, qindex, deltas, BitDepth::Eight),
+        )
+    };
+    let _outer = FrameQuantizerDeltasScope::install(deltas(5));
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            current_quantizers(plane, 120, BitDepth::Eight),
+            expect(plane, 120, deltas(5))
+        );
+        {
+            let _inner = FrameQuantizerDeltasScope::install(deltas(-7));
+            for qindex in [120, 0, 255] {
+                assert_eq!(
+                    current_quantizers(plane, qindex, BitDepth::Eight),
+                    expect(plane, qindex, deltas(-7))
+                );
+            }
+        }
+        assert_eq!(
+            current_quantizers(plane, 120, BitDepth::Eight),
+            expect(plane, 120, deltas(5))
+        );
+    }
 }

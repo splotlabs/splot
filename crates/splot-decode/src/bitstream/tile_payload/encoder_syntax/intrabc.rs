@@ -10,12 +10,13 @@ use core::ops::Range;
 use splot_core::symbol_encoder::SymbolSink;
 
 use super::super::cdf::TileCdfSelector;
+use super::super::partition_traversal::GeneralIntraLeafMode;
 use super::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, MotionVector, Result, TransformBlock,
     TxPartition, rule,
 };
+use crate::prediction::inter::MvdCoding;
 use crate::prediction::inter::read_mv::{MV_PRECISION_ONE_PEL, MvReadConfig};
-use crate::prediction::inter::{MvdCoding, non_intra_leaf_mode};
 
 /// The block vectors one leaf may code, see
 /// [`IntraTileSyntax::intrabc_vectors`].
@@ -239,7 +240,7 @@ impl IntraTileSyntax {
         let tile = &mut self.inter_state()?.tile;
         tile.publish_intrabc(&leaf.frontier, mv, skip)
             .map_err(rule("IntraBC publication"))?;
-        self.publish_leaf_modes(leaf, non_intra_leaf_mode(&leaf.frontier).mark_intrabc())
+        self.publish_leaf_modes(leaf, GeneralIntraLeafMode::no_luma_mode().mark_intrabc())
     }
 }
 

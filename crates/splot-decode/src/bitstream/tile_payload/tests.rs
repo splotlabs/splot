@@ -98,8 +98,6 @@ fn single_tile_payload_yields_deterministic_work_unit() {
     assert_eq!(plan.work_units().len(), 1);
     let unit = &mut plan.work_units_mut()[0];
     assert_eq!(unit.tile_num(), 0);
-    assert_eq!(unit.tile_row(), 0);
-    assert_eq!(unit.tile_col(), 0);
     assert_eq!(unit.mi_row_range(), 0..8);
     assert_eq!(unit.mi_col_range(), 0..16);
     assert_eq!(unit.tile_bytes(), &payload);
@@ -108,9 +106,6 @@ fn single_tile_payload_yields_deterministic_work_unit() {
         ByteSpan::new(ByteOffset::new(256), 2)
     );
     assert_eq!(unit.tile_size(), 2);
-    assert_eq!(unit.symbol().consumed_bits(), 15);
-    assert_eq!(unit.symbol().symbol_max_bits(), 1);
-    assert_eq!(unit.symbol().cdf_update_mode(), CdfUpdateMode::Enabled);
     assert_eq!(unit.cdf().update_mode(), CdfUpdateMode::Enabled);
     assert!(unit.cdf().save_policy().copy_cdf);
     assert!(!unit.cdf().save_policy().avg_cdf);
@@ -164,14 +159,9 @@ fn cdf_update_disable_is_recorded_without_symbol_finish() {
     let plan = plan_tile_payload_boundary(&input).unwrap();
 
     assert_eq!(
-        plan.work_units()[0].symbol().cdf_update_mode(),
-        CdfUpdateMode::Disabled
-    );
-    assert_eq!(
         plan.work_units()[0].cdf().update_mode(),
         CdfUpdateMode::Disabled
     );
-    assert_eq!(plan.work_units()[0].symbol().symbol_max_bits(), -7);
 }
 
 #[test]
@@ -223,8 +213,6 @@ fn multiple_tiles_are_retained_as_work_units() {
     assert_eq!(plan.work_units().len(), 2);
     let first = &plan.work_units()[0];
     assert_eq!(first.tile_num(), 0);
-    assert_eq!(first.tile_row(), 0);
-    assert_eq!(first.tile_col(), 0);
     assert_eq!(first.mi_row_range(), 0..8);
     assert_eq!(first.mi_col_range(), 0..16);
     assert_eq!(first.tile_bytes(), &[0x80]);
@@ -235,8 +223,6 @@ fn multiple_tiles_are_retained_as_work_units() {
     assert!(first.cdf().save_policy().copy_cdf);
     let second = &plan.work_units()[1];
     assert_eq!(second.tile_num(), 1);
-    assert_eq!(second.tile_row(), 0);
-    assert_eq!(second.tile_col(), 1);
     assert_eq!(second.mi_row_range(), 0..8);
     assert_eq!(second.mi_col_range(), 16..32);
     assert_eq!(second.tile_bytes(), &[0x00]);

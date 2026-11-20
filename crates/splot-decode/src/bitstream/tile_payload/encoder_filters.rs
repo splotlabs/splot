@@ -210,12 +210,13 @@ impl CcsoBlockMap {
             frame.mi_cols(),
             seq,
             core,
-            &[],
-            &[],
             ByteOffset::new(0),
             Default::default(),
         )
-        .and_then(|state| state.try_for_tile(rows, cols, None))
+        .and_then(|mut state| {
+            state.load_reused_blocks([None; 3])?;
+            state.try_for_tile(rows, cols, None)
+        })
         .map_err(rule("CCSO state"))?;
         Ok(Self {
             state,
@@ -233,12 +234,7 @@ impl CcsoBlockMap {
     /// a unit is never smaller than a superblock.
     #[must_use]
     pub fn units(&self) -> Vec<(usize, usize)> {
-        let state = &self.state;
-        (state.row_start..state.row_start + state.grid_rows)
-            .flat_map(|row| {
-                (state.col_start..state.col_start + state.grid_cols).map(move |col| (row, col))
-            })
-            .collect()
+        self.state.window.units().collect()
     }
 
     /// The `ccso_blk` context of `plane` at `unit`, or `None` when the plane
@@ -314,17 +310,14 @@ impl FilterRecorder {
             ));
         }
         let mut recorder = crate::residual::pipeline::DeblockRecorder {
+            needs: crate::filters::wienerns_lr::FilterRecordNeeds::ALL,
             blocks: &mut self.deblock_blocks,
             chroma_blocks: &mut self.chroma_blocks,
             tx_skip_records: &mut self.tx_skip,
             block_r: leaf.row4(),
             block_c: leaf.col4(),
-            chroma_tx: transforms
-                .iter()
-                .find(|tx| tx.plane == 1)
-                .map(|tx| tx.tx_size),
             chroma_subsampling: self.subsampling,
-            qindex: syntax.qindex(),
+            qindex: syntax.qindex() as u16,
             lossless: false,
         };
         for (tx, &eob) in transforms.iter().zip(eobs) {
@@ -338,13 +331,8 @@ impl FilterRecorder {
                     tx.tx_size,
                     eob,
                 );
-            } else {
-                let plane = if tx.plane == 1 {
-                    PlaneId::U
-                } else {
-                    PlaneId::V
-                };
-                recorder.record_chroma_unit(plane, tx.x, tx.y, tx.tx_size);
+            } else if tx.plane == 1 {
+                recorder.record_chroma_unit(PlaneId::U, tx.x, tx.y, tx.tx_size);
             }
         }
         Ok(())
@@ -600,7 +588,7 @@ impl LrLayout {
             for col4 in self.cols.clone().step_by(sb4) {
                 let root =
                     TilePartitionCall::root(row4, col4, self.frame.sb_size(), ROOT_HAS_CHROMA);
-                units.extend(self.units(PartitionNode(root))?);
+                units.extend(self.units(PartitionNode(root, root.own_chroma_ref()))?);
             }
         }
         Ok(units)
@@ -705,17 +693,17 @@ pub fn apply_loop_filters(
         sink.set_gdf_grid(grid);
         sink.set_gdf_reference_context(reference);
     }
-    let (filtered, _) = sink
-        .into_filtered_frame(
-            Arc::new(core.clone()),
-            seq.filter
-                .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
-            crate::pipeline::deblock_quant_deltas(seq, core),
-            None,
-            core::convert::identity,
-        )
-        .map_err(rule("loop filters"))?;
-    Ok(filtered)
+    sink.into_filtered_frame(
+        Arc::new(core.clone()),
+        seq.filter
+            .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+        crate::pipeline::deblock_quant_deltas(seq, core),
+        None,
+    )
+    .and_then(|(filtered, _)| {
+        filtered.ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)
+    })
+    .map_err(rule("loop filters"))
 }
 
 /// The decoder's CCSO grid of the frame `core` with `blocks`, or `None` when

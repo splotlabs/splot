@@ -267,8 +267,8 @@ fn lr_unit_ranges(
         checked_mul_shifted("lr_row_offset", tile_bounds.mi_row_start, MI_SIZE, sub_y)? / unit_size;
     let lr_col_offset =
         checked_mul_shifted("lr_col_offset", tile_bounds.mi_col_start, MI_SIZE, sub_x)? / unit_size;
-    let c = checked_sub("lr_c", call.c, tile_bounds.mi_col_start)?;
-    let r = checked_sub("lr_r", call.r, tile_bounds.mi_row_start)?;
+    let c = checked_sub("lr_c", call.c(), tile_bounds.mi_col_start)?;
+    let r = checked_sub("lr_r", call.r(), tile_bounds.mi_row_start)?;
 
     let unit_rows = count_units_in_frame(unit_size, frame_rows)?;
     let unit_cols = count_units_in_frame(unit_size, frame_cols)?;

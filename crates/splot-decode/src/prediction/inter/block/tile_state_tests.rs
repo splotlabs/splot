@@ -106,7 +106,6 @@ fn inter_tile_constructors_accept_nonempty_boundary_geometry() {
     assert!(TileBlockDecodedState::new(1, 1, 1, 1, 1, 1).is_ok());
     assert!(TileBlockDecodedState::new(3, 1, 1, 32, 32, 32).is_ok());
     assert!(NeighbourMvGrid::new_for_tile(7..8, 9..10).is_ok());
-    assert!(crate::prediction::intra_edge::TileYSmoothGrid::new_for_tile(7..8, 9..10).is_ok());
 }
 
 #[test]
@@ -119,12 +118,7 @@ fn inter_tile_grid_mapper_exhaustively_separates_state_from_allocation() {
         assert_invalid_tile_state(&inter_tile_grid_error(&error, "unused"));
     }
 
-    for context in [
-        "inter parser MV grid",
-        "inter luma smooth grid",
-        "inter chroma smooth grid",
-        "inter admission MV grid",
-    ] {
+    for context in ["inter parser MV grid", "inter admission MV grid"] {
         assert_workspace_allocation(
             &inter_tile_grid_error(&TileGridConstructionError::Allocation, context),
             context,
@@ -144,18 +138,22 @@ fn inter_tile_constructor_allocation_errors_stay_reconstruction_failures() {
         }),
         "inter segment id state",
     );
-    assert_workspace_allocation(
-        &inter_tile_block_decoded_error(&TileBlockDecodedStateError::Allocation {
-            source: allocation_error(),
-        }),
-        "inter block decoded state",
-    );
 }
 
 #[test]
 fn loop_restoration_records_rebase_each_tile_once_in_append_order() {
-    let mut blocks = vec![lr_source_block(Some(0), 0)];
-    let mut filters = vec![lr_unit_filter(0)];
+    let mut first_blocks = vec![lr_source_block(Some(0), 0)];
+    let mut first_filters = vec![lr_unit_filter(0)];
+    let first = (first_blocks.as_ptr(), first_filters.as_ptr());
+    let (mut blocks, mut filters) = (Vec::new(), Vec::new());
+    append_lr_records(
+        &mut blocks,
+        &mut filters,
+        &mut first_blocks,
+        &mut first_filters,
+    )
+    .unwrap();
+    assert_eq!((blocks.as_ptr(), filters.as_ptr()), first);
 
     append_lr_records(
         &mut blocks,
@@ -269,24 +267,26 @@ fn superblock_surfaces_follow_raster_order_and_clip_the_frame_edge()
 fn surface_scratch(
     info: splot_recon::DecodedFrameInfo,
     rects: &[splot_recon::PlaneRect],
-) -> splot_recon::Result<super::admission::SpareSurfaces<u8>> {
+) -> splot_recon::Result<Arc<super::admission::SpareSurfaces<u8>>> {
     let surfaces = rects
         .iter()
         .copied()
         .map(|rect| splot_recon::OwnedFrameRect::new(info, rect, 0))
         .collect::<splot_recon::Result<Vec<_>>>()?;
-    Ok(std::sync::Arc::new(Mutex::new(surfaces)))
+    let spares = super::admission::SpareSurfaces::default();
+    *spares.shared.lock() = surfaces;
+    Ok(Arc::new(spares))
 }
 
 fn drain_surface_layout(
-    scratch: super::admission::SpareSurfaces<u8>,
+    scratch: Arc<super::admission::SpareSurfaces<u8>>,
     info: splot_recon::DecodedFrameInfo,
     rects: &[splot_recon::PlaneRect],
 ) -> splot_recon::Result<Vec<splot_recon::PlaneRect>> {
-    let mut source = super::admission::SurfaceSource::new(info, rects.to_vec(), scratch);
+    let source = super::admission::SurfaceSource::new(info, rects.to_vec(), scratch);
     let mut handed = Vec::new();
     for unit in 0..rects.len() {
-        let Some(surface) = source.take(unit) else {
+        let Some(surface) = source.take(unit, 0) else {
             break;
         };
         handed.push(surface?.luma_rect());
@@ -319,14 +319,14 @@ fn a_returned_surface_is_retargeted_rather_than_reallocated()
         .collect();
     assert!(equal_sized.len() >= 2, "need two same-shaped superblocks");
 
-    let mut source =
+    let source =
         super::admission::SurfaceSource::<u8>::new(info, equal_sized.clone(), Arc::default());
-    let first = source.take(0).ok_or("a first surface")??;
+    let first = source.take(0, 0).ok_or("a first surface")??;
     assert_eq!(first.luma_rect(), equal_sized[0]);
-    source.give(first);
+    source.give(first, 0);
     assert_eq!(source.free_len(), 1);
 
-    let second = source.take(1).ok_or("a second surface")??;
+    let second = source.take(1, 0).ok_or("a second surface")??;
 
     assert_eq!(second.luma_rect(), equal_sized[1]);
     assert_eq!(
@@ -345,10 +345,10 @@ fn a_stale_recycled_surface_layout_is_laid_out_over()
     let rects = superblock_luma_rects(&(0..4), &(0..64), &workspace, 32)?;
     let stale_rects = superblock_luma_rects(&(4..8), &(0..64), &workspace, 32)?;
     let scratch = surface_scratch(info, &stale_rects)?;
-    let mut source = super::admission::SurfaceSource::new(info, rects.clone(), scratch);
+    let source = super::admission::SurfaceSource::new(info, rects.clone(), scratch);
 
     for unit in 0..rects.len() {
-        source.take(unit).ok_or("a surface")??;
+        source.take(unit, 0).ok_or("a surface")??;
     }
 
     assert_eq!(

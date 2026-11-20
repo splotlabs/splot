@@ -12,7 +12,7 @@ use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film
 use splot_core::headers::frame::{
     CoreSeqQuantView, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
     FrameHeaderParseMode, FrameHeaderParseStatus, FrameReferenceStateView, FrameType,
-    GlobalMotionRef, parse_frame_header_core,
+    parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     ChromaFormatIdc, CroppingWindow, ProfileIdc, SequenceHeader, parse_sequence_header,
@@ -74,7 +74,7 @@ pub(crate) struct PipelineFrame {
     pub(crate) output_effects: super::output_effects::FrameOutputEffects,
     pub(crate) frame_cdfs: inter::FrameCdfHandle,
     pub(crate) motion_field: inter::MotionFieldHandle,
-    pub(crate) ccso_params: Option<splot_core::headers::frame::CcsoParams>,
+    pub(crate) ccso_header: Option<std::sync::Arc<FrameHeaderCore>>,
     pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
     pub(crate) frame_rate_numerator: u32,
@@ -136,14 +136,15 @@ impl PipelineFrame {
     pub(crate) fn wait_settled(&self) -> Result<()> {
         self.frame.wait_settled()
     }
-    #[cfg(test)]
+}
+
+#[cfg(test)]
+impl PipelineDecodedFrame {
     #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
-        match &self.frame {
-            PipelineFrameSlot::Eight(slot) => slot
-                .try_frozen()
-                .unwrap_or_else(|| panic!("frame() called before the samples landed")),
-            PipelineFrameSlot::Ten(_) => panic!("frame() called on a 10-bit PipelineFrame"),
+        match self {
+            Self::Eight(frame) => frame,
+            Self::Ten(_) => panic!("frame() called on a 10-bit frame"),
         }
     }
 }
@@ -476,7 +477,7 @@ pub(crate) fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
     embedded_layer_id: splot_core::types::EmbeddedLayerId,
-) -> Result<reference_buffer::FrameRefUpdate> {
+) -> Result<reference_buffer::FrameRefUpdate<'_>> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
         unsupported_at(
             "missing_refresh_frame_flags",
@@ -513,24 +514,19 @@ pub(crate) fn frame_ref_update_from_core(
             "the § 7.23 reference update requires OrderHintLsbs",
         )
     })?;
-    let mut saved_order_hints = [0; 7];
-    let mut saved_gm_params = [GlobalMotionRef::identity().gm_params; 7];
-    let num_total_refs = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.num_total_refs)
-        .unwrap_or(0);
-    if let Some(inter) = core.inter.as_ref() {
-        for (target, &hint) in saved_order_hints.iter_mut().zip(&inter.order_hints) {
-            *target = hint;
-        }
-    }
-    if let Some(tail) = core.inter_tail.as_ref() {
-        for (target, model) in saved_gm_params
-            .iter_mut()
-            .zip(tail.global_motion.references)
-        {
-            *target = model.gm_params;
+    let (num_total_refs, saved_order_hints, saved_gm_params) = core.saved_global_motion_state();
+    let mut lr_frame_filter_class_counts = [0; 3];
+    let mut lr_banks = [None; 3];
+    if let Some(lr) = &core.lr_params {
+        for (plane, params) in lr.planes.iter().enumerate() {
+            if params.frame_filters_on {
+                let bank = params.frame_filter_bank.as_ref();
+                lr_banks[plane] = bank;
+                lr_frame_filter_class_counts[plane] = bank.map_or_else(
+                    || params.num_filter_classes.unwrap_or(1),
+                    |bank| bank.classes.len() as u8,
+                );
+            }
         }
     }
     Ok(reference_buffer::FrameRefUpdate {
@@ -550,46 +546,9 @@ pub(crate) fn frame_ref_update_from_core(
         saved_gm_params,
         long_term_id: core.long_term_id.and_then(|id| u32::try_from(id).ok()),
         embedded_layer_id,
-        lr_frame_filter_class_counts: lr_frame_filter_class_counts(core),
-        lr_frame_filter_taps: lr_frame_filter_taps(core),
+        lr_frame_filter_class_counts,
+        lr_banks,
     })
-}
-
-fn lr_frame_filter_taps(core: &FrameHeaderCore) -> splot_core::headers::frame::SlotFrameFilterTaps {
-    let mut taps = splot_core::headers::frame::SlotFrameFilterTaps::default();
-    let Some(lr) = core.lr_params.as_ref() else {
-        return taps;
-    };
-    for (plane, params) in lr.planes.iter().enumerate().take(3) {
-        if !params.frame_filters_on {
-            continue;
-        }
-        let Some(bank) = params.frame_filter_bank.as_ref() else {
-            continue;
-        };
-        taps[plane].extend_within(bank.classes.iter().map(|class| class.coeffs));
-    }
-    taps
-}
-
-fn lr_frame_filter_class_counts(core: &FrameHeaderCore) -> [u8; 3] {
-    let mut counts = [0u8; 3];
-    let Some(lr) = core.lr_params.as_ref() else {
-        return counts;
-    };
-    for (plane, params) in lr.planes.iter().enumerate().take(3) {
-        if !params.frame_filters_on {
-            continue;
-        }
-        let classes = params
-            .frame_filter_bank
-            .as_ref()
-            .map(|bank| bank.classes.len())
-            .or_else(|| params.num_filter_classes.map(usize::from))
-            .unwrap_or(1);
-        counts[plane] = u8::try_from(classes).unwrap_or(u8::MAX);
-    }
-    counts
 }
 
 pub(super) fn ensure_intra_header_complete(

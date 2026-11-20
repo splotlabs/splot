@@ -3,14 +3,14 @@
 
 #![allow(clippy::unwrap_used)]
 
-use super::super::{OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
+use super::super::{FilledWindow, OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::DeblockedWindow;
+use crate::filters::source::StripeInitialization::CopyAll;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 use splot_recon::{BitDepth, CurrentFrameWorkspace};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
@@ -87,7 +87,7 @@ fn skip_grid_records(skip_flag: bool, eob: usize) -> Vec<WienerNsLrTxSkipTransfo
         rows: 4,
         cols: 4,
         skip_flag,
-        eob,
+        empty: eob == 0,
     }]
 }
 
@@ -103,12 +103,17 @@ fn cdef_only_builds_cdef_grid_without_retaining_lr_grid() {
     let mut sink =
         WienerNsLrReconSink::for_final_filtering(workspace, 16, 16, splot_recon::BitDepth::Eight);
     sink.filter_records.tx_skip_records = skip_grid_records(true, 0);
+    sink.filter_records.cdef_skip_grid_values = Vec::with_capacity(16);
+    let retained = sink.filter_records.cdef_skip_grid_values.as_ptr();
 
     assert!(!sink.needs_lr_tx_skip_grid(&core));
+    let grid = sink.cdef_skip_grid(&core, 4, 4).unwrap().unwrap();
     assert_eq!(
-        sink.cdef_skip_grid(&core, 4, 4).unwrap(),
-        Some(crate::filters::cdef::CdefSkipGrid::new(4, 4, vec![true; 16]).unwrap())
+        grid,
+        crate::filters::cdef::CdefSkipGrid::new(4, 4, vec![1; 16]).unwrap()
     );
+    let values = grid.into_values();
+    assert_eq!(values.as_ptr(), retained);
     assert!(sink.tx_skip_grid.is_none());
 }
 
@@ -140,17 +145,12 @@ fn deblock_records() -> Vec<crate::filters::deblock::DeblockBlock> {
         .into_iter()
         .map(|c| crate::filters::deblock::DeblockBlock {
             r: 0,
-            c: c as u32,
-            luma_prediction: deblock_prediction(0, c),
-            chroma_prediction: deblock_prediction(0, c),
-            chroma_base_r: 0,
-            chroma_base_c: c as u32,
+            c: c as u16,
+            prediction: deblock_prediction(0, c),
             n4w: 8,
             n4h: 8,
-            luma_tx: 3,
-            chroma_tx: Some(2),
+            tx: 3,
             sub_pu_size: None,
-            chroma_transform_only: false,
             qindex: 100,
             skip: false,
             lossless: false,
@@ -180,8 +180,8 @@ fn progress_of<T: splot_recon::ReconSample>(
 /// Copies every stripe's window out of the frame `setup` filters, in order.
 fn stripe_windows<T: splot_recon::ReconSample>(
     setup: &OwnedFilterSetup<T>,
-) -> Vec<Option<DeblockedWindow<T>>> {
-    let mut rows = setup.sink.progress.frontier_rows().unwrap();
+) -> Vec<Option<FilledWindow<T>>> {
+    let mut rows = setup.progress.frontier_rows().unwrap();
     assert!(rows.publish_final_rows(setup.luma_height));
     let mut carry = DeblockedWindow::default();
     (0..setup.stripe_ranges().len())
@@ -203,22 +203,23 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         [(0, 32)]
     );
     let records = deblock_records();
+    let chroma_records = records.clone();
 
     let mut combined =
         WienerNsLrReconSink::for_final_filtering(deblock_workspace(), 64, 32, BitDepth::Eight);
     combined.filter_records.deblock_blocks.clone_from(&records);
+    combined.filter_records.chroma_deblock_blocks = chroma_records.clone();
     let (combined, _) = combined
         .into_filtered_frame(
             std::sync::Arc::new(core.clone()),
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let combined = combined.unwrap();
 
     let mut source = crate::test_support::frontier_rows(deblock_workspace()).1;
-    let chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
     let mut deblock = crate::filters::deblock::FrameDeblock::prepare(
         &records,
         &chroma_records,
@@ -231,7 +232,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         (1, 1),
         &mut crate::filters::deblock::DeblockGridStorage::default(),
     )
-    .unwrap()
     .unwrap();
     deblock
         .advance_source(&mut source, 8, BitDepth::Eight)
@@ -249,9 +249,9 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let staged = staged.unwrap();
 
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&staged).compute_hash(),
@@ -327,9 +327,10 @@ fn a_filtered_frame_keeps_its_reconstruction_buffer() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+
+    let frame = frame.unwrap();
 
     assert_eq!(
         frame.y().samples().as_ptr(),
@@ -357,26 +358,21 @@ fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let expected = expected.unwrap();
     let expected = splot_recon::DecodedFrameHashInput::new(&expected).compute_hash();
 
     {
-        let publishes = AtomicUsize::new(0);
         let (actual, _) = final_filter_sink_10bit()
             .into_filtered_frame(
                 Arc::clone(&core),
                 false,
                 crate::filters::deblock::DeblockQuantDeltas::ZERO,
                 None,
-                |frame| {
-                    publishes.fetch_add(1, Ordering::SeqCst);
-                    frame
-                },
             )
             .unwrap();
-        assert_eq!(publishes.load(Ordering::SeqCst), 1);
+        let actual = actual.unwrap();
         assert_eq!(
             splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
             expected,
@@ -391,20 +387,14 @@ fn one_worker_multi_stripe_task_failure_returns_without_publishing() {
     core.deblocking_filter_params = None;
     let mut sink = final_filter_sink_10bit();
     sink.plane_sizes[PlaneId::Y.index()] = None;
-    let publishes = AtomicUsize::new(0);
     let result = sink.into_filtered_frame(
         Arc::new(core),
         false,
         crate::filters::deblock::DeblockQuantDeltas::ZERO,
         None,
-        |frame| {
-            publishes.fetch_add(1, Ordering::SeqCst);
-            frame
-        },
     );
 
     assert!(result.is_err());
-    assert_eq!(publishes.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -418,9 +408,9 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let expected = expected.unwrap();
 
     let mut sink = final_filter_sink_8bit::<u8>();
     let progress = progress_of(&mut sink);
@@ -436,11 +426,40 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
             .run_window(stripe, windows[stripe].take().unwrap())
             .unwrap();
     }
-    let (actual, _) = setup.finish(core::convert::identity).unwrap();
+    drop(progress);
+    let (actual, _) = setup.finish(None).unwrap();
+    let actual = actual.unwrap();
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
         splot_recon::DecodedFrameHashInput::new(&expected).compute_hash(),
     );
+}
+
+#[test]
+fn post_ccso_fringes_follow_internal_tile_row_boundaries() {
+    let mut core = switchable_core();
+    core.tile_info.as_mut().unwrap().mi_row_starts =
+        splot_core::tile::TileStarts::from_iter_checked([0, 16, 32]).unwrap();
+    let core = Arc::new(core);
+    for disabled in [false, true] {
+        let setup = final_filter_sink_10bit()
+            .into_owned_filter_setup(Arc::clone(&core), disabled, None)
+            .unwrap();
+        let fringes: Vec<_> = setup
+            .stripe_ranges()
+            .iter()
+            .map(|&range| setup.tile_row_fringes(range))
+            .collect();
+        assert_eq!(
+            fringes,
+            [
+                [false, false],
+                [false, !disabled],
+                [!disabled, false],
+                [false, false]
+            ]
+        );
+    }
 }
 
 #[test]
@@ -454,9 +473,9 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let expected = expected.unwrap();
 
     let mut sink = final_filter_sink_10bit();
     let progress = progress_of(&mut sink);
@@ -474,19 +493,9 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
         assert_eq!(progress.published_luma_rows(), expected_rows);
     }
 
-    let freezes = AtomicUsize::new(0);
-    let (actual, _) = setup
-        .finish(|frame| {
-            freezes.fetch_add(1, Ordering::SeqCst);
-            frame
-        })
-        .unwrap();
-
-    assert_eq!(freezes.load(Ordering::SeqCst), 1);
-    assert!(
-        progress.read().is_none(),
-        "the terminal freeze must take the progressive workspace"
-    );
+    drop(progress);
+    let (actual, _) = setup.finish(None).unwrap();
+    let actual = actual.unwrap();
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
         splot_recon::DecodedFrameHashInput::new(&expected).compute_hash(),
@@ -517,17 +526,10 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
         "an out-of-range stripe must fail closed"
     );
 
-    let freezes = AtomicUsize::new(0);
     assert!(
-        setup
-            .finish(|frame| {
-                freezes.fetch_add(1, Ordering::SeqCst);
-                frame
-            })
-            .is_err(),
+        setup.finish(None).is_err(),
         "terminal freeze must reject missing stripes"
     );
-    assert_eq!(freezes.load(Ordering::SeqCst), 0);
     drop(writer);
     assert!(slot.is_settled());
     assert_eq!(slot.progress().unwrap().published_luma_rows(), 0);
@@ -619,9 +621,9 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            core::convert::identity,
         )
         .unwrap();
+    let expected = expected.unwrap();
     let (setup, progress) = arc_owned_filter_setup();
     let mut rows = final_rows(&progress);
     assert_eq!(owned_setup(&setup).stripe_ranges().len(), 3);
@@ -634,19 +636,17 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             grids: crate::filters::deblock::DeblockGridStorage::default(),
             blocks: restored.clone(),
             chroma: crate::filters::deblock::ChromaDeblockRecords::default(),
+            bru_modes: None,
         })
         .unwrap();
     drop(rows);
 
-    let freezes = AtomicUsize::new(0);
-    let (outcome, shell) = OwnedFilterSetup::owned_finish(setup).finish(|frame| {
-        freezes.fetch_add(1, Ordering::SeqCst);
-        frame
-    });
+    drop(progress);
+    let (outcome, shell) = OwnedFilterSetup::owned_finish(setup).finish(None);
     let (actual, records) = outcome.unwrap();
+    let actual = actual.unwrap();
     assert!(shell.as_ref().is_none());
 
-    assert_eq!(freezes.load(Ordering::SeqCst), 1);
     assert_eq!(
         records
             .deblock_blocks
@@ -658,7 +658,6 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             .map(|block| (block.r, block.c, block.n4w, block.n4h, block.qindex))
             .collect::<Vec<_>>()
     );
-    assert!(progress.read().is_none());
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
         splot_recon::DecodedFrameHashInput::new(&expected).compute_hash(),
@@ -673,9 +672,8 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
         job.run().unwrap();
     }
-    drop(rows);
-    let (outcome, mut setup) =
-        OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+    drop((rows, progress));
+    let (outcome, mut setup) = OwnedFilterSetup::owned_finish(setup).finish(None);
     assert!(outcome.is_ok());
     assert_eq!(Arc::as_ptr(&setup), shell);
     assert!(setup.as_ref().is_none());
@@ -691,8 +689,8 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
         job.run().unwrap();
     }
-    drop(rows);
-    let (outcome, setup) = OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+    drop((rows, progress));
+    let (outcome, setup) = OwnedFilterSetup::owned_finish(setup).finish(None);
     assert!(outcome.is_ok());
     assert_eq!(Arc::as_ptr(&setup), shell);
     assert!(setup.as_ref().is_none());
@@ -722,8 +720,8 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
         for job in owned_filter_jobs(&setup, &mut rows, &order) {
             job.run().unwrap();
         }
-        drop(rows);
-        let (outcome, _) = OwnedFilterSetup::owned_finish(setup).finish(core::convert::identity);
+        drop((rows, progress));
+        let (outcome, _) = OwnedFilterSetup::owned_finish(setup).finish(None);
         outcome.unwrap().1
     }
 
@@ -731,16 +729,12 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
     records.cdef_grid_values.reserve(32);
     records.cdef_strengths.reserve(1);
     records.tx_skip_grid_values.reserve(128);
-    for lut in &mut records.ccso_offset_luts {
-        lut.reserve(16);
-    }
     let enabled = finish(enabled_core(), records);
     let strengths = enabled.cdef_strengths.as_ptr();
     let capacities = (
         enabled.cdef_grid_values.capacity(),
         enabled.cdef_strengths.capacity(),
         enabled.tx_skip_grid_values.capacity(),
-        enabled.ccso_offset_luts.each_ref().map(Vec::capacity),
     );
 
     let mut disabled_core = switchable_core();
@@ -757,7 +751,6 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
             enabled.cdef_grid_values.capacity(),
             enabled.cdef_strengths.capacity(),
             enabled.tx_skip_grid_values.capacity(),
-            enabled.ccso_offset_luts.each_ref().map(Vec::capacity),
         ),
         capacities
     );
@@ -781,7 +774,7 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     );
     assert!(
         OwnedFilterSetup::owned_finish(setup)
-            .finish(core::convert::identity)
+            .finish(None)
             .0
             .is_err(),
         "missing stripes must prevent terminal freeze"
@@ -796,7 +789,7 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     let lingering = Arc::clone(&setup);
     assert!(
         OwnedFilterSetup::owned_finish(setup)
-            .finish(core::convert::identity)
+            .finish(None)
             .0
             .is_err(),
         "terminal freeze requires the sole Arc owner"
@@ -825,7 +818,7 @@ fn apply_luma_lr(
     sink: &WienerNsLrReconSink<u8>,
     core: &FrameHeaderCore,
     blocks: &[WienerNsLrSourceBlock],
-    direct_u8: bool,
+    fully_overwritten: bool,
 ) -> Vec<u8> {
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u8>::new(sink.frame_info()).unwrap(),
@@ -836,8 +829,7 @@ fn apply_luma_lr(
     poison_target
         .take(PlaneId::Y)
         .unwrap()
-        .u8_samples_mut()
-        .unwrap()
+        .samples_mut()
         .fill(0xa5);
     drop(poison_target);
     drop(poison_lease);
@@ -869,18 +861,19 @@ fn apply_luma_lr(
             &[],
             super::LrStripeOutput {
                 active_planes: [true, false, false],
-                direct_u8_planes: [direct_u8, false, false],
-                initializations: [StripeInitialization::CopyAll; 3],
+                initializations: [if fully_overwritten {
+                    StripeInitialization::FullyOverwritten
+                } else {
+                    StripeInitialization::CopyAll
+                }; 3],
                 target,
             },
         )
         .unwrap()
         .into_filtered();
-    let mut filtered = filtered;
-    filtered.y.finish_direct().unwrap();
     drop(filtered);
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     crate::test_support::packed(frame.y())
 }
 
@@ -918,7 +911,6 @@ fn inactive_filter_planes_reuse_cdef_storage() {
             &[],
             super::LrStripeOutput {
                 active_planes: [false; 3],
-                direct_u8_planes: [false; 3],
                 initializations: [StripeInitialization::CopyAll; 3],
                 target,
             },
@@ -926,7 +918,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
         .unwrap()
         .into_filtered();
 
-    assert_eq!(filtered.y.as_u16().unwrap().samples().as_ptr(), cdef_ptr);
+    assert_eq!(filtered.y.samples().as_ptr(), cdef_ptr);
 }
 
 fn merges(first: WienerNsLrSourceBlock, next: WienerNsLrSourceBlock) -> [Option<usize>; 2] {
@@ -960,7 +952,7 @@ fn merges_contiguous_blocks_and_splits_on_filter_visible_fields() {
 }
 
 #[test]
-fn loop_restoration_requires_exact_full_plane_coverage() {
+fn loop_restoration_requires_full_plane_coverage() {
     let covered = [
         block(1, 0, 0),
         block(1, 4, 0),
@@ -1008,7 +1000,7 @@ fn loop_restoration_requires_exact_full_plane_coverage() {
     ));
     let mut overlapping = covered.to_vec();
     overlapping.push(block(1, 0, 0));
-    assert!(!lr_plane_fully_overwritten(
+    assert!(lr_plane_fully_overwritten(
         &overlapping,
         PlaneId::U,
         FrameRestorationType::WienerNonsep,
@@ -1065,7 +1057,7 @@ fn tiled_lr_blocks(plane: PlaneId, width: usize, height: usize) -> Vec<WienerNsL
 #[test]
 fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
     let wiener = tiled_lr_blocks(PlaneId::Y, 9, 7);
-    assert!(terminal_luma_wiener_covers(&wiener, 9, 7, 0, 7));
+    assert!(luma_wiener_covers(&wiener, 9, 7, 0, 7));
 
     let mut mixed = tiled_lr_blocks(PlaneId::Y, 9, 7);
     for (index, block) in mixed.iter_mut().enumerate() {
@@ -1084,7 +1076,7 @@ fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
         0,
         7,
     ));
-    assert!(!terminal_luma_wiener_covers(&mixed, 9, 7, 0, 7));
+    assert!(!luma_wiener_covers(&mixed, 9, 7, 0, 7));
 
     let mut pc_wiener = tiled_lr_blocks(PlaneId::Y, 9, 7);
     for block in &mut pc_wiener {
@@ -1099,7 +1091,7 @@ fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
         0,
         7,
     ));
-    assert!(!terminal_luma_wiener_covers(&pc_wiener, 9, 7, 0, 7));
+    assert!(!luma_wiener_covers(&pc_wiener, 9, 7, 0, 7));
     assert!(!lr_plane_fully_overwritten(
         &pc_wiener,
         PlaneId::U,
@@ -1115,29 +1107,13 @@ fn loop_restoration_coverage_accepts_supported_kernels_and_terminal_clipping() {
 fn loop_restoration_coverage_rejects_one_pixel_and_one_block_holes() {
     let mut one_pixel = tiled_lr_blocks(PlaneId::Y, 8, 4);
     one_pixel[0].width = 3;
-    assert!(!lr_plane_fully_overwritten(
-        &one_pixel,
-        PlaneId::Y,
-        FrameRestorationType::WienerNonsep,
-        8,
-        4,
-        0,
-        4,
-    ));
-    assert!(!terminal_luma_wiener_covers(&one_pixel, 8, 4, 0, 4));
+    assert!(!luma_wiener_covers(&one_pixel, 8, 4, 0, 4,));
+    assert!(!luma_wiener_covers(&one_pixel, 8, 4, 0, 4));
 
     let mut one_block = tiled_lr_blocks(PlaneId::Y, 8, 8);
     one_block.remove(2);
-    assert!(!lr_plane_fully_overwritten(
-        &one_block,
-        PlaneId::Y,
-        FrameRestorationType::WienerNonsep,
-        8,
-        8,
-        0,
-        8,
-    ));
-    assert!(!terminal_luma_wiener_covers(&one_block, 8, 8, 0, 8));
+    assert!(!luma_wiener_covers(&one_block, 8, 8, 0, 8,));
+    assert!(!luma_wiener_covers(&one_block, 8, 8, 0, 8));
 }
 
 #[test]
@@ -1174,12 +1150,12 @@ fn loop_restoration_coverage_is_plane_independent_for_every_pixel_format() {
 }
 
 #[test]
-fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
+fn fully_overwritten_luma_wiener_matches_copy_all_for_class_layouts() {
     let snapshot: Vec<u8> = (0..256)
         .map(|index| 32 + ((index * 37 + index / 16 * 19) % 192) as u8)
         .collect();
     let blocks = tiled_lr_blocks(PlaneId::Y, 16, 16);
-    assert!(terminal_luma_wiener_covers(&blocks, 16, 16, 0, 16));
+    assert!(luma_wiener_covers(&blocks, 16, 16, 0, 16));
 
     let mut cell_core = switchable_core();
     if let Some(gdf) = cell_core.gdf_params.as_mut() {
@@ -1197,9 +1173,9 @@ fn terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts() {
     luma.num_filter_classes = Some(2);
 
     for core in [&single_core, &cell_core] {
-        let staged = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, false);
+        let copied = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, false);
         let direct = apply_luma_lr(&lr_sink(&snapshot), core, &blocks, true);
-        assert_eq!(direct, staged);
+        assert_eq!(direct, copied);
         assert!(direct.iter().any(|&sample| sample != 0xa5));
     }
 }
@@ -1313,7 +1289,7 @@ fn apply_wide_luma_lr(
     let mut poison_lease = progress.direct_stripe(0).unwrap();
     let mut poison_target = poison_lease.take_target().unwrap();
     let mut poison = poison_target.take(PlaneId::Y).unwrap();
-    poison.u16_samples_mut().unwrap().fill(0x2a5);
+    poison.samples_mut().fill(0x2a5);
     drop((poison, poison_target, poison_lease));
     let mut lease = progress.direct_stripe(0).unwrap();
     let (target, _) = lease.take_target().unwrap().split([false, true, true]);
@@ -1327,7 +1303,6 @@ fn apply_wide_luma_lr(
             &[],
             super::LrStripeOutput {
                 active_planes: [true, false, false],
-                direct_u8_planes: [false; 3],
                 initializations: [initialization; 3],
                 target,
             },
@@ -1337,7 +1312,7 @@ fn apply_wide_luma_lr(
     assert_eq!(frame.post_lr_y_holds_cdef, holds_cdef);
     drop(frame.into_filtered());
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     frame.y().visible_rows().flatten().copied().collect()
 }
 
@@ -1356,6 +1331,7 @@ fn unsplit_luma_lr(
     let (mut storage, mut cells) = (Vec::new(), Vec::new());
     let window = LrSourceRows::resolve(
         &mut storage,
+        PlaneId::Y,
         cdef.deblocked_y,
         &cdef.filtered_y,
         &[],
@@ -1364,7 +1340,7 @@ fn unsplit_luma_lr(
         0,
         block.width,
         block.height,
-        WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
+        [WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS); 2].into(),
     )
     .unwrap();
     let (width, height) = (block.width, block.height);
@@ -1449,6 +1425,7 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
     let mut storage = Vec::new();
     let window = LrSourceRows::resolve(
         &mut storage,
+        PlaneId::Y,
         cdef.deblocked_y,
         &cdef.filtered_y,
         &[],
@@ -1457,7 +1434,7 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
         0,
         200,
         16,
-        WIENER_NS_LUMA_TAP_RADIUS,
+        [WIENER_NS_LUMA_TAP_RADIUS; 2].into(),
     )
     .unwrap();
     let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
@@ -1502,7 +1479,7 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
 
 /// A strip is flat only when its whole tap reach holds one value no larger
 /// than the maximum sample; the last strip's reach is narrower than one
-/// SIMD check.
+/// SIMD check, so the columns to its left that fill one count too.
 #[test]
 fn a_differing_sample_in_a_strip_reach_breaks_only_that_strip() {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
@@ -1523,7 +1500,10 @@ fn a_differing_sample_in_a_strip_reach_breaks_only_that_strip() {
             samples[row][col] = 8;
             let expected: Vec<_> = (0..width)
                 .step_by(64)
-                .map(|x| (!(x..x + 64.min(width - x) + 2 * R).contains(&col)).then_some(7))
+                .map(|x| {
+                    let end = x + 64.min(width - x) + 2 * R;
+                    (!(x.min(end.saturating_sub(16))..end).contains(&col)).then_some(7)
+                })
                 .collect();
             assert_eq!(strips(&samples, 1023), expected, "row {row} col {col}");
         }
@@ -1596,19 +1576,34 @@ fn checked_extent_boundaries_and_other_domains_do_not_merge() {
     }
 }
 
-#[test]
-fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
-    WIENER_NS_LUMA_SCRATCH.with(|slot| slot.set(None));
-
-    with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES + 1, |_| ());
-    WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_none()));
-
-    with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES, |_| ());
-    WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_some()));
+/// Resolves the `width` x `height` block at `(x, y)` with radius `(1, 1)`.
+#[allow(clippy::too_many_arguments)]
+fn resolve_rows<'a>(
+    storage: &'a mut Vec<u8>,
+    curr: FramePlane<'a, u8>,
+    cdef: &'a StripePlane<u8>,
+    overlap: &'a [StripePlane<u8>],
+    bounds: &LoopRestorationSourceBounds,
+    (x, y): (isize, isize),
+    (width, height): (usize, usize),
+) -> ReconResult<LrSourceRows<'a, u8>> {
+    LrSourceRows::resolve(
+        storage,
+        PlaneId::Y,
+        curr,
+        cdef,
+        overlap,
+        bounds,
+        x,
+        y,
+        width,
+        height,
+        (1, 1),
+    )
 }
 
 #[test]
-fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
+fn lr_source_rows_resolve_in_stripe_rows_from_overlap_planes() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
         luma_end_x: 7,
@@ -1628,47 +1623,20 @@ fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
             .unwrap();
     }
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let band = StripePlane::copy_from(cdef_source, 0, 4).unwrap();
-    let overlap = [StripePlane::copy_from(cdef_source, 4, 8).unwrap()];
+    let band = StripePlane::copy_from_into(cdef_source, 0, 4, None, CopyAll).unwrap();
+    let overlap = [StripePlane::copy_from_into(cdef_source, 4, 8, None, CopyAll).unwrap()];
     let mut storage = Vec::new();
 
-    assert!(
-        LrSourceWindow::materialize(
-            &mut storage,
-            PlaneId::Y,
-            curr,
-            &band,
-            &[],
-            &bounds,
-            2,
-            2,
-            4,
-            4,
-            (1, 1),
-        )
-        .is_err()
-    );
-    let window = LrSourceWindow::materialize(
-        &mut storage,
-        PlaneId::Y,
-        curr,
-        &band,
-        &overlap,
-        &bounds,
-        2,
-        2,
-        4,
-        4,
-        (1, 1),
-    )
-    .unwrap();
-    assert_eq!(window.get_abs(3, 3), 27);
-    assert_eq!(window.get_abs(3, 5), 43);
-    assert_eq!(window.get_abs(4, 6), 52);
+    assert!(resolve_rows(&mut storage, curr, &band, &[], &bounds, (2, 2), (4, 4)).is_err());
+    let window =
+        resolve_rows(&mut storage, curr, &band, &overlap, &bounds, (2, 2), (4, 4)).unwrap();
+    assert_eq!(window.rows[2][2], 27);
+    assert_eq!(window.rows[4][2], 43);
+    assert_eq!(window.rows[5][3], 52);
 }
 
 #[test]
-fn lr_source_rows_match_the_materialized_window() {
+fn lr_source_rows_match_the_source_sample_process() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
         luma_end_x: 15,
@@ -1679,24 +1647,27 @@ fn lr_source_rows_match_the_materialized_window() {
         subsampling_x: 0,
         subsampling_y: 0,
     };
+    let curr_sample = |x: usize, y: usize| ((16 * y + x) % 97) as u8;
+    let cdef_sample = |x: usize, y: usize| (100 + (16 * y + x) % 101) as u8;
     let mut curr_workspace = crate::test_support::yuv420_workspace(16, 16, 0);
     let mut cdef_workspace = crate::test_support::yuv420_workspace(16, 16, 0);
     for sample in 0..256 {
         let (x, y) = (sample % 16, sample / 16);
         curr_workspace
-            .set_reconstructed_sample(PlaneId::Y, x, y, (sample % 97) as u8)
+            .set_reconstructed_sample(PlaneId::Y, x, y, curr_sample(x, y))
             .unwrap();
         cdef_workspace
-            .set_reconstructed_sample(PlaneId::Y, x, y, (100 + sample % 101) as u8)
+            .set_reconstructed_sample(PlaneId::Y, x, y, cdef_sample(x, y))
             .unwrap();
     }
     let curr = FramePlane::new(&curr_workspace, PlaneId::Y).unwrap();
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let band = StripePlane::copy_from(cdef_source, 2, 14).unwrap();
+    let band = StripePlane::copy_from_into(cdef_source, 2, 14, None, CopyAll).unwrap();
+    let resolved = LoopRestorationPlaneBounds::new(PlaneId::Y, &bounds).unwrap();
     for (block_x, block_y) in [(0, 4), (6, 6), (11, 8), (5, 4)] {
-        let (mut window_storage, mut row_storage) = (Vec::new(), Vec::new());
-        let window = LrSourceWindow::materialize(
-            &mut window_storage,
+        let mut storage = Vec::new();
+        let rows = LrSourceRows::resolve(
+            &mut storage,
             PlaneId::Y,
             curr,
             &band,
@@ -1709,28 +1680,25 @@ fn lr_source_rows_match_the_materialized_window() {
             (2, 2),
         )
         .unwrap();
-        let rows = LrSourceRows::resolve(
-            &mut row_storage,
-            curr,
-            &band,
-            &[],
-            &bounds,
-            block_x,
-            block_y,
-            5,
-            4,
-            2,
-        )
-        .unwrap();
         assert_eq!(rows.len, 8);
-        for (row, expected) in rows.rows[..rows.len].iter().zip(window.samples.chunks(9)) {
+        for (row_index, row) in rows.rows[..rows.len].iter().enumerate() {
+            let expected: Vec<u8> = (0..9)
+                .map(|col| {
+                    let sample =
+                        resolved.sample(block_x - 2 + col, block_y - 2 + row_index as isize);
+                    match sample.source {
+                        LoopRestorationSource::CurrFrame => curr_sample(sample.x, sample.y),
+                        LoopRestorationSource::CdefFrame => cdef_sample(sample.x, sample.y),
+                    }
+                })
+                .collect();
             assert_eq!(*row, expected, "block ({block_x}, {block_y})");
         }
     }
 }
 
 #[test]
-fn lr_source_window_reuses_storage_after_an_error() {
+fn lr_source_rows_reuse_storage_after_an_error() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
         luma_end_x: 7,
@@ -1750,59 +1718,29 @@ fn lr_source_window_reuses_storage_after_an_error() {
             .unwrap();
     }
     let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
-    let cdef = StripePlane::copy_from(cdef_source, 0, 8).unwrap();
-    let short_cdef = StripePlane::copy_from(cdef_source, 0, 1).unwrap();
+    let cdef = StripePlane::copy_from_into(cdef_source, 0, 8, None, CopyAll).unwrap();
+    let short_cdef = StripePlane::copy_from_into(cdef_source, 0, 1, None, CopyAll).unwrap();
     let mut storage = Vec::new();
 
-    let window = LrSourceWindow::materialize(
-        &mut storage,
-        PlaneId::Y,
-        curr,
-        &cdef,
-        &[],
-        &bounds,
-        2,
-        2,
-        4,
-        4,
-        (1, 1),
-    )
-    .unwrap();
-    assert_eq!(window.get_abs(2, 2), 18);
-    let allocation = window.samples.as_ptr();
+    let window = resolve_rows(&mut storage, curr, &cdef, &[], &bounds, (2, 2), (4, 4)).unwrap();
+    assert_eq!(window.rows[1][1], 18);
+    let allocation = storage.as_ptr();
 
     assert!(
-        LrSourceWindow::materialize(
+        resolve_rows(
             &mut storage,
-            PlaneId::Y,
             curr,
             &short_cdef,
             &[],
             &bounds,
-            2,
-            2,
-            2,
-            2,
-            (1, 1),
+            (2, 2),
+            (2, 2)
         )
         .is_err()
     );
-    let window = LrSourceWindow::materialize(
-        &mut storage,
-        PlaneId::Y,
-        curr,
-        &cdef,
-        &[],
-        &bounds,
-        2,
-        2,
-        2,
-        2,
-        (1, 1),
-    )
-    .unwrap();
-    assert_eq!(window.samples.as_ptr(), allocation);
-    assert_eq!(window.get_abs(3, 3), 27);
+    let window = resolve_rows(&mut storage, curr, &cdef, &[], &bounds, (2, 2), (2, 2)).unwrap();
+    assert_eq!(window.rows[2][2], 27);
+    assert_eq!(storage.as_ptr(), allocation);
 }
 
 #[test]
@@ -1875,4 +1813,44 @@ fn stripe_traversal_streams_ranges_and_stops_after_error() {
     assert!(invalid.next().unwrap().is_err());
     assert!(invalid.next().is_none());
     assert!(invalid.next().is_none());
+}
+
+fn lr_plane_fully_overwritten(
+    blocks: &[WienerNsLrSourceBlock],
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    width: usize,
+    frame_height: usize,
+    start_y: usize,
+    end_y: usize,
+) -> bool {
+    let rows = (start_y, end_y);
+    for_each_lr_gap(
+        blocks,
+        plane,
+        frame_type,
+        width,
+        frame_height,
+        rows,
+        |_, _| None,
+    )
+    .is_some()
+}
+
+fn luma_wiener_covers(
+    blocks: &[WienerNsLrSourceBlock],
+    width: usize,
+    height: usize,
+    start: usize,
+    end: usize,
+) -> bool {
+    lr_plane_fully_overwritten(
+        blocks,
+        PlaneId::Y,
+        FrameRestorationType::WienerNonsep,
+        width,
+        height,
+        start,
+        end,
+    )
 }

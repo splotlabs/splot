@@ -142,6 +142,26 @@ const fn build_two_d_scan() -> [u16; SCAN_TABLE_LEN] {
     out
 }
 
+/// Position `c` of the [`coefficient_scan_slice`] scan of a
+/// `4 << wi` by `4 << hi` block, for tables derived at compile time; `wi`,
+/// `hi` above 3 and `c` past the block clamp to the last entry.
+#[must_use]
+pub const fn coefficient_scan_position(
+    wi: usize,
+    hi: usize,
+    class: TransformClass,
+    c: usize,
+) -> u16 {
+    let (wi, hi) = (if wi < 3 { wi } else { 3 }, if hi < 3 { hi } else { 3 });
+    let last = SCAN_DIMS[wi] * SCAN_DIMS[hi] - 1;
+    let c = if c < last { c } else { last };
+    match class {
+        TransformClass::Vertical => VERTICAL_SCAN[c],
+        TransformClass::Horizontal => HORIZONTAL_SCAN[SCAN_OFFSETS[wi][hi] + c],
+        TransformClass::TwoD => TWO_D_SCAN[SCAN_OFFSETS[wi][hi] + c],
+    }
+}
+
 const fn scan_dim_index(d: usize) -> Option<usize> {
     match d {
         4 => Some(0),

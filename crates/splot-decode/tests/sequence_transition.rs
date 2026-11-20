@@ -26,6 +26,8 @@ const TEN_BIT_SECOND: &[u8] =
 const INTER_SECOND_SEQUENCE: &[u8] = include_bytes!(
     "../../../tests/conformance/vectors/valid/syn-2frame-flatstep-inter-y-dc-delta1-64x64-q80.ivf"
 );
+const TEN_BIT_INTER: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64-10bit.ivf");
 const FIRST_RAW: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw");
 const IVF_PAYLOAD_OFFSET: usize = 44;
@@ -53,20 +55,20 @@ fn repeated_sequence_ivf(second: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn repeated_sequence_with_inter() -> Vec<u8> {
-    let mut bytes = FIRST[IVF_PAYLOAD_OFFSET..].to_vec();
+fn extend_with_ivf_payloads(bytes: &mut Vec<u8>, ivf: &[u8]) {
     let mut cursor = 32;
-    while cursor < INTER_SECOND_SEQUENCE.len() {
-        let payload_len = u32::from_le_bytes(
-            INTER_SECOND_SEQUENCE[cursor..cursor + 4]
-                .try_into()
-                .unwrap(),
-        ) as usize;
+    while cursor < ivf.len() {
+        let payload_len = u32::from_le_bytes(ivf[cursor..cursor + 4].try_into().unwrap()) as usize;
         let payload_start = cursor + 12;
         let payload_end = payload_start + payload_len;
-        bytes.extend_from_slice(&INTER_SECOND_SEQUENCE[payload_start..payload_end]);
+        bytes.extend_from_slice(&ivf[payload_start..payload_end]);
         cursor = payload_end;
     }
+}
+
+fn repeated_sequence_with_inter() -> Vec<u8> {
+    let mut bytes = FIRST[IVF_PAYLOAD_OFFSET..].to_vec();
+    extend_with_ivf_payloads(&mut bytes, INTER_SECOND_SEQUENCE);
     bytes
 }
 
@@ -205,6 +207,34 @@ fn bit_depth_change_matches_reference_raw_and_is_rejected_by_y4m() {
                 && source.source_kind() == "frame_set"
                 && source.source_message().contains("sample bit depth")
     ));
+}
+
+#[test]
+fn threaded_bit_depth_changes_between_inter_runs_match_serial_decode() {
+    let mut input = Vec::new();
+    for ivf in [INTER_SECOND_SEQUENCE; 4]
+        .into_iter()
+        .chain([TEN_BIT_INTER; 4])
+        .chain([INTER_SECOND_SEQUENCE; 2])
+    {
+        extend_with_ivf_payloads(&mut input, ivf);
+    }
+    let serial = context()
+        .decode_hash_report_bytes(&input, DecodeOptions::default())
+        .unwrap();
+    assert_eq!(serial.frames.len(), 20);
+    let decode = std::thread::spawn(move || {
+        DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(4usize)))
+            .unwrap()
+            .decode_hash_report_bytes(&input, DecodeOptions::default())
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !decode.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(decode.is_finished(), "the threaded decode hung");
+    let threaded = decode.join().unwrap().unwrap();
+    assert_eq!(threaded.frames, serial.frames);
 }
 
 #[test]

@@ -75,14 +75,15 @@ impl IntraTileSyntax {
                 .rposition(|&q| q != 0)
                 .map_or(0, |last| last + 1);
             Ok(LumaCoeffBlock {
-                eob: block_eob(tx, levels)?,
-                quant_range: 0..nonzero,
-                zero_tail: levels.len() - nonzero,
+                eob: (block_eob(tx, levels)?) as u16,
+                quant_start: 0,
+                quant_len: nonzero as u16,
+                zero_tail: (levels.len() - nonzero) as u16,
                 cctx_type,
                 ..LumaCoeffBlock::empty(tx.tx_type as usize, false)
             })
         };
-        let u_block = block(u, levels[0], Some(u.cctx.into()))?;
+        let u_block = block(u, levels[0], Some(u.cctx))?;
         let v_block = block(v, levels[1], None)?;
         let (log2_w, log2_h) = tx_log2(u.tx_size)?;
         let (mut u_out, mut v_out) = (Vec::new(), Vec::new());

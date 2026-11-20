@@ -10,9 +10,9 @@ use splot_core::headers::sequence::DrlReorder;
 use std::sync::Arc;
 
 const BLOCK0_MV: Mv = Mv { row: 0, col: 48 };
-const N4_32: usize = 8;
-const SB_H4_64: usize = 16;
-const MI_DIM: usize = 16;
+pub(super) const N4_32: usize = 8;
+pub(super) const SB_H4_64: usize = 16;
+pub(super) const MI_DIM: usize = 16;
 
 impl NeighbourMvGrid {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
@@ -58,7 +58,7 @@ impl NeighbourMvGrid {
     }
 }
 
-fn block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
+pub(super) fn block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
     MvBlockContext {
         mi_row,
         mi_col,
@@ -72,7 +72,7 @@ fn block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
     }
 }
 
-fn empty_grid() -> NeighbourMvGrid {
+pub(super) fn empty_grid() -> NeighbourMvGrid {
     NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap()
 }
 
@@ -213,17 +213,16 @@ fn skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default() {
 }
 
 #[test]
-fn compound_mode_context_preserves_wide_order_hints() {
+fn compound_mode_context_reads_the_backward_reference_table() {
     let mut grid = empty_grid();
     let block = block_at(0, N4_32);
     record_inter_ref(&mut grid, 0, 0, 0, false, Mv::ZERO, false);
     let mut context = block_neighbour_ctx(&grid, &block);
     context.cell_count = 1;
-    let current = CompoundOrderHint::current(0x8000_0000);
 
-    assert_eq!(context.comp_mode_ctx(&[0], &[0x7fff_fffe], current), 0);
-    assert_eq!(context.comp_mode_ctx(&[0], &[0x8000_0002], current), 1);
-    assert_eq!(context.comp_mode_ctx(&[0], &[u32::MAX], current), 0);
+    assert_eq!(context.comp_mode_ctx(&[false]), 0);
+    assert_eq!(context.comp_mode_ctx(&[true]), 1);
+    assert_eq!(context.comp_mode_ctx(&[]), 0);
 }
 
 #[test]
@@ -284,8 +283,8 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
         [None, None],
     );
     let ctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
-    assert_eq!(ctx.skip_mode_ctx, 2);
-    assert_eq!(ctx.skip_ctx, 2);
+    assert_eq!(ctx.skip_mode_ctx(), 2);
+    assert_eq!(ctx.skip_ctx(), 2);
 }
 
 #[test]
@@ -1078,9 +1077,9 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
     assert_eq!(ctx.warp_mv_count, 0, "top-left WarpMvCount");
 
     let nctx = block_neighbour_ctx(&grid, &block0);
-    assert_eq!(nctx.is_inter_ctx, 0, "no-neighbour is_inter ctx");
-    assert_eq!(nctx.skip_mode_ctx, 0, "no-neighbour skip_mode ctx");
-    assert_eq!(nctx.skip_ctx, 0, "no-neighbour skip ctx");
+    assert_eq!(nctx.is_inter_ctx(), 0, "no-neighbour is_inter ctx");
+    assert_eq!(nctx.skip_mode_ctx(), 0, "no-neighbour skip_mode ctx");
+    assert_eq!(nctx.skip_ctx(), 0, "no-neighbour skip ctx");
 
     let stack = find_mv_stack(
         &grid,
@@ -1266,12 +1265,14 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
 
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.is_inter_ctx, 0,
+        nctx.is_inter_ctx(),
+        0,
         "all-inter neighbours -> is_inter ctx 0"
     );
-    assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
+    assert_eq!(nctx.skip_ctx(), 2, "two skip=1 neighbours -> skip ctx 2");
     assert_eq!(
-        nctx.skip_mode_ctx, 0,
+        nctx.skip_mode_ctx(),
+        0,
         "regular skip neighbours do not affect skip_mode ctx"
     );
 
@@ -1342,7 +1343,7 @@ fn block3_predicts_block0_mv_via_above_and_left() {
     assert_eq!(ctx.new_mv_context, 2, "above+left NEARMV NewMvContext");
 
     let nctx = block_neighbour_ctx(&grid, &block3);
-    assert_eq!(nctx.skip_ctx, 2, "two skip=1 neighbours -> skip ctx 2");
+    assert_eq!(nctx.skip_ctx(), 2, "two skip=1 neighbours -> skip ctx 2");
 
     let stack = find_mv_stack(
         &grid,
@@ -1386,7 +1387,8 @@ fn intra_neighbour_does_not_contribute() {
 
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.is_inter_ctx, 3,
+        nctx.is_inter_ctx(),
+        3,
         "two intra neighbours -> is_inter ctx 3"
     );
 
@@ -1600,7 +1602,8 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
 
     let nctx = block_neighbour_ctx(&grid, &sb2);
     assert_eq!(
-        nctx.skip_ctx, 2,
+        nctx.skip_ctx(),
+        2,
         "skip context counts both above-SB NPosBuf neighbours"
     );
 
@@ -1679,8 +1682,8 @@ fn single_ref_ctx_no_neighbour_is_one() {
     let block0 = block_at(0, 0);
     let nctx = block_neighbour_ctx(&grid, &block0);
     assert_eq!(
-        nctx.single_ref_ctx(0, 2),
-        Some(1),
+        ref_count_ctx(nctx.ref_counts(), 2, 0),
+        1,
         "no-neighbour single_ref context is 1 (both count_refs are 0)"
     );
 }
@@ -1691,10 +1694,28 @@ fn single_ref_ctx_counts_a_ref0_neighbour() {
     let block1 = block_at(0, N4_32);
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.single_ref_ctx(0, 2),
-        Some(2),
+        ref_count_ctx(nctx.ref_counts(), 2, 0),
+        2,
         "a ref-0 neighbour makes thisRefCount > nextRefsCount -> ctx 2"
     );
+}
+
+#[test]
+fn ref_count_ctx_compares_this_count_with_later_counts() {
+    for counts in [0u32, 0x1, 0x10, 0x2000, 0x0110_0011, 0x0400_0000, 0x13] {
+        for refs in 1..=7 {
+            for ref_idx in 0..refs {
+                let nibble = |i: usize| (counts >> (4 * i)) & 0xf;
+                let next: u32 = (ref_idx + 1..refs).map(nibble).sum();
+                let expected = match nibble(ref_idx).cmp(&next) {
+                    std::cmp::Ordering::Less => 0,
+                    std::cmp::Ordering::Equal => 1,
+                    std::cmp::Ordering::Greater => 2,
+                };
+                assert_eq!(ref_count_ctx(counts, refs, ref_idx), expected);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1705,34 +1726,14 @@ fn single_ref_ctx_counts_refs_above_two() {
     let nctx = block_neighbour_ctx(&grid, &block);
 
     assert_eq!(
-        nctx.single_ref_ctx(0, 3),
-        Some(0),
+        ref_count_ctx(nctx.ref_counts(), 3, 0),
+        0,
         "ref-2 neighbour makes ref-0 count lower than later refs"
     );
     assert_eq!(
-        nctx.single_ref_ctx(1, 3),
-        Some(0),
+        ref_count_ctx(nctx.ref_counts(), 3, 1),
+        0,
         "ref-2 neighbour makes ref-1 count lower than later refs"
-    );
-}
-
-#[test]
-fn single_ref_ctx_is_total_for_every_admitted_reference_count() {
-    let grid = empty_grid();
-    let nctx = block_neighbour_ctx(&grid, &block_at(0, 0));
-
-    for num_total_refs in 2..=BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
-        for ref_idx in 0..num_total_refs - 1 {
-            assert!(
-                nctx.single_ref_ctx(ref_idx, num_total_refs).is_some(),
-                "ref_idx {ref_idx} must be valid for {num_total_refs} references"
-            );
-        }
-    }
-    assert_eq!(
-        nctx.single_ref_ctx(0, BlockNeighbourContext::MAX_NEIGHBOUR_REFS + 1),
-        None,
-        "the guard remains load-bearing outside the admitted reference domain"
     );
 }
 
@@ -1775,101 +1776,6 @@ fn compound_group_idx_ctx_combines_two_nonzero_neighbours() {
 }
 
 #[test]
-fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
-    let mut grid = empty_grid();
-    let spatial = [-3_i32 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
-    grid.record_warp_block(
-        8,
-        0,
-        N4_32,
-        N4_32,
-        0,
-        false,
-        Mv { row: -8, col: 24 },
-        false,
-        SWITCHABLE_FILTERS,
-        false,
-        MotionMode::LocalWarp,
-        spatial,
-        BlockPrecisionRecord::default(),
-    );
-    let mut bank = WarpParamBank::new();
-    let older = [1 << 16, 0, 65536 + 64, 0, 0, 65536];
-    let newer = [-2 << 16, 7 << 16, 65536 - 128, 320, -640, 65536 + 256];
-    bank.update(0, older);
-    bank.update(0, newer);
-
-    let stack = find_mv_stack(
-        &grid,
-        &block_at(8, 8),
-        Mv::ZERO,
-        None,
-        &bank,
-        true,
-        DrlReorder::Disabled,
-        false,
-    );
-    assert_eq!(stack.warp_candidate(0), spatial, "first spatial insert");
-    assert_eq!(
-        stack.warp_candidate(1),
-        spatial,
-        "the second scan point re-inserts the same neighbour: 7.12.2.11 never dedups"
-    );
-    assert_eq!(stack.warp_candidate(2), newer, "bank fills newest-first");
-    assert_eq!(stack.warp_candidate(3), older, "then the older bank entry");
-    assert_eq!(
-        stack.warp_candidate(4),
-        DEFAULT_WARP_PARAMS,
-        "out-of-range indices resolve to the identity default"
-    );
-
-    let no_wrl = find_mv_stack(
-        &grid,
-        &block_at(8, 8),
-        Mv::ZERO,
-        None,
-        &bank,
-        false,
-        DrlReorder::Disabled,
-        false,
-    );
-    assert_eq!(
-        no_wrl.warp_candidate(0),
-        DEFAULT_WARP_PARAMS,
-        "DeriveWrl == 0 leaves the stack default-initialized"
-    );
-}
-
-#[test]
-fn warp_stack_appends_global_motion_after_the_parameter_bank() {
-    let mut bank = WarpParamBank::new();
-    let older = [1 << 16, 0, 65536 + 64, 0, 0, 65536];
-    let newer = [-2 << 16, 7 << 16, 65536 - 128, 320, -640, 65536 + 256];
-    let global = [3 << 16, -5 << 16, 65536 + 512, 64, -128, 65536 - 256];
-    bank.update(0, older);
-    bank.update(0, newer);
-
-    let stack = find_mv_stack_with_temporal(
-        &empty_grid(),
-        &block_at(8, 8),
-        Mv::ZERO,
-        global,
-        None,
-        &bank,
-        true,
-        DrlReorder::Disabled,
-        None,
-        None,
-        false,
-    );
-
-    assert_eq!(stack.warp_candidate(0), newer);
-    assert_eq!(stack.warp_candidate(1), older);
-    assert_eq!(stack.warp_candidate(2), global);
-    assert_eq!(stack.warp_candidate(3), DEFAULT_WARP_PARAMS);
-}
-
-#[test]
 fn row_above_seed_walk_uses_tile_global_right_edge() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..32, 16..32).unwrap();
     let expected = Mv { row: 4, col: -12 };
@@ -1893,62 +1799,6 @@ fn row_above_seed_walk_uses_tile_global_right_edge() {
     seed_walk_from_row_above(&grid, 16, 16, 16, |cell| visited.push(cell.motion.mv));
 
     assert_eq!(visited, [expected]);
-}
-
-#[test]
-fn corner_derivation_matches_the_hand_computed_model() {
-    let mut grid = empty_grid();
-    let mut record_cell = |r: usize, c: usize, mv: Mv| {
-        grid.record_block(
-            r,
-            c,
-            1,
-            1,
-            true,
-            0,
-            None,
-            false,
-            mv,
-            false,
-            SWITCHABLE_FILTERS,
-            false,
-            BlockPrecisionRecord::default(),
-        );
-    };
-    record_cell(3, 3, Mv { row: 0, col: 0 });
-    record_cell(3, 5, Mv { row: 0, col: 8 });
-    record_cell(5, 3, Mv { row: 0, col: 0 });
-    let block = MvBlockContext {
-        mi_row: 4,
-        mi_col: 4,
-        bw4: 2,
-        bh4: 2,
-        sb_h4: SB_H4_64,
-        ref_frame0: 0,
-        ref_frame1: None,
-        mi_rows: MI_DIM,
-        mi_cols: MI_DIM,
-    };
-    let stack = find_mv_stack(
-        &grid,
-        &block,
-        Mv::ZERO,
-        None,
-        &WarpParamBank::new(),
-        true,
-        DrlReorder::Disabled,
-        false,
-    );
-    assert_eq!(
-        stack.warp_candidate(0),
-        [-131_072, 0, 73_728, 0, 0, 65_536],
-        "7.12.2.3 finite differences over the three corners (one px extra x-shift across 8 px)"
-    );
-    assert_eq!(
-        stack.warp_candidate(1),
-        DEFAULT_WARP_PARAMS,
-        "gm/default tail after the corner model"
-    );
 }
 
 #[test]
@@ -2137,7 +1987,9 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         mi_rows: MI_DIM,
         mi_cols: MI_DIM,
     };
+    let frame_size = (MI_DIM * 4, MI_DIM * 4);
     let mut source = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();
+    source.set_reference_metadata(true, frame_size, &[Some(0)]);
     source.record_block(TemporalMotionBlock::new(
         4,
         4,
@@ -2150,8 +2002,6 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         [temporal_mv, Mv::ZERO],
         [None, None],
     ));
-    let frame_size = (MI_DIM * 4, MI_DIM * 4);
-    source.set_reference_metadata(true, frame_size, &[Some(0)]);
     let mut other = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();
     other.set_reference_metadata(true, frame_size, &[]);
     let temporal = TemporalMvContext::from_references(
@@ -2164,6 +2014,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -2213,6 +2064,7 @@ fn same_side_spatial_projection_survives_disabled_temporal_scan() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -2238,7 +2090,7 @@ fn same_side_spatial_projection_survives_disabled_temporal_scan() {
     assert_eq!(stack.candidate(0), Mv { row: 4, col: 6 });
 }
 
-fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: Mv) {
+pub(super) fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: Mv) {
     grid.record_block(
         8,
         c,
@@ -2311,54 +2163,6 @@ fn scan_col_skips_undecoded_far_column() {
 }
 
 #[test]
-fn scan_col_feeds_warp_stack() {
-    let mut grid = empty_grid();
-    let warp_params = [-3_i32 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
-    record_two_wide_column(&mut grid, 6, Mv { row: 0, col: 16 });
-    grid.record_warp_block(
-        8,
-        4,
-        2,
-        8,
-        0,
-        false,
-        Mv { row: -8, col: 24 },
-        false,
-        SWITCHABLE_FILTERS,
-        false,
-        MotionMode::LocalWarp,
-        warp_params,
-        BlockPrecisionRecord::default(),
-    );
-
-    let stack = find_mv_stack(
-        &grid,
-        &block_at(8, 8),
-        Mv::ZERO,
-        None,
-        &WarpParamBank::new(),
-        true,
-        DrlReorder::Disabled,
-        false,
-    );
-    assert_eq!(
-        stack.warp_candidate(0),
-        warp_params,
-        "7.12.2.5 scan points insert warp neighbours into the stack"
-    );
-    assert_eq!(
-        stack.warp_candidate(1),
-        warp_params,
-        "both scan-col rows insert without dedup"
-    );
-    assert_eq!(
-        stack.warp_candidate(2),
-        DEFAULT_WARP_PARAMS,
-        "the tail fills identity defaults after the scan-col inserts"
-    );
-}
-
-#[test]
 fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
     let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
     let model0 = [320, -640, 65_536 + 256, -128, 192, 65_536 - 320];
@@ -2385,7 +2189,7 @@ fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
     );
 
     let cell = grid.get(1, 1).unwrap();
-    assert_eq!(cell.flags.motion_mode, MotionMode::LocalWarp);
+    assert!(cell.flags.is_local_warp());
     assert_eq!(cell.motion.warp_params(), Some(model0));
     assert_eq!(cell.motion.sub_mv, warp_sub_mv_at(model0, 0, 0, 1, 1));
     assert_eq!(cell.motion.sub_mv1, warp_sub_mv_at(model1, 0, 0, 1, 1));

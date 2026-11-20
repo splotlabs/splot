@@ -137,6 +137,13 @@ SB256_INTRA = [
     "--disable-warning-prompt",
 ]
 
+# Masked compound coverage (wedge, difference weight, implicit mask) per chroma
+# format and bit depth: 17 frames of a panning testsrc2 crop, so compound
+# blocks read past the frame edge and moving content splits them.
+MASKED_INTER = ["--limit=17", "--lag-in-frames=16", "--kf-max-dist=60", "--passes=1",
+                "--threads=1", "--quiet", "--disable-warning-prompt"]
+MASKED_SOURCE = "testsrc2=size=256x192:rate=30:duration=0.6,crop=128:96:x='20+t*120':y='10+t*60'"
+
 # The COMPLETE recipe for every committed coverage fixture, deterministic via `-D`.
 # Each row: (id, lavfi_src, pix_fmt, input_flag, avmenc_flags, cpu, qp[, source]).
 # `source` defaults to Y4M; the optional mapping selects deterministic raw input.
@@ -433,9 +440,54 @@ COVERAGE = [
              "-pix_fmt", "yuv420p10le", "-strict", "-1",
          ],
      }),
+    ("syn-masked-422-128x96-q90", "", "yuv422p", "--i422",
+     MASKED_INTER + ["--i422", "--input-bit-depth=8", "--bit-depth=8"], "3", "90",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv422p",
+                                       "-strict", "-1"]}),
+    ("syn-masked-422-128x96-10bit-q90", "", "yuv422p10le", "--i422",
+     MASKED_INTER + ["--i422", "--input-bit-depth=10", "--bit-depth=10"], "3", "90",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv422p10le",
+                                       "-strict", "-1"]}),
+    ("syn-masked-444-128x96-10bit-q90", "", "yuv444p10le", "--i444",
+     MASKED_INTER + ["--i444", "--input-bit-depth=10", "--bit-depth=10"], "3", "90",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv444p10le",
+                                       "-strict", "-1"]}),
+    ("syn-masked-mono-128x96-q150", "", "yuv420p", "--monochrome",
+     MASKED_INTER + ["--monochrome", "--input-bit-depth=8", "--bit-depth=8"], "3", "150",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv420p",
+                                       "-strict", "-1"]}),
+    ("syn-masked-mono-128x96-10bit-q120", "", "yuv420p10le", "--monochrome",
+     MASKED_INTER + ["--monochrome", "--input-bit-depth=10", "--bit-depth=10"], "3", "120",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", MASKED_SOURCE, "-pix_fmt", "yuv420p10le",
+                                       "-strict", "-1"]}),
+    ("syn-2frame-mfh-inter-64x64-q160", "testsrc2=size=64x64:rate=1:duration=2", "yuv420p", "--i420",
+     ["--limit=2", "--lag-in-frames=0", "--passes=1", "--kf-min-dist=9999", "--kf-max-dist=9999",
+      "--quiet", "--disable-warning-prompt", "--enable-mfh-obu-signaling=1"], "8", "160"),
+    ("syn-2frame-lcr-inter-64x64-q160", "testsrc2=size=64x64:rate=1:duration=2", "yuv420p", "--i420",
+     ["--limit=2", "--lag-in-frames=0", "--passes=1", "--kf-min-dist=9999", "--kf-max-dist=9999",
+      "--quiet", "--disable-warning-prompt", "--enable-lcr=1"], "8", "160"),
+    ("syn-level31-wide-intra-8320x64-q200", "color=c=gray:size=8320x64:rate=1:duration=1", "yuv420p", "--i420",
+     ["--limit=1", "--lag-in-frames=0", "--passes=1", "--quiet", "--disable-warning-prompt"], "9", "200"),
+    ("syn-olk-fwdkf-same-tu-64x64-q160", "testsrc=size=64x64:rate=1:duration=12", "yuv420p", "--i420",
+     ["--limit=12", "--enable-fwd-kf=1", "--kf-max-dist=5", "--quiet", "--disable-warning-prompt"],
+     "6", "160"),
+    ("syn-segment-cdf-inheritance-96x96-q140",
+     "nullsrc=s=96x96:r=30:d=0.16,"
+     "geq=lum='65+mod(X*3+Y*2+mod(floor(X/8)+floor(Y/8),2)*(12+N*6)+N*12,132)':cb=128:cr=128",
+     "yuv420p", "--i420",
+     ["--limit=5", "--lag-in-frames=4", "--passes=1", "--kf-min-dist=120", "--kf-max-dist=120",
+      "--max-partition-size=8", "--aq-mode=1", "--deltaq-mode=0", "--enable-ext-seg=0"],
+     "6", "140"),
 ]
 
 PINNED_RECIPE_HASHES = {
+    "syn-segment-cdf-inheritance-96x96-q140": {
+        "avm_revision": "1cfda4fa4879ef2da411b02fe2f51597daab3451",
+        "source_sha256": "397cce3e7108e9417ba7d18b87f3cce8d01910f61f091ed480aa1afbac185f82",
+        "ivf_sha256": "03a99188da3b2d911b7b21f803a06e0c917c58f6dd7857ca7dcea6013d228cb9",
+        "avm_i420_raw_sha256": "7a15bb376f0277797ce267a49391486de1bdbde5e3e06a57387ddb57a8556090",
+        "reproducibility_runs": 2,
+    },
     'syn-2frame-interintra-column-422-128x32-8bit-q180': {'avm_build_flags': '-DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF '
                         '-DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 '
                         '-DCONFIG_TENSORFLOW_LITE=0',

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use splot_core::types::ObuType;
 
 /// A show-existing-frame OBU referencing `slot` (`frame_to_show_map_idx`), against a
 /// base sequence (NumRefFrames == 8 -> CeilLog2 == 3 bits, OrderHintBits == 1, no
@@ -761,6 +762,63 @@ fn ref_state_completed_intra_still_refreshes_after_gate() {
         "the completed CLK's refresh must re-validate slot 0 (SEF(0) silent); \
          report was: {report0}"
     );
+}
+
+#[test]
+fn ref_state_keeps_slots_refreshed_by_both_olks_in_a_temporal_unit() {
+    let key_frame = |obu_type: ObuType, mlayer, order_hint, refresh| {
+        let mut fb = Bits::default();
+        fb.bit(1); // is_first_tile_group
+        fb.uvlc(0); // cur_mfh_id
+        fb.uvlc(0); // seq_header_id_in_frame_header
+        if obu_type == ObuType::ClosedLoopKey {
+            fb.bit(1); // immediate_output_frame, inferred 0 for OLK
+        }
+        fb.bit(0); // frame_size_override_flag
+        fb.f(order_hint, 1);
+        fb.f(refresh, 8); // refresh_frame_flags
+        fb.bit(0); // allow_screen_content_tools
+        fb.bit(0); // allow_intrabc
+        fb.bit(0); // disable_cdf_update
+        intra_structure_tail(&mut fb, 0);
+        fb.bit(0); // tx_mode_select
+        fb.f(0, 2); // reduced_tx_set
+        annex_b_obu_with_header(
+            &layer_obu_header(obu_type.raw(), 0, mlayer, 0),
+            &fb.into_bytes(),
+        )
+    };
+
+    let seq = FrameCoreSeq {
+        max_mlayer_id: 1,
+        explicit_ref_frame_map: true,
+        ..FrameCoreSeq::base()
+    };
+    let mut data = td_and_frame_core_seq(seq);
+    data.extend(key_frame(ObuType::ClosedLoopKey, 0, 0, 1));
+    data.extend(td_and_frame_core_seq(seq));
+    for (mlayer, slot) in [(0, 1), (1, 2)] {
+        data.extend(key_frame(ObuType::OpenLoopKey, mlayer, 1, 1 << slot));
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(ObuType::RegularSef.raw(), 0, mlayer, 0),
+            &ref_sef(slot)[2..],
+        ));
+    }
+    data.extend(temporal_delimiter_obu());
+
+    for (mlayer, slot, invalid) in [(0, 1, false), (1, 2, false), (0, 0, true)] {
+        let mut stream = data.clone();
+        stream.extend(annex_b_obu_with_header(
+            &layer_obu_header(ObuType::RegularTileGroup.raw(), 0, mlayer, 0),
+            &ref_inter_explicit_map(slot)[2..],
+        ));
+        let report = Validator::new(false).validate_bytes(&stream);
+        assert_eq!(
+            has_ref_frame_idx_error(&report),
+            invalid,
+            "slot {slot}: {report}"
+        );
+    }
 }
 
 /// A COMPLETED override CLK key frame whose explicit frame size is `width`x`height`

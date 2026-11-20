@@ -18,9 +18,7 @@
 //! [`EncoderKernels::tcq_step`] adds the branch metrics of all states at once
 //! and keeps the survivors.
 
-use std::simd::cmp::{SimdOrd as _, SimdPartialEq as _, SimdPartialOrd as _};
-use std::simd::num::SimdUint as _;
-use std::simd::{Select as _, Simd, simd_swizzle};
+use fearless_simd::{Level, Select as _, Simd, SimdBase as _, SimdInt as _, dispatch, u64x8};
 
 use splot_decode::encoder_syntax::MAX_QUANT_MAGNITUDE;
 use splot_decode::encoder_syntax::{
@@ -113,37 +111,44 @@ pub(crate) fn step_scalar(prev: &[u64; TCQ_STATES], b: &Branches, lambda: u64) -
 /// Adds the branch metrics of `b` to the path costs `prev` of every state and
 /// keeps the cheaper branch into each next state (the first on a tie).
 pub(crate) fn step_simd(prev: &[u64; TCQ_STATES], b: &Branches, lambda: u64) -> Survivors {
-    type V = Simd<u64, TCQ_STATES>;
-    let lambda = V::splat(lambda);
+    dispatch!(Level::baseline(), simd => step_kernel(simd, prev, b, lambda))
+}
+
+#[inline]
+fn step_kernel<S: Simd>(simd: S, prev: &[u64; TCQ_STATES], b: &Branches, lambda: u64) -> Survivors {
     let j = |k: usize| {
-        (V::from_array(b.dist[k]) << 16)
-            .saturating_add(lambda * Simd::from_array(b.rate[k]).cast::<u64>())
+        let rate = u64x8::from_fn(simd, |s| u64::from(b.rate[k][s]));
+        (u64x8::load_array_ref(simd, &b.dist[k]) << 16).saturating_add(rate * lambda)
     };
     let (zero, even) = (j(ZERO), j(EVEN));
     let take_zero = zero.simd_le(even);
-    let prev = V::from_array(*prev);
-    let reached = prev.simd_ne(V::splat(UNREACHED));
-    let extend = |j: V| {
-        reached.select(
-            prev.saturating_add(j).simd_min(V::splat(MAX_COST)),
-            V::splat(UNREACHED),
-        )
+    let prev = u64x8::load_array_ref(simd, prev);
+    let reached = prev.simd_ne(UNREACHED);
+    let unreached = u64x8::splat(simd, UNREACHED);
+    let extend = |j: u64x8<S>| reached.select(prev.saturating_add(j).min(MAX_COST), unreached);
+    let lane = u64x8::from_fn(simd, |s| s as u64) << 2;
+    let even_pick = lane
+        | take_zero.select(
+            u64x8::splat(simd, ZERO as u64),
+            u64x8::splat(simd, EVEN as u64),
+        );
+    let mut cost = [0; 2 * TCQ_STATES];
+    let mut picks = [0; 2 * TCQ_STATES];
+    let (even_cost, odd_cost) = cost.split_at_mut(TCQ_STATES);
+    extend(take_zero.select(zero, even)).store_slice(even_cost);
+    extend(j(ODD)).store_slice(odd_cost);
+    let (even_picks, odd_picks) = picks.split_at_mut(TCQ_STATES);
+    even_pick.store_slice(even_picks);
+    (lane | ODD as u64).store_slice(odd_picks);
+    let gather = |lanes: &[u64; 2 * TCQ_STATES], at: [usize; TCQ_STATES]| {
+        u64x8::from_fn(simd, |t| lanes[at[t]])
     };
-    let even = extend(take_zero.select(zero, even));
-    let odd = extend(j(ODD));
-    let lane = V::from_array([0, 1, 2, 3, 4, 5, 6, 7]) << 2;
-    let even_pick = lane | take_zero.select(V::splat(ZERO as u64), V::splat(EVEN as u64));
-    let odd_pick = lane | V::splat(ODD as u64);
-    let first = simd_swizzle!(even, odd, FIRST);
-    let second = simd_swizzle!(even, odd, SECOND);
+    let (first, second) = (gather(&cost, FIRST), gather(&cost, SECOND));
     let take_second = second.simd_lt(first);
-    let pick = take_second.select(
-        simd_swizzle!(even_pick, odd_pick, SECOND),
-        simd_swizzle!(even_pick, odd_pick, FIRST),
-    );
+    let pick = take_second.select(gather(&picks, SECOND), gather(&picks, FIRST));
     (
-        take_second.select(second, first).to_array(),
-        pick.cast::<u8>().to_array(),
+        *take_second.select(second, first),
+        core::array::from_fn(|t| pick[t] as u8),
     )
 }
 

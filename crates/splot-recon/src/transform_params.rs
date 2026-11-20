@@ -121,19 +121,36 @@ pub const fn transform_shift(log2_width: u32, log2_height: u32) -> Result<(u8, u
 /// Returns [`ReconError::InvalidTransformShiftShape`] if `(log2_width,
 /// log2_height)` is not one of the 25 AV2 `TX_SIZES_ALL` transform shapes.
 pub const fn tx_size_index(log2_width: u32, log2_height: u32) -> Result<usize> {
-    let mut i = 0;
-    while i < TX_SIZE_LOG2_DIMS.len() {
-        let (w, h) = TX_SIZE_LOG2_DIMS[i];
-        if w == log2_width && h == log2_height {
-            return Ok(i);
-        }
-        i += 1;
+    let (w, h) = (
+        log2_width.wrapping_sub(2) as usize,
+        log2_height.wrapping_sub(2) as usize,
+    );
+    if w < 5 && h < 5 {
+        return Ok(TX_SIZE_BY_LOG2[w][h] as usize);
     }
     Err(ReconError::InvalidTransformShiftShape {
         log2_width,
         log2_height,
     })
 }
+
+/// [`TX_SIZE_LOG2_DIMS`] inverted: `[log2W - 2][log2H - 2]` is the ordinal,
+/// every pair of 4- to 64-sample sides being a `TX_SIZES_ALL` shape.
+const TX_SIZE_BY_LOG2: [[u8; 5]; 5] = {
+    let mut out = [[u8::MAX; 5]; 5];
+    let mut i = 0;
+    while i < TX_SIZE_LOG2_DIMS.len() {
+        let (w, h) = TX_SIZE_LOG2_DIMS[i];
+        out[w as usize - 2][h as usize - 2] = i as u8;
+        i += 1;
+    }
+    let mut j = 0;
+    while j < 25 {
+        assert!(out[j / 5][j % 5] != u8::MAX);
+        j += 1;
+    }
+    out
+};
 
 /// Which § 7.15.4.1 transform pass a [`get_transform_1d_type`] query is for: the
 /// row pass (`get_transform_1d_type(0, w)`) or the column pass

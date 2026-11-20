@@ -192,12 +192,6 @@ pub enum DecodeHeaderStateError {
     /// A frame's parsed width or height was zero.
     #[error("frame dimensions must be nonzero")]
     ZeroFrameSize,
-    /// A split inter walk received a tile plan inconsistent with its validated header.
-    #[error("split inter walk requires exactly one tile, got {actual}")]
-    InvalidSplitTileCount {
-        /// Number of tile work units materialized by the validated payload plan.
-        actual: usize,
-    },
     /// A validated block-size value could not produce its table-defined geometry.
     #[error("block geometry is inconsistent with the decoded block-size domain")]
     InvalidBlockGeometry,
@@ -225,9 +219,6 @@ pub enum DecodeHeaderStateError {
     /// An inter frame's reference count was invalid or did not match its map length.
     #[error("inter-frame reference count and map are inconsistent")]
     InvalidInterReferenceMap,
-    /// The CDF selector or row used by single-reference syntax was internally inconsistent.
-    #[error("single-reference entropy CDF state is inconsistent")]
-    InvalidSingleReferenceCdfState,
     /// A frame required sequence-level quantizer configuration that was absent.
     #[error("sequence transform, quantizer, and entropy configuration is missing")]
     MissingSequenceTransformQuantEntropy,

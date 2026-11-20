@@ -9,7 +9,7 @@
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
 
-use super::super::cdf::block_read::BlockSymbolTraceReadError;
+use super::super::cdf::block_read::{read_row, row_at};
 use super::super::cdf::coeff_context::dc_sign_ctx;
 use super::super::cdf::{TileCdfSelector, TileCdfSubset};
 use super::max_level::CoeffTransformClass;
@@ -96,8 +96,6 @@ impl CoeffSignRead {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffSignReadError {
-    #[error("coefficient sign symbol read failed: {0}")]
-    SymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient sign literal read failed: {source}")]
     LiteralRead {
         #[source]
@@ -156,6 +154,11 @@ fn derive_coeff_sign_source(
     CoeffSignReadSource::SignBit
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "measured: per-coefficient sign and quant step"
+)]
+#[inline(always)]
 pub(crate) fn read_preflighted_nonzero_coeff_sign(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -164,10 +167,9 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
     let (symbol, sign) = match input.source {
         CoeffSignReadSource::None => (CoeffSignReadSymbol::None, false),
         CoeffSignReadSource::Cdf(selector) => {
-            let symbol = cdfs
-                .read_block_symbol_trace(selector.tile_selector(), symbols)?
-                .get();
-            (CoeffSignReadSymbol::Cdf, symbol != 0)
+            let rows = row_at(&mut cdfs.block_rows_mut().dc_sign, selector.plane_type);
+            let row = row_at(row_at(rows, selector.group), selector.ctx);
+            (CoeffSignReadSymbol::Cdf, read_row(symbols, row) != 0)
         }
         CoeffSignReadSource::SignBit => {
             let bit = symbols

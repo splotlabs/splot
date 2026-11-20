@@ -4,4 +4,6 @@
 //! Chroma prediction helpers for decoder reconstruction.
 
 pub(crate) mod cfl;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+mod cfl_luma;
 pub(crate) mod directional;

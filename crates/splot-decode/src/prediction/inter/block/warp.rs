@@ -14,33 +14,17 @@ use super::*;
 pub(crate) fn read_warp_inter_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    allow_warpmv_mode: bool,
     force_integer_mv: bool,
-    n4w: usize,
-    n4h: usize,
     ctx: usize,
-    tile_offset: ByteOffset,
-) -> Result<Option<WarpInterMode>> {
-    if !allow_warpmv_mode || n4w < 2 || n4h < 2 {
-        return Ok(None);
+) -> Option<WarpInterMode> {
+    let rows = cdfs.block_rows_mut();
+    if read_row(symbols, row_at(&mut rows.is_warp, ctx)) == 0 {
+        return None;
     }
-    let is_warp = cdfs
-        .read_block_symbol_trace(TileCdfSelector::IsWarp { ctx }, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    if is_warp.get() == 0 {
-        return Ok(None);
+    if force_integer_mv || read_row(symbols, &mut rows.warp_mv) != 0 {
+        return Some(WarpInterMode::Warpmv);
     }
-    if force_integer_mv {
-        return Ok(Some(WarpInterMode::Warpmv));
-    }
-    let warp_mv = cdfs
-        .read_block_symbol_trace(TileCdfSelector::WarpMv, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    Ok(Some(if warp_mv.get() == 0 {
-        WarpInterMode::WarpNewmv
-    } else {
-        WarpInterMode::Warpmv
-    }))
+    Some(WarpInterMode::WarpNewmv)
 }
 
 pub(crate) fn read_warp_newmv_motion_mode_syntax(
@@ -58,9 +42,9 @@ pub(crate) fn read_warp_newmv_motion_mode_syntax(
         .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
     let mut read_flag = |selector: TileCdfSelector| -> Result<bool> {
         let flag = cdfs
-            .read_block_symbol_trace(selector, symbols)
+            .read_block_symbol(selector, symbols)
             .map_err(|error| symbol_read_error(error, tile_offset))?;
-        Ok(flag.get() != 0)
+        Ok(flag != 0)
     };
     if warp_sample_found
         && frame_modes[splot_core::headers::frame::EXTENDWARP]
@@ -302,18 +286,11 @@ fn read_warp_newmv_tail(
     max_drl_bits_minus_1: u32,
     tile_offset: ByteOffset,
 ) -> Result<WarpNewmvTail> {
-    let ref_mv_idx = read_drl_idx(
-        cdfs,
-        symbols,
-        new_mv_context,
-        max_drl_bits_minus_1,
-        tile_offset,
-    )?;
+    let ref_mv_idx = read_drl_idx(cdfs, symbols, new_mv_context, max_drl_bits_minus_1);
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
-        sequence,
-        core,
+        use_per_block_mv_precision(sequence, core),
         neighbour_ctx,
         mv_config.precision(),
         true,
@@ -339,28 +316,31 @@ pub(crate) fn inter_mv_read_config(core: &FrameHeaderCore) -> Result<MvReadConfi
     Ok(MvReadConfig::inter(precision.av2_code()))
 }
 
-pub(crate) fn inter_mvd_sign_derivation_allowed(
+/// The frame-level AV2 § 5.20.7.13 `is_mvd_sign_derive_allowed` guards.
+pub(crate) fn frame_mvd_sign_derivation_allowed(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    single_mode: u8,
-    use_amvd: bool,
     frame_config: MvReadConfig,
-    config: MvReadConfig,
 ) -> bool {
-    if single_mode != SINGLE_MODE_NEWMV || use_amvd {
-        return false;
-    }
-    if !sequence
+    sequence
         .inter
         .as_ref()
         .is_some_and(|inter| inter.enable_mvd_sign_derive)
-    {
-        return false;
-    }
-    if effective_allow_screen_content_tools(core) {
-        return false;
-    }
-    frame_config.precision() <= MV_PRECISION_QUARTER_PEL
+        && !effective_allow_screen_content_tools(core)
+        && frame_config.precision() <= MV_PRECISION_QUARTER_PEL
+}
+
+/// AV2 § 5.20.7.13 `is_mvd_sign_derive_allowed` of a block whose frame
+/// passes [`frame_mvd_sign_derivation_allowed`] as `frame_allowed`.
+pub(crate) const fn inter_mvd_sign_derivation_allowed(
+    frame_allowed: bool,
+    single_mode: u8,
+    use_amvd: bool,
+    config: MvReadConfig,
+) -> bool {
+    frame_allowed
+        && single_mode == SINGLE_MODE_NEWMV
+        && !use_amvd
         && config.precision() < MV_PRECISION_QUARTER_PEL
 }
 

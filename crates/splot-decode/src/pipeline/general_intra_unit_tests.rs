@@ -11,6 +11,7 @@ use crate::bitstream::tile_payload::{
 };
 use crate::{DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeSourceIssueKind};
 use splot_core::symbol::SymbolDecoder;
+use splot_recon::BitDepth;
 
 #[test]
 fn invalid_uv_mode_is_malformed_tile_syntax() {
@@ -505,10 +506,6 @@ fn coefficient_context_state_failures_have_exhaustive_typed_taxonomy() {
             height: 4,
             width: 4,
         },
-        crate::bitstream::tile_payload::TileCoeffStateError::QuantPositionOutOfBounds {
-            pos: 16,
-            len: 16,
-        },
         crate::bitstream::tile_payload::TileCoeffStateError::InvalidSubsampling {
             axis: "x",
             value: 2,
@@ -613,8 +610,10 @@ fn coefficient_entropy_and_geometry_failures_are_typed_header_state() {
     let source = tile
         .read_block_symbol_trace(selector, &mut symbols)
         .expect_err("out-of-range selector");
-    let entropy =
-        general_intra_residual_error(GeneralIntraResidualError::AllZeroRead { source }, offset);
+    let entropy = general_intra_residual_error(
+        GeneralIntraResidualError::TransformTypeRead { source },
+        offset,
+    );
     assert!(matches!(
         entropy,
         DecodeError::HeaderState {
@@ -641,15 +640,6 @@ fn coefficient_entropy_and_geometry_failures_are_typed_header_state() {
 fn coefficient_defensive_eof_keeps_each_syntax_owner() {
     let offset = ByteOffset::new(42);
     for (failure, expected_section) in [
-        (
-            GeneralIntraResidualError::AllZeroRead {
-                source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
-                    offset,
-                    needed: 1,
-                }),
-            },
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
         (
             GeneralIntraResidualError::TransformPartitionRead {
                 source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
@@ -743,7 +733,7 @@ fn assert_rect_luma_mrl_plan(
 ) {
     let mrl = MrlSelection::from_symbols(mrl_index, mrl_sec_index).expect("valid test MRL");
     assert_eq!(
-        rect_luma_mrl_plan_for_parts(y_mode, angle_delta_y, mrl, block, false, 32,),
+        rect_luma_mrl_plan_for_parts(y_mode, angle_delta_y, mrl, &block, false, 32,),
         Ok(expected),
         "{label}"
     );
@@ -815,7 +805,7 @@ fn lossless_luma_uses_generic_prediction_planner() {
         ] {
             let modes = luma_modes(mode);
             assert!(
-                rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
+                rect_luma_plan(&modes, &block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
                 "lossless {bit_depth:?} {mode:?}"
             );
         }
@@ -835,7 +825,7 @@ fn lossless_adjusted_directional_luma_uses_rect_planner() {
         let modes = luma_modes_with_angle(mode, angle_delta_y);
 
         assert_eq!(
-            rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA),
+            rect_luma_plan(&modes, &block_ctx, false, FULL_SB_N4_LUMA),
             Ok(RectLumaPlan::Middle {
                 p_angle,
                 use_tcq: false,
@@ -918,7 +908,7 @@ fn directional_luma_always_plans_through_the_rect_planner() {
             for angle_delta_y in [-3, 0, 2] {
                 let modes = luma_modes_with_angle(mode, angle_delta_y);
                 assert!(
-                    rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
+                    rect_luma_plan(&modes, &block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
                     "rect planner must serve directional luma {mode:?} {angle_delta_y}"
                 );
             }
@@ -1089,7 +1079,7 @@ fn active_dip_luma_routes_before_dc() {
     let block = ctx(0, 10, 2, 4);
 
     assert_eq!(
-        rect_luma_plan(&modes, block, true, 16),
+        rect_luma_plan(&modes, &block, true, 16),
         Ok(RectLumaPlan::Dip {
             mode: 2,
             transpose: true,
@@ -1321,7 +1311,7 @@ fn maps_4x8_d45_to_one_sided_left_luma() {
     let modes = luma_modes(IntraYMode::D45);
 
     assert_eq!(
-        rect_luma_plan(&modes, ctx(8, 479, 1, 2), false, FULL_SB_N4_LUMA),
+        rect_luma_plan(&modes, &ctx(8, 479, 1, 2), false, FULL_SB_N4_LUMA),
         Ok(RectLumaPlan::OneSidedLeft {
             p_angle: 225,
             use_tcq: false,
@@ -1370,7 +1360,7 @@ fn plans_rect_cardinal_luma_from_modes_and_geometry() {
         ),
     ] {
         assert_eq!(
-            rect_luma_plan(&luma_modes(mode), block, false, FULL_SB_N4_LUMA),
+            rect_luma_plan(&luma_modes(mode), &block, false, FULL_SB_N4_LUMA),
             Ok(RectLumaPlan::Cardinal {
                 direction,
                 use_tcq: false,
@@ -1477,7 +1467,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         assert_eq!(
             rect_luma_plan(
                 &luma_modes_with_angle(mode, angle_delta),
-                block,
+                &block,
                 false,
                 FULL_SB_N4_LUMA,
             ),
@@ -1538,7 +1528,7 @@ fn square_d67_angle_delta_uses_rect_residual_path_when_square_plan_rejects() {
     );
 
     assert_eq!(
-        rect_luma_plan(&modes, first_col_block, false, 32),
+        rect_luma_plan(&modes, &first_col_block, false, 32),
         Ok(RectLumaPlan::OneSidedAbove {
             p_angle: 64,
             use_tcq: false,

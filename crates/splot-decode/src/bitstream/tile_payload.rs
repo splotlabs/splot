@@ -31,7 +31,7 @@ use cdf::{TileCdfError, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_sa
 use splot_core::headers::tile_group::{TileFramingDefect, TileGroupFraming};
 use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::{ByteOffset, ByteSpan};
-use splot_core::symbol::{CdfUpdateMode, CdfValidationMode, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::CdfUpdateMode;
 use splot_core::types::ObuType;
 
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
@@ -43,7 +43,7 @@ pub(crate) use cdf::block_context::{
     IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
     SupportedNonDcLumaMode,
 };
-pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
+pub(crate) use cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 pub(crate) use cdf::{
     COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, FrameCdfSubset,
     MvCdfSelector, PB_MV_PRECISION_CDF_ROW_LEN, TileCdfSelector, TileCdfSubset,
@@ -64,49 +64,55 @@ pub(crate) use general_intra_block::{
     CflMultiDirection, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
-    decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_dip_mode_info,
-    read_general_intra_palette_y_mode, read_lossless_luma_tx_size, read_lossless_tx_size,
+    read_lossless_luma_tx_size, read_lossless_tx_size,
 };
 #[cfg(test)]
 pub(crate) use general_intra_residual::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
+#[cfg(test)]
+pub(crate) use general_intra_residual::tx_size_from_dimensions;
 pub(crate) use general_intra_residual::{
     CoeffBlock, FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope,
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
     GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
-    LumaTransformPartitionUnits, LumaTransformTypeContext, LumaTxPartition,
-    PositionedLumaCoeffBlock, TransformToolResidualPolicy, current_frame_qm_segment_id,
-    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
-    is_cctx_geometry_allowed, luma_partition_record_fills_block,
+    LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock, PositionedLumaCoeffBlock,
+    ResidualScratch, TransformToolResidualPolicy, add_cctx_pair_residual_in_place,
+    add_general_intra_coeff_block_residual_in_place, current_segment_lossless,
+    decode_general_intra_plane_coeffs, is_cctx_geometry_allowed, luma_partition_record_fills_block,
     luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
-    reconstruct_general_intra_chroma_cctx_pair_into,
+    read_intra_luma_tx_partition, read_luma_tx_partition_type,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_inter_coeff_block_residual_rect_into,
+    reconstruct_inter_coeff_block_residual_rect_into, with_residual_scratch,
 };
 #[cfg(test)]
 pub(crate) use input::plan_derived_tile_payload_boundary;
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
-    TileGroupPositionFacts, plan_derived_tile_payload_boundary_with_scratch,
+    FrameCandidateTileUnsupportedReason, TileGroupPositionFacts,
+    plan_derived_tile_payload_boundary_with_scratch,
 };
-pub(crate) use intra_joint_modes::IsCflContext;
+#[cfg(test)]
+pub(crate) use intra_joint_modes::IntraNeighbours;
 pub(crate) use intra_joint_modes::{
-    FrameSegmentIdMap, LumaPalette, MiGrid, TileFscModeState, TileIntraJointModeState,
-    TileLumaPaletteState, TileSegmentIdState, TileSegmentIdStateError, TileUseDipState,
-    TileUsesMrlsState, neg_deinterleave,
+    FrameSegmentIdMap, LumaPalette, TileSegmentIdState, TileSegmentIdStateError, neg_deinterleave,
 };
+#[cfg(test)]
+pub(crate) use mi_size_state::{PartitionNeighbours, UvEdges};
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
+pub(crate) use partition_traversal::BRU_ACTIVE;
 pub(crate) use partition_traversal::LrUnitRestorationType;
+#[cfg(test)]
+pub(crate) use partition_traversal::TilePartitionCall;
 pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
-    DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraTreeWalkError, TileTraversalStorage,
+    ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication,
+    GeneralIntraLeafMode, GeneralIntraTreeWalkError, LeafNeighbours, TileTraversalStorage,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -260,62 +266,13 @@ impl TileCoeffFrameFacts {
     }
 
     #[must_use]
-    pub(crate) const fn enable_fsc(self) -> bool {
-        self.enable_fsc
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_intra_ist(self) -> bool {
-        self.enable_intra_ist
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_inter_ist(self) -> bool {
-        self.enable_inter_ist
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_chroma_dctonly(self) -> bool {
-        self.enable_chroma_dctonly
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_cctx(self) -> bool {
-        self.enable_cctx
-    }
-
-    #[must_use]
-    pub(crate) const fn reduced_tx_set(self) -> usize {
-        self.reduced_tx_set
-    }
-
-    #[must_use]
     pub(crate) const fn reduced_tx_part_set(self) -> bool {
         self.reduced_tx_part_set
     }
 
     #[must_use]
-    pub(crate) const fn base_q_idx(self) -> u32 {
-        self.base_q_idx
-    }
-
-    #[must_use]
-    pub(crate) const fn allow_tcq(self) -> bool {
-        self.allow_tcq
-    }
-
-    #[must_use]
-    pub(crate) const fn allow_parity_hiding(self) -> bool {
-        self.allow_parity_hiding
-    }
-
-    #[must_use]
-    pub(crate) const fn lossless_for_segment(self, segment_id: usize) -> Option<bool> {
-        if segment_id < self.lossless_array.len() {
-            Some(self.lossless_array[segment_id])
-        } else {
-            None
-        }
+    pub(crate) fn lossless_for_segment(&self, segment_id: usize) -> Option<bool> {
+        self.lossless_array.get(segment_id).copied()
     }
 }
 
@@ -333,6 +290,14 @@ impl<'a> DecodeTilePayloadPlan<'a> {
         &self.work_units
     }
 
+    /// Records the § 5.19 `bru_tile_active` flags of tiles `tg_start..` in order.
+    pub(crate) fn set_bru_tile_actives(&mut self, actives: &[bool]) {
+        for (unit, active) in self.work_units.iter_mut().zip(actives) {
+            unit.bru_tile_active = Some(*active);
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn work_units_mut(&mut self) -> &mut [DecodeTileWorkUnit] {
         &mut self.work_units
     }
@@ -343,37 +308,23 @@ impl<'a> DecodeTilePayloadPlan<'a> {
         (self.payload, &self.extra_payloads, &mut self.work_units)
     }
 
-    pub(crate) fn single_tile_mut(&mut self) -> Option<(&'a [u8], &mut DecodeTileWorkUnit)> {
-        let payload = self.payload;
-        let extra_payloads = &self.extra_payloads;
-        let [tile] = self.work_units.as_mut_slice() else {
-            return None;
-        };
-        let source = if tile.payload_index == 0 {
-            Some(payload)
-        } else {
-            extra_payloads.get(tile.payload_index - 1).copied()
-        };
-        let bytes = source?.get(tile.payload_range.clone())?;
-        Some((bytes, tile))
+    /// Work unit `index` and its payload bytes.
+    pub(crate) fn tile_mut(&mut self, index: usize) -> Option<(&'a [u8], &mut DecodeTileWorkUnit)> {
+        let tile = self.work_units.get_mut(index)?;
+        Some((tile.bytes(self.payload, &self.extra_payloads)?, tile))
     }
 
     #[cfg(test)]
     pub(crate) fn resolved_tile_bytes(&self, tile: &DecodeTileWorkUnit) -> Option<&'a [u8]> {
-        let source = if tile.payload_index == 0 {
-            Some(self.payload)
-        } else {
-            self.extra_payloads.get(tile.payload_index - 1).copied()
-        };
-        source?.get(tile.payload_range.clone())
+        tile.bytes(self.payload, &self.extra_payloads)
     }
 
     pub(crate) fn retire_into(mut self, scratch: &mut TilePayloadScratch) {
-        scratch.tile_cdfs.clear();
-        for tile in self.work_units.drain(..) {
-            scratch.tile_cdfs.push(tile.cdf.into_storage());
-        }
-        core::mem::swap(&mut scratch.work_units, &mut self.work_units);
+        retire_work_units(&mut self.work_units, scratch);
+    }
+
+    pub(crate) fn take_work_units(&mut self) -> Vec<DecodeTileWorkUnit> {
+        core::mem::take(&mut self.work_units)
     }
 
     pub(crate) fn rebase_payload(
@@ -464,11 +415,21 @@ impl Default for TilePayloadScratch {
     }
 }
 
+/// Keeps the work units' CDF storage and list for the next frame.
+pub(crate) fn retire_work_units(
+    work_units: &mut Vec<DecodeTileWorkUnit>,
+    scratch: &mut TilePayloadScratch,
+) {
+    scratch.tile_cdfs.clear();
+    for tile in work_units.drain(..) {
+        scratch.tile_cdfs.push(tile.cdf.into_storage());
+    }
+    core::mem::swap(&mut scratch.work_units, work_units);
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTileWorkUnit {
     tile_num: u32,
-    tile_row: u32,
-    tile_col: u32,
     mi_row_range: core::ops::Range<u32>,
     mi_col_range: core::ops::Range<u32>,
     payload_range: core::ops::Range<usize>,
@@ -478,11 +439,17 @@ pub(crate) struct DecodeTileWorkUnit {
     tile_byte_span: ByteSpan,
     tile_size: u64,
     coeff_frame_facts: TileCoeffFrameFacts,
-    symbol: SymbolInitBoundary,
     cdf: TileCdfWorkUnitBoundary,
+    /// § 5.19 `BruTileActives[ tileRow ][ tileCol ]` of a `use_bru == 1` frame; `None`
+    /// when `use_bru == 0`.
+    bru_tile_active: Option<bool>,
 }
 
 impl DecodeTileWorkUnit {
+    pub(crate) const fn bru_tile_active(&self) -> Option<bool> {
+        self.bru_tile_active
+    }
+
     #[cfg(test)]
     pub(crate) const fn tile_bytes(&self) -> &'static [u8] {
         self.test_tile_bytes
@@ -494,21 +461,17 @@ impl DecodeTileWorkUnit {
     pub(crate) fn payload_range(&self) -> core::ops::Range<usize> {
         self.payload_range.clone()
     }
+
+    fn bytes<'a>(&self, payload: &'a [u8], extra_payloads: &[&'a [u8]]) -> Option<&'a [u8]> {
+        let source = match self.payload_index {
+            0 => Some(payload),
+            index => extra_payloads.get(index - 1).copied(),
+        };
+        source?.get(self.payload_range.clone())
+    }
     #[must_use]
     pub(crate) const fn tile_num(&self) -> u32 {
         self.tile_num
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn tile_row(&self) -> u32 {
-        self.tile_row
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn tile_col(&self) -> u32 {
-        self.tile_col
     }
 
     #[must_use]
@@ -532,14 +495,8 @@ impl DecodeTileWorkUnit {
     }
 
     #[must_use]
-    pub(crate) const fn coeff_frame_facts(&self) -> TileCoeffFrameFacts {
-        self.coeff_frame_facts
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn symbol(&self) -> SymbolInitBoundary {
-        self.symbol
+    pub(crate) const fn coeff_frame_facts(&self) -> &TileCoeffFrameFacts {
+        &self.coeff_frame_facts
     }
 
     #[must_use]
@@ -553,33 +510,6 @@ impl DecodeTileWorkUnit {
 
     pub(crate) fn frame_cdfs(&self) -> Arc<FrameCdfSubset> {
         self.cdf.frame_cdfs_shared()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SymbolInitBoundary {
-    consumed_bits: u64,
-    symbol_max_bits: i64,
-    cdf_update_mode: CdfUpdateMode,
-}
-
-impl SymbolInitBoundary {
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn consumed_bits(self) -> u64 {
-        self.consumed_bits
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn symbol_max_bits(self) -> i64 {
-        self.symbol_max_bits
-    }
-
-    #[must_use]
-    #[cfg(any(test, feature = "fuzzing"))]
-    pub(crate) const fn cdf_update_mode(self) -> CdfUpdateMode {
-        self.cdf_update_mode
     }
 }
 
@@ -781,7 +711,7 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
     let frame_cdfs = match &input.frame.initial_cdfs {
         Some(cdfs) => Arc::clone(cdfs),
         None => Arc::new(FrameCdfSubset::default_for_base_q(
-            input.frame.coeff_frame_facts.base_q_idx(),
+            input.frame.coeff_frame_facts.base_q_idx,
         )),
     };
     let cdf_policy = input
@@ -797,8 +727,7 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             actual: input.framing.tiles.len() as u64,
         })?;
     for tile in &input.framing.tiles {
-        let (tile_row, tile_col, mi_row_range, mi_col_range) =
-            grid_ranges(input.grid, tile.tile_num)?;
+        let (mi_row_range, mi_col_range) = grid_ranges(input.grid, tile.tile_num)?;
         let tile_bytes = tile_slice(
             input.payload,
             tile.tile_num,
@@ -815,15 +744,6 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             tile.tile_size,
             DecodeLimitName::MaxTilePayloadBytes,
         )?;
-        let config = SymbolDecoderConfig::new()
-            .with_cdf_update_mode(cdf_update_mode)
-            .with_cdf_validation_mode(CdfValidationMode::Trusted);
-        let symbol = SymbolDecoder::with_base_and_config(tile_bytes, absolute_tile_offset, config)?;
-        let symbol = SymbolInitBoundary {
-            consumed_bits: symbol.consumed_bits().get(),
-            symbol_max_bits: symbol.symbol_max_bits(),
-            cdf_update_mode,
-        };
         let save_policy = tile_cdf_save_policy(cdf_policy, tile.tile_num)?;
         let cdf = TileCdfWorkUnitBoundary::with_storage(
             cdf_update_mode,
@@ -847,8 +767,6 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
         )?;
         work_units.push(DecodeTileWorkUnit {
             tile_num: tile.tile_num,
-            tile_row,
-            tile_col,
             mi_row_range,
             mi_col_range,
             payload_range: payload_start..payload_end,
@@ -858,8 +776,8 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             tile_byte_span,
             tile_size: tile.tile_size,
             coeff_frame_facts: input.frame.coeff_frame_facts,
-            symbol,
             cdf,
+            bru_tile_active: None,
         });
     }
     Ok(DecodeTilePayloadPlan {
@@ -903,7 +821,7 @@ fn tile_slice(
 fn grid_ranges(
     grid: TileGridFacts<'_>,
     tile_num: u32,
-) -> Result<(u32, u32, core::ops::Range<u32>, core::ops::Range<u32>), TilePayloadBoundaryError> {
+) -> Result<(core::ops::Range<u32>, core::ops::Range<u32>), TilePayloadBoundaryError> {
     if grid.tile_cols == 0 || grid.tile_rows == 0 {
         return Err(invalid_grid(tile_num));
     }
@@ -919,10 +837,8 @@ fn grid_ranges(
     if tile_num >= tile_count {
         return Err(invalid_grid(tile_num));
     }
-    let tile_row = tile_num / grid.tile_cols;
-    let tile_col = tile_num % grid.tile_cols;
-    let row = tile_row as usize;
-    let col = tile_col as usize;
+    let row = (tile_num / grid.tile_cols) as usize;
+    let col = (tile_num % grid.tile_cols) as usize;
     let Some((&mi_row_start, &mi_row_end)) = grid
         .mi_row_starts
         .get(row)
@@ -940,12 +856,7 @@ fn grid_ranges(
     if mi_row_start >= mi_row_end || mi_col_start >= mi_col_end {
         return Err(invalid_grid(tile_num));
     }
-    Ok((
-        tile_row,
-        tile_col,
-        mi_row_start..mi_row_end,
-        mi_col_start..mi_col_end,
-    ))
+    Ok((mi_row_start..mi_row_end, mi_col_start..mi_col_end))
 }
 
 fn invalid_grid(tile_num: u32) -> TilePayloadBoundaryError {

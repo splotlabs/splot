@@ -10,9 +10,10 @@
 //! is at most `64 * 255`, so a `u16` row accumulator cannot overflow; sums
 //! of SADs wrap in `u32` on both paths.
 
-use std::simd::cmp::{SimdOrd as _, SimdPartialEq as _};
-use std::simd::num::SimdUint as _;
-use std::simd::{Simd, simd_swizzle};
+use fearless_simd::{
+    Level, Simd, SimdBase, SimdCombine as _, SimdMask as _, SimdNarrow as _, SimdSplit as _,
+    SimdWiden as _, dispatch, u8x16, u16x8, u16x16, u32x4,
+};
 
 /// The positions one SAD call scores, one sample apart horizontally.
 pub(crate) const WAYS: usize = 4;
@@ -93,41 +94,49 @@ pub(super) fn sad8x8_x4_simd(
         out.fill([u32::MAX; WAYS]);
         return;
     }
-    for block_row in 0..rows {
-        let y = block_row * 8;
-        let mut col = 0;
-        while col + 2 <= cols {
-            let acc = row_sads::<16>((src, src_stride), (refs, ref_stride), (col * 8, y));
-            let index = block_row * cols + col;
-            out[index] =
-                acc.map(|acc| u32::from(simd_swizzle!(acc, [0, 1, 2, 3, 4, 5, 6, 7]).reduce_sum()));
-            out[index + 1] = acc.map(|acc| {
-                u32::from(simd_swizzle!(acc, [8, 9, 10, 11, 12, 13, 14, 15]).reduce_sum())
-            });
-            col += 2;
+    dispatch!(Level::baseline(), simd => {
+        let wide = |row: &[u8]| {
+            let (lo, hi) = u8x16::from_slice(simd, &row[..16]).widen();
+            lo.combine(hi)
+        };
+        let narrow = |row: &[u8]| u16x8::from_fn(simd, |i| u16::from(row[i]));
+        for block_row in 0..rows {
+            let y = block_row * 8;
+            let mut col = 0;
+            while col + 2 <= cols {
+                let acc = row_sads(simd, wide, (src, src_stride), (refs, ref_stride), (col * 8, y));
+                let index = block_row * cols + col;
+                let halves = acc.map(u16x16::split);
+                out[index] = halves.map(|(lo, _)| u32::from(lo.reduce_sum()));
+                out[index + 1] = halves.map(|(_, hi)| u32::from(hi.reduce_sum()));
+                col += 2;
+            }
+            if col < cols {
+                let strip = (col * 8, y);
+                let acc = row_sads(simd, narrow, (src, src_stride), (refs, ref_stride), strip);
+                out[block_row * cols + col] = acc.map(|acc| u32::from(acc.reduce_sum()));
+            }
         }
-        if col < cols {
-            let acc = row_sads::<8>((src, src_stride), (refs, ref_stride), (col * 8, y));
-            out[block_row * cols + col] = acc.map(|acc| u32::from(acc.reduce_sum()));
-        }
-    }
+    });
 }
 
-/// The per-column `|d|` sums over eight rows of an `L`-wide strip at `(x, y)`,
-/// one accumulator per position.
+/// The per-column `|d|` sums over eight rows of a strip at `(x, y)` as wide
+/// as the lanes `load` widens, one accumulator per position.
 #[inline]
-fn row_sads<const L: usize>(
+fn row_sads<S: Simd, V: SimdBase<S, Element = u16>>(
+    simd: S,
+    load: impl Fn(&[u8]) -> V,
     (src, src_stride): (&[u8], usize),
     (refs, ref_stride): (&[u8], usize),
     (x, y): (usize, usize),
-) -> [Simd<u16, L>; WAYS] {
-    let mut acc = [Simd::<u16, L>::splat(0); WAYS];
+) -> [V; WAYS] {
+    let mut acc = [V::splat(simd, 0); WAYS];
     for row in y..y + 8 {
-        let source = Simd::<u8, L>::from_slice(&src[row * src_stride + x..]);
+        let source = load(&src[row * src_stride + x..]);
         let candidates = &refs[row * ref_stride + x..];
         for (lane, acc) in acc.iter_mut().enumerate() {
-            let candidate = Simd::<u8, L>::from_slice(&candidates[lane..]);
-            *acc += (source.simd_max(candidate) - source.simd_min(candidate)).cast::<u16>();
+            let candidate = load(&candidates[lane..]);
+            *acc += source.max(candidate) - source.min(candidate);
         }
     }
     acc
@@ -151,11 +160,13 @@ pub(super) fn sad_quads_scalar(input: &[[u32; WAYS]], cols: usize, out: &mut [[u
 /// [`sad_quads_scalar`] in [`WAYS`] `u32` lanes.
 pub(super) fn sad_quads_simd(input: &[[u32; WAYS]], cols: usize, out: &mut [[u32; WAYS]]) {
     let (half_cols, half_rows) = (cols / 2, input.len() / cols.max(1) / 2);
-    let load = |i: usize| Simd::<u32, WAYS>::from_array(input[i]);
-    for (index, sum) in out.iter_mut().enumerate().take(half_cols * half_rows) {
-        let at = index / half_cols * 2 * cols + index % half_cols * 2;
-        *sum = (load(at) + load(at + 1) + load(at + cols) + load(at + cols + 1)).to_array();
-    }
+    dispatch!(Level::baseline(), simd => {
+        let load = |i: usize| u32x4::load_array_ref(simd, &input[i]);
+        for (index, sum) in out.iter_mut().enumerate().take(half_cols * half_rows) {
+            let at = index / half_cols * 2 * cols + index % half_cols * 2;
+            *sum = *(load(at) + load(at + 1) + load(at + cols) + load(at + cols + 1));
+        }
+    });
 }
 
 /// Moves each `best` to the first lane of its `sads` that scores below it;
@@ -176,18 +187,19 @@ pub(super) fn keep_best_scalar(sads: &[[u32; WAYS]], mv: [i16; 2], best: &mut [M
 
 /// [`keep_best_scalar`] with a lane minimum per block.
 pub(super) fn keep_best_simd(sads: &[[u32; WAYS]], mv: [i16; 2], best: &mut [Motion]) {
-    for (sads, best) in sads.iter().zip(best) {
-        let sads = Simd::<u32, WAYS>::from_array(*sads);
-        let min = sads.reduce_min();
-        if min < best.sad
-            && let Some(lane) = sads.simd_eq(Simd::splat(min)).first_set()
-        {
-            *best = Motion {
-                sad: min,
-                mv: [mv[0].wrapping_add(lane as i16), mv[1]],
-            };
+    dispatch!(Level::baseline(), simd => {
+        for (sads, best) in sads.iter().zip(best.iter_mut()) {
+            let sads = u32x4::load_array_ref(simd, sads);
+            let min = sads.reduce_min();
+            let lanes = sads.simd_eq(min).to_bitmask();
+            if min < best.sad && lanes != 0 {
+                *best = Motion {
+                    sad: min,
+                    mv: [mv[0].wrapping_add(lanes.trailing_zeros() as i16), mv[1]],
+                };
+            }
         }
-    }
+    });
 }
 
 /// `out[i]`: the mean, rounded down, of samples `2i` and `2i + 1` of `top` and of
@@ -207,19 +219,21 @@ pub(super) fn downscale_row_scalar(top: &[u8], bottom: &[u8], out: &mut [u8]) {
 /// [`downscale_row_scalar`] in 16 lanes plus a scalar tail.
 pub(super) fn downscale_row_simd(top: &[u8], bottom: &[u8], out: &mut [u8]) {
     let len = out.len().min(top.len() / 2).min(bottom.len() / 2);
-    let pairs = |row: &[u8], i: usize| {
-        let (even, odd) = Simd::<u8, 16>::from_slice(&row[2 * i..])
-            .deinterleave(Simd::from_slice(&row[2 * i + 16..]));
-        even.cast::<u16>() + odd.cast::<u16>()
-    };
     let mut i = 0;
-    while i + 16 <= len {
-        let sum = pairs(top, i) + pairs(bottom, i);
-        (sum >> Simd::splat(2))
-            .cast::<u8>()
-            .copy_to_slice(&mut out[i..i + 16]);
-        i += 16;
-    }
+    dispatch!(Level::baseline(), simd => {
+        let pairs = |row: &[u8], i: usize| {
+            let half = |at: usize| u8x16::from_slice(simd, &row[at..at + 16]);
+            let (even, odd) = half(2 * i).deinterleave(half(2 * i + 16));
+            let ((even_lo, even_hi), (odd_lo, odd_hi)) = (even.widen(), odd.widen());
+            (even_lo + odd_lo, even_hi + odd_hi)
+        };
+        while i + 16 <= len {
+            let ((top_lo, top_hi), (bottom_lo, bottom_hi)) = (pairs(top, i), pairs(bottom, i));
+            let (lo, hi) = ((top_lo + bottom_lo) >> 2, (top_hi + bottom_hi) >> 2);
+            lo.narrow(hi).store_slice(&mut out[i..i + 16]);
+            i += 16;
+        }
+    });
     for i in i..len {
         let sum = u16::from(top[2 * i]) + u16::from(top[2 * i + 1]);
         let sum = sum + u16::from(bottom[2 * i]) + u16::from(bottom[2 * i + 1]);

@@ -46,24 +46,28 @@ fn transform_block_state_is_zero_initialized_and_row_major() {
 
     assert_eq!(state.width(), 4);
     assert_eq!(state.height(), 3);
-    assert_eq!(stride, 4 + LEVEL_GRID_PAD);
-    assert_eq!(state.coeff_count(), 12);
-    assert_eq!(state.level(), vec![0; padded_len].as_slice());
+    assert_eq!(stride, LEVEL_STRIDE);
+    assert!(state.level().iter().all(|&level| level == 0));
     assert!(state.quant_sign.is_empty());
     assert_eq!(state.quant_sign(), vec![0; padded_len].as_slice());
-    assert!((0..state.coeff_count()).all(|pos| state.quant_at(pos).unwrap() == 0));
 
     state.set_level(2, 1, 7).unwrap();
     state.set_quant_sign(2, 1, -1).unwrap();
-    state.set_quant(9, -12).unwrap();
 
     assert!(!state.quant_sign.is_empty());
     assert_eq!(state.level_at(2, 1).unwrap(), 7);
     assert_eq!(state.quant_sign_at(2, 1).unwrap(), -1);
-    assert_eq!(state.quant_at(9).unwrap(), -12);
     assert_eq!(state.level()[2 * stride + 1], 7);
     assert_eq!(state.quant_sign()[2 * stride + 1], -1);
-    assert_eq!(state.quant_at(9).unwrap(), -12);
+}
+
+#[test]
+fn transform_block_state_reuse_after_larger_block_zeroes_whole_grid() {
+    let mut large = TransformCoeffBlockState::new(32, 32).unwrap();
+    large.set_level(31, 31, 5).unwrap();
+    drop(large);
+    let small = TransformCoeffBlockState::new(4, 4).unwrap();
+    assert!(small.level().iter().all(|&level| level == 0));
 }
 
 #[test]
@@ -72,7 +76,7 @@ fn transform_block_fsc_state_allocates_zeroed_quant_sign() {
     let padded_len = state.level_stride() * (3 + LEVEL_GRID_PAD);
     state.quant_sign.reserve(padded_len);
     let retained = state.quant_sign.as_ptr();
-    state.ensure_quant_sign().unwrap();
+    state.ensure_quant_sign();
     assert_eq!(state.quant_sign.as_ptr(), retained);
 
     assert_eq!(state.quant_sign, vec![0; padded_len]);
@@ -105,10 +109,6 @@ fn transform_block_state_rejects_invalid_extents_and_coordinates() {
             height: 4,
             width: 4
         }
-    ));
-    assert!(matches!(
-        state.quant_at(16).unwrap_err(),
-        TileCoeffStateError::QuantPositionOutOfBounds { pos: 16, len: 16 }
     ));
     assert!(matches!(
         state.set_quant_sign(4, 0, 1).unwrap_err(),
@@ -452,10 +452,8 @@ fn reset_block_context_plane_clamps_bottom_and_right_edge_overhang() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..mi_rows, 0..mi_cols, ChromaFormatIdc::Yuv444)
             .unwrap();
-    state.above_level[0].fill(7);
-    state.above_dc[0].fill(3);
-    state.left_level[0].fill(7);
-    state.left_dc[0].fill(3);
+    state.above[0].fill(7 | 3 << DC_CATEGORY_SHIFT);
+    state.left[0].fill(7 | 3 << DC_CATEGORY_SHIFT);
 
     state
         .reset_block_context_plane(reset(0, 0, 256, 16, 16, 0, 0))
@@ -482,8 +480,7 @@ fn reset_block_context_plane_clamps_right_edge_only() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..mi_rows, 0..mi_cols, ChromaFormatIdc::Yuv444)
             .unwrap();
-    state.above_level[0].fill(5);
-    state.above_dc[0].fill(1);
+    state.above[0].fill(5 | 1 << DC_CATEGORY_SHIFT);
 
     state
         .reset_block_context_plane(reset(0, 6, 0, 4, 1, 0, 0))

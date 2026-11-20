@@ -73,8 +73,7 @@ impl EncoderReferences {
             frame_ref_update_from_core(core, ByteOffset::new(0), EmbeddedLayerId::from_bits(0))
                 .map_err(rule("reference update"))?;
         self.buffer.update(self.frames.len(), &update, false);
-        self.buffer
-            .note_frame(core.obu_type, true, &update, &core.ref_long_term_ids);
+        self.buffer.note_frame(core.obu_type, true, &update);
         self.state = settled_state(&self.buffer, &self.frames)?;
         Ok(())
     }

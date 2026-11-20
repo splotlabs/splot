@@ -4,8 +4,9 @@
 //! Hashes of 8x8 sample blocks at every position: a polynomial hash of each
 //! eight-sample row run, then of eight row hashes down a column.
 
-use std::simd::Simd;
-use std::simd::num::SimdUint as _;
+use fearless_simd::{Level, Simd, SimdBase as _, dispatch, u32x8};
+
+use super::load_u16_as_u32;
 
 /// The block side the hashes cover.
 pub(crate) const HASH_SIDE: usize = 8;
@@ -60,15 +61,19 @@ pub(crate) fn row_hashes_scalar(row: &[u16], out: &mut [u32]) {
 
 /// [`row_hashes_scalar`] over eight positions per step.
 pub(crate) fn row_hashes_simd(row: &[u16], out: &mut [u32]) {
+    dispatch!(Level::baseline(), simd => row_hashes_kernel(simd, row, out));
+}
+
+#[inline]
+fn row_hashes_kernel<S: Simd>(simd: S, row: &[u16], out: &mut [u32]) {
     let count = (row.len() + 1).saturating_sub(HASH_SIDE).min(out.len());
     let mut x = 0;
     while x + LANES <= count {
-        let mut hash = Simd::<u32, LANES>::splat(0);
+        let mut hash = u32x8::splat(simd, 0);
         for (i, power) in ROW_POWERS.into_iter().enumerate() {
-            let samples: Simd<u32, LANES> = Simd::<u16, LANES>::from_slice(&row[x + i..]).cast();
-            hash += samples * Simd::splat(power);
+            hash += load_u16_as_u32(simd, &row[x + i..]) * power;
         }
-        hash.copy_to_slice(&mut out[x..x + LANES]);
+        hash.store_slice(&mut out[x..x + LANES]);
         x += LANES;
     }
     for (x, out) in out.iter_mut().enumerate().take(count).skip(x) {
@@ -88,6 +93,11 @@ pub(crate) fn column_hashes_scalar(rows: [&[u32]; HASH_SIDE], out: &mut [u32]) {
 
 /// [`column_hashes_scalar`] over eight positions per step.
 pub(crate) fn column_hashes_simd(rows: [&[u32]; HASH_SIDE], out: &mut [u32]) {
+    dispatch!(Level::baseline(), simd => column_hashes_kernel(simd, rows, out));
+}
+
+#[inline]
+fn column_hashes_kernel<S: Simd>(simd: S, rows: [&[u32]; HASH_SIDE], out: &mut [u32]) {
     let count = rows
         .iter()
         .map(|row| row.len())
@@ -96,11 +106,11 @@ pub(crate) fn column_hashes_simd(rows: [&[u32]; HASH_SIDE], out: &mut [u32]) {
         .min(out.len());
     let mut x = 0;
     while x + LANES <= count {
-        let mut hash = Simd::<u32, LANES>::splat(0);
+        let mut hash = u32x8::splat(simd, 0);
         for (row, power) in rows.iter().zip(COLUMN_POWERS) {
-            hash += Simd::<u32, LANES>::from_slice(&row[x..]) * Simd::splat(power);
+            hash += u32x8::from_slice(simd, &row[x..x + LANES]) * power;
         }
-        hash.copy_to_slice(&mut out[x..x + LANES]);
+        hash.store_slice(&mut out[x..x + LANES]);
         x += LANES;
     }
     for (x, out) in out.iter_mut().enumerate().take(count).skip(x) {

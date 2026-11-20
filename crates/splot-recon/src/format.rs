@@ -220,11 +220,6 @@ pub trait ReconSample:
     /// Takes back buffers of this storage depth, leaving any of another depth.
     fn reclaim_planes(retired: &mut crate::RetiredFramePlanes) -> crate::FramePlaneSamples<Self>;
 
-    /// Reinterprets mutable `u16` storage as this sample type when it is `u16`,
-    /// letting a filter write its samples straight into a `u16` plane without a
-    /// staging buffer; `None` for narrower storage types.
-    fn from_u16_slice_mut(samples: &mut [u16]) -> Option<&mut [Self]>;
-
     /// Reinterprets a mutable sample slice as `u8` storage when this type is
     /// `u8`; `None` for wider storage types.
     fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]>;
@@ -232,6 +227,9 @@ pub trait ReconSample:
     /// Reinterprets a sample slice as `u8` storage when this type is `u8`;
     /// `None` for wider storage types.
     fn u8_slice(samples: &[Self]) -> Option<&[u8]>;
+
+    /// This storage depth's buffer of a pair kept for both depths.
+    fn depth_vec<'a>(eight: &'a mut Vec<u8>, ten: &'a mut Vec<u16>) -> &'a mut Vec<Self>;
 }
 
 impl ReconSample for u8 {
@@ -270,16 +268,16 @@ impl ReconSample for u8 {
         None
     }
 
-    fn from_u16_slice_mut(_samples: &mut [u16]) -> Option<&mut [Self]> {
-        None
-    }
-
     fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]> {
         Some(samples)
     }
 
     fn u8_slice(samples: &[Self]) -> Option<&[u8]> {
         Some(samples)
+    }
+
+    fn depth_vec<'a>(eight: &'a mut Vec<u8>, _ten: &'a mut Vec<u16>) -> &'a mut Vec<Self> {
+        eight
     }
 }
 
@@ -315,16 +313,16 @@ impl ReconSample for u16 {
         Some(samples)
     }
 
-    fn from_u16_slice_mut(samples: &mut [u16]) -> Option<&mut [Self]> {
-        Some(samples)
-    }
-
     fn u8_slice_mut(_samples: &mut [Self]) -> Option<&mut [u8]> {
         None
     }
 
     fn u8_slice(_samples: &[Self]) -> Option<&[u8]> {
         None
+    }
+
+    fn depth_vec<'a>(_eight: &'a mut Vec<u8>, ten: &'a mut Vec<u16>) -> &'a mut Vec<Self> {
+        ten
     }
 }
 

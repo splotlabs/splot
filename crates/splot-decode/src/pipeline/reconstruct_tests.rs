@@ -31,7 +31,8 @@ impl IntraEdgeAvailability {
 fn all_zero_luma_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
-        quant_range: 0..0,
+        quant_start: 0,
+        quant_len: 0,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
@@ -50,7 +51,8 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
@@ -85,7 +87,6 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
             215,
             true,
             true,
-            BitDepth::Eight,
         );
         result.map(|()| workspace.reconstructed_sample(PlaneId::Y, 0, 0).unwrap())
     };
@@ -108,7 +109,8 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
@@ -141,7 +143,6 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
                 above: false,
                 left: false,
             },
-            BitDepth::Eight,
         )
         .unwrap();
         (0..16)
@@ -164,7 +165,8 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
@@ -196,7 +198,6 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
             80,
             false,
             false,
-            BitDepth::Eight,
         )
         .unwrap();
     }
@@ -212,7 +213,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
 }
 
 #[test]
-fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
+fn inter_residual_all_zero_is_noop() {
     let mut workspace =
         new_general_intra_workspace::<u16>(4, 4, BitDepth::Eight, PixelFormat::Monochrome).unwrap();
     workspace
@@ -225,31 +226,6 @@ fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
         )
         .unwrap();
     let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
-    let mut quant = vec![0; 16];
-    quant[0] = 1;
-    let mut block = all_zero_luma_block();
-    block.eob = 1;
-    block.quant_range = 0..quant.len();
-    assert!(matches!(
-        reconstruct_inter_block_residual_rect_into(
-            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
-            block.view(&quant),
-            PlaneId::Y,
-            0,
-            0,
-            2,
-            2,
-            80,
-            false,
-            false,
-            BitDepth::Ten,
-        ),
-        Err(GeneralIntraResidualError::InvalidReconstructionState {
-            context: "inter residual bit depth"
-        })
-    ));
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before);
-
     reconstruct_inter_block_residual_rect_into(
         &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
         all_zero_luma_block().view(&[]),
@@ -261,7 +237,6 @@ fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
         80,
         false,
         false,
-        BitDepth::Ten,
     )
     .unwrap();
     assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before);
@@ -280,7 +255,6 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
             splot_recon::IntraPredictionScratchBuffer::Primary,
             PlaneId::Y,
             16,
-            100,
         )
         .unwrap();
     let prediction_allocation = prediction.as_ptr();
@@ -288,7 +262,8 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
@@ -332,7 +307,6 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
             splot_recon::IntraPredictionScratchBuffer::Primary,
             PlaneId::Y,
             16,
-            7,
         )
         .unwrap();
     assert_eq!(prediction.as_ptr(), prediction_allocation);
@@ -432,7 +406,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         BitDepth::Eight,
     )
     .unwrap();
-    reconstruct_general_intra_block_rect_with_availability_into(
+    reconstruct_general_intra_block_rect_into(
         &mut via_rect,
         block.view(&[]),
         PlaneId::U,
@@ -445,7 +419,6 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
         true,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
     reconstruct_general_intra_chroma_block_into(
@@ -533,7 +506,6 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
         None,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -726,7 +698,6 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
         false,
         LumaTransformTypeContext::new(IntraYMode::Dc, 0),
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -768,7 +739,6 @@ fn cardinal_mrl_synthesizes_both_missing_edges() {
                 above: false,
                 left: false,
             },
-            BitDepth::Eight,
         )
         .unwrap();
 
@@ -811,7 +781,6 @@ fn zone3_mrl_without_left_uses_above_mrl_row() {
             above: true,
             left: false,
         },
-        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -847,7 +816,6 @@ fn zone2_mrl_synthesizes_both_missing_edges() {
             above: false,
             left: false,
         },
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -911,7 +879,6 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
         false,
         None,
         None,
-        BitDepth::Eight,
         IntraEdgeAvailability {
             above: true,
             left: true,
@@ -961,7 +928,6 @@ fn zone2_top_row_left_edge_filter_matches_avm_z2_idif() {
         false,
         None,
         None,
-        BitDepth::Eight,
         IntraEdgeAvailability {
             above: false,
             left: true,
@@ -1059,7 +1025,6 @@ fn d135_neighbour_masks_unavailable_tile_above_edge() {
             0,
             false,
             None,
-            BitDepth::Eight,
             IntraEdgeAvailability {
                 above: false,
                 left: true,
@@ -1134,7 +1099,6 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
         None,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -1266,7 +1230,6 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         None,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -1303,7 +1266,6 @@ fn zone2_mrl_middle_left_edge_synthesizes_left_from_above() {
             above: true,
             left: false,
         },
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -1360,7 +1322,6 @@ fn two_sided_middle_mrl_clamps_bottom_edge_extension() {
             false,
             None,
             IntraEdgeAvailability::new(true, true),
-            BitDepth::Eight,
         )
         .unwrap();
     }
@@ -1413,7 +1374,6 @@ fn chroma_middle_prediction_clamps_bottom_edge_extension() {
             false,
             None,
             None,
-            BitDepth::Eight,
             IntraEdgeAvailability::new(true, true),
             TwoSidedMiddleEdgeFilters {
                 above: OneSidedEdgeFilter::default(),
@@ -1456,7 +1416,6 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
         None,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -1494,7 +1453,6 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
         None,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -1533,7 +1491,6 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
         None,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -1578,7 +1535,6 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
             above: false,
             left: true,
         },
-        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -1626,7 +1582,6 @@ fn zone1_d45_top_edge_mrl_uses_offset_left_reference() {
             above: false,
             left: true,
         },
-        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -1667,7 +1622,6 @@ fn zone1_d45_top_left_synthesizes_no_neighbour_above_fallback() {
             above: false,
             left: false,
         },
-        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -1709,7 +1663,6 @@ fn zone3_d203_top_left_synthesizes_no_neighbour_left_fallback() {
             above: false,
             left: false,
         },
-        BitDepth::Eight,
         OneSidedEdgeFilter::default(),
     )
     .unwrap();
@@ -1748,7 +1701,6 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
         None,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -1906,7 +1858,6 @@ fn assert_cardinal_top_left_fallback(direction: IntraCardinalDirection, expected
         None,
         None,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -1996,7 +1947,6 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
         0,
         false,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -2037,7 +1987,6 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
         0,
         false,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -2106,7 +2055,8 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     quant[9] = 12;
     let block = LumaCoeffBlock {
         eob: 10,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
@@ -2143,7 +2093,6 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         149,
         true,
         IntraEdgeAvailability::all(),
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -2218,7 +2167,6 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
         &mut ws,
         all_zero_luma_block().view(&[]),
         45, // pAngle (zone-1)
-        PlaneId::Y,
         8,
         8,
         3, // log2_width = 3 -> 8
@@ -2234,7 +2182,6 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
         IntraEdgeAvailability::all(),
         false,
         None,
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -2272,7 +2219,6 @@ fn one_sided_ibp_p203_synthesizes_missing_left_edge_from_above() {
         &mut ws,
         all_zero_luma_block().view(&[]),
         203,
-        PlaneId::Y,
         0,
         8,
         3,
@@ -2291,7 +2237,6 @@ fn one_sided_ibp_p203_synthesizes_missing_left_edge_from_above() {
         },
         false,
         None,
-        BitDepth::Eight,
     )
     .unwrap();
 
@@ -2324,7 +2269,6 @@ fn one_sided_ibp_p45_synthesizes_both_missing_edges() {
         &mut workspace,
         all_zero_luma_block().view(&[]),
         45,
-        PlaneId::Y,
         0,
         0,
         3,
@@ -2343,7 +2287,6 @@ fn one_sided_ibp_p45_synthesizes_both_missing_edges() {
         },
         false,
         None,
-        BitDepth::Eight,
     )
     .unwrap();
 

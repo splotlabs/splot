@@ -15,8 +15,8 @@ splot-cli ───────┬──> splot-validate ───> splot-core
 
 Rules:
 
-- `splot-core`, `splot-parallel`, and `splot-tables` depend on no other
-  `splot-*` crate.
+- `splot-core` depends only on `splot-tables`; `splot-parallel` and
+  `splot-tables` depend on no other `splot-*` crate.
 - `splot-tables` has no external dependencies.
 - `splot-recon` depends only on `splot-core` and `splot-tables`.
 - `splot-decode` depends only on `splot-core`, `splot-parallel`, and
@@ -92,10 +92,6 @@ Intentional materialization must carry a `splot-copy-ok:` marker.
 Plane storage is `PlaneBuf`: the first sample is 64-byte aligned and the row
 stride (`plane_stride`) is a multiple of 64 bytes, so hosts can wrap decoded
 planes without a copy.
-
-`zerocopy` is allowed only for private fixed-layout wire views, such as IVF
-headers. It is not the media-buffer ownership model and must not parse AV2
-bit-level, entropy, or variable-length syntax.
 
 Gate: `cargo xtask check-zero-copy-policy`.
 

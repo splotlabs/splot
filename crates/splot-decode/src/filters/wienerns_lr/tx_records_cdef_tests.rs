@@ -5,10 +5,7 @@ use super::*;
 
 fn cdef_state(rows: usize, cols: usize, sb_size4: usize) -> CdefState {
     CdefState {
-        row_start: 0,
-        col_start: 0,
-        rows,
-        cols,
+        window: UnitWindow::frame(rows, cols),
         values: vec![None; rows * cols],
         sb_size4,
     }

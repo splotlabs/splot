@@ -230,11 +230,13 @@ pub(super) fn ivf_key_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
 ) -> Result<(ObuEnvelope<'a>, &'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
-    let position = obus
+    if !obus
         .iter()
-        .position(|envelope| envelope.offset == candidate.offset())
-        .ok_or_else(|| missing_key_ivf_obu(Some(candidate.offset())))?;
-    let ([_, sequence_envelope, key_envelope], _) = require_key_frame_unit(obus)?;
+        .any(|envelope| envelope.offset == candidate.offset())
+    {
+        return Err(missing_key_ivf_obu(Some(candidate.offset())));
+    }
+    let ([_, sequence_envelope, key_envelope], indices) = require_key_frame_unit(obus)?;
     if key_envelope.offset != candidate.offset() {
         return Err(unsupported_at(
             "unexpected_key_obu_order",
@@ -242,15 +244,7 @@ pub(super) fn ivf_key_frame_unit<'a>(
             missing_capability_message!("frame.sequence repeated_key_frame_unit"),
         ));
     }
-    let indices = minimal_frame_unit_indices(obus)?;
-    if position != indices.frame {
-        return Err(unsupported_at(
-            "unexpected_key_obu_order",
-            candidate.offset(),
-            missing_capability_message!("frame.sequence repeated_key_frame_unit"),
-        ));
-    }
-    Ok((sequence_envelope, leading_prefix_obus(obus)?, key_envelope))
+    Ok((sequence_envelope, &obus[..indices.frame], key_envelope))
 }
 
 pub(super) fn leading_record_inter_frame_unit_start(
@@ -280,19 +274,16 @@ pub(super) fn leading_record_inter_frame_unit_start(
     None
 }
 
-#[cfg(test)]
-pub(super) fn require_leading_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
-    let (_, frame_unit_len) = require_leading_frame_unit(obus)?;
-    require_inter_obus_after_key(obus, frame_unit_len)
-}
-
 fn require_key_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
-    let (_, frame_unit_len) = require_key_frame_unit(obus)?;
-    require_inter_obus_after_key(obus, frame_unit_len)
+    let (_, indices) = require_key_frame_unit(obus)?;
+    require_inter_frame_units(obus, indices.suffix_end, "unexpected_leading_obu_after_key")
 }
 
-fn require_inter_obus_after_key(obus: &[ObuEnvelope<'_>], frame_unit_len: usize) -> Result<()> {
-    let mut index = frame_unit_len;
+pub(super) fn require_inter_frame_units(
+    obus: &[ObuEnvelope<'_>],
+    mut index: usize,
+    reason: &'static str,
+) -> Result<()> {
     while index < obus.len() {
         if obus[index].header.obu_type == ObuType::TemporalDelimiter {
             index += 1;
@@ -300,13 +291,13 @@ fn require_inter_obus_after_key(obus: &[ObuEnvelope<'_>], frame_unit_len: usize)
         index = skip_frame_prefix_obus(obus, index);
         let Some(envelope) = obus.get(index).copied() else {
             return Err(unsupported_at(
-                "unexpected_leading_obu_after_key",
+                reason,
                 obus.last()
                     .map_or(ByteOffset::new(0), |envelope| envelope.offset),
                 missing_capability_message!("inter.ivf_frame_unit_order"),
             ));
         };
-        require_inter_frame_obu(envelope, "unexpected_leading_obu_after_key")?;
+        require_inter_frame_obu(envelope, reason)?;
         index = skip_frame_suffix_obus(obus, index + 1);
     }
     Ok(())
@@ -330,6 +321,8 @@ fn is_frame_prefix_obu(envelope: &ObuEnvelope<'_>) -> bool {
     matches!(
         envelope.header.obu_type,
         ObuType::SequenceHeader
+            | ObuType::LayerConfigurationRecord
+            | ObuType::OperatingPointSet
             | ObuType::ContentInterpretation
             | ObuType::MultiFrameHeader
             | ObuType::BufferRemovalTiming
@@ -368,33 +361,12 @@ fn is_tile_group_continuation(envelope: &ObuEnvelope<'_>) -> bool {
 }
 
 pub(super) fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
-    let mut index = 0;
+    const REASON: &str = "unexpected_inter_obu_order";
     let Some(first) = obus.first().copied() else {
         return Ok(());
     };
-    require_obu_type(
-        first,
-        ObuType::TemporalDelimiter,
-        "unexpected_inter_obu_order",
-    )?;
-    index += 1;
-    while index < obus.len() {
-        if obus[index].header.obu_type == ObuType::TemporalDelimiter {
-            index += 1;
-        }
-        index = skip_frame_prefix_obus(obus, index);
-        let Some(frame_envelope) = obus.get(index).copied() else {
-            return Err(unsupported_at(
-                "unexpected_inter_obu_order",
-                obus.last()
-                    .map_or(ByteOffset::new(0), |envelope| envelope.offset),
-                missing_capability_message!("inter.ivf_frame_unit_order"),
-            ));
-        };
-        require_inter_frame_obu(frame_envelope, "unexpected_inter_obu_order")?;
-        index = skip_frame_suffix_obus(obus, index + 1);
-    }
-    Ok(())
+    require_obu_type(first, ObuType::TemporalDelimiter, REASON)?;
+    require_inter_frame_units(obus, 1, REASON)
 }
 
 fn prefix_after_previous_inter_frame(position: usize, obus: &[ObuEnvelope<'_>]) -> Option<usize> {
@@ -403,6 +375,7 @@ fn prefix_after_previous_inter_frame(position: usize, obus: &[ObuEnvelope<'_>]) 
         .rposition(|envelope| is_inter_frame_obu(envelope.header.obu_type))?;
     Some(skip_frame_suffix_obus(obus, previous.saturating_add(1)))
 }
+#[cfg(test)]
 pub(crate) fn require_minimal_obu_order<'a>(
     obus: &'a [ObuEnvelope<'a>],
 ) -> Result<[ObuEnvelope<'a>; 3]> {
@@ -413,34 +386,38 @@ pub(crate) fn require_minimal_obu_order<'a>(
 pub(super) fn require_leading_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
 ) -> Result<([ObuEnvelope<'a>; 3], usize)> {
-    let frame_unit = require_minimal_obu_order(obus)?;
-    require_obu_type(
-        frame_unit[0],
-        ObuType::TemporalDelimiter,
-        "missing_temporal_delimiter",
+    let (frame_unit, indices) = require_frame_unit(
+        obus,
+        &[
+            ObuType::ClosedLoopKey,
+            ObuType::OpenLoopKey,
+            ObuType::RasFrame,
+        ],
+        "missing_random_access_frame",
+        "decode runtime requires a closed-loop key, open-loop key, or RAS random-access frame",
     )?;
-    require_obu_type(
-        frame_unit[1],
-        ObuType::SequenceHeader,
-        "missing_sequence_header",
-    )?;
-    if !matches!(
-        frame_unit[2].header.obu_type,
-        ObuType::ClosedLoopKey | ObuType::OpenLoopKey | ObuType::RasFrame
-    ) {
-        return Err(unsupported_at(
-            "missing_random_access_frame",
-            frame_unit[2].offset,
-            "decode runtime requires a closed-loop key, open-loop key, or RAS random-access frame",
-        ));
-    }
-    Ok((frame_unit, minimal_frame_unit_indices(obus)?.len()))
+    Ok((frame_unit, indices.suffix_end))
 }
 
 fn require_key_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
-) -> Result<([ObuEnvelope<'a>; 3], usize)> {
-    let frame_unit = require_minimal_obu_order(obus)?;
+) -> Result<([ObuEnvelope<'a>; 3], MinimalFrameUnitIndices)> {
+    require_frame_unit(
+        obus,
+        &[ObuType::ClosedLoopKey, ObuType::OpenLoopKey],
+        "missing_key_frame",
+        missing_capability_message!("frame.sequence repeated_key_frame_unit"),
+    )
+}
+
+fn require_frame_unit<'a>(
+    obus: &'a [ObuEnvelope<'a>],
+    frames: &[ObuType],
+    reason: &'static str,
+    message: &'static str,
+) -> Result<([ObuEnvelope<'a>; 3], MinimalFrameUnitIndices)> {
+    let indices = minimal_frame_unit_indices(obus)?;
+    let frame_unit = [obus[0], obus[indices.sequence], obus[indices.frame]];
     require_obu_type(
         frame_unit[0],
         ObuType::TemporalDelimiter,
@@ -451,17 +428,10 @@ fn require_key_frame_unit<'a>(
         ObuType::SequenceHeader,
         "missing_sequence_header",
     )?;
-    if !matches!(
-        frame_unit[2].header.obu_type,
-        ObuType::ClosedLoopKey | ObuType::OpenLoopKey
-    ) {
-        return Err(unsupported_at(
-            "missing_key_frame",
-            frame_unit[2].offset,
-            missing_capability_message!("frame.sequence repeated_key_frame_unit"),
-        ));
+    if !frames.contains(&frame_unit[2].header.obu_type) {
+        return Err(unsupported_at(reason, frame_unit[2].offset, message));
     }
-    Ok((frame_unit, minimal_frame_unit_indices(obus)?.len()))
+    Ok((frame_unit, indices))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -469,12 +439,6 @@ struct MinimalFrameUnitIndices {
     sequence: usize,
     frame: usize,
     suffix_end: usize,
-}
-
-impl MinimalFrameUnitIndices {
-    pub(super) const fn len(self) -> usize {
-        self.suffix_end
-    }
 }
 
 pub(super) fn leading_prefix_obus<'a>(
@@ -485,30 +449,17 @@ pub(super) fn leading_prefix_obus<'a>(
 }
 
 fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUnitIndices> {
-    if obus.is_empty() {
-        return Err(unsupported(
-            "unexpected_obu_order",
-            None,
-            "decode runtime requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
-        ));
-    }
-    let mut sequence_index = 1usize;
-    while obus
-        .get(sequence_index)
-        .is_some_and(|envelope| envelope.header.obu_type == ObuType::OperatingPointSet)
-    {
-        sequence_index += 1;
-    }
-    let frame_index = sequence_index.checked_add(1).ok_or_else(|| {
-        unsupported(
-            "unexpected_obu_order",
-            None,
-            "decode runtime requires a leading temporal delimiter, optional operating-point metadata, sequence header, optional film-grain state, and closed-loop-key OBU",
+    let mut sequence = 1usize;
+    while obus.get(sequence).is_some_and(|envelope| {
+        matches!(
+            envelope.header.obu_type,
+            ObuType::LayerConfigurationRecord | ObuType::OperatingPointSet
         )
-    })?;
-    let mut frame_index = frame_index;
-    frame_index = skip_frame_prefix_obus(obus, frame_index);
-    if frame_index >= obus.len() {
+    }) {
+        sequence += 1;
+    }
+    let frame = skip_frame_prefix_obus(obus, sequence + 1);
+    if frame >= obus.len() {
         return Err(unsupported(
             "unexpected_obu_order",
             None,
@@ -516,9 +467,9 @@ fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUn
         ));
     }
     Ok(MinimalFrameUnitIndices {
-        sequence: sequence_index,
-        frame: frame_index,
-        suffix_end: skip_frame_suffix_obus(obus, frame_index + 1),
+        sequence,
+        frame,
+        suffix_end: skip_frame_suffix_obus(obus, frame + 1),
     })
 }
 

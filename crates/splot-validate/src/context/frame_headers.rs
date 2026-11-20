@@ -101,6 +101,11 @@ impl ValidatorContext {
             let role = self.seg_role_for(obu, first_picture_in_tu);
             if self.frame_unit.commits_pending_ref_update(obu, role) {
                 self.commit_pending_ref_update();
+                self.reference_state.prepare_for_frame(
+                    obu.header.extended_layer_id,
+                    obu.header.obu_type,
+                    first_picture_in_tu,
+                );
             }
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
             let mut rap_refs = FrameRapReferences::default();

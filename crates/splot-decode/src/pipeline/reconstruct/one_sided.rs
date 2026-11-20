@@ -3,19 +3,20 @@
 
 //! One-sided directional, MRL, and cardinal-MRL intra entries with idif edge builders.
 
-use core::ops::Deref;
+use core::ops::{Deref, DerefMut};
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, IntraDirectionalAngle,
-    IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges, IntraPredictionScratchBuffer,
-    IntraRectBlockSize, PlaneId, PlaneRect, ReconError, ReconSample, apply_intra_edge_filter,
-    filter_intra_edge_corner, predict_intra_directional_angle_rect_into,
+    IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges, IntraRectBlockSize, PlaneId,
+    PlaneRect, ReconError, ReconSample, apply_intra_edge_filter, filter_intra_edge_corner,
+    predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_mrl_into,
 };
 
 use super::sink::{
     IntraEdgeAvailability, build_mrl_luma_prediction, invalid_directional_edge_state,
-    noneighbour_above, noneighbour_corner, noneighbour_left, write_intra_prediction_block,
+    noneighbour_above, noneighbour_corner, noneighbour_left, predict_intra_block,
+    write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext,
@@ -23,28 +24,37 @@ use crate::bitstream::tile_payload::{
 
 const ONE_SIDED_IDIF_EDGE_CAPACITY: usize = 138;
 
-pub(crate) struct OneSidedIdifEdge<T: ReconSample> {
-    samples: [T; ONE_SIDED_IDIF_EDGE_CAPACITY],
+/// An IDIF reference edge of `len` samples held inline, at most `N`.
+pub(crate) struct IdifEdge<T: ReconSample, const N: usize> {
+    samples: [T; N],
     len: usize,
 }
 
-impl<T: ReconSample> OneSidedIdifEdge<T> {
-    fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
-        if len > ONE_SIDED_IDIF_EDGE_CAPACITY {
+pub(crate) type OneSidedIdifEdge<T> = IdifEdge<T, ONE_SIDED_IDIF_EDGE_CAPACITY>;
+
+impl<T: ReconSample, const N: usize> IdifEdge<T, N> {
+    pub(crate) fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
+        if len > N {
             return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
         }
         Ok(Self {
-            samples: [T::default(); ONE_SIDED_IDIF_EDGE_CAPACITY],
+            samples: [T::default(); N],
             len,
         })
     }
 }
 
-impl<T: ReconSample> Deref for OneSidedIdifEdge<T> {
+impl<T: ReconSample, const N: usize> Deref for IdifEdge<T, N> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
         &self.samples[..self.len]
+    }
+}
+
+impl<T: ReconSample, const N: usize> DerefMut for IdifEdge<T, N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.samples[..self.len]
     }
 }
 
@@ -78,66 +88,58 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let width = block_size.width();
     let height = block_size.height();
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-    if matches!(plane_id, PlaneId::Y) {
-        predict_general_intra_luma_one_sided_above_mrl_into(
-            workspace,
-            p_angle,
-            x,
-            y,
-            block_size,
-            num4_above_right,
-            mrl,
-            availability,
-            bit_depth,
-            edge_filter,
-            &mut prediction,
-        )?;
-    } else {
-        if mrl.mrl_index != 0 {
-            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
-        }
-        let above_idif = build_one_sided_above_idif_edge(
-            workspace,
-            plane_id,
-            x,
-            y,
-            width,
-            height,
-            num4_above_right,
-            mrl.mrl_index,
-            mrl.above_mrl_index,
-            availability,
-            bit_depth,
-            edge_filter,
-        )?;
-        let above_bilinear = &above_idif[2..2 + width + height];
-        predict_intra_directional_angle_rect_into(
-            bit_depth,
-            block_size,
-            IntraDirectionalAngle::try_from_p_angle(p_angle)?,
-            IntraDirectionalAngleEdges::above(above_bilinear),
-            &mut prediction,
-            width,
-        )?;
+    if !matches!(plane_id, PlaneId::Y) && mrl.mrl_index != 0 {
+        return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
     }
-    write_intra_prediction_block(
+    let idif = build_one_sided_above_idif_edge(
+        workspace,
+        plane_id,
+        x,
+        y,
+        width,
+        height,
+        num4_above_right,
+        mrl.mrl_index,
+        mrl.above_mrl_index,
+        availability,
+        bit_depth,
+        edge_filter,
+    )?;
+    let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
+    let predict = |output: &mut [T], stride: usize| {
+        if matches!(plane_id, PlaneId::Y) {
+            predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraDirectionalAngleIdifEdges::above(&idif),
+                mrl.mrl_index,
+                output,
+                stride,
+            )?;
+        } else {
+            predict_intra_directional_angle_rect_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraDirectionalAngleEdges::above(&idif[2..2 + width + height]),
+                output,
+                stride,
+            )?;
+        }
+        Ok(())
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -147,6 +149,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         luma_context,
         dpcm,
         bit_depth,
+        predict,
     )
 }
 
@@ -226,8 +229,8 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
     use_tcq: bool,
     luma_context: LumaTransformTypeContext,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
@@ -287,8 +290,8 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
     use_tcq: bool,
     luma_context: LumaTransformTypeContext,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
@@ -345,72 +348,48 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
     bit_depth: BitDepth,
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let width = block_size.width();
-    let height = block_size.height();
-    match direction {
-        IntraCardinalDirection::Vertical if availability.above => {
-            let above_row = y
-                .checked_sub(1)
-                .and_then(|row| row.checked_sub(above_mrl_index))
-                .ok_or_else(invalid_directional_edge_state)?;
-            let max_x = workspace
-                .plane(PlaneId::Y)?
-                .storage_size()
-                .width()
-                .checked_sub(1)
-                .ok_or_else(invalid_directional_edge_state)?;
-            for column in 0..width {
-                let sample_x = x.saturating_add(column).min(max_x);
-                let sample = workspace.reconstructed_sample(PlaneId::Y, sample_x, above_row)?;
-                for row in 0..height {
-                    prediction[row * width + column] = sample;
-                }
-            }
+    let mut edge = [T::default(); 64];
+    let storage = workspace.plane(PlaneId::Y)?.storage_size();
+    let (above_row, left_col) = (
+        y.checked_sub(1 + above_mrl_index),
+        x.checked_sub(1 + mrl_index),
+    );
+    let vertical = matches!(direction, IntraCardinalDirection::Vertical);
+    let len = if vertical {
+        block_size.width()
+    } else {
+        block_size.height()
+    };
+    let edge = &mut edge[..len];
+    let row = || above_row.ok_or_else(invalid_directional_edge_state);
+    let col = || left_col.ok_or_else(invalid_directional_edge_state);
+    match (vertical, availability.above, availability.left) {
+        (true, true, _) => {
+            let limit = storage.width().saturating_sub(1);
+            gather_row_clamped(workspace, PlaneId::Y, (x, row()?), limit, edge)?;
         }
-        IntraCardinalDirection::Vertical => {
-            let sample = if availability.left {
-                let left_col = x
-                    .checked_sub(1)
-                    .and_then(|col| col.checked_sub(mrl_index))
-                    .ok_or_else(invalid_directional_edge_state)?;
-                workspace.reconstructed_sample(PlaneId::Y, left_col, y)?
-            } else {
-                noneighbour_above::<T>(bit_depth)
-            };
-            prediction.fill(sample);
+        (false, _, true) => {
+            let limit = storage.height().saturating_sub(1);
+            gather_column_clamped(workspace, PlaneId::Y, (col()?, y), limit, edge)?;
         }
-        IntraCardinalDirection::Horizontal if availability.left => {
-            let left_col = x
-                .checked_sub(1)
-                .and_then(|col| col.checked_sub(mrl_index))
-                .ok_or_else(invalid_directional_edge_state)?;
-            let max_y = workspace
-                .plane(PlaneId::Y)?
-                .storage_size()
-                .height()
-                .checked_sub(1)
-                .ok_or_else(invalid_directional_edge_state)?;
-            for row in 0..height {
-                let sample_y = y.saturating_add(row).min(max_y);
-                let sample = workspace.reconstructed_sample(PlaneId::Y, left_col, sample_y)?;
-                for column in 0..width {
-                    prediction[row * width + column] = sample;
-                }
-            }
-        }
-        IntraCardinalDirection::Horizontal => {
-            let sample = if availability.above {
-                let above_row = y
-                    .checked_sub(1)
-                    .and_then(|row| row.checked_sub(above_mrl_index))
-                    .ok_or_else(invalid_directional_edge_state)?;
-                workspace.reconstructed_sample(PlaneId::Y, x, above_row)?
-            } else {
-                noneighbour_left::<T>(bit_depth)
-            };
-            prediction.fill(sample);
-        }
+        (true, false, true) => edge.fill(workspace.reconstructed_sample(PlaneId::Y, col()?, y)?),
+        (false, true, false) => edge.fill(workspace.reconstructed_sample(PlaneId::Y, x, row()?)?),
+        (true, false, false) => edge.fill(noneighbour_above::<T>(bit_depth)),
+        (false, false, false) => edge.fill(noneighbour_left::<T>(bit_depth)),
     }
+    let edges = if vertical {
+        IntraDirectionalAngleEdges::above(edge)
+    } else {
+        IntraDirectionalAngleEdges::left(edge)
+    };
+    splot_recon::predict_intra_cardinal_directional_rect_into(
+        bit_depth,
+        block_size,
+        direction,
+        edges,
+        prediction,
+        block_size.width(),
+    )?;
     Ok(())
 }
 
@@ -563,70 +542,63 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let width = block_size.width();
     let height = block_size.height();
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-    if matches!(plane_id, PlaneId::Y) {
-        predict_general_intra_luma_one_sided_left_mrl_into(
-            workspace,
-            p_angle,
-            x,
-            y,
-            block_size,
-            num4_below_left,
-            have_above,
-            mrl_index,
-            above_mrl_index,
-            availability.left,
-            bit_depth,
-            edge_filter,
-            &mut prediction,
-        )?;
-    } else {
-        if mrl_index != 0 {
-            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
-        }
-        let left_idif = build_one_sided_left_idif_edge(
-            workspace,
-            plane_id,
-            x,
-            y,
-            width,
-            height,
-            num4_below_left,
-            have_above,
-            mrl_index,
-            0,
-            availability.left,
-            bit_depth,
-            edge_filter,
-        )?;
-        let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
-        let left_bilinear = &left_idif[2..2 + width + height];
-        predict_intra_directional_angle_rect_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraDirectionalAngleEdges::left(left_bilinear),
-            &mut prediction,
-            width,
-        )?;
+    if !matches!(plane_id, PlaneId::Y) && mrl_index != 0 {
+        return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
     }
-    write_intra_prediction_block(
+    let idif = build_one_sided_left_idif_edge(
+        workspace,
+        plane_id,
+        x,
+        y,
+        width,
+        height,
+        num4_below_left,
+        have_above,
+        mrl_index,
+        if matches!(plane_id, PlaneId::Y) {
+            above_mrl_index
+        } else {
+            0
+        },
+        availability.left,
+        bit_depth,
+        edge_filter,
+    )?;
+    let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
+    let predict = |output: &mut [T], stride: usize| {
+        if matches!(plane_id, PlaneId::Y) {
+            predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraDirectionalAngleIdifEdges::left(&idif),
+                mrl_index,
+                output,
+                stride,
+            )?;
+        } else {
+            predict_intra_directional_angle_rect_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraDirectionalAngleEdges::left(&idif[2..2 + width + height]),
+                output,
+                stride,
+            )?;
+        }
+        Ok(())
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -636,6 +608,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         luma_context,
         dpcm,
         bit_depth,
+        predict,
     )
 }
 
@@ -699,8 +672,8 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
     use_tcq: bool,
     luma_context: LumaTransformTypeContext,
     have_left: bool,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
@@ -835,6 +808,14 @@ pub(super) fn gather_row_clamped<T: ReconSample>(
     };
     let first = x.min(limit);
     let width = x.saturating_add(last).min(limit) - first + 1;
+    if let Some(row) = stored_run(workspace, plane_id, (first, y), (width, 1)) {
+        let (copied, filled) = out.split_at_mut(width.min(out.len()));
+        copied.copy_from_slice(&row[..copied.len()]); // splot-copy-ok: gather a bounded intra edge run
+        if let Some(&fill) = row.get(width - 1) {
+            filled.fill(fill);
+        }
+        return Ok(());
+    }
     for row in workspace.rect_rows(plane_id, PlaneRect::new(first, y, width, 1)?)? {
         let (copied, filled) = out.split_at_mut(width.min(out.len()));
         copied.copy_from_slice(&row[..copied.len()]); // splot-copy-ok: gather a bounded intra edge run
@@ -843,6 +824,26 @@ pub(super) fn gather_row_clamped<T: ReconSample>(
         }
     }
     Ok(())
+}
+
+/// The stored plane samples from `(x, y)` covering `width` columns of
+/// `height` rows, rows `stride` apart, when they all lie in plane storage.
+fn stored_run<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    (x, y): (usize, usize),
+    (width, height): (usize, usize),
+) -> Option<&[T]> {
+    let plane = workspace.plane(plane_id).ok()?;
+    let storage = plane.storage_size();
+    if x + width > storage.width() || y + height > storage.height() {
+        return None;
+    }
+    let stride = plane.stride_samples();
+    let start = y.checked_sub(plane.origin_y())? * stride + x;
+    plane
+        .samples()
+        .get(start..start + (height - 1) * stride + width)
 }
 
 /// Fills `out[i]` with the reconstructed sample at `(x, Min(y + i, limit))`,
@@ -860,10 +861,19 @@ pub(super) fn gather_column_clamped<T: ReconSample>(
     };
     let first = y.min(limit);
     let height = y.saturating_add(last).min(limit) - first + 1;
-    let rows = workspace.rect_rows(plane_id, PlaneRect::new(x, first, 1, height)?)?;
     let (copied, filled) = out.split_at_mut(height.min(out.len()));
-    for (slot, row) in copied.iter_mut().zip(rows) {
-        *slot = row[0];
+    if let Some(column) = stored_run(workspace, plane_id, (x, first), (1, height)) {
+        let stride = workspace.plane(plane_id)?.stride_samples();
+        for (row, slot) in copied.iter_mut().enumerate() {
+            if let Some(&sample) = column.get(row * stride) {
+                *slot = sample;
+            }
+        }
+    } else {
+        let rows = workspace.rect_rows(plane_id, PlaneRect::new(x, first, 1, height)?)?;
+        for (slot, row) in copied.iter_mut().zip(rows) {
+            *slot = row[0];
+        }
     }
     if let Some(&fill) = copied.last() {
         filled.fill(fill);

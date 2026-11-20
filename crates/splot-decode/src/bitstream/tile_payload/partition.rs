@@ -6,17 +6,18 @@
 //! Feature tracking: `DECODE-TILE-PARTITION-DECISION-BOUNDARY`.
 
 use splot_core::Error as CoreError;
-use splot_core::symbol::{Symbol, SymbolDecoder};
+use splot_core::symbol::SymbolDecoder;
 
 use super::cdf::context::{PartitionContextInput, RectPartitionType, SquareSplitContextInput};
 use super::cdf::partition_read::PartitionEntrySymbolReadError;
 use super::cdf::{TileCdfError, TileCdfSelector, TileCdfSubset};
+use super::partition_allowed::PartitionDecisionFacts;
 
 const EXT_PARTITION_TYPES: usize = 10;
 
 /// § 5.20.3.2 partition type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(usize)]
+#[repr(u8)]
 pub enum PartitionType {
     /// `PARTITION_NONE`.
     None = 0,
@@ -59,36 +60,36 @@ impl PartitionType {
     }
 }
 
+/// A set of partition types, bit `PartitionType::index` per member.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AllowedPartitions {
-    flags: [bool; EXT_PARTITION_TYPES],
+    bits: u16,
 }
 
 impl AllowedPartitions {
     #[must_use]
-    pub(crate) const fn new(flags: [bool; EXT_PARTITION_TYPES]) -> Self {
-        Self { flags }
+    pub(crate) fn new(flags: [bool; EXT_PARTITION_TYPES]) -> Self {
+        Self::from_bits(flags.iter().enumerate().fold(0, |bits, (index, &allowed)| {
+            bits | u16::from(allowed) << index
+        }))
     }
 
-    pub(crate) fn contains(self, partition: PartitionType) -> bool {
-        self.flags[partition.index()]
-    }
-
-    pub(crate) fn count(self) -> usize {
-        self.flags.iter().filter(|allowed| **allowed).count()
-    }
-
-    fn only(self) -> Option<PartitionType> {
-        let mut found = None;
-        for partition in PartitionType::ALL {
-            if self.contains(partition) {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(partition);
-            }
+    pub(crate) const fn from_bits(bits: u16) -> Self {
+        Self {
+            bits: bits & ((1 << EXT_PARTITION_TYPES) - 1),
         }
-        found
+    }
+
+    pub(crate) const fn bits(self) -> u16 {
+        self.bits
+    }
+
+    pub(crate) const fn contains(self, partition: PartitionType) -> bool {
+        self.bits >> partition.index() & 1 != 0
+    }
+
+    pub(crate) const fn count(self) -> usize {
+        self.bits.count_ones() as usize
     }
 }
 
@@ -140,7 +141,7 @@ impl RectPartitionFamily {
         }
     }
 
-    fn has_any_allowed(self, allowed: AllowedPartitions) -> bool {
+    const fn has_any_allowed(self, allowed: AllowedPartitions) -> bool {
         allowed.contains(self.non_ext)
             || allowed.contains(self.three_way)
             || allowed.contains(self.four_way_a)
@@ -148,35 +149,13 @@ impl RectPartitionFamily {
     }
 }
 
+/// Everything `read_partition_decision` reads, small enough to pass in
+/// registers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ReadPartitionDecisionInput<'a> {
-    allowed: AllowedPartitions,
-    implied_partition: Option<PartitionType>,
-    bru_active: bool,
-    rect_type: Option<RectPartitionType>,
-    partition_context: PartitionContextInput<'a>,
-    square_split_context: SquareSplitContextInput<'a>,
-}
-
-impl<'a> ReadPartitionDecisionInput<'a> {
-    #[must_use]
-    pub(crate) const fn new(
-        allowed: AllowedPartitions,
-        implied_partition: Option<PartitionType>,
-        bru_active: bool,
-        rect_type: Option<RectPartitionType>,
-        partition_context: PartitionContextInput<'a>,
-        square_split_context: SquareSplitContextInput<'a>,
-    ) -> Self {
-        Self {
-            allowed,
-            implied_partition,
-            bru_active,
-            rect_type,
-            partition_context,
-            square_split_context,
-        }
-    }
+pub(crate) struct ReadPartitionDecisionInput {
+    pub(super) facts: PartitionDecisionFacts,
+    pub(super) partition_context: PartitionContextInput,
+    pub(super) square_split_context: SquareSplitContextInput,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -189,8 +168,6 @@ pub(crate) enum PartitionDecisionError {
     Symbol(#[from] PartitionEntrySymbolReadError),
     #[error("partition decision literal read failed: {0}")]
     Literal(#[source] CoreError),
-    #[error("{syntax} decoded symbol {symbol} is outside the boolean domain")]
-    BooleanSymbolOutOfRange { syntax: &'static str, symbol: u8 },
     #[error("partition decision selected disallowed partition {partition:?}")]
     FinalPartitionDisallowed { partition: PartitionType },
     #[error("partition decision symbol write failed: {0}")]
@@ -221,12 +198,11 @@ impl PartitionSymbols for SymbolDecoder<'_> {
     #[inline(always)]
     fn flag(
         &mut self,
-        syntax: &'static str,
+        _syntax: &'static str,
         selector: TileCdfSelector,
         cdfs: &mut TileCdfSubset,
     ) -> Result<bool, PartitionDecisionError> {
-        let symbol = cdfs.read_partition_entry_symbol(selector, self)?;
-        symbol_to_bool(syntax, symbol)
+        Ok(cdfs.read_partition_flag(selector, self)?)
     }
 
     #[inline]
@@ -250,34 +226,39 @@ impl PartitionDecisionError {
     }
 }
 
-#[inline]
+#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[inline(always)]
 pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
-    input: ReadPartitionDecisionInput<'_>,
+    input: ReadPartitionDecisionInput,
     cdfs: &mut TileCdfSubset,
     symbols: &mut S,
 ) -> Result<PartitionType, PartitionDecisionError> {
-    if input.allowed.count() == 0 {
+    let allowed = input.facts.allowed();
+    if allowed.count() == 0 {
         return Err(PartitionDecisionError::EmptyAllowedSet);
     }
 
-    if let Some(partition) = input.implied_partition
-        && input.allowed.contains(partition)
-    {
+    if let Some(partition) = input.facts.unread_partition() {
         return Ok(partition);
     }
 
-    if let Some(partition) = input.allowed.only() {
-        return Ok(partition);
-    }
+    read_partition_symbols(input, cdfs, symbols)
+}
 
-    if !input.bru_active {
-        return Ok(PartitionType::None);
-    }
-
-    if input.allowed.contains(PartitionType::None) {
+/// The symbol reads of [`read_partition_decision`] for a block whose facts
+/// give no unread partition.
+#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[inline(always)]
+pub(crate) fn read_partition_symbols<S: PartitionSymbols + ?Sized>(
+    input: ReadPartitionDecisionInput,
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut S,
+) -> Result<PartitionType, PartitionDecisionError> {
+    let allowed = input.facts.allowed();
+    if allowed.contains(PartitionType::None) {
         let do_split = symbols.flag(
             "do_split",
-            input.partition_context.do_split_selector()?,
+            input.partition_context.do_split_selector(),
             cdfs,
         )?;
         if !do_split {
@@ -285,10 +266,10 @@ pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
         }
     }
 
-    if input.allowed.contains(PartitionType::Split) {
+    if allowed.contains(PartitionType::Split) {
         let do_square_split = symbols.flag(
             "do_square_split",
-            input.square_split_context.do_square_split_selector()?,
+            input.square_split_context.do_square_split_selector(),
             cdfs,
         )?;
         if do_square_split {
@@ -296,34 +277,40 @@ pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
         }
     }
 
-    let rect_type = resolve_rect_type(input, cdfs, symbols)?;
-    let partition = read_rect_partition(input, rect_type, cdfs, symbols)?;
-    if !input.allowed.contains(partition) {
+    let (facts, context) = (input.facts, input.partition_context);
+    let rect_type = resolve_rect_type(facts, &context, cdfs, symbols)?;
+    let partition = read_rect_partition(facts, &context, rect_type, cdfs, symbols)?;
+    if !allowed.contains(partition) {
         return Err(PartitionDecisionError::FinalPartitionDisallowed { partition });
     }
 
     Ok(partition)
 }
 
+#[allow(
+    clippy::inline_always,
+    clippy::trivially_copy_pass_by_ref,
+    reason = "measured: the walk keeps the context unpacked"
+)]
+#[inline(always)]
 fn read_rect_partition<S: PartitionSymbols + ?Sized>(
-    input: ReadPartitionDecisionInput<'_>,
+    facts: PartitionDecisionFacts,
+    context: &PartitionContextInput,
     rect_type: RectPartitionType,
     cdfs: &mut TileCdfSubset,
     symbols: &mut S,
 ) -> Result<PartitionType, PartitionDecisionError> {
     let family = RectPartitionFamily::for_rect_type(rect_type);
-    let non_ext_allowed = input.allowed.contains(family.non_ext);
-    let ext_allowed3 = input.allowed.contains(family.three_way);
-    let ext_allowed4 =
-        input.allowed.contains(family.four_way_a) || input.allowed.contains(family.four_way_b);
+    let allowed = facts.allowed();
+    let non_ext_allowed = allowed.contains(family.non_ext);
+    let ext_allowed3 = allowed.contains(family.three_way);
+    let ext_allowed4 = allowed.contains(family.four_way_a) || allowed.contains(family.four_way_b);
     let ext_allowed = ext_allowed3 || ext_allowed4;
 
     let do_ext_partition = if non_ext_allowed && ext_allowed {
         symbols.flag(
             "do_ext_partition",
-            input
-                .partition_context
-                .do_ext_partition_selector(rect_type)?,
+            context.do_ext_partition_selector(rect_type),
             cdfs,
         )?
     } else {
@@ -335,9 +322,7 @@ fn read_rect_partition<S: PartitionSymbols + ?Sized>(
     } else if ext_allowed3 && ext_allowed4 {
         symbols.flag(
             "do_uneven_4way_partition",
-            input
-                .partition_context
-                .do_uneven_4way_partition_selector(rect_type)?,
+            context.do_uneven_4way_partition_selector(rect_type),
             cdfs,
         )?
     } else {
@@ -357,17 +342,24 @@ fn read_rect_partition<S: PartitionSymbols + ?Sized>(
     ))
 }
 
+#[allow(
+    clippy::inline_always,
+    clippy::trivially_copy_pass_by_ref,
+    reason = "measured: the walk keeps the context unpacked"
+)]
+#[inline(always)]
 fn resolve_rect_type<S: PartitionSymbols + ?Sized>(
-    input: ReadPartitionDecisionInput<'_>,
+    facts: PartitionDecisionFacts,
+    context: &PartitionContextInput,
     cdfs: &mut TileCdfSubset,
     symbols: &mut S,
 ) -> Result<RectPartitionType, PartitionDecisionError> {
-    if let Some(rect_type) = input.rect_type {
+    if let Some(rect_type) = facts.rect_type() {
         return Ok(rect_type);
     }
 
-    let allow_horz = RectPartitionFamily::HORZ.has_any_allowed(input.allowed);
-    let allow_vert = RectPartitionFamily::VERT.has_any_allowed(input.allowed);
+    let allow_horz = RectPartitionFamily::HORZ.has_any_allowed(facts.allowed());
+    let allow_vert = RectPartitionFamily::VERT.has_any_allowed(facts.allowed());
     if !allow_horz {
         return Ok(RectPartitionType::Vert);
     }
@@ -375,27 +367,12 @@ fn resolve_rect_type<S: PartitionSymbols + ?Sized>(
         return Ok(RectPartitionType::Horz);
     }
 
-    let rect_type = symbols.flag(
-        "rect_type",
-        input.partition_context.rect_type_selector()?,
-        cdfs,
-    )?;
+    let rect_type = symbols.flag("rect_type", context.rect_type_selector(), cdfs)?;
     Ok(if rect_type {
         RectPartitionType::Vert
     } else {
         RectPartitionType::Horz
     })
-}
-
-fn symbol_to_bool(syntax: &'static str, symbol: Symbol) -> Result<bool, PartitionDecisionError> {
-    match symbol.get() {
-        0 => Ok(false),
-        1 => Ok(true),
-        value => Err(PartitionDecisionError::BooleanSymbolOutOfRange {
-            syntax,
-            symbol: value,
-        }),
-    }
 }
 
 #[cfg(test)]

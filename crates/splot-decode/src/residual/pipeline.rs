@@ -8,10 +8,9 @@ use splot_recon::{DpcmDirection, IntraCardinalDirection, PlaneId};
 use crate::bitstream::tile_payload::{
     CflParams, LumaPalette, SupportedChromaMode, SupportedNonDcLumaMode,
 };
-use crate::tile::block_context::{BlockCtx, TxShape};
+use crate::tile::block_context::{BlockRect, FrameTileCtx, TxShape};
 
 mod chroma_pair;
-pub(crate) use chroma_pair::read_cctx_prediction;
 mod deblock_recorder;
 mod palette;
 pub(crate) use palette::palette_color_index_context;
@@ -26,14 +25,15 @@ use crate::bitstream::tile_payload::{
 };
 pub(crate) use deblock_recorder::DeblockRecorder;
 #[cfg(test)]
-use plan::{MAX_RESIDUAL_PLANES, coeff_plane};
+use plan::MAX_RESIDUAL_PLANES;
+pub(crate) use plan::ResidualPlanInput;
 #[cfg(test)]
 use plane_execution::{
     CctxRole, ParsedResidualPlane, ParsedResidualPlaneKind, ParsedTransformUnit,
     chroma_angle_delta_uv,
 };
 pub(crate) use plane_execution::{
-    ParsedGeneralIntraResidual, ResidualPlaneArena, ResidualPlaneSpan,
+    ParsedGeneralIntraResidual, ResidualParseError, ResidualPlaneArena,
 };
 #[cfg(test)]
 use splot_core::tables::conversion::TX_WIDTH_LOG2;
@@ -49,6 +49,7 @@ const IDTX: usize = 9;
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraResidualPlan {
     planes: Vec<ResidualPlanePlan>,
+    frame: FrameTileCtx,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,31 +72,31 @@ pub(crate) enum RectLumaPlan {
     },
     MiddleMrl {
         p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
+        mrl_index: u8,
+        above_mrl_index: u8,
         is_sb_boundary: bool,
         secondary_mrl: bool,
         use_tcq: bool,
     },
     OneSidedAboveMrl {
         p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
+        mrl_index: u8,
+        above_mrl_index: u8,
         secondary_mrl: bool,
         use_tcq: bool,
     },
     OneSidedLeftMrl {
         p_angle: u16,
-        mrl_index: usize,
-        above_mrl_index: usize,
+        mrl_index: u8,
+        above_mrl_index: u8,
         is_sb_boundary: bool,
         secondary_mrl: bool,
         use_tcq: bool,
     },
     CardinalMrl {
         direction: IntraCardinalDirection,
-        mrl_index: usize,
-        above_mrl_index: usize,
+        mrl_index: u8,
+        above_mrl_index: u8,
         secondary_mrl: bool,
         use_tcq: bool,
     },
@@ -146,19 +147,18 @@ pub(crate) enum ResidualPlanError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResidualPlanePlan {
     plane_id: PlaneId,
-    block_ctx: BlockCtx,
-    coeff_plane: usize,
-    tx_size: usize,
-    x: usize,
-    y: usize,
+    rect: BlockRect,
+    tx_size: u8,
+    x: u32,
+    y: u32,
     tx: TxShape,
-    residual_width4: usize,
-    residual_height4: usize,
+    residual_width4: u16,
+    residual_height4: u16,
     fsc_mode: bool,
     txb_skip_fsc_mode: bool,
     zero_corners: bool,
     defer_reconstruction: bool,
-    reconstruction_tx_type: Option<usize>,
+    reconstruction_tx_type: Option<u8>,
     reconstruction: ResidualReconstructionPlan,
 }
 
@@ -179,7 +179,7 @@ enum ResidualReconstructionPlan {
     ChromaCfl {
         params: CflParams,
         cfl_ds_filter_index: u8,
-        sb_mib: usize,
+        sb_mib: u8,
     },
     Rect {
         use_tcq: bool,

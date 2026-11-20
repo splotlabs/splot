@@ -5,10 +5,12 @@
 //! inter frame, a [`TipFrame`] per TIP output frame, and a [`FinishFrame`]
 //! for the filter phase of a frame the driver walked itself.
 //!
-//! A [`SplitFrame`] runs on the [`RowScheduler`] as seven stages: parse (the
+//! A [`SplitFrame`] runs on the [`RowScheduler`] as eight stages: parse (the
 //! whole tile, publishing a unit count as it goes), prepare (the temporal
 //! prelude and the per-tile reconstruction state), attach (the filter state
-//! the parse settles last), resolve (one temporal band at a time), recon (one
+//! the parse settles last), project (one § 7.9.8 temporal band at a time, at
+//! most one band ahead of the resolve, each when its reference bands are
+//! published), resolve (one projected temporal band at a time), recon (one
 //! batch of superblocks at a time, in order, straight into the frame
 //! workspace), frontier (one superblock row at a time: in-place deblock behind
 //! the lead, then the filter stripes that row releases), and output (the
@@ -32,6 +34,7 @@ use crate::bitstream::byte_stream::UnitBytes;
 use crate::bitstream::tile_payload::FrameQuantizerSnapshot;
 use crate::error::DecodeError;
 use crate::filters::wienerns_lr::FrameFilterRecords;
+use crate::filters::wienerns_lr::recon::OwnedFilterFrontier;
 use crate::prediction::inter::{self, ScheduledTileRecon, ScheduledTileWorkspace};
 use crate::reference::buffer::RefSlots;
 use crate::support::decode_buffers::DecodeBuffers;
@@ -47,6 +50,8 @@ const FRONTIER: usize = 5;
 const OUTPUT: usize = 6;
 const PRECOMPUTE: usize = 7;
 const FILTER: usize = 8;
+const TILE: usize = 9;
+const PROJECT: usize = 10;
 
 /// A sample type the decode driver is typed for below its bit-depth boundary.
 pub(crate) trait SplitSample: SpareFramePlanes + Send + 'static {
@@ -88,7 +93,7 @@ pub(crate) struct SplitFrameInputs<T: SplitSample> {
     pub(crate) candidate: DecodePlannedObu,
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
-    pub(crate) reference: inter::InterReferenceState<T>,
+    pub(crate) reference: Box<inter::InterReferenceState<T>>,
     pub(crate) bit_depth: BitDepth,
     pub(crate) geometry: inter::FrameDecodeGeometry,
     pub(crate) motion: inter::MotionFieldHandle,
@@ -108,6 +113,9 @@ pub(crate) struct SplitFrame<T: SplitSample> {
     stages: [Stage; 7],
     precompute: ParallelStage,
     filter: ParallelStage,
+    tiles: ParallelStage,
+    project: Stage,
+    tile_jobs: OnceLock<inter::TileParseJobs<T>>,
     filter_jobs: Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
     filter_error: Mutex<Option<DecodeError>>,
     early_ready: AtomicBool,
@@ -149,6 +157,9 @@ impl<T: SplitSample> SplitFrame<T> {
             stages: core::array::from_fn(|_| Stage::new(0)),
             precompute: ParallelStage::new(),
             filter: ParallelStage::new(),
+            tiles: ParallelStage::new(),
+            project: Stage::new(0),
+            tile_jobs: OnceLock::new(),
             filter_jobs: Mutex::new(Vec::new()),
             filter_error: Mutex::new(None),
             early_ready: AtomicBool::new(false),
@@ -182,6 +193,7 @@ impl<T: SplitSample> SplitFrame<T> {
     /// Returns the slot's storage to its idle state, or `false` while a
     /// reader of the last frame still holds part of it.
     fn reset(&mut self) -> bool {
+        self.tile_jobs.take();
         if let Some(recon) = self.recon.take() {
             *self.workspace.get_mut() = recon.retire();
         }
@@ -195,8 +207,10 @@ impl<T: SplitSample> SplitFrame<T> {
         for stage in &mut self.stages {
             stage.reset(0);
         }
-        self.precompute.set_rows(0);
-        self.filter.set_rows(0);
+        self.precompute.reset();
+        self.filter.reset();
+        self.tiles.reset();
+        self.project.reset(0);
         self.filter_jobs.get_mut().clear();
         self.filter_error.get_mut().take();
         *self.early_ready.get_mut() = false;
@@ -291,8 +305,31 @@ impl<T: SplitSample> SplitFrame<T> {
         *self.early.lock() = Some(early);
         self.early_ready.store(true, Ordering::Release);
         self.notify();
+        if pending.tiles() > 1 {
+            let jobs = pending.into_tile_jobs(&unit)?;
+            let tiles = jobs.len();
+            if self.tile_jobs.set(jobs).is_err() {
+                return Err(inter::invalid_inter_tile_scheduling_state());
+            }
+            self.tiles.set_rows(tiles);
+            return Ok(());
+        }
         while !pending.parse_units(core::num::NonZeroUsize::MAX)? {}
-        let mut deferred = pending.finish()?;
+        self.parse_finished(pending.finish()?)
+    }
+
+    fn parse_tile(&self, tile: usize) -> Result<()> {
+        let jobs = self
+            .tile_jobs
+            .get()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        match jobs.parse_tile(tile)? {
+            Some(deferred) => self.parse_finished(deferred),
+            None => Ok(()),
+        }
+    }
+
+    fn parse_finished(&self, mut deferred: inter::DeferredInterWalk<T>) -> Result<()> {
         deferred.publish_products()?;
         *self.deferred.lock() = Some(deferred);
         self.parse_done.store(true, Ordering::Release);
@@ -327,6 +364,7 @@ impl<T: SplitSample> SplitFrame<T> {
                 .store(scheduled.len(), Ordering::Release);
         }
         self.stages[RESOLVE].set_rows(scheduled.resolve_len());
+        self.project.set_rows(scheduled.resolve_len());
         self.precompute.set_rows(scheduled.len());
         self.stages[COMMIT].set_rows(scheduled.len());
         self.stages[FRONTIER].set_rows(scheduled.frontier_len());
@@ -358,9 +396,41 @@ impl<T: SplitSample> SplitFrame<T> {
             .lock()
             .take()
             .unwrap_or_else(|| Arc::new(None));
-        deferred.attach_filters(pending, self.recon_state()?, shell)?;
+        let reused_ccso = self
+            .entropy
+            .get()
+            .map_or([None; 3], inter::EntropyDependencies::reused_ccso);
+        deferred.attach_filters(pending, self.recon_state()?, shell, reused_ccso)?;
         self.attached.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// Whether frontier row `row` may run: its rows are committed, and the
+    /// final row, which releases the frame's last stripes, also has the
+    /// filter setup the finished parse attaches. Earlier rows deblock while
+    /// the parse runs.
+    fn frontier_ready(&self, row: usize) -> bool {
+        row < self.closed_rows.load(Ordering::Acquire)
+            && (row + 1 < self.stages[FRONTIER].rows() || self.attached.load(Ordering::Acquire))
+    }
+
+    /// Whether resolve band `band` may run: its band is projected and the
+    /// parse reached the unit the last resolve run waited for.
+    fn resolve_ready(&self, band: usize) -> bool {
+        let awaiting = self.awaiting_units.load(Ordering::Acquire);
+        (awaiting == 0
+            || self
+                .parse_progress
+                .get()
+                .is_some_and(|parse| parse.cell().current() >= awaiting))
+            && band < self.project.next()
+    }
+
+    /// Claims the first resolved batch whose references are published.
+    fn claim_precompute(&self, recon: &ScheduledTileRecon<T>) -> Option<usize> {
+        self.precompute.claim(|batch| {
+            batch < self.resolved_batches.load(Ordering::Acquire) && recon.batch_ready(batch)
+        })
     }
 
     /// Resolves one temporal band; `false` when the parse has not reached
@@ -375,13 +445,13 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(awaiting.is_none())
     }
 
-    fn precompute(&self, batch: usize) -> Result<()> {
-        self.recon_state()?.precompute(batch)
+    fn precompute(&self, batch: usize, worker: usize) -> Result<()> {
+        self.recon_state()?.precompute(batch, worker)
     }
 
-    fn commit(&self, batch: usize) -> Result<()> {
+    fn commit(&self, batch: usize, worker: usize) -> Result<()> {
         let recon = self.recon_state()?;
-        let progress = recon.commit(batch)?;
+        let progress = recon.commit(batch, worker)?;
         if progress.recon_complete {
             *self.scratch.lock() = Some(recon.take_scheduled_scratch()?);
         }
@@ -393,6 +463,8 @@ impl<T: SplitSample> SplitFrame<T> {
     fn frontier(&self, row: usize) -> Result<()> {
         let recon = self.recon_state()?;
         let mut progress = recon.frontier(row)?;
+        self.closed_rows
+            .fetch_max(progress.handed_rows, Ordering::AcqRel);
         let mut outcome = Ok(());
         {
             let mut jobs = self.filter_jobs.lock();
@@ -415,23 +487,6 @@ impl<T: SplitSample> SplitFrame<T> {
         if let Some(filter) = progress.output {
             *self.output_filter.lock() = Some(filter);
             self.output_ready.store(true, Ordering::Release);
-        }
-        Ok(())
-    }
-
-    /// Runs one filter stripe; the frame's first stripe error fails its output.
-    fn filter_stripe(&self, stripe: usize) -> Result<()> {
-        let job = self
-            .filter_jobs
-            .lock()
-            .get_mut(stripe)
-            .and_then(Option::take)
-            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if let Err(error) = job.run() {
-            let mut owed = self.filter_error.lock();
-            if owed.is_none() {
-                *owed = Some(error);
-            }
         }
         Ok(())
     }
@@ -473,18 +528,27 @@ impl<T: SplitSample> SplitFrame<T> {
 }
 
 impl<T: SplitSample> FrameWork for SplitFrame<T> {
-    fn claim(&self) -> Option<Claim> {
+    /// The parse and its tiles: the next frame's parse waits for its CDFs.
+    fn claim_critical(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
             return None;
         }
-        let claim = |stage: usize, row: usize| Claim { stage, row };
         if let Some(row) = self.stages[PARSE].claim(|_| {
             self.entropy
                 .get()
                 .is_none_or(inter::EntropyDependencies::is_settled)
         }) {
-            return Some(claim(PARSE, row));
+            return Some(Claim { stage: PARSE, row });
         }
+        let row = self.tiles.claim(|_| true)?;
+        Some(Claim { stage: TILE, row })
+    }
+
+    fn claim(&self) -> Option<Claim> {
+        if self.failed.load(Ordering::Acquire) {
+            return None;
+        }
+        let claim = |stage: usize, row: usize| Claim { stage, row };
         if let Some(row) = self.stages[PREPARE].claim(|_| {
             self.early_ready.load(Ordering::Acquire)
                 && self.motion_deps.get().is_none_or(|deps| {
@@ -496,36 +560,35 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
             return Some(claim(PREPARE, row));
         }
         if let Some(row) = self.stages[ATTACH].claim(|_| {
-            self.parse_done.load(Ordering::Acquire) && self.prepared.load(Ordering::Acquire)
+            self.parse_done.load(Ordering::Acquire)
+                && self.prepared.load(Ordering::Acquire)
+                && self
+                    .entropy
+                    .get()
+                    .is_none_or(inter::EntropyDependencies::ccso_settled)
         }) {
             return Some(claim(ATTACH, row));
         }
         let recon = self.recon.get()?;
-        if let Some(row) = self.stages[RESOLVE].claim(|band| {
-            let awaiting = self.awaiting_units.load(Ordering::Acquire);
-            (awaiting == 0
-                || self
-                    .parse_progress
-                    .get()
-                    .is_some_and(|parse| parse.cell().current() >= awaiting))
-                && recon.resolve_ready(band)
-        }) {
+        if let Some(row) = self
+            .project
+            .claim(|band| band <= self.stages[RESOLVE].next() + 1 && recon.resolve_ready(band))
+        {
+            return Some(claim(PROJECT, row));
+        }
+        if let Some(row) = self.stages[RESOLVE].claim(|band| self.resolve_ready(band)) {
             return Some(claim(RESOLVE, row));
         }
         if let Some(row) = self.stages[COMMIT].claim(|batch| self.precompute.is_done(batch)) {
             return Some(claim(COMMIT, row));
         }
-        if let Some(row) = self.stages[FRONTIER].claim(|row| {
-            self.attached.load(Ordering::Acquire) && row < self.closed_rows.load(Ordering::Acquire)
-        }) {
+        if let Some(row) = self.stages[FRONTIER].claim(|row| self.frontier_ready(row)) {
             return Some(claim(FRONTIER, row));
         }
         if let Some(stripe) = self.filter.claim_ready() {
             return Some(claim(FILTER, stripe));
         }
-        if let Some(row) = self.precompute.claim(|batch| {
-            batch < self.resolved_batches.load(Ordering::Acquire) && recon.batch_ready(batch)
-        }) {
+        if let Some(row) = self.claim_precompute(recon) {
             return Some(claim(PRECOMPUTE, row));
         }
         if let Some(row) = self.stages[OUTPUT].claim(|_| {
@@ -539,22 +602,32 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
     }
 
     /// Runs the claimed row, then the row it released when that one is next
-    /// (a batch's commit, a commit's frontier row), without a scan or a wake.
-    fn run(&self, mut claim: Claim) {
+    /// (a projected band's resolve, a resolved band's first batch or the next
+    /// band, a batch's commit, a commit's frontier row or the next commit),
+    /// without a scan or a wake.
+    fn run(&self, mut claim: Claim, worker: usize) {
         loop {
             let outcome = match claim.stage {
                 PARSE => self.parse().map(|()| true),
                 PREPARE => self.prepare().map(|()| true),
                 ATTACH => self.attach().map(|()| true),
                 RESOLVE => self.resolve(claim.row),
-                COMMIT => self.commit(claim.row).map(|()| true),
+                COMMIT => self.commit(claim.row, worker).map(|()| true),
                 FRONTIER => self.frontier(claim.row).map(|()| true),
-                PRECOMPUTE => self.precompute(claim.row).map(|()| true),
-                FILTER => self.filter_stripe(claim.row).map(|()| true),
+                PRECOMPUTE => self.precompute(claim.row, worker).map(|()| true),
+                TILE => self.parse_tile(claim.row).map(|()| true),
+                PROJECT => self
+                    .recon_state()
+                    .and_then(|recon| recon.project(claim.row))
+                    .map(|()| true),
+                FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)
+                    .map(|()| true),
                 _ => self.output().map(|()| true),
             };
             match claim.stage {
                 PRECOMPUTE => self.precompute.finish(claim.row),
+                TILE => self.tiles.finish(claim.row),
+                PROJECT => self.project.finish(claim.row),
                 FILTER => self.filter.finish(claim.row),
                 stage => match outcome {
                     Ok(false) => self.stages[stage].retry(claim.row),
@@ -565,24 +638,50 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 self.fail(error);
                 break;
             }
-            self.notify();
             let next = match claim.stage {
+                PROJECT => self.stages[RESOLVE]
+                    .claim(|band| self.resolve_ready(band))
+                    .map(|row| Claim {
+                        stage: RESOLVE,
+                        row,
+                    }),
+                RESOLVE => self
+                    .recon
+                    .get()
+                    .and_then(|recon| self.claim_precompute(recon))
+                    .map(|row| Claim {
+                        stage: PRECOMPUTE,
+                        row,
+                    })
+                    .or_else(|| {
+                        self.stages[RESOLVE]
+                            .claim(|band| self.resolve_ready(band))
+                            .map(|row| Claim {
+                                stage: RESOLVE,
+                                row,
+                            })
+                    }),
                 PRECOMPUTE => self.stages[COMMIT]
                     .claim(|batch| batch == claim.row)
                     .map(|row| Claim { stage: COMMIT, row }),
-                COMMIT => self.stages[FRONTIER]
-                    .claim(|row| {
-                        self.attached.load(Ordering::Acquire)
-                            && row < self.closed_rows.load(Ordering::Acquire)
-                    })
+                COMMIT | FRONTIER => self.stages[FRONTIER]
+                    .claim(|row| self.frontier_ready(row))
                     .map(|row| Claim {
                         stage: FRONTIER,
                         row,
+                    })
+                    .or_else(|| {
+                        self.stages[COMMIT]
+                            .claim(|batch| self.precompute.is_done(batch))
+                            .map(|row| Claim { stage: COMMIT, row })
                     }),
                 _ => None,
             };
             match next {
-                Some(next) => claim = next,
+                Some(next) => {
+                    self.notify();
+                    claim = next;
+                }
                 None => break,
             }
         }
@@ -596,26 +695,33 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
 /// The `D` reusable slots one decode runs its split inter frames through.
 pub(crate) struct SplitFrames<T: SplitSample> {
     slots: Vec<Arc<SplitFrame<T>>>,
+    parse: Vec<Arc<inter::ParseProgress>>,
     next: usize,
     depth: usize,
     workers: Arc<inter::InterReconScratchPool<T>>,
+    buffers: Arc<DecodeBuffers>,
 }
 
 impl<T: SplitSample> SplitFrames<T> {
-    pub(crate) fn new(depth: usize, threads: usize) -> Self {
-        let workers: Arc<inter::InterReconScratchPool<T>> = Arc::default();
-        workers.ensure_workers(threads.max(1));
+    pub(crate) fn new(depth: usize, threads: usize, buffers: &Arc<DecodeBuffers>) -> Self {
+        let workers = Arc::new(inter::InterReconScratchPool::new(threads));
         Self {
             slots: Vec::new(),
+            parse: Vec::new(),
             next: 0,
             depth: depth.max(1),
             workers,
+            buffers: Arc::clone(buffers),
         }
     }
 
-    /// Frees the next slot, waiting for its previous frame to finish and
-    /// release the storage other frames borrowed from it.
-    pub(crate) fn reserve(&mut self, rows: &RowScheduler, options: DecodeOptions) -> usize {
+    /// Frees the next slot and its parse progress, waiting for its previous
+    /// frame to finish and release the storage other frames borrowed from it.
+    pub(crate) fn reserve(
+        &mut self,
+        rows: &RowScheduler,
+        options: DecodeOptions,
+    ) -> (usize, Arc<inter::ParseProgress>) {
         let index = self.next;
         self.next = (index + 1) % self.depth;
         if index == self.slots.len() {
@@ -624,34 +730,63 @@ impl<T: SplitSample> SplitFrames<T> {
                 options,
                 Arc::clone(&self.workers),
             )));
+            self.parse.push(Arc::default());
         }
         let slot = &mut self.slots[index];
-        rows.wait(|| Arc::strong_count(slot) == 1);
-        loop {
-            if let Some(frame) = Arc::get_mut(slot)
-                && frame.reset()
-            {
+        rows.wait(|| {
+            Arc::get_mut(slot).is_some_and(|frame| {
                 frame.options = options;
-                return index;
-            }
-            std::thread::yield_now();
-        }
+                frame.reset()
+            })
+        });
+        let (parse, buffers) = (&mut self.parse[index], &self.buffers);
+        rows.wait(|| Arc::get_mut(parse).is_some_and(|parse| parse.reset(buffers)));
+        (index, Arc::clone(parse))
     }
 
     /// Loads one frame into the slot [`Self::reserve`] freed and hands it to
     /// the scheduler.
-    pub(crate) fn push(&mut self, rows: &RowScheduler, index: usize, inputs: SplitFrameInputs<T>) {
-        let slot = &mut self.slots[index];
-        if let Some(frame) = Arc::get_mut(slot) {
-            frame.arm(inputs);
-        }
+    pub(crate) fn push(
+        &mut self,
+        rows: &RowScheduler,
+        index: usize,
+        inputs: SplitFrameInputs<T>,
+    ) -> Result<()> {
+        let slot = self
+            .slots
+            .get_mut(index)
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        Arc::get_mut(slot)
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?
+            .arm(inputs);
         rows.push(Arc::clone(slot) as Arc<dyn FrameWork>);
+        Ok(())
     }
 
     /// Waits for every slot's frame to finish.
     pub(crate) fn drain(&mut self, rows: &RowScheduler) {
         for slot in &mut self.slots {
             rows.wait(|| Arc::strong_count(slot) == 1);
+        }
+    }
+
+    /// Resets every finished slot now instead of at its next reuse, so the
+    /// reference handles it keeps stop pinning the driver's frame entries.
+    /// A slot can hold storage another finished slot borrowed, so the passes
+    /// repeat until one resets no more slots.
+    fn retire_idle(&mut self) {
+        let mut idle = 0;
+        loop {
+            let now = self
+                .slots
+                .iter_mut()
+                .map(|slot| Arc::get_mut(slot).is_some_and(SplitFrame::reset))
+                .filter(|reset| *reset)
+                .count();
+            if now == idle {
+                return;
+            }
+            idle = now;
         }
     }
 }
@@ -673,19 +808,23 @@ pub(crate) struct TipFrameInputs<T: SplitSample> {
 
 const TIP_INIT: usize = 0;
 const TIP_FINISH: usize = 1;
-const TIP_BAND: usize = 2;
+const TIP_PROJECT: usize = 2;
+const TIP_BAND: usize = 3;
 
-/// One TIP output frame as row-scheduled stages: the projection, the bands
-/// (any order, concurrently, each admitted once its references published the
-/// rows it reads, each committing the finished prefix in band order), and the
-/// deblock plus freeze.
+/// One TIP output frame as row-scheduled stages: the header products, the
+/// projection of each motion-field band once the references published that
+/// band of their fields, the bands' motion (any order, concurrently, each
+/// admitted once its band is projected and its references published the rows
+/// it reads, each predicting its samples; the last band of a row publishes
+/// that row of the field the next TIP frame projects), and the deblock plus
+/// freeze.
 pub(crate) struct TipFrame<T: SplitSample> {
     wake: RowWake,
     options: DecodeOptions,
     /// Set when the stages run on the driver, which predicts bands in place.
     inline: bool,
-    spares: Arc<inter::TipSpares<T>>,
-    stages: [Stage; 2],
+    spares: Arc<inter::TipSpares>,
+    stages: [Stage; 3],
     bands: ParallelStage,
     failed: AtomicBool,
     inputs: Mutex<Option<TipFrameInputs<T>>>,
@@ -696,14 +835,16 @@ pub(crate) struct TipFrame<T: SplitSample> {
     reference: RwLock<Option<inter::InterReferenceState<T>>>,
     entropy: Mutex<Option<inter::EntropyDependencies>>,
     motion_deps: Mutex<Option<RefSlots<Option<inter::MotionFieldHandle>>>>,
-    band_bounds: OnceLock<Vec<inter::RowReferenceBounds>>,
+    /// Each band's reference rows, set when its motion-field band is
+    /// projected; empty when the bands run in place.
+    band_bounds: OnceLock<Vec<OnceLock<inter::RowReferenceBounds>>>,
     work: RwLock<Option<inter::TipOutputStages<T>>>,
     motion: Mutex<Option<inter::MotionFieldHandle>>,
     finish: Mutex<Option<PendingFinish<T>>>,
 }
 
 impl<T: SplitSample> TipFrame<T> {
-    fn new(wake: RowWake, options: DecodeOptions, spares: Arc<inter::TipSpares<T>>) -> Self {
+    fn new(wake: RowWake, options: DecodeOptions, spares: Arc<inter::TipSpares>) -> Self {
         Self {
             wake,
             options,
@@ -729,7 +870,7 @@ impl<T: SplitSample> TipFrame<T> {
         for stage in &mut self.stages {
             stage.reset(0);
         }
-        self.bands.set_rows(0);
+        self.bands.reset();
         *self.failed.get_mut() = false;
         self.inputs.get_mut().take();
         self.core.take();
@@ -752,6 +893,7 @@ impl<T: SplitSample> TipFrame<T> {
         *self.motion.get_mut() = Some(inputs.motion.clone());
         self.stages[TIP_INIT].reset(1);
         self.stages[TIP_FINISH].reset(1);
+        self.stages[TIP_PROJECT].reset(0);
         *self.inputs.get_mut() = Some(inputs);
     }
 
@@ -765,7 +907,7 @@ impl<T: SplitSample> TipFrame<T> {
             reference,
             geometry,
             mut products,
-            motion: _,
+            motion,
             finish,
             entropy: _,
             motion_deps: _,
@@ -777,10 +919,6 @@ impl<T: SplitSample> TipFrame<T> {
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
         let progress = finish.progress_handle();
         *self.finish.lock() = Some(finish);
-        let planes = progress.take_unfiltered_planes().unwrap_or_else(|| {
-            splot_recon::FramePlaneSamples::default()
-                .with_pool(progress.buffers().map(|buffers| buffers.planes()))
-        });
         let (cdfs, segments) = inter::tip_output_products(
             &core,
             &candidate,
@@ -793,17 +931,25 @@ impl<T: SplitSample> TipFrame<T> {
         )?;
         let _ = products.settle(cdfs, None, segments);
         let work = inter::TipOutputStages::init(
-            Arc::clone(&self.spares),
-            planes,
+            &self.spares,
+            progress,
             &sequence,
             &core,
             &reference,
             geometry,
             offset,
-            !self.inline,
+            (!self.inline).then_some(motion),
         )?;
         self.bands.set_rows(work.band_count());
-        let _ = self.band_bounds.set(work.band_bounds().to_vec());
+        let gated = if work.projected_bands() == 0 {
+            0
+        } else {
+            work.band_count()
+        };
+        let _ = self
+            .band_bounds
+            .set((0..gated).map(|_| OnceLock::new()).collect());
+        self.stages[TIP_PROJECT].set_rows(work.projected_bands());
         *self.work.write() = Some(work);
         *self.reference.write() = Some(reference);
         Ok(())
@@ -821,18 +967,33 @@ impl<T: SplitSample> TipFrame<T> {
         let work = work
             .as_ref()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        let field = if self.inline {
-            work.band_in_place(index, sequence, core, reference)?
-        } else {
-            work.band(index, sequence, core, reference)?;
-            work.commit_ready()?
-        };
-        if let Some(field) = field
+        if let Some(field) = work.band(index, sequence, core, reference)?
             && let Some(motion) = self.motion.lock().take()
         {
             motion.publish(field);
         }
         Ok(())
+    }
+
+    /// Projects motion-field band `index` and records the reference rows of
+    /// the bands in it.
+    fn project(&self, index: usize) -> Result<()> {
+        let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
+            return Err(inter::invalid_inter_tile_scheduling_state());
+        };
+        let reference = self.reference.read();
+        let reference = reference
+            .as_ref()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        self.work
+            .read()
+            .as_ref()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?
+            .project(index, core, reference, |band, needs| {
+                if let Some(slot) = bounds.get(band) {
+                    let _ = slot.set(needs);
+                }
+            })
     }
 
     fn finish_frame(&self) -> Result<()> {
@@ -849,14 +1010,40 @@ impl<T: SplitSample> TipFrame<T> {
             .lock()
             .take()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        let (frame, output, temporal) = work.finish(sequence, core)?;
+        let (output, temporal) = work.finish()?;
         self.reference.write().take();
         if let Some(motion) = self.motion.lock().take() {
             motion.fail();
         }
-        finish.complete_frame(frame);
+        finish.freeze_written(|workspace| inter::deblock_tip_output(workspace, sequence, core))?;
         self.spares.give(temporal, output);
         Ok(())
+    }
+
+    /// Claims the first band [`band_admitted`] admits.
+    fn claim_band(&self) -> Option<Claim> {
+        let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
+            return None;
+        };
+        let ref_frame_idx = core
+            .inter
+            .as_ref()
+            .map_or(&[][..], |inter| inter.ref_frame_idx.as_slice());
+        let row = self
+            .bands
+            .claim(|band| band_admitted(&self.reference, bounds, band, core, ref_frame_idx))?;
+        Some(Claim {
+            stage: TIP_BAND,
+            row,
+        })
+    }
+
+    fn claim_finish(&self) -> Option<Claim> {
+        let row = self.stages[TIP_FINISH].claim(|_| self.bands.is_finished())?;
+        Some(Claim {
+            stage: TIP_FINISH,
+            row,
+        })
     }
 
     fn fail(&self, error: DecodeError) {
@@ -876,74 +1063,113 @@ impl<T: SplitSample> TipFrame<T> {
 }
 
 impl<T: SplitSample> FrameWork for TipFrame<T> {
-    fn claim(&self) -> Option<Claim> {
-        if self.failed.load(Ordering::Acquire) {
+    /// The init, which settles the CDFs the next frame's parse loads.
+    fn claim_critical(&self) -> Option<Claim> {
+        if self.failed.load(Ordering::Acquire) || self.stages[TIP_INIT].is_finished() {
             return None;
         }
-        let (entropy, motion_deps) = (self.entropy.try_lock()?, self.motion_deps.try_lock()?);
-        if let Some(row) = self.stages[TIP_INIT].claim(|_| {
-            entropy
-                .as_ref()
-                .is_none_or(inter::EntropyDependencies::is_settled)
-                && motion_deps.as_ref().is_none_or(|deps| {
+        let row = self.stages[TIP_INIT].claim(|_| {
+            self.entropy.try_lock().is_some_and(|entropy| {
+                entropy
+                    .as_ref()
+                    .is_none_or(inter::EntropyDependencies::is_settled)
+            }) && self.motion_deps.try_lock().is_some_and(|deps| {
+                deps.as_ref().is_none_or(|deps| {
                     deps.iter()
                         .flatten()
-                        .all(inter::MotionFieldHandle::field_settled)
+                        .all(inter::MotionFieldHandle::metadata_settled)
                 })
-        }) {
-            return Some(Claim {
-                stage: TIP_INIT,
-                row,
-            });
-        }
-        let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
-            return None;
-        };
-        let reference = self.reference.try_read()?;
-        let reference = reference.as_ref()?;
-        let ref_frame_idx = core
-            .inter
-            .as_ref()
-            .map_or(&[][..], |inter| inter.ref_frame_idx.as_slice());
-        if let Some(row) = self.bands.claim(|band| {
-            bounds
-                .get(band)
-                .is_none_or(|bound| inter::bounds_satisfied(reference, core, ref_frame_idx, bound))
-        }) {
-            return Some(Claim {
-                stage: TIP_BAND,
-                row,
-            });
-        }
-        if let Some(row) = self.stages[TIP_FINISH].claim(|_| self.bands.is_finished()) {
-            return Some(Claim {
-                stage: TIP_FINISH,
-                row,
-            });
-        }
-        None
+            })
+        })?;
+        Some(Claim {
+            stage: TIP_INIT,
+            row,
+        })
     }
 
-    fn run(&self, claim: Claim) {
-        let outcome = match claim.stage {
-            TIP_INIT => self.init(),
-            TIP_BAND => self.band(claim.row),
-            _ => self.finish_frame(),
-        };
-        if claim.stage == TIP_BAND {
-            self.bands.finish(claim.row);
-        } else {
-            self.stages[claim.stage].finish(claim.row);
+    fn claim(&self) -> Option<Claim> {
+        if let Some(init) = self.claim_critical() {
+            return Some(init);
         }
-        if let Err(error) = outcome {
-            self.fail(error);
+        if self.failed.load(Ordering::Acquire) || self.band_bounds.get().is_none() {
+            return None;
         }
-        self.wake.notify();
+        if let Some(row) = self.stages[TIP_PROJECT].claim(|band| {
+            let (Some(work), Some(reference)) = (self.work.try_read(), self.reference.try_read())
+            else {
+                return false;
+            };
+            work.as_ref()
+                .zip(reference.as_ref())
+                .is_some_and(|(work, reference)| work.projection_ready(band, reference))
+        }) {
+            return Some(Claim {
+                stage: TIP_PROJECT,
+                row,
+            });
+        }
+        self.claim_band().or_else(|| self.claim_finish())
+    }
+
+    /// Runs the claimed row, then a band the projection admitted or the
+    /// finish the last band released, without a scan or a wake.
+    fn run(&self, mut claim: Claim, _worker: usize) {
+        loop {
+            let outcome = match claim.stage {
+                TIP_INIT => self.init(),
+                TIP_PROJECT => self.project(claim.row),
+                TIP_BAND => self.band(claim.row),
+                _ => self.finish_frame(),
+            };
+            match claim.stage {
+                TIP_BAND => self.bands.finish(claim.row),
+                stage => self.stages[stage].finish(claim.row),
+            }
+            if let Err(error) = outcome {
+                self.fail(error);
+                break;
+            }
+            let next = match claim.stage {
+                TIP_PROJECT => self.claim_band(),
+                TIP_BAND => self.claim_finish(),
+                _ => None,
+            };
+            match next {
+                Some(next) => {
+                    self.wake.notify();
+                    claim = next;
+                }
+                None => break,
+            }
+        }
     }
 
     fn done(&self) -> bool {
         self.failed.load(Ordering::Acquire) || self.stages[TIP_FINISH].is_finished()
     }
+}
+
+/// Whether TIP band `band` may run: its motion-field band is projected and
+/// the references published every row it reads. Bands that run in place have
+/// no bounds and are always admitted.
+fn band_admitted<T: SplitSample>(
+    reference: &RwLock<Option<inter::InterReferenceState<T>>>,
+    bounds: &[OnceLock<inter::RowReferenceBounds>],
+    band: usize,
+    core: &FrameHeaderCore,
+    ref_frame_idx: &[u32],
+) -> bool {
+    if bounds.is_empty() {
+        return true;
+    }
+    let Some(bound) = bounds.get(band).and_then(OnceLock::get) else {
+        return false;
+    };
+    reference.try_read().is_some_and(|reference| {
+        reference
+            .as_ref()
+            .is_some_and(|reference| inter::bounds_satisfied(reference, core, ref_frame_idx, bound))
+    })
 }
 
 /// Reserves the pending frame and product handles published by one TIP job.
@@ -991,7 +1217,7 @@ pub(crate) struct FinishFrame<T: SplitSample> {
         )>,
     >,
     finish: Mutex<Option<PendingFinish<T>>>,
-    frontier: Mutex<Option<crate::filters::wienerns_lr::recon::OwnedFilterFrontier<T>>>,
+    frontier: Mutex<Option<OwnedFilterFrontier<T>>>,
     filter_jobs: Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
     filter_error: Mutex<Option<DecodeError>>,
     /// The emptied setup shell of the last frame, reused by the next.
@@ -1019,7 +1245,7 @@ impl<T: SplitSample> FinishFrame<T> {
         for stage in &mut self.stages {
             stage.reset(0);
         }
-        self.filter.set_rows(0);
+        self.filter.reset();
         *self.started.get_mut() = false;
         *self.failed.get_mut() = false;
         self.job.get_mut().take();
@@ -1072,22 +1298,6 @@ impl<T: SplitSample> FinishFrame<T> {
             .get_mut(stripe)
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)? = Some(job);
         self.filter.ready(stripe);
-        Ok(())
-    }
-
-    fn filter_stripe(&self, stripe: usize) -> Result<()> {
-        let job = self
-            .filter_jobs
-            .lock()
-            .get_mut(stripe)
-            .and_then(Option::take)
-            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if let Err(error) = job.run() {
-            let mut owed = self.filter_error.lock();
-            if owed.is_none() {
-                *owed = Some(error);
-            }
-        }
         Ok(())
     }
 
@@ -1150,11 +1360,11 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         None
     }
 
-    fn run(&self, claim: Claim) {
+    fn run(&self, claim: Claim, _worker: usize) {
         let outcome = match claim.stage {
             FINISH_INIT => self.init(),
             FINISH_ADVANCE => self.advance(claim.row),
-            FINISH_FILTER => self.filter_stripe(claim.row),
+            FINISH_FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row),
             _ => self.output(),
         };
         if claim.stage == FINISH_FILTER {
@@ -1165,7 +1375,6 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         if let Err(error) = outcome {
             self.fail(error);
         }
-        self.wake.notify();
     }
 
     fn done(&self) -> bool {
@@ -1214,7 +1423,7 @@ impl<W: FrameWork + 'static> WorkPool<W> {
             return Ok(());
         }
         while let Some(claim) = slot.claim() {
-            slot.run(claim);
+            slot.run(claim, 0);
         }
         if slot.done() {
             Ok(())
@@ -1236,8 +1445,9 @@ pub(crate) struct SamplePools<T: SplitSample> {
     pub(super) scratch: inter::InterDecodeScratch<T>,
     pub(super) split: SplitFrames<T>,
     tip: WorkPool<TipFrame<T>>,
-    tip_spares: Arc<inter::TipSpares<T>>,
+    tip_spares: Arc<inter::TipSpares>,
     finish: WorkPool<FinishFrame<T>>,
+    inline_filter_shell: Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
 }
 
 impl<T: SplitSample> SamplePools<T> {
@@ -1246,10 +1456,11 @@ impl<T: SplitSample> SamplePools<T> {
         scratch.set_decode_buffers(buffers);
         Self {
             scratch,
-            split: SplitFrames::new(depth, threads),
+            split: SplitFrames::new(depth, threads, buffers),
             tip: WorkPool::default(),
             tip_spares: Arc::default(),
             finish: WorkPool::default(),
+            inline_filter_shell: None,
         }
     }
 
@@ -1257,6 +1468,18 @@ impl<T: SplitSample> SamplePools<T> {
         self.split.drain(rows);
         self.tip.drain(rows);
         self.finish.drain(rows);
+    }
+
+    fn release_idle(&mut self) {
+        self.split.retire_idle();
+        release_idle(&mut self.tip.slots, TipFrame::reset);
+        release_idle(&mut self.finish.slots, FinishFrame::reset);
+    }
+}
+
+fn release_idle<W>(slots: &mut [Arc<W>], reset: impl Fn(&mut W) -> bool) {
+    for work in slots.iter_mut().filter_map(Arc::get_mut) {
+        reset(work);
     }
 }
 
@@ -1285,6 +1508,12 @@ impl RowPools {
             PipelineFrameSlot::Eight(_) => self.eight.scratch.recycle_frame_filter_records(records),
             PipelineFrameSlot::Ten(_) => self.ten.scratch.recycle_frame_filter_records(records),
         }
+    }
+
+    /// Releases what the finished split frames of both sample types still hold.
+    pub(crate) fn retire_idle(&mut self) {
+        self.eight.release_idle();
+        self.ten.release_idle();
     }
 
     /// Hands one TIP output frame to the scheduler, or decodes it inline.
@@ -1322,12 +1551,22 @@ impl RowPools {
         finish: PendingFinish<T>,
         walked: super::frame_engine::finish::WalkedFrame<T>,
     ) -> Result<()> {
-        let pool = &mut T::pools(self).finish;
-        let index = pool.reserve(
-            || FinishFrame::new(rows.map_or_else(RowWake::detached, RowScheduler::wake)),
-            FinishFrame::reset,
-        );
-        pool.push_slot(rows, index, |work| work.arm(finish, walked))
+        let pools = T::pools(self);
+        let Some(rows) = rows else {
+            let frontier =
+                walked.into_frontier(finish.progress_handle(), pools.inline_filter_shell.take());
+            match frontier.and_then(OwnedFilterFrontier::run_inline) {
+                Ok(filter) => pools.inline_filter_shell = Some(finish.run_owned_finish(filter)),
+                Err(error) => finish.fail(error),
+            }
+            return Ok(());
+        };
+        let index = pools
+            .finish
+            .reserve(|| FinishFrame::new(rows.wake()), FinishFrame::reset);
+        pools
+            .finish
+            .push_slot(Some(rows), index, |work| work.arm(finish, walked))
     }
 
     /// Waits for every work in every pool to finish.
@@ -1337,9 +1576,107 @@ impl RowPools {
     }
 }
 
+/// Runs filter stripe `stripe` of `jobs`; the first stripe error is kept in
+/// `error` to fail the frame's output.
+fn run_filter_stripe<T: SplitSample>(
+    jobs: &Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
+    error: &Mutex<Option<DecodeError>>,
+    stripe: usize,
+) -> Result<()> {
+    let job = jobs
+        .lock()
+        .get_mut(stripe)
+        .and_then(Option::take)
+        .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+    if let Err(failure) = job.run() {
+        error.lock().get_or_insert(failure);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::decoded_frame;
+    use splot_core::bitio::BitReader;
+    use splot_core::headers::frame::{
+        FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
+        parse_frame_header_core,
+    };
+    use splot_core::types::ObuType;
+    use splot_recon::{ReferenceFrameStore, ReferenceSlot, SharedFrame};
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn release_idle_frees_the_references_a_finished_split_frame_pins() {
+        let data = [0xA0];
+        let input = FrameHeaderParseInput {
+            obu_type: ObuType::ClosedLoopKey,
+            first_picture_in_tu: true,
+            active_sequence: None,
+            mfh_record: None,
+            reference_state: FrameReferenceStateView::unknown(),
+            mode: FrameHeaderParseMode::Core,
+        };
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let core = parse_frame_header_core(&mut reader, &input).expect("key core");
+        let pinned = RefFrameSlot::<u8>::completed(SharedFrame::new(decoded_frame(8, 8)));
+        let mut state = inter::InterReferenceState::<u8>::empty().expect("reference state");
+        state.store = ReferenceFrameStore::with_capacity(1).expect("reference store");
+        let slot = ReferenceSlot::new(0).expect("slot");
+        state
+            .store
+            .put(slot, pinned.share())
+            .expect("store reference");
+        let mut pools = RowPools::new(1, 1, &DecodeBuffers::new());
+        let split = &mut pools.eight.split;
+        let workers = Arc::clone(&split.workers);
+        let mut frame = SplitFrame::new(RowWake::detached(), DecodeOptions::default(), workers);
+        let workspace = frame.workspace.get_mut();
+        let _ = workspace
+            .install_identities(Arc::new(core), state)
+            .expect("identities");
+        split.slots.push(Arc::new(frame));
+        assert!(!pinned.is_sole_handle());
+
+        pools.retire_idle();
+
+        assert!(pinned.is_sole_handle());
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn each_sample_type_resets_its_own_parse_progress_after_readers_release() {
+        let rows = RowScheduler::new(core::num::NonZeroUsize::MIN).expect("rows");
+        let mut pools = RowPools::new(2, 1, &DecodeBuffers::new());
+        let options = DecodeOptions::default();
+        let (index, first) = pools.eight.split.reserve(&rows, options);
+        assert_eq!(index, 0);
+        first.cell().publish(1);
+        let (_, second) = pools.eight.split.reserve(&rows, options);
+        let (_, ten) = pools.ten.split.reserve(&rows, options);
+        assert!(!Arc::ptr_eq(&ten, &first), "the sample types share no slot");
+        drop(ten);
+        let (pointer, wake) = (Arc::as_ptr(&first) as usize, rows.wake());
+        let reader = splot_parallel::spawn_thread("reader", move || {
+            for _ in 0..1024 {
+                assert_eq!(first.cell().current(), 1);
+                std::thread::yield_now();
+            }
+            drop(first);
+            wake.notify();
+        })
+        .expect("reader thread");
+        let (index, reused) = pools.eight.split.reserve(&rows, options);
+        assert_eq!((index, Arc::as_ptr(&reused) as usize), (0, pointer));
+        assert_eq!(reused.cell().current(), 0);
+        reader.join().expect("reader joins");
+        drop((reused, second));
+        for _ in 0..128 {
+            drop(pools.eight.split.reserve(&rows, options));
+        }
+        assert_eq!(pools.eight.split.parse.len(), 2);
+    }
 
     #[test]
     fn finish_advance_is_not_claimable_until_init_publishes_the_frontier() {

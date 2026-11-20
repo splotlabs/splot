@@ -13,46 +13,44 @@ use splot_recon::{BitDepth, DecodedFrame, ReconSample, Y4mError, Y4mFrameRate, Y
 use crate::DecodeOptions;
 use crate::bitstream::byte_stream::UnitSource;
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
-use crate::output::film_grain;
+use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
-pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
+pub(crate) fn write_y4m_stream_to_writer(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
-    output: W,
-) -> Result<W> {
+    output: &mut (dyn Write + Send),
+) -> Result<()> {
     let mut target = Some(output);
     let mut writer = None;
     let mut sample_bit_depth = None;
     let frame_rate_override = options.y4m_frame_rate_override();
+    let mut spare = GrainPlanes::default();
     crate::pipeline::emit_frames(
         source,
         options,
         session,
         |header| preflight_y4m_source(header, frame_rate_override),
         |output| {
-            let frame_rate = match frame_rate_override {
-                Some(frame_rate) => frame_rate,
-                None => {
-                    Y4mFrameRate::new(output.frame_rate_numerator, output.frame_rate_denominator)
-                        .map_err(|source| {
-                            DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
-                        })?
-                }
+            let (numerator, denominator) =
+                (output.frame_rate_numerator, output.frame_rate_denominator);
+            let frame_rate = || {
+                frame_rate_override.map_or_else(|| Y4mFrameRate::new(numerator, denominator), Ok)
             };
+            let grain = output.display_grain.as_ref();
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Eight)?;
-                    let display =
-                        film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
-                    write_y4m_frame(&mut writer, &mut target, display.as_ref(), frame_rate)
+                    write_display(frame.get(), grain, &mut spare.eight, |display| {
+                        write_y4m_frame(&mut writer, &mut target, display, frame_rate)
+                    })
                 }
                 PipelineDecodedFrame::Ten(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Ten)?;
-                    let display =
-                        film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
-                    write_y4m_frame(&mut writer, &mut target, display.as_ref(), frame_rate)
+                    write_display(frame.get(), grain, &mut spare.ten, |display| {
+                        write_y4m_frame(&mut writer, &mut target, display, frame_rate)
+                    })
                 }
             }
         },
@@ -64,7 +62,7 @@ pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
         )
     })?;
     writer.flush().map_err(map_y4m_writer_error)?;
-    Ok(writer.into_inner())
+    Ok(())
 }
 
 fn ensure_y4m_sample_bit_depth(expected: &mut Option<BitDepth>, actual: BitDepth) -> Result<()> {
@@ -82,11 +80,11 @@ fn ensure_y4m_sample_bit_depth(expected: &mut Option<BitDepth>, actual: BitDepth
     }
 }
 
-fn write_y4m_frame<T: ReconSample, W: Write>(
-    writer: &mut Option<Y4mWriter<W>>,
-    output: &mut Option<W>,
+fn write_y4m_frame<'w, T: ReconSample>(
+    writer: &mut Option<Y4mWriter<&'w mut (dyn Write + Send)>>,
+    output: &mut Option<&'w mut (dyn Write + Send)>,
     frame: &DecodedFrame<T>,
-    frame_rate: Y4mFrameRate,
+    frame_rate: impl FnOnce() -> std::result::Result<Y4mFrameRate, Y4mError>,
 ) -> Result<()> {
     let mut active = if let Some(active) = writer.take() {
         active
@@ -97,6 +95,7 @@ fn write_y4m_frame<T: ReconSample, W: Write>(
                 "runtime Y4M output writer is unavailable",
             )
         })?;
+        let frame_rate = frame_rate().map_err(map_y4m_writer_error)?;
         Y4mWriter::from_frame(output, frame, frame_rate).map_err(map_y4m_writer_error)?
     };
     active.write_frame(frame).map_err(map_y4m_writer_error)?;

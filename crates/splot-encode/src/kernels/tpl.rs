@@ -4,9 +4,7 @@
 //! The amount each lookahead block of a frame passes to its references in
 //! the temporal model.
 
-use std::simd::Simd;
-use std::simd::cmp::SimdOrd as _;
-use std::simd::num::SimdUint as _;
+use fearless_simd::{Level, SimdBase as _, dispatch, u64x4};
 
 const LANES: usize = 4;
 
@@ -42,20 +40,24 @@ pub(crate) fn propagate_simd(
         .min(intra.len())
         .min(best.len())
         .min(received.len());
-    let (noise, one) = (Simd::splat(u64::from(noise)), Simd::splat(1));
+    let noise = u64::from(noise);
     let mut index = 0;
-    while index + LANES <= len {
-        let intra_v = Simd::<u32, LANES>::from_slice(&intra[index..]).cast::<u64>();
-        let best_v = Simd::<u32, LANES>::from_slice(&best[index..]).cast::<u64>();
-        let received_v = Simd::<u64, LANES>::from_slice(&received[index..]);
-        let kept = intra_v - intra_v.simd_min(best_v + noise);
-        ((intra_v + received_v) * kept / intra_v.simd_max(one))
-            .copy_to_slice(&mut out[index..index + LANES]);
-        index += LANES;
-    }
+    dispatch!(Level::baseline(), simd => {
+        while index + LANES <= len {
+            let intra_v = u64x4::from_fn(simd, |k| u64::from(intra[index + k]));
+            let best_v = u64x4::from_fn(simd, |k| u64::from(best[index + k]));
+            let received_v = u64x4::from_slice(simd, &received[index..index + LANES]);
+            let kept = intra_v - intra_v.min(best_v + noise);
+            let product = (intra_v + received_v) * kept;
+            for (k, out) in out[index..index + LANES].iter_mut().enumerate() {
+                *out = product[k] / intra_v[k].max(1);
+            }
+            index += LANES;
+        }
+    });
     for i in index..len {
         let (intra, best) = (u64::from(intra[i]), u64::from(best[i]));
-        let kept = intra - intra.min(best + noise[0]);
+        let kept = intra - intra.min(best + noise);
         out[i] = intra.wrapping_add(received[i]).wrapping_mul(kept) / intra.max(1);
     }
 }

@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use super::super::warp_sub_mv_at;
 use super::tip_field::TIP_AVERAGE_WEIGHTS;
 use super::*;
 use splot_parallel::{ThreadCount, WorkerPool};
@@ -39,12 +40,12 @@ fn project_whole_temporal_motion_field(
     let mut band = trajectories.and_then(TrajectoryState::whole_band);
     if let Some(mut rows) = output.bands(height8.max(1)).next() {
         project_temporal_motion_field(
+            &mut ChunkLanes::default(),
             &prepared,
             source,
             0..height8,
-            projection_step,
-            tmvp_unit_size8,
-            band.as_mut(),
+            (projection_step, tmvp_unit_size8),
+            band.as_mut().map(|band| (band, true)),
             &mut rows,
         );
     }
@@ -52,7 +53,7 @@ fn project_whole_temporal_motion_field(
 
 #[test]
 fn temporal_motion_block_stays_compact() {
-    assert_eq!(size_of::<TemporalMotionBlock>(), 120);
+    assert_eq!(size_of::<TemporalMotionBlock>(), 104);
     assert_eq!(size_of::<ProjectedTemporalMotionCell>(), 8);
 }
 
@@ -98,10 +99,14 @@ fn compact_temporal_motion_preserves_every_warp_shape() {
         [Some(first), Some(second)],
     ] {
         let motion = TemporalBlockMotion::new(mvs, warp_params);
-        for list in 0..2 {
-            let expected =
-                warp_params[list].map_or(mvs[list], |params| warp_sub_mv_at(params, 4, 6, 8, 10));
-            assert_eq!(motion.mv_at(list, 4, 6, 8, 10), expected);
+        let mut walks = motion.cell_walks(4, 6, 2);
+        for col in [6, 8, 10] {
+            let walked = walks.each_mut().map(CellMvWalk::next);
+            for list in 0..2 {
+                let expected = warp_params[list]
+                    .map_or(mvs[list], |params| warp_sub_mv_at(params, 4, 6, 8, col));
+                assert_eq!(walked[list], expected);
+            }
         }
     }
 }
@@ -126,8 +131,8 @@ fn odd_origin_warp_block_stores_round2_cells_sampled_at_its_own_rows() {
         swap: false,
     };
     let mut cells = Vec::new();
-    visit_temporal_block_cells(block, refs, 16, 16, |y8, x8, cell, _| {
-        cells.push((y8, x8, cell.mvs[0]));
+    visit_temporal_block_cells(block, refs, 16, 16, |y8, x8, cell| {
+        cells.extend(x8.map(|x8| (y8, x8, cell.mvs[0])));
     });
     let expected: Vec<_> = [(1, 2, 3, 5), (1, 3, 3, 7), (2, 2, 5, 5), (2, 3, 5, 7)]
         .map(|(y8, x8, row, col)| {
@@ -252,6 +257,168 @@ fn published_band_resets_keep_cell_capacity_after_readers_retire() {
         drop(reader);
         band.reset(layout, &metadata, 0).unwrap();
         assert_eq!(band.row(0).unwrap().as_ptr(), address);
+    }
+}
+
+#[test]
+fn recycled_band_resets_every_cell_to_no_reference() {
+    let layout = MotionFieldLayout::new(16, 16, 16).unwrap();
+    let metadata = TemporalMotionField::new_with_metadata(16, 16, true, (64, 64), &[Some(2)])
+        .unwrap()
+        .metadata();
+    let inter = TemporalMotionBlock::new(
+        0,
+        0,
+        16,
+        16,
+        16,
+        16,
+        4,
+        [Some(2), None],
+        [Mv { row: 8, col: -12 }, Mv::ZERO],
+        [None; 2],
+    );
+    let mut band = TemporalMotionBand::vacant(layout, &metadata);
+    band.reset(layout, &metadata, 0).unwrap();
+    band.record_blocks(&[inter]).unwrap();
+    assert!(
+        band.cells
+            .cells()
+            .iter()
+            .all(|&cell| cell != TemporalMotionCell::STORED_EMPTY)
+    );
+    band = band.into_shared();
+    drop(band.clone());
+    band.reset(layout, &metadata, 0).unwrap();
+    assert_eq!(band.cells.cells().len(), 64);
+    assert!(
+        band.cells
+            .cells()
+            .iter()
+            .all(|&cell| cell == TemporalMotionCell::STORED_EMPTY)
+    );
+}
+
+fn tile_leaves(
+    next: &mut impl FnMut(u32) -> usize,
+    leaves: &mut Vec<[usize; 4]>,
+    leaf: [usize; 4],
+) {
+    const SPLITS: [&[usize]; 4] = [&[1, 1], &[1, 1, 1, 1], &[1, 2, 4, 1], &[1, 4, 2, 1]];
+    let [row, col, h, w] = leaf;
+    let choice = next(11);
+    let horizontal = choice & 1 == 0;
+    let side = if horizontal { h } else { w };
+    let pattern = SPLITS[choice.saturating_sub(3) / 2 % 4];
+    let total: usize = pattern.iter().sum();
+    if choice < 3 || side < total {
+        leaves.push(leaf);
+        return;
+    }
+    let unit = side / total;
+    let mut offset = 0;
+    for &part in pattern {
+        let size = part * unit;
+        let child = if horizontal {
+            [row + offset, col, size, w]
+        } else {
+            [row, col + offset, h, size]
+        };
+        tile_leaves(next, leaves, child);
+        offset += size;
+    }
+}
+
+#[test]
+fn skipped_clear_records_of_whole_cell_intra_leaves_leave_the_field_unchanged() {
+    let (mi_rows, mi_cols) = (32, 32);
+    let hints = [Some(2), Some(6)];
+    let new_field = || {
+        TemporalMotionField::new_with_metadata(mi_rows, mi_cols, true, (128, 128), &hints).unwrap()
+    };
+    let layout = MotionFieldLayout::new(mi_rows, mi_cols, 16).unwrap();
+    let metadata = new_field().metadata();
+    let fold_field = |records: &[TemporalMotionBlock]| {
+        let mut field = new_field();
+        field.record_blocks(records);
+        field.contiguous_cells().to_vec()
+    };
+    let fold_bands = |records: &[TemporalMotionBlock]| {
+        (0..layout.band_count())
+            .map(|index| {
+                let mut band = TemporalMotionBand::vacant(layout, &metadata);
+                band.reset(layout, &metadata, index).unwrap();
+                band.record_blocks(records).unwrap();
+                band.cells.cells().to_vec()
+            })
+            .collect::<Vec<_>>()
+    };
+    for seed in 1..=8u64 {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut next = |bound: u32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % u64::from(bound)) as usize
+        };
+        let mut leaves = Vec::new();
+        for sb_row in (0..mi_rows).step_by(16) {
+            for sb_col in (0..mi_cols).step_by(16) {
+                tile_leaves(&mut next, &mut leaves, [sb_row, sb_col, 16, 16]);
+            }
+        }
+        let mut records: Vec<_> = leaves
+            .into_iter()
+            .map(|[row, col, h, w]| {
+                let is_inter = next(2) == 0;
+                let block = if is_inter {
+                    let mv = |next: &mut dyn FnMut(u32) -> usize| Mv {
+                        row: 1 + next(255) as i32,
+                        col: -1 - next(255) as i32,
+                    };
+                    let second = next(2) == 0;
+                    TemporalMotionBlock::new(
+                        row,
+                        col,
+                        w,
+                        h,
+                        mi_rows,
+                        mi_cols,
+                        4,
+                        [hints[0], hints[1].filter(|_| second)],
+                        [mv(&mut next), mv(&mut next)],
+                        [None; 2],
+                    )
+                } else {
+                    TemporalMotionBlock::new(
+                        row,
+                        col,
+                        w,
+                        h,
+                        mi_rows,
+                        mi_cols,
+                        4,
+                        [None; 2],
+                        [Mv::ZERO; 2],
+                        [None; 2],
+                    )
+                };
+                (block, is_inter || (row | col | w | h) & 1 != 0)
+            })
+            .collect();
+        if seed % 2 == 0 {
+            for i in (1..records.len()).rev() {
+                records.swap(i, next(i as u32 + 1));
+            }
+        }
+        let every: Vec<_> = records.iter().map(|&(block, _)| block).collect();
+        let kept: Vec<_> = records
+            .iter()
+            .filter_map(|&(block, keep)| keep.then_some(block))
+            .collect();
+        assert!(kept.len() < every.len(), "seed {seed} skips no record");
+        assert_eq!(fold_field(&every), fold_field(&kept), "seed {seed}");
+        assert_eq!(fold_bands(&every), fold_bands(&kept), "seed {seed}");
     }
 }
 
@@ -409,7 +576,7 @@ fn reference_order_hints_exclude_invalid_and_restricted_slots() {
 }
 
 #[test]
-fn metadata_constructor_matches_delayed_reference_resolution() {
+fn metadata_constructor_resolves_block_references() {
     let ref_order_hints = [Some(1), None, Some(3)];
     for (block_hints, expected) in [
         ([Some(3), Some(1)], [2, 0]),
@@ -427,23 +594,18 @@ fn metadata_constructor_matches_delayed_reference_resolution() {
             [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
             [None; 2],
         );
-        let mut delayed = TemporalMotionField::new(2, 2).unwrap();
-        delayed.record_block(block);
-        delayed.set_reference_metadata(true, (8, 8), &ref_order_hints);
-
-        let mut immediate =
+        let mut field =
             TemporalMotionField::new_with_metadata(2, 2, true, (8, 8), &ref_order_hints).unwrap();
-        immediate.record_block(block);
+        field.record_block(block);
 
-        assert_eq!(immediate, delayed);
-        assert_eq!(immediate.cell(0, 0).unwrap().ref_indices, expected);
+        assert_eq!(field.cell(0, 0).unwrap().ref_indices, expected);
     }
 }
 
 /// Field hints are ref_valid-gated and repeat hint 1; block hints are raw, so
 /// hints 5 and 2 name no field slot.
 #[test]
-fn carried_slots_match_delayed_resolution_for_every_reference_pair() {
+fn carried_slots_match_per_block_resolution_for_every_reference_pair() {
     let field_hints = [Some(1), None, Some(3), Some(1), Some(6), None, Some(9)];
     let raw_hints = [1, 5, 3, 1, 6, 2, 9];
     let lists = || (0..raw_hints.len()).map(Some).chain([None]);
@@ -480,17 +642,65 @@ fn carried_slots_match_delayed_resolution_for_every_reference_pair() {
         .collect();
     let frame_size = (mi_cols * 4, 8);
 
-    let mut delayed = TemporalMotionField::new(2, mi_cols).unwrap();
+    let field = || {
+        TemporalMotionField::new_with_metadata(2, mi_cols, true, frame_size, &field_hints).unwrap()
+    };
+    let mut per_block = field();
     for &block in &blocks {
-        delayed.record_block(block);
+        per_block.record_block(block);
     }
-    delayed.set_reference_metadata(true, frame_size, &field_hints);
+    let mut carried = field();
+    carried.record_blocks(&blocks);
 
-    let mut immediate =
-        TemporalMotionField::new_with_metadata(2, mi_cols, true, frame_size, &field_hints).unwrap();
-    immediate.record_blocks(&blocks);
+    assert_eq!(carried, per_block);
+}
 
-    assert_eq!(immediate, delayed);
+#[test]
+fn merged_neighbour_records_write_the_same_field() {
+    let (mi_rows, mi_cols) = (4, 11);
+    let hints = [Some(2), Some(6)];
+    let mv = Mv { row: 8, col: -12 };
+    let record = |mi_col: usize, n4w: usize, mvs: [Mv; 2]| {
+        TemporalMotionBlock::new(
+            0, mi_col, n4w, 2, mi_rows, mi_cols, 4, hints, mvs, [None; 2],
+        )
+    };
+    let blocks = [
+        record(0, 2, [mv, Mv::ZERO]),
+        record(2, 2, [mv, Mv::ZERO]),
+        record(4, 2, [Mv::ZERO, mv]),
+        record(6, 2, [Mv::ZERO, mv]),
+        record(8, 2, [Mv::ZERO, mv]),
+        record(10, 1, [Mv::ZERO, mv]),
+    ];
+    let mut merged = Vec::new();
+    for block in blocks {
+        TemporalMotionBlock::push_merged(&mut merged, 0, block);
+    }
+    assert_eq!(merged.len(), 2);
+    let mut kept = vec![record(0, 2, [mv, Mv::ZERO])];
+    TemporalMotionBlock::push_merged(&mut kept, 1, record(2, 2, [mv, Mv::ZERO]));
+    TemporalMotionBlock::push_merged(&mut kept, 0, record(4, 1, [mv, Mv::ZERO]));
+    TemporalMotionBlock::push_merged(&mut kept, 0, record(5, 2, [mv, Mv::ZERO]));
+    assert_eq!(
+        kept.len(),
+        3,
+        "records before `first` and after an odd width stay apart"
+    );
+
+    let field = |records: &[TemporalMotionBlock]| {
+        let mut field = TemporalMotionField::new_with_metadata(
+            mi_rows,
+            mi_cols,
+            true,
+            (mi_cols * 4, mi_rows * 4),
+            &hints,
+        )
+        .unwrap();
+        field.record_blocks(records);
+        field
+    };
+    assert_eq!(field(&merged), field(&blocks));
 }
 
 #[test]
@@ -652,6 +862,7 @@ fn step_two_projection_samples_and_stores_on_the_even_grid() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -877,13 +1088,13 @@ fn projection_is_total_over_untrusted_integer_inputs() {
 #[test]
 fn tip_candidate_distinguishes_absent_from_present_invalid_cells() {
     let mut context = tip_context(4, vec![Some(2), Some(6)], 2, 2);
-    context.tip = Some(TipReferencePair {
+    context.tip = Some(tip_projection(TipReferencePair {
         past_ref: 0,
         future_ref: 1,
         past_offset: 2,
         future_offset: -2,
         ref_offset: 4,
-    });
+    }));
     let base = Mv { row: 3, col: -5 };
     assert_eq!(context.tip_candidate(0, 0, base), Some([base; 2]));
 
@@ -976,6 +1187,41 @@ fn sampling_gap_does_not_average_across_tmvp_units() {
 }
 
 #[test]
+fn sampling_gap_scales_and_averages_only_valid_neighbours() {
+    let mut context = tip_context(2, vec![Some(0)], 6, 10);
+    for (y8, x8, row, col, offset) in [
+        (0, 0, 32, -6, 4),
+        (0, 2, 9, 11, 2),
+        (2, 0, -33, 23, 8),
+        (2, 2, 12, -18, 4),
+        (0, 4, -2048, 2047, 0),
+    ] {
+        context.field.set(y8, x8, Mv { row, col }, offset, true);
+    }
+
+    context.fill_sampling_gaps(2, 8);
+
+    for (y8, x8, row, col, offset) in [
+        (0, 1, 25, 8, 4),
+        (1, 0, 8, 3, 4),
+        (1, 1, 11, 3, 4),
+        (0, 3, 5, 6, 2),
+        (1, 3, 5, 1, 2),
+        (1, 4, -2048, 2047, 0),
+    ] {
+        assert_eq!(
+            context.field.cell(y8, x8),
+            Some(ProjectedTemporalMotionCell::new(
+                true,
+                Mv { row, col },
+                offset
+            ))
+        );
+    }
+    assert!(!context.field.cell(2, 4).unwrap().valid);
+}
+
+#[test]
 fn temporal_projection_stays_within_the_vertical_tmvp_unit() {
     assert!(!tmvp_position_is_near(52, 107, 47, 107, 2, 16));
     assert!(tmvp_position_is_near(47, 107, 47, 107, 2, 16));
@@ -1045,7 +1291,7 @@ fn tip_step_one_hole_fill_stays_within_64_pixel_tmvp_units() {
     context.field.set(0, 7, Mv { row: 8, col: -16 }, 4, true);
 
     let references = context.tip_reference_pair().unwrap();
-    assert!(context.prepare_tip(references, 1, 16, true).is_ok());
+    assert!(context.prepare_tip(references, 1, 8, true).is_ok());
     assert_eq!(context.tip_candidate(0, 8, Mv::ZERO), Some([Mv::ZERO; 2]));
 }
 
@@ -1333,6 +1579,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
         enable_tip: false,
         enable_trajectory: true,
         reduced: false,
+        bru_ref: None,
     };
     let ref_frame_idx = [0];
     let ref_valid = [false];
@@ -1351,7 +1598,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let field_ptr = context.field.cells.as_ptr();
     let trajectories = context.trajectories.as_ref().unwrap();
     let trajectory_ptr = trajectories.cells.as_ptr();
-    let positions_ptr = trajectories.scratch[0].positions.as_ptr();
+    let positions_ptr = trajectories.scratch.positions.as_ptr();
 
     let parked = TemporalProjectionConfig {
         enable_trajectory: false,
@@ -1375,7 +1622,7 @@ fn refresh_reuses_projected_and_trajectory_storage() {
     let trajectories = context.trajectories.as_ref().unwrap();
     assert_eq!(context.field.cells.as_ptr(), field_ptr);
     assert_eq!(trajectories.cells.as_ptr(), trajectory_ptr);
-    assert_eq!(trajectories.scratch[0].positions.as_ptr(), positions_ptr);
+    assert_eq!(trajectories.scratch.positions.as_ptr(), positions_ptr);
 }
 
 #[test]
@@ -1408,6 +1655,7 @@ fn trajectories_do_not_change_the_projected_motion_field() {
                 enable_tip: false,
                 enable_trajectory,
                 reduced: false,
+                bru_ref: None,
             },
             &[0, 1],
             &[true, true],
@@ -1445,6 +1693,7 @@ fn refresh_rejects_a_malformed_selected_projection_source() {
             enable_tip: false,
             enable_trajectory: false,
             reduced: false,
+            bru_ref: None,
         },
         &[0, 1],
         &[true, true],
@@ -1479,6 +1728,7 @@ fn frame_temporal_storage_reuses_bands_and_clears_previous_products() {
                     enable_tip: false,
                     enable_trajectory: iteration % 2 == 0,
                     reduced: false,
+                    bru_ref: None,
                 },
                 &[0],
                 &[true],
@@ -1514,4 +1764,72 @@ fn frame_temporal_storage_reuses_bands_and_clears_previous_products() {
             }
         }
     }
+}
+
+#[test]
+fn a_band_projects_once_the_same_band_of_every_reference_field_is_published() {
+    use crate::prediction::inter::MotionFieldHandle;
+    let layout = MotionFieldLayout::new(64, 16, 16).unwrap();
+    let source = TemporalMotionField::metadata_only(layout, true, (64, 256), &[Some(1)]);
+    let other = TemporalMotionField::metadata_only(layout, true, (64, 256), &[Some(3)]);
+    let metadata = [Some(source.metadata()), Some(other.metadata())];
+    let mut context = TemporalMvContext::empty();
+    let plan = context
+        .begin_banded_refresh(
+            layout,
+            2,
+            TemporalProjectionConfig {
+                frame_size: (64, 256),
+                step: 1,
+                unit_size8: 8,
+                enable_tip: false,
+                enable_trajectory: false,
+                reduced: false,
+                bru_ref: None,
+            },
+            &[0, 1],
+            &[true, true],
+            &[3, 1],
+            &metadata,
+            &[Some(layout), Some(layout)],
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+    assert_eq!(plan.len(), 4);
+    let fields = [source, other].map(|field| {
+        let handle = MotionFieldHandle::pending_with_layout(layout);
+        handle.begin_bands(&field.metadata()).unwrap();
+        Some(handle)
+    });
+    let band = 1;
+    let reads: Vec<_> = plan.requirements(band).collect();
+    assert!(!reads.is_empty());
+    assert!(
+        reads.iter().all(|&(_, read)| read == band),
+        "§ 7.9.8 keeps a projection in its row"
+    );
+    for neighbour in [0, 2, 3] {
+        for field in fields.iter().flatten() {
+            field.publish_builder_band(neighbour);
+        }
+    }
+    assert!(
+        !plan.sources_settled(band, &fields),
+        "neighbour bands never admit a band"
+    );
+    let (last, first) = reads.split_last().unwrap();
+    for &(slot, read) in first {
+        fields[slot].as_ref().unwrap().publish_builder_band(read);
+    }
+    assert!(
+        !plan.sources_settled(band, &fields),
+        "one reference band is still owed"
+    );
+    fields[last.0]
+        .as_ref()
+        .unwrap()
+        .publish_builder_band(last.1);
+    assert!(plan.sources_settled(band, &fields));
 }

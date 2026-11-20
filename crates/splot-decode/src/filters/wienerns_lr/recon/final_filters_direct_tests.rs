@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::filters::source::StripeInitialization;
+use crate::filters::source::StripeInitialization::{self, CopyAll};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
     PlaneRect, PlaneSize, ReconSample,
@@ -73,9 +73,13 @@ fn cdef_frame(workspace: &CurrentFrameWorkspace<u16>) -> CdefFrame<'_, u16> {
         deblocked_y: y,
         deblocked_u: u,
         deblocked_v: v,
-        filtered_y: StripePlane::copy_from(y, 0, y.frame_height()).unwrap(),
-        filtered_u: u.map(|plane| StripePlane::copy_from(plane, 0, plane.frame_height()).unwrap()),
-        filtered_v: v.map(|plane| StripePlane::copy_from(plane, 0, plane.frame_height()).unwrap()),
+        filtered_y: StripePlane::copy_from_into(y, 0, y.frame_height(), None, CopyAll).unwrap(),
+        filtered_u: u.map(|plane| {
+            StripePlane::copy_from_into(plane, 0, plane.frame_height(), None, CopyAll).unwrap()
+        }),
+        filtered_v: v.map(|plane| {
+            StripePlane::copy_from_into(plane, 0, plane.frame_height(), None, CopyAll).unwrap()
+        }),
     }
 }
 
@@ -85,7 +89,7 @@ fn poison_progress(progress: &Arc<crate::pipeline::frame_progress::FrameProgress
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         if let Some(mut plane) = target.take(plane) {
             let (width, stride) = (plane.width(), plane.stride());
-            for row in plane.u16_samples_mut().unwrap().chunks_mut(stride) {
+            for row in plane.samples_mut().chunks_mut(stride) {
                 row[..width].fill(POISON);
             }
         }
@@ -122,8 +126,8 @@ fn block(
     }
 }
 
-fn blocks_for_target(
-    target: &crate::pipeline::frame_progress::DirectPlaneTarget,
+fn blocks_for_target<T: ReconSample>(
+    target: &crate::pipeline::frame_progress::DirectPlaneTarget<T>,
     plane: PlaneId,
 ) -> Vec<WienerNsLrSourceBlock> {
     let end_y = target.end_y().unwrap();
@@ -143,9 +147,10 @@ fn blocks_for_target(
     blocks
 }
 
-fn write_blocks(plane: &mut StripePlane, blocks: &[WienerNsLrSourceBlock], value: u16) {
+fn write_blocks(plane: &mut StripePlane<u16>, blocks: &[WienerNsLrSourceBlock], value: u16) {
     for block in blocks {
-        let (output, stride) = lr_block_destination(plane, block).unwrap();
+        let rect = PlaneRect::new(block.x, block.y, block.width, block.height).unwrap();
+        let (output, stride) = plane.rect_mut(rect).unwrap();
         for row in 0..block.height {
             output[row * stride..row * stride + block.width].fill(value);
         }
@@ -184,25 +189,18 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
             block_sets[1].as_slice(),
             block_sets[2].as_slice(),
         ];
-        let core = lr_core([FrameRestorationType::WienerNonsep; 3]);
-        let initializations = lr_initializations(&core, active, block_slices, &target);
+        let initializations = lr_initializations(active, &target);
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             if active[plane.index()] {
                 assert_eq!(
                     initializations[plane.index()],
-                    StripeInitialization::FullyOverwritten,
+                    StripeInitialization::Partial,
                     "{format:?} {plane:?}"
                 );
             }
         }
-        let mut frame = LrFrame::from_cdef(
-            cdef_frame(&workspace),
-            active,
-            [false; 3],
-            initializations,
-            target,
-        )
-        .unwrap();
+        let mut frame =
+            LrFrame::from_cdef(cdef_frame(&workspace), active, initializations, target).unwrap();
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             if !active[plane.index()] {
                 continue;
@@ -212,7 +210,6 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
                 PlaneId::U => frame.post_lr_u.as_mut(),
                 PlaneId::V => frame.post_lr_v.as_mut(),
             }
-            .and_then(StripeOutputPlane::as_u16_mut)
             .unwrap();
             let rows = crate::test_support::stripe_rows(output);
             assert!(rows.iter().all(|&sample| sample == POISON));
@@ -224,17 +221,9 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
             let rows = crate::test_support::stripe_rows(output);
             assert!(rows.iter().all(|&sample| sample != POISON));
         }
-        let mut filtered = frame.into_filtered();
-        filtered.y.finish_direct().unwrap();
-        if let Some(plane) = filtered.u.as_mut() {
-            plane.finish_direct().unwrap();
-        }
-        if let Some(plane) = filtered.v.as_mut() {
-            plane.finish_direct().unwrap();
-        }
-        drop(filtered);
+        drop(frame.into_filtered());
         assert!(lease.submit());
-        let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+        let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
             if let Some(plane) = frame.plane(plane) {
                 let rows = crate::test_support::packed(plane);
@@ -245,7 +234,7 @@ fn poisoned_u16_targets_are_fully_written_for_all_plane_formats_and_odd_dimensio
 }
 
 #[test]
-fn a_coverage_hole_selects_copy_all_and_replaces_poison_with_cdef() {
+fn a_coverage_hole_selects_partial_and_fills_only_the_hole_with_cdef() {
     let workspace = workspace(PixelFormat::Monochrome, 8, 8);
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
@@ -255,27 +244,27 @@ fn a_coverage_hole_selects_copy_all_and_replaces_poison_with_cdef() {
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let mut blocks = blocks_for_target(target.get(PlaneId::Y).unwrap(), PlaneId::Y);
-    blocks.remove(1);
-    let core = lr_core([
-        FrameRestorationType::WienerNonsep,
-        FrameRestorationType::None,
-        FrameRestorationType::None,
-    ]);
-    let initializations =
-        lr_initializations(&core, [true, false, false], [&blocks, &[], &[]], &target);
-    assert_eq!(initializations[0], StripeInitialization::CopyAll);
-    let frame = LrFrame::from_cdef(
+    let hole = blocks.remove(1);
+    let initializations = lr_initializations([true, false, false], &target);
+    assert_eq!(initializations[0], StripeInitialization::Partial);
+    let mut frame = LrFrame::from_cdef(
         cdef_frame(&workspace),
         [true, false, false],
-        [false; 3],
         initializations,
         target,
     )
     .unwrap();
-    assert_eq!(
-        crate::test_support::stripe_rows(frame.post_lr_y.as_ref().unwrap().as_u16().unwrap()),
-        crate::test_support::workspace_rows(&workspace, PlaneId::Y)
-    );
+    let post_lr = frame.post_lr_y.as_mut().unwrap();
+    let wiener = FrameRestorationType::WienerNonsep;
+    copy_lr_gaps(&blocks, PlaneId::Y, wiener, &frame.cdef_y, post_lr).unwrap();
+    let rows = crate::test_support::stripe_rows(post_lr);
+    let source = crate::test_support::workspace_rows(&workspace, PlaneId::Y);
+    for (index, (&sample, &cdef)) in rows.iter().zip(&source).enumerate() {
+        let (x, y) = (index % 8, index / 8);
+        let in_hole = (hole.x..hole.x + hole.width).contains(&x)
+            && (hole.y..hole.y + hole.height).contains(&y);
+        assert_eq!(sample, if in_hole { cdef } else { POISON }, "({x}, {y})");
+    }
 }
 
 #[test]
@@ -293,7 +282,6 @@ fn every_post_lr_plane_is_preflighted_before_any_target_mutation() {
         LrFrame::from_cdef(
             cdef_frame(&workspace),
             [true; 3],
-            [false; 3],
             [StripeInitialization::FullyOverwritten; 3],
             target,
         )
@@ -306,7 +294,7 @@ fn every_post_lr_plane_is_preflighted_before_any_target_mutation() {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         let mut target = target.take(plane).unwrap();
         let (width, stride) = (target.width(), target.stride());
-        let samples = target.u16_samples_mut().unwrap();
+        let samples = target.samples_mut();
         assert!(
             samples
                 .chunks(stride)
@@ -321,16 +309,11 @@ fn lossless_block() -> crate::filters::deblock::DeblockBlock {
     crate::filters::deblock::DeblockBlock {
         r: 0,
         c: 0,
-        luma_prediction: prediction,
-        chroma_prediction: prediction,
-        chroma_base_r: 0,
-        chroma_base_c: 0,
+        prediction,
         n4w: 1,
         n4h: 1,
-        luma_tx: 0,
-        chroma_tx: Some(0),
+        tx: 0,
         sub_pu_size: None,
-        chroma_transform_only: false,
         qindex: 0,
         skip: false,
         lossless: true,
@@ -341,13 +324,9 @@ fn lossless_block() -> crate::filters::deblock::DeblockBlock {
 fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
     let workspace = workspace(PixelFormat::Monochrome, 8, 8);
     let records = [lossless_block()];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        2,
-        2,
-        &records,
-        [&[], &[]],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 2, &records, &[])
+            .unwrap();
     let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
         workspace
             .plane(plane)
@@ -377,19 +356,9 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
     let block = block(PlaneId::Y, LrUnitRestorationType::WienerNonsep, 0, 0, 8, 8);
-    assert!(lr_plane_fully_overwritten(
-        &[block],
-        PlaneId::Y,
-        FrameRestorationType::WienerNonsep,
-        8,
-        8,
-        0,
-        8,
-    ));
     let mut frame = LrFrame::from_cdef(
         cdef_frame(&workspace),
         [true, false, false],
-        [false; 3],
         [
             StripeInitialization::FullyOverwritten,
             StripeInitialization::CopyAll,
@@ -398,20 +367,15 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
         target,
     )
     .unwrap();
-    let output = frame
-        .post_lr_y
-        .as_mut()
-        .and_then(StripeOutputPlane::as_u16_mut)
-        .unwrap();
+    let output = frame.post_lr_y.as_mut().unwrap();
     let curr = FramePlane::new(&workspace, PlaneId::Y).unwrap();
-    let (samples, stride) = lr_block_destination(output, &block).unwrap();
+    let rect = PlaneRect::new(block.x, block.y, block.width, block.height).unwrap();
+    let (samples, stride) = output.rect_mut(rect).unwrap();
     for row in 0..block.height {
         samples[row * stride..row * stride + block.width].fill(777);
     }
     chain
-        .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, samples, stride, |slot, sample| {
-            *slot = sample;
-        })
+        .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, samples, stride)
         .unwrap();
     for y in 0..8 {
         for x in 0..8 {
@@ -427,7 +391,7 @@ fn lossless_samples_are_restored_inside_a_fully_overwritten_stripe() {
 }
 
 #[test]
-fn u8_lossless_luma_samples_write_exactly_to_both_output_representations() {
+fn u8_lossless_luma_samples_write_exactly() {
     let workspace = workspace_with(
         BitDepth::Eight,
         PixelFormat::Monochrome,
@@ -436,13 +400,9 @@ fn u8_lossless_luma_samples_write_exactly_to_both_output_representations() {
         |x, y, plane| 20 + ((x * 7 + y * 11 + plane.index() * 23) % 200) as u8,
     );
     let records = [lossless_block()];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        2,
-        2,
-        &records,
-        [&[], &[]],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(2, 2, &records, &[])
+            .unwrap();
     let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
         workspace
             .plane(plane)
@@ -466,28 +426,14 @@ fn u8_lossless_luma_samples_write_exactly_to_both_output_representations() {
     };
     let block = block(PlaneId::Y, LrUnitRestorationType::WienerNonsep, 0, 0, 8, 8);
     let curr = FramePlane::new(&workspace, PlaneId::Y).unwrap();
-    let mut output = [777u16; 64];
     let mut direct = [0xeeu8; 64];
 
     chain
-        .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, &mut output, 8, |slot, sample| {
-            *slot = sample.to_u16();
-        })
-        .unwrap();
-    chain
-        .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, &mut direct, 8, |slot, sample| {
-            *slot = sample;
-        })
+        .preserve_lossless_lr_samples(PlaneId::Y, &block, curr, &mut direct, 8)
         .unwrap();
 
     for y in 0..8 {
         for x in 0..8 {
-            let expected = if x < 4 && y < 4 {
-                u16::from(crate::test_support::workspace_rows(&workspace, PlaneId::Y)[y * 8 + x])
-            } else {
-                777
-            };
-            assert_eq!(output[y * 8 + x], expected, "sample ({x}, {y})");
             let expected = if x < 4 && y < 4 {
                 crate::test_support::workspace_rows(&workspace, PlaneId::Y)[y * 8 + x]
             } else {
@@ -513,7 +459,6 @@ fn poison_oracle_exposes_one_suppressed_lr_block_write() {
     let mut frame = LrFrame::from_cdef(
         cdef_frame(&workspace),
         [true, false, false],
-        [false; 3],
         [
             StripeInitialization::FullyOverwritten,
             StripeInitialization::CopyAll,
@@ -522,11 +467,7 @@ fn poison_oracle_exposes_one_suppressed_lr_block_write() {
         target,
     )
     .unwrap();
-    let output = frame
-        .post_lr_y
-        .as_mut()
-        .and_then(StripeOutputPlane::as_u16_mut)
-        .unwrap();
+    let output = frame.post_lr_y.as_mut().unwrap();
     write_blocks(output, &blocks[1..], 777);
     assert!(
         crate::test_support::stripe_rows(output)
@@ -550,7 +491,7 @@ fn direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write() {
     let mut poison_target = poison_lease.take_target().unwrap();
     let mut poison_plane = poison_target.take(PlaneId::Y).unwrap();
     let (width, stride) = (poison_plane.width(), poison_plane.stride());
-    for row in poison_plane.u8_samples_mut().unwrap().chunks_mut(stride) {
+    for row in poison_plane.samples_mut().chunks_mut(stride) {
         row[..width].fill(0xde);
     }
     drop(poison_plane);
@@ -560,117 +501,21 @@ fn direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write() {
     let mut lease = progress.direct_stripe(0).unwrap();
     let mut target = lease.take_target().unwrap();
     let target = target.take(PlaneId::Y).unwrap();
-    let source =
-        StripePlane::copy_from(FramePlane::new(&workspace, PlaneId::Y).unwrap(), 0, 8).unwrap();
     let blocks = blocks_for_target(&target, PlaneId::Y);
-    let mut output = StripeOutputPlane::direct_u8(target, &source).unwrap();
+    let mut output = StripePlane::from_target(target);
     for block in &blocks[1..] {
         let rect = PlaneRect::new(block.x, block.y, block.width, block.height).unwrap();
-        let (samples, stride) = output.u8_rect_mut(rect).unwrap();
+        let (samples, stride) = output.rect_mut(rect).unwrap();
         for row in 0..block.height {
             samples[row * stride..row * stride + block.width].fill(77);
         }
     }
     assert!(
-        match output {
-            StripeOutputPlane::DirectU8(mut target) => {
-                let (width, stride) = (target.width(), target.stride());
-                let samples = target.u8_samples_mut().unwrap();
-                let mut rows = samples.chunks(stride).map(|row| &row[..width]);
-                rows.all(|row| row.iter().all(|&sample| sample != 0xde))
-            }
-            StripeOutputPlane::U16(_) => false,
-        },
+        crate::test_support::stripe_rows(&output)
+            .iter()
+            .all(|&sample| sample != 0xde),
         "omitted direct-u8 LR block write escaped poison oracle"
     );
-}
-
-#[test]
-fn gdf_active_luma_keeps_the_full_overwrite_initialization() {
-    let workspace = workspace(PixelFormat::Monochrome, 8, 8);
-    let mut core = lr_core([
-        FrameRestorationType::WienerNonsep,
-        FrameRestorationType::None,
-        FrameRestorationType::None,
-    ]);
-    let gdf = core.gdf_params.as_mut().unwrap();
-    gdf.gdf_frame_enable = true;
-    gdf.gdf_per_block = Some(false);
-    gdf.gdf_pic_qc_idx = Some(0);
-    gdf.gdf_pic_scale_idx = Some(0);
-    let progress = Arc::new(
-        crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
-    );
-    progress.begin(&[(0, 8)]).unwrap();
-    let mut lease = progress.direct_stripe(0).unwrap();
-    let target = lease.take_target().unwrap();
-    let blocks = blocks_for_target(target.get(PlaneId::Y).unwrap(), PlaneId::Y);
-    assert_eq!(
-        lr_initializations(&core, [true, false, false], [&blocks, &[], &[]], &target)[0],
-        StripeInitialization::FullyOverwritten
-    );
-}
-
-#[test]
-fn terminal_luma_direct_u8_eligibility_keeps_every_non_class_a_fallback() {
-    let workspace_u8 = workspace_with(BitDepth::Eight, PixelFormat::Monochrome, 9, 7, |x, y, _| {
-        ((x * 17 + y * 29) % 256) as u8
-    });
-    let progress = Arc::new(
-        crate::pipeline::frame_progress::FrameProgress::<u8>::new(workspace_u8.info()).unwrap(),
-    );
-    progress.begin(&[(0, 7)]).unwrap();
-    let mut lease = progress.direct_stripe(0).unwrap();
-    let target = lease.take_target().unwrap();
-    let target = target.get(PlaneId::Y).unwrap();
-    let mut blocks = blocks_for_target(target, PlaneId::Y);
-
-    assert!(terminal_luma_wiener_direct_u8(
-        BitDepth::Eight,
-        Some(FrameRestorationType::WienerNonsep),
-        false,
-        &blocks,
-        target,
-    ));
-    assert!(!terminal_luma_wiener_direct_u8(
-        BitDepth::Eight,
-        Some(FrameRestorationType::WienerNonsep),
-        true,
-        &blocks,
-        target,
-    ));
-    assert!(!terminal_luma_wiener_direct_u8(
-        BitDepth::Eight,
-        Some(FrameRestorationType::PcWiener),
-        false,
-        &blocks,
-        target,
-    ));
-    blocks.remove(1);
-    assert!(!terminal_luma_wiener_direct_u8(
-        BitDepth::Eight,
-        Some(FrameRestorationType::WienerNonsep),
-        false,
-        &blocks,
-        target,
-    ));
-
-    let workspace = workspace(PixelFormat::Monochrome, 9, 7);
-    let progress = Arc::new(
-        crate::pipeline::frame_progress::FrameProgress::<u16>::new(workspace.info()).unwrap(),
-    );
-    progress.begin(&[(0, 7)]).unwrap();
-    let mut lease = progress.direct_stripe(0).unwrap();
-    let target = lease.take_target().unwrap();
-    let target = target.get(PlaneId::Y).unwrap();
-    let blocks = blocks_for_target(target, PlaneId::Y);
-    assert!(!terminal_luma_wiener_direct_u8(
-        BitDepth::Ten,
-        Some(FrameRestorationType::WienerNonsep),
-        false,
-        &blocks,
-        target,
-    ));
 }
 
 #[test]

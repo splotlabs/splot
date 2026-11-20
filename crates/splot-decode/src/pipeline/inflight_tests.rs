@@ -13,32 +13,6 @@ use crate::pipeline::frame_tasks::SplitSample;
 use crate::prediction::inter::InterReferenceState;
 use crate::test_support::decoded_frame;
 
-#[test]
-fn parse_slots_are_bounded_and_reset_only_after_readers_release() {
-    let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
-    let first = ring.claim_parse_slot();
-    let pointer = Arc::as_ptr(&first) as usize;
-    first.cell().publish(1);
-    let second = ring.claim_parse_slot();
-    let reader = splot_parallel::spawn_thread("reader", move || {
-        for _ in 0..1024 {
-            assert_eq!(first.cell().current(), 1);
-            std::thread::yield_now();
-        }
-    })
-    .expect("reader thread");
-    let reused = ring.claim_parse_slot();
-    assert_eq!(Arc::as_ptr(&reused) as usize, pointer);
-    assert_eq!(reused.cell().current(), 0);
-    reader.join().expect("reader joins");
-    drop(reused);
-    drop(second);
-    for _ in 0..128 {
-        drop(ring.claim_parse_slot());
-    }
-    assert_eq!(ring.parse_slots.len(), 2);
-}
-
 /// The luma buffer the next workspace of `info` takes from the ring's pool.
 fn next_luma(ring: &InflightRing, info: DecodedFrameInfo) -> *const u8 {
     let mut planes =
@@ -221,7 +195,7 @@ fn pixel_reference_wait_drains_later_slots_after_the_first_failure() {
         .store
         .put(ReferenceSlot::new(1).expect("second slot"), late.share())
         .expect("store late slot");
-    let gate = references.pixel_reference_gate([0, 1]);
+    let gate = references.pixel_reference_gate([u32::MAX, 0, 0, 7, 1, 1]);
 
     let late_progress = late.progress().expect("late progress");
     let publisher = Arc::clone(&late_writer.progress);
@@ -402,9 +376,6 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
     records.cdef_grid_values.reserve(32);
     records.cdef_strengths.reserve(8);
     records.tx_skip_grid_values.reserve(128);
-    for lut in &mut records.ccso_offset_luts {
-        lut.reserve(16);
-    }
     report.outcome.records = Some(records);
     writer.complete(decoded_frame(4, 4));
     assert!(
@@ -428,11 +399,10 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
 
     let eight = &u8::pools(&mut pools).scratch;
     assert!(eight.frame_filter_records_capacity() >= 64);
-    let (cdef_grid, cdef_strengths, tx_skip, ccso) = eight.derived_filter_record_capacities();
+    let (cdef_grid, cdef_strengths, tx_skip) = eight.derived_filter_record_capacities();
     assert!(cdef_grid >= 32);
     assert!(cdef_strengths >= 8);
     assert!(tx_skip >= 128);
-    assert!(ccso.into_iter().all(|capacity| capacity >= 16));
     assert_eq!(
         u16::pools(&mut pools)
             .scratch
@@ -450,7 +420,7 @@ fn failed_finish_reports_its_error_before_harvest() {
         frame.info(),
         PipelineFrameSlot::Eight,
         &mut ring,
-        &mut crate::pipeline::FrameStore::new(false, 2),
+        &mut crate::pipeline::FrameStore::new(2),
         0,
     )
     .expect("pending finish");
@@ -534,7 +504,7 @@ fn retired_publications_keep_their_identity_and_exclude_direct_readers() {
         assert_eq!(Arc::as_ptr(&slot.cell), cell);
         assert_eq!(Arc::as_ptr(slot.progress.as_ref().unwrap()), progress);
         assert!(!slot.is_settled());
-        assert!(slot.progress().unwrap().read().is_none());
+        assert!(PublishedFrame::of_slot(&slot).is_none());
         writer.progress.begin(&[(0, 8)]).expect("stripe geometry");
         let lease = writer.progress.direct_stripe(0).unwrap();
         drop(writer);

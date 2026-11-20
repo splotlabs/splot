@@ -5,16 +5,15 @@
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    CurrentFrameIntraEdges, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, PlaneRect,
-    ReconSample, ReferencePlaneView,
+    CurrentFramePlane, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
 };
 
 use super::reference::ReferenceSamples;
 use super::{BawpSyntax, Mv, PlacedInterBlock};
 use crate::Result;
+use fearless_simd::{prelude::*, u16x16};
 
 const SHIFT: u32 = 8;
-const MAX_BAWP_RECT_DIM: usize = 64;
 
 /// Rows below its top-left reference position a § 7.13.3.25 template reaches:
 /// [`bawp_template_counts`] caps the template side at 16 luma samples.
@@ -41,6 +40,7 @@ pub(super) fn bawp_reference_luma_rows(luma_y: usize, luma_h: usize, mv_row: i32
 }
 
 #[derive(Default)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct TemplateStats {
     sum_x: i32,
     sum_y: i32,
@@ -74,59 +74,185 @@ impl TemplateStats {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn collect_template_stats<T, F>(
-    edges: &CurrentFrameIntraEdges<T>,
-    width: usize,
-    height: usize,
-    num_up: usize,
-    num_left: usize,
-    ref_x: i32,
-    ref_y: i32,
-    mut reference_sample: F,
-) -> Option<TemplateStats>
-where
-    T: ReconSample,
-    F: FnMut(i32, i32) -> Option<i32>,
-{
-    let mut stats = TemplateStats::default();
-    if num_up > 0 {
-        let step = width.checked_div(num_up)?;
-        let above = edges.above_samples()?;
-        let mut i = step >> 1;
-        while i < width {
-            let recon = i32::from(above.get(i)?.to_u16());
-            let sample_col = i32::try_from(i)
-                .ok()
-                .and_then(|offset| ref_x.checked_add(offset))?;
-            let reference = reference_sample(ref_y - 1, sample_col)?;
-            stats.sum_x += reference;
-            stats.sum_y += recon;
-            stats.sum_xy += reference * recon;
-            stats.sum_xx += reference * reference;
-            i += step;
+/// The `(reference, current)` samples of a § 7.13.3.25 template, widened to
+/// `u16`: the leading 16 samples of both above rows, of which the sums keep
+/// the `len_up / num_up` step, and the `num_left <= 16` left pairs, the
+/// unused lanes zero. With samples at most 1023, `sumX` and `sumY` stay at
+/// most `32 * 1023` and `sumXX` and `sumXY` at most `32 * 1023 * 1023 < 2^31`.
+#[derive(Default)]
+struct TemplatePairs {
+    above: [[u16; 16]; 2],
+    left: [[u16; 16]; 2],
+    up: (usize, usize),
+    count: i32,
+}
+
+impl TemplatePairs {
+    /// The above arm of `len` samples and `num` pairs from the rows
+    /// `reference` and `current`, which hold at least `len` samples.
+    #[inline]
+    fn add_above<T: ReconSample>(
+        &mut self,
+        (len, num): (usize, usize),
+        [reference, current]: [&[T]; 2],
+    ) -> Option<()> {
+        let step = len.checked_div(num).filter(|&step| step > 0 && len <= 16)?;
+        for (lanes, row) in self.above.iter_mut().zip([reference, current]) {
+            if let Some(row) = T::u8_slice(row).and_then(<[u8]>::first_chunk::<16>) {
+                *lanes = row.map(u16::from);
+            } else if let Some(row) = T::u16_slice(row).and_then(<[u16]>::first_chunk::<16>) {
+                *lanes = *row;
+            } else {
+                let row = row.get(..len)?;
+                lanes
+                    .iter_mut()
+                    .zip(row)
+                    .for_each(|(lane, sample)| *lane = sample.to_u16());
+            }
         }
-        stats.count = stats.count.checked_add(i32::try_from(num_up).ok()?)?;
+        self.up = (len, step);
+        self.count = self.count.checked_add(i32::try_from(num).ok()?)?;
+        Some(())
+    }
+
+    /// The left arm: the pairs `pair(i)` at `i = step >> 1, step + (step >> 1),
+    /// ...` below `len`, `step = len / num`.
+    fn add_left(
+        &mut self,
+        (len, num): (usize, usize),
+        mut pair: impl FnMut(usize) -> Option<(u16, u16)>,
+    ) -> Option<()> {
+        let step = len.checked_div(num).filter(|&step| step > 0)?;
+        let [reference, current] = &mut self.left;
+        for k in 0..num.min(16) {
+            (reference[k], current[k]) = pair((step >> 1) + k * step)?;
+        }
+        self.count = self.count.checked_add(i32::try_from(num).ok()?)?;
+        Some(())
+    }
+
+    /// The template sums: the above lanes past `len` or off the step
+    /// zeroed, `u16` lanes for the sample sums and `u32` lanes for the
+    /// products.
+    #[inline]
+    fn stats(&self) -> TemplateStats {
+        const LANE: [u16; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let (len, step) = self.up;
+        baseline_simd!(simd => {
+            let lane = u16x16::load_array(simd, LANE);
+            let keep = lane.simd_lt(u16x16::splat(simd, len as u16))
+                & (lane & u16x16::splat(simd, step.wrapping_sub(1) as u16))
+                    .simd_eq(u16x16::splat(simd, (step >> 1) as u16));
+            let zero = u16x16::splat(simd, 0);
+            let above = self.above.map(|lanes| keep.select(u16x16::load_array(simd, lanes), zero));
+            let left = self.left.map(|lanes| u16x16::load_array(simd, lanes));
+            let (x, y) = ([above[0], left[0]], [above[1], left[1]]);
+            let products = |a: [u16x16<_>; 2], b: [u16x16<_>; 2]| {
+                let ((low0, high0), (low1, high1)) = (a[0].widening_mul(b[0]), a[1].widening_mul(b[1]));
+                (low0 + high0 + low1 + high1).reduce_sum() as i32
+            };
+            TemplateStats {
+                sum_x: i32::from((x[0] + x[1]).reduce_sum()),
+                sum_y: i32::from((y[0] + y[1]).reduce_sum()),
+                sum_xx: products(x, x),
+                sum_xy: products(x, y),
+                count: self.count,
+            }
+        })
+    }
+}
+
+/// The samples above and left of a block's template in a current-frame
+/// plane, clamped to storage like the DC edges: indices past the stored
+/// extent repeat the last stored sample.
+struct CurrentTemplate<'a, T> {
+    above: &'a [T],
+    left: &'a [T],
+    stride: usize,
+    last_col: usize,
+    last_row: usize,
+}
+
+impl<'a, T: ReconSample> CurrentTemplate<'a, T> {
+    /// `None` when an arm the template uses lies outside the frame.
+    fn new(
+        plane: &'a CurrentFramePlane<T>,
+        (x, y): (usize, usize),
+        (width, height, num_up, num_left): (usize, usize, usize, usize),
+    ) -> Result<Option<Self>> {
+        let storage = plane.storage_size();
+        let up = usize::from(num_up > 0);
+        let (Some(top), Some(stored_cols), Some(stored_rows)) = (
+            y.checked_sub(up),
+            storage.width().checked_sub(x),
+            storage.height().checked_sub(y),
+        ) else {
+            return Ok(None);
+        };
+        let (Some(last_col), Some(last_row)) = (
+            width.min(stored_cols).checked_sub(1),
+            height.min(stored_rows).checked_sub(1),
+        ) else {
+            return Ok(None);
+        };
+        if num_left > 0 && x == 0 {
+            return Ok(None);
+        }
+        let (stride, rows) = (plane.stride_samples(), plane.rows(top, y + last_row + 1)?);
+        Ok(Some(Self {
+            above: rows.get(x..).unwrap_or_default(),
+            left: rows
+                .get((up * stride + x).saturating_sub(1)..)
+                .unwrap_or_default(),
+            stride,
+            last_col,
+            last_row,
+        }))
+    }
+
+    /// The row above the template from its first column, at least `len`
+    /// samples: past the stored extent, `padded` repeats the last stored
+    /// sample.
+    fn above_row<'b>(&'b self, len: usize, padded: &'b mut [T; 16]) -> Option<&'b [T]> {
+        if self.last_col + 1 >= len {
+            return self.above.get(..len).map(|_| self.above);
+        }
+        let stored = self.above.get(..=self.last_col)?;
+        let (head, tail) = padded.get_mut(..len)?.split_at_mut(stored.len());
+        head.copy_from_slice(stored); // splot-copy-ok: template row padded past the frame edge
+        tail.fill(*stored.last()?);
+        Some(padded)
+    }
+
+    #[inline]
+    fn left(&self, i: usize) -> Option<u16> {
+        Some(self.left.get(i.min(self.last_row) * self.stride)?.to_u16())
+    }
+}
+
+/// The § 7.13.3.25 template sums: `above_ref` is the reference row above
+/// the block from its first column, `left_ref(i)` the reference sample left
+/// of block row `i`.
+#[inline]
+fn collect_template_stats<T: ReconSample>(
+    current: &CurrentTemplate<'_, T>,
+    (width, height, num_up, num_left): (usize, usize, usize, usize),
+    above_ref: &[T],
+    mut left_ref: impl FnMut(usize) -> Option<u16>,
+) -> Option<TemplateStats> {
+    let mut pairs = TemplatePairs::default();
+    if num_up > 0 {
+        let mut padded = [T::default(); 16];
+        let above = current.above_row(width, &mut padded)?;
+        above_ref.get(..width)?;
+        pairs.add_above((width, num_up), [above_ref, above])?;
     }
     if num_left > 0 {
-        let step = height.checked_div(num_left)?;
-        let left = edges.left_samples()?;
-        let mut i = step >> 1;
-        while i < height {
-            let recon = i32::from(left.get(i)?.to_u16());
-            let sample_row = i32::try_from(i)
-                .ok()
-                .and_then(|offset| ref_y.checked_add(offset))?;
-            let reference = reference_sample(sample_row, ref_x - 1)?;
-            stats.sum_x += reference;
-            stats.sum_y += recon;
-            stats.sum_xy += reference * recon;
-            stats.sum_xx += reference * reference;
-            i += step;
-        }
-        stats.count = stats.count.checked_add(i32::try_from(num_left).ok()?)?;
+        pairs.add_left((height, num_left), |i| {
+            Some((left_ref(i)?, current.left(i)?))
+        })?;
     }
-    Some(stats)
+    Some(pairs.stats())
 }
 
 pub(crate) fn apply_bawp<T: ReconSample>(
@@ -164,10 +290,6 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     (avail_up, avail_left): (bool, bool),
     mv: Mv,
 ) -> Result<()> {
-    if !target.width().is_power_of_two() || !target.height().is_power_of_two() {
-        return Ok(());
-    }
-
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
     let Some(ref_y) = fullpel_ref_pos(target.y(), dy) else {
@@ -205,28 +327,33 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
 
     let (width, height, num_up, num_left) =
         bawp_template_counts(target.width(), target.height(), true, avail_up, avail_left);
-    let Some(size) = morph_dimensions_size(width, height) else {
+    let dims = (width, height, num_up, num_left);
+    if morph_dimensions_size(width, height).is_none() {
+        return Ok(());
+    }
+    let plane = workspace.plane(PlaneId::Y)?;
+    let Some(current) = CurrentTemplate::new(plane, (target.x(), target.y()), dims)? else {
         return Ok(());
     };
-    let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, target.x(), target.y(), size)?;
-
-    let Some(stats) = collect_template_stats(
-        &edges,
-        width,
-        height,
-        num_up,
-        num_left,
-        ref_x,
-        ref_y,
-        |row, col| intrabc_morph_sample(workspace, row, col),
-    ) else {
+    let (Ok(ref_x), Ok(ref_y)) = (usize::try_from(ref_x), usize::try_from(ref_y)) else {
+        return Ok(());
+    };
+    let Some(reference) = CurrentTemplate::new(plane, (ref_x, ref_y), dims)
+        .ok()
+        .flatten()
+    else {
+        return Ok(());
+    };
+    let mut padded = [T::default(); 16];
+    let above = reference.above_row(width, &mut padded).unwrap_or_default();
+    let Some(stats) = collect_template_stats(&current, dims, above, |i| reference.left(i)) else {
         return Ok(());
     };
 
     let alpha = stats.implicit_alpha();
     let beta = stats.beta(alpha);
 
-    apply_bawp_region(workspace, PlaneId::Y, target, alpha, beta)?;
+    workspace.apply_bawp_rect(PlaneId::Y, target, alpha, beta)?;
     Ok(())
 }
 
@@ -243,20 +370,20 @@ fn apply_bawp_plane<T: ReconSample>(
     luma_alpha: i16,
     tile_offset: ByteOffset,
 ) -> Result<i16> {
-    let plane_x = placed.luma_x >> sub_x;
-    let plane_y = placed.luma_y >> sub_y;
-    let plane_w = placed.luma_w >> sub_x;
-    let plane_h = placed.luma_h >> sub_y;
-    let last_row = (bawp_reference_luma_rows(placed.luma_y, placed.luma_h, mv.row) >> sub_y)
+    let plane_x = placed.luma_x() >> sub_x;
+    let plane_y = placed.luma_y() >> sub_y;
+    let plane_w = placed.luma_w() >> sub_x;
+    let plane_h = placed.luma_h() >> sub_y;
+    let last_row = (bawp_reference_luma_rows(placed.luma_y(), placed.luma_h(), mv.row) >> sub_y)
         .saturating_sub(1) as i32;
-    let (ref_samples, ref_width, ref_height) =
-        reference_plane(reference, plane, last_row, tile_offset)?;
+    let ref_samples = reference.plane_view(plane, last_row, tile_offset)?;
+    let (ref_width, ref_height) = (ref_samples.width(), ref_samples.height());
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
-    let Some(ref_y) = fullpel_ref_pos(placed.luma_y, dy).map(|y| y >> sub_y) else {
+    let Some(ref_y) = fullpel_ref_pos(placed.luma_y(), dy).map(|y| y >> sub_y) else {
         return Ok(luma_alpha);
     };
-    let Some(ref_x) = fullpel_ref_pos(placed.luma_x, dx).map(|x| x >> sub_x) else {
+    let Some(ref_x) = fullpel_ref_pos(placed.luma_x(), dx).map(|x| x >> sub_x) else {
         return Ok(luma_alpha);
     };
     let Some(plane_width) = i32::try_from(ref_width).ok() else {
@@ -310,20 +437,21 @@ fn apply_bawp_plane<T: ReconSample>(
         bawp.avail_up,
         bawp.avail_left,
     );
-    let Some(size) = morph_dimensions_size(width, height) else {
+    let dims = (width, height, num_up, num_left);
+    if morph_dimensions_size(width, height).is_none() {
+        return Ok(luma_alpha);
+    }
+    let Some(current) = CurrentTemplate::new(workspace.plane(plane)?, (plane_x, plane_y), dims)?
+    else {
         return Ok(luma_alpha);
     };
-
-    let edges = workspace.intra_dc_edges_for_rect(plane, plane_x, plane_y, size)?;
-    let ref_at = |row: i32, col: i32| -> Option<i32> {
-        let row = usize::try_from(row).ok()?;
-        let col = usize::try_from(col).ok()?;
-        Some(ref_samples.sample(row, col))
+    let (Ok(ref_x), Ok(ref_y)) = (usize::try_from(ref_x), usize::try_from(ref_y)) else {
+        return Ok(luma_alpha);
     };
-
-    let Some(stats) = collect_template_stats(
-        &edges, width, height, num_up, num_left, ref_x, ref_y, ref_at,
-    ) else {
+    let above_row = ref_samples.row(ref_y - 1).get(ref_x..).unwrap_or_default();
+    let Some(stats) = collect_template_stats(&current, dims, above_row, |i| {
+        Some(ref_samples.sample(ref_y + i, ref_x - 1) as u16)
+    }) else {
         return Ok(luma_alpha);
     };
 
@@ -347,8 +475,7 @@ fn apply_bawp_plane<T: ReconSample>(
     };
     let beta = stats.beta(alpha);
 
-    apply_bawp_region(
-        workspace,
+    workspace.apply_bawp_rect(
         plane,
         PlaneRect::new(plane_x, plane_y, plane_w, plane_h)?,
         alpha,
@@ -372,74 +499,10 @@ fn morph_dimensions_size(width: usize, height: usize) -> Option<IntraRectBlockSi
     .ok()
 }
 
-fn apply_bawp_region<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    plane: PlaneId,
-    rect: PlaneRect,
-    alpha: i16,
-    beta: i32,
-) -> Result<()> {
-    let storage = workspace.plane(plane)?.storage_size();
-    let x = rect.x();
-    let y = rect.y();
-    let width = rect.width();
-    let height = rect.height();
-    if x >= storage.width() || y >= storage.height() {
-        return Ok(());
-    }
-    let visible_width = width.min(storage.width() - x);
-    let visible_height = height.min(storage.height() - y);
-    let mut y_offset = 0usize;
-    while y_offset < height && y_offset < visible_height {
-        let chunk_h = (height - y_offset).min(MAX_BAWP_RECT_DIM);
-        let Some(chunk_y) = y.checked_add(y_offset) else {
-            return Ok(());
-        };
-        let mut x_offset = 0usize;
-        while x_offset < width && x_offset < visible_width {
-            let chunk_w = (width - x_offset).min(MAX_BAWP_RECT_DIM);
-            let Some(chunk_x) = x.checked_add(x_offset) else {
-                return Ok(());
-            };
-            let Some(size) = morph_dimensions_size(chunk_w, chunk_h) else {
-                return Ok(());
-            };
-            workspace.apply_bawp_rect(plane, chunk_x, chunk_y, size, alpha, beta)?;
-            x_offset += chunk_w;
-        }
-        y_offset += chunk_h;
-    }
-    Ok(())
-}
-
 fn fullpel_ref_pos(origin: usize, delta: i32) -> Option<i32> {
     i32::try_from(origin)
         .ok()
         .and_then(|origin| origin.checked_add(delta))
-}
-
-fn intrabc_morph_sample<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    row: i32,
-    col: i32,
-) -> Option<i32> {
-    let row = usize::try_from(row).ok()?;
-    let col = usize::try_from(col).ok()?;
-    workspace
-        .reconstructed_sample(PlaneId::Y, col, row)
-        .ok()
-        .map(|sample| i32::from(sample.to_u16()))
-}
-
-fn reference_plane<T: ReconSample>(
-    reference: ReferenceSamples<'_, T>,
-    plane: PlaneId,
-    last_row: i32,
-    tile_offset: ByteOffset,
-) -> Result<(ReferencePlaneView<'_, T>, usize, usize)> {
-    let (view, _, _) = reference.plane_view(plane, last_row, tile_offset)?;
-    let (width, height) = (view.width(), view.height());
-    Ok((view, width, height))
 }
 
 fn bawp_template_counts(

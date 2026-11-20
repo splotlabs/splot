@@ -3,16 +3,18 @@
 
 //! SAD, SSE, and Hadamard SATD over strided `u16` blocks.
 //!
-//! The SIMD forms run one row at a time in `min(width, 16)` lanes (rows are 4,
-//! 8, or a multiple of 16 samples wide). Every sum is exact integer arithmetic
+//! The SIMD forms run one row at a time in 16 `u16` lanes, or 8 zero-padded
+//! lanes for 4- and 8-wide rows. Every sum is exact integer arithmetic
 //! that cannot overflow for `u16` inputs, so lane order does not change a
 //! result: `|d| <= 65535` keeps a SAD lane of a 256x256 block below `2^28`
 //! and its whole `u32` sum below `2^32` (`65536 * 65535`), `d * d` fits `u32`
 //! before it widens into `u64` lanes, and an 8x8 Hadamard coefficient stays
 //! below `64 * 65535`, so one tile's magnitudes also sum in `u32`.
 
-use std::simd::num::{SimdInt as _, SimdUint as _};
-use std::simd::{Simd, cmp::SimdOrd as _, simd_swizzle};
+use fearless_simd::{
+    Level, Simd, SimdBase, SimdCombine as _, SimdFrom, SimdWiden as _, dispatch, i32x4, i32x8,
+    u16x8, u16x16, u32x8, u64x4,
+};
 
 use super::BlockDims;
 
@@ -99,16 +101,49 @@ pub(super) fn sse_row_scalar(a: &[u16], b: &[u16]) -> u64 {
         .sum()
 }
 
+/// Calls `f` with the `|a - b|` of each 16-sample group of a row pair as two
+/// 8-lane halves, or of a row of at most 8 samples zero-padded to 8 lanes.
+#[inline]
+fn row_abs_diff<S: Simd>(simd: S, a: &[u16], b: &[u16], mut f: impl FnMut(u32x8<S>)) {
+    if a.len() <= 8 && b.len() <= 8 {
+        let pad = |row: &[u16]| {
+            let mut lanes = [0; 8];
+            lanes[..row.len()].copy_from_slice(row);
+            u16x8::simd_from(simd, lanes)
+        };
+        let (a, b) = (pad(a), pad(b));
+        let (lo, hi) = (a.max(b) - a.min(b)).widen();
+        f(lo.combine(hi));
+        return;
+    }
+    for (a, b) in a.as_chunks::<16>().0.iter().zip(b.as_chunks::<16>().0) {
+        let (a, b) = (u16x16::simd_from(simd, *a), u16x16::simd_from(simd, *b));
+        let (lo, hi) = (a.max(b) - a.min(b)).widen();
+        f(lo);
+        f(hi);
+    }
+}
+
+/// Adds the squares of `d` to `acc`; a square of a `u16` difference fits `u32`.
+#[inline]
+pub(super) fn add_squares<S: Simd>(acc: &mut u64x4<S>, d: u32x8<S>) {
+    let (lo, hi) = (d * d).widen();
+    *acc += lo + hi;
+}
+
 /// [`sse_row_scalar`] in 16 lanes plus a scalar tail.
 pub(super) fn sse_row_simd(a: &[u16], b: &[u16]) -> u64 {
+    dispatch!(Level::baseline(), simd => sse_row_kernel(simd, a, b))
+}
+
+#[inline]
+fn sse_row_kernel<S: Simd>(simd: S, a: &[u16], b: &[u16]) -> u64 {
     let len = a.len().min(b.len());
     let (a_chunks, a_tail) = a[..len].as_chunks::<16>();
     let (b_chunks, b_tail) = b[..len].as_chunks::<16>();
-    let mut acc = Simd::<u64, 16>::splat(0);
+    let mut acc = u64x4::splat(simd, 0);
     for (a, b) in a_chunks.iter().zip(b_chunks) {
-        let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
-        let d = (a.simd_max(b) - a.simd_min(b)).cast::<u32>();
-        acc += (d * d).cast::<u64>();
+        row_abs_diff(simd, a, b, |d| add_squares(&mut acc, d));
     }
     acc.reduce_sum()
         + a_tail
@@ -142,27 +177,22 @@ pub(super) fn sad_simd(
     pred_stride: usize,
     dims: BlockDims,
 ) -> u32 {
-    match dims.width() {
-        4 => sad_lanes::<4>(src, src_stride, pred, pred_stride, dims),
-        8 => sad_lanes::<8>(src, src_stride, pred, pred_stride, dims),
-        _ => sad_lanes::<16>(src, src_stride, pred, pred_stride, dims),
-    }
+    dispatch!(Level::baseline(), simd => sad_kernel(simd, src, src_stride, pred, pred_stride, dims))
 }
 
-/// The sum of `|d|` in `L` `u32` lanes.
-fn sad_lanes<const L: usize>(
+/// The sum of `|d|` in 8 `u32` lanes.
+#[inline]
+fn sad_kernel<S: Simd>(
+    simd: S,
     src: &[u16],
     src_stride: usize,
     pred: &[u16],
     pred_stride: usize,
     dims: BlockDims,
 ) -> u32 {
-    let mut acc = Simd::<u32, L>::splat(0);
+    let mut acc = u32x8::splat(simd, 0);
     for_each_row_pair(src, src_stride, pred, pred_stride, dims, |a, b| {
-        for (a, b) in a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0) {
-            let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
-            acc += (a.simd_max(b) - a.simd_min(b)).cast::<u32>();
-        }
+        row_abs_diff(simd, a, b, |d| acc += d);
     });
     acc.reduce_sum()
 }
@@ -202,6 +232,21 @@ pub(super) fn sad_row_simd(
     dims: BlockDims,
     out: &mut [u32],
 ) {
+    dispatch!(Level::baseline(), simd => {
+        sad_row_kernel(simd, src, src_stride, pred, pred_stride, dims, out);
+    });
+}
+
+#[inline]
+fn sad_row_kernel<S: Simd>(
+    simd: S,
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    dims: BlockDims,
+    out: &mut [u32],
+) {
     const L: usize = 8;
     let (w, h) = (dims.width(), dims.height());
     let full = w == 4
@@ -212,7 +257,8 @@ pub(super) fn sad_row_simd(
         && pred.len() >= (h - 1) * pred_stride + w + out.len().div_ceil(L) * L - 1;
     if !full {
         for (k, out) in out.iter_mut().enumerate() {
-            *out = sad_simd(
+            *out = sad_kernel(
+                simd,
                 src,
                 src_stride,
                 pred.get(k..).unwrap_or_default(),
@@ -223,16 +269,16 @@ pub(super) fn sad_row_simd(
         return;
     }
     for (group, out) in out.chunks_mut(L).enumerate() {
-        let mut acc = Simd::<u32, L>::splat(0);
+        let mut acc = u32x8::splat(simd, 0);
         for y in 0..h {
             let row = &pred[y * pred_stride + group * L..];
             for (x, &s) in src[y * src_stride..][..w].iter().enumerate() {
-                let c = Simd::<u16, L>::from_slice(&row[x..x + L]);
-                let s = Simd::splat(s);
-                acc += (c.simd_max(s) - c.simd_min(s)).cast::<u32>();
+                let c = u16x8::from_slice(simd, &row[x..x + L]);
+                let (lo, hi) = (c.max(s) - c.min(s)).widen();
+                acc += lo.combine(hi);
             }
         }
-        out.copy_from_slice(&acc.to_array()[..out.len()]);
+        out.copy_from_slice(&acc.as_slice()[..out.len()]);
     }
 }
 
@@ -243,30 +289,13 @@ pub(super) fn sse_simd(
     pred_stride: usize,
     dims: BlockDims,
 ) -> u64 {
-    match dims.width() {
-        4 => sse_lanes::<4>(src, src_stride, pred, pred_stride, dims),
-        8 => sse_lanes::<8>(src, src_stride, pred, pred_stride, dims),
-        _ => sse_lanes::<16>(src, src_stride, pred, pred_stride, dims),
-    }
-}
-
-/// The sum of `d * d` in `L` `u64` lanes.
-fn sse_lanes<const L: usize>(
-    src: &[u16],
-    src_stride: usize,
-    pred: &[u16],
-    pred_stride: usize,
-    dims: BlockDims,
-) -> u64 {
-    let mut acc = Simd::<u64, L>::splat(0);
-    for_each_row_pair(src, src_stride, pred, pred_stride, dims, |a, b| {
-        for (a, b) in a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0) {
-            let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
-            let d = (a.simd_max(b) - a.simd_min(b)).cast::<u32>();
-            acc += (d * d).cast::<u64>();
-        }
-    });
-    acc.reduce_sum()
+    dispatch!(Level::baseline(), simd => {
+        let mut acc = u64x4::splat(simd, 0);
+        for_each_row_pair(src, src_stride, pred, pred_stride, dims, |a, b| {
+            row_abs_diff(simd, a, b, |d| add_squares(&mut acc, d));
+        });
+        acc.reduce_sum()
+    })
 }
 
 #[cfg(test)]
@@ -294,28 +323,11 @@ pub(super) fn residual_simd(
     dims: BlockDims,
     out: &mut [i32],
 ) {
-    match dims.width() {
-        4 => residual_lanes::<4>(src, src_stride, pred, pred_stride, dims, out),
-        8 => residual_lanes::<8>(src, src_stride, pred, pred_stride, dims, out),
-        _ => residual_lanes::<16>(src, src_stride, pred, pred_stride, dims, out),
-    }
-}
-
-fn residual_lanes<const L: usize>(
-    src: &[u16],
-    src_stride: usize,
-    pred: &[u16],
-    pred_stride: usize,
-    dims: BlockDims,
-    out: &mut [i32],
-) {
     let mut out = out.chunks_exact_mut(dims.width());
     for_each_row_pair(src, src_stride, pred, pred_stride, dims, |a, b| {
         let Some(out) = out.next() else { return };
-        let lanes = out.as_chunks_mut::<L>().0.iter_mut();
-        for (slot, (a, b)) in lanes.zip(a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0)) {
-            let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
-            *slot = (a.cast::<i32>() - b.cast::<i32>()).to_array();
+        for (slot, (&a, &b)) in out.iter_mut().zip(a.iter().zip(b)) {
+            *slot = i32::from(a) - i32::from(b);
         }
     });
 }
@@ -393,86 +405,87 @@ pub(super) fn satd_simd(
     pred_stride: usize,
     dims: BlockDims,
 ) -> u64 {
+    dispatch!(Level::baseline(), simd => {
+        satd_kernel(simd, src, src_stride, pred, pred_stride, dims)
+    })
+}
+
+#[inline]
+fn satd_kernel<S: Simd>(
+    simd: S,
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    dims: BlockDims,
+) -> u64 {
     let tile = satd_tile(dims);
     let mut total = 0u64;
     for (y, x) in tile_origins(dims, tile) {
-        let a = src.get(y * src_stride + x..).unwrap_or_default();
-        let b = pred.get(y * pred_stride + x..).unwrap_or_default();
+        let a = (
+            src.get(y * src_stride + x..).unwrap_or_default(),
+            src_stride,
+        );
+        let b = (
+            pred.get(y * pred_stride + x..).unwrap_or_default(),
+            pred_stride,
+        );
         total += if tile == 8 {
-            satd_tile8(a, src_stride, b, pred_stride)
+            row_hadamard_magnitudes(simd, column_hadamard::<S, i32x8<S>, 8>(simd, a, b))
         } else {
-            satd_tile4(a, src_stride, b, pred_stride)
+            row_hadamard_magnitudes(simd, column_hadamard::<S, i32x4<S>, 4>(simd, a, b))
         };
     }
     total
 }
 
-/// One 4x4 SATD tile: a column Hadamard across the row vectors, then a row
-/// Hadamard inside each vector. The row transform permutes its outputs, which
-/// leaves the sum of magnitudes unchanged.
-fn satd_tile4(src: &[u16], src_stride: usize, pred: &[u16], pred_stride: usize) -> u64 {
-    column_hadamard::<4>(src, src_stride, pred, pred_stride)
-        .iter()
-        .map(|&row| u64::from(hadamard_rows4(row).abs().cast::<u32>().reduce_sum()))
-        .sum()
-}
-
-/// One 8x8 SATD tile. The row Hadamard runs on two rows at once: each
-/// butterfly stage pairs lanes of two vectors with one swizzle per operand,
-/// so it needs no sign multiply, and the magnitudes reduce once per tile.
-fn satd_tile8(src: &[u16], src_stride: usize, pred: &[u16], pred_stride: usize) -> u64 {
-    let rows = column_hadamard::<8>(src, src_stride, pred, pred_stride);
-    let mut acc = Simd::<i32, 8>::splat(0);
-    for [r0, r1] in rows.as_chunks::<2>().0 {
-        let (lo, hi) = (
-            simd_swizzle!(*r0, *r1, [0, 1, 2, 3, 8, 9, 10, 11]),
-            simd_swizzle!(*r0, *r1, [4, 5, 6, 7, 12, 13, 14, 15]),
-        );
-        let (sum, dif) = (lo + hi, lo - hi);
-        let (lo, hi) = (
-            simd_swizzle!(sum, dif, [0, 1, 8, 9, 4, 5, 12, 13]),
-            simd_swizzle!(sum, dif, [2, 3, 10, 11, 6, 7, 14, 15]),
-        );
-        let (sum, dif) = (lo + hi, lo - hi);
-        let (lo, hi) = (
-            simd_swizzle!(sum, dif, [0, 2, 4, 6, 8, 10, 12, 14]),
-            simd_swizzle!(sum, dif, [1, 3, 5, 7, 9, 11, 13, 15]),
-        );
-        acc += (lo + hi).abs() + (lo - hi).abs();
+/// The magnitude sum of the row Hadamard of a tile's rows, two rows at once:
+/// each stage pairs the even and odd lanes of the two vectors, so every
+/// butterfly stays inside one row and needs no sign multiply. The stages
+/// permute their outputs, which leaves the sum of magnitudes unchanged.
+#[inline]
+fn row_hadamard_magnitudes<S: Simd, V: SimdBase<S, Element = i32>, const N: usize>(
+    simd: S,
+    rows: [V; N],
+) -> u64 {
+    let mut acc = V::splat(simd, 0);
+    for &[mut lo, mut hi] in rows.as_chunks::<2>().0 {
+        for _ in 0..N.trailing_zeros() {
+            let (even, odd) = (lo.unzip_low(hi), lo.unzip_high(hi));
+            (lo, hi) = (even + odd, even - odd);
+        }
+        acc += lo.abs() + hi.abs();
     }
-    u64::from(acc.cast::<u32>().reduce_sum())
+    u64::from(acc.reduce_sum() as u32)
 }
 
 /// The `src - pred` rows of an `N x N` tile after the column Hadamard, with
 /// one bounds check per tile when both slices hold it. Rows and samples that
 /// a short slice does not hold count as zero.
-fn column_hadamard<const N: usize>(
-    src: &[u16],
-    src_stride: usize,
-    pred: &[u16],
-    pred_stride: usize,
-) -> [Simd<i32, N>; N] {
+#[inline]
+fn column_hadamard<S: Simd, V: SimdBase<S, Element = i32, Array = [i32; N]>, const N: usize>(
+    simd: S,
+    (src, src_stride): (&[u16], usize),
+    (pred, pred_stride): (&[u16], usize),
+) -> [V; N] {
     let end = |stride: usize| (N - 1) * stride + N;
-    let mut v = [Simd::<i32, N>::splat(0); N];
+    let mut d = [[0i32; N]; N];
     if let (Some(a), Some(b)) = (src.get(..end(src_stride)), pred.get(..end(pred_stride))) {
-        let row = |s: &[u16], at: usize| Simd::<u16, N>::from_slice(&s[at..at + N]).cast::<i32>();
-        for (i, slot) in v.iter_mut().enumerate() {
-            *slot = row(a, i * src_stride) - row(b, i * pred_stride);
+        for (i, row) in d.iter_mut().enumerate() {
+            let (a, b) = (&a[i * src_stride..][..N], &b[i * pred_stride..][..N]);
+            for (slot, (&a, &b)) in row.iter_mut().zip(a.iter().zip(b)) {
+                *slot = i32::from(a) - i32::from(b);
+            }
         }
     } else {
-        let row = |s: &[u16], at: usize| {
-            let row = s.get(at..).unwrap_or_default();
-            let row = row.first_chunk::<N>().copied().unwrap_or_else(|| {
-                let mut tail = [0u16; N];
-                tail[..row.len()].copy_from_slice(row);
-                tail
-            });
-            Simd::from_array(row).cast::<i32>()
-        };
-        for (i, slot) in v.iter_mut().enumerate() {
-            *slot = row(src, i * src_stride) - row(pred, i * pred_stride);
+        let sample = |s: &[u16], at: usize| s.get(at).map_or(0, |&v| i32::from(v));
+        for (i, row) in d.iter_mut().enumerate() {
+            for (j, slot) in row.iter_mut().enumerate() {
+                *slot = sample(src, i * src_stride + j) - sample(pred, i * pred_stride + j);
+            }
         }
     }
+    let mut v = d.map(|row| V::simd_from(simd, row));
     let mut half = 1;
     while half < N {
         for base in (0..N).step_by(2 * half) {
@@ -485,13 +498,6 @@ fn column_hadamard<const N: usize>(
         half *= 2;
     }
     v
-}
-
-fn hadamard_rows4(v: Simd<i32, 4>) -> Simd<i32, 4> {
-    let v = simd_swizzle!(v, [0, 0, 2, 2])
-        + simd_swizzle!(v, [1, 1, 3, 3]) * Simd::from_array([1, -1, 1, -1]);
-    simd_swizzle!(v, [0, 1, 0, 1])
-        + simd_swizzle!(v, [2, 3, 2, 3]) * Simd::from_array([1, 1, -1, -1])
 }
 
 #[cfg(test)]

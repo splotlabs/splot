@@ -6,90 +6,61 @@ use super::*;
 const MAX: fn(u64) -> DecodeLimitThreshold = DecodeLimitThreshold::Max;
 
 #[test]
-fn default_options_and_limits_are_finite_and_pinned() {
+fn default_options_and_limits_are_unlimited() {
     let limits = DecodeLimits::default();
-    let cases = [
-        (
-            DecodeLimitName::MaxInputBytes,
-            limits.max_input_bytes(),
-            16 * 1024 * 1024,
-        ),
-        (DecodeLimitName::MaxObus, limits.max_obus(), 16_384),
+    let getters = [
+        (DecodeLimitName::MaxInputBytes, limits.max_input_bytes()),
+        (DecodeLimitName::MaxObus, limits.max_obus()),
         (
             DecodeLimitName::MaxIvfFrameRecords,
             limits.max_ivf_frame_records(),
-            4_096,
         ),
         (
             DecodeLimitName::MaxFramesToDecode,
             limits.max_frames_to_decode(),
-            8_192,
         ),
-        (
-            DecodeLimitName::MaxOutputFrames,
-            limits.max_output_frames(),
-            8_192,
-        ),
-        (
-            DecodeLimitName::MaxFrameWidth,
-            limits.max_frame_width(),
-            4_096,
-        ),
-        (
-            DecodeLimitName::MaxFrameHeight,
-            limits.max_frame_height(),
-            4_096,
-        ),
+        (DecodeLimitName::MaxOutputFrames, limits.max_output_frames()),
+        (DecodeLimitName::MaxFrameWidth, limits.max_frame_width()),
+        (DecodeLimitName::MaxFrameHeight, limits.max_frame_height()),
         (
             DecodeLimitName::MaxLumaSamplesPerFrame,
             limits.max_luma_samples_per_frame(),
-            4_096 * 4_096,
         ),
         (
             DecodeLimitName::MaxDecodedFrameBytes,
             limits.max_decoded_frame_bytes(),
-            64 * 1024 * 1024,
         ),
         (
             DecodeLimitName::MaxReferenceSlots,
             limits.max_reference_slots(),
-            16,
         ),
         (
             DecodeLimitName::MaxReferenceStoreBytes,
             limits.max_reference_store_bytes(),
-            256 * 1024 * 1024,
         ),
-        (
-            DecodeLimitName::MaxTileCount,
-            limits.max_tile_count(),
-            4_096,
-        ),
+        (DecodeLimitName::MaxTileCount, limits.max_tile_count()),
         (
             DecodeLimitName::MaxTilePartitionSteps,
             limits.max_tile_partition_steps(),
-            1_048_576,
         ),
         (
             DecodeLimitName::MaxTilePayloadBytes,
             limits.max_tile_payload_bytes(),
-            16 * 1024 * 1024,
         ),
         (
             DecodeLimitName::MaxLoopRestorationSourceReads,
             limits.max_loop_restoration_source_reads(),
-            1_048_576 * 16,
         ),
     ];
 
     assert_eq!(DecodeOptions::default(), DecodeOptions::DEFAULT);
     assert_eq!(DecodeOptions::default().limits(), DecodeLimits::DEFAULT);
+    assert_eq!(limits, DecodeLimits::unlimited());
     assert_eq!(DecodeOptions::default().y4m_frame_rate_override(), None);
     assert_eq!(DecodeOptions::new(limits).limits(), limits);
-    for (name, getter, expected) in cases {
-        assert_eq!(getter, MAX(expected));
-        assert_eq!(limits.threshold(name), MAX(expected));
-        assert!(expected > 0);
+    for (name, getter) in getters {
+        assert_eq!(getter, DecodeLimitThreshold::Unlimited);
+        assert_eq!(limits.threshold(name), DecodeLimitThreshold::Unlimited);
     }
 }
 

@@ -33,12 +33,11 @@ use splot_recon::{
 };
 
 use super::frame_engine::finish::WalkStage;
-use super::frame_progress::FrameProgress;
+use super::frame_progress::{FrameProgress, PublishedFrame};
 use super::frame_tasks::RowPools;
 use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
 use crate::filters::wienerns_lr::FrameFilterRecords;
-use crate::prediction::inter::ParseProgress;
 use crate::prediction::inter::reference::HeldFrameSamples;
 use parking_lot::Mutex;
 
@@ -225,14 +224,14 @@ impl<T: ReconSample> RefFrameSlot<T> {
     ///
     /// A settled slot lends its decoded frame directly; a slot whose filter
     /// phase is still running lends the row prefix that phase has published,
-    /// keeping the shared borrow alive for the handle's lifetime. The settled
-    /// check runs again when the published prefix is gone, since the freeze can
-    /// take the workspace between the two.
+    /// for the handle's lifetime. The settled check runs again when no prefix
+    /// is lent, since the freeze settles the slot before it publishes that the
+    /// prefix moved there.
     pub(crate) fn hold_samples(&self) -> Option<HeldFrameSamples<'_, T>> {
         if let Some(frame) = self.try_frozen() {
             return Some(HeldFrameSamples::Settled(frame));
         }
-        if let Some(published) = self.progress().and_then(FrameProgress::read) {
+        if let Some(published) = PublishedFrame::of_slot(self) {
             return Some(HeldFrameSamples::Filtering(published));
         }
         self.try_frozen().map(HeldFrameSamples::Settled)
@@ -307,12 +306,17 @@ impl<T: ReconSample> RefFrameSlot<T> {
 /// way the phase ended instead of waiting for a row that will never land.
 pub(crate) struct FrameSlotWriter<T: ReconSample> {
     cell: Arc<CompletionCell<SlotValue<T>>>,
-    progress: Arc<FrameProgress<T>>,
+    pub(super) progress: Arc<FrameProgress<T>>,
     info: DecodedFrameInfo,
     shell: Option<splot_recon::SharedFrameShell<T>>,
 }
 
 impl<T: ReconSample> FrameSlotWriter<T> {
+    /// Shares the progress this writer's frame publishes its stripes through.
+    pub(crate) fn progress_handle(&self) -> Arc<FrameProgress<T>> {
+        Arc::clone(&self.progress)
+    }
+
     /// Publishes the filtered samples and wakes the driver.
     ///
     /// The geometry the slot published before the samples must be the geometry
@@ -515,8 +519,6 @@ pub(crate) struct InflightRing {
     entries: VecDeque<InflightEntry>,
     reports: Vec<FinishReport>,
     failure: Option<(usize, DecodeError)>,
-    parse_slots: Vec<Arc<ParseProgress>>,
-    next_parse_slot: usize,
     buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
 }
 
@@ -558,8 +560,6 @@ impl InflightRing {
                 .map(|_| Arc::new(CompletionCell::new()))
                 .collect(),
             failure: None,
-            parse_slots: Vec::new(),
-            next_parse_slot: 0,
         }
     }
 
@@ -571,23 +571,6 @@ impl InflightRing {
                 Some(Arc::clone(cell))
             })
             .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
-    }
-
-    /// Claims a parse slot after the ring has harvested its preceding frame.
-    pub(crate) fn claim_parse_slot(&mut self) -> Arc<ParseProgress> {
-        let index = self.next_parse_slot;
-        self.next_parse_slot = (index + 1) % self.capacity;
-        if index == self.parse_slots.len() {
-            self.parse_slots.push(Arc::new(ParseProgress::default()));
-        }
-        loop {
-            if let Some(slot) = Arc::get_mut(&mut self.parse_slots[index])
-                && slot.reset(&self.buffers)
-            {
-                return Arc::clone(&self.parse_slots[index]);
-            }
-            std::thread::yield_now();
-        }
     }
 
     /// Hands a retired frame's sample buffers to the decode's pool, which the
@@ -650,7 +633,7 @@ impl InflightRing {
         self.entries.push_back(entry);
     }
 
-    fn harvest_oldest(&mut self, pools: &mut RowPools) -> bool {
+    pub(crate) fn harvest_oldest(&mut self, pools: &mut RowPools) -> bool {
         let Some(entry) = self.entries.pop_front() else {
             return false;
         };
@@ -738,7 +721,6 @@ pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
 /// reconstruction never ran stops the driver blocking on it.
 pub(crate) struct PendingFinish<T: ReconSample> {
     writer: FrameSlotWriter<T>,
-    progress: Arc<FrameProgress<T>>,
     report: FinishReportWriter,
 }
 
@@ -781,7 +763,6 @@ fn reserve_slot<T: SpareFramePlanes>(
         Some(slot) => slot.reuse_pending(workspace, &buffers)?,
         None => RefFrameSlot::pending_recycled(workspace, Some(&buffers))?,
     };
-    let progress = Arc::clone(&writer.progress);
     ring.push(InflightEntry {
         frame_index,
         slot: erase(slot.share()),
@@ -791,7 +772,6 @@ fn reserve_slot<T: SpareFramePlanes>(
         erase(slot),
         PendingFinish {
             writer,
-            progress,
             report: FinishReportWriter {
                 cell: report,
                 outcome: FinishOutcome::default(),
@@ -803,19 +783,21 @@ fn reserve_slot<T: SpareFramePlanes>(
 impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     /// Shares the progressive output owner with scheduled filter-stripe tasks.
     pub(crate) fn progress_handle(&self) -> Arc<FrameProgress<T>> {
-        Arc::clone(&self.progress)
+        self.writer.progress_handle()
     }
 
-    /// Publishes a frame whose reconstruction is already terminal and has no
-    /// filter records to return to the driver's scratch pool.
-    pub(crate) fn complete_frame(self, frame: DecodedFrame<T>) {
-        let Self {
-            writer,
-            progress: _,
-            report,
-        } = self;
-        writer.complete(frame);
+    /// Runs `pass` over a frame written whole into its workspace, then
+    /// freezes it into the slot; the frame has no filter records to return.
+    pub(crate) fn freeze_written(
+        self,
+        pass: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<()>,
+    ) -> Result<()> {
+        let Self { writer, report } = self;
+        let progress = writer.progress_handle();
+        progress.with_unpublished_workspace(pass)??;
+        progress.freeze_workspace(writer)?;
         drop(report);
+        Ok(())
     }
 
     /// Freezes one scheduler-owned setup after every stripe job has settled.
@@ -823,14 +805,10 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         self,
         filter: crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>,
     ) -> crate::filters::wienerns_lr::recon::OwnedFilterShell<T> {
-        let Self {
-            writer,
-            progress: _,
-            mut report,
-        } = self;
-        let (outcome, shell) = filter.finish(|frame| writer.complete(frame));
+        let Self { writer, mut report } = self;
+        let (outcome, shell) = filter.finish(Some(writer));
         match outcome {
-            Ok(((), records)) => {
+            Ok((_, records)) => {
                 report.outcome.records = Some(records);
             }
             Err(error) => {

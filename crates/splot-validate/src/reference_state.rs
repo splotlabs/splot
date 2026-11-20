@@ -11,8 +11,12 @@
 //! poisons every slot because its refresh mask is unknown. Only proven-invalid
 //! references produce findings; external HLS cannot establish reference buffers.
 
-use splot_core::headers::frame::{FrameReferenceStateView, FrameType};
-use splot_core::types::ExtendedLayerId;
+use splot_core::headers::frame::{
+    FrameReferenceStateView, FrameType, GlobalMotionRef, REFS_PER_FRAME,
+    SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
+};
+use splot_core::headers::sequence::MAX_NUM_MLAYERS;
+use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, ObuType};
 
 use std::collections::BTreeMap;
 
@@ -27,6 +31,7 @@ pub(crate) const NUM_REF_FRAMES: usize = 16;
 /// Only the reference-state subset required for later frame-header parsing and conformance
 /// checks is modeled; reconstruction-only state remains in the decoder runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum SlotState {
     /// The slot's state is not known to the validator: it was never established in this
     /// modeled run, or a frame whose refresh mask could not be parsed may have written
@@ -72,6 +77,9 @@ pub(crate) struct SlotFacts {
     pub(crate) long_term_id: Option<u32>,
     /// Per-plane retained Wiener-NS class counts used by the § 5.18 filter dictionary.
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
+    /// `RefNumTotalRefs[ i ]`, `SavedOrderHints[ i ]` and `SavedGmParams[ i ]` (§ 7.23),
+    /// read by the § 5.18.9.1 `global_motion_params()` base-warp selection.
+    pub(crate) global_motion: (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams),
 }
 
 /// One extended layer's reference buffer, matching its CVS reset scope (§ 7.3.6).
@@ -83,6 +91,12 @@ struct LayerReferenceState {
     /// `RefCounter[ i ]` (§ 7.23), identifying slots holding the same frame.
     counters: [u32; NUM_REF_FRAMES],
     next_counter: u32,
+    /// `NumRefFrames` of the last CLK reset: the § 5.18 reference loops read only slots
+    /// below it. [`NUM_REF_FRAMES`] until a CLK reset is seen.
+    num_ref_frames: usize,
+    /// § 5.18.2 `OlkRefresh` per embedded layer; `None` means no pending OLK.
+    open_loop_refresh: Option<[u32; MAX_NUM_MLAYERS]>,
+    allowed_frames: Option<u32>,
 }
 
 impl Default for LayerReferenceState {
@@ -91,6 +105,9 @@ impl Default for LayerReferenceState {
             slots: [SlotState::Unknown; NUM_REF_FRAMES],
             counters: [0; NUM_REF_FRAMES],
             next_counter: 0,
+            num_ref_frames: NUM_REF_FRAMES,
+            open_loop_refresh: None,
+            allowed_frames: None,
         }
     }
 }
@@ -106,6 +123,9 @@ impl LayerReferenceState {
             *slot = SlotState::ProvenInvalid;
         }
         self.next_counter = 0;
+        self.num_ref_frames = bound;
+        self.open_loop_refresh = None;
+        self.allowed_frames = None;
     }
 
     /// Applies the § 7.23 update for a parsed frame: for each set bit of
@@ -139,6 +159,65 @@ impl LayerReferenceState {
     /// refresh mask could not be parsed (it may have refreshed any slot).
     fn poison_all(&mut self) {
         self.slots = [SlotState::Unknown; NUM_REF_FRAMES];
+        self.open_loop_refresh = None;
+        self.allowed_frames = None;
+    }
+
+    fn prepare_for_frame(&mut self, obu_type: ObuType, first_picture_in_tu: bool) {
+        if obu_type == ObuType::ClosedLoopKey {
+            self.open_loop_refresh = None;
+        } else if first_picture_in_tu && obu_type.is_regular_frame() {
+            self.finish_open_loop();
+        }
+        self.allowed_frames = if !first_picture_in_tu
+            && obu_type.is_regular_frame()
+            && obu_type != ObuType::OpenLoopKey
+        {
+            self.open_loop_refresh_mask()
+        } else {
+            None
+        };
+    }
+
+    fn note_frame(
+        &mut self,
+        mlayer: EmbeddedLayerId,
+        obu_type: ObuType,
+        first_picture_in_tu: bool,
+        refresh_frame_flags: u32,
+    ) {
+        if obu_type == ObuType::ClosedLoopKey {
+            self.open_loop_refresh = None;
+        } else if obu_type == ObuType::OpenLoopKey {
+            self.open_loop_refresh.get_or_insert([0; MAX_NUM_MLAYERS])[usize::from(mlayer.get())] =
+                refresh_frame_flags;
+        } else if !first_picture_in_tu
+            && obu_type.is_regular_frame()
+            && let Some(refreshed) = self.open_loop_refresh.as_mut()
+        {
+            refreshed[usize::from(mlayer.get())] |= refresh_frame_flags;
+        }
+    }
+
+    fn open_loop_refresh_mask(&self) -> Option<u32> {
+        self.open_loop_refresh
+            .as_ref()
+            .map(|masks| masks.iter().fold(0, |combined, mask| combined | mask))
+    }
+
+    fn finish_open_loop(&mut self) {
+        let Some(refreshed) = self.open_loop_refresh_mask() else {
+            return;
+        };
+        self.open_loop_refresh = None;
+        let bound = self.num_ref_frames.min(NUM_REF_FRAMES);
+        for (index, slot) in self.slots[..bound].iter_mut().enumerate() {
+            if (refreshed >> index) & 1 == 0
+                && matches!(slot, SlotState::Valid(facts) if facts.long_term_id.is_none())
+            {
+                *slot = SlotState::ProvenInvalid;
+            }
+        }
     }
 }
 
@@ -165,6 +244,10 @@ pub(crate) struct ReferenceStateScratch {
     implicit_output_frame: [bool; NUM_REF_FRAMES],
     immediate_output_frame: [bool; NUM_REF_FRAMES],
     lr_frame_filter_class_counts: [[u8; 3]; NUM_REF_FRAMES],
+    num_total_refs: [u32; NUM_REF_FRAMES],
+    saved_gm_order_hints: [SavedGlobalMotionOrderHints; NUM_REF_FRAMES],
+    saved_gm_params: [SavedGlobalMotionParams; NUM_REF_FRAMES],
+    allowed_frames: Option<u32>,
 }
 
 impl ReferenceStateScratch {
@@ -180,11 +263,17 @@ impl ReferenceStateScratch {
         .with_primary_reference_state(&self.counter, &self.frame_is_inter)
         .with_long_term_id_state(&self.long_term_id)
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
+        .with_global_motion_state(
+            &self.num_total_refs,
+            &self.saved_gm_order_hints,
+            &self.saved_gm_params,
+        )
         .with_single_layer_order_hint_state(
             &self.order_hint_lsbs,
             &self.implicit_output_frame,
             &self.immediate_output_frame,
         )
+        .with_allowed_frames(self.allowed_frames)
     }
 }
 
@@ -234,9 +323,9 @@ impl ReferenceStateTracker {
     /// boundary, with the no-trailing-delimiter end-of-bitstream flush), AFTER the
     /// frame's facts are known and BEFORE any later frame's reference checks consult the
     /// buffer — matching § 7.23's "final step in decoding a frame" ordering.
-    pub(crate) fn apply(&mut self, xlayer: ExtendedLayerId, update: FrameRefUpdate) {
+    pub(crate) fn apply(&mut self, xlayer: ExtendedLayerId, update: &FrameRefUpdate) {
         let layer = self.layers.entry(xlayer).or_default();
-        match update {
+        match *update {
             FrameRefUpdate::ClkReset {
                 num_ref_frames,
                 refresh_frame_flags,
@@ -252,6 +341,30 @@ impl ReferenceStateTracker {
             } => layer.apply_refresh(refresh_frame_flags, is_key_or_switch, facts),
             FrameRefUpdate::SefNoUpdate => {}
             FrameRefUpdate::PoisonAll => layer.poison_all(),
+        }
+    }
+
+    pub(crate) fn prepare_for_frame(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        obu_type: ObuType,
+        first_picture_in_tu: bool,
+    ) {
+        if let Some(layer) = self.layers.get_mut(&xlayer) {
+            layer.prepare_for_frame(obu_type, first_picture_in_tu);
+        }
+    }
+
+    pub(crate) fn note_frame(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        mlayer: EmbeddedLayerId,
+        obu_type: ObuType,
+        first_picture_in_tu: bool,
+        refresh_frame_flags: u32,
+    ) {
+        if let Some(layer) = self.layers.get_mut(&xlayer) {
+            layer.note_frame(mlayer, obu_type, first_picture_in_tu, refresh_frame_flags);
         }
     }
 
@@ -288,19 +401,24 @@ impl ReferenceStateTracker {
     /// Borrows `xlayer`'s `RefValid[]` / `RefOrderHint[]` / dims as the parallel slices a
     /// [`splot_core::headers::frame::FrameReferenceStateView`] threads into the parser,
     /// writing them into the caller-provided scratch buffers. Returns `None` when the
-    /// layer has no buffer yet (every slot Unknown — there is nothing to thread).
+    /// layer has no buffer yet, or when any slot below `NumRefFrames` is `Unknown`: the
+    /// § 5.18 reference loops read every such slot, so a parse against a partial buffer
+    /// could read later syntax at wrong bit positions. The parser then stops honestly.
     ///
-    /// An `Unknown` slot contributes `RefValid[i] = false` (the parser must not treat an
-    /// unestablished slot as available); a `ProvenInvalid` slot likewise contributes
-    /// `false`; a `Valid` slot contributes `true` plus its stored facts. Width/height/
-    /// order-hint for non-valid slots are filler `0` — the parser reads them only where
-    /// `RefValid[i]` is `true` (the § 5.18 reference paths gate on `RefValid`).
+    /// A `ProvenInvalid` slot (and an `Unknown` slot at or above `NumRefFrames`)
+    /// contributes `RefValid[i] = false`; a `Valid` slot contributes `true` plus its stored
+    /// facts. Width/height/order-hint for non-valid slots are filler `0` — the parser reads
+    /// them only where `RefValid[i]` is `true` (the § 5.18 reference paths gate on
+    /// `RefValid`).
     pub(crate) fn view_into<'a>(
         &self,
         xlayer: ExtendedLayerId,
         scratch: &'a mut ReferenceStateScratch,
     ) -> Option<FrameReferenceStateView<'a>> {
         let layer = self.layers.get(&xlayer)?;
+        if layer.slots[..layer.num_ref_frames].contains(&SlotState::Unknown) {
+            return None;
+        }
         for (i, slot) in layer.slots.iter().enumerate() {
             match slot {
                 SlotState::Valid(facts) => {
@@ -317,6 +435,11 @@ impl ReferenceStateTracker {
                     scratch.implicit_output_frame[i] = facts.implicit_output_frame;
                     scratch.immediate_output_frame[i] = facts.immediate_output_frame;
                     scratch.lr_frame_filter_class_counts[i] = facts.lr_frame_filter_class_counts;
+                    (
+                        scratch.num_total_refs[i],
+                        scratch.saved_gm_order_hints[i],
+                        scratch.saved_gm_params[i],
+                    ) = facts.global_motion;
                 }
                 SlotState::Unknown | SlotState::ProvenInvalid => {
                     scratch.valid[i] = false;
@@ -332,9 +455,15 @@ impl ReferenceStateTracker {
                     scratch.implicit_output_frame[i] = false;
                     scratch.immediate_output_frame[i] = false;
                     scratch.lr_frame_filter_class_counts[i] = [0; 3];
+                    (
+                        scratch.num_total_refs[i],
+                        scratch.saved_gm_order_hints[i],
+                        scratch.saved_gm_params[i],
+                    ) = IDENTITY_GLOBAL_MOTION;
                 }
             }
         }
+        scratch.allowed_frames = layer.allowed_frames;
         Some(scratch.view())
     }
 
@@ -378,8 +507,16 @@ pub(crate) fn slot_facts(
         frame_is_inter: frame_type? == FrameType::Inter,
         long_term_id: long_term_id.and_then(|id| u32::try_from(id).ok()),
         lr_frame_filter_class_counts: [0; 3],
+        global_motion: IDENTITY_GLOBAL_MOTION,
     })
 }
+
+/// The § 7.23 global-motion state of a frame with no references and identity warps.
+const IDENTITY_GLOBAL_MOTION: (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams) = (
+    0,
+    [0; REFS_PER_FRAME],
+    [GlobalMotionRef::identity().gm_params; REFS_PER_FRAME],
+);
 
 /// Whether a `FrameType` is `KEY_FRAME` or `SWITCH_FRAME` for the § 7.23 `first`
 /// RefValid rule (mirror :14100).
@@ -394,6 +531,7 @@ mod tests {
     use proptest::prelude::*;
 
     const XL: ExtendedLayerId = ExtendedLayerId::from_bits(0);
+    const ML: EmbeddedLayerId = EmbeddedLayerId::from_bits(0);
 
     fn facts(order_hint: u32) -> SlotFacts {
         SlotFacts {
@@ -409,6 +547,7 @@ mod tests {
             frame_is_inter: false,
             long_term_id: None,
             lr_frame_filter_class_counts: [0; 3],
+            global_motion: IDENTITY_GLOBAL_MOTION,
         }
     }
 
@@ -436,7 +575,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b101,
                 is_key_or_switch: false,
                 facts: facts(7),
@@ -453,7 +592,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b10_1010,
                 is_key_or_switch: true,
                 facts: facts(3),
@@ -470,7 +609,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1111,
                 is_key_or_switch: false,
                 facts: facts(1),
@@ -478,7 +617,7 @@ mod tests {
         );
         tracker.apply(
             XL,
-            FrameRefUpdate::ClkReset {
+            &FrameRefUpdate::ClkReset {
                 num_ref_frames: 8,
                 refresh_frame_flags: 0b1,
                 facts: facts(9),
@@ -494,7 +633,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::ClkReset {
+            &FrameRefUpdate::ClkReset {
                 num_ref_frames: 8,
                 refresh_frame_flags: 0xFFFF,
                 facts: facts(0),
@@ -511,13 +650,13 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1,
                 is_key_or_switch: false,
                 facts: facts(5),
             },
         );
-        tracker.apply(XL, FrameRefUpdate::SefNoUpdate);
+        tracker.apply(XL, &FrameRefUpdate::SefNoUpdate);
         assert_eq!(tracker.slot(XL, 0), SlotState::Valid(facts(5)));
     }
 
@@ -526,13 +665,13 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0xFFFF,
                 is_key_or_switch: false,
                 facts: facts(2),
             },
         );
-        tracker.apply(XL, FrameRefUpdate::PoisonAll);
+        tracker.apply(XL, &FrameRefUpdate::PoisonAll);
         for i in 0..NUM_REF_FRAMES {
             assert_eq!(tracker.slot(XL, i), SlotState::Unknown);
         }
@@ -544,7 +683,7 @@ mod tests {
         let xl1 = ExtendedLayerId::from_bits(1);
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1,
                 is_key_or_switch: false,
                 facts: facts(4),
@@ -557,35 +696,83 @@ mod tests {
     #[test]
     fn view_into_reflects_slot_validity() {
         let mut tracker = ReferenceStateTracker::default();
+        let saved_params = [[1, 2, 65_536, 3, 4, 65_536]; REFS_PER_FRAME];
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::ClkReset {
+                num_ref_frames: 8,
                 refresh_frame_flags: 0b1,
-                is_key_or_switch: false,
                 facts: SlotFacts {
                     order_hint: 11,
                     order_hint_lsb: 11,
                     width: 64,
                     height: 48,
                     lr_frame_filter_class_counts: [3, 1, 0],
+                    global_motion: (2, [11, 9, 0, 0, 0, 0, 0], saved_params),
                     ..facts(11)
                 },
             },
         );
         let mut scratch = ReferenceStateScratch::default();
-        assert!(tracker.view_into(XL, &mut scratch).is_some());
+        let view = tracker.view_into(XL, &mut scratch).unwrap();
+        assert_eq!(view.ref_num_total_refs.unwrap()[0], 2);
+        assert_eq!(view.saved_global_motion_order_hints.unwrap()[0][1], 9);
+        assert_eq!(view.saved_global_motion_params.unwrap()[0], saved_params);
+        assert_eq!(view.ref_num_total_refs.unwrap()[1], 0);
         assert!(scratch.valid[0]);
         assert_eq!(scratch.order_hint[0], 11);
         assert_eq!(scratch.width[0], 64);
         assert_eq!(scratch.height[0], 48);
         assert_eq!(scratch.lr_frame_filter_class_counts[0], [3, 1, 0]);
         assert!(!scratch.valid[1]);
+        assert!(!scratch.valid[8]);
         assert_eq!(scratch.lr_frame_filter_class_counts[1], [0; 3]);
-        tracker.apply(XL, FrameRefUpdate::PoisonAll);
-        let view = tracker.view_into(XL, &mut scratch).unwrap();
-        assert_eq!(view.lr_frame_filter_class_counts.unwrap()[0], [0; 3]);
         let absent = tracker.view_into(ExtendedLayerId::from_bits(2), &mut scratch);
         assert!(absent.is_none());
+    }
+
+    #[test]
+    fn view_into_withholds_a_partially_unknown_buffer() {
+        let mut tracker = ReferenceStateTracker::default();
+        let mut scratch = ReferenceStateScratch::default();
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::Refresh {
+                refresh_frame_flags: 0b1,
+                is_key_or_switch: false,
+                facts: facts(1),
+            },
+        );
+        assert!(tracker.view_into(XL, &mut scratch).is_none());
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::ClkReset {
+                num_ref_frames: 8,
+                refresh_frame_flags: 0b1,
+                facts: facts(2),
+            },
+        );
+        assert!(tracker.view_into(XL, &mut scratch).is_some());
+        tracker.apply(XL, &FrameRefUpdate::PoisonAll);
+        assert!(tracker.view_into(XL, &mut scratch).is_none());
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::Refresh {
+                refresh_frame_flags: 0b1111_1110,
+                is_key_or_switch: false,
+                facts: facts(3),
+            },
+        );
+        assert!(tracker.view_into(XL, &mut scratch).is_none());
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::Refresh {
+                refresh_frame_flags: 0b1,
+                is_key_or_switch: false,
+                facts: facts(4),
+            },
+        );
+        assert!(tracker.view_into(XL, &mut scratch).is_some());
     }
 
     #[test]
@@ -650,7 +837,7 @@ mod tests {
         let mut tracker = ReferenceStateTracker::default();
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b1,
                 is_key_or_switch: false,
                 facts: lt_facts(7, 5),
@@ -658,7 +845,7 @@ mod tests {
         );
         tracker.apply(
             XL,
-            FrameRefUpdate::Refresh {
+            &FrameRefUpdate::Refresh {
                 refresh_frame_flags: 0b100,
                 is_key_or_switch: false,
                 facts: facts(8),
@@ -675,6 +862,127 @@ mod tests {
         assert!(is_key_or_switch(FrameType::Switch));
         assert!(!is_key_or_switch(FrameType::Inter));
         assert!(!is_key_or_switch(FrameType::IntraOnly));
+    }
+
+    #[test]
+    fn olk_restricts_same_tu_allowed_frames_and_invalidates_at_first_regular_tu() {
+        let mut tracker = ReferenceStateTracker::default();
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::ClkReset {
+                num_ref_frames: 8,
+                refresh_frame_flags: 1 << 0,
+                facts: facts(1),
+            },
+        );
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::Refresh {
+                refresh_frame_flags: 1 << 3,
+                is_key_or_switch: true,
+                facts: lt_facts(2, 9),
+            },
+        );
+
+        tracker.prepare_for_frame(XL, ObuType::OpenLoopKey, true);
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::Refresh {
+                refresh_frame_flags: 1 << 1,
+                is_key_or_switch: true,
+                facts: facts(3),
+            },
+        );
+        tracker.note_frame(XL, ML, ObuType::OpenLoopKey, true, 1 << 1);
+
+        tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, false);
+        let mut scratch = ReferenceStateScratch::default();
+        assert_eq!(
+            tracker.view_into(XL, &mut scratch).unwrap().allowed_frames,
+            Some(1 << 1)
+        );
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::Refresh {
+                refresh_frame_flags: 1 << 4,
+                is_key_or_switch: false,
+                facts: facts(4),
+            },
+        );
+        tracker.note_frame(XL, ML, ObuType::RegularTileGroup, false, 1 << 4);
+
+        tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, false);
+        assert_eq!(
+            tracker.view_into(XL, &mut scratch).unwrap().allowed_frames,
+            Some((1 << 1) | (1 << 4))
+        );
+
+        tracker.prepare_for_frame(XL, ObuType::LeadingTileGroup, false);
+        assert_eq!(
+            tracker.view_into(XL, &mut scratch).unwrap().allowed_frames,
+            None
+        );
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::Refresh {
+                refresh_frame_flags: 1 << 2,
+                is_key_or_switch: false,
+                facts: facts(5),
+            },
+        );
+
+        tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, true);
+        assert_eq!(
+            tracker.view_into(XL, &mut scratch).unwrap().allowed_frames,
+            None
+        );
+        assert_eq!(tracker.slot(XL, 0), SlotState::ProvenInvalid);
+        assert!(matches!(tracker.slot(XL, 1), SlotState::Valid(_)));
+        assert_eq!(tracker.slot(XL, 2), SlotState::ProvenInvalid);
+        assert!(matches!(tracker.slot(XL, 3), SlotState::Valid(_)));
+        assert!(matches!(tracker.slot(XL, 4), SlotState::Valid(_)));
+    }
+
+    #[test]
+    fn clk_clears_open_loop_state_and_allowed_frames() {
+        let mut tracker = ReferenceStateTracker::default();
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::ClkReset {
+                num_ref_frames: 8,
+                refresh_frame_flags: 1 << 0,
+                facts: facts(1),
+            },
+        );
+        tracker.apply(
+            XL,
+            &FrameRefUpdate::Refresh {
+                refresh_frame_flags: 1 << 1,
+                is_key_or_switch: true,
+                facts: facts(2),
+            },
+        );
+        tracker.note_frame(XL, ML, ObuType::OpenLoopKey, true, 1 << 1);
+
+        tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, false);
+        let mut scratch = ReferenceStateScratch::default();
+        assert_eq!(
+            tracker.view_into(XL, &mut scratch).unwrap().allowed_frames,
+            Some(1 << 1)
+        );
+
+        tracker.prepare_for_frame(XL, ObuType::ClosedLoopKey, true);
+        assert_eq!(
+            tracker.view_into(XL, &mut scratch).unwrap().allowed_frames,
+            None
+        );
+        tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, false);
+        assert_eq!(
+            tracker.view_into(XL, &mut scratch).unwrap().allowed_frames,
+            None
+        );
+        tracker.prepare_for_frame(XL, ObuType::RegularTileGroup, true);
+        assert!(matches!(tracker.slot(XL, 0), SlotState::Valid(_)));
     }
 
     proptest! {
@@ -699,7 +1007,7 @@ mod tests {
                 2 => FrameRefUpdate::SefNoUpdate,
                 _ => FrameRefUpdate::PoisonAll,
             };
-            tracker.apply(xl, update);
+            tracker.apply(xl, &update);
             for i in 0..(NUM_REF_FRAMES + 4) {
                 let _ = tracker.slot(xl, i);
             }
@@ -713,7 +1021,7 @@ mod tests {
             let f = SlotFacts { width: 2, height: 3, ..facts(1) };
             tracker.apply(
                 XL,
-                FrameRefUpdate::Refresh {
+                &FrameRefUpdate::Refresh {
                     refresh_frame_flags: u32::from(mask),
                     is_key_or_switch: false,
                     facts: f,
@@ -735,13 +1043,13 @@ mod tests {
             let mut tracker = ReferenceStateTracker::default();
             tracker.apply(
                 XL,
-                FrameRefUpdate::Refresh {
+                &FrameRefUpdate::Refresh {
                     refresh_frame_flags: mask,
                     is_key_or_switch: is_kos,
                     facts: SlotFacts { width: 9, height: 9, ..facts(9) },
                 },
             );
-            tracker.apply(XL, FrameRefUpdate::PoisonAll);
+            tracker.apply(XL, &FrameRefUpdate::PoisonAll);
             for i in 0..NUM_REF_FRAMES {
                 prop_assert_eq!(tracker.slot(XL, i), SlotState::Unknown);
             }

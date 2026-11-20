@@ -9,8 +9,8 @@
 //! through. It reconstructs the row's entries — all of them on the serial and
 //! multi-tile paths, and the ones the parallel prepass left behind on its own
 //! out-of-order surface — folds the row's § 7.12 temporal motion records into
-//! the frame's motion field, appends its filter records, and advances the
-//! block-decoded availability grid.
+//! the frame's motion field, and advances the block-decoded availability
+//! grid.
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
@@ -18,56 +18,28 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
-use super::ReconCommand;
+use super::super::mc::WorkspaceSink;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
-use super::tile::{ReconRow, ReconRowBuffers, TileFilterRecords};
+use super::tile::{ReconRow, ReconRowBuffers};
+use super::{ReconCommandMut, ReconCommandRef};
 use crate::Result;
-use crate::bitstream::tile_payload::{FrameQuantizerSnapshot, TileBlockDecodedState};
-
-fn append_row_filter_records(
-    filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
-    row_filter_records: &mut TileFilterRecords,
-) {
-    filter_records
-        .deblock_blocks
-        .append(&mut row_filter_records.deblock_blocks);
-    filter_records
-        .chroma_deblock_blocks
-        .append(&mut row_filter_records.chroma_deblock_blocks);
-    filter_records
-        .tx_skip_records
-        .append(&mut row_filter_records.tx_skip_records);
-}
-
-/// Moves one parsed row's filter geometry into the frame owner before that row
-/// enters the scheduled reconstruction graph.
-///
-/// The canonical replay then carries an empty row record owner, which makes
-/// the complete frame geometry immutable while row tasks still own commands.
-pub(super) fn detach_row_filter_records(
-    row: &mut ReconRow,
-    filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
-) {
-    append_row_filter_records(filter_records, &mut row.filter_records);
-}
+use crate::bitstream::tile_payload::TileBlockDecodedState;
 
 /// Commits one parsed row into the frame, in tile order.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn replay_recon_row<T: ReconSample>(
     mut row: ReconRow,
+    tile_offset: splot_core::span::ByteOffset,
     expected_ordinal: &mut usize,
     decoded_any: &mut bool,
-    quantizer: &FrameQuantizerSnapshot,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &mut TileBlockDecodedState,
-    current_superblock: &mut Option<[usize; 2]>,
     motion: &MotionFieldUnits,
-    filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
+    lists: (&[u32], &super::FrameRefFacts),
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     mi_rows: usize,
@@ -77,54 +49,60 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<ReconRowBuffers> {
-    let mut coefficient_scratch = std::mem::take(&mut scratch.coefficients);
-    let mut plane_scratch = std::mem::take(&mut scratch.plane_records);
-    let mut lists = std::mem::take(&mut scratch.lists);
+    let mut folded = std::mem::take(&mut scratch.temporal);
+    folded.clear();
+    let mut has_intra = false;
     let result = (|| {
-        if row.ordinal != *expected_ordinal {
-            return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
-        }
-        row.return_terminal_error()?;
-        row.load_parsed(&mut lists);
-        row.return_terminal_error()?;
         let ordinal = row.ordinal;
         *expected_ordinal = expected_ordinal.saturating_add(1);
         let row_has_entries = !row.superblocks.is_empty();
         let motion_owed = !row.motion_folded;
         let mut precompute_error = row.take_precompute_error();
-        let _quantizer_scopes = quantizer.install_frame();
         let ReconRow {
             mut superblocks,
-            residual_source,
             mut residual_coeffs,
             mut entries,
+            mut slots,
             mut residual_blocks,
             mut temporal,
-            mut flag_log,
-            filter_records: mut row_filter_records,
             mut residual_planes,
+            mut filter_records,
             ..
         } = row;
-        let shared_coefficients = residual_source.is_some();
-        if let Some(source) = residual_source
-            && entries.iter().any(|entry| entry.command().is_some())
-        {
-            source.copy_into(&mut coefficient_scratch)?;
-            source.take_planes(&mut plane_scratch)?;
-        }
+        let shared = deferred_recon::ReconShared {
+            tile_offset,
+            reference,
+            ref_frame_idx: lists.0,
+            ref_facts: lists.1,
+            held: super::super::hold_row_references(reference, lists),
+            temporal_context,
+            sequence,
+            core,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            tip: core::cell::OnceCell::new(),
+        };
         for superblock in &superblocks {
             let superblock_entries = entries
                 .get_mut(superblock.entries.clone())
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-            debug_assert!(
+            let last_decoded_reader =
                 superblock_entries
                     .iter()
-                    .all(|entry| entry.publication.superblock_origin() == superblock.origin)
-            );
+                    .rposition(|entry| match entry.command(&slots) {
+                        Some(ReconCommandRef::GeneralIntra) => true,
+                        Some(ReconCommandRef::Inter(c)) => c.reads_current_frame(),
+                        Some(ReconCommandRef::Intrabc) | None => false,
+                    });
+            if last_decoded_reader.is_some() {
+                let [r, c] = superblock.origin;
+                block_decoded.clear_superblock(r, c);
+            }
             for (offset, entry) in superblock_entries.iter_mut().enumerate() {
-                entry
-                    .publication
-                    .prepare_block_decoded(block_decoded, current_superblock);
                 if precompute_error
                     .as_ref()
                     .is_some_and(|(index, _)| *index == superblock.entries.start + offset)
@@ -133,114 +111,122 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     return Err(error);
                 }
                 let temporal_clear = if motion_owed {
-                    entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
+                    entry.temporal_clear_record(
+                        superblock.origin,
+                        &slots,
+                        mi_rows,
+                        mi_cols,
+                        current_order_hint,
+                    )
                 } else {
                     None
                 };
                 if let Some(clear) = temporal_clear {
-                    motion.fold_unit(ordinal, core::slice::from_ref(&clear))?;
+                    folded.push(clear);
                 }
-                if let Some(command) = entry.take_command() {
+                if let Some(command) = entry.command_mut(&mut slots) {
                     match command {
-                        ReconCommand::GeneralIntra(command) => {
+                        ReconCommandMut::GeneralIntra(command) => {
+                            if !has_intra {
+                                crate::pipeline::general_intra::swap_general_intra_scratch(
+                                    scratch.general_intra_mut(),
+                                    workspace,
+                                );
+                                has_intra = true;
+                            }
                             command.reconstruct(
-                                if shared_coefficients {
-                                    &mut plane_scratch
-                                } else {
-                                    &mut residual_planes
-                                },
-                                if shared_coefficients {
-                                    &coefficient_scratch
-                                } else {
-                                    &residual_coeffs
-                                },
+                                &mut residual_planes,
+                                &residual_coeffs,
                                 scratch.general_intra_mut(),
                                 workspace,
                                 block_decoded,
-                            )?;
+                                tile_offset,
+                            )
                         }
-                        ReconCommand::Intrabc(command) => {
-                            scratch.reconstruct_intrabc(
-                                command,
-                                &residual_blocks,
-                                if shared_coefficients {
-                                    &coefficient_scratch
-                                } else {
-                                    &residual_coeffs
-                                },
-                                workspace,
-                            )?;
+                        ReconCommandMut::Intrabc(command) => {
+                            command.reconstruct(&residual_blocks, &residual_coeffs, workspace)
                         }
-                        ReconCommand::Inter(command) => {
-                            scratch.reconstruct(
-                                &command,
-                                workspace,
-                                block_decoded,
-                                motion,
-                                ordinal,
-                                &residual_blocks,
-                                if shared_coefficients {
-                                    &coefficient_scratch
-                                } else {
-                                    &residual_coeffs
-                                },
-                                temporal_context,
-                                reference,
-                                ref_frame_idx,
-                                sequence,
-                                core,
-                                mi_rows,
-                                mi_cols,
-                                current_order_hint,
-                                luma_use_tcq,
-                                residual_use_ddt,
-                                bit_depth,
-                            )?;
-                        }
-                    }
-                } else {
-                    let records = temporal
-                        .get(entry.temporal.clone())
-                        .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
-                    if motion_owed {
-                        motion.fold_unit(ordinal, records)?;
-                    }
+                        ReconCommandMut::Inter(command) => scratch.reconstruct(
+                            command,
+                            &mut WorkspaceSink::Frame(workspace),
+                            block_decoded,
+                            &mut folded,
+                            &residual_blocks,
+                            &residual_coeffs,
+                            &shared,
+                        ),
+                    }?;
                 }
-                entry
-                    .publication
-                    .publish_block_decoded(block_decoded)
-                    .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
+                if offset < last_decoded_reader.unwrap_or(0) {
+                    entry
+                        .publication
+                        .publish_block_decoded(block_decoded)
+                        .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
+                }
             }
         }
-        if motion_owed {
+        if let Some((_, error)) = precompute_error {
+            return Err(error);
+        }
+        if has_intra {
+            crate::pipeline::general_intra::swap_general_intra_scratch(
+                scratch.general_intra_mut(),
+                workspace,
+            );
+            has_intra = false;
+        }
+        if !motion_owed && row_has_entries && !temporal.is_empty() {
+            motion.fold_unit(ordinal, &temporal)?;
+        }
+        if !folded.is_empty() {
+            motion.fold_unit(ordinal, &folded)?;
+        }
+        if motion_owed || row_has_entries {
             motion.unit_landed_for(ordinal);
         }
-        append_row_filter_records(filter_records, &mut row_filter_records);
         *decoded_any |= row_has_entries;
+        let [luma, chroma, tx_skip, leaves] = filter_records.published;
+        let [planes, units] = residual_planes.lengths();
+        let lengths = [
+            residual_coeffs.len(),
+            entries.len(),
+            slots.len(),
+            residual_blocks.len(),
+            temporal.len(),
+            planes,
+            units,
+            luma,
+            chroma,
+            tx_skip,
+            leaves,
+        ];
         residual_planes.clear();
         superblocks.clear();
         entries.clear();
+        slots.clear();
         residual_blocks.clear();
         residual_coeffs.clear();
         temporal.clear();
-        flag_log.clear();
-        if shared_coefficients {
-            lists.swap_into(&mut entries, &mut residual_blocks);
-        }
+        filter_records.clear();
         Ok(ReconRowBuffers {
             superblocks,
             residual_coeffs,
             entries,
+            slots,
             residual_blocks,
             temporal,
-            flag_log,
-            filter_records: row_filter_records,
             residual_planes,
+            filter_records,
+            lengths,
         })
     })();
-    scratch.coefficients = coefficient_scratch;
-    plane_scratch.clear();
-    scratch.plane_records = plane_scratch;
-    scratch.lists = lists;
+    if has_intra {
+        crate::pipeline::general_intra::swap_general_intra_scratch(
+            scratch.general_intra_mut(),
+            workspace,
+        );
+    }
+    folded.clear();
+    scratch.temporal = folded;
     result
 }

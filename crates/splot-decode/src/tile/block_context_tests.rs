@@ -22,8 +22,20 @@ fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
 }
 
 #[test]
+fn plane_origin_at_the_maximum_av2_frame_edge() {
+    let side4 = 1 << 14;
+    let rect = BlockRect::new(side4 - 1, side4 - 1, 1, 1);
+    let shape = TxShape::from_luma_4x4(1, 1).expect("4x4 shape");
+    let frame = FrameTileCtx::new(side4, side4, BitDepth::Ten, ChromaSampling::Yuv422);
+    let y = frame.plane_block(rect, shape, PlaneId::Y);
+    let uv = frame.plane_block(rect, shape, PlaneId::U);
+    assert_eq!((y.x(), y.y()), (65532, 65532));
+    assert_eq!((uv.x(), uv.y()), (32766, 65532));
+}
+
+#[test]
 fn every_av2_block_size_has_a_transform_shape() {
-    for index in 0..NUM_4X4_BLOCKS_WIDE.len() {
+    for index in 0..MI_WIDTH_LOG2.len() {
         let block_size = BlockSize::new(index).expect("valid AV2 block size");
         let tx = TxShape::from_av2_block_size(block_size);
 
@@ -34,7 +46,7 @@ fn every_av2_block_size_has_a_transform_shape() {
         );
     }
 
-    assert!(BlockSize::new(NUM_4X4_BLOCKS_WIDE.len()).is_err());
+    assert!(BlockSize::new(MI_WIDTH_LOG2.len()).is_err());
 }
 
 fn assert_plane_block(
@@ -142,9 +154,8 @@ fn large_chroma_smooth_corner_cap_fixture_decodes_to_oracle() {
     use splot_recon::DecodedFrameHashInput;
 
     let options = crate::DecodeOptions::default();
-    let decoded = crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options)
+    let ready = crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options)
         .expect("decode fixture");
-    let ready = decoded.ready_frame().expect("ready frame");
     assert!(
         matches!(&ready, crate::pipeline::PipelineDecodedFrame::Eight(_)),
         "fixture decoded at the wrong bit depth"

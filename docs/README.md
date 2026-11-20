@@ -6,8 +6,9 @@ Everything you need to work on splot. For using splot, see the
 
 ## Toolchain
 
-The workspace pins a nightly in `rust-toolchain.toml` for portable SIMD (edition
-2024, resolver 3). Rustup selects and installs it.
+The workspace pins stable Rust in `rust-toolchain.toml` (edition 2024, resolver
+3); rustup selects and installs it. SIMD kernels use `fearless_simd`. Only
+`cargo +nightly fuzz` needs a nightly toolchain.
 
 ```bash
 rustup show active-toolchain
@@ -45,6 +46,8 @@ cargo xtask ci
 It runs formatting, clippy, tests, doctests, rustdoc, optional external tool
 checks, dependency and concurrency policy, spec mirror integrity, diagnostic
 registry drift, the duplicate-code budget and the documentation budget.
+`cargo xtask ci --fast` keeps formatting, clippy and the repo checks and skips
+tests, rustdoc, external tools and the C ABI example, which GitHub CI runs.
 
 ## Documents
 

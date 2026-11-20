@@ -20,26 +20,54 @@ const MAX_ADJUSTED_TX_EXTENT: usize = 32;
 /// grids so AV2 § 8.3.2 neighbor reads (offsets up to +4 per
 /// `Sig_Ref_Diff_Offset`) never need per-sample bounds handling.
 pub(crate) const LEVEL_GRID_PAD: usize = 4;
-const MAX_PADDED_COEFF_LEN: usize =
-    (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD) * (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD);
+/// Row stride of every level and sign grid, so neighbour offsets are
+/// constants.
+pub(crate) const LEVEL_STRIDE: usize = MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD;
+const MAX_PADDED_COEFF_LEN: usize = LEVEL_STRIDE * (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD);
+/// Mask that keeps a block position or a neighbour offset below half the
+/// grid, a power of two at least [`MAX_PADDED_COEFF_LEN`].
+pub(crate) const LEVEL_INDEX_MASK: usize = MAX_PADDED_COEFF_LEN.next_power_of_two() - 1;
+/// Length of every level grid: a masked position plus a masked offset
+/// always indexes it, so neighbour reads need no bounds checks.
+pub(crate) const LEVEL_GRID_LEN: usize = 2 * (LEVEL_INDEX_MASK + 1);
+/// A block's level grid; entries past its padded extent are zero.
+pub(crate) type LevelGrid = [u8; LEVEL_GRID_LEN];
+static ZERO_LEVEL_GRID: LevelGrid = [0; LEVEL_GRID_LEN];
 
 static ZERO_QUANT_SIGN: [i8; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
+/// Mask that keeps a block position of the ordinary coefficient pass's level
+/// grid below its padded words.
+pub(crate) const LEVEL_WORDS_MASK: usize = 2047;
+/// The ordinary coefficient pass's level grid: one word per position at
+/// [`LEVEL_STRIDE`], zero outside a block while no block is being decoded,
+/// with room past every masked position for the largest neighbour offset.
+pub(crate) type CoeffLevelWords = [u32; LEVEL_WORDS_MASK + 1 + 256];
+/// Packed scan entries for one block's nonzero AC levels, in decode order.
+pub(crate) type CoeffNonzeroList = [u32; 1024];
+const LEVEL_WORDS: usize = core::mem::size_of::<CoeffLevelWords>() / 4;
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 use core::cell::Cell;
 
+#[inline]
 fn zero_buffer<T: Default + Copy>(
     mut buffer: Vec<T>,
     len: usize,
 ) -> Result<Vec<T>, TryReserveError> {
     buffer.clear();
-    buffer.try_reserve_exact(len)?;
+    if buffer.capacity() < len {
+        buffer.try_reserve_exact(len)?;
+    }
     buffer.resize(len, T::default());
     Ok(buffer)
 }
 
-/// A transform block's level, sign and quantised-coefficient buffers.
-type CoeffBlockBuffers = (Vec<u8>, Vec<i8>, Vec<i32>);
+/// A transform block's level grid with the length of its last used
+/// extent, and its sign buffer.
+///
+/// The two extents are one past the highest index the last block wrote, so
+/// the next block only re-zeroes that dirt instead of the whole arrays.
+type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, usize);
 
 std::thread_local! {
     /// One transform block's buffers, reused by the next block on this worker.
@@ -48,11 +76,15 @@ std::thread_local! {
 
 impl Drop for TransformCoeffBlockState {
     fn drop(&mut self) {
+        if self.level.len() != LEVEL_GRID_LEN {
+            return;
+        }
         COEFF_BLOCK_BUFFERS.with(|slot| {
             slot.set(Some((
                 core::mem::take(&mut self.level),
+                self.level_len,
                 core::mem::take(&mut self.quant_sign),
-                core::mem::take(&mut self.quant),
+                self.sign_end,
             )));
         });
     }
@@ -60,13 +92,15 @@ impl Drop for TransformCoeffBlockState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockState {
+    width: usize,
     height: usize,
-    stride: usize,
+    /// Padded extent of the block inside `level`.
+    level_len: usize,
+    /// [`LEVEL_GRID_LEN`] entries, zero past `level_len`.
     level: Vec<u8>,
     quant_sign: Vec<i8>,
-    quant: Vec<i32>,
-    /// One past the last nonzero entry of `quant`.
-    quant_end: usize,
+    /// One past the highest `quant_sign` index the block wrote.
+    sign_end: usize,
 }
 
 impl TransformCoeffBlockState {
@@ -76,36 +110,53 @@ impl TransformCoeffBlockState {
         checked_mul_usize("width * height", width, height)
     }
 
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: an out-of-line return spills the state through memory"
+    )]
+    #[inline(always)]
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
-        let allocation = Self::allocation(width, height)?;
-        let stride = width + LEVEL_GRID_PAD;
-        let level_len = stride * (height + LEVEL_GRID_PAD);
-        let (level, mut quant_sign, quant) =
+        Self::allocation(width, height)?;
+        let level_len = LEVEL_STRIDE * (height + LEVEL_GRID_PAD);
+        let (mut level, used_len, mut quant_sign, sign_end) =
             COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
-        let level = zero_buffer(level, level_len)?;
-        let quant = zero_buffer(quant, allocation)?;
+        if level.len() == LEVEL_GRID_LEN {
+            if let Some(used) = level.get_mut(..used_len.max(level_len)) {
+                used.fill(0);
+            }
+        } else {
+            level = zero_buffer(level, LEVEL_GRID_LEN)?;
+        }
         quant_sign.clear();
         Ok(Self {
+            width,
             height,
-            stride,
+            level_len,
             level,
             quant_sign,
-            quant,
-            quant_end: 0,
+            sign_end,
         })
     }
 
-    pub(crate) fn ensure_quant_sign(&mut self) -> Result<(), TileCoeffStateError> {
+    pub(crate) fn ensure_quant_sign(&mut self) {
         if self.quant_sign.is_empty() {
-            self.quant_sign = zero_buffer(core::mem::take(&mut self.quant_sign), self.level.len())?;
+            let mut buffer = core::mem::take(&mut self.quant_sign);
+            if buffer.len() > self.level_len {
+                buffer.truncate(self.level_len);
+            }
+            let dirty = self.sign_end.min(buffer.len());
+            buffer[..dirty].fill(0);
+            if buffer.len() < self.level_len {
+                buffer.resize(self.level_len, 0);
+            }
+            self.quant_sign = buffer;
+            self.sign_end = 0;
         }
-        Ok(())
     }
 
     #[must_use]
     pub(crate) const fn width(&self) -> usize {
-        self.stride - LEVEL_GRID_PAD
+        self.width
     }
 
     #[must_use]
@@ -114,8 +165,9 @@ impl TransformCoeffBlockState {
     }
 
     #[must_use]
-    pub(crate) fn level(&self) -> &[u8] {
-        &self.level
+    #[inline]
+    pub(crate) fn level(&self) -> &LevelGrid {
+        self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID)
     }
 
     pub(crate) fn level_mut(&mut self) -> &mut [u8] {
@@ -124,40 +176,24 @@ impl TransformCoeffBlockState {
 
     /// Row stride of the padded level and sign grids.
     #[must_use]
+    #[allow(
+        clippy::unused_self,
+        reason = "callers stay agnostic of the fixed stride"
+    )]
     pub(crate) const fn level_stride(&self) -> usize {
-        self.stride
-    }
-
-    /// Number of real (unpadded) coefficient positions in the block.
-    #[must_use]
-    pub(crate) const fn coeff_count(&self) -> usize {
-        self.quant.len()
+        LEVEL_STRIDE
     }
 
     #[must_use]
     pub(crate) fn quant_sign(&self) -> &[i8] {
         if self.quant_sign.is_empty() {
-            &ZERO_QUANT_SIGN[..self.level.len()]
+            &ZERO_QUANT_SIGN[..self.level_len]
         } else {
             &self.quant_sign
         }
     }
 
-    #[must_use]
-    /// The block's quantised coefficients.
-    ///
-    /// Borrowed, not taken: the caller copies them into its row's arena and
-    /// lets this state drop, which hands all three buffers to the next block
-    /// parsed on this worker.
-    pub(crate) fn quant(&self) -> &[i32] {
-        &self.quant
-    }
-
-    /// The quantised coefficients up to and including the last nonzero one.
-    pub(crate) fn nonzero_quant(&self) -> &[i32] {
-        &self.quant[..self.quant_end]
-    }
-
+    #[inline]
     pub(crate) fn set_level(
         &mut self,
         row: usize,
@@ -170,6 +206,7 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn set_quant_sign(
         &mut self,
         row: usize,
@@ -177,21 +214,13 @@ impl TransformCoeffBlockState {
         value: i8,
     ) -> Result<(), TileCoeffStateError> {
         let idx = self.index(row, col)?;
-        self.ensure_quant_sign()?;
+        self.ensure_quant_sign();
         self.quant_sign[idx] = value;
+        self.sign_end = self.sign_end.max(idx + 1);
         Ok(())
     }
 
-    pub(crate) fn set_quant(&mut self, pos: usize, value: i32) -> Result<(), TileCoeffStateError> {
-        let idx = self.quant_index(pos)?;
-        self.quant[idx] = value;
-        if value != 0 {
-            self.quant_end = self.quant_end.max(idx + 1);
-        }
-        Ok(())
-    }
-
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn level_at(&self, row: usize, col: usize) -> Result<u32, TileCoeffStateError> {
         Ok(u32::from(self.level[self.index(row, col)?]))
     }
@@ -201,11 +230,7 @@ impl TransformCoeffBlockState {
         Ok(self.quant_sign()[self.index(row, col)?])
     }
 
-    #[cfg(test)]
-    pub(crate) fn quant_at(&self, pos: usize) -> Result<i32, TileCoeffStateError> {
-        Ok(self.quant[self.quant_index(pos)?])
-    }
-
+    #[inline]
     fn index(&self, row: usize, col: usize) -> Result<usize, TileCoeffStateError> {
         let width = self.width();
         if row >= self.height || col >= width {
@@ -216,23 +241,7 @@ impl TransformCoeffBlockState {
                 width,
             });
         }
-        row.checked_mul(self.stride)
-            .and_then(|base| base.checked_add(col))
-            .ok_or(TileCoeffStateError::ArithmeticOverflow {
-                operation: "row * stride + col",
-                left: row,
-                right: self.stride,
-            })
-    }
-
-    fn quant_index(&self, pos: usize) -> Result<usize, TileCoeffStateError> {
-        if pos >= self.quant.len() {
-            return Err(TileCoeffStateError::QuantPositionOutOfBounds {
-                pos,
-                len: self.quant.len(),
-            });
-        }
-        Ok(pos)
+        Ok(row * LEVEL_STRIDE + col)
     }
 }
 
@@ -242,11 +251,17 @@ pub(crate) struct TileCoeffContextState {
     plane_col_origins: [usize; PLANE_COUNT],
     plane_rows: [usize; PLANE_COUNT],
     plane_cols: [usize; PLANE_COUNT],
-    above_level: [Vec<u8>; PLANE_COUNT],
-    left_level: [Vec<u8>; PLANE_COUNT],
-    above_dc: [Vec<u8>; PLANE_COUNT],
-    left_dc: [Vec<u8>; PLANE_COUNT],
+    /// Per plane 4x4 column (`above`) and row (`left`): the last block's
+    /// `culLevel` with its `dcCategory` at [`DC_CATEGORY_SHIFT`].
+    above: [Vec<u8>; PLANE_COUNT],
+    left: [Vec<u8>; PLANE_COUNT],
+    levels: Vec<u32>,
 }
+
+/// Where a context-line byte keeps the `dcCategory` (0 to 2), above the
+/// `culLevel` (0 to 4) in [`CUL_LEVEL_MASK`].
+pub(crate) const DC_CATEGORY_SHIFT: u32 = 3;
+pub(crate) const CUL_LEVEL_MASK: u8 = (1 << DC_CATEGORY_SHIFT) - 1;
 
 impl TileCoeffContextState {
     pub(crate) fn allocation(mi_rows: usize, mi_cols: usize) -> Result<(), TileCoeffStateError> {
@@ -316,27 +331,66 @@ impl TileCoeffContextState {
         self.plane_col_origins = plane_col_origins;
         self.plane_rows = plane_rows;
         self.plane_cols = plane_cols;
-        zero_plane_lines(&mut self.above_level, plane_cols)?;
-        zero_plane_lines(&mut self.left_level, plane_rows)?;
-        zero_plane_lines(&mut self.above_dc, plane_cols)?;
-        zero_plane_lines(&mut self.left_dc, plane_rows)?;
+        zero_plane_lines(&mut self.above, plane_cols)?;
+        zero_plane_lines(&mut self.left, plane_rows)?;
+        self.ensure_levels()?;
         Ok(())
     }
 
-    pub(crate) fn above_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
-        Ok(&self.above_level[validate_plane(plane)?])
+    fn ensure_levels(&mut self) -> Result<(), TileCoeffStateError> {
+        const LEN: usize = LEVEL_WORDS + core::mem::size_of::<CoeffNonzeroList>() / 4;
+        if self.levels.len() != LEN {
+            self.levels = zero_buffer(core::mem::take(&mut self.levels), LEN)?;
+        }
+        Ok(())
     }
 
-    pub(crate) fn left_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
-        Ok(&self.left_level[validate_plane(plane)?])
+    #[cfg(test)]
+    pub(crate) fn above_level(&self, plane: usize) -> Result<Vec<u8>, TileCoeffStateError> {
+        Ok(cul_levels(&self.above[validate_plane(plane)?]))
     }
 
-    pub(crate) fn above_dc(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
-        Ok(&self.above_dc[validate_plane(plane)?])
+    #[cfg(test)]
+    pub(crate) fn left_level(&self, plane: usize) -> Result<Vec<u8>, TileCoeffStateError> {
+        Ok(cul_levels(&self.left[validate_plane(plane)?]))
     }
 
-    pub(crate) fn left_dc(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
-        Ok(&self.left_dc[validate_plane(plane)?])
+    #[cfg(test)]
+    pub(crate) fn above_dc(&self, plane: usize) -> Result<Vec<u8>, TileCoeffStateError> {
+        Ok(dc_categories(&self.above[validate_plane(plane)?]))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn left_dc(&self, plane: usize) -> Result<Vec<u8>, TileCoeffStateError> {
+        Ok(dc_categories(&self.left[validate_plane(plane)?]))
+    }
+
+    /// The above context line of `plane`, see [`DC_CATEGORY_SHIFT`].
+    pub(crate) fn above_line(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
+        Ok(&self.above[validate_plane(plane)?])
+    }
+
+    /// The left context line of `plane`, see [`DC_CATEGORY_SHIFT`].
+    pub(crate) fn left_line(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
+        Ok(&self.left[validate_plane(plane)?])
+    }
+
+    /// The above and left context lines of `plane` with the level grid and
+    /// nonzero list of the coefficient passes, allocated on first use.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn dc_lines_and_levels(
+        &mut self,
+        plane: usize,
+    ) -> Result<(&[u8], &[u8], &mut CoeffLevelWords, &mut CoeffNonzeroList), TileCoeffStateError>
+    {
+        let plane = validate_plane(plane)?;
+        self.ensure_levels()?;
+        let (levels, nonzero) = self.levels.split_at_mut(LEVEL_WORDS);
+        let (Some(levels), Some(nonzero)) = (levels.first_chunk_mut(), nonzero.first_chunk_mut())
+        else {
+            return Err(TileCoeffStateError::InvalidPlane { plane });
+        };
+        Ok((&self.above[plane], &self.left[plane], levels, nonzero))
     }
 
     pub(crate) fn local_x4(&self, plane: usize, x4: usize) -> Result<usize, TileCoeffStateError> {
@@ -388,12 +442,7 @@ impl TileCoeffContextState {
                 self.plane_col_origins[plane],
                 self.plane_cols[plane],
             );
-            for (line, span) in [
-                (&mut self.above_level[plane], &c),
-                (&mut self.above_dc[plane], &c),
-                (&mut self.left_level[plane], &r),
-                (&mut self.left_dc[plane], &r),
-            ] {
+            for (line, span) in [(&mut self.above[plane], &c), (&mut self.left[plane], &r)] {
                 if let Some(cells) = line.get_mut(span.clone()) {
                     visit(cells);
                 }
@@ -401,54 +450,106 @@ impl TileCoeffContextState {
         }
     }
 
+    #[inline]
     pub(crate) fn update_after_coeffs(
         &mut self,
         input: CoeffContextUpdate,
     ) -> Result<(), TileCoeffStateError> {
-        let plane = validate_plane(input.plane)?;
         validate_dc_category(input.dc_category)?;
-        if input.w4 == 0 {
+        let lines = self.block_lines(input.plane, [input.x4, input.y4, input.w4, input.h4])?;
+        self.commit_block(&lines, input.cul_level, input.dc_category);
+        Ok(())
+    }
+
+    /// The above and left context-line spans of the transform block at
+    /// `[x4, y4, w4, h4]` (plane 4x4 units), checked once so the block's
+    /// context reads and its commit need no further checks.
+    #[inline]
+    pub(crate) fn block_lines(
+        &self,
+        plane: usize,
+        [x4, y4, w4, h4]: [usize; 4],
+    ) -> Result<CoeffBlockLines, TileCoeffStateError> {
+        let plane = validate_plane(plane)?;
+        if w4 == 0 {
             return Err(TileCoeffStateError::EmptyContextRange { axis: "columns" });
         }
-        if input.h4 == 0 {
+        if h4 == 0 {
             return Err(TileCoeffStateError::EmptyContextRange { axis: "rows" });
         }
-        let above_start = local_context_coordinate(
-            "above",
-            input.x4,
-            self.plane_col_origins[plane],
-            self.plane_cols[plane],
-        )?;
-        let left_start = local_context_coordinate(
-            "left",
-            input.y4,
-            self.plane_row_origins[plane],
-            self.plane_rows[plane],
-        )?;
-        let above = edge_clamped_range("above", above_start, input.w4, self.plane_cols[plane])?;
-        let left = edge_clamped_range("left", left_start, input.h4, self.plane_rows[plane])?;
+        let (cols, rows) = (self.plane_cols[plane], self.plane_rows[plane]);
+        let x4 = local_context_coordinate("above", x4, self.plane_col_origins[plane], cols)?;
+        let y4 = local_context_coordinate("left", y4, self.plane_row_origins[plane], rows)?;
+        Ok(CoeffBlockLines {
+            plane,
+            above: edge_clamped_range("above", x4, w4, cols)?,
+            left: edge_clamped_range("left", y4, h4, rows)?,
+            x4,
+            y4,
+            w4,
+            h4,
+        })
+    }
 
-        fill_context_line(
-            &mut self.above_level[plane],
-            &mut self.above_dc[plane],
-            above,
-            input.cul_level,
-            input.dc_category,
-        )?;
-        fill_context_line(
-            &mut self.left_level[plane],
-            &mut self.left_dc[plane],
-            left,
-            input.cul_level,
-            input.dc_category,
-        )?;
-        Ok(())
+    /// The OR of the block's above and left context bytes; see
+    /// [`DC_CATEGORY_SHIFT`].
+    #[allow(clippy::inline_always, reason = "measured: per-block context read")]
+    #[inline(always)]
+    pub(crate) fn line_or(&self, lines: &CoeffBlockLines) -> [u8; 2] {
+        let plane = lines.plane.min(PLANE_COUNT - 1);
+        let (above, left) = (&self.above[plane], &self.left[plane]);
+        [
+            above
+                .get(lines.above.clone())
+                .map_or(0, crate::support::or_mi_run),
+            left.get(lines.left.clone())
+                .map_or(0, crate::support::or_mi_run),
+        ]
+    }
+
+    /// Records the block's `culLevel` and `dcCategory` in its spans.
+    #[allow(clippy::inline_always, reason = "measured: per-block context commit")]
+    #[inline(always)]
+    pub(crate) fn commit_block(&mut self, lines: &CoeffBlockLines, level: u8, dc_category: u8) {
+        let plane = lines.plane.min(PLANE_COUNT - 1);
+        let value = level | dc_category << DC_CATEGORY_SHIFT;
+        for (line, range) in [
+            (&mut self.above[plane], &lines.above),
+            (&mut self.left[plane], &lines.left),
+        ] {
+            if let Some(run) = line.get_mut(range.clone()) {
+                crate::support::fill_mi_run(run, value);
+            }
+        }
     }
 
     pub(crate) fn reset_block_context_plane(
         &mut self,
         input: CoeffContextReset,
     ) -> Result<(), TileCoeffStateError> {
+        let (plane, above, left) = self.reset_spans(input)?;
+        zero_context_span(&mut self.above[plane], above)?;
+        zero_context_span(&mut self.left[plane], left)
+    }
+
+    /// [`Self::reset_block_context_plane`] of every chroma plane at once:
+    /// they share one line layout, so `input` (of plane 1) sizes them all.
+    pub(crate) fn reset_chroma_block_context(
+        &mut self,
+        input: CoeffContextReset,
+    ) -> Result<(), TileCoeffStateError> {
+        let (_, above, left) = self.reset_spans(input)?;
+        for plane in 1..PLANE_COUNT {
+            zero_context_span(&mut self.above[plane], above.clone())?;
+            zero_context_span(&mut self.left[plane], left.clone())?;
+        }
+        Ok(())
+    }
+
+    fn reset_spans(
+        &self,
+        input: CoeffContextReset,
+    ) -> Result<(usize, Range<usize>, Range<usize>), TileCoeffStateError> {
         let plane = validate_plane(input.plane)?;
         validate_subsampling("x", input.sub_x)?;
         validate_subsampling("y", input.sub_y)?;
@@ -482,23 +583,21 @@ impl TileCoeffContextState {
             left_end,
             self.plane_rows[plane],
         )?;
-
-        fill_context_line(
-            &mut self.above_level[plane],
-            &mut self.above_dc[plane],
-            above,
-            0,
-            0,
-        )?;
-        fill_context_line(
-            &mut self.left_level[plane],
-            &mut self.left_dc[plane],
-            left,
-            0,
-            0,
-        )?;
-        Ok(())
+        Ok((plane, above, left))
     }
+}
+
+/// A transform block's checked spans of its plane's context lines, with
+/// its tile-local 4x4 origin and its 4x4 extent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffBlockLines {
+    pub(crate) plane: usize,
+    above: Range<usize>,
+    left: Range<usize>,
+    pub(crate) x4: usize,
+    pub(crate) y4: usize,
+    pub(crate) w4: usize,
+    pub(crate) h4: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -565,8 +664,6 @@ pub(crate) enum TileCoeffStateError {
         height: usize,
         width: usize,
     },
-    #[error("coefficient Quant position {pos} exceeds adjusted block coefficient count {len}")]
-    QuantPositionOutOfBounds { pos: usize, len: usize },
     #[error("invalid coefficient context subsampling {axis} shift {value}")]
     InvalidSubsampling { axis: &'static str, value: u32 },
 }
@@ -708,15 +805,10 @@ fn shifted(value: usize, shift: u32) -> Result<usize, TileCoeffStateError> {
         })
 }
 
-fn fill_context_line(
-    level: &mut [u8],
-    dc: &mut [u8],
-    range: Range<usize>,
-    level_value: u8,
-    dc_value: u8,
-) -> Result<(), TileCoeffStateError> {
-    let len = level.len().min(dc.len());
-    let (Some(level), Some(dc)) = (level.get_mut(range.clone()), dc.get_mut(range.clone())) else {
+#[inline]
+fn zero_context_span(line: &mut [u8], range: Range<usize>) -> Result<(), TileCoeffStateError> {
+    let len = line.len();
+    let Some(span) = line.get_mut(range.clone()) else {
         return Err(TileCoeffStateError::ContextRangeOutOfBounds {
             context: "context line",
             start: range.start,
@@ -724,9 +816,18 @@ fn fill_context_line(
             len,
         });
     };
-    level.fill(level_value);
-    dc.fill(dc_value);
+    crate::support::fill_mi_run(span, 0);
     Ok(())
+}
+
+#[cfg(test)]
+fn cul_levels(line: &[u8]) -> Vec<u8> {
+    line.iter().map(|&byte| byte & CUL_LEVEL_MASK).collect()
+}
+
+#[cfg(test)]
+fn dc_categories(line: &[u8]) -> Vec<u8> {
+    line.iter().map(|&byte| byte >> DC_CATEGORY_SHIFT).collect()
 }
 
 fn zero_plane_lines<T: Default>(
@@ -741,7 +842,9 @@ fn zero_plane_lines<T: Default>(
 
 fn zero_line<T: Default>(values: &mut Vec<T>, len: usize) -> Result<(), TileCoeffStateError> {
     values.clear();
-    values.try_reserve_exact(len)?;
+    if values.capacity() < len {
+        values.try_reserve_exact(len)?;
+    }
     values.resize_with(len, T::default);
     Ok(())
 }

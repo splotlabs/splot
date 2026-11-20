@@ -22,7 +22,7 @@ fn active_luma_ccso_state(mi_rows: usize, mi_cols: usize) -> CcsoState {
 fn ccso_state_reads_only_at_aligned_origins() {
     let state = active_luma_ccso_state(270, 480);
     assert_eq!(state.shift, 6);
-    assert_eq!((state.grid_rows, state.grid_cols), (5, 8));
+    assert_eq!((state.window.rows, state.window.cols), (5, 8));
     let unit_mask = (1usize << state.shift) - 1;
     let aligned = |mi: usize| mi & unit_mask == 0;
     assert!(aligned(0));
@@ -68,15 +68,15 @@ fn ccso_state_left_neighbour_context_matches_spec_8_3_2() {
 fn ccso_state_inactive_reads_nothing() {
     let state = CcsoState::inactive();
     assert!(!state.active);
-    assert_eq!(state.grid_rows, 0);
+    assert_eq!(state.window.rows, 0);
 }
 
 #[test]
 fn ccso_state_rejects_out_of_grid_access() {
     let mut state = active_luma_ccso_state(270, 480);
-    assert!(state.set_block_value(0, state.grid_rows, 0, 1).is_err());
-    assert!(state.set_block_value(0, 0, state.grid_cols, 1).is_err());
-    assert_eq!(state.block_value(0, 0, state.grid_cols), 0);
+    assert!(state.set_block_value(0, state.window.rows, 0, 1).is_err());
+    assert!(state.set_block_value(0, 0, state.window.cols, 1).is_err());
+    assert_eq!(state.block_value(0, 0, state.window.cols), 0);
     assert_eq!(state.block_value(0, 99, 99), 0);
     assert_eq!(state.block_value(0, usize::MAX, 0), 0);
 }
@@ -104,10 +104,9 @@ fn ccso_tile_merge_copies_only_the_owned_region() {
 
 #[test]
 fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
-    use super::super::{
-        MI_SIZE, SelectableLumaTxGrid, TX_PARTITION_HORZ, TX_PARTITION_HORZ4, apply_tx_partition,
-        table_usize, tx_size_from_dimensions,
-    };
+    use super::super::grid_tests::{Block4x4Extent, collect_inter_luma_transforms};
+    use super::super::{MI_SIZE, table_usize};
+    use crate::bitstream::tile_payload::{LumaTxPartition, tx_size_from_dimensions};
     use splot_core::tables::conversion::MAX_TX_SIZE_RECT;
 
     const TX_16X64: usize = 17;
@@ -118,9 +117,17 @@ fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
         table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, 23).unwrap(),
         TX_16X64
     );
-    let mut grid = SelectableLumaTxGrid::new(16, 4).unwrap();
-    apply_tx_partition(&mut grid, 0, 0, TX_16X64, TX_PARTITION_HORZ4).unwrap();
-    let records = grid.records_for_region(0, 0, 16, 4).unwrap();
+    let mut records = Vec::new();
+    let extent = Block4x4Extent { rows: 16, cols: 4 };
+    collect_inter_luma_transforms(
+        (0, 0),
+        extent,
+        (16, 4),
+        TX_16X64,
+        LumaTxPartition::Horz4,
+        &mut records,
+    )
+    .unwrap();
     assert_eq!(records.len(), 4);
     for record in &records {
         assert_eq!((record.rows, record.cols), (4, 4));
@@ -129,8 +136,15 @@ fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
             Some(TX_16X16)
         );
     }
-    let mut wrong = SelectableLumaTxGrid::new(16, 4).unwrap();
-    apply_tx_partition(&mut wrong, 0, 0, TX_16X64, TX_PARTITION_HORZ).unwrap();
-    assert_eq!(wrong.records_for_region(0, 0, 16, 4).unwrap().len(), 2);
+    collect_inter_luma_transforms(
+        (0, 0),
+        extent,
+        (16, 4),
+        TX_16X64,
+        LumaTxPartition::Horz,
+        &mut records,
+    )
+    .unwrap();
+    assert_eq!(records.len(), 2);
     assert_eq!(tx_size_from_dimensions(16, 32), Some(TX_16X32));
 }

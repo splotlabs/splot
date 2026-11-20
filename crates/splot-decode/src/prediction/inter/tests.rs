@@ -26,14 +26,14 @@ use super::block::{
 use super::test_support::fixture_sequence_and_key_core;
 use super::{
     CompoundOrderHint, MotionFieldHandle, TemporalMotionField, ccso_reference_slot,
-    compound_is_joint_context, compound_is_joint_context_from_order_hints,
+    compound_is_joint_context_from_order_hints,
 };
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, Result};
 use crate::pipeline::frame_engine::finish::finish_walked_frame;
-use crate::pipeline::{PipelineDecodedFrame, PipelineFrame, decode_frames_from_plan};
+use crate::pipeline::{PipelineDecodedFrame, decode_frames_from_plan};
 use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
     DecodeStreamPlan,
@@ -176,11 +176,11 @@ fn plan_fixture(bytes: &[u8], options: &DecodeOptions) -> DecodeStreamPlan {
     DecodeContext::plan_bytes(bytes, *options).expect("plan")
 }
 
-pub(super) fn decode_fixture(bytes: &[u8]) -> Vec<PipelineFrame> {
+pub(super) fn decode_fixture(bytes: &[u8]) -> Vec<PipelineDecodedFrame> {
     decode_fixture_on_threads(bytes, 1)
 }
 
-fn decode_fixture_on_threads(bytes: &[u8], threads: usize) -> Vec<PipelineFrame> {
+fn decode_fixture_on_threads(bytes: &[u8], threads: usize) -> Vec<PipelineDecodedFrame> {
     let options = DecodeOptions::default();
     decode_fixture_with_options(bytes, &options, threads).expect("decode")
 }
@@ -189,18 +189,18 @@ fn decode_fixture_with_options(
     bytes: &[u8],
     options: &DecodeOptions,
     threads: usize,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<Vec<PipelineDecodedFrame>> {
     crate::pipeline::decode_frames_from_plan_on_threads(bytes, options, threads)
 }
 
 fn decode_frames_from_plan_on_pool(
     bytes: &[u8],
     options: &DecodeOptions,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<Vec<PipelineDecodedFrame>> {
     decode_frames_from_plan(bytes, options)
 }
 
-fn decode_frames() -> Vec<PipelineFrame> {
+fn decode_frames() -> Vec<PipelineDecodedFrame> {
     decode_fixture(TWO_FRAME_INTER_FIXTURE)
 }
 
@@ -214,10 +214,10 @@ fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, Quantizat
     )
 }
 
-fn assert_yuv420_8bit_frames(frames: &[PipelineFrame], width: usize, height: usize) {
+fn assert_yuv420_8bit_frames(frames: &[PipelineDecodedFrame], width: usize, height: usize) {
     let visible_size = PlaneSize::new(width, height).expect("valid visible size");
     for (index, output) in frames.iter().enumerate() {
-        let PipelineDecodedFrame::Eight(frame) = output.ready_frame().expect("ready") else {
+        let PipelineDecodedFrame::Eight(frame) = output else {
             panic!("frame {index} decoded as 10-bit");
         };
         assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
@@ -226,14 +226,14 @@ fn assert_yuv420_8bit_frames(frames: &[PipelineFrame], width: usize, height: usi
     }
 }
 
-pub(super) fn frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
+pub(super) fn frame_hashes(frames: &[PipelineDecodedFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
-            let PipelineDecodedFrame::Eight(frame) = output.ready_frame().expect("ready") else {
+            let PipelineDecodedFrame::Eight(frame) = output else {
                 panic!("frame decoded as 10-bit");
             };
-            DecodedFrameHashInput::new(&frame).compute_hash().to_hex()
+            DecodedFrameHashInput::new(frame).compute_hash().to_hex()
         })
         .collect()
 }
@@ -340,8 +340,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         .expect("fixture carries the inter frame record");
     let (prefix, inter_envelope) =
         crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
-    let (store, meta) = reference.build_store::<u8>(&frames.into())?;
-    let inter_state = std::sync::Arc::new(super::InterReferenceState::from_metadata(store, meta));
+    let inter_state = std::sync::Arc::new(reference.state::<u8>(&frames.into())?);
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
@@ -372,7 +371,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         panic!("inter fixture unexpectedly completed without its filter phase");
     };
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
-    finish_walked_frame(walked, None, |frame| writer.complete(frame))?;
+    finish_walked_frame(walked, writer)?;
     slot.ready()
 }
 
@@ -436,8 +435,7 @@ fn parse_inter_core_for_validation_inner(
         .expect("fixture carries the inter frame record");
     let (prefix, inter_envelope) =
         crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
-    let (store, meta) = reference.build_store::<u8>(&frames.into())?;
-    let inter_state = super::InterReferenceState::from_metadata(store, meta);
+    let inter_state = reference.state::<u8>(&frames.into())?;
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
@@ -461,11 +459,12 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
 
 fn luma_coeff_block(quant: &[i32], eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
     LumaCoeffBlock {
-        eob,
-        quant_range: 0..quant.len(),
+        eob: eob as u16,
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
-        cctx_type,
+        cctx_type: cctx_type.map(|cctx| cctx as u8),
         plane_tx_type: 0,
         use_tcq: false,
         lossless: false,
@@ -533,8 +532,6 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
             x: 0,
             y: 0,
             tx_size: 6,
-            log2_width: 3,
-            log2_height: 2,
             cctx_pair_delta: 2,
             coeffs: u_coeffs,
         },
@@ -543,8 +540,6 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
             x: 0,
             y: 0,
             tx_size: 0,
-            log2_width: 2,
-            log2_height: 2,
             cctx_pair_delta: 0,
             coeffs: all_zero_inter_coeff_block(),
         },
@@ -553,16 +548,12 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
             x: 0,
             y: 0,
             tx_size: 6,
-            log2_width: 3,
-            log2_height: 2,
             cctx_pair_delta: -2,
             coeffs: v_coeffs,
         },
     ];
     let residual = super::InterResidual { block_range: 0..3 };
-    let mut scratch = super::InterResidualReconScratch::default();
     super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
@@ -570,7 +561,6 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         101,
         false,
         true,
-        false,
         BitDepth::Eight,
     )
     .unwrap();
@@ -622,23 +612,18 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         x: 0,
         y: 0,
         tx_size: 2,
-        log2_width: 4,
-        log2_height: 4,
         cctx_pair_delta: 0,
         coeffs,
     }];
     let residual = super::InterResidual { block_range: 0..1 };
-    let mut scratch = super::InterResidualReconScratch::default();
     super::add_inter_residual_to_workspace(
-        &mut scratch,
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &quant,
         150,
         false,
-        true,
-        true,
+        false,
         BitDepth::Ten,
     )
     .unwrap();
@@ -810,14 +795,14 @@ fn ten_bit_flex_mvres_inter_fixture_decodes_avm_bit_exact() {
     );
 }
 
-fn ten_bit_frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
+fn ten_bit_frame_hashes(frames: &[PipelineDecodedFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
-            let PipelineDecodedFrame::Ten(frame) = output.ready_frame().expect("ready") else {
+            let PipelineDecodedFrame::Ten(frame) = output else {
                 panic!("frame decoded as 8-bit");
             };
-            DecodedFrameHashInput::new(&frame).compute_hash().to_hex()
+            DecodedFrameHashInput::new(frame).compute_hash().to_hex()
         })
         .collect()
 }
@@ -2390,28 +2375,6 @@ fn compound_is_joint_context_uses_strict_same_side_signs() {
         ),
         1,
         "full-domain past references retain their same-side context"
-    );
-}
-
-#[test]
-fn compound_is_joint_context_uses_selected_ranked_pair() {
-    let ref_frame_idx = [2, 0, 1];
-    let ref_order_hint = [9, 10, 11];
-
-    assert_eq!(
-        compound_is_joint_context(&ref_frame_idx, &ref_order_hint, (0, 1), 10,).unwrap(),
-        0,
-        "selected future/past references have equal distance"
-    );
-    assert_eq!(
-        compound_is_joint_context(&ref_frame_idx, &ref_order_hint, (1, 2), 10,).unwrap(),
-        1,
-        "selected past/current references have unequal distance"
-    );
-    assert_eq!(
-        compound_is_joint_context(&[0, 1], &[u32::MAX, 0], (0, 1), 127).unwrap(),
-        1,
-        "raw restricted order hints retain the restricted-reference term"
     );
 }
 

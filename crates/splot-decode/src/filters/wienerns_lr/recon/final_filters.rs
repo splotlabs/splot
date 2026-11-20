@@ -9,13 +9,11 @@ use crate::bitstream::tile_payload::{
     LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
 };
 use crate::filters::cdef::{CdefFrame, CdefSkipGrid};
-use crate::filters::source::{
-    FramePlane, StripeCopyError, StripeInitialization, StripeOutputPlane, StripePlane,
-};
+use crate::filters::source::{FramePlane, StripeCopyError, StripeInitialization, StripePlane};
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
 use splot_recon::{
-    BitDepth, LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
+    LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES,
     PcWienerClassifyPaddedSource, PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter,
     PcWienerPaddedSource, PlaneId, PlaneRect, ReconError, ReconSample, Result as ReconResult,
@@ -24,54 +22,19 @@ use splot_recon::{
     WienerNsChromaScratch, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
     pc_wiener_filter_set_index, pc_wiener_subclass_table,
-    wiener_ns_filter_chroma_block_padded_u8_into, wiener_ns_filter_chroma_block_padded_u16_into,
-    wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_cells_u8_into, wiener_ns_filter_luma_block_padded_into,
-    wiener_ns_filter_luma_block_padded_u8_into,
+    wiener_ns_filter_chroma_block_padded_into, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_luma_block_padded_into,
 };
 
 thread_local! {
     static PC_WIENER_CLASSIFY_SCRATCH: std::cell::RefCell<PcWienerClassifyScratch> =
         std::cell::RefCell::new(PcWienerClassifyScratch::default());
-    static WIENER_NS_LUMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
-        const { std::cell::Cell::new(None) };
-    static WIENER_NS_CHROMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
-        const { std::cell::Cell::new(None) };
+    static WIENER_NS_LUMA_SCRATCH: std::cell::RefCell<WienerNsLumaScratch> =
+        std::cell::RefCell::new(WienerNsLumaScratch::default());
+    static WIENER_NS_CHROMA_SCRATCH: std::cell::RefCell<WienerNsChromaScratch> =
+        std::cell::RefCell::new(WienerNsChromaScratch::default());
     static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<LrSourceScratch>>> =
         const { std::cell::Cell::new(None) };
-}
-
-fn with_wiener_ns_chroma_scratch<T: ReconSample, R>(
-    f: impl FnOnce(&mut WienerNsChromaScratch<T>) -> R,
-) -> R {
-    WIENER_NS_CHROMA_SCRATCH.with(|slot| {
-        let mut scratch = slot
-            .take()
-            .and_then(|scratch| scratch.downcast::<WienerNsChromaScratch<T>>().ok())
-            .unwrap_or_default();
-        let result = f(&mut scratch);
-        slot.set(Some(scratch));
-        result
-    })
-}
-
-const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
-
-fn with_wiener_ns_luma_scratch<T: ReconSample, R>(
-    sample_count: usize,
-    f: impl FnOnce(&mut WienerNsLumaScratch<T>) -> R,
-) -> R {
-    WIENER_NS_LUMA_SCRATCH.with(|slot| {
-        let mut scratch = slot
-            .take()
-            .and_then(|scratch| scratch.downcast::<WienerNsLumaScratch<T>>().ok())
-            .unwrap_or_default();
-        let result = f(&mut scratch);
-        if sample_count <= MAX_RETAINED_WIENER_NS_LUMA_SAMPLES {
-            slot.set(Some(scratch));
-        }
-        result
-    })
 }
 
 const MAX_RETAINED_LR_SCRATCH_ELEMENTS: usize = 64 * 1024;
@@ -80,35 +43,36 @@ const MAX_RETAINED_LR_SCRATCH_ELEMENTS: usize = 64 * 1024;
 struct LrSourceScratch {
     primary: Vec<u16>,
     secondary: Vec<u16>,
+    primary8: Vec<u8>,
+    secondary8: Vec<u8>,
     cell_subclasses: Vec<u8>,
 }
 
-pub(crate) struct LrFrame<'a, T> {
+pub(crate) struct LrFrame<'a, T: ReconSample> {
     pub(crate) deblocked_y: FramePlane<'a, T>,
     pub(crate) deblocked_u: Option<FramePlane<'a, T>>,
     pub(crate) deblocked_v: Option<FramePlane<'a, T>>,
-    pub(crate) cdef_y: StripePlane,
-    pub(crate) cdef_u: Option<StripePlane>,
-    pub(crate) cdef_v: Option<StripePlane>,
-    pub(crate) post_lr_y: Option<StripeOutputPlane>,
-    pub(crate) post_lr_u: Option<StripeOutputPlane>,
-    pub(crate) post_lr_v: Option<StripeOutputPlane>,
+    pub(crate) cdef_y: StripePlane<T>,
+    pub(crate) cdef_u: Option<StripePlane<T>>,
+    pub(crate) cdef_v: Option<StripePlane<T>>,
+    pub(crate) post_lr_y: Option<StripePlane<T>>,
+    pub(crate) post_lr_u: Option<StripePlane<T>>,
+    pub(crate) post_lr_v: Option<StripePlane<T>>,
     /// The luma post-LR plane already holds the CDEF output, so a flat LR
     /// strip needs no write.
     post_lr_y_holds_cdef: bool,
 }
 
-pub(crate) struct FilteredStripe {
-    pub(crate) y: StripeOutputPlane,
-    pub(crate) u: Option<StripeOutputPlane>,
-    pub(crate) v: Option<StripeOutputPlane>,
+pub(crate) struct FilteredStripe<T: ReconSample> {
+    pub(crate) y: StripePlane<T>,
+    pub(crate) u: Option<StripePlane<T>>,
+    pub(crate) v: Option<StripePlane<T>>,
 }
 
-pub(crate) struct LrStripeOutput {
+pub(crate) struct LrStripeOutput<T: ReconSample> {
     pub(crate) active_planes: [bool; 3],
-    pub(crate) direct_u8_planes: [bool; 3],
     pub(crate) initializations: [StripeInitialization; 3],
-    pub(crate) target: crate::pipeline::frame_progress::DirectStripeTarget,
+    pub(crate) target: crate::pipeline::frame_progress::DirectStripeTarget<T>,
 }
 
 impl<'a, T: ReconSample> LrFrame<'a, T> {
@@ -117,9 +81,8 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
     fn from_cdef(
         mut frame: CdefFrame<'a, T>,
         active_planes: [bool; 3],
-        direct_u8_planes: [bool; 3],
         initializations: [StripeInitialization; 3],
-        mut target: crate::pipeline::frame_progress::DirectStripeTarget,
+        mut target: crate::pipeline::frame_progress::DirectStripeTarget<T>,
     ) -> core::result::Result<Self, StripeCopyError> {
         let planes = [
             Some(&frame.filtered_y),
@@ -137,9 +100,6 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 }
                 return Err(StripeCopyError::Geometry);
             };
-            if direct_u8_planes[plane_id.index()] && direct_target.is_u16() {
-                return Err(StripeCopyError::Geometry);
-            }
             plane.preflight_copy_rows_into(
                 plane.origin_y(),
                 plane.end_y().ok_or(StripeCopyError::Geometry)?,
@@ -147,31 +107,25 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 initializations[plane_id.index()],
             )?;
         }
-        let post_lr_y_holds_cdef = !direct_u8_planes[PlaneId::Y.index()]
-            && (target.get(PlaneId::Y).is_none()
-                || initializations[PlaneId::Y.index()] == StripeInitialization::CopyAll);
-        let mut copy = |plane_id: PlaneId, plane: &mut StripePlane| {
+        let post_lr_y_holds_cdef = target.get(PlaneId::Y).is_none()
+            || initializations[PlaneId::Y.index()] == StripeInitialization::CopyAll;
+        let mut copy = |plane_id: PlaneId, plane: &mut StripePlane<T>| {
             let end_y = plane.end_y().ok_or(StripeCopyError::Geometry)?;
             let Some(target) = target.take(plane_id) else {
-                let cdef = plane.copy_rows_into_mode(
+                let cdef = plane.copy_rows_into(
                     plane.origin_y(),
                     end_y,
                     None,
                     StripeInitialization::CopyAll,
                 )?;
-                return Ok(StripeOutputPlane::u16(core::mem::replace(plane, cdef)));
+                return Ok(core::mem::replace(plane, cdef));
             };
-            if direct_u8_planes[plane_id.index()] {
-                return StripeOutputPlane::direct_u8(target, plane);
-            }
-            plane
-                .copy_rows_into_mode(
-                    plane.origin_y(),
-                    end_y,
-                    Some(target),
-                    initializations[plane_id.index()],
-                )
-                .map(StripeOutputPlane::u16)
+            plane.copy_rows_into(
+                plane.origin_y(),
+                end_y,
+                Some(target),
+                initializations[plane_id.index()],
+            )
         };
         let post_lr_y = if active_planes[PlaneId::Y.index()] {
             Some(
@@ -215,17 +169,11 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         })
     }
 
-    pub(crate) fn into_filtered(self) -> FilteredStripe {
+    pub(crate) fn into_filtered(self) -> FilteredStripe<T> {
         FilteredStripe {
-            y: self
-                .post_lr_y
-                .unwrap_or_else(|| StripeOutputPlane::u16(self.cdef_y)),
-            u: self
-                .post_lr_u
-                .or_else(|| self.cdef_u.map(StripeOutputPlane::u16)),
-            v: self
-                .post_lr_v
-                .or_else(|| self.cdef_v.map(StripeOutputPlane::u16)),
+            y: self.post_lr_y.unwrap_or(self.cdef_y),
+            u: self.post_lr_u.or(self.cdef_u),
+            v: self.post_lr_v.or(self.cdef_v),
         }
     }
 }
@@ -235,6 +183,8 @@ impl LrSourceScratch {
         [
             self.primary.capacity(),
             self.secondary.capacity(),
+            self.primary8.capacity(),
+            self.secondary8.capacity(),
             self.cell_subclasses.capacity(),
         ]
         .into_iter()
@@ -464,200 +414,110 @@ fn lr_blocks_near_rows(
     &blocks[relevant_start..relevant_end]
 }
 
-pub(crate) fn lr_plane_fully_overwritten(
+/// Calls `gap(rows, columns)` for each rectangle of the plane rows
+/// `start_y..end_y` that no block of `blocks` writes whole, or returns `None`
+/// on bad geometry or when `gap` does. Blocks out of column order can add
+/// gaps that a block does write, never drop one.
+#[allow(clippy::too_many_arguments)]
+fn for_each_lr_gap(
     blocks: &[WienerNsLrSourceBlock],
     plane: PlaneId,
     frame_type: FrameRestorationType,
     width: usize,
     frame_height: usize,
-    start_y: usize,
-    end_y: usize,
-) -> bool {
+    (start_y, end_y): (usize, usize),
+    mut gap: impl FnMut((usize, usize), (usize, usize)) -> Option<()>,
+) -> Option<()> {
     if width == 0 || start_y >= end_y || end_y > frame_height {
-        return false;
+        return None;
     }
     let blocks = lr_blocks_near_rows(blocks, start_y, end_y);
+    let span = |block: &WienerNsLrSourceBlock| {
+        let end_x = block.x.checked_add(block.width)?.min(width);
+        let end_y = block.y.checked_add(block.height)?.min(frame_height);
+        Some(((block.x, end_x), (block.y, end_y)))
+    };
     let mut y = start_y;
     while y < end_y {
-        let mut x = 0usize;
         let mut next_y = end_y;
         for block in blocks {
-            let Some(block_end_y) = block.y.checked_add(block.height) else {
-                return false;
-            };
-            let block_end_y = block_end_y.min(frame_height);
-            if block.y > y {
-                next_y = next_y.min(block.y);
-                continue;
+            let (_, (top, bottom)) = span(block)?;
+            if top > y {
+                next_y = next_y.min(top);
+            } else if bottom > y {
+                next_y = next_y.min(bottom);
             }
-            if block_end_y <= y {
-                continue;
-            }
-            next_y = next_y.min(block_end_y);
-            let Some(block_end_x) = block.x.checked_add(block.width) else {
-                return false;
-            };
-            let block_end_x = block_end_x.min(width);
-            if !lr_restoration_writes_complete_rectangle(plane, frame_type, block.restoration_type)
-                || block.x >= block_end_x
-                || block.x != x
-            {
-                return false;
-            }
-            x = block_end_x;
         }
-        if x != width {
-            return false;
+        let mut x = 0usize;
+        for block in blocks {
+            let ((left, right), (top, bottom)) = span(block)?;
+            if top > y
+                || bottom <= y
+                || !lr_restoration_writes_complete_rectangle(
+                    plane,
+                    frame_type,
+                    block.restoration_type,
+                )
+            {
+                continue;
+            }
+            if left > x {
+                gap((y, next_y), (x, left))?;
+            }
+            x = x.max(right);
+        }
+        if x < width {
+            gap((y, next_y), (x, width))?;
         }
         y = next_y;
     }
-    true
+    Some(())
 }
 
-pub(crate) fn terminal_luma_wiener_covers(
+/// Copies from `cdef` into `post_lr` the samples that no block of `blocks`
+/// writes whole, so that they hold the CDEF output after loop restoration.
+fn copy_lr_gaps<T: ReconSample>(
     blocks: &[WienerNsLrSourceBlock],
-    width: usize,
-    frame_height: usize,
-    start_y: usize,
-    end_y: usize,
-) -> bool {
-    lr_plane_fully_overwritten(
+    plane: PlaneId,
+    frame_type: FrameRestorationType,
+    cdef: &StripePlane<T>,
+    post_lr: &mut StripePlane<T>,
+) -> Result<()> {
+    let source = cdef.view().map_err(|_| super::lr_pipeline_state_error())?;
+    let rows = (
+        post_lr.origin_y(),
+        post_lr.end_y().ok_or_else(super::lr_pipeline_state_error)?,
+    );
+    let (width, frame_height) = (post_lr.width(), post_lr.frame_height());
+    for_each_lr_gap(
         blocks,
-        PlaneId::Y,
-        FrameRestorationType::WienerNonsep,
+        plane,
+        frame_type,
         width,
         frame_height,
-        start_y,
-        end_y,
+        rows,
+        |rows, columns| post_lr.copy_columns_from(source, rows, columns),
     )
+    .ok_or_else(super::lr_pipeline_state_error)
 }
 
-pub(crate) fn terminal_luma_wiener_direct_u8(
-    bit_depth: BitDepth,
-    frame_type: Option<FrameRestorationType>,
-    gdf_active: bool,
-    blocks: &[WienerNsLrSourceBlock],
-    target: &crate::pipeline::frame_progress::DirectPlaneTarget,
-) -> bool {
-    bit_depth == BitDepth::Eight
-        && !target.is_u16()
-        && !gdf_active
-        && frame_type.is_some_and(|frame_type| {
-            matches!(
-                frame_type,
-                FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
-            )
-        })
-        && target.end_y().is_some_and(|end_y| {
-            luma_stripe_units_all_wiener_nonsep(blocks, target.origin_y(), end_y)
-                && terminal_luma_wiener_covers(
-                    blocks,
-                    target.width(),
-                    target.frame_height(),
-                    target.origin_y(),
-                    end_y,
-                )
-        })
-}
-
-/// The direct-`u8` luma sink has no `u16` post-LR stripe, so a PC-Wiener unit
-/// dispatched into it would fail. Reject the whole stripe unless every unit the
-/// LR walk will visit is Wiener-NS.
-fn luma_stripe_units_all_wiener_nonsep(
-    blocks: &[WienerNsLrSourceBlock],
-    start_y: usize,
-    end_y: usize,
-) -> bool {
-    lr_blocks_near_rows(blocks, start_y, end_y)
-        .iter()
-        .filter(|block| lr_block_in_rows(block, start_y, end_y).is_some())
-        .all(|block| block.restoration_type == LrUnitRestorationType::WienerNonsep)
-}
-
-pub(crate) fn lr_initializations(
-    core: &FrameHeaderCore,
+pub(crate) fn lr_initializations<T: ReconSample>(
     active_planes: [bool; 3],
-    plane_blocks: [&[WienerNsLrSourceBlock]; 3],
-    target: &crate::pipeline::frame_progress::DirectStripeTarget,
+    target: &crate::pipeline::frame_progress::DirectStripeTarget<T>,
 ) -> [StripeInitialization; 3] {
-    core::array::from_fn(|index| {
-        let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
-        let Some(target) = target.get(plane).filter(|target| target.is_u16()) else {
-            return StripeInitialization::CopyAll;
-        };
-        if !active_planes[index] {
-            return StripeInitialization::CopyAll;
-        }
-        let covered = target.end_y().is_some_and(|end_y| {
-            core.lr_params
-                .as_ref()
-                .and_then(|params| params.planes.get(index))
-                .is_some_and(|params| {
-                    lr_plane_fully_overwritten(
-                        plane_blocks[index],
-                        plane,
-                        params.restoration_type,
-                        target.width(),
-                        target.frame_height(),
-                        target.origin_y(),
-                        end_y,
-                    )
-                })
-        });
-        if covered {
-            StripeInitialization::FullyOverwritten
+    [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+        if active_planes[plane.index()] && target.get(plane).is_some() {
+            StripeInitialization::Partial
         } else {
             StripeInitialization::CopyAll
         }
     })
 }
 
-fn lr_block_destination<'a>(
-    plane: &'a mut StripePlane,
+fn lr_block_destination<'a, T: ReconSample>(
+    plane: &'a mut StripePlane<T>,
     block: &WienerNsLrSourceBlock,
-) -> Result<(&'a mut [u16], usize)> {
-    if block
-        .x
-        .checked_add(block.width)
-        .is_none_or(|end_x| end_x > plane.width())
-    {
-        return Err(super::lr_pipeline_state_error());
-    }
-    let rect = splot_recon::PlaneRect::new(block.x, block.y, block.width, block.height)
-        .map_err(|_| super::lr_pipeline_state_error())?;
-    let (destination, stride) = plane
-        .rect_mut(rect)
-        .ok_or_else(super::lr_pipeline_state_error)?;
-    Ok((destination, stride))
-}
-
-enum LrDestination<'a> {
-    U16(&'a mut [u16]),
-    U8(&'a mut [u8]),
-}
-
-impl LrDestination<'_> {
-    /// The destination from column `x` of its first row.
-    fn columns_from(&mut self, x: usize) -> Result<LrDestination<'_>> {
-        Ok(match self {
-            Self::U16(output) => LrDestination::U16(
-                output
-                    .get_mut(x..)
-                    .ok_or_else(super::lr_pipeline_state_error)?,
-            ),
-            Self::U8(output) => LrDestination::U8(
-                output
-                    .get_mut(x..)
-                    .ok_or_else(super::lr_pipeline_state_error)?,
-            ),
-        })
-    }
-}
-
-fn chroma_lr_block_destination<'a>(
-    plane: &'a mut StripeOutputPlane,
-    block: &WienerNsLrSourceBlock,
-) -> Result<(LrDestination<'a>, usize)> {
+) -> Result<(&'a mut [T], usize)> {
     if block
         .x
         .checked_add(block.width)
@@ -667,20 +527,9 @@ fn chroma_lr_block_destination<'a>(
     }
     let rect = PlaneRect::new(block.x, block.y, block.width, block.height)
         .map_err(|_| super::lr_pipeline_state_error())?;
-    match plane {
-        StripeOutputPlane::U16(plane) => {
-            let (destination, stride) = plane
-                .rect_mut(rect)
-                .ok_or_else(super::lr_pipeline_state_error)?;
-            Ok((LrDestination::U16(destination), stride))
-        }
-        StripeOutputPlane::DirectU8(_) => {
-            let (destination, stride) = plane
-                .u8_rect_mut(rect)
-                .ok_or_else(super::lr_pipeline_state_error)?;
-            Ok((LrDestination::U8(destination), stride))
-        }
-    }
+    plane
+        .rect_mut(rect)
+        .ok_or_else(super::lr_pipeline_state_error)
 }
 
 /// Post-CCSO rows adjacent to a stripe band, split per plane.
@@ -689,48 +538,18 @@ fn chroma_lr_block_destination<'a>(
 /// stripes restart per tile row, so a band abutting a tile-row boundary needs
 /// deringed rows the band itself never covers.
 #[derive(Default)]
-pub(crate) struct CdefOverlap {
-    pub(crate) y: Vec<StripePlane>,
-    pub(crate) u: Vec<StripePlane>,
-    pub(crate) v: Vec<StripePlane>,
+pub(crate) struct CdefOverlap<T: ReconSample> {
+    pub(crate) y: Vec<StripePlane<T>>,
+    pub(crate) u: Vec<StripePlane<T>>,
+    pub(crate) v: Vec<StripePlane<T>>,
 }
 
-impl CdefOverlap {
-    fn plane(&self, plane_id: PlaneId) -> &[StripePlane] {
+impl<T: ReconSample> CdefOverlap<T> {
+    fn plane(&self, plane_id: PlaneId) -> &[StripePlane<T>] {
         match plane_id {
             PlaneId::Y => &self.y,
             PlaneId::U => &self.u,
             PlaneId::V => &self.v,
-        }
-    }
-}
-
-/// A padded § 7.20.2 source window held as `u16` for every sample storage, so
-/// the `u16` CDEF rows copy without a narrowing check.
-struct LrSourceWindow<'a> {
-    samples: &'a [u16],
-    stride: usize,
-    origin_x: isize,
-    origin_y: isize,
-}
-
-enum LrSourceRow<'a, T> {
-    Curr(&'a [T]),
-    Cdef(&'a [u16]),
-}
-
-impl<T: ReconSample> LrSourceRow<'_, T> {
-    fn len(&self) -> usize {
-        match self {
-            Self::Curr(row) => row.len(),
-            Self::Cdef(row) => row.len(),
-        }
-    }
-
-    fn get(&self, index: usize) -> Option<u16> {
-        match self {
-            Self::Curr(row) => row.get(index).map(|sample| sample.to_u16()),
-            Self::Cdef(row) => row.get(index).copied(),
         }
     }
 }
@@ -760,7 +579,7 @@ impl LrWindowGeometry {
     fn new<T: ReconSample>(
         plane: PlaneId,
         curr_plane: FramePlane<'_, T>,
-        cdef_plane: &StripePlane,
+        cdef_plane: &StripePlane<T>,
         bounds: &LoopRestorationSourceBounds,
         block_x: isize,
         block_y: isize,
@@ -827,9 +646,9 @@ impl LrWindowGeometry {
         &self,
         row_index: usize,
         curr_plane: FramePlane<'a, T>,
-        cdef_plane: &'a StripePlane,
-        cdef_overlap: &'a [StripePlane],
-    ) -> ReconResult<LrSourceRow<'a, T>> {
+        cdef_plane: &'a StripePlane<T>,
+        cdef_overlap: &'a [StripePlane<T>],
+    ) -> ReconResult<&'a [T]> {
         let y = isize::try_from(row_index)
             .ok()
             .and_then(|row| self.y0.checked_add(row))
@@ -840,74 +659,56 @@ impl LrWindowGeometry {
                 field: "LR source frame bounds",
             });
         }
-        Ok(match sample.source {
+        match sample.source {
             LoopRestorationSource::CurrFrame => {
-                LrSourceRow::Curr(curr_plane.row(sample.y).ok_or_else(|| {
-                    ReconError::BufferLengthMismatch {
-                        expected: sample.y.saturating_add(1),
-                        actual: curr_plane.frame_height(),
-                    }
-                })?)
-            }
-            LoopRestorationSource::CdefFrame => LrSourceRow::Cdef(
-                cdef_plane
+                curr_plane
                     .row(sample.y)
-                    .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(sample.y)))
                     .ok_or_else(|| ReconError::BufferLengthMismatch {
                         expected: sample.y.saturating_add(1),
-                        actual: cdef_plane.end_y().unwrap_or(cdef_plane.origin_y()),
-                    })?,
-            ),
-        })
+                        actual: curr_plane.frame_height(),
+                    })
+            }
+            LoopRestorationSource::CdefFrame => cdef_plane
+                .row(sample.y)
+                .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(sample.y)))
+                .ok_or_else(|| ReconError::BufferLengthMismatch {
+                    expected: sample.y.saturating_add(1),
+                    actual: cdef_plane.end_y().unwrap_or(cdef_plane.origin_y()),
+                }),
+        }
     }
 
     /// The source samples of `row` themselves when no window column is
-    /// clipped and the row already holds `u16` samples.
-    fn borrowed<'a, T: ReconSample>(&self, row: &LrSourceRow<'a, T>) -> Option<&'a [u16]> {
+    /// clipped.
+    fn borrowed<'a, T>(&self, row: &'a [T]) -> Option<&'a [T]> {
         if self.mid != self.stride {
             return None;
         }
-        let columns = self.mid_start..self.mid_start.checked_add(self.stride)?;
-        match *row {
-            LrSourceRow::Curr(row) => T::u16_slice(row.get(columns)?),
-            LrSourceRow::Cdef(row) => row.get(columns),
-        }
+        row.get(self.mid_start..self.mid_start.checked_add(self.stride)?)
     }
 
-    fn write<T: ReconSample>(
-        &self,
-        source_row: &LrSourceRow<'_, T>,
-        output: &mut [u16],
-    ) -> ReconResult<()> {
+    fn write<T: Copy>(&self, source_row: &[T], output: &mut [T]) -> ReconResult<()> {
         let edge = |x: usize| {
-            source_row.get(x).ok_or(ReconError::BufferLengthMismatch {
-                expected: x.saturating_add(1),
-                actual: source_row.len(),
-            })
+            source_row
+                .get(x)
+                .copied()
+                .ok_or(ReconError::BufferLengthMismatch {
+                    expected: x.saturating_add(1),
+                    actual: source_row.len(),
+                })
         };
         let (pre, mid) = (self.pre, self.mid);
         output[..pre].fill(edge(self.left)?);
         if mid > 0 {
             let mid_end = self.mid_start.saturating_add(mid);
-            let missing = ReconError::BufferLengthMismatch {
-                expected: mid_end,
-                actual: source_row.len(),
-            };
-            let output = &mut output[pre..pre + mid];
-            match source_row {
-                LrSourceRow::Curr(row) => {
-                    let source = row.get(self.mid_start..mid_end).ok_or(missing)?;
-                    if let Some(source) = T::u16_slice(source) {
-                        output.copy_from_slice(source);
-                    } else {
-                        for (output, &value) in output.iter_mut().zip(source) {
-                            *output = value.to_u16();
-                        }
-                    }
-                }
-                LrSourceRow::Cdef(row) => {
-                    output.copy_from_slice(row.get(self.mid_start..mid_end).ok_or(missing)?);
-                }
+            let source = source_row.get(self.mid_start..mid_end).ok_or(
+                ReconError::BufferLengthMismatch {
+                    expected: mid_end,
+                    actual: source_row.len(),
+                },
+            )?;
+            for (output, &value) in output[pre..pre + mid].iter_mut().zip(source) {
+                *output = value;
             }
         }
         output[pre + mid..].fill(edge(self.right)?);
@@ -921,41 +722,34 @@ impl LrWindowGeometry {
 const MAX_LR_WINDOW_ROWS: usize = 64 + 2 * PC_WIENER_CLASSIFY_READ_RADIUS;
 const _: () = assert!(MAX_LR_WINDOW_ROWS <= 128);
 
-/// A padded § 7.20.2 luma source window as rows: an unclipped row borrows its
-/// source plane row, and only a clipped or `u8` row is resolved into the
+/// A padded § 7.20.2 source window as rows: an unclipped row borrows its
+/// source plane row, and only a clipped row is resolved into the
 /// scratch.
-struct LrSourceRows<'a> {
-    rows: [&'a [u16]; MAX_LR_WINDOW_ROWS],
+struct LrSourceRows<'a, T> {
+    rows: [&'a [T]; MAX_LR_WINDOW_ROWS],
     len: usize,
-    radius: usize,
+    radius: (usize, usize),
     origin_x: isize,
     origin_y: isize,
 }
 
-impl<'a> LrSourceRows<'a> {
+impl<'a, T: ReconSample> LrSourceRows<'a, T> {
     #[allow(clippy::too_many_arguments)]
-    fn resolve<T: ReconSample>(
-        scratch: &'a mut Vec<u16>,
+    fn resolve(
+        scratch: &'a mut Vec<T>,
+        plane: PlaneId,
         curr_plane: FramePlane<'a, T>,
-        cdef_plane: &'a StripePlane,
-        cdef_overlap: &'a [StripePlane],
+        cdef_plane: &'a StripePlane<T>,
+        cdef_overlap: &'a [StripePlane<T>],
         bounds: &LoopRestorationSourceBounds,
         block_x: isize,
         block_y: isize,
         width: usize,
         height: usize,
-        radius: usize,
+        radius: (usize, usize),
     ) -> ReconResult<Self> {
         let geometry = LrWindowGeometry::new(
-            PlaneId::Y,
-            curr_plane,
-            cdef_plane,
-            bounds,
-            block_x,
-            block_y,
-            width,
-            height,
-            (radius, radius),
+            plane, curr_plane, cdef_plane, bounds, block_x, block_y, width, height, radius,
         )?;
         let (stride, len) = (geometry.stride, geometry.rows);
         if len > MAX_LR_WINDOW_ROWS {
@@ -963,7 +757,7 @@ impl<'a> LrSourceRows<'a> {
         }
         reserve_window(
             scratch,
-            PlaneId::Y,
+            plane,
             stride.checked_mul(len).ok_or(OVERFLOW_WINDOW)?,
         )?;
         let cdef_origin = usize_to_isize_recon(cdef_plane.origin_y(), "LR source window rows")?;
@@ -975,7 +769,7 @@ impl<'a> LrSourceRows<'a> {
                 .checked_add(geometry.mid_start)
         };
         let unclipped = geometry.mid == stride;
-        let mut rows: [&'a [u16]; MAX_LR_WINDOW_ROWS] = [&[]; MAX_LR_WINDOW_ROWS];
+        let mut rows: [&'a [T]; MAX_LR_WINDOW_ROWS] = [&[]; MAX_LR_WINDOW_ROWS];
         let mut in_scratch = 0u128;
         for (row_index, row) in rows.iter_mut().enumerate().take(len) {
             let y = geometry.y0 + row_index as isize;
@@ -988,17 +782,17 @@ impl<'a> LrSourceRows<'a> {
                 continue;
             }
             let source = geometry.row(row_index, curr_plane, cdef_plane, cdef_overlap)?;
-            if let Some(samples) = geometry.borrowed(&source) {
+            if let Some(samples) = geometry.borrowed(source) {
                 *row = samples;
                 continue;
             }
             geometry.write(
-                &source,
+                source,
                 &mut scratch[row_index * stride..(row_index + 1) * stride],
             )?;
             in_scratch |= 1 << row_index;
         }
-        let scratch: &'a [u16] = scratch;
+        let scratch: &'a [T] = scratch;
         for (row_index, row) in rows.iter_mut().enumerate().take(len) {
             if in_scratch & (1 << row_index) != 0 {
                 *row = &scratch[row_index * stride..(row_index + 1) * stride];
@@ -1015,34 +809,24 @@ impl<'a> LrSourceRows<'a> {
 
     /// The rows reaching `tap_radius` around the block, and the column in
     /// each row where they start.
-    fn tail(&self, tap_radius: usize) -> Option<(&[&'a [u16]], usize)> {
-        let skip = self.radius.checked_sub(tap_radius)?;
-        Some((self.rows.get(skip..self.len - skip)?, skip))
+    fn tail(&self, tap_radius: usize) -> Option<(&[&'a [T]], usize)> {
+        let skip_x = self.radius.0.checked_sub(tap_radius)?;
+        let skip_y = self.radius.1.checked_sub(tap_radius)?;
+        Some((self.rows.get(skip_y..self.len - skip_y)?, skip_x))
     }
 }
 
-/// The one value that the `width` columns from `col` of every row hold.
-fn flat_lr_window(rows: &[&[u16]], col: usize, width: usize) -> Option<u16> {
-    use std::simd::{Simd, num::SimdUint};
-    const LANES: usize = 16;
-    let value = *rows.first()?.get(col)?;
-    let splat = Simd::<u16, LANES>::splat(value);
+/// The one value that the `width` columns from `col` of every row hold. A
+/// window narrower than one SIMD check is checked with the columns to its
+/// left that fill one, so it is not flat when they differ.
+fn flat_lr_window<T: ReconSample>(rows: &[&[T]], col: usize, width: usize) -> Option<u16> {
+    let value = rows.first()?.get(col)?.to_u16();
+    let end = col.checked_add(width)?;
+    let start = col.min(end.saturating_sub(16));
     rows.iter()
         .all(|row| {
-            let Some(row) = col.checked_add(width).and_then(|end| row.get(col..end)) else {
-                return false;
-            };
-            let Some(last) = row.last_chunk::<LANES>() else {
-                return row.iter().all(|&sample| sample == value);
-            };
-            let diff = row
-                .as_chunks::<LANES>()
-                .0
-                .iter()
-                .fold(Simd::from_array(*last) ^ splat, |diff, chunk| {
-                    diff | (Simd::from_array(*chunk) ^ splat)
-                });
-            diff.reduce_or() == 0
+            row.get(start..end)
+                .is_some_and(|row| crate::filters::cdef::holds_value(row, value) == Some(true))
         })
         .then_some(value)
 }
@@ -1054,8 +838,8 @@ fn flat_lr_window(rows: &[&[u16]], col: usize, width: usize) -> Option<u16> {
 /// column `col`, holds one value `v <= max_sample`: the § 7.20.3 tap
 /// differences are then zero and the § 7.20.4 taps sum to zero, so both
 /// filters return `v`, and no other process reads the strip's classes.
-fn for_each_lr_strip(
-    rows: &[&[u16]],
+fn for_each_lr_strip<T: ReconSample>(
+    rows: &[&[T]],
     col: usize,
     width: usize,
     radius: usize,
@@ -1103,7 +887,11 @@ fn fill_lr_rect<O: Copy>(
     Ok(())
 }
 
-fn reserve_window(samples: &mut Vec<u16>, plane: PlaneId, sample_count: usize) -> ReconResult<()> {
+fn reserve_window<T: ReconSample>(
+    samples: &mut Vec<T>,
+    plane: PlaneId,
+    sample_count: usize,
+) -> ReconResult<()> {
     if let Some(missing) = sample_count.checked_sub(samples.len()).filter(|n| *n > 0) {
         samples
             .try_reserve_exact(missing)
@@ -1111,75 +899,9 @@ fn reserve_window(samples: &mut Vec<u16>, plane: PlaneId, sample_count: usize) -
                 plane,
                 context: "LR source window",
             })?;
-        samples.resize(sample_count, 0);
+        samples.resize(sample_count, T::default());
     }
     Ok(())
-}
-
-impl<'a> LrSourceWindow<'a> {
-    /// Resolves one padded § 7.17 source window into `samples`.
-    ///
-    /// Every row is written across the whole stride, so a buffer that already
-    /// holds enough samples keeps its previous contents instead of being
-    /// cleared and refilled.
-    #[allow(clippy::too_many_arguments)]
-    fn materialize<T: ReconSample>(
-        samples: &'a mut Vec<u16>,
-        plane: PlaneId,
-        curr_plane: FramePlane<'_, T>,
-        cdef_plane: &StripePlane,
-        cdef_overlap: &[StripePlane],
-        bounds: &LoopRestorationSourceBounds,
-        block_x: isize,
-        block_y: isize,
-        width: usize,
-        height: usize,
-        radius: (usize, usize),
-    ) -> ReconResult<Self> {
-        let geometry = LrWindowGeometry::new(
-            plane, curr_plane, cdef_plane, bounds, block_x, block_y, width, height, radius,
-        )?;
-        let stride = geometry.stride;
-        let sample_count = stride.checked_mul(geometry.rows).ok_or(OVERFLOW_WINDOW)?;
-        reserve_window(samples, plane, sample_count)?;
-        for (row_index, output) in samples[..sample_count].chunks_exact_mut(stride).enumerate() {
-            let row = geometry.row(row_index, curr_plane, cdef_plane, cdef_overlap)?;
-            geometry.write(&row, output)?;
-        }
-        Ok(Self {
-            samples: samples.get(..sample_count).ok_or(OVERFLOW_WINDOW)?,
-            stride,
-            origin_x: geometry.x0,
-            origin_y: geometry.y0,
-        })
-    }
-
-    fn tail_from(&self, x: isize, y: isize) -> Option<(&'a [u16], usize)> {
-        let col = usize::try_from(x.checked_sub(self.origin_x)?).ok()?;
-        let row = usize::try_from(y.checked_sub(self.origin_y)?).ok()?;
-        if col >= self.stride {
-            return None;
-        }
-        let start = row.checked_mul(self.stride)?.checked_add(col)?;
-        self.samples.get(start..).map(|tail| (tail, self.stride))
-    }
-
-    #[cfg(test)]
-    fn get_abs(&self, x: isize, y: isize) -> u16 {
-        let col = x.saturating_sub(self.origin_x);
-        let row = y.saturating_sub(self.origin_y);
-        if col < 0 || row < 0 || col as usize >= self.stride {
-            return 0;
-        }
-        self.samples
-            .get(
-                (row as usize)
-                    .saturating_mul(self.stride)
-                    .saturating_add(col as usize),
-            )
-            .copied()
-            .unwrap_or_default()
-    }
 }
 
 const OVERFLOW_WINDOW: ReconError = ReconError::ArithmeticOverflow {
@@ -1203,21 +925,19 @@ fn mi_to_luma_end_recon(mi_end: usize, context: &'static str) -> ReconResult<usi
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
     pub(crate) fn cdef_skip_grid(
-        &self,
+        &mut self,
         core: &FrameHeaderCore,
         mi_rows: usize,
         mi_cols: usize,
     ) -> Result<Option<CdefSkipGrid>> {
-        let Some(cdef) = core.cdef_params.as_ref() else {
-            return Ok(None);
-        };
-        if cdef.cdef_on_skip_txfm_frame_enable != Some(false) {
+        if !crate::filters::wienerns_lr::cdef_uses_tx_skip(core) {
             return Ok(None);
         }
         let skip_grid = crate::filters::wienerns_lr::derive_cdef_skip_grid(
             mi_rows,
             mi_cols,
             &self.filter_records.tx_skip_records,
+            core::mem::take(&mut self.filter_records.cdef_skip_grid_values),
         )
         .map_err(|_| super::lr_pipeline_state_error())?;
         Ok(Some(skip_grid))
@@ -1225,36 +945,43 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 }
 
 impl StripeChain<'_> {
-    pub(crate) fn active_lr_planes(
+    /// Each plane's blocks near the luma rows `luma_start..luma_end`, and
+    /// whether one of them reaches into those rows.
+    pub(crate) fn lr_stripe_blocks<'b>(
         &self,
-        luma_start: usize,
-        luma_end: usize,
-        plane_blocks: [&[WienerNsLrSourceBlock]; 3],
-    ) -> [bool; 3] {
+        (luma_start, luma_end): (usize, usize),
+        plane_blocks: [&'b [WienerNsLrSourceBlock]; 3],
+    ) -> ([&'b [WienerNsLrSourceBlock]; 3], [bool; 3]) {
         let sub_y = usize::from(self.pixel_format.subsampling_y());
-        core::array::from_fn(|plane| {
+        let rows = |plane: usize| {
             let shift = usize::from(plane != PlaneId::Y.index()) * sub_y;
-            let start = luma_start >> shift;
-            let end = luma_end.div_ceil(1 << shift);
-            plane_blocks[plane]
+            (luma_start >> shift, luma_end.div_ceil(1 << shift))
+        };
+        let blocks: [_; 3] = core::array::from_fn(|plane| {
+            let (start, end) = rows(plane);
+            lr_blocks_near_rows(plane_blocks[plane], start, end)
+        });
+        let active = core::array::from_fn(|plane| {
+            let (start, end) = rows(plane);
+            blocks[plane]
                 .iter()
                 .any(|block| lr_block_in_rows(block, start, end).is_some())
-        })
+        });
+        (blocks, active)
     }
 
     pub(crate) fn apply_lr_stripe<'a, T: ReconSample>(
         &self,
         core: &FrameHeaderCore,
         cdef: CdefFrame<'a, T>,
-        cdef_overlap: &CdefOverlap,
+        cdef_overlap: &CdefOverlap<T>,
         plane_blocks: [&[WienerNsLrSourceBlock]; 3],
         lr_unit_filters: &[WienerNsLrUnitFilter],
-        output: LrStripeOutput,
+        output: LrStripeOutput<T>,
     ) -> Result<LrFrame<'a, T>> {
         let mut frame = LrFrame::from_cdef(
             cdef,
             output.active_planes,
-            output.direct_u8_planes,
             output.initializations,
             output.target,
         )
@@ -1267,6 +994,24 @@ impl StripeChain<'_> {
             }
             StripeCopyError::Geometry => super::lr_pipeline_state_error(),
         })?;
+        let planes = [
+            (Some(&frame.cdef_y), frame.post_lr_y.as_mut()),
+            (frame.cdef_u.as_ref(), frame.post_lr_u.as_mut()),
+            (frame.cdef_v.as_ref(), frame.post_lr_v.as_mut()),
+        ];
+        for (index, planes) in planes.into_iter().enumerate() {
+            if let (Some(cdef), Some(post_lr)) = planes
+                && output.initializations[index] == StripeInitialization::Partial
+            {
+                let frame_type = core
+                    .lr_params
+                    .as_ref()
+                    .and_then(|params| params.planes.get(index))
+                    .map_or(FrameRestorationType::None, |params| params.restoration_type);
+                let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
+                copy_lr_gaps(plane_blocks[index], plane, frame_type, cdef, post_lr)?;
+            }
+        }
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };
@@ -1312,9 +1057,6 @@ impl StripeChain<'_> {
             {
                 match block.restoration_type {
                     LrUnitRestorationType::PcWiener => {
-                        let post_lr_y = post_lr_y
-                            .as_u16_mut()
-                            .ok_or_else(super::lr_pipeline_state_error)?;
                         self.compute_pc_wiener_block(
                             &block,
                             frame.deblocked_y,
@@ -1424,11 +1166,11 @@ impl StripeChain<'_> {
         &self,
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
-        cdef_luma: &StripePlane,
-        cdef_luma_overlap: &[StripePlane],
+        cdef_luma: &StripePlane<T>,
+        cdef_luma_overlap: &[StripePlane<T>],
         qindex: u32,
         filter_set_index: usize,
-        post_lr: &mut StripePlane,
+        post_lr: &mut StripePlane<T>,
         fill_flat: bool,
     ) -> Result<()> {
         let block = clipped_lr_source_block(
@@ -1447,11 +1189,13 @@ impl StripeChain<'_> {
         with_lr_source_scratch(|scratch| {
             let LrSourceScratch {
                 primary,
+                primary8,
                 cell_subclasses,
                 ..
             } = scratch;
             let window = LrSourceRows::resolve(
-                primary,
+                T::depth_vec(primary8, primary),
+                PlaneId::Y,
                 curr_luma,
                 cdef_luma,
                 cdef_luma_overlap,
@@ -1460,7 +1204,7 @@ impl StripeChain<'_> {
                 block_y,
                 block.width,
                 block.height,
-                PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS),
+                [PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS); 2].into(),
             )
             .map_err(lr_window_error)?;
             let (rows, col) = window
@@ -1480,6 +1224,8 @@ impl StripeChain<'_> {
                         .get_mut(x..)
                         .ok_or_else(super::lr_pipeline_state_error)?;
                     if let Some(value) = flat {
+                        let value =
+                            T::try_from_u16(value).map_err(|_| super::lr_pipeline_state_error())?;
                         return fill_lr_rect(output, output_stride, end - x, block.height, value);
                     }
                     let mut sub = block;
@@ -1509,14 +1255,7 @@ impl StripeChain<'_> {
                         .map_err(lr_window_error)
                 },
             )?;
-            self.preserve_lossless_lr_samples(
-                PlaneId::Y,
-                &block,
-                curr_luma,
-                output,
-                output_stride,
-                |slot, sample| *slot = sample.to_u16(),
-            )
+            self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, output_stride)
         })
     }
 
@@ -1536,12 +1275,12 @@ impl StripeChain<'_> {
         lr_unit_filters: &[WienerNsLrUnitFilter],
         frame_coeffs: Option<&[i16; WIENER_NS_CHROMA_COEFFS]>,
         curr_chroma: FramePlane<'_, T>,
-        cdef_chroma: &StripePlane,
-        cdef_chroma_overlap: &[StripePlane],
+        cdef_chroma: &StripePlane<T>,
+        cdef_chroma_overlap: &[StripePlane<T>],
         curr_luma: FramePlane<'_, T>,
-        cdef_luma: &StripePlane,
-        cdef_luma_overlap: &[StripePlane],
-        post_lr: &mut StripeOutputPlane,
+        cdef_luma: &StripePlane<T>,
+        cdef_luma_overlap: &[StripePlane<T>],
+        post_lr: &mut StripePlane<T>,
     ) -> Result<()> {
         let (plane_width, plane_height) = self.plane_dimensions(plane_id);
         let (sub_x, sub_y) = self.plane_subsampling(plane_id);
@@ -1565,7 +1304,7 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let (mut output, output_stride) = chroma_lr_block_destination(post_lr, &block)?;
+        let (output, output_stride) = lr_block_destination(post_lr, &block)?;
         {
             let params = WienerNsChromaFilter {
                 x: block.x,
@@ -1583,8 +1322,15 @@ impl StripeChain<'_> {
                 cfl_ds_filter_index: self.cfl_ds_filter_index,
             };
             with_lr_source_scratch(|scratch| -> Result<()> {
-                let chroma_window = LrSourceWindow::materialize(
-                    &mut scratch.primary,
+                let LrSourceScratch {
+                    primary,
+                    secondary,
+                    primary8,
+                    secondary8,
+                    ..
+                } = scratch;
+                let chroma_window = LrSourceRows::resolve(
+                    T::depth_vec(primary8, primary),
                     plane_id,
                     curr_chroma,
                     cdef_chroma,
@@ -1597,13 +1343,8 @@ impl StripeChain<'_> {
                     (WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAP_RADIUS),
                 )
                 .map_err(lr_window_error)?;
-                let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
-                let (chroma_padded, chroma_stride) = chroma_window
-                    .tail_from(
-                        block_x.saturating_sub(radius),
-                        block_y.saturating_sub(radius),
-                    )
-                    .ok_or_else(super::lr_pipeline_state_error)?;
+                let chroma_rows = &chroma_window.rows[..chroma_window.len];
+                let luma_window;
                 let padded_source = if params.reads_luma() {
                     let luma_radius_x = WIENER_NS_CHROMA_TAP_RADIUS << sub_x;
                     let luma_radius_y = WIENER_NS_CHROMA_TAP_RADIUS << sub_y;
@@ -1613,8 +1354,8 @@ impl StripeChain<'_> {
                     let luma_block_y = block_y
                         .checked_mul(1 << sub_y)
                         .ok_or_else(super::lr_pipeline_state_error)?;
-                    let luma_window = LrSourceWindow::materialize(
-                        &mut scratch.secondary,
+                    luma_window = LrSourceRows::resolve(
+                        T::depth_vec(secondary8, secondary),
                         PlaneId::Y,
                         curr_luma,
                         cdef_luma,
@@ -1633,64 +1374,33 @@ impl StripeChain<'_> {
                         (luma_radius_x, luma_radius_y),
                     )
                     .map_err(lr_window_error)?;
-                    let (luma_padded, luma_stride) = luma_window
-                        .tail_from(
-                            luma_block_x.saturating_sub(luma_radius_x as isize),
-                            luma_block_y.saturating_sub(luma_radius_y as isize),
-                        )
-                        .ok_or_else(super::lr_pipeline_state_error)?;
-                    WienerNsChromaPaddedSource::new(
-                        chroma_padded,
-                        chroma_stride,
-                        luma_padded,
-                        luma_stride,
+                    WienerNsChromaPaddedSource::from_rows(
+                        (chroma_rows, 0),
+                        (&luma_window.rows[..luma_window.len], 0),
                         block.width,
                         block.height,
                         (sub_x as u8, sub_y as u8),
                     )
                 } else {
-                    WienerNsChromaPaddedSource::chroma_only(
-                        chroma_padded,
-                        chroma_stride,
+                    WienerNsChromaPaddedSource::chroma_from_rows(
+                        chroma_rows,
+                        0,
                         block.width,
                         block.height,
                     )
                 }
                 .map_err(|error| lr_plane_window_error(&error, plane_id))?;
-                with_wiener_ns_chroma_scratch::<u16, _>(|scratch| match &mut output {
-                    LrDestination::U16(output) => wiener_ns_filter_chroma_block_padded_u16_into(
+                with_reusable_scratch(&WIENER_NS_CHROMA_SCRATCH, |scratch| {
+                    wiener_ns_filter_chroma_block_padded_into(
                         output,
                         &params,
                         &padded_source,
                         scratch,
-                    ),
-                    LrDestination::U8(output) => wiener_ns_filter_chroma_block_padded_u8_into(
-                        output,
-                        &params,
-                        &padded_source,
-                        scratch,
-                    ),
+                    )
                 })
                 .map_err(|error| lr_plane_window_error(&error, plane_id))
             })?;
-            match output {
-                LrDestination::U16(output) => self.preserve_lossless_lr_samples(
-                    plane_id,
-                    &block,
-                    curr_chroma,
-                    output,
-                    output_stride,
-                    |slot, sample| *slot = sample.to_u16(),
-                ),
-                LrDestination::U8(output) => self.preserve_lossless_lr_samples(
-                    plane_id,
-                    &block,
-                    curr_chroma,
-                    output,
-                    output_stride,
-                    |slot, sample| *slot = sample.to_u16() as u8,
-                ),
-            }
+            self.preserve_lossless_lr_samples(plane_id, &block, curr_chroma, output, output_stride)
         }
     }
 
@@ -1699,13 +1409,13 @@ impl StripeChain<'_> {
         &self,
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
-        cdef_luma: &StripePlane,
-        cdef_luma_overlap: &[StripePlane],
+        cdef_luma: &StripePlane<T>,
+        cdef_luma_overlap: &[StripePlane<T>],
         qindex: u32,
         num_classes: usize,
         filter_set_index: usize,
         coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
-        post_lr: &mut StripeOutputPlane,
+        post_lr: &mut StripePlane<T>,
         fill_flat: bool,
     ) -> Result<()> {
         let block = clipped_lr_source_block(
@@ -1720,15 +1430,17 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "luma LR block y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let (mut output, output_stride) = chroma_lr_block_destination(post_lr, &block)?;
+        let (output, output_stride) = lr_block_destination(post_lr, &block)?;
         with_lr_source_scratch(|scratch| -> Result<()> {
             let LrSourceScratch {
                 primary,
+                primary8,
                 cell_subclasses,
                 ..
             } = scratch;
             let window = LrSourceRows::resolve(
-                primary,
+                T::depth_vec(primary8, primary),
+                PlaneId::Y,
                 curr_luma,
                 cdef_luma,
                 cdef_luma_overlap,
@@ -1737,7 +1449,7 @@ impl StripeChain<'_> {
                 block_y,
                 block.width,
                 block.height,
-                WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
+                [WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS); 2].into(),
             )
             .map_err(lr_window_error)?;
             let (rows, col) = window
@@ -1753,26 +1465,17 @@ impl StripeChain<'_> {
                     if flat.is_some() && !fill_flat {
                         return Ok(());
                     }
-                    let mut output = output.columns_from(x)?;
+                    let output = output
+                        .get_mut(x..)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
                     let mut sub = block;
                     sub.x += x;
                     sub.width = end - x;
                     if let Some(value) = flat {
-                        return match output {
-                            LrDestination::U16(output) => {
-                                fill_lr_rect(output, output_stride, sub.width, sub.height, value)
-                            }
-                            LrDestination::U8(output) => {
-                                let value = u8::try_from(value)
-                                    .map_err(|_| super::lr_pipeline_state_error())?;
-                                fill_lr_rect(output, output_stride, sub.width, sub.height, value)
-                            }
-                        };
+                        let value =
+                            T::try_from_u16(value).map_err(|_| super::lr_pipeline_state_error())?;
+                        return fill_lr_rect(output, output_stride, sub.width, sub.height, value);
                     }
-                    let sample_count = sub
-                        .width
-                        .checked_mul(sub.height)
-                        .ok_or_else(super::lr_pipeline_state_error)?;
                     let cell_subclass_map = if num_classes > 1 {
                         Some(self.luma_lr_cell_subclasses(
                             &sub,
@@ -1796,108 +1499,64 @@ impl StripeChain<'_> {
                     let padded_source =
                         WienerNsLumaPaddedSource::from_rows(rows, col + x, sub.width, sub.height)
                             .map_err(lr_window_error)?;
-                    with_wiener_ns_luma_scratch::<u16, _>(sample_count, |scratch| match &mut output
-                    {
-                        LrDestination::U16(output) => {
-                            if let Some(cell_subclasses) = cell_subclass_map {
-                                wiener_ns_filter_luma_block_padded_cells_into(
-                                    output,
-                                    &params,
-                                    &padded_source,
-                                    cell_subclasses,
-                                    scratch,
-                                )
-                            } else {
-                                wiener_ns_filter_luma_block_padded_into(
-                                    output,
-                                    &params,
-                                    &padded_source,
-                                    scratch,
-                                )
-                            }
-                        }
-                        LrDestination::U8(output) => {
-                            if let Some(cell_subclasses) = cell_subclass_map {
-                                wiener_ns_filter_luma_block_padded_cells_u8_into(
-                                    output,
-                                    &params,
-                                    &padded_source,
-                                    cell_subclasses,
-                                    scratch,
-                                )
-                            } else {
-                                wiener_ns_filter_luma_block_padded_u8_into(
-                                    output,
-                                    &params,
-                                    &padded_source,
-                                    scratch,
-                                )
-                            }
+                    let source = &padded_source;
+                    with_reusable_scratch(&WIENER_NS_LUMA_SCRATCH, |scratch| {
+                        if let Some(cells) = cell_subclass_map {
+                            wiener_ns_filter_luma_block_padded_cells_into(
+                                output, &params, source, cells, scratch,
+                            )
+                        } else {
+                            wiener_ns_filter_luma_block_padded_into(
+                                output, &params, source, scratch,
+                            )
                         }
                     })
                     .map_err(lr_window_error)
                 },
             )
         })?;
-        match output {
-            LrDestination::U16(output) => self.preserve_lossless_lr_samples(
-                PlaneId::Y,
-                &block,
-                curr_luma,
-                output,
-                output_stride,
-                |slot, sample| *slot = sample.to_u16(),
-            ),
-            LrDestination::U8(output) => self.preserve_lossless_lr_samples(
-                PlaneId::Y,
-                &block,
-                curr_luma,
-                output,
-                output_stride,
-                |slot, sample| *slot = sample.to_u16() as u8,
-            ),
-        }
+        self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, output_stride)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn preserve_lossless_lr_samples<T: ReconSample, O>(
+    fn preserve_lossless_lr_samples<T: ReconSample>(
         &self,
         plane_id: PlaneId,
         block: &WienerNsLrSourceBlock,
         curr_plane: FramePlane<'_, T>,
-        output: &mut [O],
+        output: &mut [T],
         output_stride: usize,
-        mut write_sample: impl FnMut(&mut O, T),
     ) -> Result<()> {
         let Some(lossless_grid) = self.lossless_grid else {
             return Ok(());
         };
         let (sub_x, sub_y) = self.plane_subsampling(plane_id);
         for row in 0..block.height {
-            for col in 0..block.width {
-                let x = block
-                    .x
-                    .checked_add(col)
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let y = block
-                    .y
-                    .checked_add(row)
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                if !lossless_grid.plane_sample_lossless(plane_id, x, y, sub_x, sub_y) {
-                    continue;
+            let y = block
+                .y
+                .checked_add(row)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            let source = curr_plane
+                .row(y)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            let start = row
+                .checked_mul(output_stride)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            let filtered = output
+                .get_mut(start..start + block.width)
+                .ok_or_else(super::lr_pipeline_state_error)?;
+            let mut col = 0;
+            while col < block.width {
+                let x = block.x + col;
+                let next = (((((x << sub_x) / MI_SIZE + 1) * MI_SIZE) >> sub_x) - block.x)
+                    .clamp(col + 1, block.width);
+                if lossless_grid.plane_sample_lossless(plane_id, x, y, sub_x, sub_y) {
+                    let kept = source
+                        .get(x..x + next - col)
+                        .ok_or_else(super::lr_pipeline_state_error)?;
+                    filtered[col..next].copy_from_slice(kept); // splot-copy-ok: lossless samples skip loop restoration
                 }
-                let output_index = row
-                    .checked_mul(output_stride)
-                    .and_then(|start| start.checked_add(col))
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let sample = *curr_plane
-                    .row(y)
-                    .and_then(|row| row.get(x))
-                    .ok_or_else(super::lr_pipeline_state_error)?;
-                let Some(slot) = output.get_mut(output_index) else {
-                    return Err(super::lr_pipeline_state_error());
-                };
-                write_sample(slot, sample);
+                col = next;
             }
         }
         Ok(())
@@ -1914,10 +1573,10 @@ impl StripeChain<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn luma_lr_cell_subclasses<'a>(
+    fn luma_lr_cell_subclasses<'a, T: ReconSample>(
         &self,
         block: &WienerNsLrSourceBlock,
-        window: &LrSourceRows<'_>,
+        window: &LrSourceRows<'_, T>,
         qindex: u32,
         num_classes: usize,
         filter_set_index: usize,
@@ -1932,23 +1591,6 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let tile_end_y = mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let cell_count = cell_cols
-            .checked_mul(cell_rows)
-            .ok_or_else(super::lr_pipeline_state_error)?;
-        if cell_count > cell_subclasses.len() {
-            let additional = cell_count - cell_subclasses.len();
-            if cell_subclasses.try_reserve_exact(additional).is_err() {
-                cell_subclasses.clear();
-                return Err(ReconError::WorkspaceAllocationFailed {
-                    plane: PlaneId::Y,
-                    context: "PC-Wiener cell subclasses",
-                }
-                .into());
-            }
-            cell_subclasses.resize(cell_count, 0);
-        } else {
-            cell_subclasses.truncate(cell_count);
-        }
         let subclass_table =
             pc_wiener_subclass_table(num_classes, filter_set_index).map_err(lr_window_error)?;
         let padded_source = PcWienerClassifyPaddedSource::from_rows(
@@ -1981,25 +1623,18 @@ impl StripeChain<'_> {
             tile_end_y,
         };
         with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
-            let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+            pc_wiener_classify_grid_padded_classes_into::<T, _>(
                 &params,
                 cell_cols,
                 cell_rows,
                 &padded_source,
                 |run| tx_skip_grid.run(run.row, run.col, run.len),
+                subclass_table,
                 scratch,
+                cell_subclasses,
             )
-            .map_err(lr_window_error)?;
-            if classes.len() != cell_subclasses.len() {
-                return Err(super::lr_pipeline_state_error());
-            }
-            for (cell, &class) in cell_subclasses.iter_mut().zip(classes) {
-                *cell = subclass_table[usize::from(class)];
-            }
-            Ok(())
-        })?;
-
-        Ok(cell_subclasses)
+            .map_err(lr_window_error)
+        })
     }
 }
 

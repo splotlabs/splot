@@ -18,14 +18,12 @@
 //!
 //! Design rules enforced here:
 //!
-//! - `splot-core` depends on no other `splot-*` crate.
+//! - `splot-core` depends on no other `splot-*` crate but `splot-tables`.
 //! - Library code never panics on malformed input; failures are [`Error`]s.
 //! - This is the **AV2** OBU header (§ 5.2.2), not the AV1 OBU header.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
-
-#![feature(portable_simd)]
 
 pub mod annexb;
 pub mod bitio;

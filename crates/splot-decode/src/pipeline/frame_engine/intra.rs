@@ -69,7 +69,6 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         .lossless_info
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
-    // Enforce DecodeLimits before allocating the workspace, as the inter path does.
     let tile_plan = derive_tile_plan(candidate, bytes, sequence, &core, options)?;
     let tile_size = tile_plan
         .work_units()

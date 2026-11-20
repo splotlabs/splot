@@ -15,12 +15,12 @@ use splot_core::headers::metadata::MetadataUnit;
 use splot_core::ivf::IvfHeader;
 use splot_parallel::{FrameDelay, ThreadCount};
 use splot_recon::{
-    BitDepth, DecodedFrameInfo, PixelFormat, PlaneId, PlanePool, PlaneRef, ReconSample, SharedFrame,
+    BitDepth, DecodedFrameInfo, FramePlaneSamples, PixelFormat, PlaneId, PlanePool, PlaneRef,
+    ReconSample, SharedFrame,
 };
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, fill_buffer};
 use crate::error::{DecodeError, DecoderStateError, Result};
-use crate::output::film_grain::{DisplayFrame, frame_for_output};
 use crate::pipeline::{DecodeSession, PipelineDecodedFrame, PipelineFrame};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
 
@@ -118,8 +118,9 @@ pub enum SendStatus {
 /// boundary and its row stride is a multiple of that many bytes; the visible
 /// area may start inside it (see [`PlaneRef::visible_rect`]). The decoder never
 /// writes the planes again; dropping the last picture that holds them gives
-/// the storage back to the decoder. Film grain, when the stream signals it, is
-/// applied to a new buffer with the same layout guarantees.
+/// the storage back to the decoder, which reuses frame-sized planes for later
+/// pictures and frees smaller ones. Film grain, when the stream signals it, is
+/// applied into planes from that same storage, with the same layout guarantees.
 #[derive(Debug)]
 pub struct Picture {
     samples: Option<Samples>,
@@ -149,8 +150,10 @@ impl Picture {
     fn new(frame: &PipelineFrame, pool: Option<Arc<PlanePool>>) -> Result<Self> {
         let grain = frame.display_grain.as_ref();
         let samples = match frame.ready_frame()? {
-            PipelineDecodedFrame::Eight(frame) => Samples::Eight(display(frame, grain)?),
-            PipelineDecodedFrame::Ten(frame) => Samples::Ten(display(frame, grain)?),
+            PipelineDecodedFrame::Eight(frame) => {
+                Samples::Eight(display(frame, grain, pool.as_ref())?)
+            }
+            PipelineDecodedFrame::Ten(frame) => Samples::Ten(display(frame, grain, pool.as_ref())?),
         };
         let info = match &samples {
             Samples::Eight(frame) => frame.info(),
@@ -234,17 +237,20 @@ impl Drop for Picture {
     }
 }
 
+/// The displayed form of `frame`: grain goes into planes from the decoder's
+/// pool, which the picture gives them back to when the caller drops it.
 fn display<T: ReconSample>(
     frame: SharedFrame<T>,
     grain: Option<&crate::pipeline::ActiveFilmGrain>,
+    pool: Option<&Arc<PlanePool>>,
 ) -> Result<SharedFrame<T>> {
-    if grain.is_none() {
+    let Some(grain) = grain else {
         return Ok(frame);
-    }
-    match frame_for_output(frame.get(), grain)? {
-        DisplayFrame::Owned(grained) => Ok(SharedFrame::new(*grained)),
-        DisplayFrame::Borrowed(_) => Ok(frame),
-    }
+    };
+    let spare = FramePlaneSamples::default().with_pool(pool);
+    let grained =
+        splot_recon::apply_film_grain_into(frame.get(), &grain.model, grain.grain_seed, spare)?;
+    Ok(SharedFrame::new(grained))
 }
 
 fn recycle<T: ReconSample>(frame: SharedFrame<T>, pool: &Arc<PlanePool>) {

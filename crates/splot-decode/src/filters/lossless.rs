@@ -5,16 +5,19 @@
 
 use splot_recon::PlaneId;
 
-use crate::filters::deblock::{ChromaDeblockRecords, DeblockBlock};
+use crate::filters::deblock::DeblockBlock;
 
 const MI_SIZE: usize = 4;
+/// The MI side of a CDEF 8x8 block.
+const CDEF_BLOCK_MI: usize = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LosslessBlockGrid {
     mi_rows: usize,
     mi_cols: usize,
     luma: Vec<bool>,
-    chroma: [Vec<bool>; 2],
+    /// Shared by U and V, whose records are one list.
+    chroma: Vec<bool>,
 }
 
 impl LosslessBlockGrid {
@@ -23,57 +26,44 @@ impl LosslessBlockGrid {
         mi_rows: usize,
         mi_cols: usize,
         luma_blocks: &[DeblockBlock],
-        chroma_blocks: [&[DeblockBlock]; 2],
+        chroma_blocks: &[DeblockBlock],
+    ) -> Result<Self, LosslessGridError> {
+        Self::from_deblock_blocks_reusing(
+            (mi_rows, mi_cols),
+            luma_blocks,
+            chroma_blocks,
+            Default::default(),
+        )
+    }
+
+    /// The grid of `luma_blocks` and `chroma_blocks`, laid out in the
+    /// storage of `[luma, chroma]`.
+    pub(crate) fn from_deblock_blocks_reusing(
+        (mi_rows, mi_cols): (usize, usize),
+        luma_blocks: &[DeblockBlock],
+        chroma_blocks: &[DeblockBlock],
+        [luma, chroma]: [Vec<bool>; 2],
     ) -> Result<Self, LosslessGridError> {
         Ok(Self {
             mi_rows,
             mi_cols,
-            luma: lossless_cells(mi_rows, mi_cols, luma_blocks.iter())?,
-            chroma: [
-                lossless_cells(mi_rows, mi_cols, chroma_blocks[0].iter())?,
-                lossless_cells(mi_rows, mi_cols, chroma_blocks[1].iter())?,
-            ],
+            luma: lossless_cells(mi_rows, mi_cols, luma_blocks, luma)?,
+            chroma: lossless_cells(mi_rows, mi_cols, chroma_blocks, chroma)?,
         })
     }
 
-    pub(crate) fn from_deblock_records(
-        mi_rows: usize,
-        mi_cols: usize,
-        luma_blocks: &[DeblockBlock],
-        chroma_blocks: &ChromaDeblockRecords,
-    ) -> Result<Self, LosslessGridError> {
-        Ok(Self {
-            mi_rows,
-            mi_cols,
-            luma: lossless_cells(mi_rows, mi_cols, luma_blocks.iter())?,
-            chroma: [
-                lossless_cells(
-                    mi_rows,
-                    mi_cols,
-                    chroma_blocks.iter_plane(0).map(|(_, block)| block),
-                )
-                .map_err(|error| error.for_plane(splot_recon::PlaneId::U))?,
-                lossless_cells(
-                    mi_rows,
-                    mi_cols,
-                    chroma_blocks.iter_plane(1).map(|(_, block)| block),
-                )
-                .map_err(|error| error.for_plane(splot_recon::PlaneId::V))?,
-            ],
-        })
+    pub(crate) fn into_cells(self) -> [Vec<bool>; 2] {
+        [self.luma, self.chroma]
     }
 
     pub(crate) fn cdef_luma_lossless(&self, mi_row: usize, mi_col: usize) -> bool {
-        self.any_luma_mi(mi_row, mi_col, 2, 2)
+        any_cells(&self.luma, self.mi_rows, self.mi_cols, mi_row, mi_col)
     }
 
-    pub(crate) fn cdef_chroma_lossless(
-        &self,
-        plane_id: PlaneId,
-        mi_row: usize,
-        mi_col: usize,
-    ) -> bool {
-        self.any_chroma_mi(plane_id, mi_row, mi_col, 2, 2)
+    /// Whether the 8x8 block at `(mi_row, mi_col)` has a lossless chroma
+    /// cell, in U and V alike, whose records are one list.
+    pub(crate) fn cdef_chroma_lossless(&self, mi_row: usize, mi_col: usize) -> bool {
+        any_cells(&self.chroma, self.mi_rows, self.mi_cols, mi_row, mi_col)
     }
 
     pub(crate) fn plane_sample_lossless(
@@ -88,55 +78,34 @@ impl LosslessBlockGrid {
         let luma_y = y.checked_shl(sub_y as u32).unwrap_or(usize::MAX);
         let mi_col = luma_x / MI_SIZE;
         let mi_row = luma_y / MI_SIZE;
-        match plane_id {
-            PlaneId::Y => self.luma_cell(mi_row, mi_col),
-            PlaneId::U | PlaneId::V => self.chroma_cell(plane_id, mi_row, mi_col),
+        cell(
+            self.cells(plane_id),
+            self.mi_rows,
+            self.mi_cols,
+            mi_row,
+            mi_col,
+        )
+    }
+
+    fn cells(&self, plane_id: PlaneId) -> &[bool] {
+        if plane_id == PlaneId::Y {
+            &self.luma
+        } else {
+            &self.chroma
         }
-    }
-
-    fn any_luma_mi(&self, row: usize, col: usize, rows: usize, cols: usize) -> bool {
-        any_cells(&self.luma, self.mi_rows, self.mi_cols, row, col, rows, cols)
-    }
-
-    fn any_chroma_mi(
-        &self,
-        plane_id: PlaneId,
-        row: usize,
-        col: usize,
-        rows: usize,
-        cols: usize,
-    ) -> bool {
-        let cells = match plane_id {
-            PlaneId::Y => &self.luma,
-            PlaneId::U => &self.chroma[0],
-            PlaneId::V => &self.chroma[1],
-        };
-        any_cells(cells, self.mi_rows, self.mi_cols, row, col, rows, cols)
-    }
-
-    fn luma_cell(&self, row: usize, col: usize) -> bool {
-        cell(&self.luma, self.mi_rows, self.mi_cols, row, col)
-    }
-
-    fn chroma_cell(&self, plane_id: PlaneId, row: usize, col: usize) -> bool {
-        let cells = match plane_id {
-            PlaneId::Y => &self.luma,
-            PlaneId::U => &self.chroma[0],
-            PlaneId::V => &self.chroma[1],
-        };
-        cell(cells, self.mi_rows, self.mi_cols, row, col)
     }
 }
 
-fn lossless_cells<'a>(
+fn lossless_cells(
     mi_rows: usize,
     mi_cols: usize,
-    blocks: impl IntoIterator<Item = &'a DeblockBlock>,
+    blocks: &[DeblockBlock],
+    mut cells: Vec<bool>,
 ) -> Result<Vec<bool>, LosslessGridError> {
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(LosslessGridError::Geometry)?;
-    let mut cells = Vec::new();
+    cells.clear();
     cells
         .try_reserve_exact(count)
         .map_err(|_| LosslessGridError::Allocation(splot_recon::PlaneId::Y))?;
@@ -164,17 +133,11 @@ fn lossless_cells<'a>(
     Ok(cells)
 }
 
-fn any_cells(
-    cells: &[bool],
-    mi_rows: usize,
-    mi_cols: usize,
-    row: usize,
-    col: usize,
-    rows: usize,
-    cols: usize,
-) -> bool {
-    let row_end = row.saturating_add(rows).min(mi_rows);
-    let col_end = col.saturating_add(cols).min(mi_cols);
+/// Whether any cell of the 8x8 block at `(row, col)`, clipped to the grid,
+/// is lossless.
+fn any_cells(cells: &[bool], mi_rows: usize, mi_cols: usize, row: usize, col: usize) -> bool {
+    let row_end = row.saturating_add(CDEF_BLOCK_MI).min(mi_rows);
+    let col_end = col.saturating_add(CDEF_BLOCK_MI).min(mi_cols);
     for rr in row..row_end {
         for cc in col..col_end {
             if cell(cells, mi_rows, mi_cols, rr, cc) {
@@ -201,15 +164,6 @@ pub(crate) enum LosslessGridError {
     Geometry,
     #[error("lossless grid storage could not be reserved")]
     Allocation(splot_recon::PlaneId),
-}
-
-impl LosslessGridError {
-    const fn for_plane(self, plane: splot_recon::PlaneId) -> Self {
-        match self {
-            Self::Allocation(_) => Self::Allocation(plane),
-            Self::Geometry => Self::Geometry,
-        }
-    }
 }
 
 #[cfg(test)]

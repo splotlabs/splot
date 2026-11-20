@@ -6,23 +6,25 @@
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
+use super::super::coeff_state::{DC_CATEGORY_SHIFT, LEVEL_INDEX_MASK, LevelGrid};
+
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
-const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
+pub(crate) const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
 
-const SIG_OFFSETS: [[[i32; 2]; SIG_REF_DIFF_OFFSET_NUM]; 3] = SIG_REF_DIFF_OFFSET;
+pub(crate) const SIG_OFFSETS: [[[i32; 2]; SIG_REF_DIFF_OFFSET_NUM]; 3] = SIG_REF_DIFF_OFFSET;
 
-const MAX_BASE_BR_RANGE: u32 = 6;
+pub(crate) const MAX_BASE_BR_RANGE: u32 = 6;
 
-const MAG_REF_OFFSET_WITH_TX_CLASS: [[[usize; 2]; 3]; 3] = [
+pub(crate) const MAG_REF_OFFSET_WITH_TX_CLASS: [[[usize; 2]; 3]; 3] = [
     [[0, 1], [1, 0], [1, 1]], // TX_CLASS_2D
     [[0, 1], [1, 0], [0, 2]], // TX_CLASS_HORIZ
     [[0, 1], [1, 0], [2, 0]], // TX_CLASS_VERT
 ];
 
-const CHROMA_2D_PLANE_CONTEXT_OFFSET: [usize; 3] = [4, 0, 4];
-const LF_2D_CONTEXT_CAP_AND_OFFSET: [(usize, usize); 3] = [(8, 0), (6, 9), (4, 16)];
-const HF_2D_CONTEXT_OFFSET: [usize; 3] = [0, 5, 10];
+pub(crate) const CHROMA_2D_PLANE_CONTEXT_OFFSET: [usize; 3] = [4, 0, 4];
+pub(crate) const LF_2D_CONTEXT_CAP_AND_OFFSET: [(usize, usize); 3] = [(8, 0), (6, 9), (4, 16)];
+pub(crate) const HF_2D_CONTEXT_OFFSET: [usize; 3] = [0, 5, 10];
 
 /// Every neighbour offset `[row, col]` the `coeff_base` and `coeff_br`
 /// contexts of class index `tx_class` read.
@@ -43,18 +45,27 @@ const fn tx_class_idx(tx_class: usize) -> usize {
 /// `TransformCoeffBlockState`; the `LEVEL_GRID_PAD` zero rows and columns
 /// below and right of the block absorb every § 8.3.2 neighbor offset, so no
 /// per-axis boundary handling is needed.
+#[inline]
 fn clamped_level_at(level: &[u8], stride: usize, row: usize, col: usize, limit: u32) -> u32 {
     level
         .get(row.wrapping_mul(stride).wrapping_add(col))
         .map_or(0, |&value| u32::from(value).min(limit))
 }
 
-/// [`clamped_level_at`] for the neighbour `(dr, dc)` of the flat position
-/// `base`, with the same wrapping index arithmetic.
-fn level_near(level: &[u8], base: usize, stride: usize, dr: usize, dc: usize, limit: u32) -> u32 {
-    level
-        .get(base.wrapping_add(dr.wrapping_mul(stride)).wrapping_add(dc))
-        .map_or(0, |&value| u32::from(value).min(limit))
+/// The clamped level of the neighbour `(dr, dc)` of the flat position
+/// `base`. Block positions and neighbour offsets are below the index
+/// mask, so masking never changes a valid index.
+#[inline]
+fn level_near(
+    level: &LevelGrid,
+    base: usize,
+    stride: usize,
+    dr: usize,
+    dc: usize,
+    limit: u32,
+) -> u32 {
+    let offset = dr.wrapping_mul(stride).wrapping_add(dc);
+    u32::from(level[(base & LEVEL_INDEX_MASK) + (offset & LEVEL_INDEX_MASK)]).min(limit)
 }
 
 pub(crate) const fn coeff_base_eob_ctx(c: usize, bwl: u32, height: usize) -> usize {
@@ -99,7 +110,7 @@ impl CoeffBrContext {
         reason = "measured: plain inline leaves two out-of-line calls in the level loop"
     )]
     #[inline(always)]
-    pub(crate) fn ctx(self, level: &[u8]) -> usize {
+    pub(crate) fn ctx(self, level: &LevelGrid) -> usize {
         let is_dc = self.row == 0 && self.col == 0;
         let class_idx = tx_class_idx(self.tx_class);
         let mag = match class_idx {
@@ -119,8 +130,9 @@ impl CoeffBrContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[inline]
-    fn neighbour_mag<const CLASS: usize>(self, level: &[u8]) -> u32 {
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
+    fn neighbour_mag<const CLASS: usize>(self, level: &LevelGrid) -> u32 {
         let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
         let at = |[dr, dc]: [usize; 2]| {
             level_near(level, base, self.stride, dr, dc, MAX_BASE_BR_RANGE - 1)
@@ -135,6 +147,7 @@ impl CoeffBrContext {
     }
 }
 
+#[inline]
 fn idtx_neighbour_mag(level: &[u8], row: usize, col: usize, stride: usize, clamp: u32) -> u32 {
     let mut mag = 0u32;
     if col > 0 {
@@ -146,10 +159,12 @@ fn idtx_neighbour_mag(level: &[u8], row: usize, col: usize, stride: usize, clamp
     mag
 }
 
+#[inline]
 pub(crate) fn coeff_base_idtx_ctx(level: &[u8], row: usize, col: usize, stride: usize) -> usize {
     idtx_neighbour_mag(level, row, col, stride, 3) as usize
 }
 
+#[inline]
 pub(crate) fn coeff_br_idtx_ctx(level: &[u8], row: usize, col: usize, stride: usize) -> usize {
     let mag = idtx_neighbour_mag(level, row, col, stride, MAX_BASE_BR_RANGE - 1);
     mag.min(6) as usize
@@ -182,7 +197,7 @@ impl CoeffBaseContext {
         reason = "the coefficient loop calls this per coefficient; keep it inlined beside the encoder facade"
     )]
     #[inline(always)]
-    pub(crate) fn select(&self, level: &[u8]) -> CoeffBaseSelection {
+    pub(crate) fn select(&self, level: &LevelGrid) -> CoeffBaseSelection {
         let class_idx = tx_class_idx(self.tx_class);
         let mag = match class_idx {
             1 => self.neighbour_mag::<1>(level),
@@ -242,8 +257,9 @@ impl CoeffBaseContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[inline]
-    fn neighbour_mag<const CLASS: usize>(&self, level: &[u8]) -> u32 {
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
+    fn neighbour_mag<const CLASS: usize>(&self, level: &LevelGrid) -> u32 {
         let lf_limit = self.is_lf && !(self.is_hidden && self.c == 0);
         let near_limit = if lf_limit { 5 } else { 3 };
         let far_limit = if lf_limit && CLASS == 0 { 5 } else { 3 };
@@ -263,50 +279,54 @@ impl CoeffBaseContext {
     }
 }
 
-pub(crate) const fn dc_sign_ctx(
-    above_dc: &[u8],
-    left_dc: &[u8],
+/// The `dc_sign` context (§ 8.3.2) from the above and left context lines
+/// (see `coeff_state::DC_CATEGORY_SHIFT`) of a block at `x4, y4` of `w4` by `h4`.
+#[allow(clippy::inline_always, reason = "measured: once per coded DC")]
+#[inline(always)]
+pub(crate) fn dc_sign_ctx(
+    above: &[u8],
+    left: &[u8],
     x4: usize,
     y4: usize,
     w4: usize,
     h4: usize,
 ) -> usize {
-    let mut dc_sign: isize = 0;
-    let mut k = 0;
-    while k < w4 {
-        let idx = x4.saturating_add(k);
-        if idx >= above_dc.len() {
-            break;
-        }
-        match above_dc[idx] {
-            1 => dc_sign -= 1,
-            2 => dc_sign += 1,
-            _ => {}
-        }
-        k += 1;
-    }
-    let mut k = 0;
-    while k < h4 {
-        let idx = y4.saturating_add(k);
-        if idx >= left_dc.len() {
-            break;
-        }
-        match left_dc[idx] {
-            1 => dc_sign -= 1,
-            2 => dc_sign += 1,
-            _ => {}
-        }
-        k += 1;
-    }
-    if dc_sign < 0 {
-        1
-    } else if dc_sign > 0 {
-        2
-    } else {
-        0
+    let dc_sign = dc_sign_votes(above, x4, w4) + dc_sign_votes(left, y4, h4);
+    match dc_sign.cmp(&0) {
+        core::cmp::Ordering::Less => 1,
+        core::cmp::Ordering::Greater => 2,
+        core::cmp::Ordering::Equal => 0,
     }
 }
 
+/// `dcCategory` 2 and 1 of a context-line byte are its high and low
+/// category bit, so a run's net sign is the difference of two popcounts.
+const DC_POSITIVE: u64 = 0x0202_0202_0202_0202 << DC_CATEGORY_SHIFT;
+const DC_NEGATIVE: u64 = 0x0101_0101_0101_0101 << DC_CATEGORY_SHIFT;
+
+const fn dc_votes(word: u64) -> i32 {
+    (word & DC_POSITIVE).count_ones() as i32 - (word & DC_NEGATIVE).count_ones() as i32
+}
+
+/// Net sign of the DC categories of the `len` context-line bytes from
+/// `start`, clamped to the line.
+#[allow(clippy::inline_always, reason = "measured: twice per coded DC")]
+#[inline(always)]
+fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
+    let run = line.get(start..).unwrap_or_default();
+    let len = len.min(run.len());
+    if (1..=8).contains(&len)
+        && let Some(bytes) = run.first_chunk::<8>()
+    {
+        return dc_votes(u64::from_le_bytes(*bytes) & (u64::MAX >> (64 - 8 * len)));
+    }
+    run.iter()
+        .take(len)
+        .map(|&byte| dc_votes(u64::from(byte)))
+        .sum()
+}
+
+#[inline]
 pub(crate) const fn idtx_sign_ctx(
     quant_sign: &[i8],
     level: &[u8],

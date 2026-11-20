@@ -5,7 +5,8 @@
 use libfuzzer_sys::fuzz_target;
 use splot_core::error::{Error, SymbolDecoderErrorKind};
 use splot_core::symbol::{
-    CdfUpdateMode, SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig,
+    CDF_COUNT_SHIFT, CdfUpdateMode, CdfValidationMode, SymbolDecoder, SymbolDecoderCheckpoint,
+    SymbolDecoderConfig,
 };
 
 const UPDATE_MODE_FLAG: u8 = 0b0000_0001;
@@ -22,6 +23,7 @@ const OP_READ_VALID_SYMBOL: u8 = 2;
 const OP_READ_MALFORMED_SYMBOL: u8 = 3;
 const OP_CHECKPOINT: u8 = 4;
 const OP_FINISH: u8 = 5;
+const OP_READ_TRUSTED_ROW: u8 = 6;
 
 fuzz_target!(|data: &[u8]| {
     let Some((flags, rest)) = data.split_first() else {
@@ -47,13 +49,17 @@ fuzz_target!(|data: &[u8]| {
     let Ok(mut decoder) = SymbolDecoder::with_config(payload, config) else {
         return;
     };
+    let trusted_config = config.with_cdf_validation_mode(CdfValidationMode::Trusted);
+    let Ok(mut trusted) = SymbolDecoder::with_config(payload, trusted_config) else {
+        return;
+    };
 
     let mut cursor = ops.iter().copied();
     let op_count = 1 + usize::from(*op_count_seed % MAX_OPS as u8);
     let mut previous_checkpoint = decoder.checkpoint();
 
     for _ in 0..op_count {
-        let op = cursor.next().unwrap_or(0) % 6;
+        let op = cursor.next().unwrap_or(0) % 7;
         match op {
             OP_READ_BOOL => {
                 let _ = decoder.read_bool();
@@ -107,6 +113,17 @@ fuzz_target!(|data: &[u8]| {
                 }
                 return;
             }
+            OP_READ_TRUSTED_ROW => {
+                let len = 3 + usize::from(cursor.next().unwrap_or(0) % 7);
+                let mut cdf: Vec<u16> = (0..len)
+                    .map(|_| {
+                        u16::from_le_bytes([cursor.next().unwrap_or(0), cursor.next().unwrap_or(0)])
+                    })
+                    .collect();
+                if let Some(symbol) = trusted.read_trusted_row(&mut cdf) {
+                    assert!((symbol as usize) < len - 1);
+                }
+            }
             _ => {}
         }
     }
@@ -133,8 +150,9 @@ fn assert_valid_cdf_after_read(mode: CdfUpdateMode, before: &[i32], after: &[i32
             assert!(value > after[index - 1]);
         }
     }
-    assert!((0..i32::from(CDF_RATE_ROWS)).contains(&after[n - 1]));
-    assert!((0..=i32::from(MAX_CDF_COUNT)).contains(&after[n]));
+    assert!((0..i32::from(CDF_RATE_ROWS)).contains(&(after[n - 1] & 127)));
+    assert!((0..=i32::from(MAX_CDF_COUNT)).contains(&(after[n - 1] >> CDF_COUNT_SHIFT)));
+    assert_eq!(after[n], 0);
 }
 
 fn assert_checkpoint_monotonic(before: SymbolDecoderCheckpoint, after: SymbolDecoderCheckpoint) {
@@ -163,8 +181,10 @@ fn valid_cdf_row(n: usize, cursor: &mut std::iter::Copied<std::slice::Iter<'_, u
         let value = ((index + 1) * 32_768 / n) as i32;
         row.push(value.clamp(1, CDF_PROB_MAX));
     }
-    row.push(i32::from(cursor.next().unwrap_or(0) % CDF_RATE_ROWS));
-    row.push(i32::from(cursor.next().unwrap_or(0) % (MAX_CDF_COUNT + 1)));
+    let rate_index = i32::from(cursor.next().unwrap_or(0) % CDF_RATE_ROWS);
+    let count = i32::from(cursor.next().unwrap_or(0) % (MAX_CDF_COUNT + 1));
+    row.push(rate_index | count << CDF_COUNT_SHIFT);
+    row.push(0);
     row
 }
 
@@ -175,10 +195,14 @@ fn malformed_cdf_row(cursor: &mut std::iter::Copied<std::slice::Iter<'_, u8>>) -
         2 => vec![100, 100, 0, 0],
         3 => vec![
             16_384,
-            i32::from(CDF_RATE_ROWS) + i32::from(cursor.next().unwrap_or(0)),
+            i32::from(CDF_RATE_ROWS) + i32::from(cursor.next().unwrap_or(0) % 3),
             0,
         ],
-        4 => vec![16_384, 0, 33 + i32::from(cursor.next().unwrap_or(0))],
+        4 => vec![
+            16_384,
+            (33 + i32::from(cursor.next().unwrap_or(0))) << CDF_COUNT_SHIFT,
+            0,
+        ],
         _ => vec![-(1 + i32::from(cursor.next().unwrap_or(0))), 0, 0],
     }
 }

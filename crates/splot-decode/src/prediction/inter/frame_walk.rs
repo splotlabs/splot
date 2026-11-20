@@ -7,7 +7,7 @@
 //! reads from its header before any tile syntax: the tile plan, the
 //! reconstruction workspace, the § 7.2 filter-sink facts and the frame's
 //! quantizer state. The fused walk goes straight on to its tile phase from
-//! there; [`parse_inter_frame`] instead runs only the entropy pass and returns
+//! there; [`PendingInterWalk`] instead runs only the entropy pass and returns
 //! a [`DeferredInterWalk`], which owns everything the reconstruction still
 //! needs so the driver can run it after it has moved on.
 
@@ -21,9 +21,12 @@ use splot_recon::{
 };
 
 use super::*;
-use crate::bitstream::byte_stream::SourceBytes;
-use crate::bitstream::tile_payload::{DecodeTilePayloadPlan, FrameQuantizerSnapshot};
+use crate::bitstream::byte_stream::{SourceBytes, UnitBytes};
+use crate::bitstream::tile_payload::{
+    DecodeTilePayloadPlan, DecodeTileWorkUnit, FrameQuantizerSnapshot,
+};
 use crate::filters::wienerns_lr::FrameFilterRecords;
+use parking_lot::{Mutex, RwLock};
 
 /// One inter frame's header-derived walk state, shared by the fused walk and
 /// the split parse pass so both enter their tile phase identically.
@@ -306,11 +309,9 @@ pub(super) fn required_inter_quantizer_deltas(
 /// Whether one frame's walk can run as an entropy pass now and a deferred
 /// reconstruction later.
 ///
-/// The split serves exactly one tile — a multi-tile frame already parses its
-/// tiles independently. A frame that allows global intra block copy keeps
-/// every reconstructed row in its workspace instead of one superblock row, so
-/// a copy from any row above reads raw samples. Every other frame keeps the
-/// fused walk.
+/// Inter tile groups and key frames split; a multi-tile frame parses its
+/// tiles one after another and numbers their units in frame superblock order.
+/// Every other frame keeps the fused walk.
 #[must_use]
 pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
     use splot_core::headers::frame::FrameHeaderParseStatus;
@@ -327,10 +328,7 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
         }
         _ => false,
     }) && core.frame_is_intra.is_some()
-        && core
-            .tile_info
-            .as_ref()
-            .is_some_and(|tiles| tiles.tile_cols == 1 && tiles.tile_rows == 1)
+        && !super::bru_inactive_frame(core)
 }
 
 /// One inter frame whose entropy pass is done and whose reconstruction is
@@ -361,6 +359,9 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
     pub(crate) params: block::TileWalkParams,
     pub(crate) prelude: block::TemporalPrelude,
     pub(crate) motion_field: super::find_mv_stack::TemporalMotionField,
+    /// The frame records' deblock storage, which the frontier fills from the
+    /// records the parse publishes.
+    pub(crate) deblock: Option<crate::filters::deblock::OwnedDeblockRecords>,
 }
 
 pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
@@ -369,7 +370,7 @@ pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
     pub(crate) options: &'payload DecodeOptions,
-    pub(crate) reference: InterReferenceState<T>,
+    pub(crate) reference: Box<InterReferenceState<T>>,
     pub(crate) bit_depth: BitDepth,
     pub(crate) geometry: FrameDecodeGeometry,
     pub(crate) motion: MotionFieldHandle,
@@ -404,7 +405,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         let band_rows = if block::global_intrabc_enabled(core.intrabc) {
             geometry.info().storage_luma_size().height()
         } else {
-            geometry.sb_h4() * 4
+            0
         };
         let prologue = derive_inter_walk_prologue(
             &candidate,
@@ -420,7 +421,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             &mut payload_scratch,
         );
         let InterWalkPrologue {
-            mut tile_plan,
+            tile_plan,
             workspace,
             setup,
             facts,
@@ -436,14 +437,9 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
         let quantizer = FrameQuantizerSnapshot::capture();
         let prepared = (|| {
-            let tile_count = tile_plan.work_units().len();
-            let [tile] = tile_plan.work_units_mut() else {
-                return Err(
-                    DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
-                );
-            };
+            let work_units = tile_plan.work_units();
             let block_setup = super::block::derive_inter_block_setup(
-                std::slice::from_mut(tile),
+                work_units,
                 &sequence,
                 &core,
                 options,
@@ -456,14 +452,10 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             )?;
             motion.publish_metadata(block_setup.motion_field_metadata());
             let (parse_setup, params, prelude, motion_field) = block_setup.split();
-            block::publish_tile_geometry(
-                tile,
-                &params,
-                sequence.general.chroma_format_idc,
-                &parse_progress,
-            )?;
-            let parser = InterFrameParser::new(parse_setup);
-            let identities = reusable.install_identities(core, reference)?;
+            records.bru_modes.clone_from(&params.bru_modes);
+            block::publish_tile_geometry(work_units, &params, &parse_progress)?;
+            let parser = InterFrameParser::new(parse_setup, work_units.len());
+            let identities = reusable.install_identities(core, *reference)?;
             Ok((identities, parser, params, prelude, motion_field))
         })();
         let ((core, reference), parser, params, prelude, motion_field) = match prepared {
@@ -487,6 +479,10 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             params,
             prelude,
             motion_field,
+            deblock: core
+                .deblocking_filter_params
+                .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4])
+                .then(|| crate::filters::deblock::OwnedDeblockRecords::take_storage(&mut records)),
         };
         let pending = PendingInterWalk {
             tile_plan,
@@ -527,23 +523,23 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
     /// Parses at most `units` units, returning whether entropy has ended.
     pub(crate) fn parse_units(&mut self, units: core::num::NonZeroUsize) -> Result<bool> {
         let _quantizer_scopes = self.quantizer.install_frame();
-        let tile_count = self.tile_plan.work_units().len();
-        let Some((tile_bytes, tile)) = self.tile_plan.single_tile_mut() else {
-            self.parse_progress.fail();
-            return Err(
-                DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
-            );
-        };
         for _ in 0..units.get() {
-            match self.parser.parse_unit(
-                tile,
-                tile_bytes,
-                &self.sequence,
-                &self.core,
-                self.ref_frame_idx.as_slice(),
-                &self.reference,
-                &self.parse_progress,
-            ) {
+            let parsed = self
+                .tile_plan
+                .tile_mut(self.parser.tile())
+                .ok_or_else(block::invalid_inter_tile_scheduling_state)
+                .and_then(|(tile_bytes, tile)| {
+                    self.parser.parse_unit(
+                        tile,
+                        tile_bytes,
+                        &self.sequence,
+                        &self.core,
+                        self.ref_frame_idx.as_slice(),
+                        &self.reference,
+                        &self.parse_progress,
+                    )
+                });
+            match parsed {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
                 Err(error) => {
@@ -558,15 +554,9 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
     /// Finalizes entropy products after the last parsed unit.
     pub(crate) fn finish(mut self) -> Result<DeferredInterWalk<T>> {
         let _quantizer_scopes = self.quantizer.install_frame();
-        let tile_count = self.tile_plan.work_units().len();
-        let [tile] = self.tile_plan.work_units_mut() else {
-            self.parse_progress.fail();
-            return Err(
-                DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into(),
-            );
-        };
+        let (_, _, work_units) = self.tile_plan.payloads_and_work_units_mut();
         let parse = match self.parser.finish(
-            tile,
+            work_units,
             self.records,
             &self.core,
             &self.reference,
@@ -589,8 +579,162 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
     }
 }
 
+impl<T: ReconSample> PendingInterWalk<'_, T> {
+    pub(crate) fn tiles(&self) -> usize {
+        self.tile_plan.work_units().len()
+    }
+
+    /// Hands each tile to its own scheduler row. A row finds its tile's
+    /// bytes in `unit` at the tile's span, which must be the plan's bytes.
+    pub(crate) fn into_tile_jobs(mut self, unit: &UnitBytes) -> Result<TileParseJobs<T>> {
+        let view = unit.view();
+        for index in 0..self.tiles() {
+            let found = self.tile_plan.tile_mut(index).is_some_and(|(bytes, tile)| {
+                let span = tile.tile_byte_span();
+                view.get(span.start.get(), span.end().get())
+                    .is_some_and(|own| core::ptr::eq(own, bytes))
+            });
+            if !found {
+                self.parse_progress.fail();
+                return Err(block::invalid_inter_tile_scheduling_state());
+            }
+        }
+        let mut work_units = self.tile_plan.take_work_units();
+        let mut tiles = Vec::new();
+        tiles
+            .try_reserve_exact(work_units.len())
+            .map_err(|_| inter_allocation!("inter tile parse rows"))?;
+        tiles.extend(work_units.drain(..).map(|tile| Mutex::new(Some(tile))));
+        Ok(TileParseJobs {
+            unit: unit.clone(),
+            tiles,
+            rest: RwLock::new(Some(TileWalkRest {
+                parser: self.parser.detached()?,
+                work_units,
+                records: self.records,
+                products: self.products,
+                payload_scratch: self.payload_scratch,
+            })),
+            core: self.core,
+            sequence: self.sequence,
+            reference: self.reference,
+            ref_frame_idx: self.ref_frame_idx,
+            parse_progress: self.parse_progress,
+            quantizer: self.quantizer,
+        })
+    }
+}
+
+/// A multi-tile frame's § 8.2 pass as one scheduler row per tile. Every tile
+/// starts from the frame's initial CDFs with its own symbol decoder and
+/// above contexts (§ 8.2.2), so the tiles parse at once; the row that ends
+/// the last tile merges them in tile order and saves the CDFs (§ 8.2.4).
+pub(crate) struct TileParseJobs<T: ReconSample> {
+    unit: UnitBytes,
+    tiles: Vec<Mutex<Option<DecodeTileWorkUnit>>>,
+    rest: RwLock<Option<TileWalkRest>>,
+    core: Arc<FrameHeaderCore>,
+    sequence: Arc<SequenceHeader>,
+    reference: Arc<InterReferenceState<T>>,
+    ref_frame_idx: RefIdxBuf,
+    parse_progress: Arc<super::ParseProgress>,
+    quantizer: FrameQuantizerSnapshot,
+}
+
+struct TileWalkRest {
+    parser: InterFrameParser<'static>,
+    work_units: Vec<DecodeTileWorkUnit>,
+    records: FrameFilterRecords,
+    products: FrameProductWriters,
+    payload_scratch: crate::bitstream::tile_payload::TilePayloadScratch,
+}
+
+impl<T: ReconSample> TileParseJobs<T> {
+    pub(crate) fn len(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// Parses tile `index`; the row that parses the last tile returns the
+    /// finished walk.
+    pub(crate) fn parse_tile(&self, index: usize) -> Result<Option<DeferredInterWalk<T>>> {
+        let parsed = self.parse_one(index);
+        if parsed.is_err() {
+            self.parse_progress.fail();
+        }
+        parsed
+    }
+
+    fn parse_one(&self, index: usize) -> Result<Option<DeferredInterWalk<T>>> {
+        let invalid = block::invalid_inter_tile_scheduling_state;
+        let _quantizer_scopes = self.quantizer.install_frame();
+        let slot = self.tiles.get(index).ok_or_else(invalid)?;
+        let mut tile = slot.lock().take().ok_or_else(invalid)?;
+        let span = tile.tile_byte_span();
+        let view = self.unit.view();
+        let bytes = view
+            .get(span.start.get(), span.end().get())
+            .ok_or_else(invalid)?;
+        let open = self
+            .rest
+            .read()
+            .as_ref()
+            .ok_or_else(invalid)?
+            .parser
+            .open_tile(&tile, &self.parse_progress);
+        let parsed = open.and_then(|open| {
+            open.parse(
+                &mut tile,
+                bytes,
+                &self.sequence,
+                &self.core,
+                self.ref_frame_idx.as_slice(),
+                &self.reference,
+                &self.parse_progress,
+                (index, self.tiles.len()),
+            )
+        });
+        *slot.lock() = Some(tile);
+        let mut rest = self.rest.write();
+        if !rest
+            .as_mut()
+            .ok_or_else(invalid)?
+            .parser
+            .keep_tile(index, parsed?)?
+        {
+            return Ok(None);
+        }
+        let TileWalkRest {
+            mut parser,
+            mut work_units,
+            mut records,
+            products,
+            mut payload_scratch,
+        } = rest.take().ok_or_else(invalid)?;
+        drop(rest);
+        for slot in &self.tiles {
+            work_units.push(slot.lock().take().ok_or_else(invalid)?);
+        }
+        parser.merge_tiles(&work_units, &self.parse_progress, &mut records)?;
+        let parse = parser.finish(
+            &mut work_units,
+            records,
+            &self.core,
+            &self.reference,
+            &self.parse_progress,
+            products,
+        )?;
+        crate::bitstream::tile_payload::retire_work_units(&mut work_units, &mut payload_scratch);
+        Ok(Some(DeferredInterWalk {
+            parse,
+            parse_progress: Arc::clone(&self.parse_progress),
+            payload_scratch,
+            marker: core::marker::PhantomData,
+        }))
+    }
+}
+
 impl<T: ReconSample> DeferredInterWalk<T> {
-    pub(crate) fn publish_products(&mut self) -> Result<FrameProducts> {
+    pub(crate) fn publish_products(&mut self) -> Result<()> {
         self.parse.publish_products()
     }
     /// Hands the scheduled frontier the filter state the pass settles last.
@@ -599,10 +743,16 @@ impl<T: ReconSample> DeferredInterWalk<T> {
         pending: block::PendingFilterAttach<T>,
         reconstruction: &block::ScheduledTileRecon<T>,
         filter_shell: crate::filters::wienerns_lr::recon::OwnedFilterShell<T>,
+        reused_ccso: [Option<&crate::filters::ccso::CcsoUnitGrid>; 3],
     ) -> Result<()> {
         reconstruction.restore_payload_scratch(self.payload_scratch)?;
-        self.parse
-            .attach_filters(pending, reconstruction, &self.parse_progress, filter_shell)
+        self.parse.attach_filters(
+            pending,
+            reconstruction,
+            &self.parse_progress,
+            filter_shell,
+            reused_ccso,
+        )
     }
 }
 
@@ -630,6 +780,7 @@ impl<T: ReconSample> InterWalkEarly<T> {
             params,
             prelude,
             motion_field,
+            deblock,
         } = self;
         let _quantizer_scopes = quantizer.install_frame();
         let (reconstruction, pending) = block::prepare_scheduled_recon(
@@ -649,6 +800,7 @@ impl<T: ReconSample> InterWalkEarly<T> {
             &params,
             prelude,
             motion_field,
+            deblock,
         )?;
         Ok((reconstruction, pending))
     }

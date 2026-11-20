@@ -14,7 +14,6 @@ use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize
 use splot_recon::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize};
 
 use super::*;
-use crate::filters::deblock::ChromaDeblockRecords;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 
 const QINDEX: u32 = 120;
@@ -163,12 +162,12 @@ fn check_cell_classes(bit_depth: BitDepthIdc, cdef_and_ccso: bool) {
     for row in 0..height / 4 {
         for col in 0..width / 4 {
             tx_skip.push(WienerNsLrTxSkipTransformRecord {
-                row,
-                col,
+                row: row as u16,
+                col: col as u16,
                 rows: 1,
                 cols: 1,
                 skip_flag: (row * 3 + col) % 5 == 0,
-                eob: (row + col) % 3,
+                empty: (row + col).is_multiple_of(3),
             });
         }
     }
@@ -176,7 +175,7 @@ fn check_cell_classes(bit_depth: BitDepthIdc, cdef_and_ccso: bool) {
         qindex: QINDEX,
         subsampling: (1, 1),
         deblock_blocks: Vec::new(),
-        chroma_blocks: ChromaDeblockRecords::new(),
+        chroma_blocks: Vec::new(),
         tx_skip,
     };
     let (rows, cols) = cdef_unit_grid((height / 4, width / 4));

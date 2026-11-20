@@ -4,8 +4,8 @@
 //! First-block, DIP, and Paeth intra entries with their edge helpers.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraDipEdges, IntraMiddleDirectionalAngleEdges,
-    IntraPaethEdges, IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId, ReconSample,
+    BitDepth, CurrentFrameWorkspace, IntraBlockFrame, IntraDipEdges,
+    IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraRectBlockSize, PlaneId, ReconSample,
     predict_intra_dip_rect_into, predict_intra_middle_directional_angle_rect_into,
     predict_intra_paeth_rect_into,
 };
@@ -14,14 +14,15 @@ use super::middle::middle_directional_angle;
 use super::one_sided::{gather_column_clamped, gather_row_clamped};
 use super::sink::{
     IntraEdgeAvailability, invalid_directional_edge_state, noneighbour_above, noneighbour_corner,
-    noneighbour_left, write_intra_prediction_block,
+    noneighbour_left, predict_intra_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
+    add_general_intra_coeff_block_residual_in_place,
 };
-use crate::pipeline::general_intra::RecycledIntraSamples;
 
 const MI_SIZE: usize = 4;
+const MAX_DIP_EDGE_SAMPLES: usize = 80;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>(
@@ -39,13 +40,64 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
     num4_below_left: usize,
     luma_context: LumaTransformTypeContext,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let mut above_buf = [T::default(); MAX_DIP_EDGE_SAMPLES];
+    let mut left_buf = [T::default(); MAX_DIP_EDGE_SAMPLES];
+    let (above_len, left_len) = (width + (width >> 2), height + (height >> 2));
+    let readable = (
+        (width + num4_above_right * MI_SIZE).min(above_len),
+        (height + num4_below_left * MI_SIZE).min(left_len),
+    );
+    let in_frame = workspace.with_intra_block_frame(PlaneId::Y, x, y, block_size, |frame| {
+        let Some((left, top_left)) = gather_dip_edges(
+            frame,
+            availability,
+            readable,
+            bit_depth,
+            [&mut above_buf[..above_len], &mut left_buf[..left_len]],
+        ) else {
+            return Ok(false);
+        };
+        let (row, output, stride) = frame.above_row_and_target();
+        let above = match row.get(..readable.0.min(row.len())) {
+            Some(row) if availability.above => row,
+            _ => &above_buf[..above_len],
+        };
+        predict_intra_dip_rect_into(
+            bit_depth,
+            block_size,
+            usize::from(dip_mode),
+            dip_transpose,
+            IntraDipEdges::new(&left_buf[..left], above, top_left),
+            output,
+            stride,
+        )?;
+        Ok::<_, GeneralIntraResidualError>(true)
+    })?;
+    if in_frame == Some(true) {
+        if block.eob != 0 {
+            add_general_intra_coeff_block_residual_in_place(
+                workspace,
+                block,
+                PlaneId::Y,
+                x,
+                y,
+                block_size,
+                qindex,
+                use_tcq,
+                Some(luma_context),
+                None,
+                bit_depth,
+            )?;
+        }
+        return Ok(());
+    }
     let (left, above, top_left) = dip_reference_edges(
         workspace,
         x,
@@ -56,26 +108,24 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         num4_below_left,
         availability,
         bit_depth,
+        &mut above_buf,
+        &mut left_buf,
     )?;
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        PlaneId::Y,
-        width * height,
-        T::default(),
-    )?;
-    predict_intra_dip_rect_into(
-        bit_depth,
-        block_size,
-        usize::from(dip_mode),
-        dip_transpose,
-        IntraDipEdges::new(&left, &above, top_left),
-        &mut prediction,
-        width,
-    )?;
-    write_intra_prediction_block(
+    let predict = |output: &mut [T], stride: usize| {
+        predict_intra_dip_rect_into(
+            bit_depth,
+            block_size,
+            usize::from(dip_mode),
+            dip_transpose,
+            IntraDipEdges::new(left, above, top_left),
+            output,
+            stride,
+        )
+        .map_err(Into::into)
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         PlaneId::Y,
         x,
         y,
@@ -85,6 +135,7 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         Some(luma_context),
         None,
         bit_depth,
+        predict,
     )
 }
 
@@ -108,7 +159,7 @@ pub(crate) fn predict_directional_noneighbour_into<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn dip_reference_edges<T: ReconSample>(
+fn dip_reference_edges<'a, T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     x: usize,
     y: usize,
@@ -118,14 +169,16 @@ fn dip_reference_edges<T: ReconSample>(
     num4_below_left: usize,
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
-) -> core::result::Result<
-    (RecycledIntraSamples<T>, RecycledIntraSamples<T>, T),
-    GeneralIntraResidualError,
-> {
+    above_buf: &'a mut [T; MAX_DIP_EDGE_SAMPLES],
+    left_buf: &'a mut [T; MAX_DIP_EDGE_SAMPLES],
+) -> core::result::Result<(&'a [T], &'a [T], T), GeneralIntraResidualError> {
     let above_len = width + (width >> 2);
     let left_len = height + (height >> 2);
     let (above_row, left_col) = neighbour_origin(availability, x, y)?;
-    let above = if availability.above {
+    let above_slice = above_buf
+        .get_mut(..above_len)
+        .ok_or_else(invalid_directional_edge_state)?;
+    if availability.above {
         collect_available_dip_edge(
             workspace,
             DipEdge::Above,
@@ -134,14 +187,18 @@ fn dip_reference_edges<T: ReconSample>(
             width,
             above_len,
             num4_above_right,
-        )?
+            above_slice,
+        )?;
     } else if let Some(left_col) = left_col {
         let seed = workspace.reconstructed_sample(PlaneId::Y, left_col, y)?;
-        RecycledIntraSamples::filled(above_len, seed)
+        above_slice.fill(seed);
     } else {
-        RecycledIntraSamples::filled(above_len, noneighbour_above::<T>(bit_depth))
-    };
-    let left = if availability.left {
+        above_slice.fill(noneighbour_above::<T>(bit_depth));
+    }
+    let left_slice = left_buf
+        .get_mut(..left_len)
+        .ok_or_else(invalid_directional_edge_state)?;
+    if availability.left {
         collect_available_dip_edge(
             workspace,
             DipEdge::Left,
@@ -150,13 +207,14 @@ fn dip_reference_edges<T: ReconSample>(
             height,
             left_len,
             num4_below_left,
-        )?
+            left_slice,
+        )?;
     } else if let Some(above_row) = above_row {
         let seed = workspace.reconstructed_sample(PlaneId::Y, x, above_row)?;
-        RecycledIntraSamples::filled(left_len, seed)
+        left_slice.fill(seed);
     } else {
-        RecycledIntraSamples::filled(left_len, noneighbour_left::<T>(bit_depth))
-    };
+        left_slice.fill(noneighbour_left::<T>(bit_depth));
+    }
     let top_left = match (above_row, left_col) {
         (Some(above_row), Some(left_col)) => {
             workspace.reconstructed_sample(PlaneId::Y, left_col, above_row)?
@@ -165,7 +223,54 @@ fn dip_reference_edges<T: ReconSample>(
         (None, Some(left_col)) => workspace.reconstructed_sample(PlaneId::Y, left_col, y)?,
         (None, None) => noneighbour_corner::<T>(bit_depth),
     };
-    Ok((left, above, top_left))
+    Ok((left_slice, above_slice, top_left))
+}
+
+/// Gathers the § 7.13.2.3 DIP edges of an in-storage block straight from the
+/// frame, the counterpart of [`dip_reference_edges`]: an available left edge
+/// reads its first `readable` samples, clamped at the storage edge, into
+/// `left`, and an available above edge stays in its frame row; an absent edge
+/// takes its fallback value in `above` or `left`. Returns how many `left`
+/// samples hold the edge, whose last repeats past them, and the top-left
+/// sample, or `None` when an edge the availability claims is not stored,
+/// which the checked path reports.
+fn gather_dip_edges<T: ReconSample>(
+    frame: &IntraBlockFrame<'_, T>,
+    availability: IntraEdgeAvailability,
+    (above_readable, left_readable): (usize, usize),
+    bit_depth: BitDepth,
+    [above, left]: [&mut [T]; 2],
+) -> Option<(usize, T)> {
+    let row = frame.above_row();
+    let first_above = if availability.above {
+        if above_readable.min(row.len()) == 0 {
+            return None;
+        }
+        row.first().copied()
+    } else {
+        None
+    };
+    let (left_len, first_left) = if availability.left {
+        let readable = left_readable.min(left.len());
+        let copied = frame.left_column(&mut left[..readable]);
+        if copied < readable.min(frame.left_extent()) || copied == 0 {
+            return None;
+        }
+        (copied, Some(left[0]))
+    } else {
+        let fill = first_above.unwrap_or_else(|| noneighbour_left::<T>(bit_depth));
+        left.fill(fill);
+        (left.len(), None)
+    };
+    if !availability.above {
+        above.fill(first_left.unwrap_or_else(|| noneighbour_above::<T>(bit_depth)));
+    }
+    let top_left = match (first_above, first_left) {
+        (Some(_), Some(_)) => frame.top_left()?,
+        (Some(first), None) | (None, Some(first)) => first,
+        (None, None) => noneighbour_corner::<T>(bit_depth),
+    };
+    Some((left_len, top_left))
 }
 
 #[derive(Clone, Copy)]
@@ -174,6 +279,7 @@ enum DipEdge {
     Left,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_available_dip_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     direction: DipEdge,
@@ -182,7 +288,8 @@ fn collect_available_dip_edge<T: ReconSample>(
     initial_len: usize,
     edge_len: usize,
     extra_units: usize,
-) -> core::result::Result<RecycledIntraSamples<T>, GeneralIntraResidualError> {
+    out: &mut [T],
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let fixed = match direction {
         DipEdge::Above => y,
         DipEdge::Left => x,
@@ -208,16 +315,11 @@ fn collect_available_dip_edge<T: ReconSample>(
     else {
         return Err(invalid_directional_edge_state());
     };
-    let mut edge = RecycledIntraSamples::filled(edge_len, T::default());
     match direction {
-        DipEdge::Above => {
-            gather_row_clamped(workspace, PlaneId::Y, (start, fixed), limit, &mut edge)
-        }
-        DipEdge::Left => {
-            gather_column_clamped(workspace, PlaneId::Y, (fixed, start), limit, &mut edge)
-        }
+        DipEdge::Above => gather_row_clamped(workspace, PlaneId::Y, (start, fixed), limit, out),
+        DipEdge::Left => gather_column_clamped(workspace, PlaneId::Y, (fixed, start), limit, out),
     }?;
-    Ok(edge)
+    Ok(())
 }
 
 /// Resolves the neighbour sample origins an available edge points at.
@@ -317,14 +419,15 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
     qindex: u32,
     use_tcq: bool,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
 
@@ -343,22 +446,19 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             above,
             left,
         )?;
-        let mut prediction = workspace.take_intra_prediction_buffer(
-            IntraPredictionScratchBuffer::Primary,
-            plane_id,
-            width * height,
-            T::default(),
-        )?;
-        predict_intra_paeth_rect_into(
-            bit_depth,
-            block_size,
-            IntraPaethEdges::new(left, above, top_left),
-            &mut prediction,
-            width,
-        )?;
-        write_intra_prediction_block(
-            workspace, block, prediction, plane_id, x, y, block_size, qindex, use_tcq, None, None,
-            bit_depth,
+        let predict = |output: &mut [T], stride: usize| {
+            predict_intra_paeth_rect_into(
+                bit_depth,
+                block_size,
+                IntraPaethEdges::new(left, above, top_left),
+                output,
+                stride,
+            )
+            .map_err(Into::into)
+        };
+        predict_intra_block(
+            workspace, block, plane_id, x, y, block_size, qindex, use_tcq, None, None, bit_depth,
+            predict,
         )
     }
 }
@@ -413,6 +513,7 @@ mod tests {
                         DipEdge::Left => ws.reconstructed_sample(PlaneId::Y, 2, at).unwrap(),
                     })
                     .collect();
+                let mut out = vec![u16::MAX; edge_len];
                 let gathered = collect_available_dip_edge(
                     &ws,
                     direction,
@@ -421,6 +522,7 @@ mod tests {
                     initial_len,
                     edge_len,
                     extra_units,
+                    &mut out,
                 );
                 let Some(&last) = reads.last() else {
                     assert!(gathered.is_err(), "start {start} readable {readable}");
@@ -428,7 +530,8 @@ mod tests {
                 };
                 let mut expected = reads.clone();
                 expected.resize(edge_len, last);
-                assert_eq!(gathered.unwrap().as_slice(), expected.as_slice());
+                assert!(gathered.is_ok());
+                assert_eq!(out.as_slice(), expected.as_slice());
             }
         }
     }

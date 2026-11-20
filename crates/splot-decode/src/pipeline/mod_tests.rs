@@ -104,10 +104,13 @@ fn every_output_adapter_rejects_invalid_frame_effects_in_the_shared_pipeline()
     ];
 
     for (adapter, result) in results {
+        let Err(DecodeError::UnsupportedFeature { unsupported }) = result else {
+            return Err(format!("{adapter} output bypassed the shared effect validation").into());
+        };
         assert_eq!(
-            unsupported_reason(result),
-            Some("content_interpretation_reserved_bits"),
-            "{adapter} output bypassed the shared effect validation"
+            (unsupported.reason(), unsupported.byte_offset()),
+            ("content_interpretation_reserved_bits", None),
+            "{adapter} output reported a wrong reason or a false offset"
         );
     }
     Ok(())
@@ -231,7 +234,7 @@ fn multiple_tile_groups_decode_bit_exact() -> std::result::Result<(), Box<dyn st
     let plan = DecodeContext::plan_bytes(MULTIPLE_TILE_GROUP_FIXTURE, options)?;
     assert_eq!(plan.frame_candidate_count(), 1);
     let decoded = decode_frame_from_plan(MULTIPLE_TILE_GROUP_FIXTURE, &options)?;
-    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame()? else {
+    let PipelineDecodedFrame::Eight(frame) = decoded else {
         return Err("fixture decoded as 10-bit".into());
     };
     assert_eq!(frame.y().samples().len(), 128 * 64);
@@ -331,7 +334,10 @@ fn leading_frame_unit_allows_ops_before_sequence()
     assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
     assert_eq!(frame_unit_len, 4);
     assert_eq!(leading_record_inter_frame_unit_start(0, 4, &obus), Some(4));
-    assert!(require_leading_ivf_obu_order(&obus).is_ok());
+    assert!(
+        require_inter_frame_units(&obus, frame_unit_len, "unexpected_leading_obu_after_key")
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -379,7 +385,10 @@ fn leading_frame_unit_allows_film_grain_before_key_and_inter()
     assert_eq!(key.header.obu_type, ObuType::ClosedLoopKey);
     assert_eq!(frame_unit_len, 5);
     assert_eq!(leading_record_inter_frame_unit_start(0, 6, &obus), Some(5));
-    assert!(require_leading_ivf_obu_order(&obus).is_ok());
+    assert!(
+        require_inter_frame_units(&obus, frame_unit_len, "unexpected_leading_obu_after_key")
+            .is_ok()
+    );
     Ok(())
 }
 

@@ -5,9 +5,9 @@
 //! rotation of the U and V coefficients, and the U/V energy sums that choose
 //! the rotation.
 
-use std::simd::cmp::{SimdOrd as _, SimdPartialOrd as _};
-use std::simd::num::SimdInt as _;
-use std::simd::{Select as _, Simd};
+use fearless_simd::{
+    Level, Select as _, Simd, SimdBase as _, SimdWiden as _, dispatch, i32x8, i64x4,
+};
 
 use splot_recon::math::round2_signed_i32;
 
@@ -28,16 +28,26 @@ pub(crate) fn stats_scalar(u: &[i32], v: &[i32]) -> [i64; 3] {
 
 /// [`stats_scalar`] in four `i64` lanes.
 pub(crate) fn stats_simd(u: &[i32], v: &[i32]) -> [i64; 3] {
+    dispatch!(Level::baseline(), simd => stats_kernel(simd, u, v))
+}
+
+#[inline]
+fn stats_kernel<S: Simd>(simd: S, u: &[i32], v: &[i32]) -> [i64; 3] {
     let len = u.len().min(v.len());
-    let (mut uu, mut vv, mut uv) = (Simd::<i64, 4>::splat(0), Simd::splat(0), Simd::splat(0));
-    let (u_chunks, v_chunks) = (u[..len].chunks_exact(4), v[..len].chunks_exact(4));
+    let zero = i64x4::splat(simd, 0);
+    let (mut uu, mut vv, mut uv) = (zero, zero, zero);
+    let (u_chunks, v_chunks) = (u[..len].chunks_exact(8), v[..len].chunks_exact(8));
     let (u_tail, v_tail) = (u_chunks.remainder(), v_chunks.remainder());
     for (a, b) in u_chunks.zip(v_chunks) {
-        let a: Simd<i64, 4> = Simd::<i32, 4>::from_slice(a).cast();
-        let b: Simd<i64, 4> = Simd::<i32, 4>::from_slice(b).cast();
-        uu += a * a;
-        vv += b * b;
-        uv += a * b;
+        let (a, b) = (
+            i32x8::from_slice(simd, a).widen(),
+            i32x8::from_slice(simd, b).widen(),
+        );
+        for (a, b) in [(a.0, b.0), (a.1, b.1)] {
+            uu += a * a;
+            vv += b * b;
+            uv += a * b;
+        }
     }
     let [tu, tv, tuv] = u_tail
         .iter()
@@ -76,22 +86,25 @@ pub(crate) fn rotate_scalar(u: &mut [i32], v: &mut [i32], rotation: [i32; 2]) {
 
 /// [`rotate_scalar`] in eight lanes.
 pub(crate) fn rotate_simd(u: &mut [i32], v: &mut [i32], rotation: [i32; 2]) {
+    dispatch!(Level::baseline(), simd => rotate_kernel(simd, u, v, rotation));
+}
+
+#[inline]
+fn rotate_kernel<S: Simd>(simd: S, u: &mut [i32], v: &mut [i32], rotation: [i32; 2]) {
     let len = u.len().min(v.len());
     let (u, v) = (&mut u[..len], &mut v[..len]);
-    let bound = Simd::<i32, LANES>::splat(INPUT_BOUND);
-    let (cos, sin) = (Simd::splat(rotation[0]), Simd::splat(rotation[1]));
-    let round = |sum: Simd<i32, LANES>| {
-        let magnitude =
-            (sum.abs() + Simd::splat(1 << (PREC_BITS - 1))) >> Simd::splat(PREC_BITS as i32);
-        sum.simd_lt(Simd::splat(0)).select(-magnitude, magnitude)
+    let [cos, sin] = rotation;
+    let round = |sum: i32x8<S>| {
+        let magnitude = (sum.abs() + (1 << (PREC_BITS - 1))) >> PREC_BITS;
+        sum.simd_lt(0).select(-magnitude, magnitude)
     };
     let mut u_chunks = u.chunks_exact_mut(LANES);
     let mut v_chunks = v.chunks_exact_mut(LANES);
     for (cu, cv) in (&mut u_chunks).zip(&mut v_chunks) {
-        let su = Simd::from_slice(cu).simd_clamp(-bound, bound);
-        let sv = Simd::from_slice(cv).simd_clamp(-bound, bound);
-        round(cos * su + sin * sv).copy_to_slice(cu);
-        round(cos * sv - sin * su).copy_to_slice(cv);
+        let su = i32x8::from_slice(simd, cu).clamp(-INPUT_BOUND, INPUT_BOUND);
+        let sv = i32x8::from_slice(simd, cv).clamp(-INPUT_BOUND, INPUT_BOUND);
+        round(su * cos + sv * sin).store_slice(cu);
+        round(sv * cos - su * sin).store_slice(cv);
     }
     for (cu, cv) in u_chunks
         .into_remainder()

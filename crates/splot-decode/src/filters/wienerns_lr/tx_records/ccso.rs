@@ -2,10 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tile::mi_width_log2;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -13,7 +12,10 @@ use crate::bitstream::tile_payload::{DecodeBlockFrontier, DecodeTileWorkUnit, Ti
 use crate::error::Result;
 use crate::filters::ccso::CcsoUnitGrid;
 
-use super::{CCSO_PLANES, CCSO_SYMBOL_VALUES, MI_SIZE_LOG2, read_tx_symbol};
+use super::{
+    CCSO_PLANES, CCSO_SYMBOL_VALUES, MI_SIZE_LOG2, UnitWindow, read_tx_symbol,
+    selectable_state_error,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CcsoState {
@@ -22,10 +24,9 @@ pub(crate) struct CcsoState {
     pub(crate) plane_enabled: [bool; CCSO_PLANES],
     pub(crate) sb_reuse: [bool; CCSO_PLANES],
     pub(crate) blocks: [Vec<u8>; CCSO_PLANES],
-    pub(crate) row_start: usize,
-    pub(crate) col_start: usize,
-    pub(crate) grid_rows: usize,
-    pub(crate) grid_cols: usize,
+    pub(crate) window: UnitWindow,
+    /// Where a [`Self::load_reused_blocks`] error points.
+    reuse_offset: ByteOffset,
 }
 
 impl CcsoState {
@@ -44,16 +45,9 @@ impl CcsoState {
         }
         let unit_mi = 1usize
             .checked_shl(self.shift)
-            .ok_or_else(ccso_state_error)?;
-        let row_start = mi_rows.start / unit_mi;
-        let col_start = mi_cols.start / unit_mi;
-        let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
-        let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
-        let grid_rows = row_end.saturating_sub(row_start);
-        let grid_cols = col_end.saturating_sub(col_start);
-        let len = grid_rows
-            .checked_mul(grid_cols)
-            .ok_or_else(ccso_state_error)?;
+            .ok_or_else(selectable_state_error)?;
+        let window = self.window.tile(&mi_rows, &mi_cols, unit_mi);
+        let len = window.len().ok_or_else(selectable_state_error)?;
         let [mut spare_y, mut spare_u, mut spare_v] =
             spare.map(|spare| spare.blocks).unwrap_or_default();
         let copy_region =
@@ -63,13 +57,13 @@ impl CcsoState {
                 blocks
                     .try_reserve_exact(len)
                     .map_err(|_| ccso_allocation_error(plane))?;
-                for row in row_start..row_end {
-                    let start = row
-                        .checked_mul(self.grid_cols)
-                        .and_then(|start| start.checked_add(col_start))
-                        .ok_or_else(ccso_state_error)?;
-                    let end = start.checked_add(grid_cols).ok_or_else(ccso_state_error)?;
-                    blocks.extend_from_slice(source.get(start..end).ok_or_else(ccso_state_error)?);
+                for row in 0..window.rows {
+                    let range = self.window.tile_row(window, row);
+                    blocks.extend_from_slice(
+                        range
+                            .and_then(|range| source.get(range))
+                            .ok_or_else(selectable_state_error)?,
+                    );
                 }
                 Ok(blocks)
             };
@@ -83,21 +77,18 @@ impl CcsoState {
                 copy_region(&self.blocks[1], splot_recon::PlaneId::U, &mut spare_u)?,
                 copy_region(&self.blocks[2], splot_recon::PlaneId::V, &mut spare_v)?,
             ],
-            row_start,
-            col_start,
-            grid_rows,
-            grid_cols,
+            window,
+            reuse_offset: self.reuse_offset,
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// The frame's state with no block read yet; the planes it reuses stay
+    /// zero until [`Self::load_reused_blocks`], which the parse never reads.
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        ref_frame_idx: &[u32],
-        ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
         tile_offset: ByteOffset,
         blocks: [Vec<u8>; CCSO_PLANES],
     ) -> Result<Self> {
@@ -118,7 +109,7 @@ impl CcsoState {
                 .is_some_and(|params| params.sb_reuse_ccso)
         });
         let mut state = Self::active(shift, plane_enabled, sb_reuse, grid, blocks)?;
-        state.load_reused_blocks(core, ref_frame_idx, ref_ccso_unit_grids, tile_offset)?;
+        state.reuse_offset = tile_offset;
         Ok(state)
     }
 
@@ -150,10 +141,8 @@ impl CcsoState {
             plane_enabled,
             sb_reuse,
             blocks,
-            row_start: 0,
-            col_start: 0,
-            grid_rows,
-            grid_cols,
+            window: UnitWindow::frame(grid_rows, grid_cols),
+            reuse_offset: ByteOffset::new(0),
         })
     }
 
@@ -169,13 +158,13 @@ impl CcsoState {
             plane_enabled: [false; CCSO_PLANES],
             sb_reuse: [false; CCSO_PLANES],
             blocks,
-            row_start: 0,
-            col_start: 0,
-            grid_rows: 0,
-            grid_cols: 0,
+            window: UnitWindow::default(),
+            reuse_offset: ByteOffset::new(0),
         }
     }
 
+    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -189,8 +178,19 @@ impl CcsoState {
         let Some(unit) = self.unit_at(frontier.r, frontier.c) else {
             return Ok(());
         };
+        self.read_unit(work_unit, symbols, unit, tile_offset)
+    }
+
+    #[inline(never)]
+    fn read_unit(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'_>,
+        unit: (usize, usize),
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         if self.block_index(unit.0, unit.1).is_none() {
-            return Err(ccso_state_error());
+            return Err(selectable_state_error());
         }
         let tile_col_start = work_unit.mi_col_range().start as usize;
         for plane in 0..CCSO_PLANES {
@@ -205,7 +205,7 @@ impl CcsoState {
                 "5.20.10.2",
             )?;
             if value >= CCSO_SYMBOL_VALUES {
-                return Err(ccso_state_error());
+                return Err(selectable_state_error());
             }
             self.set_block_value(plane, unit.0, unit.1, value as u8)?;
         }
@@ -258,25 +258,18 @@ impl CcsoState {
     ) -> Result<()> {
         let index = self
             .block_index(unit_row, unit_col)
-            .ok_or_else(ccso_state_error)?;
+            .ok_or_else(selectable_state_error)?;
         let cell = self
             .blocks
             .get_mut(plane)
             .and_then(|grid| grid.get_mut(index))
-            .ok_or_else(ccso_state_error)?;
+            .ok_or_else(selectable_state_error)?;
         *cell = value;
         Ok(())
     }
 
     fn block_index(&self, unit_row: usize, unit_col: usize) -> Option<usize> {
-        crate::tile::local_grid_index(
-            unit_row,
-            unit_col,
-            self.row_start,
-            self.col_start,
-            self.grid_rows,
-            self.grid_cols,
-        )
+        self.window.index(unit_row, unit_col)
     }
 
     pub(crate) fn merge_tile(
@@ -289,78 +282,49 @@ impl CcsoState {
             || self.shift != tile.shift
             || self.plane_enabled != tile.plane_enabled
             || self.sb_reuse != tile.sb_reuse
-            || self.row_start != 0
-            || self.col_start != 0
+            || !self.window.is_frame()
         {
-            return Err(ccso_state_error());
+            return Err(selectable_state_error());
         }
         if !self.active {
             return Ok(());
         }
         let unit_mi = 1usize
             .checked_shl(self.shift)
-            .ok_or_else(ccso_state_error)?;
-        let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
-        let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
-        let expected_row_start = mi_rows.start / unit_mi;
-        let expected_col_start = mi_cols.start / unit_mi;
-        if tile.row_start != expected_row_start
-            || tile.col_start != expected_col_start
-            || tile.grid_rows != row_end.saturating_sub(expected_row_start)
-            || tile.grid_cols != col_end.saturating_sub(expected_col_start)
-        {
-            return Err(ccso_state_error());
+            .ok_or_else(selectable_state_error)?;
+        if tile.window != self.window.tile(&mi_rows, &mi_cols, unit_mi) {
+            return Err(selectable_state_error());
         }
-        for row in mi_rows.start / unit_mi..row_end {
-            for col in mi_cols.start / unit_mi..col_end {
-                let index = self.block_index(row, col).ok_or_else(ccso_state_error)?;
-                for plane in 0..CCSO_PLANES {
-                    let tile_index = tile.block_index(row, col).ok_or_else(ccso_state_error)?;
-                    self.blocks[plane][index] = tile.blocks[plane][tile_index];
-                }
-            }
+        for (frame, tile_blocks) in self.blocks.iter_mut().zip(&tile.blocks) {
+            self.window
+                .merge(tile.window, tile_blocks, frame)
+                .ok_or_else(selectable_state_error)?;
         }
         Ok(())
     }
 
-    fn load_reused_blocks(
+    /// Copies the § 6.17.7.8 `sb_reuse_ccso` planes from `sources`, the
+    /// saved grid of each plane's reference.
+    pub(crate) fn load_reused_blocks(
         &mut self,
-        core: &FrameHeaderCore,
-        ref_frame_idx: &[u32],
-        ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
-        tile_offset: ByteOffset,
+        sources: [Option<&CcsoUnitGrid>; CCSO_PLANES],
     ) -> Result<()> {
-        let Some(ccso) = core.ccso_params.as_ref() else {
-            return Ok(());
-        };
-        for plane in 0..CCSO_PLANES {
+        for (plane, source) in sources.into_iter().enumerate() {
             if !self.sb_reuse[plane] {
                 continue;
             }
-            let ref_index = ccso
-                .planes
-                .get(plane)
-                .and_then(|params| params.ccso_ref_idx)
-                .unwrap_or(0);
-            let slot = ref_frame_idx
-                .get(ref_index as usize)
-                .copied()
-                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
-            let grid = ref_ccso_unit_grids
-                .get(slot as usize)
-                .and_then(Option::as_ref)
-                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
-            let source = grid
+            let grid = source.ok_or_else(|| ccso_reuse_error(self.reuse_offset))?;
+            let blocks = grid
                 .plane_blocks(plane)
-                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
+                .ok_or_else(|| ccso_reuse_error(self.reuse_offset))?;
             if grid.shift() != self.shift
-                || grid.grid_rows() != self.grid_rows
-                || grid.grid_cols() != self.grid_cols
-                || source.len() != self.blocks[plane].len()
+                || grid.grid_rows() != self.window.rows
+                || grid.grid_cols() != self.window.cols
+                || blocks.len() != self.blocks[plane].len()
             {
-                return Err(ccso_reuse_error(tile_offset));
+                return Err(ccso_reuse_error(self.reuse_offset));
             }
-            self.blocks[plane].copy_from_slice(source);
+            self.blocks[plane].copy_from_slice(blocks);
         }
         Ok(())
     }
@@ -369,28 +333,29 @@ impl CcsoState {
         mut self,
         mut output: Arc<CcsoUnitGrid>,
     ) -> Result<(Arc<CcsoUnitGrid>, bool)> {
-        if self.row_start != 0 || self.col_start != 0 {
-            return Err(ccso_state_error());
+        if !self.window.is_frame() {
+            return Err(selectable_state_error());
         }
-        let grid = Arc::get_mut(&mut output).ok_or_else(ccso_state_error)?;
+        let grid = Arc::get_mut(&mut output).ok_or_else(selectable_state_error)?;
         grid.reset(
             self.active,
             self.shift,
             self.plane_enabled,
             core::mem::take(&mut self.blocks),
-            self.grid_rows,
-            self.grid_cols,
+            self.window.rows,
+            self.window.cols,
         )
-        .map_err(|_| ccso_state_error())?;
+        .map_err(|_| selectable_state_error())?;
         Ok((output, self.active))
     }
 }
 
 pub(crate) fn ccso_mi_width_log2(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<u32> {
     let filter = sequence.filter.as_ref();
-    let sb_mi_width_log2 = frame_sb_mi_width_log2(sequence, core)?;
+    let frame_is_intra = core.frame_is_intra.ok_or_else(selectable_state_error)?;
+    let sb_mi_width_log2 = super::frame_sb_size4(sequence, frame_is_intra)?.trailing_zeros();
     let Some(tile_info) = core.tile_info.as_ref() else {
-        return Err(ccso_state_error());
+        return Err(selectable_state_error());
     };
     Ok(ccso_mi_width_log2_for_layout(
         filter.is_some_and(|f| f.ccso_unit_matches_sb_size),
@@ -400,23 +365,6 @@ pub(crate) fn ccso_mi_width_log2(sequence: &SequenceHeader, core: &FrameHeaderCo
         &tile_info.mi_col_starts,
         &tile_info.mi_row_starts,
     ))
-}
-
-fn frame_sb_mi_width_log2(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<u32> {
-    let partition = sequence.partition.as_ref().ok_or_else(ccso_state_error)?;
-    let frame_is_intra = core.frame_is_intra.ok_or_else(ccso_state_error)?;
-    let sb_size = if partition.use_256x256_superblock {
-        if frame_is_intra {
-            SuperblockSize::Block128x128
-        } else {
-            SuperblockSize::Block256x256
-        }
-    } else if partition.use_128x128_superblock {
-        SuperblockSize::Block128x128
-    } else {
-        SuperblockSize::Block64x64
-    };
-    Ok(mi_width_log2(sb_size))
 }
 
 fn ccso_mi_width_log2_for_layout(
@@ -451,12 +399,14 @@ fn ccso_mi_width_log2_for_layout(
 }
 
 fn ccso_grid(mi_rows: usize, mi_cols: usize, shift: u32) -> Result<(usize, usize, usize)> {
-    let unit_mi = 1usize.checked_shl(shift).ok_or_else(ccso_state_error)?;
+    let unit_mi = 1usize
+        .checked_shl(shift)
+        .ok_or_else(selectable_state_error)?;
     let grid_rows = mi_rows.div_ceil(unit_mi);
     let grid_cols = mi_cols.div_ceil(unit_mi);
     let cells = grid_rows
         .checked_mul(grid_cols)
-        .ok_or_else(ccso_state_error)?;
+        .ok_or_else(selectable_state_error)?;
     Ok((grid_rows, grid_cols, cells))
 }
 
@@ -466,10 +416,6 @@ fn ccso_reuse_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
         "6.17.7.8",
         "CCSO block-flag reuse references an incompatible saved grid",
     )
-}
-
-fn ccso_state_error() -> crate::error::DecodeError {
-    crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
 fn ccso_allocation_error(plane: splot_recon::PlaneId) -> crate::error::DecodeError {

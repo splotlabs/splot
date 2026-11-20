@@ -139,3 +139,23 @@ fn strict_quant_bound_is_checked_after_hidden_parity_and_tcq() {
         })
     ));
 }
+
+#[test]
+fn next_tcq_state_matches_spec_table() {
+    const SPEC: [[usize; 2]; 8] = [
+        [0, 4],
+        [4, 0],
+        [1, 5],
+        [5, 1],
+        [6, 2],
+        [2, 6],
+        [7, 3],
+        [3, 7],
+    ];
+    for (state, row) in SPEC.iter().enumerate() {
+        for (parity, &next) in row.iter().enumerate() {
+            assert_eq!(next_tcq_state(state, parity as u32), next);
+            assert_eq!((next >> 1) & 1, (state >> 2) & 1);
+        }
+    }
+}

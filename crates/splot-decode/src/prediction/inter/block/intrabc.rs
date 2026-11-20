@@ -11,17 +11,21 @@ use crate::filters::wienerns_lr::intrabc_records::{
     derive_intrabc_luma_prediction_geometry,
 };
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
-use crate::prediction::inter::{
-    InterResidual, InterResidualBlock, InterResidualReconScratch, Mv, mc,
-};
+use crate::prediction::inter::{InterResidual, InterResidualBlock, Mv, mc};
 use crate::{Result, prediction::inter::add_inter_residual_to_workspace};
 
 pub(super) struct IntrabcReconPrediction {
-    luma: IntrabcPredictionGeometry,
+    luma_target: PlaneRect,
+    luma_source: IntrabcLumaSource,
     chroma: Option<IntrabcChromaPrediction>,
     morph_mv: Option<Mv>,
     /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
     morph_avail: (bool, bool),
+}
+
+enum IntrabcLumaSource {
+    Copy(PlaneRect),
+    Subpel(PlaneScaling),
 }
 
 #[derive(Clone, Copy)]
@@ -58,7 +62,12 @@ impl IntrabcReconPrediction {
             col: info.block_mv.col,
         });
         Ok(Self {
-            luma,
+            luma_target: luma.target,
+            luma_source: if luma.fractional {
+                IntrabcLumaSource::Subpel(luma.scaling)
+            } else {
+                IntrabcLumaSource::Copy(luma.source)
+            },
             chroma,
             morph_mv,
             morph_avail,
@@ -123,7 +132,6 @@ pub(super) struct IntrabcReconCommand {
     segment_id: u8,
     qindex: u32,
     luma_use_tcq: bool,
-    residual_use_ddt: bool,
     bit_depth: BitDepth,
 }
 
@@ -134,7 +142,6 @@ impl IntrabcReconCommand {
         segment_id: u8,
         qindex: u32,
         luma_use_tcq: bool,
-        residual_use_ddt: bool,
         bit_depth: BitDepth,
     ) -> Self {
         Self {
@@ -143,39 +150,33 @@ impl IntrabcReconCommand {
             segment_id,
             qindex,
             luma_use_tcq,
-            residual_use_ddt,
             bit_depth,
         }
     }
 
     pub(super) fn reconstruct<T: ReconSample>(
-        self,
-        residual_scratch: &mut InterResidualReconScratch<T>,
+        &self,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
-        let prediction = self.prediction;
-        if prediction.luma.fractional {
-            mc::intrabc_predict_subpel_plane_into(
+        let prediction = &self.prediction;
+        match prediction.luma_source {
+            IntrabcLumaSource::Subpel(scaling) => mc::intrabc_predict_subpel_plane_into(
                 workspace,
                 PlaneId::Y,
-                prediction.luma.target,
-                prediction.luma.scaling,
-            )?;
-        } else {
-            mc::intrabc_copy_plane_into(
-                workspace,
-                PlaneId::Y,
-                prediction.luma.source,
-                prediction.luma.target,
-            )?;
+                prediction.luma_target,
+                scaling,
+            )?,
+            IntrabcLumaSource::Copy(source) => {
+                mc::intrabc_copy_plane_into(workspace, PlaneId::Y, source, prediction.luma_target)?;
+            }
         }
         if let Some(mv) = prediction.morph_mv {
             crate::prediction::inter::bawp::apply_intrabc_morph_pred(
                 workspace,
-                prediction.luma.target,
+                prediction.luma_target,
                 prediction.morph_avail,
                 mv,
             )?;
@@ -192,15 +193,13 @@ impl IntrabcReconCommand {
         }
         if let Some(residual) = self.residual.as_ref() {
             add_inter_residual_to_workspace(
-                residual_scratch,
                 &mut mc::WorkspaceSink::Frame(workspace),
                 residual,
                 residual_blocks,
                 residual_coeffs,
                 self.qindex,
                 self.luma_use_tcq,
-                self.residual_use_ddt,
-                true,
+                false,
                 self.bit_depth,
             )?;
         }

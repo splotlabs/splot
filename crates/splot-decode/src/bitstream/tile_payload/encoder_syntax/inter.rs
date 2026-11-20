@@ -30,7 +30,7 @@ use super::super::cdf::{
 use super::super::general_intra_residual::{
     inter_chroma_plane_tx_type, luma_transform_records_for_partition,
 };
-use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraTreeWalkError};
+use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraLeafMode};
 use super::compound::InterPrediction;
 use super::{
     EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
@@ -46,7 +46,7 @@ use crate::prediction::inter::{
     EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterIntraPrediction,
     InterReferenceState, MotionFieldHandle, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
     SINGLE_MODE_NEWMV, TIP_REF_FRAME, TemporalMvContext, chroma_inter_tx_type,
-    encoder_motion_field, encoder_temporal_context, inter_residual_units, non_intra_leaf_mode,
+    encoder_motion_field, encoder_temporal_context, inter_residual_units,
     resolve_initial_frame_cdfs,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
@@ -161,8 +161,7 @@ impl EncoderReferences {
         }
         self.frames[index] = Some((SharedFrame::new(frame), cdfs, motion));
         self.buffer.update(index, &update, is_key_or_switch(core));
-        self.buffer
-            .note_frame(core.obu_type, true, &update, &core.ref_long_term_ids);
+        self.buffer.note_frame(core.obu_type, true, &update);
         for (index, frame) in self.frames.iter_mut().enumerate() {
             if !self.buffer.retains(index) {
                 *frame = None;
@@ -285,8 +284,8 @@ fn settled_state(
     buffer: &RuntimeReferenceBuffer,
     frames: &[Option<SettledFrame>],
 ) -> Result<InterReferenceState<u16>> {
-    let (store, mut meta) = buffer
-        .build_store_from(|slot, index| {
+    let mut state = buffer
+        .state_from(|slot, index| {
             let (frame, ..) = frames
                 .get(index)
                 .and_then(Option::as_ref)
@@ -294,10 +293,10 @@ fn settled_state(
             Ok((RefFrameSlot::completed(frame.share()), None))
         })
         .map_err(rule("reference state"))?;
-    for (slot, (cdfs, motion)) in meta
+    for (slot, (cdfs, motion)) in state
         .ref_frame_cdfs
         .iter_mut()
-        .zip(meta.ref_motion_fields.iter_mut())
+        .zip(state.ref_motion_fields.iter_mut())
         .enumerate()
     {
         if let Some((_, saved, field)) = buffer
@@ -309,7 +308,7 @@ fn settled_state(
             motion.clone_from(field);
         }
     }
-    Ok(InterReferenceState::from_metadata(store, meta))
+    Ok(state)
 }
 
 /// A motion vector in `1/8` luma samples (§ 7.12).
@@ -661,19 +660,6 @@ impl IntraTileSyntax {
     #[must_use]
     pub fn mv_step(&self) -> i32 {
         1 << MV_PRECISION_EIGHTH_PEL.saturating_sub(self.mv_precision())
-    }
-
-    /// The motion vector the decoder derives for `modes` at `leaf`. A `NEWMV`
-    /// whose `mv` is off the step lattice of its candidate is an error.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
-    pub fn inter_mv(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<MotionVector> {
-        let motion = self.single_motion(leaf, modes)?;
-        let tile = &mut self.inter_state()?.tile;
-        tile.motion_vector(&leaf.frontier, motion)
-            .map(MotionVector::from)
-            .map_err(rule("motion vector"))
     }
 
     /// The `NEWMV` difference step of `modes` in `1/8` samples: the step of
@@ -1468,35 +1454,25 @@ impl IntraTileSyntax {
     }
 
     fn publish_non_intra_modes(&mut self, leaf: &LeafBlock) -> Result<()> {
-        self.publish_leaf_modes(leaf, non_intra_leaf_mode(&leaf.frontier))
+        self.publish_leaf_modes(leaf, GeneralIntraLeafMode::no_luma_mode())
     }
 
     /// Publishes the leaf modes `mode` of the non-intra leaf `leaf`.
     pub(super) fn publish_leaf_modes(
         &mut self,
         leaf: &LeafBlock,
-        mode: super::super::partition_traversal::GeneralIntraLeafMode,
+        mode: GeneralIntraLeafMode,
     ) -> Result<()> {
-        super::super::partition_traversal::publish_intra_leaf_state::<core::convert::Infallible>(
-            self.frame,
-            leaf.call,
+        super::super::partition_traversal::publish_intra_leaf_state::<!>(
+            &self.frame,
+            &leaf.call,
             &leaf.frontier,
             mode,
             leaf.call.b_size,
-            &mut self.joint_modes,
-            &mut self.fsc_modes,
-            &mut self.use_dip,
-            &mut self.uses_mrls,
-            &mut self.palette_y,
-            &mut self.uv_cfls,
-            &mut self.y_modes,
+            &mut self.intra_facts,
             &mut self.mi_sizes,
         )
-        .map_err(|error| match error {
-            GeneralIntraTreeWalkError::Traversal(source) => rule("leaf publication")(source),
-            GeneralIntraTreeWalkError::MiSize(source) => rule("leaf publication")(source),
-            GeneralIntraTreeWalkError::Leaf(never) => match never {},
-        })?;
+        .map_err(rule("leaf publication"))?;
         DecodedLeafPublication::new(leaf.call, leaf.call.b_size, self.sb_size4 - 1)
             .publish_block_decoded(&mut self.recon.block_decoded)
             .map_err(rule("BlockDecoded update"))

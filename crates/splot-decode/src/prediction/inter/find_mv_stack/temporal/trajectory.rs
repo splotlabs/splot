@@ -3,9 +3,9 @@
 
 use splot_recon::math::round2_signed_i32;
 
+use super::{Mv, REFMVS_LIMIT, project_no_constraint};
 #[cfg(test)]
-use super::temporal_grid_index;
-use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint};
+use super::{allocate_temporal_grid, temporal_grid_index};
 
 type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
@@ -92,6 +92,7 @@ impl TrajectoryPositions {
     };
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TrajectoryMotionField {
     width8: usize,
@@ -99,6 +100,7 @@ pub(super) struct TrajectoryMotionField {
     pub(super) cells: Vec<PackedTrajectoryMv>,
 }
 
+#[cfg(test)]
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, cells) =
@@ -141,8 +143,7 @@ pub(super) struct TrajectoryState {
     /// matched control, which is the cost this layout reclaims.
     pub(super) cells: Vec<PackedTrajectoryMv>,
     pub(super) reference_count: usize,
-    /// Position scratch for each band one projection round runs at once.
-    pub(super) scratch: Vec<OwnedTrajectoryScratch>,
+    pub(super) scratch: OwnedTrajectoryScratch,
     step: usize,
     unit_size8: usize,
     width8: usize,
@@ -156,20 +157,17 @@ impl TrajectoryState {
         step: usize,
         unit_size8: usize,
     ) -> Option<Self> {
-        let template = TrajectoryMotionField::new(mi_dimensions.0, mi_dimensions.1)?;
-        let cell_count = template.cells.len();
-        let step = step.clamp(1, 2);
-        let unit_size8 = unit_size8.max(1);
-        let (width8, height8) = (template.width8, template.height8);
-        Some(Self {
-            cells: vec![PackedTrajectoryMv::INVALID; cell_count.checked_mul(reference_count)?],
+        let mut state = Self {
+            cells: Vec::new(),
             reference_count,
-            scratch: Vec::new(),
+            scratch: OwnedTrajectoryScratch::default(),
             step,
             unit_size8,
-            width8,
-            height8,
-        })
+            width8: 0,
+            height8: 0,
+        };
+        state.reset(mi_dimensions, reference_count, step, unit_size8)?;
+        Some(state)
     }
 
     /// Writes one reference's trajectory vector at a whole-field cell.
@@ -216,8 +214,8 @@ impl TrajectoryState {
         let cell_count = width8.checked_mul(height8)?;
         let total = cell_count.checked_mul(reference_count)?;
         self.reference_count = reference_count;
+        self.cells.clear();
         self.cells.resize(total, PackedTrajectoryMv::INVALID);
-        self.cells.fill(PackedTrajectoryMv::INVALID);
         self.step = step.clamp(1, 2);
         self.unit_size8 = unit_size8.max(1);
         (self.width8, self.height8) = (width8, height8);
@@ -240,7 +238,7 @@ impl TrajectoryState {
         Self {
             cells,
             reference_count,
-            scratch: Vec::new(),
+            scratch: OwnedTrajectoryScratch::default(),
             step: 1,
             unit_size8: 1,
             width8,
@@ -265,8 +263,7 @@ impl TrajectoryState {
             .collect()
     }
 
-    /// Splits the trajectory grid into `band_rows`-tall row bands, with
-    /// `slots` scratches for the bands one projection round runs at once.
+    /// Splits the trajectory grid into `band_rows`-tall row bands, which share position scratch.
     ///
     /// Bands are unit-aligned, and AV2 § 7.9.8 keeps each projected sample in
     /// the TMVP unit row of the position it was sampled from, so the bands
@@ -276,18 +273,13 @@ impl TrajectoryState {
     pub(super) fn grids(
         &mut self,
         band_rows: usize,
-        slots: usize,
-    ) -> Option<(TrajectoryGrids<'_>, &mut [OwnedTrajectoryScratch])> {
+    ) -> Option<(TrajectoryGrids<'_>, &mut OwnedTrajectoryScratch)> {
         let total = self.width8.checked_mul(self.height8)?;
         if band_rows == 0
             || self.reference_count > MAX_TRAJECTORY_REFERENCES
             || self.cells.len() != total.checked_mul(self.reference_count)?
         {
             return None;
-        }
-        if self.scratch.len() < slots {
-            self.scratch
-                .resize_with(slots, OwnedTrajectoryScratch::default);
         }
         let stride = band_rows.checked_mul(self.width8)?;
         let grids = TrajectoryGrids {
@@ -302,7 +294,7 @@ impl TrajectoryState {
             width8: self.width8,
             height8: self.height8,
         };
-        Some((grids, self.scratch.get_mut(..slots)?))
+        Some((grids, &mut self.scratch))
     }
 
     /// The whole field as one band whose position scratch persists across calls.
@@ -311,9 +303,8 @@ impl TrajectoryState {
         let cells = self.width8.checked_mul(self.height8)?;
         let reference_count = self.reference_count;
         let height8 = self.height8;
-        let fresh = self.scratch.is_empty();
-        let (mut grids, scratch) = self.grids(height8, 1)?;
-        let scratch = scratch.first_mut()?;
+        let fresh = self.scratch.epoch == 0;
+        let (mut grids, scratch) = self.grids(height8)?;
         if fresh {
             scratch.reset(cells, reference_count)?;
         }
@@ -483,6 +474,15 @@ impl GridRows {
             .and_then(PackedTrajectoryMv::unpack)
     }
 
+    /// Whether two positions share a TMVP unit. The unit is a power of two
+    /// (8 or 16 luma samples), so the comparison is a shift pair.
+    fn same_unit(self, a: usize, b: usize) -> bool {
+        let unit = self.unit_size8;
+        debug_assert!(unit.is_power_of_two());
+        let shift = unit.trailing_zeros();
+        (a >> shift) == (b >> shift)
+    }
+
     /// One reference's vector at `(y8, x8)`. A step-2 projection writes only
     /// the even cells of a row pair; any other cell reads as the average of its
     /// anchor and the anchor's written neighbours in the same TMVP unit, so the
@@ -505,15 +505,14 @@ impl GridRows {
         let (y8, x8) = (y8 - dy, x8 - dx);
         let mut sum = self.stored(cells, reference, y8, x8)?;
         let mut count = 1;
-        let unit = self.unit_size8;
         for (source_y, source_x, enabled) in [
             (y8, x8 + 2, dx > 0),
             (y8 + 2, x8, dy > 0),
             (y8 + 2, x8 + 2, dy & dx > 0),
         ] {
             if enabled
-                && source_y / unit == y8 / unit
-                && source_x / unit == x8 / unit
+                && self.same_unit(source_y, y8)
+                && self.same_unit(source_x, x8)
                 && let Some(mv) = self.stored(cells, reference, source_y, source_x)
             {
                 sum = add_mv(sum, mv);
@@ -782,7 +781,10 @@ impl TrajectoryBand<'_> {
             .fields
             .get_mut(index * self.reference_count + reference)
         {
-            *slot = PackedTrajectoryMv::new(mv);
+            *slot = PackedTrajectoryMv {
+                row: mv.row as i16,
+                col: mv.col as i16,
+            };
         }
         mv
     }
@@ -833,6 +835,8 @@ impl TrajectoryBand<'_> {
     /// record in the TMVP unit row of the trajectories it holds, and the caller
     /// passes an end record in the scanned cell's unit row, so only the column
     /// is tested against a trajectory's window.
+    /// A vector that moves less than one 8x8 cell on both axes keeps the
+    /// trajectory's stored sample position.
     #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
     #[inline(always)]
     pub(super) fn extend_trajectories(
@@ -868,6 +872,12 @@ impl TrajectoryBand<'_> {
                 continue;
             };
             let to_mv = self.set_field_at(to, traj_index, add_mv(from_mv, delta));
+            if to_mv.row.unsigned_abs().max(to_mv.col.unsigned_abs()) < 64 {
+                if let Some(slot) = self.position_slot(to, traj_index) {
+                    self.set_position_slot(slot, phase, trajectory);
+                }
+                continue;
+            }
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, to_mv)
                 .filter(|&position| Self::position_allowed(position, bounds))
@@ -1121,8 +1131,8 @@ mod tests {
     fn band_reset_hides_positions_from_every_earlier_band() {
         let mut state = TrajectoryState::new((2, 2), 1, 1, 8).unwrap();
         for round in 0..600 {
-            let (mut grids, scratch) = state.grids(1, 1).unwrap();
-            let mut band = grids.next_band(&mut scratch[0]).unwrap();
+            let (mut grids, scratch) = state.grids(1).unwrap();
+            let mut band = grids.next_band(scratch).unwrap();
             assert_eq!(band.positions_at(0, (0, 0)), None, "round {round}");
             if round == 0 {
                 band.set_position(0, (0, 0), 1, (0, 0));
@@ -1137,14 +1147,14 @@ mod tests {
         let mut state = TrajectoryState::new((8, 8), 2, 1, 8).unwrap();
         let source_index = temporal_grid_index(state.width8, state.height8, 1, 2).unwrap();
         state.whole_band().unwrap();
-        state.scratch[0].positions[source_index] = TrajectoryPositions {
+        state.scratch.positions[source_index] = TrajectoryPositions {
             phases: [
                 PackedPosition::new((1, 1)).unwrap(),
                 PackedPosition::INVALID,
                 PackedPosition::new((1, 3)).unwrap(),
             ],
             mask: 0b101,
-            epoch: state.scratch[0].epoch,
+            epoch: state.scratch.epoch,
         };
         state.set_trajectory_cell(0, 1, 1, Mv { row: 8, col: 16 });
         state.set_trajectory_cell(0, 1, 3, Mv { row: 24, col: 32 });

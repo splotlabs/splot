@@ -9,7 +9,7 @@ use crate::test_support::decoded_frame;
 use splot_recon::SharedFrame;
 use std::sync::Arc;
 
-fn key_update() -> FrameRefUpdate {
+fn key_update() -> FrameRefUpdate<'static> {
     FrameRefUpdate {
         refresh_frame_flags: 0xFF,
         order_hint: 0,
@@ -26,13 +26,13 @@ fn key_update() -> FrameRefUpdate {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [1, 0, 0],
-        lr_frame_filter_taps: Default::default(),
+        lr_banks: [None; 3],
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
 }
 
-fn inter_update() -> FrameRefUpdate {
+fn inter_update() -> FrameRefUpdate<'static> {
     FrameRefUpdate {
         refresh_frame_flags: 1 << 1,
         order_hint: 1,
@@ -49,7 +49,7 @@ fn inter_update() -> FrameRefUpdate {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0, 0, 0],
-        lr_frame_filter_taps: Default::default(),
+        lr_banks: [None; 3],
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -86,7 +86,7 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
             crate::prediction::inter::MotionFieldLayout::new(16, 16, 16)
                 .expect("valid motion-field layout"),
         ),
-        ccso_params: None,
+        ccso_header: None,
         ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
         segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
             crate::bitstream::tile_payload::FrameSegmentIdMap::new(
@@ -137,7 +137,7 @@ fn inter_refresh_adds_a_second_valid_slot() {
 }
 
 #[test]
-fn first_regular_frame_after_olk_keeps_only_olk_and_listed_long_term_slots() {
+fn first_regular_frame_after_olk_keeps_only_olk_and_long_term_slots() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     let mut old = key_update();
     old.refresh_frame_flags = 1;
@@ -151,12 +151,12 @@ fn first_regular_frame_after_olk_keeps_only_olk_and_listed_long_term_slots() {
     let mut olk = key_update();
     olk.refresh_frame_flags = 1 << 1;
     buf.update(2, &olk, true);
-    buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[7]);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk);
 
     let mut leading = inter_update();
     leading.refresh_frame_flags = 1 << 2;
     buf.update(3, &leading, false);
-    buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
+    buf.note_frame(ObuType::LeadingTileGroup, false, &leading);
 
     buf.prepare_for_frame(ObuType::RegularTileGroup, true);
 
@@ -172,23 +172,74 @@ fn olk_co_vcl_refresh_in_same_tu_survives_first_regular_tu() {
     let mut olk = key_update();
     olk.refresh_frame_flags = 1 << 1;
     buf.update(0, &olk, true);
-    buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[]);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk);
 
     let mut co_vcl = inter_update();
     co_vcl.refresh_frame_flags = 1 << 4;
     buf.update(1, &co_vcl, false);
-    buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl, &[]);
+    buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl);
 
     let mut leading = inter_update();
     leading.refresh_frame_flags = 1 << 2;
     buf.update(2, &leading, false);
-    buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
+    buf.note_frame(ObuType::LeadingTileGroup, false, &leading);
 
     buf.prepare_for_frame(ObuType::RegularTileGroup, true);
 
     assert!(buf.slots[1].valid);
     assert!(!buf.slots[2].valid);
     assert!(buf.slots[4].valid);
+}
+
+#[test]
+fn regular_frames_after_olk_in_its_tu_allow_only_tu_refreshed_slots() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    let mut olk = key_update();
+    olk.refresh_frame_flags = 1 << 1;
+    buf.prepare_for_frame(ObuType::OpenLoopKey, true);
+    assert_eq!(buf.allowed_frames, None);
+    buf.update(0, &olk, true);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, false);
+    assert_eq!(buf.allowed_frames, Some(1 << 1));
+    let mut co_vcl = inter_update();
+    co_vcl.refresh_frame_flags = 1 << 4;
+    buf.update(1, &co_vcl, false);
+    buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl);
+
+    buf.prepare_for_frame(ObuType::RegularSef, false);
+    assert_eq!(buf.allowed_frames, Some((1 << 1) | (1 << 4)));
+    buf.prepare_for_frame(ObuType::LeadingTileGroup, false);
+    assert_eq!(buf.allowed_frames, None);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, true);
+    assert_eq!(buf.allowed_frames, None);
+}
+
+#[test]
+fn closed_loop_key_clears_open_loop_state_and_allowed_frames() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    let mut old = key_update();
+    old.refresh_frame_flags = 1;
+    buf.update(0, &old, true);
+
+    let mut olk = key_update();
+    olk.refresh_frame_flags = 1 << 1;
+    buf.update(1, &olk, true);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, false);
+    assert_eq!(buf.allowed_frames, Some(1 << 1));
+
+    buf.prepare_for_frame(ObuType::ClosedLoopKey, true);
+    assert_eq!(buf.allowed_frames, None);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, false);
+    assert_eq!(buf.allowed_frames, None);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, true);
+    assert!(buf.slots[0].valid);
 }
 
 #[test]
@@ -203,7 +254,7 @@ fn reference_refresh_preserves_full_and_lsb_order_hints() {
     assert_eq!(buf.slots[1].order_hint, 136);
     assert_eq!(buf.slots[1].order_hint_lsb, 8);
     let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
-    let metadata = buf.build_store::<u8>(&frames.into()).unwrap().1;
+    let metadata = buf.state::<u8>(&frames.into()).unwrap();
     assert_eq!(metadata.ref_order_hint[1], 136);
     assert_eq!(metadata.ref_order_hint_lsbs[1], 8);
     assert!(metadata.ref_implicit_output_frame[1]);
@@ -220,7 +271,7 @@ fn reference_refresh_preserves_global_motion_predictor_state() {
     buf.update(1, &update, false);
 
     let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
-    let metadata = buf.build_store::<u8>(&frames.into()).unwrap().1;
+    let metadata = buf.state::<u8>(&frames.into()).unwrap();
     assert_eq!(metadata.ref_num_total_refs[1], 2);
     assert_eq!(metadata.saved_global_motion_order_hints[1][..2], [7, 11]);
     assert_eq!(
@@ -240,18 +291,13 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
     let frame_cdfs = Arc::new(crate::bitstream::tile_payload::FrameCdfSubset::from_defaults());
     frame.frame_cdfs = crate::prediction::inter::FrameCdfHandle::settled(Arc::clone(&frame_cdfs));
 
-    let mut reader = splot_core::bitio::BitReader::new(&[], splot_core::span::ByteOffset::new(0));
-    let ccso_params = splot_core::headers::frame::parse_ccso_params(
-        &mut reader,
-        false,
-        3,
-        &splot_core::headers::frame::CoreSeqCcsoView {
-            enable_ccso: false,
-            single_picture_header_flag: false,
-        },
-    )
-    .unwrap();
-    frame.ccso_params = Some(ccso_params.clone());
+    let (_, header) =
+        crate::prediction::inter::test_support::fixture_sequence_and_key_core(include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
+        ));
+    assert!(header.ccso_params.is_some());
+    let ccso_header = Arc::new(header);
+    frame.ccso_header = Some(Arc::clone(&ccso_header));
 
     let ccso_grid = Arc::new(
         crate::filters::ccso::CcsoUnitGrid::new(
@@ -277,14 +323,17 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
     let motion_field = Arc::clone(frame.motion_field.field().unwrap());
 
     let frames = vec![Some(frame)];
-    let metadata = buf.build_store::<u8>(&frames.into()).unwrap().1;
+    let metadata = buf.state::<u8>(&frames.into()).unwrap();
 
     let stored_cdfs = metadata.ref_frame_cdfs[2]
         .as_ref()
         .and_then(crate::prediction::inter::FrameCdfHandle::product)
         .unwrap();
     assert!(Arc::ptr_eq(stored_cdfs, &frame_cdfs));
-    assert_eq!(metadata.ref_ccso_params[2].as_ref(), Some(&ccso_params));
+    assert!(Arc::ptr_eq(
+        metadata.ref_ccso_headers[2].as_ref().unwrap(),
+        &ccso_header
+    ));
     let stored_grid = metadata.ref_ccso_unit_grids[2]
         .as_ref()
         .and_then(crate::prediction::inter::CcsoGridHandle::product)
@@ -304,7 +353,7 @@ fn reference_products_come_from_the_retained_pipeline_frame() {
         &motion_field
     ));
     assert!(metadata.ref_frame_cdfs[0].is_none());
-    assert!(metadata.ref_ccso_params[0].is_none());
+    assert!(metadata.ref_ccso_headers[0].is_none());
     assert!(metadata.ref_ccso_unit_grids[0].is_none());
     assert!(metadata.ref_segment_ids[0].is_none());
     assert!(metadata.ref_motion_fields[0].is_none());
@@ -373,7 +422,7 @@ fn valid_slot_without_frame_index_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.slots[0].valid = true;
 
-    let Err(error) = buf.build_store::<u8>(&Vec::new().into()) else {
+    let Err(error) = buf.state::<u8>(&Vec::new().into()) else {
         panic!("missing decoded-frame index must be rejected");
     };
 
@@ -391,7 +440,7 @@ fn valid_slot_with_out_of_range_frame_index_is_reference_state_error() {
     buf.slots[0].valid = true;
     buf.slots[0].frame_index = Some(3);
 
-    let Err(error) = buf.build_store::<u8>(&Vec::new().into()) else {
+    let Err(error) = buf.state::<u8>(&Vec::new().into()) else {
         panic!("out-of-range decoded-frame index must be rejected");
     };
 
@@ -412,7 +461,7 @@ fn valid_slot_with_missing_retained_frame_is_reference_state_error() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.update(0, &key_update(), true);
 
-    let Err(error) = buf.build_store::<u8>(&vec![None].into()) else {
+    let Err(error) = buf.state::<u8>(&vec![None].into()) else {
         panic!("missing retained frame must be rejected");
     };
 
@@ -430,7 +479,7 @@ fn valid_slot_with_mismatched_storage_depth_keeps_its_diagnostic() {
     buf.update(0, &key_update(), true);
     let frames = vec![Some(pipeline_frame(64, 64))];
 
-    let Err(error) = buf.build_store::<u16>(&frames.into()) else {
+    let Err(error) = buf.state::<u16>(&frames.into()) else {
         panic!("8-bit retained frame must not enter a 10-bit reference store");
     };
 
@@ -447,7 +496,7 @@ fn valid_slot_with_mismatched_frame_size_is_reference_state_error() {
     buf.update(0, &key_update(), true);
     let frames = vec![Some(pipeline_frame(32, 64))];
 
-    let Err(error) = buf.build_store::<u8>(&frames.into()) else {
+    let Err(error) = buf.state::<u8>(&frames.into()) else {
         panic!("mismatched retained-frame size must be rejected");
     };
 
@@ -519,32 +568,46 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
     buf.update(0, &key_update(), true);
     assert!(buf.lr_frame_filter_taps.is_none());
     let coeffs = |tap: i16| InlineVec::from_iter_checked([tap]).unwrap();
+    let banks = [5, 9, 7].map(|tap| WienerNsFrameFilterBank {
+        classes: InlineVec::from_iter_checked([
+            splot_core::headers::frame::WienerNsFrameFilterClass {
+                coeffs: coeffs(tap),
+                ..Default::default()
+            },
+        ])
+        .unwrap(),
+    });
     let mut update = inter_update();
-    update.lr_frame_filter_taps[0].push(coeffs(5)).unwrap();
+    update.lr_banks[0] = Some(&banks[0]);
     buf.update(1, &update, false);
-    let frames = || {
-        (0..4)
-            .map(|_| Some(pipeline_frame(64, 64)))
-            .collect::<Vec<_>>()
-            .into()
-    };
-    let held = buf.build_store::<u8>(&frames()).unwrap().1;
+    let frames = (0..=4)
+        .map(|_| Some(pipeline_frame(64, 64)))
+        .collect::<Vec<_>>()
+        .into();
+    let held = buf.state::<u8>(&frames).unwrap();
 
-    update.lr_frame_filter_taps[0][0] = coeffs(9);
+    update.lr_banks[0] = Some(&banks[1]);
     buf.update(2, &update, false);
-    let fresh = buf.build_store::<u8>(&frames()).unwrap().1;
+    let fresh = buf.state::<u8>(&frames).unwrap();
 
-    let taps =
-        |meta: &ReferenceMetadata, slot: usize| meta.lr_frame_filter_taps.as_ref().unwrap()[slot];
+    let taps = |meta: &InterReferenceState<u8>, slot: usize| {
+        meta.lr_frame_filter_taps.as_ref().unwrap()[slot]
+    };
     assert_eq!(taps(&held, 1)[0][0], coeffs(5));
     assert_eq!(taps(&fresh, 1)[0][0], coeffs(9));
     assert!(taps(&fresh, 0)[0].is_empty());
 
     drop(held);
-    update.lr_frame_filter_taps[0][0] = coeffs(7);
+    update.lr_banks[0] = Some(&banks[2]);
     buf.update(3, &update, false);
-    let reused = buf.build_store::<u8>(&frames()).unwrap().1;
+    let reused = buf.state::<u8>(&frames).unwrap();
     assert_eq!(taps(&fresh, 1)[0][0], coeffs(9));
     assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
     assert_eq!(buf.lr_frame_filter_spares.len(), 1);
+
+    update.lr_banks[0] = None;
+    buf.update(4, &update, false);
+    let cleared = buf.state::<u8>(&frames).unwrap();
+    assert!(taps(&cleared, 1)[0].is_empty());
+    assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
 }

@@ -16,11 +16,11 @@ use crate::filters::source::DeblockedPlanes;
 use crate::pipeline::frame_progress::{DirectStripeTarget, FrameProgress};
 use crate::test_support::yuv420_workspace;
 
-fn poison_u16_target(target: &mut DirectStripeTarget, poison: u16) {
+fn poison_u16_target(target: &mut DirectStripeTarget<u16>, poison: u16) {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         let mut plane = target.take(plane).unwrap();
         let (width, stride) = (plane.width(), plane.stride());
-        for row in plane.u16_samples_mut().unwrap().chunks_mut(stride) {
+        for row in plane.samples_mut().chunks_mut(stride) {
             row[..width].fill(poison);
         }
     }
@@ -104,8 +104,8 @@ fn direct_cdef_10bit(
         sub_y: subsampling.1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
+        units: &cdef_units(params, 2, subsampling),
     };
     let geometry = [
         Some(CdefPlaneGeometry {
@@ -134,12 +134,13 @@ fn direct_cdef_10bit(
         }),
     ];
     assert_eq!(
-        cdef_initializations(Some(&lookup), Some(&target), geometry, (0, size.height())).unwrap(),
+        cdef_initializations(Some(&lookup), geometry, (0, size.height())),
         [expected_initialization; 3]
     );
     let frame = cdef_stripe_into(
         DeblockedPlanes::frame(workspace).unwrap(),
         Some(params),
+        &cdef_units(params, 2, subsampling),
         Some(grid),
         skip_grid,
         lossless_grid,
@@ -150,12 +151,13 @@ fn direct_cdef_10bit(
         0,
         size.height(),
         Some(target),
+        true,
     )
     .unwrap();
     let samples = cdef_frame_samples(&frame);
     drop(frame);
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     for (plane, expected) in [PlaneId::Y, PlaneId::U, PlaneId::V]
         .into_iter()
         .zip(&samples)
@@ -225,7 +227,7 @@ fn complete_direct_u16_cdef_matches_owned_on_odd_edges() {
             &grid,
             None,
             None,
-            StripeInitialization::FullyOverwritten
+            StripeInitialization::Partial
         ),
         owned_cdef_10bit(&workspace, &params, &grid, None, None)
     );
@@ -244,7 +246,7 @@ fn complete_direct_u16_cdef_matches_owned_for_chroma_subsampling() {
                 &grid,
                 None,
                 None,
-                StripeInitialization::FullyOverwritten
+                StripeInitialization::Partial
             ),
             owned_cdef_10bit(&workspace, &params, &grid, None, None),
             "{pixel_format:?}"
@@ -253,7 +255,7 @@ fn complete_direct_u16_cdef_matches_owned_for_chroma_subsampling() {
 }
 
 #[test]
-fn one_disabled_cdef_unit_keeps_copy_initialization() {
+fn one_disabled_cdef_unit_copies_its_blocks() {
     let workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 68, 18);
     let params = active_params();
     let grid = CdefUnitGrid::new(1, 2, vec![Some(0), None]).unwrap();
@@ -264,7 +266,7 @@ fn one_disabled_cdef_unit_keeps_copy_initialization() {
             &grid,
             None,
             None,
-            StripeInitialization::CopyAll
+            StripeInitialization::Partial
         ),
         owned_cdef_10bit(&workspace, &params, &grid, None, None)
     );
@@ -282,7 +284,7 @@ fn poison_oracle_rejects_one_omitted_block_write() {
         &grid,
         None,
         None,
-        StripeInitialization::FullyOverwritten,
+        StripeInitialization::Partial,
     );
     for row in 0..8 {
         mutated[PlaneId::Y.index()][row * 16..row * 16 + 8].fill(0xdead);
@@ -299,9 +301,9 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
     let workspace = patterned_10bit_workspace(PixelFormat::Yuv420, 20, 18);
     let params = active_params();
     let grid = constant_cdef_grid(5, 5, 0).unwrap();
-    let mut skipped = vec![false; 25];
+    let mut skipped = vec![0; 25];
     for index in [0, 1, 5, 6] {
-        skipped[index] = true;
+        skipped[index] = 1;
     }
     let skip_grid = CdefSkipGrid::new(5, 5, skipped).unwrap();
     assert_eq!(
@@ -311,19 +313,15 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
             &grid,
             Some(&skip_grid),
             None,
-            StripeInitialization::CopyAll
+            StripeInitialization::Partial
         ),
         owned_cdef_10bit(&workspace, &params, &grid, Some(&skip_grid), None)
     );
 
     let blocks = [deblock_block(0, 0, 2, 2, true)];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        5,
-        5,
-        &blocks,
-        [&blocks, &blocks],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(5, 5, &blocks, &blocks)
+            .unwrap();
     assert_eq!(
         direct_cdef_10bit(
             &workspace,
@@ -331,14 +329,14 @@ fn partial_skip_and_lossless_cdef_keep_poison_out_of_direct_output() {
             &grid,
             None,
             Some(&lossless),
-            StripeInitialization::CopyAll
+            StripeInitialization::Partial
         ),
         owned_cdef_10bit(&workspace, &params, &grid, None, Some(&lossless))
     );
 }
 
 #[test]
-fn disabled_cdef_initializes_u8_direct_staging_from_source() {
+fn disabled_cdef_initializes_u8_direct_target_from_source() {
     let workspace = yuv420_workspace(18, 14, 91);
     let height = workspace.plane(PlaneId::Y).unwrap().storage_size().height();
     let progress = Arc::new(FrameProgress::<u8>::new(workspace.info()).unwrap());
@@ -347,12 +345,7 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
         let mut lease = progress.direct_stripe(0).unwrap();
         let mut target = lease.take_target().unwrap();
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-            target
-                .take(plane)
-                .unwrap()
-                .u8_samples_mut()
-                .unwrap()
-                .fill(0xde);
+            target.take(plane).unwrap().samples_mut().fill(0xde);
         }
     }
     let mut lease = progress.direct_stripe(0).unwrap();
@@ -360,6 +353,7 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
     let mut frame = cdef_stripe_into(
         DeblockedPlanes::frame(&workspace).unwrap(),
         None,
+        &[None; 8],
         None,
         None,
         None,
@@ -370,6 +364,7 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
         0,
         height,
         Some(target),
+        true,
     )
     .unwrap();
     for filtered in [
@@ -380,12 +375,15 @@ fn disabled_cdef_initializes_u8_direct_staging_from_source() {
     .into_iter()
     .flatten()
     {
-        assert!(filtered.samples().iter().all(|&sample| sample == 91));
-        filtered.finish_direct().unwrap();
+        assert!(
+            crate::test_support::stripe_rows(filtered)
+                .iter()
+                .all(|&sample| sample == 91)
+        );
     }
     drop(frame);
     assert!(lease.submit());
-    let frame = progress.freeze_workspace(core::convert::identity).unwrap();
+    let frame = Arc::into_inner(progress).unwrap().freeze().unwrap();
     assert!(
         crate::test_support::packed(frame.y())
             .iter()
@@ -419,6 +417,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
         cdef_stripe_into(
             DeblockedPlanes::frame(&workspace).unwrap(),
             Some(&params),
+            &cdef_units(&params, 2, (1, 1)),
             Some(&grid),
             None,
             None,
@@ -429,6 +428,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
             0,
             16,
             Some(target),
+            true,
         )
         .is_err()
     );
@@ -439,7 +439,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         let mut target = target.take(plane).unwrap();
         let (width, stride) = (target.width(), target.stride());
-        let samples = target.u16_samples_mut().unwrap();
+        let samples = target.samples_mut();
         assert!(
             samples
                 .chunks(stride)
@@ -501,7 +501,7 @@ fn flat_segment_fills_fully_overwritten_direct_output() {
             &grid,
             None,
             None,
-            StripeInitialization::FullyOverwritten
+            StripeInitialization::Partial
         ),
         owned
     );
@@ -567,7 +567,7 @@ fn flat_blocks_fill_fully_overwritten_direct_output() {
             &grid,
             None,
             None,
-            StripeInitialization::FullyOverwritten
+            StripeInitialization::Partial
         ),
         owned
     );
@@ -601,7 +601,7 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
             &grid,
             None,
             None,
-            StripeInitialization::FullyOverwritten,
+            StripeInitialization::Partial,
         );
         let block_rows = |plane: usize| {
             let shift = usize::from(plane != 0);
@@ -623,6 +623,7 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
         let frame = cdef_stripe_into(
             DeblockedPlanes::frame(&workspace).unwrap(),
             Some(&params),
+            &cdef_units(&params, 2, (1, 1)),
             Some(&grid),
             None,
             None,
@@ -633,6 +634,7 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
             0,
             24,
             lease.take_target(),
+            true,
         )
         .unwrap();
         let mut kept = cdef_frame_samples(&frame);
@@ -696,12 +698,23 @@ fn run_segment(
         sub_y: 1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
+        units: &cdef_units(&[params], 2, (1, 1)),
     };
     if segment {
         let mut scratch = CdefSegmentScratch::default();
-        assert!(cdef_segment(&lookup, params, (2, c), (0, 6), &mut scratch, &mut frame).unwrap());
+        assert!(
+            cdef_segment(
+                &lookup,
+                (params, 0),
+                (2, c),
+                (0, 6),
+                &mut scratch,
+                (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
+                &mut frame
+            )
+            .unwrap()
+        );
     } else {
         let mut pad = [0u16; CDEF_PADDED_AREA];
         for block in 0..CDEF_SEGMENT_BLOCKS {
@@ -730,19 +743,14 @@ fn segment_path_matches_per_block_path() {
     let input = run_segment(
         &workspace,
         active_params()[0],
-        &crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
-            .unwrap(),
+        &crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], &[]).unwrap(),
         8,
         false,
     );
     let blocks = [deblock_block(2, 10, 2, 2, true)];
-    let lossless = crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
-        6,
-        36,
-        &blocks,
-        [&blocks, &blocks],
-    )
-    .unwrap();
+    let lossless =
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &blocks, &blocks)
+            .unwrap();
     let mixed = |y_pri, y_sec, uv_pri, uv_sec| CdefFrameParams {
         y_pri,
         y_sec,
@@ -783,8 +791,8 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         sub_y: 1,
         has_chroma: true,
         coeff_shift: 2,
-        max_sample: 1023,
         fill_flat: [true; 3],
+        units: &cdef_units(&active_params(), 2, (1, 1)),
     };
     let mut frame = cdef_stripe(
         DeblockedPlanes::frame(&workspace).unwrap(),
@@ -805,12 +813,32 @@ fn edge_segment_falls_back_to_the_per_block_path() {
     let params = active_params()[0];
     for (r, c) in [(0, 16), (2, 0), (2, 8), (2, 32), (4, 16)] {
         assert!(
-            !cdef_segment(&lookup, params, (r, c), (0, 6), &mut scratch, &mut frame).unwrap(),
+            !cdef_segment(
+                &lookup,
+                (params, 0),
+                (r, c),
+                (0, 6),
+                &mut scratch,
+                (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
+                &mut frame
+            )
+            .unwrap(),
             "({r}, {c})"
         );
     }
     assert_eq!(cdef_frame_samples(&frame), before);
-    assert!(cdef_segment(&lookup, params, (2, 16), (0, 6), &mut scratch, &mut frame).unwrap());
+    assert!(
+        cdef_segment(
+            &lookup,
+            (params, 0),
+            (2, 16),
+            (0, 6),
+            &mut scratch,
+            (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
+            &mut frame
+        )
+        .unwrap()
+    );
     assert_ne!(cdef_frame_samples(&frame), before);
 }
 
@@ -835,8 +863,7 @@ fn segment_path_matches_per_block_path_on(spread: usize) {
         }
     }
     let lossless =
-        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], [&[], &[]])
-            .unwrap();
+        crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(6, 36, &[], &[]).unwrap();
     for damping in [3, 4, 5, 6] {
         for ((y_pri, y_sec), (uv_pri, uv_sec)) in [
             ((4, 4), (2, 4)),

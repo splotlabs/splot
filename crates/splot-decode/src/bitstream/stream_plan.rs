@@ -20,9 +20,6 @@ use crate::bitstream::byte_stream::SourceBytes;
 use crate::error::{DecodeError, Result};
 use crate::{DecodeLimitName, DecodeOptions, UNSUPPORTED_FEATURE_RULE_ID};
 
-/// Support-matrix row that owns parsed stream planning.
-pub const DECODE_STREAM_STATE_MATRIX_ROW: &str = "decode-stream-state";
-
 /// Feature ID for parsed stream planning.
 pub const DECODE_STREAM_STATE_FEATURE_ID: &str = "DECODE-STREAM-STATE-PLANNER";
 
@@ -152,6 +149,7 @@ impl DecodeStreamPlan {
     /// Accepted frame candidates of any kind (key or inter), in deterministic
     /// source order. This is the per-frame decode order the multi-frame runtime
     /// walks (AV2 § 5.2.1, § 6.18).
+    #[cfg(test)]
     pub fn frame_candidates_all(&self) -> impl Iterator<Item = &DecodePlannedObu> {
         self.obus.iter().filter(|obu| obu.role.is_frame_candidate())
     }
@@ -620,12 +618,6 @@ impl DecodeUnsupportedStructure {
         UNSUPPORTED_FEATURE_RULE_ID
     }
 
-    /// Decoder support matrix row that owns this unsupported planner result.
-    #[must_use]
-    pub const fn matrix_row(&self) -> &'static str {
-        DECODE_STREAM_STATE_MATRIX_ROW
-    }
-
     /// Feature ID that owns this unsupported planner result.
     #[must_use]
     pub const fn feature_id(&self) -> &'static str {
@@ -1008,11 +1000,14 @@ fn classify_obu(
         | ObuType::RegularTip
         | ObuType::BridgeFrame
         | ObuType::RasFrame => Ok(DecodePlannedObuRole::InterFrameCandidate),
-        ObuType::OperatingPointSet if header.extended_layer_id == GLOBAL_XLAYER_ID => {
+        ObuType::OperatingPointSet | ObuType::LayerConfigurationRecord
+            if header.extended_layer_id == GLOBAL_XLAYER_ID =>
+        {
             Ok(DecodePlannedObuRole::Global)
         }
         ObuType::SequenceHeader
         | ObuType::OperatingPointSet
+        | ObuType::LayerConfigurationRecord
         | ObuType::MultiFrameHeader
         | ObuType::MetadataShort
         | ObuType::MetadataGroup
@@ -1020,7 +1015,7 @@ fn classify_obu(
         | ObuType::QuantizationMatrix
         | ObuType::FilmGrain
         | ObuType::ContentInterpretation => Ok(DecodePlannedObuRole::SelectedLayerState),
-        ObuType::Msdo | ObuType::LayerConfigurationRecord | ObuType::AtlasSegment => unsupported(
+        ObuType::Msdo | ObuType::AtlasSegment => unsupported(
             DecodeUnsupportedReason::MultistreamSelection,
             envelope,
             "7.1",

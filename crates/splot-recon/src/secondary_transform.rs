@@ -13,12 +13,13 @@
 //!
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
 
-use std::simd::Simd;
+use fearless_simd::{Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, i16x16, i32x8, u32x8};
+#[cfg(target_arch = "aarch64")]
+use fearless_simd::{SimdCombine as _, i16x8, i32x4};
 
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
 use crate::coefficient_scan::TransformClass;
-use crate::math::round2_signed_i32;
 use crate::{BitDepth, ReconError, Result};
 
 /// AV2 § 3 `IST_4X4_HEIGHT`: rows in the 4x4 secondary-transform matrix.
@@ -61,7 +62,8 @@ const STX_SCAN_ORDER_8X8: [usize; 64] = [
 /// `w >= 8 && h >= 8`), `bwl` (`Min(5, Tx_Width_Log2[txSz])`, i.e. `log2(w)`), and
 /// the output width are derived internally. `n` is the § 7.15.3 input
 /// coefficient count (`IST_4X4_HEIGHT`, `IST_8X8_HEIGHT`, or the reduced
-/// `IST_8X8_HEIGHT_RED`); `kernel` and `sec_tx_type` (`1..=3`) select the § 9.7
+/// `IST_8X8_HEIGHT_RED`), or a block's smaller end of block, past which the
+/// § 7.15.3 inputs are zero; `kernel` and `sec_tx_type` (`1..=3`) select the § 9.7
 /// IST kernel; `primary_scan_class` aligns the IST input support with the
 /// primary transform scan; `transpose` chooses the § 7.15.3 output layout;
 /// `bit_depth` bounds the `Clip3`.
@@ -120,29 +122,18 @@ pub fn secondary_transform_layout(
         n,
         kernel,
         sec_tx_type,
-        primary_scan_class,
         transpose,
-        bit_depth,
+        ..
     } = *params;
-    if !is_valid_side(w) || !is_valid_side(h) {
-        return Err(ReconError::SecondaryTransformInvalidShape { w, h });
-    }
+    let (scan, bound) = validated(params, w.wrapping_mul(h), 0)?;
     let large = w >= 8 && h >= 8;
-    let (set_size, kernel_height, width) = if large {
-        (IST_SET_SIZE_8X8, IST_8X8_HEIGHT, IST_8X8_WIDTH)
-    } else {
-        (IST_SET_SIZE_4X4, IST_4X4_HEIGHT, IST_4X4_WIDTH)
-    };
+    let width = if large { IST_8X8_WIDTH } else { IST_4X4_WIDTH };
     let invalid = || ReconError::SecondaryTransformInvalidParams {
         n,
         kernel,
         sec_tx_type,
     };
-    if n == 0 || n > kernel_height || kernel >= set_size || !(1..STX_TYPES).contains(&sec_tx_type) {
-        return Err(invalid());
-    }
     let stx = sec_tx_type - 1;
-    let scan = crate::coefficient_scan_slice(w, h, primary_scan_class)?;
     let mut inputs = [0u16; IST_8X8_HEIGHT];
     for (slot, &pos) in inputs[..n].iter_mut().zip(scan.iter()) {
         *slot = pos;
@@ -175,7 +166,7 @@ pub fn secondary_transform_layout(
         width,
         outputs,
         kernel,
-        bound: 1i32 << (u32::from(bit_depth.bits()) + 7),
+        bound,
     })
 }
 
@@ -202,47 +193,445 @@ pub fn secondary_inverse_transform(
     dequant: &mut [i32],
     params: &SecondaryInverseTransform,
 ) -> Result<()> {
-    let layout = secondary_transform_layout(params)?;
-    let expected = params.w * params.h;
-    if dequant.len() != expected {
-        return Err(ReconError::SecondaryTransformBufferMismatch {
-            expected,
-            actual: dequant.len(),
-        });
-    }
-    let bound = layout.bound;
-    let mut coefs = [0i32; IST_8X8_HEIGHT];
-    for (slot, &pos) in coefs[..layout.n].iter_mut().zip(&layout.inputs) {
-        *slot = dequant[usize::from(pos)].clamp(-bound, bound - 1);
-    }
-    dequant.fill(0);
-    let mut sums = [0i32; IST_8X8_WIDTH];
-    let coefs = &coefs[..layout.n];
-    if layout.width == IST_8X8_WIDTH {
-        accumulate_kernel_rows(layout.kernel.as_chunks().0, coefs, &mut sums);
-    } else if let Some(sums) = sums.first_chunk_mut::<IST_4X4_WIDTH>() {
-        accumulate_kernel_rows(layout.kernel.as_chunks().0, coefs, sums);
-    }
-    for (&t, &pos) in sums[..layout.width].iter().zip(&layout.outputs) {
-        dequant[usize::from(pos)] = round2_signed_i32(t, 7).clamp(-bound, bound - 1);
-    }
-    Ok(())
+    let coded = dequant.len();
+    secondary_inverse_transform_prefix(dequant, coded, params).map(|_| ())
 }
 
-/// Adds `coef * row` over the kernel rows of the nonzero input coefficients,
-/// keeping the `W <= 48` sums in vector registers.
-fn accumulate_kernel_rows<const W: usize>(rows: &[[i32; W]], coefs: &[i32], sums: &mut [i32; W]) {
-    let mut acc = [Simd::<i32, 4>::splat(0); IST_8X8_WIDTH / 4];
-    for (row, &coef) in rows.iter().zip(coefs) {
-        if coef != 0 {
-            let coef = Simd::splat(coef);
-            for (acc, weights) in acc.iter_mut().zip(row.chunks_exact(4)) {
-                *acc += Simd::from_slice(weights) * coef;
-            }
+/// [`secondary_inverse_transform`] of a block whose samples from `coded` on
+/// are zero and may be unwritten: zeroes only the whole-row prefix that may
+/// be non-zero afterwards, and returns its length.
+pub(crate) fn secondary_inverse_transform_prefix(
+    dequant: &mut [i32],
+    coded: usize,
+    params: &SecondaryInverseTransform,
+) -> Result<usize> {
+    let (scan, bound) = validated(params, dequant.len(), coded)?;
+    let mut coefs = [0i32; IST_8X8_HEIGHT];
+    for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
+        if let Some(&coeff) = dequant[..coded].get(usize::from(pos)) {
+            *slot = coeff.clamp(-bound, bound - 1);
         }
     }
-    for (sums, acc) in sums.chunks_exact_mut(4).zip(acc) {
-        sums.copy_from_slice(&acc.to_array()); // splot-copy-ok: publish four IST sums
+    Ok(transform_into(&coefs, params, dequant, coded))
+}
+
+/// [`secondary_inverse_transform_prefix`] of the § 7.14.4 flat dequantization
+/// of the raster `quant` prefix by `(dc_quant, ac_quant, dq_denom)`: only the
+/// first `n` scan positions feed the transform and every other `Dequant`
+/// entry ends zero, so only those positions are dequantized. Writes the
+/// returned whole-row prefix of `dequant`.
+pub(crate) fn secondary_inverse_transform_quant(
+    quant: &[i32],
+    quantizers: (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    dequant: &mut [i32],
+) -> Result<usize> {
+    let coefs = dequantized_inputs(quant, quantizers, params, dequant.len())?;
+    Ok(transform_into(&coefs, params, dequant, 0))
+}
+
+/// [`secondary_inverse_transform_quant`] of a block at least 16 wide into the
+/// first 8 columns of its rows, row `r` at `rows[8 * r..]`: the output rows
+/// as the 8-wide transform writes them. Returns the written length.
+pub(crate) fn secondary_inverse_transform_quant_rows8(
+    quant: &[i32],
+    quantizers: (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    rows: &mut [i32; 64],
+) -> Result<usize> {
+    if params.w < 16 {
+        return Err(ReconError::SecondaryTransformInvalidShape {
+            w: params.w,
+            h: params.h,
+        });
+    }
+    let coefs = dequantized_inputs(quant, quantizers, params, params.w * params.h)?;
+    let narrow = SecondaryInverseTransform { w: 8, ..*params };
+    Ok(transform_into(&coefs, &narrow, rows, 0))
+}
+
+/// The dequantized inputs of [`secondary_inverse_transform_quant`] into a
+/// `len`-sample `Dequant`.
+fn dequantized_inputs(
+    quant: &[i32],
+    (dc_quant, ac_quant, dq_denom): (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    len: usize,
+) -> Result<[i32; IST_8X8_HEIGHT]> {
+    let (scan, bound) = validated(params, len, quant.len())?;
+    let mut coefs = [0i32; IST_8X8_HEIGHT];
+    for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
+        *slot = quant.get(usize::from(pos)).copied().unwrap_or(0);
+    }
+    if dq_denom.is_power_of_two() && scan.first() == Some(&0) {
+        let shift = dq_denom.trailing_zeros();
+        baseline_simd!(simd => {
+            let used = params.n.div_ceil(8);
+            for (k, chunk) in coefs.as_chunks_mut::<8>().0.iter_mut().take(used).enumerate() {
+                let first = if k == 0 { dc_quant } else { ac_quant };
+                let q2 = u32x8::load_array(simd, [first, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant]);
+                crate::dequant_process::dequant_lanes(simd, i32x8::from_slice(simd, chunk), q2, shift, bound)
+                    .store_slice(chunk);
+            }
+        });
+    } else {
+        for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
+            let q2 = if pos == 0 { dc_quant } else { ac_quant };
+            *slot = crate::dequant_coefficient(*slot, q2, dq_denom, params.bit_depth);
+        }
+    }
+    Ok(coefs)
+}
+
+/// The checked shape, parameters and buffer of `params` with the primary
+/// scan and the § 7.15.3 clamp bound.
+fn validated(
+    params: &SecondaryInverseTransform,
+    len: usize,
+    coded: usize,
+) -> Result<(&'static [u16], i32)> {
+    let SecondaryInverseTransform {
+        w,
+        h,
+        n,
+        kernel,
+        sec_tx_type,
+        primary_scan_class,
+        bit_depth,
+        ..
+    } = *params;
+    if !is_valid_side(w) || !is_valid_side(h) {
+        return Err(ReconError::SecondaryTransformInvalidShape { w, h });
+    }
+    let (set_size, kernel_height) = if w >= 8 && h >= 8 {
+        (IST_SET_SIZE_8X8, IST_8X8_HEIGHT)
+    } else {
+        (IST_SET_SIZE_4X4, IST_4X4_HEIGHT)
+    };
+    if n == 0 || n > kernel_height || kernel >= set_size || !(1..STX_TYPES).contains(&sec_tx_type) {
+        return Err(ReconError::SecondaryTransformInvalidParams {
+            n,
+            kernel,
+            sec_tx_type,
+        });
+    }
+    let scan = crate::coefficient_scan_slice(w, h, primary_scan_class)?;
+    if len != w * h || coded > len {
+        return Err(ReconError::SecondaryTransformBufferMismatch {
+            expected: w * h,
+            actual: len,
+        });
+    }
+    Ok((scan, 1i32 << (u32::from(bit_depth.bits()) + 7)))
+}
+
+/// Runs the kernel over the gathered `coefs` and writes `Dequant`: zero over
+/// its first `coded` entries and the output rows, with the outputs scattered
+/// into the top-left sub-block. Returns the written whole-row prefix.
+/// Adding 32768 maps the coefficients that fit in `i16` to `0..=65535`.
+fn transform_into(
+    coefs: &[i32; IST_8X8_HEIGHT],
+    params: &SecondaryInverseTransform,
+    dequant: &mut [i32],
+    coded: usize,
+) -> usize {
+    let SecondaryInverseTransform {
+        w,
+        h,
+        n,
+        kernel,
+        sec_tx_type,
+        transpose,
+        bit_depth,
+        ..
+    } = *params;
+    let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
+    let expected = w * h;
+    let large = w >= 8 && h >= 8;
+    let output_rows = if large { 8 } else { 4 };
+    let len = coded
+        .max((output_rows * w).min(expected))
+        .min(dequant.len());
+    if !(large && len == 64 && w == 8) {
+        dequant[..len].fill(0);
+    }
+    let wide = bound > 1 << 15
+        && coefs
+            .iter()
+            .fold(0u32, |bits, &coef| bits | coef.wrapping_add(1 << 15) as u32)
+            > u32::from(u16::MAX);
+    let coefs = coefs.get(..n.div_ceil(2) * 2).unwrap_or(&coefs[..]);
+    let stx = sec_tx_type - 1;
+    if large {
+        let kernel = IST_8X8_PACKED
+            .get(usize::from(transpose))
+            .and_then(|sets| sets.get(kernel))
+            .and_then(|set| set.get(stx));
+        baseline_simd!(simd => {
+            let zero = i32x8::splat(simd, 0);
+            let mut sums = [zero; 6];
+            let rows = if let Some(kernel) = kernel {
+                accumulate_kernel_pairs(simd, &kernel.pairs, coefs, wide, &mut sums);
+                raster_rows(simd, kernel.layout, sums.map(|s| clip(simd, s, bound)))
+            } else {
+                [zero; 8]
+            };
+            if let (8, Some(block)) = (w, dequant.first_chunk_mut::<64>()) {
+                for (row, &t) in block.as_chunks_mut::<8>().0.iter_mut().zip(&rows) {
+                    t.store_array(row);
+                }
+            } else {
+                for (r, &t) in rows.iter().enumerate() {
+                    if let Some(row) = dequant.get_mut(r * w..len).and_then(<[i32]>::first_chunk_mut::<8>) {
+                        t.store_array(row);
+                    }
+                }
+            }
+        });
+        return len;
+    }
+    let clipped: [i32; IST_4X4_WIDTH] = baseline_simd!(simd => {
+        let mut sums = [i32x8::splat(simd, 0); IST_4X4_WIDTH / 8];
+        if let Some(pairs) = IST_4X4_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
+            accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
+        }
+        let mut clipped = [0i32; IST_4X4_WIDTH];
+        for (&t, out) in sums.iter().zip(clipped.as_chunks_mut::<8>().0) {
+            clip(simd, t, bound).store_slice(out);
+        }
+        clipped
+    });
+    let mut tile = [0i32; 64];
+    for (&value, &pos) in clipped.iter().zip(&OUTPUTS_4X4[usize::from(transpose)]) {
+        tile[usize::from(pos) & 63] = value;
+    }
+    for (row, tile) in dequant[..len]
+        .chunks_mut(w)
+        .zip(tile.as_chunks::<8>().0)
+        .take(4)
+    {
+        if let (Some(row), Some(tile)) = (row.first_chunk_mut::<4>(), tile.first_chunk::<4>()) {
+            *row = *tile;
+        }
+    }
+    len
+}
+
+/// The § 7.15.3 `Round2Signed(t, 7)` output clamped to `bound`.
+#[inline]
+fn clip<S: Simd>(simd: S, t: i32x8<S>, bound: i32) -> i32x8<S> {
+    ((t + (1 << 6) + (t >> 31)) >> 7)
+        .max(i32x8::splat(simd, -bound))
+        .min(i32x8::splat(simd, bound - 1))
+}
+
+#[derive(Clone, Copy)]
+enum IstRaster {
+    SixRows,
+    SixColumns,
+    TaperedRows,
+}
+
+#[derive(Clone, Copy)]
+struct IstKernel {
+    layout: IstRaster,
+    pairs: [[i16; 2 * IST_8X8_WIDTH]; IST_8X8_HEIGHT / 2],
+}
+
+/// Paired § 9.7 `Ist_8x8_Kernel` weights for the 48 raster-ordered outputs.
+static IST_8X8_PACKED: [[[IstKernel; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2] = {
+    const EMPTY: IstKernel = IstKernel {
+        layout: IstRaster::TaperedRows,
+        pairs: [[0i16; 2 * IST_8X8_WIDTH]; IST_8X8_HEIGHT / 2],
+    };
+    let mut kernels = [[[EMPTY; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2];
+    let mut i = 0;
+    while i < 2 * IST_SET_SIZE_8X8 * (STX_TYPES - 1) {
+        let count = IST_SET_SIZE_8X8 * (STX_TYPES - 1);
+        let transpose = i / count;
+        let set = i % count / (STX_TYPES - 1);
+        let kind = i % (STX_TYPES - 1);
+        let mut outputs = [0; IST_8X8_WIDTH];
+        let mut mask = 0;
+        let mut col = 0;
+        while col < outputs.len() {
+            let mapped = STX_SCAN_MAP[set][kind][col];
+            assert!(mapped >= 0 && (mapped as usize) < STX_SCAN_ORDER_8X8.len());
+            let pos = STX_SCAN_ORDER_8X8[mapped as usize];
+            let pos = if transpose == 0 {
+                pos
+            } else {
+                (pos % 8) * 8 + pos / 8
+            };
+            outputs[col] = pos;
+            mask |= 1u64 << pos;
+            col += 1;
+        }
+        let layout = if mask == 0x0000_ffff_ffff_ffff {
+            IstRaster::SixRows
+        } else if mask == 0x3f3f_3f3f_3f3f_3f3f {
+            IstRaster::SixColumns
+        } else {
+            assert!(mask == 0x030f_3f3f_7f7f_ffff);
+            IstRaster::TaperedRows
+        };
+        kernels[transpose][set][kind].layout = layout;
+        col = 0;
+        while col < outputs.len() {
+            let rank = (mask & ((1u64 << outputs[col]) - 1)).count_ones() as usize;
+            let mut row = 0;
+            while row < IST_8X8_HEIGHT {
+                let weight = IST_8X8_KERNEL[set][kind][row][col];
+                assert!(weight == weight as i16 as i32);
+                kernels[transpose][set][kind].pairs[row / 2][2 * rank + row % 2] = weight as i16;
+                row += 1;
+            }
+            col += 1;
+        }
+        i += 1;
+    }
+    kernels
+};
+
+/// Fills the unused raster positions of the § 7.15.3 output with zeros.
+fn raster_rows<S: Simd>(
+    simd: S,
+    layout: IstRaster,
+    [sum0, sum1, sum2, sum3, sum4, sum5]: [i32x8<S>; 6],
+) -> [i32x8<S>; 8] {
+    let zero = i32x8::splat(simd, 0);
+    let mask6 = i32x8::load_array(simd, [-1, -1, -1, -1, -1, -1, 0, 0]);
+    match layout {
+        IstRaster::SixRows => [sum0, sum1, sum2, sum3, sum4, sum5, zero, zero],
+        IstRaster::SixColumns => [
+            sum0 & mask6,
+            simd.slide_i32x8::<6>(sum0, sum1) & mask6,
+            simd.slide_i32x8::<4>(sum1, sum2) & mask6,
+            simd.slide_i32x8::<2>(sum2, sum3) & mask6,
+            sum3 & mask6,
+            simd.slide_i32x8::<6>(sum3, sum4) & mask6,
+            simd.slide_i32x8::<4>(sum4, sum5) & mask6,
+            simd.slide_i32x8::<2>(sum5, zero) & mask6,
+        ],
+        IstRaster::TaperedRows => {
+            let mask7 = i32x8::load_array(simd, [-1, -1, -1, -1, -1, -1, -1, 0]);
+            let mask4 = i32x8::load_array(simd, [-1, -1, -1, -1, 0, 0, 0, 0]);
+            [
+                sum0,
+                sum1,
+                sum2 & mask7,
+                simd.slide_i32x8::<7>(sum2, sum3) & mask7,
+                simd.slide_i32x8::<6>(sum3, sum4) & mask6,
+                simd.slide_i32x8::<4>(sum4, sum5) & mask6,
+                simd.slide_i32x8::<2>(sum5, zero) & mask4,
+                simd.slide_i32x8::<6>(sum5, zero),
+            ]
+        }
+    }
+}
+
+/// The raster positions of `Ist_4x4_Kernel`, from `Stx_Scan_Order_4x4[i]`
+/// (`y * 4 + x`).
+static OUTPUTS_4X4: [[u8; IST_4X4_WIDTH]; 2] = {
+    let mut out = [[0u8; IST_4X4_WIDTH]; 2];
+    let mut i = 0;
+    while i < IST_4X4_WIDTH {
+        let (y, x) = (STX_SCAN_ORDER_4X4[i] / 4, STX_SCAN_ORDER_4X4[i] % 4);
+        out[0][i] = (y * 8 + x) as u8;
+        out[1][i] = (x * 8 + y) as u8;
+        i += 1;
+    }
+    out
+};
+
+/// The § 9.7 `Ist_4x4_Kernel` as interleaved `i16` pairs: entry
+/// `[q][2 * i + r]` is the weight of output `i` in kernel row `2 * q + r`.
+static IST_4X4_PAIRS: [[[[i16; 2 * IST_4X4_WIDTH]; IST_4X4_HEIGHT / 2]; STX_TYPES - 1];
+    IST_SET_SIZE_4X4] = pair_kernels(&IST_4X4_KERNEL);
+
+const fn pair_kernels<
+    const W: usize,
+    const H: usize,
+    const T: usize,
+    const S: usize,
+    const W2: usize,
+    const H2: usize,
+>(
+    kernels: &[[[[i32; W]; H]; T]; S],
+) -> [[[[i16; W2]; H2]; T]; S] {
+    assert!(W2 == 2 * W && 2 * H2 == H);
+    let mut out = [[[[0i16; W2]; H2]; T]; S];
+    let mut index = 0;
+    while index < S * T * H * W {
+        let (set, rest) = (index / (T * H * W), index % (T * H * W));
+        let (kind, rest) = (rest / (H * W), rest % (H * W));
+        let (row, col) = (rest / W, rest % W);
+        let weight = kernels[set][kind][row][col];
+        assert!(weight == weight as i16 as i32);
+        out[set][kind][row / 2][2 * col + row % 2] = weight as i16;
+        index += 1;
+    }
+    out
+}
+
+/// Adds `coef * row` over the kernel rows of the nonzero input coefficients
+/// (an even count, zero padded) as `pmaddwd` pairs of adjacent rows, the sums
+/// in registers; NEON keeps 32 unpaired `smlal2` sums per pass and pairs them.
+///
+/// A coefficient inside `i16` (every 8-bit one) is one multiply-add operand;
+/// a `wide` coefficient `c` splits into `a = c >> 8` and `b = c & 255`, both
+/// inside `i16`, and the row sum takes `256 * sum(k * a) + sum(k * b)`, the
+/// same `i32` value.
+#[inline]
+fn accumulate_kernel_pairs<S: Simd, const W2: usize, const N: usize>(
+    simd: S,
+    pairs: &[[i16; W2]],
+    coefs: &[i32],
+    wide: bool,
+    sums: &mut [i32x8<S>; N],
+) {
+    let operand =
+        |a: i32, b: i32| i32x8::splat(simd, (a & 0xffff) | (b << 16)).bitcast::<i16x16<S>>();
+    #[cfg(target_arch = "aarch64")]
+    if !wide {
+        for (pass, out) in sums.chunks_mut(4).enumerate() {
+            let mut acc = [i32x4::splat(simd, 0); 16];
+            for (pair, &[a, b]) in pairs.iter().zip(coefs.as_chunks::<2>().0) {
+                if a | b == 0 {
+                    continue;
+                }
+                let op = i16x8::splat(simd, a as i16).zip_low(i16x8::splat(simd, b as i16));
+                let chunks = pair.get(64 * pass..).unwrap_or_default().as_chunks::<8>().0;
+                for (chunk, acc) in chunks.iter().zip(acc.as_chunks_mut::<2>().0) {
+                    let (low, high) = i16x8::from_slice(simd, chunk).widening_mul(op);
+                    acc[0] += low;
+                    acc[1] += high;
+                }
+            }
+            for (sum, [a, b, c, d]) in out.iter_mut().zip(acc.as_chunks::<4>().0) {
+                let pair_sums = |x: i32x4<S>, y| x.unzip_low(y) + x.unzip_high(y);
+                *sum = pair_sums(*a, *b).combine(pair_sums(*c, *d));
+            }
+        }
+        return;
+    }
+    for (pair, &[a, b]) in pairs.iter().zip(coefs.as_chunks::<2>().0) {
+        if a | b == 0 {
+            continue;
+        }
+        let (high, low) = if wide {
+            (operand(a >> 8, b >> 8), operand(a & 0xff, b & 0xff))
+        } else {
+            (operand(a, b), operand(0, 0))
+        };
+        for (chunk, sum) in pair.as_chunks::<16>().0.iter().zip(sums.iter_mut()) {
+            let weights = i16x16::from_slice(simd, chunk);
+            let mut term = high.pairwise_dot_product(weights);
+            if wide {
+                term = (term << 8) + low.pairwise_dot_product(weights);
+            }
+            *sum += term;
+        }
     }
 }
 
@@ -393,6 +782,39 @@ mod tests {
     fn large_8x8_matches_independent_reference() {
         let base: [i32; 64] = core::array::from_fn(|i| (i as i32 % 9 - 4) * 13);
         assert_matches_reference(base, &params(8, 8, IST_8X8_HEIGHT, 7, 3, false));
+    }
+
+    #[test]
+    fn paired_kernel_rows_match_the_reference_at_both_depths() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 40) as i32 - (1 << 23)
+        };
+        for (bit_depth, range) in [(BitDepth::Eight, 8), (BitDepth::Ten, 6)] {
+            for kernel in 0..IST_SET_SIZE_8X8 {
+                for sec in 1..STX_TYPES {
+                    for transpose in [false, true] {
+                        for shift in [range, range + 3] {
+                            let base: [i32; 64] = core::array::from_fn(|_| next() >> shift);
+                            for n in [IST_8X8_HEIGHT, 20, 7] {
+                                let mut p = params(8, 8, n, kernel, sec, transpose);
+                                p.bit_depth = bit_depth;
+                                assert_matches_reference(base, &p);
+                            }
+                        }
+                    }
+                }
+            }
+            for (kernel, sec) in [(0, 1), (5, 2), (10, 3)] {
+                let small: [i32; 16] = core::array::from_fn(|_| next() >> (range + (next() & 3)));
+                let mut p = params(4, 4, IST_4X4_HEIGHT, kernel, sec, true);
+                p.bit_depth = bit_depth;
+                assert_matches_reference(small, &p);
+            }
+        }
     }
 
     #[test]

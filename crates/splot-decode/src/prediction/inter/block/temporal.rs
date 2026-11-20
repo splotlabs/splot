@@ -9,26 +9,6 @@ use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
 use super::super::{InterReferenceState, MotionFieldHandle, Mv};
 use parking_lot::Mutex;
 
-pub(super) fn block_ref_within_temporal_distance<T: ReconSample>(
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
-    current_order_hint: u32,
-    ref_frame0: i8,
-) -> bool {
-    let Some(hint) = usize::try_from(ref_frame0)
-        .ok()
-        .and_then(|list_ref| ref_frame_idx.get(list_ref))
-        .and_then(|&slot| reference.ref_order_hint.get(slot as usize))
-    else {
-        return false;
-    };
-    let dist = super::super::get_relative_dist(
-        current_order_hint as i32,
-        i32::try_from(*hint).unwrap_or(i32::MAX),
-    );
-    dist.abs() <= 2
-}
-
 fn temporal_ref_order_hint<T: ReconSample>(
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
@@ -77,13 +57,6 @@ pub(super) fn temporal_motion_block<T: ReconSample>(
     )
 }
 
-pub(super) fn commit_temporal_motion_blocks(
-    motion_field: &mut TemporalMotionField,
-    blocks: &[TemporalMotionBlock],
-) {
-    motion_field.record_blocks(blocks);
-}
-
 /// One frame's AV2 § 7.9 motion field while its parse units are still landing.
 ///
 /// A unit writes cells no other unit touches — units are superblock or tile
@@ -96,6 +69,7 @@ pub(super) fn commit_temporal_motion_blocks(
 /// land there, so a frame's motion field can publish at the end of its prepass
 /// instead of at the end of its ordered pixel commit, which is what lets the
 /// next frame's § 7.9 prelude start while this one is still committing.
+#[derive(Debug)]
 pub(super) struct MotionFieldUnits {
     field: Mutex<Option<TemporalMotionField>>,
     owed: AtomicUsize,
@@ -105,6 +79,7 @@ pub(super) struct MotionFieldUnits {
     handle: Option<MotionFieldHandle>,
 }
 
+#[derive(Debug)]
 struct MotionBandUnits {
     owed: AtomicUsize,
 }
@@ -138,6 +113,22 @@ impl MotionFieldUnits {
     pub(super) fn retire(&mut self) {
         self.handle.take();
         self.field.get_mut().take();
+    }
+
+    /// Collects units into `field` with nothing to publish, for a caller that
+    /// takes the field with [`Self::take_field`].
+    pub(super) fn reset(&mut self, field: TemporalMotionField) {
+        self.retire();
+        *self.field.get_mut() = Some(field);
+        self.bands.clear();
+        *self.owed.get_mut() = 0;
+        self.units = 0;
+        self.units_per_row = 0;
+    }
+
+    /// Takes the collected field, or `None` once it has been taken.
+    pub(super) fn take_field(&self) -> Option<TemporalMotionField> {
+        self.locked().take()
     }
 
     pub(super) fn reset_publishing(
@@ -177,7 +168,7 @@ impl MotionFieldUnits {
             return;
         }
         if let Some(field) = self.locked().as_mut() {
-            commit_temporal_motion_blocks(field, records);
+            field.record_blocks(records);
         }
     }
 
@@ -328,12 +319,12 @@ mod tests {
 
         let mut logged = TemporalMotionField::new(2, 2).expect("logged field");
         logged.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
-        commit_temporal_motion_blocks(&mut logged, &[first, second]);
+        logged.record_blocks(&[first, second]);
         assert_eq!(logged, direct);
 
         let mut reversed = TemporalMotionField::new(2, 2).expect("reversed field");
         reversed.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
-        commit_temporal_motion_blocks(&mut reversed, &[second, first]);
+        reversed.record_blocks(&[second, first]);
         assert_ne!(reversed, direct);
     }
 

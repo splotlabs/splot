@@ -8,8 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use splot_decode::DecodeOptions;
-
 mod common;
 use common::{
     conformance_vector, empty_avmenc_ivf, read_dir_names, splot, temp_dir, temp_input, temp_output,
@@ -37,27 +35,6 @@ fn local_decoder_mission_path() -> PathBuf {
                 .map(|home| PathBuf::from(home).join("Documents/SplotLabs/local-decoder-mission.ivf"))
         })
         .expect("set SPLOT_LOCAL_DECODER_MISSION_IVF or HOME for the ignored local decoder mission regression")
-}
-
-/// One temporal unit: a temporal delimiter, then `count - 1` padding OBUs.
-fn one_unit_of_obus(count: usize) -> Vec<u8> {
-    [[0x01, 0x08].as_slice(), &[0x01, 0x64].repeat(count - 1)].concat()
-}
-
-fn default_max_input_bytes() -> u64 {
-    DecodeOptions::default()
-        .limits()
-        .max_input_bytes()
-        .max_value()
-        .expect("default max_input_bytes is finite")
-}
-
-fn default_max_obus() -> u64 {
-    DecodeOptions::default()
-        .limits()
-        .max_obus()
-        .max_value()
-        .expect("default max_obus is finite")
 }
 
 fn decode_hash_json(path: &Path, threads: &str, frame_delay: &str) -> serde_json::Value {
@@ -866,86 +843,6 @@ fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
     assert_eq!(json["unsupported_reason"], "multistream_selection");
     assert_eq!(json["obu_type"], "OBU_MSDO");
     assert_eq!(json["byte_offset"], 1);
-    assert_eq!(
-        std::fs::read(&output).expect("read temporary output sentinel"),
-        original_output
-    );
-}
-
-#[test]
-fn decode_resource_limit_json_mode_reports_limit_values() {
-    let max_obus = default_max_obus();
-    let limit_input = one_unit_of_obus((max_obus + 1).try_into().unwrap());
-    let input = temp_input("av2", &limit_input);
-    let output = temp_output("hashes");
-    let original_output = b"resource-limit output sentinel";
-    std::fs::write(&output, original_output).expect("write temporary output sentinel");
-
-    let out = splot(&[
-        "decode",
-        "--json",
-        "--output-format",
-        "hash",
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stderr.is_empty(), "stderr was not empty");
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/resource-limit");
-    assert_eq!(json["severity"], "Error");
-    assert_eq!(json["spec_section"], "5.2.1");
-    assert_eq!(json["detail_kind"], "resource_limit");
-    assert_eq!(json["limit_name"], "max_obus");
-    assert_eq!(json["limit"], serde_json::json!(max_obus));
-    assert_eq!(json["actual"], serde_json::json!(max_obus + 1));
-    assert_eq!(json["unit"], "count");
-    assert_eq!(json["output_format"], "hash");
-    assert_eq!(
-        std::fs::read(&output).expect("read temporary output sentinel"),
-        original_output
-    );
-}
-
-#[test]
-fn decode_oversized_input_reports_resource_limit_without_touching_output() {
-    let input = temp_path("oversized-input", "av2");
-    let max_input_bytes = default_max_input_bytes();
-    let actual = max_input_bytes
-        .checked_add(1)
-        .expect("default max_input_bytes leaves room for sentinel byte");
-    std::fs::File::create(&input)
-        .expect("create sparse oversized input")
-        .set_len(actual)
-        .expect("size sparse oversized input");
-    let output = temp_output("hashes");
-    let original_output = b"oversized-input output sentinel";
-    std::fs::write(&output, original_output).expect("write temporary output sentinel");
-
-    let out = splot(&[
-        "decode",
-        "--json",
-        "--output-format",
-        "hash",
-        input.to_str().unwrap(),
-        "-o",
-        output.to_str().unwrap(),
-    ]);
-
-    assert_eq!(out.status.code(), Some(1));
-    assert!(out.stderr.is_empty(), "stderr was not empty");
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["rule_id"], "decode/resource-limit");
-    assert_eq!(json["severity"], "Error");
-    assert_eq!(json["spec_section"], "");
-    assert_eq!(json["detail_kind"], "resource_limit");
-    assert_eq!(json["limit_name"], "max_input_bytes");
-    assert_eq!(json["limit"], max_input_bytes);
-    assert_eq!(json["actual"], actual);
-    assert_eq!(json["unit"], "bytes");
-    assert_eq!(json["output_format"], "hash");
     assert_eq!(
         std::fs::read(&output).expect("read temporary output sentinel"),
         original_output

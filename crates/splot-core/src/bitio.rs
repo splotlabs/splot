@@ -10,37 +10,10 @@
 use crate::error::{ByteAlignmentErrorKind, Error, Result};
 use crate::span::{BitOffset, ByteOffset};
 
-/// Arbitrary-width value read by the AV2 `le(n)` descriptor (AV2 v1.0.0 § 4.11.5).
-///
-/// Bytes are stored in the same little-endian order they appear in the bitstream.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LittleEndianValue {
-    bytes: Vec<u8>,
-}
-
-impl LittleEndianValue {
-    /// Creates a little-endian value from raw descriptor bytes.
-    #[must_use]
-    pub fn from_le_bytes(bytes: Vec<u8>) -> Self {
-        Self { bytes }
-    }
-
-    /// Returns the raw little-endian bytes.
-    #[must_use]
-    pub fn as_le_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    /// Returns the number of bytes read by the descriptor.
-    #[must_use]
-    pub fn byte_len(&self) -> usize {
-        self.bytes.len()
-    }
-}
-
 /// Returns the eight bytes at `byte_index` as a big-endian window, reading
 /// bytes past the end of `data` as zero padding.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
 pub(crate) fn be_window(data: &[u8], byte_index: usize) -> u64 {
     if let Some(bytes) = byte_index
         .checked_add(8)
@@ -280,38 +253,6 @@ impl<'a> BitReader<'a> {
         let value = self.read_uvlc()?;
         let half = ((value + 1) >> 1) as i32;
         if value & 1 == 1 { Ok(half) } else { Ok(-half) }
-    }
-
-    /// Reads an arbitrary-width AV2 `le(n)` descriptor (AV2 v1.0.0 § 4.11.5).
-    ///
-    /// # Errors
-    /// Returns [`Error::UnexpectedEof`] if fewer than `n` bytes remain.
-    pub fn read_le(&mut self, n: u32) -> Result<LittleEndianValue> {
-        let mut bytes = Vec::new();
-        for _ in 0..n {
-            bytes.push(self.read_bits_u8(8)?);
-        }
-        Ok(LittleEndianValue::from_le_bytes(bytes))
-    }
-
-    /// Reads an AV2 `le(n)` descriptor and converts it to `u64`.
-    ///
-    /// # Errors
-    /// Returns [`Error::ByteWidthTooLarge`] if `n > 8`, or
-    /// [`Error::UnexpectedEof`] if fewer than `n` bytes remain.
-    pub fn read_le_u64(&mut self, n: u32) -> Result<u64> {
-        if n > 8 {
-            return Err(Error::ByteWidthTooLarge {
-                requested: n,
-                max: 8,
-            });
-        }
-
-        let mut value = 0;
-        for i in 0..n {
-            value |= u64::from(self.read_bits_u8(8)?) << (i * 8);
-        }
-        Ok(value)
     }
 
     /// Reads an AV2 `leb128()` descriptor (AV2 v1.0.0 § 4.11.6).
@@ -652,48 +593,6 @@ mod tests {
     }
 
     #[test]
-    fn read_le_decodes_little_endian_bytes() {
-        let mut reader = BitReader::new(&[0x34, 0x12, 0xAB], ByteOffset::new(0));
-        let first = reader.read_le(2).unwrap();
-        assert_eq!(first.as_le_bytes(), &[0x34, 0x12]);
-        assert_eq!(first.byte_len(), 2);
-
-        let second = reader.read_le(1).unwrap();
-        assert_eq!(second.as_le_bytes(), &[0xAB]);
-
-        let mut u64_reader = BitReader::new(&[0x78, 0x56, 0x34, 0x12], ByteOffset::new(0));
-        assert_eq!(u64_reader.read_le_u64(4).unwrap(), 0x1234_5678);
-    }
-
-    #[test]
-    fn read_le_supports_values_wider_than_u64() {
-        let data = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10];
-        let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let value = reader.read_le(9).unwrap();
-        assert_eq!(value.as_le_bytes(), &data);
-        assert_eq!(value.byte_len(), 9);
-    }
-
-    #[test]
-    fn read_le_u64_rejects_too_many_bytes_before_consuming() {
-        let mut wide = BitReader::new(&[0; 9], ByteOffset::new(0));
-        assert!(matches!(
-            wide.read_le_u64(9),
-            Err(Error::ByteWidthTooLarge {
-                requested: 9,
-                max: 8
-            })
-        ));
-        assert_eq!(wide.byte_offset(), ByteOffset::new(0));
-    }
-
-    #[test]
-    fn read_le_reports_eof() {
-        let mut eof = BitReader::new(&[0x34], ByteOffset::new(0));
-        assert!(matches!(eof.read_le(2), Err(Error::UnexpectedEof { .. })));
-    }
-
-    #[test]
     fn read_leb128_decodes_single_and_multi_byte() {
         let mut zero = BitReader::new(&[0x00], ByteOffset::new(0));
         assert_eq!(zero.read_leb128().unwrap(), 0);
@@ -968,9 +867,6 @@ mod proptests {
 
             let mut leb128_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = leb128_reader.read_leb128();
-
-            let mut le_reader = BitReader::new(&data, ByteOffset::new(0));
-            let _ = le_reader.read_le(n);
 
             let mut ns_reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = ns_reader.read_ns(n);

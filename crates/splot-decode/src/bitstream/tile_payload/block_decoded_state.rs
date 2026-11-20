@@ -21,11 +21,16 @@
 //! [(subBlockMiCol >> subX) + j] = 1`, line 15113) is applied after each
 //! transform block reconstructs so a later sub-block reads the correct sentinel.
 
-use std::collections::TryReserveError;
-
 const MAX_PLANES: usize = 3;
+/// A superblock is at most 64 4x4 cells on each side, so one word holds a row.
+const MAX_CELLS: usize = 64;
 
-#[derive(Debug, Default, Eq, PartialEq)]
+/// `BlockDecoded` for one superblock: bit `x` of `rows[plane][y]` is cell
+/// `(x, y)`. The `y == -1` row and `x == -1` column are not stored: § 5.20.2.3
+/// sets them to the leading `above_len` / `left_len` cells, and no block
+/// writes them. Cells right of the superblock (`x >= sbSize4`) stay 0 for
+/// `y >= 0`, so they need no storage either.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileBlockDecodedState {
     subsampling_x: usize,
     subsampling_y: usize,
@@ -33,64 +38,25 @@ pub(crate) struct TileBlockDecodedState {
     sb_size4: usize,
     mi_col_end: usize,
     mi_row_end: usize,
-    planes: [PlaneGrid; MAX_PLANES],
+    above_len: [usize; MAX_PLANES],
+    left_len: [usize; MAX_PLANES],
+    plane_rows: [usize; MAX_PLANES],
+    rows: [[u64; MAX_CELLS]; MAX_PLANES],
 }
 
-#[derive(Debug, Eq, PartialEq, Default)]
-struct PlaneGrid {
-    width: usize,
-    height: usize,
-    cells: Vec<bool>,
-}
-
-impl Clone for PlaneGrid {
-    fn clone(&self) -> Self {
+impl Default for TileBlockDecodedState {
+    fn default() -> Self {
         Self {
-            width: self.width,
-            height: self.height,
-            cells: self.cells.clone(),
-        }
-    }
-
-    /// Copies into the cells this grid already holds.
-    ///
-    /// The decoder keeps a grid per tile for the life of the stream, so the
-    /// copy the commit reads is written over the previous tile's rather than
-    /// allocating one of its own.
-    fn clone_from(&mut self, source: &Self) {
-        self.width = source.width;
-        self.height = source.height;
-        self.cells.clone_from(&source.cells);
-    }
-}
-
-/// Written by hand so `clone_from` reaches the plane grids' own.
-///
-/// `#[derive(Clone)]` generates only `clone`, leaving `clone_from` to replace
-/// the destination wholesale -- which allocates three plane grids on a
-/// destination that already had them.
-impl Clone for TileBlockDecodedState {
-    fn clone(&self) -> Self {
-        Self {
-            subsampling_x: self.subsampling_x,
-            subsampling_y: self.subsampling_y,
-            num_planes: self.num_planes,
-            sb_size4: self.sb_size4,
-            mi_col_end: self.mi_col_end,
-            mi_row_end: self.mi_row_end,
-            planes: self.planes.clone(),
-        }
-    }
-
-    fn clone_from(&mut self, source: &Self) {
-        self.subsampling_x = source.subsampling_x;
-        self.subsampling_y = source.subsampling_y;
-        self.num_planes = source.num_planes;
-        self.sb_size4 = source.sb_size4;
-        self.mi_col_end = source.mi_col_end;
-        self.mi_row_end = source.mi_row_end;
-        for (plane, source) in self.planes.iter_mut().zip(&source.planes) {
-            plane.clone_from(source);
+            subsampling_x: 0,
+            subsampling_y: 0,
+            num_planes: 0,
+            sb_size4: 0,
+            mi_col_end: 0,
+            mi_row_end: 0,
+            above_len: [0; MAX_PLANES],
+            left_len: [0; MAX_PLANES],
+            plane_rows: [0; MAX_PLANES],
+            rows: [[0; MAX_CELLS]; MAX_PLANES],
         }
     }
 }
@@ -117,7 +83,7 @@ impl TileBlockDecodedState {
         Ok(state)
     }
 
-    /// Lays this state out for another tile, keeping the plane grids.
+    /// Lays this state out for another tile.
     #[inline]
     pub(crate) fn reset(
         &mut self,
@@ -134,6 +100,9 @@ impl TileBlockDecodedState {
         if sb_size4 == 0 {
             return Err(TileBlockDecodedStateError::EmptySuperblock);
         }
+        if sb_size4 > MAX_CELLS {
+            return Err(TileBlockDecodedStateError::Overflow);
+        }
         if subsampling_x > 1 {
             return Err(TileBlockDecodedStateError::InvalidSubsampling {
                 axis: "horizontal",
@@ -146,40 +115,18 @@ impl TileBlockDecodedState {
                 value: subsampling_y,
             });
         }
-        for (plane, grid) in self.planes.iter_mut().enumerate().take(num_planes) {
-            let (sub_x, sub_y) = plane_subsampling(plane, subsampling_x, subsampling_y);
-            let width = (sb_size4
-                .checked_mul(2)
-                .ok_or(TileBlockDecodedStateError::Overflow)?
-                >> sub_x)
-                .checked_add(2)
-                .ok_or(TileBlockDecodedStateError::Overflow)?;
-            let height = (sb_size4 >> sub_y)
-                .checked_add(2)
-                .ok_or(TileBlockDecodedStateError::Overflow)?;
-            let cells_len = width
-                .checked_mul(height)
-                .ok_or(TileBlockDecodedStateError::Overflow)?;
-            let mut cells = core::mem::take(&mut grid.cells);
-            cells.clear();
-            if cells.capacity() < cells_len {
-                cells
-                    .try_reserve_exact(cells_len)
-                    .map_err(|source| TileBlockDecodedStateError::Allocation { source })?;
-            }
-            cells.resize(cells_len, false);
-            *grid = PlaneGrid {
-                width,
-                height,
-                cells,
-            };
+        *self = Self {
+            subsampling_x,
+            subsampling_y,
+            num_planes,
+            sb_size4,
+            mi_col_end,
+            mi_row_end,
+            ..Self::default()
+        };
+        for plane in 0..num_planes {
+            self.plane_rows[plane] = sb_size4 >> self.subsampling(plane).1;
         }
-        self.subsampling_x = subsampling_x;
-        self.subsampling_y = subsampling_y;
-        self.num_planes = num_planes;
-        self.sb_size4 = sb_size4;
-        self.mi_col_end = mi_col_end;
-        self.mi_row_end = mi_row_end;
         Ok(())
     }
 
@@ -194,21 +141,16 @@ impl TileBlockDecodedState {
     #[inline]
     pub(crate) fn clear_superblock(&mut self, r: usize, c: usize) {
         for plane in 0..self.num_planes {
-            let (sub_x, sub_y) = plane_subsampling(plane, self.subsampling_x, self.subsampling_y);
-            let sb_width4 = self.mi_col_end.saturating_sub(c) >> sub_x;
-            let sb_height4 = self.mi_row_end.saturating_sub(r) >> sub_y;
-            let grid = &mut self.planes[plane];
-            grid.cells.fill(false);
-            let top_len = sb_width4.saturating_add(1).min(grid.width);
-            grid.cells[..top_len].fill(true);
-            let left_rows = sb_height4.saturating_add(1).min(grid.height);
-            for y in 1..left_rows {
-                grid.cells[y * grid.width] = true;
-            }
-            grid.cells[(grid.height - 1) * grid.width] = false;
+            let (sub_x, sub_y) = self.subsampling(plane);
+            let rows = self.plane_rows[plane];
+            self.above_len[plane] = (self.mi_col_end.saturating_sub(c) >> sub_x)
+                .min(((2 * self.sb_size4) >> sub_x) + 1);
+            self.left_len[plane] = (self.mi_row_end.saturating_sub(r) >> sub_y).min(rows);
+            self.rows[plane][..rows].fill(0);
         }
     }
 
+    #[inline]
     pub(crate) fn set_block(
         &mut self,
         plane: usize,
@@ -220,22 +162,51 @@ impl TileBlockDecodedState {
         if plane >= self.num_planes {
             return;
         }
-        let step_x4 = step_x4.max(1);
-        let step_y4 = step_y4.max(1);
-        let (sub_x, sub_y) = plane_subsampling(plane, self.subsampling_x, self.subsampling_y);
-        let base_x = sub_block_mi_col >> sub_x;
-        let base_y = sub_block_mi_row >> sub_y;
-        let grid = &mut self.planes[plane];
-        let start_x = base_x.saturating_add(1);
-        let end_x = start_x.saturating_add(step_x4).min(grid.width);
-        let end_y = base_y
-            .saturating_add(step_y4)
-            .saturating_add(1)
-            .min(grid.height);
-        if start_x < end_x {
-            for y in base_y.saturating_add(1)..end_y {
-                let row = y * grid.width;
-                crate::support::fill_mi_run(&mut grid.cells[row + start_x..row + end_x], true);
+        let (sub_x, sub_y) = self.subsampling(plane);
+        let x = sub_block_mi_col >> sub_x;
+        let y = sub_block_mi_row >> sub_y;
+        let width = step_x4.max(1).min(MAX_CELLS.saturating_sub(x));
+        let end_y = (y + step_y4.max(1)).min(self.plane_rows[plane]);
+        if width == 0 || y >= end_y {
+            return;
+        }
+        let mask = (u64::MAX >> (MAX_CELLS - width)) << x;
+        for row in &mut self.rows[plane][y..end_y] {
+            *row |= mask;
+        }
+    }
+
+    /// [`Self::set_block`] of a whole leaf over `planes`, with the chroma
+    /// planes, which share their geometry, written in one pass.
+    #[inline]
+    pub(crate) fn set_leaf(
+        &mut self,
+        planes: core::ops::Range<usize>,
+        sub_block_mi_row: usize,
+        sub_block_mi_col: usize,
+        width4: usize,
+        height4: usize,
+    ) {
+        if planes.start == 0 {
+            self.set_block(0, sub_block_mi_row, sub_block_mi_col, width4, height4);
+        }
+        let chroma = planes.start.max(1)..planes.end.min(self.num_planes);
+        if chroma.is_empty() {
+            return;
+        }
+        let x = sub_block_mi_col >> self.subsampling_x;
+        let y = sub_block_mi_row >> self.subsampling_y;
+        let width = (width4 >> self.subsampling_x)
+            .max(1)
+            .min(MAX_CELLS.saturating_sub(x));
+        let end_y = (y + (height4 >> self.subsampling_y).max(1)).min(self.plane_rows[1]);
+        if width == 0 || y >= end_y {
+            return;
+        }
+        let mask = (u64::MAX >> (MAX_CELLS - width)) << x;
+        for plane in chroma {
+            for row in &mut self.rows[plane][y..end_y] {
+                *row |= mask;
             }
         }
     }
@@ -245,6 +216,8 @@ impl TileBlockDecodedState {
         self.set_block(0, (y >> 2) & sb_mask, (x >> 2) & sb_mask, width4, height4);
     }
 
+    /// § 5.20.7.24 `count_top_right_avail` at superblock cell `(x4, y4)`.
+    #[inline]
     pub(crate) fn count_top_right_avail(
         &self,
         plane: usize,
@@ -252,10 +225,22 @@ impl TileBlockDecodedState {
         y4: usize,
         w4: usize,
     ) -> usize {
-        let row = (y4 as isize) - 1;
-        self.count_decoded_run(plane, w4, |i| ((x4 + w4 + i) as isize, row))
+        if plane >= self.num_planes {
+            return 0;
+        }
+        let start = x4 + w4;
+        let decoded = match y4.checked_sub(1) {
+            None => self.above_len[plane].saturating_sub(start),
+            Some(y) if y < self.plane_rows[plane] && start < MAX_CELLS => {
+                (self.rows[plane][y] >> start).trailing_ones() as usize
+            }
+            Some(_) => 0,
+        };
+        decoded.min(w4)
     }
 
+    /// § 5.20.7.24 `count_bottom_left_avail` at superblock cell `(x4, y4)`.
+    #[inline]
     pub(crate) fn count_bottom_left_avail(
         &self,
         plane: usize,
@@ -263,54 +248,25 @@ impl TileBlockDecodedState {
         y4: usize,
         h4: usize,
     ) -> usize {
-        let col = (x4 as isize) - 1;
-        self.count_decoded_run(plane, h4, |i| (col, (y4 + h4 + i) as isize))
-    }
-
-    fn count_decoded_run(
-        &self,
-        plane: usize,
-        len: usize,
-        mut coord: impl FnMut(usize) -> (isize, isize),
-    ) -> usize {
         if plane >= self.num_planes {
             return 0;
         }
-        let grid = &self.planes[plane];
-        let mut decoded = 0;
-        for i in 0..len {
-            let (x, y) = coord(i);
-            if grid.get(x, y) {
-                decoded = i + 1;
-            } else {
-                break;
-            }
+        let start = y4 + h4;
+        let Some(x) = x4.checked_sub(1) else {
+            return self.left_len[plane].saturating_sub(start).min(h4);
+        };
+        let end = (start + h4).min(self.plane_rows[plane]);
+        if x >= MAX_CELLS || start >= end {
+            return 0;
         }
-        decoded
+        self.rows[plane][start..end]
+            .iter()
+            .take_while(|row| *row >> x & 1 != 0)
+            .count()
     }
 
     pub(crate) const fn sb_size4(&self) -> usize {
         self.sb_size4
-    }
-}
-
-impl PlaneGrid {
-    fn index(&self, x: isize, y: isize) -> Option<usize> {
-        let sx = x.checked_add(1)?;
-        let sy = y.checked_add(1)?;
-        if sx < 0 || sy < 0 {
-            return None;
-        }
-        let sx = sx as usize;
-        let sy = sy as usize;
-        if sx >= self.width || sy >= self.height {
-            return None;
-        }
-        sy.checked_mul(self.width)?.checked_add(sx)
-    }
-
-    fn get(&self, x: isize, y: isize) -> bool {
-        self.index(x, y).is_some_and(|index| self.cells[index])
     }
 }
 
@@ -336,8 +292,6 @@ pub(crate) enum TileBlockDecodedStateError {
     InvalidSubsampling { axis: &'static str, value: usize },
     #[error("BlockDecoded state dimension overflow")]
     Overflow,
-    #[error("BlockDecoded state allocation failed: {source}")]
-    Allocation { source: TryReserveError },
 }
 
 #[cfg(test)]

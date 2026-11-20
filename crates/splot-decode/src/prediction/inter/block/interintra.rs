@@ -10,8 +10,8 @@
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, InterIntraMode, IntraCardinalDirection, IntraDcEdges,
     IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode, PlaneId as ReconPlaneId,
-    ReconError, ReconSample, apply_intra_ibp_dc_rect, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_value,
+    ReconError, ReconSample, predict_intra_cardinal_directional_rect_into,
+    predict_intra_dc_rect_value, predict_intra_ibp_dc_rect_into,
 };
 
 use super::super::{PlacedInterBlock, mc};
@@ -24,7 +24,7 @@ use crate::pipeline::reconstruct::{
 };
 
 fn interintra_cardinal_edge<'a, T: ReconSample>(
-    mode: InterIntraMode,
+    vertical: bool,
     edges: IntraDcEdges<'a, T>,
     len: usize,
     bit_depth: BitDepth,
@@ -43,27 +43,17 @@ fn interintra_cardinal_edge<'a, T: ReconSample>(
                 .map_or_else(|| no_neighbour_left(bit_depth), Ok)
         }
     };
-    match mode {
-        InterIntraMode::Vertical => {
-            if let Some(above) = edges.above_samples() {
-                Ok(above)
-            } else {
-                fallback.clear();
-                fallback.resize(len, sample(true)?);
-                Ok(fallback)
-            }
-        }
-        InterIntraMode::Horizontal => {
-            if let Some(left) = edges.left_samples() {
-                Ok(left)
-            } else {
-                fallback.clear();
-                fallback.resize(len, sample(false)?);
-                Ok(fallback)
-            }
-        }
-        InterIntraMode::Dc | InterIntraMode::Smooth => Ok(&[]),
+    let edge = if vertical {
+        edges.above_samples()
+    } else {
+        edges.left_samples()
+    };
+    if let Some(edge) = edge {
+        return Ok(edge);
     }
+    fallback.clear();
+    fallback.resize(len, sample(vertical)?);
+    Ok(fallback)
 }
 
 fn no_neighbour_above<T: ReconSample>(bit_depth: BitDepth) -> splot_recon::Result<T> {
@@ -151,13 +141,18 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
             continue;
         }
         let (luma_x, luma_y, luma_w, luma_h) = if plane == ReconPlaneId::Y {
-            (placed.luma_x, placed.luma_y, placed.luma_w, placed.luma_h)
+            (
+                placed.luma_x(),
+                placed.luma_y(),
+                placed.luma_w(),
+                placed.luma_h(),
+            )
         } else {
             (
-                placed.chroma_luma_x,
-                placed.chroma_luma_y,
-                placed.chroma_luma_w,
-                placed.chroma_luma_h,
+                placed.chroma_luma_x(),
+                placed.chroma_luma_y(),
+                placed.chroma_luma_w(),
+                placed.chroma_luma_h(),
             )
         };
         let x = luma_x >> sub_x;
@@ -194,40 +189,32 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
         let samples = &mut scratch.samples[sample_start..];
         match mode {
             InterIntraMode::Dc => {
-                let dc = predict_intra_dc_rect_value(bit_depth, size, dc_edges)?;
-                samples.fill(dc);
                 if enable_ibp && !(w == 4 && h == 4) {
-                    apply_intra_ibp_dc_rect(bit_depth, size, dc_edges, samples, w)?;
+                    predict_intra_ibp_dc_rect_into(bit_depth, size, dc_edges, samples, w)?;
+                } else {
+                    samples.fill(predict_intra_dc_rect_value(bit_depth, size, dc_edges)?);
                 }
             }
             InterIntraMode::Vertical | InterIntraMode::Horizontal => {
-                let (direction, edge) = if mode == InterIntraMode::Vertical {
+                let vertical = mode == InterIntraMode::Vertical;
+                let len = if vertical { w } else { h };
+                let edge = interintra_cardinal_edge(
+                    vertical,
+                    dc_edges,
+                    len,
+                    bit_depth,
+                    &mut scratch.fallback_edge,
+                )?;
+                let (direction, prepared) = if vertical {
                     (
                         IntraCardinalDirection::Vertical,
-                        interintra_cardinal_edge(
-                            mode,
-                            dc_edges,
-                            w,
-                            bit_depth,
-                            &mut scratch.fallback_edge,
-                        )?,
+                        IntraDirectionalAngleEdges::above(edge),
                     )
                 } else {
                     (
                         IntraCardinalDirection::Horizontal,
-                        interintra_cardinal_edge(
-                            mode,
-                            dc_edges,
-                            h,
-                            bit_depth,
-                            &mut scratch.fallback_edge,
-                        )?,
+                        IntraDirectionalAngleEdges::left(edge),
                     )
-                };
-                let prepared = if mode == InterIntraMode::Vertical {
-                    IntraDirectionalAngleEdges::above(edge)
-                } else {
-                    IntraDirectionalAngleEdges::left(edge)
                 };
                 predict_intra_cardinal_directional_rect_into(
                     bit_depth, size, direction, prepared, samples, w,

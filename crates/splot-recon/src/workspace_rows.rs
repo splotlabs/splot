@@ -23,8 +23,9 @@
 
 use super::owned_rect::OwnedFrameRectRows;
 use super::{
-    CurrentFramePlane, CurrentFrameWorkspace, IntraPredictionScratch, block_rect,
-    chroma_plane_geometry,
+    CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect, CurrentFrameWorkspace,
+    IntraPredictionScratch, block_rect, chroma_plane_geometry, ensure_rect_in_storage,
+    subsampled_rect,
 };
 use crate::reconstruct::add_block_residual_into_rows;
 use crate::{
@@ -122,21 +123,148 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         })
     }
 
-    /// Moves a band down so it stores the superblock row starting at luma row
-    /// `luma_row`, keeping the row above it.
-    ///
-    /// A workspace that stores every row is left as it is.
+    /// A band over full-width plane rows another owner lends: each plane's
+    /// rows start at plane row `origin_y`, and the band keeps `scratch`.
     ///
     /// # Errors
-    /// Returns [`ReconError`] when the band would move up, which would expose
-    /// rows it no longer holds.
-    pub fn move_band(&mut self, luma_row: usize) -> Result<()> {
-        let subsampling_y = self.info.pixel_format().subsampling_y();
-        self.y.move_band(luma_row.saturating_sub(BAND_EDGE_ROWS))?;
-        for plane in [self.u.as_mut(), self.v.as_mut()].into_iter().flatten() {
-            plane.move_band((luma_row >> subsampling_y).saturating_sub(BAND_EDGE_ROWS))?;
-        }
-        Ok(())
+    /// Returns [`ReconError`] when the planes do not match `info`, or a
+    /// plane's rows are not whole rows inside its storage.
+    pub fn lend_band(
+        info: DecodedFrameInfo,
+        [y, u, v]: [Option<(crate::LentRows<T>, usize)>; 3],
+        scratch: IntraPredictionScratch<T>,
+    ) -> Result<Self> {
+        crate::intra_dc_math::validate_sample_type::<T>(info.bit_depth())?;
+        let lent = |plane, storage_size: PlaneSize, visible_rect, rows: Option<(_, usize)>| {
+            let Some((samples, origin_y)) = rows else {
+                return Err(ReconError::MissingChromaPlane { plane });
+            };
+            let samples: crate::LentRows<T> = samples;
+            let stride = crate::plane_buf::plane_stride::<T>(storage_size.width()).ok_or(
+                ReconError::ArithmeticOverflow {
+                    context: "lent band stride",
+                },
+            )?;
+            let end = origin_y.checked_add(samples.len() / stride);
+            if samples.is_empty()
+                || !samples.len().is_multiple_of(stride)
+                || end.is_none_or(|end| end > storage_size.height())
+            {
+                return Err(ReconError::WorkspaceRectOutOfBounds {
+                    plane,
+                    storage: storage_size,
+                    rect: visible_rect,
+                });
+            }
+            Ok(CurrentFramePlane {
+                plane,
+                storage_size,
+                visible_rect,
+                origin_y,
+                stride,
+                samples: super::PlaneSamples::lent(samples),
+                pool: None,
+            })
+        };
+        let luma_size = info.storage_luma_size();
+        let y = lent(PlaneId::Y, luma_size, info.visible_luma_rect(), y)?;
+        let (u, v) = match chroma_plane_geometry(
+            info.pixel_format(),
+            luma_size,
+            info.visible_luma_rect(),
+        )? {
+            None if u.is_none() && v.is_none() => (None, None),
+            None => return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::U }),
+            Some((size, rect)) => (
+                Some(lent(PlaneId::U, size, rect, u)?),
+                Some(lent(PlaneId::V, size, rect, v)?),
+            ),
+        };
+        Ok(Self {
+            info,
+            y,
+            u,
+            v,
+            intra_prediction_scratch: scratch,
+        })
+    }
+
+    /// The address of the first luma sample of a band [`Self::lend_band`]
+    /// made, or `None` for a workspace that owns its samples.
+    pub fn lent_luma_addr(&self) -> Option<usize> {
+        self.y.samples.lent_addr()
+    }
+}
+
+impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
+    /// The rectangle over full-width plane bands `(samples, stride)` the
+    /// caller holds exclusively: each band holds exactly the plane rows of
+    /// `luma_rect` or of its chroma rectangle.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when a band does not span exactly the rows of
+    /// `luma_rect` or its chroma rectangle, or `luma_rect` is not full width.
+    pub fn from_bands(
+        info: DecodedFrameInfo,
+        luma_rect: PlaneRect,
+        [y, u, v]: [Option<(&'storage mut [T], usize)>; 3],
+    ) -> Result<Self> {
+        let luma = info.storage_luma_size();
+        let chroma = chroma_plane_geometry(info.pixel_format(), luma, info.visible_luma_rect())?
+            .map(|(size, _)| size);
+        let chroma_rect = chroma
+            .map(|size| {
+                let format = info.pixel_format();
+                subsampled_rect(
+                    luma_rect,
+                    format.subsampling_x(),
+                    format.subsampling_y(),
+                    size,
+                )
+            })
+            .transpose()?;
+        let band =
+            |plane, storage_size: PlaneSize, rect: PlaneRect, band: (&'storage mut [T], _)| {
+                let (samples, stride) = band;
+                let fits = rect.x() == 0
+                    && rect.width() == storage_size.width()
+                    && stride >= rect.width()
+                    && rect.height().checked_mul(stride) == Some(samples.len());
+                ensure_rect_in_storage(plane, storage_size, rect)?;
+                fits.then_some(CurrentFramePlaneRect {
+                    plane,
+                    storage_size,
+                    rect,
+                    stride,
+                    samples,
+                })
+                .ok_or(ReconError::WorkspaceRectSurfaceNotABand {
+                    plane,
+                    storage: storage_size,
+                    rect,
+                    settled_rows: rect.y(),
+                })
+            };
+        let missing = |plane| ReconError::WorkspaceRectOutOfBounds {
+            plane,
+            storage: luma,
+            rect: luma_rect,
+        };
+        let y = band(
+            PlaneId::Y,
+            luma,
+            luma_rect,
+            y.ok_or_else(|| missing(PlaneId::Y))?,
+        )?;
+        let (u, v) = match (chroma.zip(chroma_rect), u, v) {
+            (None, None, None) => (None, None),
+            (Some((size, rect)), Some(u), Some(v)) => (
+                Some(band(PlaneId::U, size, rect, u)?),
+                Some(band(PlaneId::V, size, rect, v)?),
+            ),
+            _ => return Err(missing(PlaneId::U)),
+        };
+        Ok(Self { info, y, u, v })
     }
 }
 
@@ -157,7 +285,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         rows: usize,
         mut samples: crate::PlaneBuf<T>,
     ) -> Result<Self> {
-        let stride = crate::plane_stride::<T>(storage_size.width()).ok_or(
+        let stride = crate::plane_buf::plane_stride::<T>(storage_size.width()).ok_or(
             ReconError::ArithmeticOverflow {
                 context: "current-frame band stride",
             },
@@ -184,34 +312,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             visible_rect,
             origin_y: 0,
             stride,
-            samples,
+            samples: super::PlaneSamples::owned(samples),
             pool: None,
         })
-    }
-
-    fn move_band(&mut self, origin_y: usize) -> Result<()> {
-        let stride = self.stride_samples();
-        if self.samples.len() >= stride * self.storage_size.height() {
-            return Ok(());
-        }
-        let Some(skip) = origin_y.checked_sub(self.origin_y) else {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: self.storage_size,
-                rect: PlaneRect::new(0, origin_y, stride, 1)?,
-            });
-        };
-        let skip = skip.saturating_mul(stride);
-        if skip >= self.samples.len() {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: self.storage_size,
-                rect: PlaneRect::new(0, origin_y, stride, 1)?,
-            });
-        }
-        self.samples.copy_within(skip.., 0); // splot-copy-ok: keep the edge rows the next superblock row reads
-        self.origin_y = origin_y;
-        Ok(())
     }
 
     /// The first plane row this plane stores.
@@ -288,6 +391,13 @@ impl<T: ReconSample> CurrentFrameRectRowsMut<'_, T> {
     /// Returns this view's rectangle in global plane coordinates.
     pub const fn rect(&self) -> PlaneRect {
         self.rect
+    }
+
+    /// The rows as one strided slice, `(samples, stride)`, for a predictor that
+    /// writes the block in place; every sample it writes must already lie
+    /// within the active bit depth.
+    pub fn prediction_target(&mut self) -> (&mut [T], usize) {
+        (&mut *self.samples, self.stride_samples)
     }
 
     /// Reconstructs the rectangle from a contiguous block prediction and its
@@ -374,6 +484,222 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     }
 }
 
+/// One block lying wholly inside plane storage, with the stored samples
+/// around it: an intra predictor reads its § 7.13.2 edges straight from the
+/// frame and writes its prediction in place.
+///
+/// Every sample written through [`Self::target`] must lie within the active
+/// bit depth.
+pub struct IntraBlockFrame<'a, T: ReconSample> {
+    samples: &'a mut [T],
+    origin: usize,
+    /// Where the block's first row starts in `samples`.
+    row_start: usize,
+    stride: usize,
+    /// Stored samples of the row above, from the block's first column.
+    above_len: usize,
+    /// Plane rows from the block's first row to the bottom storage edge.
+    rows_below: usize,
+}
+
+impl<T: ReconSample> IntraBlockFrame<'_, T> {
+    /// The stored row above the block from its first column, up to the plane's
+    /// right storage edge; empty in the plane's first row.
+    #[inline]
+    pub fn above_row(&self) -> &[T] {
+        match self.origin.checked_sub(self.stride) {
+            Some(start) if self.above_len > 0 => self
+                .samples
+                .get(start..start + self.above_len)
+                .unwrap_or_default(),
+            _ => &[],
+        }
+    }
+
+    /// Copies the column left of the block from its first row into `out`, up
+    /// to the plane's bottom storage edge, and returns how many samples it
+    /// copied: none in the plane's first column.
+    #[inline]
+    pub fn left_column(&self, out: &mut [T]) -> usize {
+        let stride = self.stride.max(1);
+        let rows = self.samples.get(self.row_start..).unwrap_or_default();
+        let len = out.len().min(self.rows_below).min(rows.len() / stride);
+        let column = (self.origin - self.row_start).wrapping_sub(1);
+        if column >= stride {
+            return 0;
+        }
+        for (slot, row) in out[..len].iter_mut().zip(rows.chunks_exact(stride)) {
+            *slot = row[column];
+        }
+        len
+    }
+
+    /// Plane rows from the block's first row down to the bottom storage edge,
+    /// stored or not.
+    #[inline]
+    pub const fn left_extent(&self) -> usize {
+        self.rows_below
+    }
+
+    /// The sample above and left of the block, when both edges are stored.
+    #[inline]
+    pub fn top_left(&self) -> Option<T> {
+        if self.above_len == 0 || self.origin == self.row_start {
+            return None;
+        }
+        self.samples.get(self.origin - self.stride - 1).copied()
+    }
+
+    /// [`Self::above_row`] beside [`Self::target`], for a prediction that
+    /// reads its above edge straight from the frame while it writes.
+    #[inline]
+    pub fn above_row_and_target(&mut self) -> (&[T], &mut [T], usize) {
+        let (before, target) = self
+            .samples
+            .split_at_mut_checked(self.origin)
+            .unwrap_or_default();
+        let above = match self.origin.checked_sub(self.stride) {
+            Some(start) if self.above_len > 0 => before
+                .get(start..start + self.above_len)
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        (above, target, self.stride)
+    }
+
+    /// The block's first sample onwards and the row stride, for the
+    /// prediction write.
+    #[inline]
+    pub fn target(&mut self) -> (&mut [T], usize) {
+        (
+            self.samples.get_mut(self.origin..).unwrap_or_default(),
+            self.stride,
+        )
+    }
+
+    /// Writes the § 7.13.2.10 DC prediction of the block in place, blended by
+    /// § 7.13.2.12 IBP when `ibp`, from the stored left column and above row
+    /// that `[left, above]` make available.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for a sample type that cannot hold `bit_depth`.
+    #[inline]
+    pub fn predict_dc(
+        &mut self,
+        size: IntraRectBlockSize,
+        bit_depth: BitDepth,
+        [left, above]: [bool; 2],
+        ibp: bool,
+    ) -> Result<()> {
+        let rows = self.samples.len().saturating_sub(self.row_start) / self.stride.max(1);
+        let block = crate::intra_ibp_dc::DcFrameBlock {
+            size,
+            bit_depth,
+            origin: self.origin,
+            stride: self.stride,
+            left: left
+                && self.origin != self.row_start
+                && self.rows_below.min(rows) >= size.height(),
+            above: above && self.above_len >= size.width(),
+            ibp,
+        };
+        crate::intra_ibp_dc::predict_dc_in_frame(self.samples, block)
+    }
+}
+
+impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// Runs `predict` over one block and the stored samples around it.
+    ///
+    /// Returns `Ok(None)` without running `predict` when the block overhangs
+    /// plane storage or its above row lies outside a band, so the caller keeps
+    /// its buffered path for those blocks.
+    ///
+    /// # Errors
+    /// Returns the caller's error type for an absent plane, a block origin
+    /// outside plane storage, or any failure `predict` raises.
+    #[inline]
+    pub fn with_intra_block_frame<R, E>(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        predict: impl FnOnce(&mut IntraBlockFrame<'_, T>) -> core::result::Result<R, E>,
+    ) -> core::result::Result<Option<R>, E>
+    where
+        E: From<ReconError>,
+    {
+        match IntraBlockFrame::of(self.plane_mut(plane)?, x, y, size)? {
+            Some(mut frame) => predict(&mut frame).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Self::with_intra_block_frame`] over the U and V blocks at the same
+    /// position at once.
+    ///
+    /// # Errors
+    /// Returns the caller's error type for a monochrome workspace, a block
+    /// origin outside plane storage, or any failure `predict` raises.
+    #[inline]
+    pub fn with_intra_chroma_frames<R, E>(
+        &mut self,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        predict: impl FnOnce(&mut [IntraBlockFrame<'_, T>; 2]) -> core::result::Result<R, E>,
+    ) -> core::result::Result<Option<R>, E>
+    where
+        E: From<ReconError>,
+    {
+        let (Some(u), Some(v)) = (self.u.as_mut(), self.v.as_mut()) else {
+            return Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U }.into());
+        };
+        match (
+            IntraBlockFrame::of(u, x, y, size)?,
+            IntraBlockFrame::of(v, x, y, size)?,
+        ) {
+            (Some(u), Some(v)) => predict(&mut [u, v]).map(Some),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
+    /// The block of `target` at `(x, y)`, or `None` when it overhangs plane
+    /// storage or its above row lies outside a band.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: the intra glue folds into its caller"
+    )]
+    #[inline(always)]
+    fn of(
+        target: &'a mut CurrentFramePlane<T>,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<Option<Self>> {
+        let storage = target.storage_size;
+        let (width, height) = (size.width(), size.height());
+        if x + width > storage.width() || y + height > storage.height() {
+            return Ok(None);
+        }
+        let stride = target.stride_samples();
+        let local_y = target.band_row(y, height)?;
+        if y > 0 && local_y == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            origin: local_y * stride + x,
+            row_start: local_y * stride,
+            stride,
+            above_len: if y > 0 { storage.width() - x } else { 0 },
+            rows_below: storage.height() - y,
+            samples: &mut target.samples,
+        }))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -423,63 +749,6 @@ mod tests {
             self.0 ^= self.0 << 17;
             self.0
         }
-    }
-
-    /// A band stores one superblock row and the row above it; a moved band
-    /// keeps that edge row, and every access outside its rows fails closed.
-    #[test]
-    fn band_keeps_the_edge_row_and_refuses_rows_it_does_not_store() {
-        let frame = |height| {
-            DecodedFrameInfo::new(
-                OutputIndex::new(0),
-                BitDepth::Ten,
-                PixelFormat::Yuv420,
-                PlaneSize::new(64, height).unwrap(),
-                PlaneRect::new(0, 0, 64, height).unwrap(),
-            )
-            .unwrap()
-        };
-        let mut band = CurrentFrameWorkspace::<u16>::new_band(frame(256), 64, None).unwrap();
-        band.set_reconstructed_sample(PlaneId::Y, 3, 63, 77)
-            .unwrap();
-        band.set_reconstructed_sample(PlaneId::U, 3, 31, 55)
-            .unwrap();
-        assert!(band.set_reconstructed_sample(PlaneId::Y, 3, 65, 1).is_err());
-        assert!(band.samples(PlaneId::Y).is_err());
-
-        band.move_band(64).unwrap();
-        assert_eq!(band.reconstructed_sample(PlaneId::Y, 3, 63).unwrap(), 77);
-        assert_eq!(band.reconstructed_sample(PlaneId::U, 3, 31).unwrap(), 55);
-        assert!(band.reconstructed_sample(PlaneId::Y, 3, 62).is_err());
-        assert!(band.reconstructed_sample(PlaneId::U, 3, 30).is_err());
-        assert!(band.reconstructed_sample(PlaneId::Y, 3, 128).is_err());
-        let rows = |y, height| PlaneRect::new(0, y, 8, height).unwrap();
-        assert!(band.rect_rows(PlaneId::Y, rows(63, 65)).is_ok());
-        assert!(band.rect_rows(PlaneId::Y, rows(62, 2)).is_err());
-        assert!(band.fill_rect(PlaneId::Y, rows(120, 9), 1).is_err());
-        assert!(band.plane(PlaneId::Y).unwrap().rows(64, 128).is_ok());
-        assert!(band.plane(PlaneId::Y).unwrap().rows(60, 64).is_err());
-        assert!(band.move_band(0).is_err());
-        assert!(band.move_band(256).is_err());
-        assert_eq!(band.reconstructed_sample(PlaneId::Y, 3, 63).unwrap(), 77);
-        assert!(band.as_frame_ref().is_err());
-        assert!(band.as_frame_mut().is_err());
-
-        let mut odd = CurrentFrameWorkspace::<u16>::new_band(frame(64), 1, None).unwrap();
-        odd.move_band(2).unwrap();
-        odd.set_reconstructed_sample(PlaneId::U, 0, 1, 3).unwrap();
-
-        let whole = CurrentFrameWorkspace::<u16>::new_band(frame(64), 64, Some(band)).unwrap();
-        assert!(whole.samples(PlaneId::Y).is_ok());
-        assert!(whole.as_frame_ref().is_ok());
-
-        let mut bottom = CurrentFrameWorkspace::<u16>::new_band(frame(200), 64, None).unwrap();
-        for row in [64, 128, 192] {
-            bottom.move_band(row).unwrap();
-        }
-        assert!(bottom.plane(PlaneId::Y).unwrap().rows(191, 200).is_ok());
-        assert!(bottom.plane(PlaneId::Y).unwrap().rows(200, 201).is_err());
-        assert!(bottom.reconstructed_sample(PlaneId::Y, 0, 200).is_err());
     }
 
     /// The write-through path must reproduce the buffered reference exactly for
@@ -599,5 +868,117 @@ mod tests {
             })
             .unwrap();
         assert_eq!(rect, Some(PlaneRect::new(8, 16, 8, 4).unwrap()));
+    }
+
+    #[test]
+    fn intra_block_frame_reads_stored_edges_and_writes_in_place() {
+        let mut ws = workspace(BitDepth::Eight, 16, 16, 0u8);
+        for y in 0..16 {
+            for x in 0..16 {
+                ws.set_reconstructed_sample(PlaneId::Y, x, y, (x + 16 * y) as u8)
+                    .unwrap();
+            }
+        }
+        let above: Vec<u8> = (4..16).map(|x| x + 48).collect();
+        let read = ws
+            .with_intra_block_frame(PlaneId::Y, 4, 4, block(2, 2), |frame| {
+                assert_eq!(frame.above_row(), &above[..]);
+                let mut left = [0u8; 16];
+                let copied = frame.left_column(&mut left);
+                let (target, stride) = frame.target();
+                target[stride + 1] = 7;
+                Ok::<_, ReconError>((copied, left, frame.top_left(), frame.left_extent()))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.0, 12);
+        assert_eq!(
+            read.1[..12],
+            core::array::from_fn::<u8, 12, _>(|i| (3 + 16 * (i + 4)) as u8)
+        );
+        assert_eq!((read.2, read.3), (Some(51), 12));
+        assert_eq!(ws.reconstructed_sample(PlaneId::Y, 5, 5).unwrap(), 7);
+
+        let corner = ws
+            .with_intra_block_frame(PlaneId::Y, 0, 0, block(2, 2), |frame| {
+                Ok::<_, ReconError>((
+                    frame.above_row().len(),
+                    frame.left_column(&mut [0; 4]),
+                    frame.top_left(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(corner, Some((0, 0, None)));
+        let overhang = ws
+            .with_intra_block_frame(PlaneId::Y, 14, 4, block(2, 2), |_| Ok::<_, ReconError>(()))
+            .unwrap();
+        assert_eq!(overhang, None);
+    }
+
+    fn dc_in_frame_matches_the_edge_kernels<T: ReconSample + PartialEq + core::fmt::Debug>(
+        bit_depth: BitDepth,
+    ) {
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let span = u64::from(bit_depth.max_sample()) + 1;
+        let mut ws = workspace(bit_depth, 136, 136, T::default());
+        for py in 0..136 {
+            for px in 0..136 {
+                let value = T::try_from_u16((rng.next() % span) as u16).unwrap();
+                ws.set_reconstructed_sample(PlaneId::Y, px, py, value)
+                    .unwrap();
+            }
+        }
+        for log2_width in 2..=6u8 {
+            for log2_height in 2..=6u8 {
+                let size = block(log2_width, log2_height);
+                for (x, y) in [(0, 0), (0, 68), (68, 0), (68, 68)] {
+                    for edges in [[false, false], [true, false], [false, true], [true, true]] {
+                        for ibp in [false, true] {
+                            let stored =
+                                ws.intra_dc_edges_for_rect(PlaneId::Y, x, y, size).unwrap();
+                            let dc_edges = crate::IntraDcEdges::new(
+                                stored.left_samples().filter(|_| edges[0]),
+                                stored.above_samples().filter(|_| edges[1]),
+                            );
+                            let mut pred = vec![T::default(); size.sample_count()];
+                            if ibp {
+                                crate::predict_intra_ibp_dc_rect_into(
+                                    bit_depth,
+                                    size,
+                                    dc_edges,
+                                    &mut pred,
+                                    size.width(),
+                                )
+                                .unwrap();
+                            } else {
+                                pred.fill(
+                                    crate::predict_intra_dc_rect_value(bit_depth, size, dc_edges)
+                                        .unwrap(),
+                                );
+                            }
+                            ws.with_intra_block_frame(PlaneId::Y, x, y, size, |frame| {
+                                frame.predict_dc(size, bit_depth, edges, ibp)
+                            })
+                            .unwrap()
+                            .unwrap();
+                            for (i, &value) in pred.iter().enumerate() {
+                                let (px, py) = (x + i % size.width(), y + i / size.width());
+                                assert_eq!(
+                                    ws.reconstructed_sample(PlaneId::Y, px, py).unwrap(),
+                                    value,
+                                    "{size:?} at ({x}, {y}) {edges:?} ibp {ibp}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dc_in_frame_matches_the_edge_kernels_at_both_depths() {
+        dc_in_frame_matches_the_edge_kernels::<u8>(BitDepth::Eight);
+        dc_in_frame_matches_the_edge_kernels::<u16>(BitDepth::Ten);
     }
 }

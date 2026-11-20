@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::PlaneSize;
 use splot_recon::math::{round2_signed, round2_signed_i32};
+use splot_recon::{
+    BitDepth, DecodedFrameInfo, InterpolationFilter, PlaneSize, SubpelPredictParams,
+};
 
 const REF_SCALE_SHIFT: u32 = 14;
 const SUBPEL_BITS: u32 = 4;
@@ -23,8 +25,70 @@ pub(crate) struct PlaneScaling {
 }
 
 impl PlaneScaling {
+    /// The subpel prediction of a `w` x `h` block at this scaling.
+    pub(crate) const fn subpel_params(
+        self,
+        interp: InterpolationFilter,
+        w: usize,
+        h: usize,
+        bit_depth: BitDepth,
+    ) -> SubpelPredictParams {
+        SubpelPredictParams {
+            interp,
+            w,
+            h,
+            start_x: self.start_x,
+            start_y: self.start_y,
+            step_x: self.step_x,
+            step_y: self.step_y,
+            first_x: self.first_x,
+            first_y: self.first_y,
+            last_x: self.last_x,
+            last_y: self.last_y,
+            bit_depth,
+        }
+    }
+
     pub(crate) const fn is_scaled(self) -> bool {
         self.scale_x != 1 << REF_SCALE_SHIFT || self.scale_y != 1 << REF_SCALE_SHIFT
+    }
+
+    #[expect(clippy::inline_always)]
+    #[inline(always)]
+    pub(crate) fn of_reference(
+        reference: DecodedFrameInfo,
+        frame: PlaneSize,
+        sub_x: u32,
+        sub_y: u32,
+    ) -> Self {
+        let coded = reference.coded_luma_size();
+        derive_plane_scaling_from_scale(
+            0,
+            0,
+            0,
+            0,
+            sub_x,
+            sub_y,
+            scale_dimension(coded.width() as i32, frame.width() as i32),
+            scale_dimension(coded.height() as i32, frame.height() as i32),
+            0,
+            0,
+            false,
+        )
+        .with_reference_storage(reference.storage_luma_size(), sub_x, sub_y)
+    }
+
+    /// [`Self::of_reference`] of the luma and the chroma plane class of
+    /// `reference` against a current frame of coded luma size `frame`: the
+    /// § 7.13.3.18 `xScale`, `yScale`, unscaled steps and `useRefArea = 0`
+    /// clip region that stay constant for a whole frame.
+    pub(crate) fn of_reference_planes(reference: DecodedFrameInfo, frame: PlaneSize) -> [Self; 2] {
+        let format = reference.pixel_format();
+        let (sub_x, sub_y) = (format.subsampling_x() as u32, format.subsampling_y() as u32);
+        [
+            Self::of_reference(reference, frame, 0, 0),
+            Self::of_reference(reference, frame, sub_x, sub_y),
+        ]
     }
 
     pub(crate) fn with_reference_storage(
@@ -51,7 +115,8 @@ impl PlaneScaling {
         self.with_mv_precision(plane_x, plane_y, mv_row, mv_col, sub_x, sub_y, true)
     }
 
-    #[inline]
+    #[expect(clippy::inline_always)]
+    #[inline(always)]
     pub(crate) fn with_mv(
         self,
         plane_x: i32,
@@ -120,8 +185,7 @@ pub(crate) fn derive_plane_scaling(
     let scale_x = scale_dimension(reference_width, frame_width);
     let scale_y = scale_dimension(reference_height, frame_height);
     let plane_bound = |reference_dimension: i32, subsampling: u32| {
-        let sample_scale = 1 << subsampling;
-        ((reference_dimension + sample_scale - 1) / sample_scale - 1).max(0)
+        (((reference_dimension + (1 << subsampling) - 1) >> subsampling) - 1).max(0)
     };
     derive_plane_scaling_from_scale(
         plane_x,

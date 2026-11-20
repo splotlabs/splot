@@ -330,6 +330,21 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         })
     }
 
+    /// Both chroma planes' spans of `rect`, or `None` where it is clipped or outside them.
+    pub(super) fn chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [T], usize); 2]> {
+        let (u, v) = (self.u?, self.v?);
+        if clamp_rect_to_storage(PlaneId::U, u.storage_size, rect).ok()? != rect {
+            return None;
+        }
+        u.ensure_rect(rect).ok()?;
+        let (head, tail) = self.samples.split_at_mut_checked(v.start)?;
+        let (x, y, stride) = (rect.x() - u.rect.x(), rect.y() - u.rect.y(), u.rect.width());
+        Some([
+            contiguous_span(head.get_mut(u.start..u.end())?, stride, x, y, rect).ok()?,
+            contiguous_span(tail.get_mut(..v.len)?, stride, x, y, rect).ok()?,
+        ])
+    }
+
     /// Publishes this completed rectangle into its matching frame workspace.
     ///
     /// # Errors

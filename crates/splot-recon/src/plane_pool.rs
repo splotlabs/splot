@@ -103,7 +103,7 @@ mod tests {
     use super::{MIN_POOLED_SAMPLES, PlanePool};
 
     fn frame_sized() -> crate::PlaneBuf<u16> {
-        crate::plane_buf_from(&vec![0; MIN_POOLED_SAMPLES])
+        crate::plane_buf::plane_buf_from(&vec![0; MIN_POOLED_SAMPLES])
     }
 
     #[test]

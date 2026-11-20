@@ -13,11 +13,7 @@ fn recorded_trajectory(
 ) -> Option<Position> {
     let index = temporal_grid_index(state.width8, state.height8, at.0, at.1)?;
     let cells = state.width8 * state.height8;
-    let positions = state
-        .scratch
-        .first()?
-        .positions
-        .get(reference * cells + index)?;
+    let positions = state.scratch.positions.get(reference * cells + index)?;
     if positions.mask & (1 << phase) == 0 {
         return None;
     }

@@ -7,9 +7,11 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
 
 use super::super::super::cdf::FrameCdfSubset;
+use super::super::super::coeff_state::DC_CATEGORY_SHIFT;
 use super::*;
 
-static ABOVE_DC: [u8; 4] = [2, 2, 0, 0];
+/// Context-line bytes with dcCategory 2 (and culLevel 1) in the first two.
+static ABOVE_DC: [u8; 4] = [1 | 2 << DC_CATEGORY_SHIFT, 1 | 2 << DC_CATEGORY_SHIFT, 0, 0];
 static LEFT_DC: [u8; 4] = [0; 4];
 
 fn source_config(

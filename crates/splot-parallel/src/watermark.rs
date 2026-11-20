@@ -5,8 +5,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// A monotonic progress watermark readers poll. Raising it wakes every live
-/// row scheduler, whose frames re-read the value when they claim rows.
+/// A monotonic progress watermark readers poll. Raising it wakes the row
+/// scheduler the publishing thread works for, whose frames re-read the value
+/// when they claim rows.
 ///
 /// A failed producer publishes [`WatermarkCell::FAILED`] so every dependent is
 /// admitted and can observe the producer's failure state.
@@ -38,10 +39,10 @@ impl WatermarkCell {
         self.value.load(Ordering::Acquire)
     }
 
-    /// Raises the watermark and wakes the row schedulers.
+    /// Raises the watermark and wakes the bound row scheduler.
     pub fn publish(&self, value: usize) -> usize {
         if self.value.fetch_max(value, Ordering::AcqRel) < value {
-            crate::rows::wake_all();
+            crate::rows::wake_bound();
         }
         self.current()
     }

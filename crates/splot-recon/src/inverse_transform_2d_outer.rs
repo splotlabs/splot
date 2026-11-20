@@ -21,6 +21,8 @@
 //! `Adjusted_Tx_Size` cap) and the original size as `1 << log2` (the
 //! `Tx_Width` / `Tx_Height` of `txSz`), so no conversion tables are needed.
 
+use fearless_simd::{Simd, SimdBase as _, i32x4};
+
 #[cfg(test)]
 use crate::inverse_transform_2d::inverse_transform_2d;
 use crate::inverse_transform_2d::{
@@ -223,6 +225,25 @@ pub fn inverse_transform_2d_outer(
     dequant: &[i32],
     residual: &mut [i32],
 ) -> Result<()> {
+    inverse_transform_2d_outer_with_scratch(
+        params,
+        dequant,
+        residual,
+        &mut [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+    )
+}
+
+/// [`inverse_transform_2d_outer`] with a caller-supplied 32x32 matrix-transform
+/// scratch block, whose contents need not be initialised.
+///
+/// # Errors
+/// Returns the [`inverse_transform_2d_outer`] errors.
+pub fn inverse_transform_2d_outer_with_scratch(
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+    transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+) -> Result<()> {
     let (adj_w, adj_h, orig_w, orig_h) = transform_dimensions(params)?;
     let adj_pels = adj_w * adj_h;
     let orig_pels = orig_w * orig_h;
@@ -235,13 +256,12 @@ pub fn inverse_transform_2d_outer(
         });
     }
 
-    let mut transform_scratch = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
     if orig_pels == adj_pels {
         return inverse_transform_2d_outer_adjusted_inner(
             params,
             dequant,
             residual,
-            &mut transform_scratch,
+            transform_scratch,
             adj_w,
             adj_h,
         );
@@ -253,7 +273,7 @@ pub fn inverse_transform_2d_outer(
         params,
         dequant,
         adj,
-        &mut transform_scratch,
+        transform_scratch,
         adj_w,
         adj_h,
     )?;
@@ -264,9 +284,7 @@ pub fn inverse_transform_2d_outer(
         if orig_w == adj_w {
             dst.copy_from_slice(src); // splot-copy-ok: § 7.15.4 sample duplication row
         } else {
-            for (pair, &value) in dst.chunks_exact_mut(2).zip(src) {
-                pair.fill(value);
-            }
+            duplicate_columns(src, dst);
         }
     }
     Ok(())
@@ -325,9 +343,12 @@ fn inverse_transform_2d_outer_adjusted_inner(
         let shift = u32::from(adj_pels > 256) + u32::from(adj_pels > 1024);
         let down = 3 - shift; // shift is 0..=2, so down is 1..=3.
         let (coded, zero) = residual.split_at_mut(dequant.len());
-        for (out, &coeff) in coded.iter_mut().zip(dequant.iter()) {
-            *out = coeff >> down;
-        }
+        baseline_simd!(simd => {
+            let (out, _) = coded.as_chunks_mut::<4>();
+            for (out, &coeff) in out.iter_mut().zip(dequant.as_chunks::<4>().0) {
+                *out = (i32x4::load_array(simd, coeff) >> down).into();
+            }
+        });
         zero.fill(0);
     } else {
         let inner = InverseTransform2d {
@@ -375,26 +396,56 @@ fn transform_dimensions(params: &InverseTransform2dOuter) -> Result<(usize, usiz
     ))
 }
 
-/// AV2 § 7.15.4 DPCM cumulative sum over the `w * h` row-major `res` block. Uses
-/// `wrapping_add` so the primitive is total; conformant `Clip3`-bounded residuals
-/// never overflow.
+/// AV2 § 7.15.4 DPCM cumulative sum over the `w * h` row-major `res` block,
+/// `w` a multiple of 4, in wrapping lane adds (so the primitive is total;
+/// conformant `Clip3`-bounded residuals never overflow): a vertical sum adds
+/// each row onto the next, a horizontal one takes each 4-lane group's
+/// prefix sum in two lane shifts and adds the previous group's last sum.
 fn apply_dpcm(res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
-    match direction {
-        DpcmDirection::Vertical => {
-            for i in 1..h {
-                for j in 0..w {
-                    res[i * w + j] = res[i * w + j].wrapping_add(res[(i - 1) * w + j]);
+    baseline_simd!(simd => {
+        let zero = i32x4::splat(simd, 0);
+        let rows = res.chunks_exact_mut(w).take(h);
+        let mut above = None::<&mut [i32]>;
+        for row in rows {
+            let groups = row.as_chunks_mut::<4>().0;
+            match direction {
+                DpcmDirection::Vertical => {
+                    if let Some(above) = &above {
+                        for (group, up) in groups.iter_mut().zip(above.as_chunks::<4>().0) {
+                            *group = (i32x4::load_array(simd, *group) + i32x4::load_array(simd, *up)).into();
+                        }
+                    }
+                }
+                DpcmDirection::Horizontal => {
+                    let mut carry = zero;
+                    for group in groups {
+                        let v = i32x4::load_array(simd, *group);
+                        let v = v + simd.slide_i32x4::<3>(zero, v);
+                        let v = v + simd.slide_i32x4::<2>(zero, v) + carry;
+                        carry = i32x4::splat(simd, v.as_array()[3]);
+                        *group = v.into();
+                    }
                 }
             }
+            above = Some(row);
         }
-        DpcmDirection::Horizontal => {
-            for i in 0..h {
-                for j in 1..w {
-                    res[i * w + j] = res[i * w + j].wrapping_add(res[i * w + j - 1]);
-                }
-            }
+    });
+}
+
+/// The § 7.15.4 sample duplication of one adjusted row `src` (a multiple of
+/// 4 samples) into the twice as wide `dst`.
+pub(crate) fn duplicate_columns(src: &[i32], dst: &mut [i32]) {
+    baseline_simd!(simd => {
+        let dst = dst.as_chunks_mut::<8>().0;
+        for (pair, &src) in dst.iter_mut().zip(src.as_chunks::<4>().0) {
+            let v = i32x4::load_array(simd, src);
+            let low: [i32; 4] = simd.zip_low_i32x4(v, v).into();
+            let high: [i32; 4] = simd.zip_high_i32x4(v, v).into();
+            let (first, second) = pair.split_at_mut(4);
+            first.copy_from_slice(&low); // splot-copy-ok: one duplicated lane group
+            second.copy_from_slice(&high); // splot-copy-ok: one duplicated lane group
         }
-    }
+    });
 }
 
 #[cfg(test)]
@@ -498,6 +549,51 @@ mod tests {
         assert_eq!(residual[0], 8);
         assert_eq!(residual[7], -4);
         assert_eq!(residual[31], 1);
+    }
+
+    /// The lane DPCM sums and the lane duplication match the per-sample
+    /// wrapping reference for every adjusted shape, on random and extreme
+    /// residuals.
+    #[test]
+    fn lane_dpcm_and_duplication_match_the_scalar_reference() {
+        let mut state = 0x0dd_ba11_u64;
+        for (w, h) in [4usize, 8, 16, 32]
+            .into_iter()
+            .flat_map(|w| [4, 8, 16, 32].map(|h| (w, h)))
+        {
+            let block: Vec<i32> = (0..w * h)
+                .map(|i| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    if i % 5 == 0 {
+                        [i32::MAX, i32::MIN][i % 2]
+                    } else {
+                        state as i32 >> 8
+                    }
+                })
+                .collect();
+            for direction in [DpcmDirection::Vertical, DpcmDirection::Horizontal] {
+                let mut expected = block.clone();
+                for i in 0..h {
+                    for j in 0..w {
+                        let prev = match direction {
+                            DpcmDirection::Vertical if i > 0 => expected[(i - 1) * w + j],
+                            DpcmDirection::Horizontal if j > 0 => expected[i * w + j - 1],
+                            _ => 0,
+                        };
+                        expected[i * w + j] = expected[i * w + j].wrapping_add(prev);
+                    }
+                }
+                let mut got = block.clone();
+                apply_dpcm(&mut got, w, h, direction);
+                assert_eq!(got, expected, "{w}x{h} {direction:?}");
+            }
+            let mut wide = vec![0; 2 * w];
+            duplicate_columns(&block[..w], &mut wide);
+            let expected: Vec<i32> = block[..w].iter().flat_map(|&v| [v, v]).collect();
+            assert_eq!(wide, expected, "width {w}");
+        }
     }
 
     #[test]
@@ -1009,3 +1105,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "inverse_transform_2d_outer_add_tests.rs"]
+mod add_tests;

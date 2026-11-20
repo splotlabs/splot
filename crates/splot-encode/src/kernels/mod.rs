@@ -3,11 +3,11 @@
 
 //! Encoder hot kernels behind one dispatch trait.
 //!
-//! Every kernel has a scalar reference ([`ScalarKernels`]) and a `std::simd`
-//! implementation ([`SimdKernels`]). The two give bit-identical results; the
-//! property tests in each submodule assert this over random inputs, block
-//! sizes, and bit depths. Encoder code calls [`kernels`] and never names an
-//! implementation directly.
+//! Every kernel has a scalar reference ([`ScalarKernels`]) and a
+//! `fearless_simd` implementation ([`SimdKernels`]). The two give
+//! bit-identical results; the property tests in each submodule assert this
+//! over random inputs, block sizes, and bit depths. Encoder code calls
+//! [`kernels`] and never names an implementation directly.
 //!
 //! The forward transform and the quantizer are the encoder-side inverses of the
 //! `splot-recon` § 7.15.4 inverse transform and § 7.14.4 dequantizer: their
@@ -31,9 +31,24 @@ pub(crate) mod temporal_filter;
 mod tpl;
 pub(crate) mod wiener;
 
+use fearless_simd::{Bytes as _, Simd, SimdBase as _, SimdCombine as _, SimdWiden as _};
+use fearless_simd::{i32x8, u16x8, u32x8};
 pub(crate) use forward_transform::ForwardTransform2d;
 pub(crate) use quantize::Quantizer;
 use splot_recon::SecondaryTransformLayout;
+
+/// The first eight `u16` samples of `samples` in `u32` lanes.
+#[inline]
+fn load_u16_as_u32<S: Simd>(simd: S, samples: &[u16]) -> u32x8<S> {
+    let (lo, hi) = u16x8::from_slice(simd, &samples[..8]).widen();
+    lo.combine(hi)
+}
+
+/// The first eight `u16` samples of `samples` in `i32` lanes.
+#[inline]
+fn load_u16_as_i32<S: Simd>(simd: S, samples: &[u16]) -> i32x8<S> {
+    load_u16_as_u32(simd, samples).bitcast()
+}
 
 /// An invalid kernel argument.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -345,7 +360,7 @@ pub(crate) trait EncoderKernels: Sync {
 #[cfg(test)]
 pub(crate) struct ScalarKernels;
 
-/// The `std::simd` kernels, bit-identical to [`ScalarKernels`].
+/// The `fearless_simd` kernels, bit-identical to [`ScalarKernels`].
 pub(crate) struct SimdKernels;
 
 /// The kernels the encoder uses.

@@ -5,14 +5,11 @@
 //!
 //! Feature tracking: `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use core::ops::{Deref, DerefMut};
-
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
     IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges,
-    IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId, ReconSample,
-    predict_intra_cardinal_directional_rect_into,
+    IntraRectBlockSize, PlaneId, ReconSample, predict_intra_cardinal_directional_rect_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_into,
@@ -23,45 +20,18 @@ use super::one_sided::{
 };
 use super::sink::{
     IntraEdgeAvailability, build_mrl_luma_prediction, invalid_directional_edge_state,
-    noneighbour_above, noneighbour_corner, noneighbour_left, write_intra_prediction_block,
+    noneighbour_above, noneighbour_corner, noneighbour_left, predict_intra_block,
+    write_intra_prediction_block,
 };
+use super::smooth::fill_edge_from_neighbour;
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
 };
-use crate::pipeline::general_intra::RecycledIntraSamples;
 
 const TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY: usize = 128 + 3 + 4;
 
-struct TwoSidedMiddleIdifEdge<T: ReconSample> {
-    samples: [T; TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
-    len: usize,
-}
-
-impl<T: ReconSample> TwoSidedMiddleIdifEdge<T> {
-    fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
-        if len > TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY {
-            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
-        }
-        Ok(Self {
-            samples: [T::default(); TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
-            len,
-        })
-    }
-}
-
-impl<T: ReconSample> Deref for TwoSidedMiddleIdifEdge<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        &self.samples[..self.len]
-    }
-}
-
-impl<T: ReconSample> DerefMut for TwoSidedMiddleIdifEdge<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.samples[..self.len]
-    }
-}
+type TwoSidedMiddleIdifEdge<T> = super::one_sided::IdifEdge<T, TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY>;
+type MiddleEdge<T> = super::one_sided::IdifEdge<T, 65>;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TwoSidedMiddleEdgeFilters {
@@ -81,13 +51,14 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     qindex: u32,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
-    bit_depth: BitDepth,
     availability: IntraEdgeAvailability,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     if (availability.left && left_samples.is_none())
@@ -105,47 +76,49 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     } else {
         None
     };
-    let (left, above) = build_directional_middle_edges(
+    let (left, above) = build_directional_middle_rect_edges(
         left_samples,
         above_samples,
         above_corner,
         have_left,
         have_above,
         side,
+        side,
         bit_depth,
     )?;
     let angle = middle_directional_angle(mode);
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        side * side,
-        T::default(),
-    )?;
-    if matches!(plane_id, PlaneId::Y) {
-        let (left_idif, above_idif) =
-            extend_directional_middle_idif_edges(&left, &above, bit_depth)?;
-        predict_intra_middle_directional_angle_rect_idif_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-            &mut prediction,
-            side,
-        )?;
+    let idif = if matches!(plane_id, PlaneId::Y) {
+        Some(extend_directional_middle_idif_edges(
+            &left, &above, bit_depth,
+        )?)
     } else {
-        predict_intra_middle_directional_angle_rect_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleEdges::both(&left, &above),
-            &mut prediction,
-            side,
-        )?;
-    }
-    write_intra_prediction_block(
+        None
+    };
+    let predict = |output: &mut [T], stride: usize| {
+        if let Some((left_idif, above_idif)) = &idif {
+            predict_intra_middle_directional_angle_rect_idif_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleIdifEdges::both(left_idif, above_idif),
+                output,
+                stride,
+            )?;
+        } else {
+            predict_intra_middle_directional_angle_rect_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleEdges::both(&left, &above),
+                output,
+                stride,
+            )?;
+        }
+        Ok(())
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -155,6 +128,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         luma_context,
         None,
         bit_depth,
+        predict,
     )
 }
 
@@ -172,32 +146,17 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
-    bit_depth: BitDepth,
     availability: IntraEdgeAvailability,
     filters: TwoSidedMiddleEdgeFilters,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
-    let left_samples = availability.left.then(|| edges.left_samples()).flatten();
-    let above_samples = availability.above.then(|| edges.above_samples()).flatten();
-    if (availability.left && left_samples.is_none())
-        || (availability.above && above_samples.is_none())
-    {
-        return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-
-    let (left_idif, above_idif) = if left_samples.is_some() && above_samples.is_some() {
+    let (left_idif, above_idif) = if availability.left && availability.above && x > 0 && y > 0 {
         let above_row = y
             .checked_sub(1)
             .ok_or_else(invalid_directional_edge_state)?;
@@ -219,6 +178,15 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         })?;
         (left_idif, above_idif)
     } else {
+        let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+        workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
+        let left_samples = availability.left.then(|| edges.left_samples()).flatten();
+        let above_samples = availability.above.then(|| edges.above_samples()).flatten();
+        if (availability.left && left_samples.is_none())
+            || (availability.above && above_samples.is_none())
+        {
+            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
+        }
         let (left, above) = build_directional_middle_rect_edges(
             left_samples,
             above_samples,
@@ -247,31 +215,33 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         };
         (left_idif, above_idif)
     };
-    if matches!(plane_id, PlaneId::Y) {
-        predict_intra_middle_directional_angle_rect_idif_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-            &mut prediction,
-            width,
-        )?;
-    } else {
-        let left = &left_idif[1..height + 2];
-        let above = &above_idif[1..width + 2];
-        predict_intra_middle_directional_angle_rect_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleEdges::both(left, above),
-            &mut prediction,
-            width,
-        )?;
-    }
-    write_intra_prediction_block(
+    let predict = |output: &mut [T], stride: usize| {
+        if matches!(plane_id, PlaneId::Y) {
+            predict_intra_middle_directional_angle_rect_idif_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+                output,
+                stride,
+            )?;
+        } else {
+            let left = &left_idif[1..height + 2];
+            let above = &above_idif[1..width + 2];
+            predict_intra_middle_directional_angle_rect_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleEdges::both(left, above),
+                output,
+                stride,
+            )?;
+        }
+        Ok(())
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -281,6 +251,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         luma_context,
         dpcm,
         bit_depth,
+        predict,
     )
 }
 
@@ -301,8 +272,8 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
@@ -410,20 +381,18 @@ fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
         (false, false) => {
             let corner = noneighbour_corner::<T>(bit_depth);
             (
-                build_two_sided_middle_mrl_idif_edge(width, mrl_index, |logical| {
-                    Ok(if logical < 0 {
-                        corner
-                    } else {
-                        noneighbour_above::<T>(bit_depth)
-                    })
-                })?,
-                build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
-                    Ok(if logical < 0 {
-                        corner
-                    } else {
-                        noneighbour_left::<T>(bit_depth)
-                    })
-                })?,
+                filled_middle_mrl_idif_edge(
+                    width,
+                    mrl_index,
+                    corner,
+                    noneighbour_above::<T>(bit_depth),
+                )?,
+                filled_middle_mrl_idif_edge(
+                    height,
+                    mrl_index,
+                    corner,
+                    noneighbour_left::<T>(bit_depth),
+                )?,
             )
         }
     };
@@ -472,22 +441,24 @@ fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or_else(invalid_directional_edge_state)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, left_col, y)?;
-    let max_y = workspace
-        .plane(PlaneId::Y)?
-        .storage_size()
-        .height()
-        .checked_sub(1)
-        .ok_or_else(invalid_directional_edge_state)?;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
-        if logical < 0 {
-            return Ok(seed);
-        }
-        let logical = logical.unsigned_abs() as usize;
-        let row = y
-            .saturating_add(logical.min(height.saturating_sub(1)))
-            .min(max_y);
-        Ok(workspace.reconstructed_sample(PlaneId::Y, left_col, row)?)
-    })
+    let limit = clamped_limit(workspace, PlaneId::Y, y, height, false)?;
+    build_two_sided_middle_mrl_idif_edge(
+        height,
+        mrl_index,
+        |negative| {
+            negative.fill(seed);
+            Ok(())
+        },
+        |positive| {
+            Ok(gather_column_clamped(
+                workspace,
+                PlaneId::Y,
+                (left_col, y),
+                limit,
+                positive,
+            )?)
+        },
+    )
 }
 
 fn build_above_only_middle_mrl_left_idif_edge<T: ReconSample>(
@@ -503,7 +474,28 @@ fn build_above_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or_else(invalid_directional_edge_state)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, x, above_row)?;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |_| Ok(seed))
+    filled_middle_mrl_idif_edge(height, mrl_index, seed, seed)
+}
+
+/// The last plane position, along the row (`row`) or column, of a `side`-long
+/// edge run from `start` clamped to the plane storage.
+fn clamped_limit<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    start: usize,
+    side: usize,
+    row: bool,
+) -> core::result::Result<usize, GeneralIntraResidualError> {
+    let storage = workspace.plane(plane_id)?.storage_size();
+    let len = if row {
+        storage.width()
+    } else {
+        storage.height()
+    };
+    let max = len
+        .checked_sub(1)
+        .ok_or_else(invalid_directional_edge_state)?;
+    Ok(start.saturating_add(side.saturating_sub(1)).min(max))
 }
 
 fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
@@ -519,28 +511,31 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or_else(invalid_directional_edge_state)?;
-    let max_x = workspace
-        .plane(PlaneId::Y)?
-        .storage_size()
-        .width()
-        .checked_sub(1)
-        .ok_or_else(invalid_directional_edge_state)?;
-    build_two_sided_middle_mrl_idif_edge(width, mrl_index, |logical| {
-        let column = if logical < 0 {
+    let limit = clamped_limit(workspace, PlaneId::Y, x, width, true)?;
+    build_two_sided_middle_mrl_idif_edge(
+        width,
+        mrl_index,
+        |negative| {
             if have_left {
-                let back = logical.unsigned_abs() as usize;
-                x.checked_sub(back)
-                    .ok_or_else(invalid_directional_edge_state)?
+                let first = x
+                    .checked_sub(negative.len())
+                    .ok_or_else(invalid_directional_edge_state)?;
+                gather_row_clamped(workspace, PlaneId::Y, (first, above_row), x - 1, negative)?;
             } else {
-                x
+                negative.fill(workspace.reconstructed_sample(PlaneId::Y, x, above_row)?);
             }
-        } else {
-            let logical = logical.unsigned_abs() as usize;
-            x.saturating_add(logical.min(width.saturating_sub(1)))
-                .min(max_x)
-        };
-        Ok(workspace.reconstructed_sample(PlaneId::Y, column, above_row)?)
-    })
+            Ok(())
+        },
+        |positive| {
+            Ok(gather_row_clamped(
+                workspace,
+                PlaneId::Y,
+                (x, above_row),
+                limit,
+                positive,
+            )?)
+        },
+    )
 }
 
 fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
@@ -555,49 +550,75 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or_else(invalid_directional_edge_state)?;
-    let max_y = workspace
-        .plane(PlaneId::Y)?
-        .storage_size()
-        .height()
-        .checked_sub(1)
-        .ok_or_else(invalid_directional_edge_state)?;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
-        let row = if logical < 0 {
+    let limit = clamped_limit(workspace, PlaneId::Y, y, height, false)?;
+    build_two_sided_middle_mrl_idif_edge(
+        height,
+        mrl_index,
+        |negative| {
+            let above = y
+                .checked_sub(1)
+                .ok_or_else(invalid_directional_edge_state)?;
             if is_sb_boundary {
-                y.checked_sub(1)
-                    .ok_or_else(invalid_directional_edge_state)?
+                negative.fill(workspace.reconstructed_sample(PlaneId::Y, left_col, above)?);
             } else {
-                let back = logical.unsigned_abs() as usize;
-                y.checked_sub(back)
-                    .ok_or_else(invalid_directional_edge_state)?
+                let first = y
+                    .checked_sub(negative.len())
+                    .ok_or_else(invalid_directional_edge_state)?;
+                gather_column_clamped(workspace, PlaneId::Y, (left_col, first), above, negative)?;
             }
-        } else {
-            let logical = logical.unsigned_abs() as usize;
-            y.saturating_add(logical.min(height.saturating_sub(1)))
-                .min(max_y)
-        };
-        Ok(workspace.reconstructed_sample(PlaneId::Y, left_col, row)?)
-    })
+            Ok(())
+        },
+        |positive| {
+            Ok(gather_column_clamped(
+                workspace,
+                PlaneId::Y,
+                (left_col, y),
+                limit,
+                positive,
+            )?)
+        },
+    )
 }
 
+/// An MRL IDIF edge whose negative logical positions hold `negative` and
+/// whose others hold `positive`.
+fn filled_middle_mrl_idif_edge<T: ReconSample>(
+    side: usize,
+    mrl_index: usize,
+    negative: T,
+    positive: T,
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
+    build_two_sided_middle_mrl_idif_edge(
+        side,
+        mrl_index,
+        |run| {
+            run.fill(negative);
+            Ok(())
+        },
+        |run| {
+            run.fill(positive);
+            Ok(())
+        },
+    )
+}
+
+/// The `side + mrlIndex + 4` MRL IDIF edge: `negative` writes logical
+/// `-1 - mrlIndex ..= -1`, `positive` logical `0 ..= side + 1`, and slice index
+/// zero repeats logical `-1 - mrlIndex`.
 fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
     side: usize,
     mrl_index: usize,
-    sample: impl Fn(i32) -> core::result::Result<T, GeneralIntraResidualError>,
+    negative: impl FnOnce(&mut [T]) -> core::result::Result<(), GeneralIntraResidualError>,
+    positive: impl FnOnce(&mut [T]) -> core::result::Result<(), GeneralIntraResidualError>,
 ) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let len = side
         .checked_add(mrl_index)
         .and_then(|v| v.checked_add(4))
         .ok_or_else(invalid_directional_edge_state)?;
-    let mrl = i32::try_from(mrl_index)
-        .map_err(|_| GeneralIntraResidualError::InvalidDirectionalEdgeState)?;
-    let max_logical = i32::try_from(side)
-        .map_err(|_| GeneralIntraResidualError::InvalidDirectionalEdgeState)?
-        + 1;
     let mut edge = TwoSidedMiddleIdifEdge::new(len)?;
-    for (offset, logical) in (-1 - mrl..=max_logical).enumerate() {
-        edge[offset + 1] = sample(logical)?;
-    }
+    let (head, rest) = edge.split_at_mut(2 + mrl_index);
+    negative(&mut head[1..])?;
+    positive(rest)?;
     edge[0] = edge[1];
     Ok(edge)
 }
@@ -636,29 +657,29 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     availability: IntraEdgeAvailability,
-    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let bit_depth = workspace.info().bit_depth();
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
-    let synthesized_edge;
+    let mut synthesized_edge = [T::default(); 128];
     let cardinal_edges = match direction {
         IntraCardinalDirection::Vertical => {
             if let Some(above) = above_samples {
                 IntraDirectionalAngleEdges::above(above)
             } else if let Some(left) = left_samples {
                 let fill = *left.first().unwrap_or(&noneighbour_above::<T>(bit_depth));
-                synthesized_edge = RecycledIntraSamples::filled(width, fill);
-                IntraDirectionalAngleEdges::above(&synthesized_edge)
+                synthesized_edge[..width].fill(fill);
+                IntraDirectionalAngleEdges::above(&synthesized_edge[..width])
             } else {
-                synthesized_edge =
-                    RecycledIntraSamples::filled(width, noneighbour_above::<T>(bit_depth));
-                IntraDirectionalAngleEdges::above(&synthesized_edge)
+                synthesized_edge[..width].fill(noneighbour_above::<T>(bit_depth));
+                IntraDirectionalAngleEdges::above(&synthesized_edge[..width])
             }
         }
         IntraCardinalDirection::Horizontal => {
@@ -666,33 +687,28 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
                 IntraDirectionalAngleEdges::left(left)
             } else if let Some(above) = above_samples {
                 let fill = *above.first().unwrap_or(&noneighbour_left::<T>(bit_depth));
-                synthesized_edge = RecycledIntraSamples::filled(height, fill);
-                IntraDirectionalAngleEdges::left(&synthesized_edge)
+                synthesized_edge[..height].fill(fill);
+                IntraDirectionalAngleEdges::left(&synthesized_edge[..height])
             } else {
-                synthesized_edge =
-                    RecycledIntraSamples::filled(height, noneighbour_left::<T>(bit_depth));
-                IntraDirectionalAngleEdges::left(&synthesized_edge)
+                synthesized_edge[..height].fill(noneighbour_left::<T>(bit_depth));
+                IntraDirectionalAngleEdges::left(&synthesized_edge[..height])
             }
         }
     };
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-    predict_intra_cardinal_directional_rect_into(
-        bit_depth,
-        block_size,
-        direction,
-        cardinal_edges,
-        &mut prediction,
-        width,
-    )?;
-    write_intra_prediction_block(
+    let predict = |output: &mut [T], stride: usize| {
+        predict_intra_cardinal_directional_rect_into(
+            bit_depth,
+            block_size,
+            direction,
+            cardinal_edges,
+            output,
+            stride,
+        )
+        .map_err(Into::into)
+    };
+    predict_intra_block(
         workspace,
         block,
-        prediction,
         plane_id,
         x,
         y,
@@ -702,30 +718,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         luma_context,
         dpcm,
         bit_depth,
-    )
-}
-
-fn build_directional_middle_edges<T: ReconSample>(
-    left_neighbour: Option<&[T]>,
-    above_neighbour: Option<&[T]>,
-    above_corner: Option<T>,
-    have_left: bool,
-    have_above: bool,
-    side: usize,
-    bit_depth: BitDepth,
-) -> core::result::Result<
-    (RecycledIntraSamples<T>, RecycledIntraSamples<T>),
-    GeneralIntraResidualError,
-> {
-    build_directional_middle_rect_edges(
-        left_neighbour,
-        above_neighbour,
-        above_corner,
-        have_left,
-        have_above,
-        side,
-        side,
-        bit_depth,
+        predict,
     )
 }
 
@@ -739,94 +732,41 @@ fn build_directional_middle_rect_edges<T: ReconSample>(
     width: usize,
     height: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<
-    (RecycledIntraSamples<T>, RecycledIntraSamples<T>),
-    GeneralIntraResidualError,
-> {
-    let mut left = RecycledIntraSamples::with_capacity(height + 1);
-    let mut above = RecycledIntraSamples::with_capacity(width + 1);
+) -> core::result::Result<(MiddleEdge<T>, MiddleEdge<T>), GeneralIntraResidualError> {
+    let mut left = MiddleEdge::new(height + 1)?;
+    let mut above = MiddleEdge::new(width + 1)?;
+    let fill_above = noneighbour_above::<T>(bit_depth);
+    let fill_left = noneighbour_left::<T>(bit_depth);
+    let left_samples = left_neighbour.unwrap_or(&[]);
+    let above_samples = above_neighbour.unwrap_or(&[]);
     match (have_left, have_above) {
         (true, true) => {
             let Some(corner) = above_corner else {
                 return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
             };
-            let left_samples = left_neighbour.unwrap_or(&[]);
-            let above_samples = above_neighbour.unwrap_or(&[]);
-            left.push(corner);
-            above.push(corner);
-            for i in 0..height {
-                left.push(sample_or_last(
-                    left_samples,
-                    i,
-                    noneighbour_left::<T>(bit_depth),
-                ));
-            }
-            for i in 0..width {
-                above.push(sample_or_last(
-                    above_samples,
-                    i,
-                    noneighbour_above::<T>(bit_depth),
-                ));
-            }
+            left[0] = corner;
+            above[0] = corner;
+            fill_edge_from_neighbour(left_samples, &mut left[1..], fill_left);
+            fill_edge_from_neighbour(above_samples, &mut above[1..], fill_above);
         }
         (false, true) => {
-            let above_samples = above_neighbour.unwrap_or(&[]);
-            let seed = above_samples
-                .first()
-                .copied()
-                .unwrap_or(noneighbour_above::<T>(bit_depth));
-            left.push(seed);
-            above.push(seed);
-            for _ in 0..height {
-                left.push(seed);
-            }
-            for i in 0..width {
-                above.push(sample_or_last(
-                    above_samples,
-                    i,
-                    noneighbour_above::<T>(bit_depth),
-                ));
-            }
+            left.fill(above_samples.first().copied().unwrap_or(fill_above));
+            above[0] = left[0];
+            fill_edge_from_neighbour(above_samples, &mut above[1..], fill_above);
         }
         (true, false) => {
-            let left_samples = left_neighbour.unwrap_or(&[]);
-            let seed = left_samples
-                .first()
-                .copied()
-                .unwrap_or(noneighbour_left::<T>(bit_depth));
-            left.push(seed);
-            above.push(seed);
-            for i in 0..height {
-                left.push(sample_or_last(
-                    left_samples,
-                    i,
-                    noneighbour_left::<T>(bit_depth),
-                ));
-            }
-            for _ in 0..width {
-                above.push(seed);
-            }
+            above.fill(left_samples.first().copied().unwrap_or(fill_left));
+            left[0] = above[0];
+            fill_edge_from_neighbour(left_samples, &mut left[1..], fill_left);
         }
         (false, false) => {
-            left.push(noneighbour_corner::<T>(bit_depth));
-            above.push(noneighbour_corner::<T>(bit_depth));
-            for _ in 0..height {
-                left.push(noneighbour_left::<T>(bit_depth));
-            }
-            for _ in 0..width {
-                above.push(noneighbour_above::<T>(bit_depth));
-            }
+            left.fill(fill_left);
+            above.fill(fill_above);
+            left[0] = noneighbour_corner::<T>(bit_depth);
+            above[0] = left[0];
         }
     }
     Ok((left, above))
-}
-
-fn sample_or_last<T: ReconSample>(samples: &[T], index: usize, fallback: T) -> T {
-    samples
-        .get(index)
-        .or_else(|| samples.last())
-        .copied()
-        .unwrap_or(fallback)
 }
 
 pub(super) fn middle_directional_angle(

@@ -8,9 +8,13 @@
 //! is exact: `|err * 4| < 2^15`, and a squared `u16` difference fits `u32`
 //! before it widens into `u64` lanes.
 
-use std::simd::Simd;
-use std::simd::cmp::SimdOrd as _;
-use std::simd::num::{SimdInt as _, SimdUint as _};
+use fearless_simd::{
+    Bytes as _, Level, Select as _, Simd, SimdBase as _, SimdCombine as _, SimdWiden as _,
+    dispatch, i16x8, i32x8, u64x4,
+};
+
+use super::distortion::add_squares;
+use super::load_u16_as_i32;
 
 const LANES: usize = 8;
 
@@ -65,30 +69,43 @@ pub(crate) fn scale_sse_simd(
     (shift, max): (u32, u16),
     sums: &mut [u64; 5],
 ) {
+    dispatch!(Level::baseline(), simd => {
+        scale_sse_kernel(simd, (lr, err, src), (shift, max), sums);
+    });
+}
+
+#[inline]
+fn scale_sse_kernel<S: Simd>(
+    simd: S,
+    (lr, err, src): (&[u16], &[i16], &[u16]),
+    (shift, max): (u32, u16),
+    sums: &mut [u64; 5],
+) {
     let len = lr.len().min(err.len()).min(src.len());
     let half = if shift == 0 { 0 } else { 1 << (shift - 1) };
-    let (half, top) = (Simd::<i32, LANES>::splat(half), Simd::splat(i32::from(max)));
-    let mut acc = [Simd::<u64, LANES>::splat(0); 5];
+    let mut acc = [u64x4::splat(simd, 0); 5];
     let mut x = 0;
     while x + LANES <= len {
-        let base = Simd::<u16, LANES>::from_slice(&lr[x..x + LANES]).cast::<i32>();
-        let target = Simd::<u16, LANES>::from_slice(&src[x..x + LANES]).cast::<i32>();
-        let e = Simd::<i16, LANES>::from_slice(&err[x..x + LANES]).cast::<i32>();
-        let square = |sample: Simd<i32, LANES>| {
-            let d = (sample - target).abs().cast::<u32>();
-            (d * d).cast::<u64>()
+        let base = load_u16_as_i32(simd, &lr[x..]);
+        let target = load_u16_as_i32(simd, &src[x..]);
+        let (lo, hi) = i16x8::from_slice(simd, &err[x..x + LANES]).widen();
+        let e = lo.combine(hi);
+        let square = |acc: &mut u64x4<S>, sample: i32x8<S>| {
+            add_squares(acc, (sample - target).abs().bitcast());
         };
-        acc[0] += square(base);
+        square(&mut acc[0], base);
         for scale in 1..=4 {
-            let value = e * Simd::splat(scale);
+            let value = e * scale;
             let rounded = if shift == 0 {
                 value
             } else {
-                let magnitude = (value.abs() + half) >> Simd::splat(shift as i32);
-                value.signum() * magnitude
+                let magnitude = (value.abs() + half) >> shift;
+                value.simd_lt(0).select(-magnitude, magnitude)
             };
-            let sample = (base + rounded).simd_clamp(Simd::splat(0), top);
-            acc[scale as usize] += square(sample);
+            square(
+                &mut acc[scale as usize],
+                (base + rounded).clamp(0, i32::from(max)),
+            );
         }
         x += LANES;
     }

@@ -339,10 +339,6 @@ pub(crate) struct InterSeqView {
     pub frame_width_bits: u32,
     /// `frame_height_bits` (`frame_height_bits_minus_1 + 1`, § 5.4.1).
     pub frame_height_bits: u32,
-    /// `max_frame_width` (§ 5.4.1): the non-override `frame_size()` default dims.
-    pub max_frame_width: u32,
-    /// `max_frame_height` (§ 5.4.1): the non-override `frame_size()` default dims.
-    pub max_frame_height: u32,
     /// The frame `SbSize` for the inter path (`frame_sb_size(false)`, mirror :4317-4329).
     pub sb_size: SuperblockSize,
 }
@@ -359,10 +355,9 @@ pub(crate) struct InterFrameContext {
     pub is_bridge: bool,
     /// `bridge_frame_ref_idx`, when this is a bridge frame.
     pub bridge_frame_ref_idx: Option<u32>,
-    /// `true` when `cur_mfh_id == 0` (the non-override `frame_size()` default dims come
-    /// from the sequence maxima; a `cur_mfh_id > 0` non-override inter size needs the
-    /// resolved MFH defaults this phase does not thread on the inter path).
-    pub cur_mfh_id_is_zero: bool,
+    /// The § 5.18.4.1 non-override `frame_size()` dims, `mfh_frame_width/height_minus_1[
+    /// cur_mfh_id ] + 1`; `None` when a `cur_mfh_id > 0` record is unresolved.
+    pub default_frame_size: Option<FrameSize>,
     /// `OrderHint` (§ 5.18.2), including any extension beyond the coded `OrderHintLsbs`,
     /// threaded into the implicit reference-map ranking (`get_ref_frames()` § 7.7).
     pub order_hint: Option<u32>,
@@ -659,8 +654,8 @@ fn parse_inter_reference_region(
         let w = reader.read_bits(seq.frame_width_bits)?.saturating_add(1);
         let h = reader.read_bits(seq.frame_height_bits)?.saturating_add(1);
         control.frame_size = Some(FrameSize::new(w, h));
-    } else if ctx.cur_mfh_id_is_zero {
-        control.frame_size = Some(FrameSize::new(seq.max_frame_width, seq.max_frame_height));
+    } else if let Some(size) = ctx.default_frame_size {
+        control.frame_size = Some(size);
     } else {
         control.stop = Some(InterStop::UnmodeledDerivation);
         return Ok(());
@@ -962,10 +957,14 @@ fn derive_implicit_ref_map(
     let ref_valid = reference_state.ref_valid?;
     let num_ref_frames = (seq.num_ref_frames as usize).min(NUM_REF_FRAMES);
 
+    let allowed_frames = ctx.ras_long_term_ref_mask.unwrap_or(u32::MAX)
+        & reference_state.allowed_frames.unwrap_or(u32::MAX);
+
     let valid_count = ref_valid
         .iter()
+        .enumerate()
         .take(num_ref_frames)
-        .filter(|v| **v)
+        .filter(|&(i, v)| *v && ((allowed_frames >> i) & 1) != 0)
         .count();
     let current_order_hint = if valid_count <= 1 {
         ctx.order_hint.unwrap_or(0)
@@ -1026,7 +1025,7 @@ fn derive_implicit_ref_map(
         order_hint: i32::try_from(current_order_hint).unwrap_or(i32::MAX),
         obu_mlayer_id: 0,
         obu_tlayer_id: 0,
-        allowed_frames: ctx.ras_long_term_ref_mask.map_or(-1, |mask| mask as i32),
+        allowed_frames: allowed_frames as i32,
         is_bridge: false,
         bridge_frame_ref_idx: 0,
         frame_width,
@@ -1067,8 +1066,6 @@ mod tests {
             allow_frame_max_bvp_drl_bits: false,
             frame_width_bits: 12,
             frame_height_bits: 12,
-            max_frame_width: 4096,
-            max_frame_height: 2304,
             sb_size: SuperblockSize::Block128x128,
         }
     }
@@ -1079,7 +1076,7 @@ mod tests {
             frame_type: FrameType::Inter,
             is_bridge: false,
             bridge_frame_ref_idx: None,
-            cur_mfh_id_is_zero: true,
+            default_frame_size: Some(FrameSize::new(4096, 2304)),
             order_hint: Some(0),
             ras_long_term_ref_mask: None,
         }
@@ -1222,7 +1219,7 @@ mod tests {
             frame_type: FrameType::Inter,
             is_bridge: true,
             bridge_frame_ref_idx: Some(2),
-            cur_mfh_id_is_zero: true,
+            default_frame_size: None,
             order_hint: Some(0),
             ras_long_term_ref_mask: None,
         };
@@ -1391,9 +1388,8 @@ mod tests {
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let mut seq = inter_seq();
         seq.explicit_ref_frame_map = false;
-        seq.max_frame_width = 64;
-        seq.max_frame_height = 64;
-        let ctx = inter_ctx();
+        let mut ctx = inter_ctx();
+        ctx.default_frame_size = Some(FrameSize::new(64, 64));
         let mut ref_valid = [false; NUM_REF_FRAMES];
         ref_valid[0] = true;
         let ref_oh = [0u32; NUM_REF_FRAMES];
@@ -1558,6 +1554,44 @@ mod tests {
         parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.num_total_refs, None);
         assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
+    }
+
+    #[test]
+    fn inter_implicit_map_allowed_frames_filters_disallowed_valid_slot() {
+        let mut seq = inter_seq();
+        seq.explicit_ref_frame_map = false;
+        let ctx = inter_ctx();
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[0] = true;
+        ref_valid[3] = true;
+        let ref_oh = [8u32; NUM_REF_FRAMES];
+        let ref_w = [4096u32; NUM_REF_FRAMES];
+        let ref_h = [2304u32; NUM_REF_FRAMES];
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
+            .with_allowed_frames(Some(1 << 3));
+        let map = derive_implicit_ref_map(&seq, &ctx, &rs, false, None).unwrap();
+        assert_eq!(map.num_total_refs, 1);
+        assert_eq!(map.ref_frame_idx.as_slice(), &[3]);
+    }
+
+    #[test]
+    fn inter_implicit_map_intersects_ras_and_allowed_frames_masks() {
+        let mut seq = inter_seq();
+        seq.explicit_ref_frame_map = false;
+        let mut ctx = inter_ctx();
+        ctx.ras_long_term_ref_mask = Some((1 << 1) | (1 << 2));
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[1] = true;
+        ref_valid[2] = true;
+        ref_valid[4] = true;
+        let ref_oh = [8u32; NUM_REF_FRAMES];
+        let ref_w = [4096u32; NUM_REF_FRAMES];
+        let ref_h = [2304u32; NUM_REF_FRAMES];
+        let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
+            .with_allowed_frames(Some((1 << 2) | (1 << 4)));
+        let map = derive_implicit_ref_map(&seq, &ctx, &rs, false, None).unwrap();
+        assert_eq!(map.num_total_refs, 1);
+        assert_eq!(map.ref_frame_idx.as_slice(), &[2]);
     }
 
     #[test]
