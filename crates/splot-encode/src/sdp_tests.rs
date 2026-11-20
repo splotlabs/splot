@@ -27,7 +27,8 @@ const QP: u16 = 160;
 
 /// Codes key frame, inter frame, key frame of panning content with SDP and
 /// asymmetric superblock qindex offsets on `threads` threads; returns the
-/// units, the encoder recon and the frame filter tools coded.
+/// units, the encoder recon and the frame filter tools coded. Key frames
+/// keep the 8xN search, whose streams code every tool at [`QP`].
 fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
     let (width, height, bit_depth, preset, chroma, (cols_log2, rows_log2)) = case;
     let mut config = config(width, height, bit_depth, preset, QP);
@@ -38,9 +39,12 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
         rows_log2,
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
+    let params = config.preset.params();
+    let kinds = params.min_block_log2.values();
     let preset = PresetParams {
         sdp: true,
-        ..*config.preset.params()
+        min_block_log2: Levels::by_frame([3, kinds[9], kinds[18], kinds[27]]),
+        ..*params
     };
     let mut coder = IntraFrameCoder::with_preset(&config, &preset).unwrap();
     assert!(coder.sequence.partition.unwrap().enable_sdp);
