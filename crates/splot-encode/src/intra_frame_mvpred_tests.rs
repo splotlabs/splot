@@ -94,7 +94,11 @@ fn temporal_candidates_reach_the_first_leaf_of_a_frame() {
             coder.encode_frame(&source, &plan, 110).unwrap();
         }
         let plan = plans.next().unwrap();
-        let tools_of = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
+        let tools_of = crate::gop::frame_tools(
+            (&coder.preset, crate::preset::PresetContext::default()),
+            coder.tiles,
+            110,
+        );
         let core = plan
             .header(
                 &coder.view,
@@ -138,7 +142,11 @@ fn rollback_restores_the_reference_mv_bank() {
         )
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
+    let tools = crate::gop::frame_tools(
+        (&coder.preset, crate::preset::PresetContext::default()),
+        coder.tiles,
+        110,
+    );
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, 110, &filters, tools)

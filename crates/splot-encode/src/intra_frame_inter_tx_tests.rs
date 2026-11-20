@@ -195,7 +195,13 @@ fn an_uneven_split_leaf_ends_as_a_second_trial_of_its_choice() {
         };
         let leaf = syntax.leaf(node)?;
         assert!(syntax.luma_tx_partitions(&leaf)?.len() > 1);
-        let motion = MotionSearch::new(syntax, residual.source, preset, lambda, Vec::new())?;
+        let motion = MotionSearch::new(
+            syntax,
+            residual.source,
+            (preset, crate::preset::PresetContext::default()),
+            lambda,
+            Vec::new(),
+        )?;
         let start = syntax.snapshot(node)?;
         let evaluate = |syntax: &mut IntraTileSyntax, residual: &mut SourceResidualCoder| {
             let mut trial = TrialCoder::new(syntax, residual, preset, lambda, motion.as_ref());
@@ -257,7 +263,13 @@ fn a_repeat_leaf_codes_its_searched_choice_or_searches_again() {
         let (first, second) = (syntax.leaf(via_horz)?, syntax.leaf(via_vert)?);
         assert!(first.same_block(&second));
         assert!(!first.same_block(&syntax.leaf(top_left(syntax, root, 16))?));
-        let motion = MotionSearch::new(syntax, residual.source, preset, lambda, Vec::new())?;
+        let motion = MotionSearch::new(
+            syntax,
+            residual.source,
+            (preset, crate::preset::PresetContext::default()),
+            lambda,
+            Vec::new(),
+        )?;
         let start = syntax.snapshot(via_horz)?;
         let mut trial = TrialCoder::new(syntax, residual, preset, lambda, motion.as_ref());
         let (_, searched) = trial.evaluate_leaf(via_horz)?;

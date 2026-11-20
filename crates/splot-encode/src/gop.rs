@@ -54,7 +54,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
 
 use crate::error::{Error, Result};
-use crate::preset::PresetParams;
+use crate::preset::{PresetContext, PresetParams};
 use crate::rate_control::FrameType;
 
 /// `NumRefFrames` of the encoder's sequence header (`explicit_num_ref_frames = 0`).
@@ -371,15 +371,19 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
     frame.unwrap_or_else(|| unreachable!("IPPP codes every input frame"))
 }
 
-/// The frame-level tool choices of `preset` for a frame at `qindex`: the
+/// The frame-level tool choices of `preset` in `context` for a frame at `qindex`: the
 /// transform parameters, whether inter frames code compound and skip-mode
 /// blocks, whether their motion vectors are eighth-pel, whether they take
 /// temporal motion vectors, whether they code switchable interpolation
 /// filters, their TIP weight, whether they force integer vectors, their
 /// `opfl_refine_type`, and the `tiles`.
-pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u32) -> FrameTools {
+pub(crate) fn frame_tools(
+    (preset, context): (&PresetParams, PresetContext),
+    tiles: UniformTiles,
+    qindex: u32,
+) -> FrameTools {
     (
-        crate::tx_choice::key_frame_tx_params(preset),
+        crate::tx_choice::key_frame_tx_params(preset, context),
         preset.compound_candidates > 0,
         (
             !preset.integer_mv

@@ -9,16 +9,19 @@ use splot_core::headers::frame::{KeyFrameTxParams, TxMode};
 use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock, recon_params, tx_log2};
 use splot_recon::{BitDepth, PlaneId, reconstruct_transform_block_residual_with_secondary};
 
-use crate::preset::PresetParams;
+use crate::preset::{PresetContext, PresetParams};
 use crate::tile_writer::{Result, coeffs::adjusted_log2};
 
-/// The frame-header transform choices of `preset`: `TX_MODE_SELECT` when it
+/// The frame-header transform choices of `preset` in `context`: `TX_MODE_SELECT` when it
 /// searches transform partitions, and every intra type (`reduced_tx_set = 0`)
 /// when it searches types; otherwise every luma block infers `DCT_DCT`. Key
 /// frames code `allow_intrabc` with the preset's IntraBC search.
-pub(crate) fn key_frame_tx_params(preset: &PresetParams) -> KeyFrameTxParams {
+pub(crate) fn key_frame_tx_params(
+    preset: &PresetParams,
+    context: PresetContext,
+) -> KeyFrameTxParams {
     KeyFrameTxParams {
-        tx_mode: if preset.tx_partition_search {
+        tx_mode: if preset.tx_partition_search.at(context) {
             TxMode::Select
         } else {
             TxMode::Largest
