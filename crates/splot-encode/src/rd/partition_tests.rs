@@ -21,6 +21,10 @@ struct Synthetic<F> {
     coded: Vec<Rect>,
     leaf_evaluations: usize,
     evaluated: std::collections::HashMap<Rect, usize>,
+    /// The leaves that code no coefficient.
+    uncoded: Vec<Rect>,
+    /// An SDP node and its luma and chroma roots.
+    sdp: Option<(Rect, Rect, Rect)>,
 }
 
 impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
@@ -31,6 +35,8 @@ impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
             coded: Vec::new(),
             leaf_evaluations: 0,
             evaluated: std::collections::HashMap::new(),
+            uncoded: Vec::new(),
+            sdp: None,
         }
     }
 }
@@ -44,8 +50,10 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         x < self.size && y < self.size
     }
 
-    fn sdp_roots(&self, _: Rect) -> Option<(Rect, Rect)> {
-        None
+    fn sdp_roots(&self, node: Rect) -> Option<(Rect, Rect)> {
+        self.sdp
+            .filter(|&(sdp, ..)| sdp == node)
+            .map(|(_, luma, chroma)| (luma, chroma))
     }
 
     fn follow_luma(&mut self, _: Option<(Rect, &PartitionTree)>) -> Result<(), Self::Error> {
@@ -128,6 +136,12 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         Ok((self.leaf_cost)(node))
     }
 
+    fn leaf_coded(&self) -> bool {
+        self.coded
+            .last()
+            .is_none_or(|leaf| !self.uncoded.contains(leaf))
+    }
+
     fn partition_rate(&mut self, _: Rect, partition: Partition) -> Result<Bits, Self::Error> {
         Ok(Bits::whole(if partition == Partition::None {
             1
@@ -158,6 +172,7 @@ fn full_search() -> PresetParams {
         min_block_log2: crate::preset::Levels::all(2),
         max_block_log2: 7,
         partition_early_exit: crate::preset::Levels::all(false),
+        none_breakout: crate::preset::Levels::all(0),
         ext_three_way_margin: u8::MAX,
         ext_four_way_margin: u8::MAX,
         ..PRESETS[0]
@@ -732,4 +747,92 @@ proptest! {
             early_exit_optimum(&coder, root, unit_lambda(), true)
         );
     }
+}
+
+fn breakout(level: u8) -> PresetParams {
+    PresetParams {
+        none_breakout: crate::preset::Levels::all(level),
+        ..full_search()
+    }
+}
+
+/// A root whose `NONE` leaf codes no coefficient ends there with the
+/// breakout on, though splitting costs less; with it off the search splits.
+#[test]
+fn breakout_ends_a_node_whose_none_leaf_codes_no_coefficient() {
+    let busy = |(.., w, h): Rect| RdCost {
+        distortion: 1 << (2 * (w + h)),
+        rate: Bits::whole(1),
+    };
+    let root = (0, 0, 5, 5);
+    for (level, leaf) in [(0, false), (1, true)] {
+        let mut coder = Synthetic::new(32, busy);
+        coder.uncoded.push(root);
+        let (tree, _) =
+            search_partition(&mut coder, root, &breakout(level), unit_lambda()).unwrap();
+        assert_eq!(
+            matches!(tree, PartitionTree::Leaf(_)),
+            leaf,
+            "level {level}: {tree:?}"
+        );
+        assert_eq!(coder.evaluated.contains_key(&(0, 0, 4, 4)), !leaf);
+    }
+}
+
+/// A coded `NONE` leaf ends the node only under the level's thresholds: the
+/// root's distortion of half a unit lambda per sample passes level 16 and
+/// fails level 4, which leave the cheaper split to the search.
+#[test]
+fn breakout_ends_a_none_leaf_under_the_thresholds() {
+    let cost = |node: Rect| RdCost {
+        distortion: if node == (0, 0, 5, 5) { 512 } else { 0 },
+        rate: Bits::whole(1),
+    };
+    let root = (0, 0, 5, 5);
+    for (level, leaf) in [(0, false), (4, false), (16, true)] {
+        let mut coder = Synthetic::new(32, cost);
+        let (tree, _) =
+            search_partition(&mut coder, root, &breakout(level), unit_lambda()).unwrap();
+        assert_eq!(
+            matches!(tree, PartitionTree::Leaf(_)),
+            leaf,
+            "level {level}: {tree:?}"
+        );
+        assert_eq!(coder.evaluated.contains_key(&(0, 0, 4, 4)), !leaf);
+    }
+}
+
+/// An SDP node searches its luma root under its budget and its chroma root
+/// under what the luma tree leaves: a budget the luma tree uses up codes no
+/// chroma, and the chroma tree fails a budget its optimum reaches.
+#[test]
+fn sdp_chroma_searches_under_the_budget_the_luma_tree_leaves() {
+    use crate::rd::partition::search_visits;
+    let busy = |(x, _, w, h): Rect| RdCost {
+        distortion: (1 << (2 * (w + h))) + u64::from(x),
+        rate: Bits::whole(1),
+    };
+    let (node, luma, chroma) = ((128, 0, 5, 5), (0, 0, 5, 5), (64, 0, 5, 5));
+    let sdp_coder = || {
+        let mut coder = Synthetic::new(256, busy);
+        coder.sdp = Some((node, luma, chroma));
+        coder
+    };
+    let plain = sdp_coder();
+    let (l, c) = (
+        optimum(&plain, luma, unit_lambda()),
+        optimum(&plain, chroma, unit_lambda()),
+    );
+    let visit = |budget| {
+        let mut coder = sdp_coder();
+        let found = search_visits(&mut coder, node, &full_search(), unit_lambda(), &[budget]);
+        let chroma_coded = coder.evaluated.keys().any(|&(x, ..)| x >= 64);
+        (
+            found.unwrap()[0].map(|cost| cost.cost(unit_lambda())),
+            chroma_coded,
+        )
+    };
+    assert_eq!(visit(Some(l)), (None, false));
+    assert_eq!(visit(Some(l + c)), (None, true));
+    assert_eq!(visit(Some(l + c + 1)), (Some(l + c), true));
 }

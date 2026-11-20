@@ -52,6 +52,10 @@ pub(crate) trait PartitionSearch {
     fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, LeafChoice), Self::Error>;
     /// Codes `node` as a leaf with `choice` into the live state; returns its cost.
     fn code_leaf(&mut self, node: Self::Node, choice: LeafChoice) -> Result<RdCost, Self::Error>;
+    /// Whether the leaf coded last codes a nonzero coefficient in any plane.
+    fn leaf_coded(&self) -> bool {
+        true
+    }
     /// The rate of the partition symbols that select `partition` at `node`.
     fn partition_rate(
         &mut self,
@@ -92,6 +96,10 @@ pub(crate) trait PartitionSearch {
 /// Partition paths reach many nodes more than once. A node keeps the tree its
 /// first search chose, and a later visit codes that tree again in the new
 /// context instead of searching it again.
+///
+/// With the preset's `none_breakout` level, a node whose `NONE` leaf codes
+/// no coefficient, or whose `NONE` distortion and rate per sample are under
+/// the level's thresholds ([`cheap`]), tries no other shape.
 ///
 /// Each shape after the first searches under a budget, the lower of the best
 /// cost so far and the node's own budget: its children search under what the
@@ -224,6 +232,12 @@ impl Levels {
             Some(child) => child.saturating_add(self.window) >= lo,
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Nodes on this thread that the `NONE` breakout ended.
+    pub(crate) static BREAKOUTS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 /// What a searched node found: its tree, or a budget it found no tree under
@@ -361,6 +375,7 @@ fn search<S: PartitionSearch>(
     let mut three_way = [None; 2];
     let mut exited = false;
     let early_exit = preset.partition_early_exit.at(coder.context());
+    let breakout = preset.none_breakout.at(coder.context());
     for (index, (partition, children)) in candidates.iter().enumerate() {
         let best_j = best.as_ref().map(|(j, ..)| *j);
         let gate = match extended_shape(*partition) {
@@ -385,6 +400,7 @@ fn search<S: PartitionSearch>(
             (false, true) => best_j,
             (false, false) => lower(best_j, budget),
         };
+        let mut ends = false;
         let found = if *partition == Partition::None {
             let (mut cost, choice) = match leaf {
                 Some(choice) => (coder.code_leaf(node, choice)?, choice),
@@ -392,6 +408,8 @@ fn search<S: PartitionSearch>(
             };
             leaf = Some(choice);
             cost.rate += rate;
+            ends = breakout > 0
+                && (!coder.leaf_coded() || cheap(cost, coder.block_log2(node)?, lambda, breakout));
             Some((PartitionTree::Leaf(choice), cost))
         } else {
             let nested = extended && extended_shape(*partition).is_none();
@@ -425,7 +443,7 @@ fn search<S: PartitionSearch>(
             Some((tree, cost)) => {
                 let j = cost.cost(lambda);
                 if best_j.is_none_or(|best_j| j < best_j) {
-                    let end = if index + 1 < candidates.len() {
+                    let end = if index + 1 < candidates.len() && !ends {
                         Some(coder.save(node, start.as_ref())?)
                     } else {
                         None
@@ -438,6 +456,11 @@ fn search<S: PartitionSearch>(
         };
         if *partition == Partition::None {
             unsplit = Some(j);
+            if ends {
+                #[cfg(test)]
+                BREAKOUTS.set(BREAKOUTS.get() + 1);
+                break;
+            }
             continue;
         }
         if let Some((axis, false)) = extended_shape(*partition) {
@@ -463,6 +486,17 @@ fn search<S: PartitionSearch>(
     }
     remember(memo, key, node, Seen::Tree(tree.clone()));
     Ok(Some((tree, cost)))
+}
+
+/// Whether the `NONE` cost `cost` of a block of luma log2 size `(w, h)` is
+/// under the breakout thresholds of `level`: a distortion per luma sample of
+/// at most `(level * sqrt(lambda) / 16)^2` and a rate per luma sample of at
+/// most `level / 256` bits.
+fn cheap(cost: RdCost, (w, h): (u32, u32), lambda: Lambda, level: u8) -> bool {
+    let samples = 1u128 << (w + h);
+    let scale = u128::from(lambda.qp_scaled(u64::from(level)));
+    u128::from(cost.distortion) << 24 <= scale * scale * samples
+        && u128::from(cost.rate.0) << 8 <= (u128::from(level) * samples) << Bits::FRAC_BITS
 }
 
 /// Codes `tree` at `node` into the live state, partition symbols before the
