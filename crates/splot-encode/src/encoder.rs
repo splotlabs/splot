@@ -383,6 +383,7 @@ impl Encoder {
             self.coder.set_block_importance(tpl::BlockImportance {
                 grid: (cols, rows, self.lookahead.block_luma()),
                 strength: self.tpl_delta_q,
+                centred: matches!(self.config.rate_control, RateControlMode::ConstantQp { .. }),
                 frames: costs,
             });
         }

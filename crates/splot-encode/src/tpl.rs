@@ -72,6 +72,9 @@ pub(crate) struct BlockImportance {
     pub(crate) grid: (usize, usize, usize),
     /// The `tpl_delta_q` strength in percent.
     pub(crate) strength: u8,
+    /// Whether the superblock moves average to zero: the rate controller
+    /// adds no [`TplFrame::qindex_offset`] to the frame qindex.
+    pub(crate) centred: bool,
     /// [`TplFrame::block_costs`] by display index.
     pub(crate) frames: BTreeMap<u64, Vec<(u32, u64)>>,
 }
@@ -240,15 +243,17 @@ fn log2_importance(intra: u64, received: u64) -> i64 {
 /// `(intra, received)` of each block of the `(cols, rows)` grid of
 /// `block_luma` blocks. A superblock's `log2_beta` is the mean over its
 /// blocks of the `log2` of their importance `(intra + received) / intra`,
-/// less the mean of that over the superblocks, so the moves keep the frame
-/// lambda on average and the frame qindex stays the rate controller's.
-/// Scaled by `strength` percent, the lambda moves by `-log2_beta` and the
-/// qindex by 12 per octave, both bounded by [`MAX_TPL_QINDEX_DECREASE`].
+/// less that of the frame's sums, the importance whose qindex offset the
+/// rate controller adds to the frame; when `centred` (the controller adds
+/// none), less the mean over the superblocks, so the moves keep the frame
+/// lambda on average. Scaled by `strength` percent, the lambda moves by
+/// `-log2_beta` and the qindex by 12 per octave, both bounded by
+/// [`MAX_TPL_QINDEX_DECREASE`].
 pub(crate) fn superblock_quant(
     costs: &[(u32, u64)],
     (cols, rows, block_luma): (usize, usize, usize),
     (sb_cols, sb_rows, sb_luma): (usize, usize, usize),
-    strength: u8,
+    (strength, centred): (u8, bool),
 ) -> Vec<(i16, i16)> {
     let per_sb = (sb_luma / block_luma).max(1);
     let logs: Vec<Option<i64>> = (0..sb_rows * sb_cols)
@@ -267,7 +272,14 @@ pub(crate) fn superblock_quant(
         .iter()
         .flatten()
         .fold((0, 0), |(sum, count), &log| (sum + log, count + 1));
-    let frame = if count == 0 { 0 } else { sum / count };
+    let frame = if centred {
+        if count == 0 { 0 } else { sum / count }
+    } else {
+        let (intra, received) = costs.iter().fold((0, 0), |(i, r), &(intra, received)| {
+            (i + u64::from(intra), r + received)
+        });
+        log2_importance(intra, received)
+    };
     logs.iter()
         .map(|log| {
             let log2_beta = log.map_or(0, |log| log - frame);
@@ -436,18 +448,21 @@ mod tests {
         analyze(&mut lookahead, &plan, None, None, &sources)
     }
 
-    /// The superblock moves keep the frame lambda on average: a few
+    /// Centred superblock moves keep the frame lambda on average: a few
     /// important blocks among many unreferenced ones, the usual shape of a
-    /// referenced frame, do not raise the mean qindex.
+    /// referenced frame, do not raise the mean qindex. Moves relative to the
+    /// frame's sums do, as the frame qindex offset takes the importance.
     #[test]
     fn superblock_moves_average_to_zero() {
         let costs: Vec<(u32, u64)> = (0..16)
             .map(|i| (1000, if i % 5 == 0 { 9000 } else { 0 }))
             .collect();
-        let quant = superblock_quant(&costs, (4, 4, 16), (2, 2, 32), 100);
+        let quant = superblock_quant(&costs, (4, 4, 16), (2, 2, 32), (100, true));
         let lambda: i32 = quant.iter().map(|&(_, l)| i32::from(l)).sum();
         let qindex: i32 = quant.iter().map(|&(q, _)| i32::from(q)).sum();
         assert!(lambda.abs() <= 4 && qindex.abs() <= 4, "{quant:?}");
+        let relative = superblock_quant(&costs, (4, 4, 16), (2, 2, 32), (100, false));
+        assert!(relative.iter().map(|&(q, _)| i32::from(q)).sum::<i32>() > 8);
     }
 
     /// A superblock whose blocks later frames predict from gets a lower
@@ -464,24 +479,32 @@ mod tests {
             (1000, 0),
         ];
         let grid = (3, 2, 16);
-        let quant = superblock_quant(&costs, grid, (2, 1, 32), 100);
+        let quant = superblock_quant(&costs, grid, (2, 1, 32), (100, false));
         let (left, right) = (quant[0], quant[1]);
         assert!(
             left.0 < right.0 && left.1 < right.1 && right.0 > 0,
             "{quant:?}"
         );
         let log2 = |i: u64, r: u64| i64::from(log2_q8((((i + r) << 8) / i) as u32));
+        let frame = log2(5128, 8000);
         let blocks = log2(1000, 7000) + log2(1000, 0) + log2(1000, 1000) + log2(128, 0);
-        let frame = (blocks / 4 + log2(1, 0)) / 2;
         let mean = blocks / 4 - frame;
         assert_eq!(i64::from(left.1), -mean);
         assert_eq!(i64::from(left.0), (-mean * 12 + 128).div_euclid(256));
         assert_eq!(i64::from(right.1), frame - log2(1, 0));
-        let half = superblock_quant(&costs, grid, (2, 1, 32), 50);
+        let half = superblock_quant(&costs, grid, (2, 1, 32), (50, false));
         assert_eq!(i64::from(half[0].1), -mean / 2);
-        let strong = superblock_quant(&[(128, 1 << 20), (128, 0)], (2, 1, 16), (2, 1, 16), 200);
-        assert_eq!(strong, [(-32, -682), (32, 682)]);
-        assert_eq!(superblock_quant(&costs, grid, (2, 1, 32), 0), [(0, 0); 2]);
+        let strong = superblock_quant(
+            &[(128, 1 << 20), (128, 0)],
+            (2, 1, 16),
+            (2, 1, 16),
+            (200, false),
+        );
+        assert_eq!(strong[1], (32, 682));
+        assert_eq!(
+            superblock_quant(&costs, grid, (2, 1, 32), (0, false)),
+            [(0, 0); 2]
+        );
     }
 
     #[test]

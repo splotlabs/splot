@@ -338,10 +338,11 @@ fn offsets_that_snap_to_zero_code_no_delta_q() {
         coder.set_block_importance(crate::tpl::BlockImportance {
             grid,
             strength,
+            centred: false,
             frames: [(plan.display_index, costs.clone())].into(),
         });
         let quant = coder.superblock_quant(&plan, &synthetic_frame(&config, 1));
-        let model = crate::tpl::superblock_quant(&costs, grid, (4, 3, 64), strength);
+        let model = crate::tpl::superblock_quant(&costs, grid, (4, 3, 64), (strength, false));
         let snaps_to_zero = model.iter().all(|&(offset, _)| offset.abs() <= 1);
         assert_eq!(quant.is_empty(), snaps_to_zero, "{strength}: {model:?}");
         (empty, coded) = (empty || snaps_to_zero, coded || !snaps_to_zero);
