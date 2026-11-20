@@ -177,6 +177,60 @@ fn inter_tx_partition_streams_decode_alike_on_any_thread_count() {
     }
 }
 
+/// An inter leaf that tries its luma transform partitions ends coded by one
+/// final trial: a second trial of its choice from the leaf start gives the
+/// same cost, the same coded-coefficient flag, the same samples in every plane
+/// and the same cost of a trial of the next leaf, which reads its CDFs, cells
+/// and edge.
+#[test]
+fn an_uneven_split_leaf_ends_as_a_second_trial_of_its_choice() {
+    use crate::rd::partition::PartitionSearch;
+    let config = config(136, 136, BitDepth::Eight, 6, 110);
+    let preset = with_split(1);
+    let lambda = Lambda::from_qindex(110, config.bit_depth).unwrap();
+    let (first, second) = in_first_inter_frame(&config, preset, |syntax, root, residual| {
+        let row = syntax.children(top_left(syntax, root, 64), Partition::Horz)?[0];
+        let [node, next] = syntax.children(row, Partition::Vert)?[..] else {
+            return Err(TileWriterError::Shape("a 64x32 row without two halves"));
+        };
+        let leaf = syntax.leaf(node)?;
+        assert!(syntax.luma_tx_partitions(&leaf)?.len() > 1);
+        let motion = MotionSearch::new(syntax, residual.source, preset, lambda, Vec::new())?;
+        let start = syntax.snapshot(node)?;
+        let evaluate = |syntax: &mut IntraTileSyntax, residual: &mut SourceResidualCoder| {
+            let mut trial = TrialCoder::new(syntax, residual, preset, lambda, motion.as_ref());
+            let (cost, choice) = trial.evaluate_leaf(node)?;
+            Ok::<_, TileWriterError>((cost, choice, trial.leaf_coded()))
+        };
+        let (_, choice, _) = evaluate(syntax, residual)?;
+        let prediction = choice
+            .inter
+            .ok_or(TileWriterError::Shape("an intra leaf"))?;
+        syntax.restore(&start)?;
+        let blocks = syntax.plan_inter_leaf(&leaf, prediction)?;
+        let probe = |syntax: &mut IntraTileSyntax, residual: &mut SourceResidualCoder| {
+            let samples = blocks
+                .iter()
+                .map(|tx| syntax.reconstruction(tx))
+                .collect::<core::result::Result<Vec<_>, _>>()?;
+            let saved = syntax.snapshot(next)?;
+            let mut trial = TrialCoder::new(syntax, residual, preset, lambda, None);
+            let cost = trial.code_leaf(next, LeafChoice::DC)?;
+            trial.restore(&saved)?;
+            Ok::<_, TileWriterError>((samples, cost))
+        };
+        syntax.restore(&start)?;
+        let (cost, again, coded) = evaluate(syntax, residual)?;
+        assert_eq!(again, choice);
+        let first = (cost, coded, probe(syntax, residual)?);
+        syntax.restore(&start)?;
+        let mut trial = TrialCoder::new(syntax, residual, preset, lambda, None);
+        let (cost, coded) = (trial.code_leaf(node, choice)?, trial.leaf_coded());
+        Ok((first, (cost, coded, probe(syntax, residual)?)))
+    });
+    assert_eq!(first, second);
+}
+
 /// The quadrant errors of the SIMD `sse` kernel equal a scalar sum over
 /// asymmetric random samples, for square, wide and tall blocks.
 #[test]
