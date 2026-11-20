@@ -47,6 +47,13 @@ pub struct PresetParams {
     /// niklas `4` +1.06% at 0.76x (`1,1,1,4`: +0.54% at 0.82x), paris f30
     /// -1.17% at 0.70x. Levels from 8 up lose more than the ladder buys.
     pub none_breakout: Levels<u8>,
+    /// A block that a second partition path reaches codes the choice its
+    /// first search found, with one final trial, per frame kind: `1` when
+    /// that choice is inter, `2` any choice, `0` searches it again. Reused
+    /// intra choices carry the loss: paris and park_joy p6 f10 lost +0.39%
+    /// and +1.21% at 0.80x and 0.77x instructions with `2` in inter frames,
+    /// -0.09% and +0.17% at 0.83x with `1`.
+    pub leaf_reuse: Levels<u8>,
     /// Rate-distortion optimized quantization. On in every row: off at p7-p10
     /// lost 8-9% BD-rate on paris f10 at the same instruction count.
     pub rdoq: bool,
@@ -814,6 +821,11 @@ preset_table! {
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4]]),
+        leaf_reuse:            frames([
+                               [    2,     2,     2,     2,     2,     2,     2,     2,     2,     2,     2],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1]]),
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -919,7 +931,8 @@ preset_table! {
 /// whose first frame looks like screen content. SDP off: desktop_credits p6
 /// measured Y +0.34% intra and +2.30% inter with it (screendata -0.24% and
 /// -0.91%, 2026-10-26). `none_breakout` off: it is not measured on screen
-/// content, where it ends blocks before their IntraBC leaves.
+/// content, where it ends blocks before their IntraBC leaves. `leaf_reuse`
+/// off: not measured on screen content.
 pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
     let mut rows = PRESETS;
     let mut i = 0;
@@ -931,6 +944,7 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
             integer_mv: true,
             sdp: false,
             none_breakout: Levels::all(0),
+            leaf_reuse: Levels::all(0),
             ..rows[i]
         };
         i += 1;
@@ -1012,6 +1026,13 @@ mod tests {
                 &fast.partition_early_exit
             ));
             assert!(at_most(&slow.none_breakout, &fast.none_breakout));
+            assert!(
+                slow.leaf_reuse
+                    .values()
+                    .iter()
+                    .zip(fast.leaf_reuse.values())
+                    .all(|(&s, &f)| s == 0 || (f != 0 && f <= s))
+            );
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
