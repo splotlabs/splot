@@ -76,6 +76,8 @@ pub(crate) struct Lookahead {
     last_full: Option<(u64, Plane)>,
     /// The scene-cut ratio of the last frame pushed, in percent.
     last_ratio: u64,
+    /// Stops the motion searches of a cancelled encoder.
+    pub(crate) cancel: crate::cancel::CancelToken,
 }
 
 impl Lookahead {
@@ -99,6 +101,7 @@ impl Lookahead {
             fields: (preset.me_seeds > 0 || preset.compound_skip_sad > 0).then(OpenLoopMotion::new),
             last_full: None,
             last_ratio: 0,
+            cancel: crate::cancel::CancelToken::default(),
         }
     }
 
@@ -226,12 +229,15 @@ impl Lookahead {
 
     /// The open-loop motion of `current` against `reference`, whose full
     /// levels are `fulls`, searched without keeping it; `None` when either
-    /// frame is not held.
+    /// frame is not held or the encoder is cancelled.
     pub(crate) fn full_motion(
         &self,
         (current, reference): (u64, u64),
         fulls: (&Plane, &Plane),
     ) -> Option<FrameMotion> {
+        if self.cancel.is_cancelled() {
+            return None;
+        }
         let (now, then) = (self.frame(current)?, self.frame(reference)?);
         Some(hme::search(
             (fulls.0, &now.pyramid),
