@@ -1030,13 +1030,7 @@ mod tests {
                 &fast.partition_early_exit
             ));
             assert!(at_most(&slow.none_breakout, &fast.none_breakout));
-            assert!(
-                slow.leaf_reuse
-                    .values()
-                    .iter()
-                    .zip(fast.leaf_reuse.values())
-                    .all(|(&s, &f)| s == 0 || (f != 0 && f <= s))
-            );
+            assert!(at_most(&slow.leaf_reuse, &fast.leaf_reuse));
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);

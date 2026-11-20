@@ -1486,7 +1486,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
             let start = self.save(node, None)?;
             match self.code_leaf(node, choice) {
                 Ok(cost) => return Ok((cost, choice)),
-                Err(TileWriterError::Unsupported(_) | TileWriterError::Syntax(_)) => {
+                Err(
+                    TileWriterError::Unsupported(_)
+                    | TileWriterError::Syntax(EncoderSyntaxError::Unsupported(_)),
+                ) => {
                     self.restore(&start)?;
                 }
                 Err(error) => return Err(error),
@@ -1494,7 +1497,11 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         }
         let found = self.search_leaf(node)?;
         if reuse > 0 {
-            self.leaves.entry(key).or_default().push((leaf, found.1));
+            let seen = self.leaves.entry(key).or_default();
+            match seen.iter_mut().find(|(block, _)| block.same_block(&leaf)) {
+                Some(entry) => entry.1 = found.1,
+                None => seen.push((leaf, found.1)),
+            }
         }
         Ok(found)
     }
