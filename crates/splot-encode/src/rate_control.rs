@@ -513,7 +513,9 @@ fn log2_q8(x: u64) -> i64 {
     i64::from(k) * 256 + (mantissa & 0xff) as i64
 }
 
-/// Codings of one frame past the first that [`DecoderBuffer::coarser`] may ask for.
+/// Retries of one frame that [`DecoderBuffer::coarser`] aims freely; each
+/// later retry rises at least `2^k` qindex (`k` counting them), so a frame
+/// reaches `MaxQ` (255 or 303) within eight more.
 pub(crate) const MAX_RECODES: usize = 3;
 
 /// The decoder buffer of [`RateControlMode::CappedCrf`] and
@@ -554,12 +556,14 @@ impl DecoderBuffer {
     }
 
     /// The qindex to code a frame again at after `tries`, its `(qindex,
-    /// bits)` so far, or `None` when the last fits or is at `MaxQ`. A frame
-    /// coded before `later` hidden and shown frames of its unit leaves them
-    /// one frame period per hidden (reference) frame and a quarter period
-    /// per shown frame, at most half the room. The first retry takes the step
-    /// that fits when bits scale as `1 / step`; later ones move `log2(bits)`
-    /// linearly in qindex through the last two.
+    /// bits)` so far in rising qindex, or `None` when the last fits or is at
+    /// `MaxQ`. A frame coded before `later` hidden and shown frames of its
+    /// unit leaves them one frame period per hidden (reference) frame and a
+    /// quarter period per shown frame, at most half the room. The first retry
+    /// takes the step that fits when bits scale as `1 / step`; later ones move
+    /// `log2(bits)` linearly in qindex along the flattest falling secant from
+    /// an earlier try to the last, and past [`MAX_RECODES`] rise at least
+    /// `2^k`.
     pub(crate) fn coarser(
         &self,
         tries: &[(u16, u64)],
@@ -574,15 +578,19 @@ impl DecoderBuffer {
         if bits <= room || qindex >= max {
             return None;
         }
-        let secant = match *tries {
-            [.., (before, more), _] if before < qindex => {
-                Some((qindex - before, log2_q8(more) - log2_q8(bits)))
-            }
-            _ => None,
-        };
-        let next = if let Some((apart, slope)) = secant.filter(|&(_, slope)| slope > 0) {
+        let flattest = tries[..tries.len() - 1]
+            .iter()
+            .map(|&(before, more)| {
+                (
+                    i64::from(qindex.saturating_sub(before)),
+                    log2_q8(more) - log2_q8(bits),
+                )
+            })
+            .filter(|&(apart, fall)| apart > 0 && fall > 0)
+            .min_by(|&(a, fall), &(b, other)| (fall * b).cmp(&(other * a)));
+        let next = if let Some((apart, fall)) = flattest {
             let need = log2_q8(bits) - log2_q8(room);
-            let rise = (i64::from(apart) * need + slope - 1) / slope;
+            let rise = (apart * need + fall - 1) / fall;
             u16::try_from(i64::from(qindex) + rise).unwrap_or(max)
         } else {
             let target = u128::from(step(qindex, bit_depth)) * u128::from(bits) / u128::from(room);
@@ -590,7 +598,8 @@ impl DecoderBuffer {
                 .find(|&next| u128::from(step(next, bit_depth)) >= target)
                 .unwrap_or(max)
         };
-        Some(next.clamp(qindex + 1, max))
+        let extra = tries.len().saturating_sub(MAX_RECODES).min(15);
+        Some(next.max(qindex.saturating_add(1 << extra)).min(max))
     }
 
     /// Adds the bits of a coded or show-existing frame.
