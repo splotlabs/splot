@@ -12,7 +12,7 @@ use crate::tile_writer::Partition;
 type SdpCase = (u32, u32, BitDepth, u8, PixelFormat, (u8, u8));
 
 const SDP_CASES: [SdpCase; 3] = [
-    (136, 72, BitDepth::Eight, 9, PixelFormat::Yuv420, (1, 0)),
+    (136, 80, BitDepth::Eight, 9, PixelFormat::Yuv420, (1, 0)),
     (97, 70, BitDepth::Ten, 6, PixelFormat::Yuv422, (0, 0)),
     (72, 40, BitDepth::Eight, 6, PixelFormat::Yuv444, (0, 1)),
 ];

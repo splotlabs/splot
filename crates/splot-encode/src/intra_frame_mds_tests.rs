@@ -74,8 +74,9 @@ fn staged_streams_decode_on_any_thread_count() {
 }
 
 /// The length and FNV-1a hash of the p5 stream of [`staged_stream`] at qp
-/// 200, recorded from main e20662669 before the staged mode decision.
-const P5_GOLDEN: (usize, u64) = (3028, 0xb309_6d3f_f798_d7c8);
+/// 200, recorded from main e20662669 before the staged mode decision and
+/// again for the long-side-first partition order alone.
+const P5_GOLDEN: (usize, u64) = (2888, 0x0fff_5a1c_edab_b855);
 
 /// The p5 row, whose MDS0 budgets are open and whose inter-frame intra
 /// shortlist is `intra_modes`, codes the stream of the unstaged search
@@ -150,8 +151,9 @@ fn mds1_streams_decode_on_any_thread_count() {
 
 /// The length and FNV-1a hash of the [`staged_stream`] at qp 200 of preset
 /// 6 with every candidate on a full trial, recorded from main 36451046e with
-/// `full_trials: true`.
-const FULL_GOLDEN: (usize, u64) = (2963, 0x19dd_6acc_4a12_1993);
+/// `full_trials: true` and again for the long-side-first partition order
+/// alone.
+const FULL_GOLDEN: (usize, u64) = (2762, 0x42fa_37cf_68e7_498f);
 
 /// `full_trials` 255 gives every candidate a full trial: without the `NONE`
 /// breakout it codes the stream of the old `full_trials: true`, and MDS1

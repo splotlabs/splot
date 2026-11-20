@@ -83,8 +83,10 @@ pub(crate) trait PartitionSearch {
 /// A leaf is tried only up to `max_block_log2` per side, a split only when every
 /// child keeps both sides at least `min_block_log2`; when the limits leave no
 /// candidate, every codable partition is tried. `NONE` is tried first and
-/// `SPLIT` second; with `partition_early_exit`, the search stops once a split
-/// is coded and the unsplit cost does not exceed the best split cost. A
+/// `SPLIT` second, then the binary shape that halves the longer side; with
+/// `partition_early_exit`, the search stops once a split is coded and the
+/// unsplit cost does not exceed the best split cost, so a wide block decides
+/// the exit on `VERT`. A
 /// tolerance that also stops when the split wins by a margin compounds over the
 /// levels of the tree: 10% cost 20 points of BD-rate on CIF content.
 ///
@@ -636,10 +638,17 @@ fn candidates<S: PartitionSearch>(
         };
         all.push((partition, children));
     }
-    all.sort_by_key(|(partition, _)| match partition {
+    let (w, h) = coder.block_log2(node)?;
+    let halves_long_side = if w > h {
+        Partition::Vert
+    } else {
+        Partition::Horz
+    };
+    all.sort_by_key(|&(partition, _)| match partition {
         Partition::None => 0,
         Partition::Split => 1,
-        _ => 2,
+        _ if partition == halves_long_side => 2,
+        _ => 3,
     });
     if !extended {
         all.retain(|(partition, _)| extended_shape(*partition).is_none());
