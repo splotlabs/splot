@@ -6844,6 +6844,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-PARTITION-BUDGET"
+name = "Encoder partition search RD budget"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rd/partition.rs"
+change_id = "enc-partition-budget"
+owner = "encoder"
+risk = "medium"
+notes = "Branch and bound in rd::partition::search: each shape after the first searches under the lower of the best cost so far and the node's budget; its children search under what is left, and the shape stops once its cost reaches the budget. A node with no tree under its budget reports none and the memo keeps the budget as a bound with its NONE choice: a later visit under a budget not above the bound reports none at once, a larger budget searches again and codes the kept NONE choice instead of a new mode search. The shape that decides partition_early_exit searches under the best cost alone and three-way shapes without a budget, so the early exit and the four-way gate read the costs of the search without budgets (budgets_keep_the_early_exit_result). SDP: the chroma root takes the budget the luma tree leaves. Not byte-identical to main: a node that a budget stopped has no tree for later visits, which search it again in their own context instead of coding the first tree again. Measured f10 vs main fab1875ad: p6 park_joy +0.47% at 0.984x instructions, paris -0.36% at 0.993x; p0 paris -0.06% at 0.937x; p3 paris -0.09% at 1.000x; p8 paris +0.45% at 1.005x; p10 paris -0.09% at 1.000x; intra p6 park_joy -0.13% at 0.998x, paris -0.02% at 0.998x. The early exit needs the exact SPLIT cost, so at p2-p10 the budget rarely reaches below the first split; a budget that also bounds that SPLIT (exit once it reaches the budget) measured p6 park_joy +2.83% at 0.880x and paris +0.81% at 0.851x and was dropped."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rd/partition_tests.rs::split_stops_at_the_budget_of_the_best_shape", "crates/splot-encode/src/rd/partition_tests.rs::a_bound_skips_lower_budgets_and_searches_larger_ones", "crates/splot-encode/src/rd/partition_tests.rs::budgets_keep_the_early_exit_result", "crates/splot-encode/src/rd/partition_tests.rs::exhaustive_search_is_optimal", "crates/splot-encode/src/intra_frame_mds_tests.rs::two_pass_streams_decode_on_any_thread_count"]
+commands = ["cargo test -p splot-encode partition_tests --locked", "cargo test -p splot-encode two_pass --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-TEMPORAL-FILTER"
 name = "Encoder temporal filtering of key and base frames"
 category = "encoder"
