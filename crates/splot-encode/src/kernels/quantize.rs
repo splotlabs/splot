@@ -19,7 +19,7 @@
 //! `|l| * q2 < 2^24` so the `0xFFFFFF` mask never wraps, and at or below the
 //! first level whose reconstruction reaches the `Clip3` bound.
 //!
-//! The scalar form searches `lo` from an exact integer division. The SIMD form
+//! The scalar test oracle searches `lo` from an exact integer division. The SIMD form
 //! estimates `t = |c| * 8 * dqDenom / q2` in `f32` (error below 0.2 for every
 //! `t` below `2^20`), and `r(l)` stays within `l * step - 1.5` and
 //! `l * step + 0.5` with `step >= 1`, so `lo` lies in
@@ -150,6 +150,7 @@ fn check_lengths(coeffs: &[i32], levels: &[i32], dequant: &[i32]) -> Result<(), 
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn quantize_scalar(
     quantizer: &Quantizer,
     coeffs: &[i32],
@@ -236,7 +237,9 @@ pub(super) fn quantize_simd(
     dequant: &mut [i32],
 ) -> Result<usize, KernelError> {
     check_lengths(coeffs, levels, dequant)?;
-    dispatch!(Level::baseline(), simd => quantize_kernel(simd, quantizer, coeffs, levels, dequant))
+    Ok(
+        dispatch!(Level::baseline(), simd => quantize_kernel(simd, quantizer, coeffs, levels, dequant)),
+    )
 }
 
 #[inline]
@@ -246,7 +249,7 @@ fn quantize_kernel<S: Simd>(
     coeffs: &[i32],
     levels: &mut [i32],
     dequant: &mut [i32],
-) -> Result<usize, KernelError> {
+) -> usize {
     let (c_chunks, c_tail) = coeffs.as_chunks::<LANES>();
     let (l_chunks, l_tail) = levels.as_chunks_mut::<LANES>();
     let (d_chunks, d_tail) = dequant.as_chunks_mut::<LANES>();
@@ -269,20 +272,27 @@ fn quantize_kernel<S: Simd>(
         level.store_slice(l);
         dq.store_slice(d);
     }
-    let tail_start = coeffs.len() - c_tail.len();
-    if tail_start == 0 {
-        count += quantize_scalar(quantizer, c_tail, l_tail, d_tail)?;
-    } else {
-        let ac_only = Quantizer {
-            dc: quantizer.ac,
-            ..*quantizer
-        };
-        count += quantize_scalar(&ac_only, c_tail, l_tail, d_tail)?;
+    let n = c_tail.len();
+    if n > 0 {
+        let steps = if c_chunks.is_empty() { &first } else { &rest };
+        let mut c = [0; LANES];
+        c[..n].copy_from_slice(c_tail);
+        let (level, dq) = quantize_lanes(quantizer, steps, i32x8::load_array_ref(simd, &c));
+        count += level.simd_ne(0).to_bitmask().count_ones() as usize;
+        let (mut l, mut d) = ([0; LANES], [0; LANES]);
+        level.store_slice(&mut l);
+        dq.store_slice(&mut d);
+        l_tail.copy_from_slice(&l[..n]);
+        d_tail.copy_from_slice(&d[..n]);
     }
-    Ok(count)
+    count
 }
 
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "two callers; out of line it is a call per vector"
+)]
+#[inline(always)]
 fn quantize_lanes<S: Simd>(
     quantizer: &Quantizer,
     steps: &StepLanes<S>,
