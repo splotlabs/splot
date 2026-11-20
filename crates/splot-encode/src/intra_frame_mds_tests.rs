@@ -86,6 +86,7 @@ fn open_budgets_code_the_unstaged_stream() {
         ref_intra_margin: u8::MAX,
         none_breakout: Levels::all(0),
         tcq_type_trellis: false,
+        partition_early_exit: Levels::all(true),
         ..*Preset::new(5).unwrap().params()
     }));
     assert_eq!(p5.mds0_budgets, Levels::all([u8::MAX; 3]));
@@ -166,6 +167,7 @@ fn full_trials_255_code_the_old_full_trial_stream() {
         leaf_reuse: Levels::all(0),
         min_block_log2: Levels::all(3),
         tcq_type_trellis: false,
+        partition_early_exit: Levels::all(true),
         ..*Preset::new(6).unwrap().params()
     }));
     MDS1_PRUNED.set(0);

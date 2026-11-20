@@ -116,6 +116,7 @@ pub(super) fn zooming_frame(config: &Config, index: u32) -> SourceFrame {
 fn with_warp(change: impl FnOnce(&mut PresetParams)) -> &'static PresetParams {
     let mut params = PresetParams {
         warp: 1,
+        partition_early_exit: Levels::all(true),
         ..*Preset::new(6).unwrap().params()
     };
     change(&mut params);

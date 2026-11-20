@@ -96,12 +96,20 @@ fn codes_wiener_ns(lr: &[FrameLr], planes: core::ops::Range<usize>) -> bool {
     })
 }
 
+/// Preset 6 with the key-frame partition early exit of its recorded streams.
+fn p6() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        partition_early_exit: Levels::all(true),
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
 /// Key and inter frames code luma and chroma Wiener-NS banks, the stream
 /// decodes to the encoder recon, and 1, 2 and 8 threads write the same bytes.
 /// Without the tool no plane codes it; without the chroma fits only luma does.
 #[test]
 fn wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count() {
-    let on = Preset::new(6).unwrap().params();
+    let on = p6();
     let (one, recon, lr) = wiener_stream((1, PixelFormat::Yuv420), on);
     assert!(codes_wiener_ns(&lr[..1], 0..1), "{lr:?}");
     assert!(codes_wiener_ns(&lr[1..], 0..1), "{lr:?}");
@@ -166,7 +174,7 @@ fn class_banks_decode_to_the_encoder_recon() {
 /// the encoder recon.
 #[test]
 fn temporal_wiener_ns_bank_decodes_to_the_encoder_recon() {
-    let on = Preset::new(6).unwrap().params();
+    let on = p6();
     let (units, recon, lr) = pan_stream((2, PixelFormat::Yuv420), with_wiener_ns(on, (1, 1)), 0);
     assert!(
         lr.iter().flatten().any(|&(_, temporal, _)| temporal),
@@ -179,7 +187,7 @@ fn temporal_wiener_ns_bank_decodes_to_the_encoder_recon() {
 /// decode to the encoder recon.
 #[test]
 fn wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon() {
-    let on = Preset::new(6).unwrap().params();
+    let on = p6();
     for chroma in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
         let (units, recon, lr) = wiener_stream((2, chroma), on);
         assert!(
@@ -198,7 +206,7 @@ fn avm_decodes_wiener_ns_frames_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let on = Preset::new(6).unwrap().params();
+    let on = p6();
     for (speed, preset) in [(1, on), (0, with_wiener_ns(on, (1, 1)))] {
         let (units, recon, lr) = pan_stream((2, PixelFormat::Yuv420), preset, speed);
         assert!(

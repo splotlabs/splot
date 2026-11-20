@@ -38,6 +38,9 @@ pub struct PresetParams {
     /// cost does not exceed the best split cost so far, per frame kind. p1
     /// exits on leaf frames only: paris f10 +0.84% BD-rate at 0.80x the p0
     /// instructions, half of the p0 to p2 BD step (p2 exits everywhere).
+    /// Key frames exit from p7 only (2026-11-20): all-intra p2-p6 -1.6% to
+    /// -1.9% BD-rate at 1.14x to 1.45x instructions, keyint 30 about neutral
+    /// (p6 CRF +0.01% at 1.015x).
     pub partition_early_exit: Levels<bool>,
     /// After its `NONE` trial, a block tries no other partition when the
     /// `NONE` leaf codes no coefficient, or when its distortion per sample
@@ -828,7 +831,7 @@ preset_table! {
         max_block_log2:        [    8,     8,     8,     7,     7,     7,     7,     6,     6,     6,     6],
         sb256_min_height:      [  720,   720,   720,   720,   720,   720,   720,   720,   720,   720,   720],
         partition_early_exit:  frames([
-                               [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+                               [false, false, false, false, false, false, false,  true,  true,  true,  true],
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true]]),
