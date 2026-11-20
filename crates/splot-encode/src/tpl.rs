@@ -12,8 +12,9 @@
 //! importance is `(intra + received) / intra` over all its blocks. Its qindex
 //! offset is `-12 * log2(importance)`, bounded: the § 7.14.2 quantizer step
 //! doubles every 24 qindex, so the step shrinks by `sqrt(importance)` and
-//! `lambda`, which goes with the squared step, by `importance`. Deeper layers
-//! of the mini-GOP add [`LAYER_QINDEX_OFFSET`] per layer.
+//! `lambda`, which goes with the squared step, by `importance`. A frame above
+//! the base layer keeps [`LAYER_DECREASE_PERCENT`] of that decrease, and deeper
+//! layers of the mini-GOP add [`LAYER_QINDEX_OFFSET`] per layer.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +30,13 @@ use crate::rd::log2_q8;
 /// The largest qindex decrease the model gives a frame.
 pub(crate) const MAX_TPL_QINDEX_DECREASE: i32 = 32;
 /// The qindex increase per mini-GOP layer below the top one.
-pub(crate) const LAYER_QINDEX_OFFSET: i32 = 3;
+pub(crate) const LAYER_QINDEX_OFFSET: i32 = 2;
+/// The share of its importance decrease a frame keeps, in percent, by mini-GOP
+/// layer (key and base frames first); deeper layers keep the last. Measured
+/// 2026-11-20 (CRF p6 against 100 per layer and offset 3): paris f30 -1.34%,
+/// niklas f30 -0.87%, rush_hour_444 f60 -1.06%, park_joy f10 -0.01%, paris
+/// f10 +0.36%.
+const LAYER_DECREASE_PERCENT: [i32; 4] = [100, 50, 25, 0];
 /// The smallest complexity a block adds: even a perfect prediction costs
 /// mode and vector bits.
 const MIN_BLOCK_COMPLEXITY: u32 = 128;
@@ -179,8 +186,7 @@ pub(crate) fn analyze(
             let octaves_q8 =
                 u64::from(log2_q8(u32::try_from(importance_q8).unwrap_or(u32::MAX))) - (8 << 8);
             let decrease = ((octaves_q8 * QINDEX_PER_IMPORTANCE_OCTAVE + 128) >> 8) as i32;
-            let offset = -decrease.min(MAX_TPL_QINDEX_DECREASE)
-                + i32::from(node.frame.layer) * LAYER_QINDEX_OFFSET;
+            let offset = layer_qindex_offset(decrease, node.frame.layer);
             TplFrame {
                 display_index: node.frame.display_index,
                 complexity: floored(if node.frame.frame_type == FrameType::Key {
@@ -200,6 +206,14 @@ pub(crate) fn analyze(
             }
         })
         .collect()
+}
+
+/// The frame qindex offset of an importance `decrease` at mini-GOP `layer`.
+fn layer_qindex_offset(decrease: i32, layer: u8) -> i32 {
+    let last = LAYER_DECREASE_PERCENT.len() - 1;
+    let percent = LAYER_DECREASE_PERCENT[usize::from(layer).min(last)];
+    -(decrease * percent / 100).min(MAX_TPL_QINDEX_DECREASE)
+        + i32::from(layer) * LAYER_QINDEX_OFFSET
 }
 
 /// The amount each block of `nodes` receives from the later nodes that
@@ -505,6 +519,13 @@ mod tests {
             superblock_quant(&costs, grid, (2, 1, 32), (0, false)),
             [(0, 0); 2]
         );
+    }
+
+    #[test]
+    fn upper_layers_keep_a_shrinking_share_of_the_decrease() {
+        let offsets = [0, 1, 2, 3, 5].map(|layer| layer_qindex_offset(40, layer));
+        assert_eq!(offsets, [-32, -18, -6, 6, 10]);
+        assert_eq!(layer_qindex_offset(0, 2), 4);
     }
 
     #[test]
