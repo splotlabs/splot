@@ -169,38 +169,66 @@ impl FrameCoder for Counting {
 
 /// The encoder with `global_motion = 1` estimates zoom models from its
 /// lookahead for zooming content, codes them in inter frames, and the stream
-/// decodes to the encoder recon.
+/// decodes to the encoder recon, also at qps and presets whose
+/// `GLOBAL_GLOBALMV` leaves land in frames that later frames take temporal
+/// vectors from.
 #[test]
 fn the_encoder_estimates_and_codes_global_motion() {
-    let mut config = config(160, 96, BitDepth::Eight, 6, 120);
-    config.preset_overrides = vec![("global_motion".to_owned(), "1".to_owned())];
-    let (recons, global_frames) = (Arc::default(), Arc::default());
-    let coder = Counting {
-        coder: IntraFrameCoder::new(&config).unwrap(),
-        bit_depth: config.bit_depth,
-        recons: Arc::clone(&recons),
-        global_frames: Arc::clone(&global_frames),
-    };
-    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
-    let mut units = Vec::new();
-    for index in 0..=8 {
-        if index == 8 {
-            encoder.flush().unwrap();
-        } else {
-            encoder
-                .send_frame(super::warp::zooming_frame(&config, index))
-                .unwrap();
+    for (width, height, preset, qp) in [(160, 96, 6, 120), (160, 96, 6, 90), (192, 112, 9, 90)] {
+        let mut config = config(width, height, BitDepth::Eight, preset, qp);
+        config.preset_overrides = vec![("global_motion".to_owned(), "1".to_owned())];
+        let case = format!("estimated {width}x{height} p{preset} qp {qp}");
+        let (recons, global_frames) = (Arc::default(), Arc::default());
+        let coder = Counting {
+            coder: IntraFrameCoder::new(&config).unwrap(),
+            bit_depth: config.bit_depth,
+            recons: Arc::clone(&recons),
+            global_frames: Arc::clone(&global_frames),
+        };
+        let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
+        let mut units = Vec::new();
+        for index in 0..=8 {
+            if index == 8 {
+                encoder.flush().unwrap();
+            } else {
+                encoder
+                    .send_frame(super::warp::zooming_frame(&config, index))
+                    .unwrap();
+            }
+            while let Some(packet) = encoder.receive_packet().unwrap() {
+                units.extend(packet.data);
+            }
         }
-        while let Some(packet) = encoder.receive_packet().unwrap() {
-            units.extend(packet.data);
-        }
+        assert!(
+            *global_frames.lock().unwrap() > 0,
+            "{case}: no global frame"
+        );
+        let expected: Vec<u8> = recons.lock().unwrap().values().flatten().copied().collect();
+        assert_same_samples(&decode(&units), &expected, &case);
     }
-    assert!(
-        *global_frames.lock().unwrap() > 0,
-        "no frame codes global motion"
-    );
-    let expected: Vec<u8> = recons.lock().unwrap().values().flatten().copied().collect();
-    assert_same_samples(&decode(&units), &expected, "estimated");
+}
+
+/// A mini-GOP zooming stream whose compound leaves code `GLOBAL_GLOBALMV`
+/// wherever they can, with the zoom model on list reference 0 alone, stores
+/// the model of the global list in the § 7.22 motion records as the decoder
+/// does: later frames read those records, and the stream decodes to the
+/// encoder recon. The estimated streams cover two global lists.
+#[test]
+fn global_global_leaves_store_the_model_of_each_global_list() {
+    let mut config = config(128, 96, BitDepth::Eight, 6, 180);
+    config.threads = splot_parallel::ThreadCount::from(1);
+    let preset = Box::leak(Box::new(PresetParams {
+        global_motion: 1,
+        compound_skip_sad: 0,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    coder.global_motion[0] = Some(zoom_model(&config));
+    crate::mode_decision::FORCE_GLOBAL_GLOBAL.set(true);
+    let stream = super::warp::zooming_stream(&config, coder, |coded| (coded.global_leaves, 0));
+    crate::mode_decision::FORCE_GLOBAL_GLOBAL.set(false);
+    super::warp::assert_warp_records_consumed(&stream.frames, "one global list");
+    assert_same_samples(&decode(&stream.units), &stream.expected, "one global list");
 }
 
 /// AVM decodes global motion streams, with and without `force_integer_mv`,

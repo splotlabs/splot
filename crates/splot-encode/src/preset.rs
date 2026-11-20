@@ -55,8 +55,7 @@ pub struct PresetParams {
     /// intra choices carry the loss: paris and park_joy p6 f10 lost +0.39%
     /// and +1.21% at 0.80x and 0.77x instructions with `2` in every frame,
     /// +0.24% and +0.97% with `2` in key frames alone, -0.09% and +0.17%
-    /// at 0.83x with `1`. Off while `global_motion` is on: a reused
-    /// `GLOBALMV` leaf there gave a recon that the decoder does not match.
+    /// at 0.83x with `1`.
     pub leaf_reuse: Levels<u8>,
     /// Rate-distortion optimized quantization. On in every row: off at p7-p10
     /// lost 8-9% BD-rate on paris f10 at the same instruction count.
@@ -146,8 +145,11 @@ pub struct PresetParams {
     pub bitrate_mini_gop_size: u8,
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
-    /// 8 from p4 (2026-11-20, f10 vs p4 with 16): niklas -2.09% BD-rate at
-    /// 0.985x instructions, paris +0.02% at 0.980x; it put p4 above p5.
+    /// 8 in every row (2026-11-20, CRF, 8 vs 16 at p3): paris f30 -1.52%,
+    /// niklas f10 -0.71%, park_joy f10 +0.03%, and p0 paris f10 -2.13%; with
+    /// 16 the frame offsets of base frames reach their bound and take
+    /// 24-36% more bits. Flat qp prefers 16 (p3 mean +0.41%, p0 paris -0.53%
+    /// for 8); the rows follow CRF, the default mode.
     pub lookahead_frames: u8,
     /// Strength in percent of the block-level temporal model: each
     /// superblock's qindex and lambda move with the importance of its
@@ -931,7 +933,7 @@ preset_table! {
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         bitrate_mini_gop_size: [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
-        lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     8,     8,     8],
+        lookahead_frames:      [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tf_frames:             frames([
