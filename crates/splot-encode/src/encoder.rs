@@ -20,8 +20,7 @@ use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::Lookahead;
 use crate::preset::{FrameKind, PresetContext, ResolutionClass};
 use crate::rate_control::{
-    Cbr, ConstantQp, Crf, DecoderBuffer, FramePlanInfo, FrameType, MAX_RECODES, RateController,
-    Vbr, max_qindex,
+    Cbr, ConstantQp, Crf, DecoderBuffer, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };
 use crate::stats::{FrameStats, psnr, ssim};
 use crate::tpl;
@@ -477,8 +476,8 @@ impl Encoder {
     }
 
     /// `coded`, the frame `plan` coded from `source` at `qp`, with its qindex;
-    /// while its unit would underflow the [`DecoderBuffer`], up to
-    /// [`MAX_RECODES`] times, the frame coded again at a coarser qindex. A
+    /// while its unit would underflow the [`DecoderBuffer`] below `MaxQ`, the
+    /// frame coded again at a coarser qindex ([`DecoderBuffer::coarser`]). A
     /// new coding reruns the frame coder only (mode decision, loop filters
     /// and entropy coding) with the lookahead motion, TPL and filtered source
     /// of the first.
@@ -491,12 +490,8 @@ impl Encoder {
         let Some(buffer) = &self.buffer else {
             return Ok((qp, coded));
         };
-        let mut tries = Vec::new();
-        for _ in 0..MAX_RECODES {
-            tries.push((qp, coded.temporal_unit.len() as u64 * 8));
-            let Some(coarser) = buffer.coarser(&tries, later, self.config.bit_depth) else {
-                break;
-            };
+        let mut tries = vec![(qp, coded.temporal_unit.len() as u64 * 8)];
+        while let Some(coarser) = buffer.coarser(&tries, later, self.config.bit_depth) {
             qp = coarser;
             coded =
                 self.coder
@@ -505,6 +500,7 @@ impl Encoder {
                     .ok_or(Error::Unsupported {
                         what: "a frame coded again without its result",
                     })?;
+            tries.push((qp, coded.temporal_unit.len() as u64 * 8));
         }
         if let Some(buffer) = &mut self.buffer {
             buffer.add(coded.temporal_unit.len() as u64 * 8);

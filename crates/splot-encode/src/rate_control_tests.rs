@@ -142,22 +142,9 @@ const FRAMES: u64 = 30;
 /// texture from frame 17, coded at preset 9 (mini-GOPs of 2); the first frame
 /// is black when `black_first` is set.
 fn encode(rate_control: RateControlMode, black_first: bool) -> Stream {
-    encode_with(rate_control, black_first, &[])
-}
-
-/// [`encode`] with the preset fields `overrides`.
-fn encode_with(
-    rate_control: RateControlMode,
-    black_first: bool,
-    overrides: &[(&str, &str)],
-) -> Stream {
     let mut config = Config::new(SIZE.0, SIZE.1);
     config.preset = Preset::new(9).unwrap();
     config.rate_control = rate_control;
-    config.preset_overrides = overrides
-        .iter()
-        .map(|&(field, value)| (field.to_owned(), value.to_owned()))
-        .collect();
     let (recons, codings) = (Arc::default(), Arc::default());
     let coder = Recording {
         coder: IntraFrameCoder::new(&config).unwrap(),
@@ -667,12 +654,9 @@ fn capped_crf_with_a_loose_cap_is_the_crf_stream() {
 
 /// A cap at 60% of the CRF rate underflows the CRF stream; capped CRF codes
 /// frames again until no unit underflows, spends less, and still decodes to
-/// the encoder recon. Pinned to `leaf_reuse` 0: with it, unit 9 still
-/// underflows after `MAX_RECODES` codings, a limit of the rate control.
+/// the encoder recon.
 #[test]
 fn capped_crf_keeps_the_decoder_buffer_and_decodes_to_the_recon() {
-    let pinned = [("leaf_reuse", "0")];
-    let encode = |mode, black_first| encode_with(mode, black_first, &pinned);
     let plain = encode(RateControlMode::Crf { crf: 20 }, false);
     let cap = plain.kbps() * 6 / 10;
     let buffer = (500, 250);
@@ -699,4 +683,46 @@ fn cbr_codes_a_frame_again_instead_of_underflowing_a_small_buffer() {
     assert_eq!(underflows(&stream.units, 60, (250, 125)), [] as [usize; 0]);
     assert!(stream.recodes > 0);
     assert_same_samples(&decode(&stream.units.concat()), &stream.expected, "cbr");
+}
+
+/// The tries of a frame first coded at `first` and coded again while
+/// [`DecoderBuffer::coarser`] asks, where qindex `q` costs `bits(q)`.
+fn fit(buffer: &DecoderBuffer, first: u16, bits: impl Fn(u16) -> u64) -> Vec<(u16, u64)> {
+    let mut tries = vec![(first, bits(first))];
+    while let Some(next) = buffer.coarser(&tries, (0, 0), BitDepth::Eight) {
+        assert!(next > tries.last().unwrap().0, "{tries:?} then {next}");
+        tries.push((next, bits(next)));
+    }
+    tries
+}
+
+/// Bits that fall slower than `1 / step`, that rise between two tries, that
+/// close in on the room from above, or that never fit: the last try fits the
+/// room or is at `MaxQ`, within `MAX_RECODES + 8` retries.
+#[test]
+fn the_buffer_re_code_ends_fitting_or_at_the_maximum_qindex() {
+    let buffer = DecoderBuffer {
+        size: 30_000,
+        drain: 1_000,
+        level: 25_320,
+    };
+    let room = 4_680;
+    let max = max_qindex(BitDepth::Eight);
+    let flat = |q: u16| 60_000 / step(q, BitDepth::Eight).isqrt();
+    let curves: [(&str, &dyn Fn(u16) -> u64); 4] = [
+        ("flat", &flat),
+        ("noisy", &|q| flat(q) + u64::from(q % 5) * 400),
+        ("closing", &|q| {
+            room + 4_000_000 / (u64::from(q) * u64::from(q))
+        }),
+        ("never", &|_| 10_000),
+    ];
+    for (name, bits) in curves {
+        for first in [20, 69, 120, 200] {
+            let tries = fit(&buffer, first, bits);
+            let &(qindex, last) = tries.last().unwrap();
+            assert!(last <= room || qindex == max, "{name}: {tries:?}");
+            assert!(tries.len() <= MAX_RECODES + 9, "{name}: {tries:?}");
+        }
+    }
 }
