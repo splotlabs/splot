@@ -93,6 +93,16 @@ pub(crate) trait PartitionSearch {
 /// first search chose, and a later visit codes that tree again in the new
 /// context instead of searching it again.
 ///
+/// Each shape after the first searches under a budget, the lower of the best
+/// cost so far and the node's own budget: its children search under what the
+/// budget leaves, and the shape stops once its cost reaches the budget. A node
+/// with no tree under its budget reports none and keeps the budget as a
+/// bound: a later visit under a budget not above it reports none at once, a
+/// later visit under a larger budget searches again and codes the `NONE`
+/// choice found before. The shape whose cost decides the early exit searches
+/// under the best cost alone, and three-way shapes without a budget, as the
+/// exit and the four-way gate read their exact costs.
+///
 /// A three-way shape is tried only when the `NONE` cost is within the
 /// preset's margin of the best cost so far, an uneven four-way shape only
 /// when the three-way shape of its axis is; the early exit skips the other
@@ -124,7 +134,44 @@ pub(crate) fn search_guided<S: PartitionSearch>(
     levels: Option<&Levels>,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
     let mut memo = Memo::new();
-    search(coder, node, preset, lambda, (&mut memo, levels), true)
+    let found = search(
+        coder,
+        node,
+        preset,
+        lambda,
+        (&mut memo, levels),
+        (true, None),
+    )?;
+    Ok(found.unwrap_or((PartitionTree::Leaf(LeafChoice::DC), RdCost::default())))
+}
+
+/// Searches `node` once per budget of `budgets` over one memo; `None` for a
+/// visit that found no tree under its budget.
+///
+/// # Errors
+/// Returns the coder's errors.
+#[cfg(test)]
+pub(crate) fn search_visits<S: PartitionSearch>(
+    coder: &mut S,
+    node: S::Node,
+    preset: &PresetParams,
+    lambda: Lambda,
+    budgets: &[Option<u128>],
+) -> Result<Vec<Option<RdCost>>, S::Error> {
+    let mut memo = Memo::new();
+    let mut out = Vec::with_capacity(budgets.len());
+    for &budget in budgets {
+        let found = search(
+            coder,
+            node,
+            preset,
+            lambda,
+            (&mut memo, None),
+            (true, budget),
+        )?;
+        out.push(found.map(|(_, cost)| cost));
+    }
+    Ok(out)
 }
 
 /// The partition levels of a first pass (PD0) over a superblock: each 8x8
@@ -179,8 +226,36 @@ impl Levels {
     }
 }
 
-/// The tree each searched node chose, by node key and extended-shape mode.
-type Memo<N> = HashMap<(u64, bool), Vec<(N, PartitionTree)>>;
+/// What a searched node found: its tree, or a budget it found no tree under
+/// and the choice of its `NONE` leaf when it tried one.
+enum Seen {
+    Tree(PartitionTree),
+    Bound(u128, Option<LeafChoice>),
+}
+
+/// What each searched node found, by node key and extended-shape mode.
+type Memo<N> = HashMap<(u64, bool), Vec<(N, Seen)>>;
+
+/// The tree of a search and its cost; `None` when no tree costs less than
+/// the search's budget.
+type Found = Option<(PartitionTree, RdCost)>;
+
+/// Records `seen` for `node`, replacing what an earlier visit recorded.
+fn remember<N: PartialEq>(memo: &mut Memo<N>, key: (u64, bool), node: N, seen: Seen) {
+    let entries = memo.entry(key).or_default();
+    match entries.iter_mut().find(|(at, _)| *at == node) {
+        Some(entry) => entry.1 = seen,
+        None => entries.push((node, seen)),
+    }
+}
+
+/// The lower of two optional bounds; `None` is no bound.
+fn lower(a: Option<u128>, b: Option<u128>) -> Option<u128> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
 
 fn search<S: PartitionSearch>(
     coder: &mut S,
@@ -188,32 +263,67 @@ fn search<S: PartitionSearch>(
     preset: &PresetParams,
     lambda: Lambda,
     (memo, levels): (&mut Memo<S::Node>, Option<&Levels>),
-    extended: bool,
-) -> Result<(PartitionTree, RdCost), S::Error> {
+    (extended, budget): (bool, Option<u128>),
+) -> Result<Found, S::Error> {
     if !coder.in_frame(node) {
-        return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
+        return Ok(Some((
+            PartitionTree::Leaf(LeafChoice::DC),
+            RdCost::default(),
+        )));
     }
     let key = (coder.key(node), extended);
-    if let Some((_, tree)) = memo
+    let mut leaf = None;
+    match memo
         .get(&key)
         .and_then(|seen| seen.iter().find(|(seen, _)| *seen == node))
     {
-        let tree = tree.clone();
-        let cost = recode(coder, node, &tree)?;
-        return Ok((tree, cost));
+        Some((_, Seen::Tree(tree))) => {
+            let tree = tree.clone();
+            let cost = recode(coder, node, &tree)?;
+            return Ok(Some((tree, cost)));
+        }
+        Some((_, Seen::Bound(bound, _))) if budget.is_some_and(|budget| budget <= *bound) => {
+            return Ok(None);
+        }
+        Some((_, Seen::Bound(_, known))) => leaf = *known,
+        None => {}
     }
     if let Some((luma_root, chroma_root)) = coder.sdp_roots(node) {
-        let (luma, luma_cost) = search(coder, luma_root, preset, lambda, (memo, levels), extended)?;
+        let lumas = search(
+            coder,
+            luma_root,
+            preset,
+            lambda,
+            (memo, levels),
+            (extended, budget),
+        )?;
+        let Some((luma, luma_cost)) = lumas else {
+            return Ok(None);
+        };
+        let spent = luma_cost.cost(lambda);
+        if budget.is_some_and(|budget| spent >= budget) {
+            return Ok(None);
+        }
+        let rest = budget.map(|budget| budget - spent);
         coder.follow_luma(Some((luma_root, &luma)))?;
-        let chroma = search(coder, chroma_root, preset, lambda, (memo, levels), extended);
+        let chroma = search(
+            coder,
+            chroma_root,
+            preset,
+            lambda,
+            (memo, levels),
+            (extended, rest),
+        );
         coder.follow_luma(None)?;
-        let (chroma, chroma_cost) = chroma?;
+        let Some((chroma, chroma_cost)) = chroma? else {
+            return Ok(None);
+        };
         let tree = PartitionTree::Sdp {
             luma: Box::new(luma),
             chroma: Box::new(chroma),
         };
-        memo.entry(key).or_default().push((node, tree.clone()));
-        return Ok((tree, luma_cost + chroma_cost));
+        remember(memo, key, node, Seen::Tree(tree.clone()));
+        return Ok(Some((tree, luma_cost + chroma_cost)));
     }
     let mut candidates = candidates(coder, node, preset, extended)?;
     if let Some(levels) = levels {
@@ -250,6 +360,7 @@ fn search<S: PartitionSearch>(
     let mut best_split = None;
     let mut three_way = [None; 2];
     let mut exited = false;
+    let early_exit = preset.partition_early_exit.at(coder.context());
     for (index, (partition, children)) in candidates.iter().enumerate() {
         let best_j = best.as_ref().map(|(j, ..)| *j);
         let gate = match extended_shape(*partition) {
@@ -267,35 +378,64 @@ fn search<S: PartitionSearch>(
             coder.restore(start)?;
         }
         let rate = coder.partition_rate(node, *partition)?;
-        let (tree, mut cost) = if *partition == Partition::None {
-            let (cost, leaf) = coder.evaluate_leaf(node)?;
-            (PartitionTree::Leaf(leaf), cost)
+        let three_way_shape = matches!(extended_shape(*partition), Some((_, false)));
+        let exits = early_exit && unsplit.is_some() && best_split.is_none();
+        let bound = match (three_way_shape, exits) {
+            (true, _) => None,
+            (false, true) => best_j,
+            (false, false) => lower(best_j, budget),
+        };
+        let found = if *partition == Partition::None {
+            let (mut cost, choice) = match leaf {
+                Some(choice) => (coder.code_leaf(node, choice)?, choice),
+                None => coder.evaluate_leaf(node)?,
+            };
+            leaf = Some(choice);
+            cost.rate += rate;
+            Some((PartitionTree::Leaf(choice), cost))
         } else {
+            let nested = extended && extended_shape(*partition).is_none();
             let mut trees = Vec::with_capacity(children.len());
-            let mut cost = RdCost::default();
+            let mut cost = RdCost {
+                distortion: 0,
+                rate,
+            };
             for &child in children {
-                let nested = extended && extended_shape(*partition).is_none();
-                let (tree, child_cost) =
-                    search(coder, child, preset, lambda, (memo, levels), nested)?;
+                let spent = cost.cost(lambda);
+                if bound.is_some_and(|bound| spent >= bound) {
+                    break;
+                }
+                let rest = bound.map(|bound| bound - spent);
+                let found = search(coder, child, preset, lambda, (memo, levels), (nested, rest))?;
+                let Some((tree, child_cost)) = found else {
+                    break;
+                };
                 trees.push(tree);
                 cost = cost + child_cost;
             }
-            let tree = PartitionTree::Split {
-                kind: *partition,
-                children: trees,
-            };
-            (tree, cost)
+            (trees.len() == children.len()).then(|| {
+                let tree = PartitionTree::Split {
+                    kind: *partition,
+                    children: trees,
+                };
+                (tree, cost)
+            })
         };
-        cost.rate += rate;
-        let j = cost.cost(lambda);
-        if best.as_ref().is_none_or(|(best_j, ..)| j < *best_j) {
-            let end = if index + 1 < candidates.len() {
-                Some(coder.save(node, start.as_ref())?)
-            } else {
-                None
-            };
-            best = Some((j, tree, cost, end));
-        }
+        let j = match found {
+            Some((tree, cost)) => {
+                let j = cost.cost(lambda);
+                if best_j.is_none_or(|best_j| j < best_j) {
+                    let end = if index + 1 < candidates.len() {
+                        Some(coder.save(node, start.as_ref())?)
+                    } else {
+                        None
+                    };
+                    best = Some((j, tree, cost, end));
+                }
+                j
+            }
+            None => bound.unwrap_or(u128::MAX),
+        };
         if *partition == Partition::None {
             unsplit = Some(j);
             continue;
@@ -305,17 +445,24 @@ fn search<S: PartitionSearch>(
         }
         let split = best_split.map_or(j, |b: u128| b.min(j));
         best_split = Some(split);
-        exited |= preset.partition_early_exit.at(coder.context())
-            && unsplit.is_some_and(|none| none <= split);
+        exited |= early_exit && unsplit.is_some_and(|none| none <= split);
     }
-    let Some((_, tree, cost, end)) = best else {
-        return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
+    let Some((_, tree, cost, end)) = best.filter(|(j, ..)| budget.is_none_or(|budget| *j < budget))
+    else {
+        if let Some(budget) = budget {
+            remember(memo, key, node, Seen::Bound(budget, leaf));
+            return Ok(None);
+        }
+        return Ok(Some((
+            PartitionTree::Leaf(LeafChoice::DC),
+            RdCost::default(),
+        )));
     };
     if let Some(end) = &end {
         coder.restore(end)?;
     }
-    memo.entry(key).or_default().push((node, tree.clone()));
-    Ok((tree, cost))
+    remember(memo, key, node, Seen::Tree(tree.clone()));
+    Ok(Some((tree, cost)))
 }
 
 /// Codes `tree` at `node` into the live state, partition symbols before the

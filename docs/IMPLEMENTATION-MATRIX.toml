@@ -5129,7 +5129,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "encoder-m4-rate-control"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its underspend to 8 frame budgets and its overspend to 32, predicts flat frames by their mean coded size, and repays the whole drift over the last window of the input (ENC-RATE-CONTROL-V2); CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q. CLI default (enc-crf-default, 2026-11-20): splot encode without --qp, --crf or --bitrate codes Crf { crf: Config::DEFAULT_CRF = 20 }, whose 8-bit base qindex is the old flat default Config::DEFAULT_QP = 80; --qp 80 codes the old default stream byte for byte. Config::new keeps ConstantQp { qp: 80 } for library callers."
+notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its underspend to 8 frame budgets and its overspend to 32, predicts flat frames by their mean coded size, and repays the whole drift over the last window of the input (ENC-RATE-CONTROL-V2); CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q. CLI default (enc-crf-default, 2026-11-20): splot encode without --qp, --crf or --bitrate codes Crf { crf: Config::DEFAULT_CRF = 20 }, whose 8-bit base qindex is the old flat default Config::DEFAULT_QP = 80; --qp 80 codes the old default stream byte for byte. Config::new keeps ConstantQp { qp: 80 } for library callers. --max-bitrate without --crf caps that default CRF (ENC-CAPPED-CRF)."
 
 [feature.status]
 mapped = "done"
@@ -6844,6 +6844,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-PARTITION-BUDGET"
+name = "Encoder partition search RD budget"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rd/partition.rs"
+change_id = "enc-partition-budget"
+owner = "encoder"
+risk = "medium"
+notes = "Branch and bound in rd::partition::search: each shape after the first searches under the lower of the best cost so far and the node's budget; its children search under what is left, and the shape stops once its cost reaches the budget. A node with no tree under its budget reports none and the memo keeps the budget as a bound with its NONE choice: a later visit under a budget not above the bound reports none at once, a larger budget searches again and codes the kept NONE choice instead of a new mode search. The shape that decides partition_early_exit searches under the best cost alone and three-way shapes without a budget, so the early exit and the four-way gate read the costs of the search without budgets (budgets_keep_the_early_exit_result). SDP: the chroma root takes the budget the luma tree leaves. Not byte-identical to main: a node that a budget stopped has no tree for later visits, which search it again in their own context instead of coding the first tree again. Measured f10 vs main fab1875ad: p6 park_joy +0.47% at 0.984x instructions, paris -0.36% at 0.993x; p0 paris -0.06% at 0.937x; p3 paris -0.09% at 1.000x; p8 paris +0.45% at 1.005x; p10 paris -0.09% at 1.000x; intra p6 park_joy -0.13% at 0.998x, paris -0.02% at 0.998x. The early exit needs the exact SPLIT cost, so at p2-p10 the budget rarely reaches below the first split; a budget that also bounds that SPLIT (exit once it reaches the budget) measured p6 park_joy +2.83% at 0.880x and paris +0.81% at 0.851x and was dropped."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rd/partition_tests.rs::split_stops_at_the_budget_of_the_best_shape", "crates/splot-encode/src/rd/partition_tests.rs::a_bound_skips_lower_budgets_and_searches_larger_ones", "crates/splot-encode/src/rd/partition_tests.rs::budgets_keep_the_early_exit_result", "crates/splot-encode/src/rd/partition_tests.rs::exhaustive_search_is_optimal", "crates/splot-encode/src/intra_frame_mds_tests.rs::two_pass_streams_decode_on_any_thread_count"]
+commands = ["cargo test -p splot-encode partition_tests --locked", "cargo test -p splot-encode two_pass --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-TEMPORAL-FILTER"
 name = "Encoder temporal filtering of key and base frames"
 category = "encoder"
@@ -7111,7 +7143,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "enc-cbr-buffer"
 owner = "encoder"
 risk = "low"
-notes = "B9 item: CBR buffer model. Encoder strategy; no new syntax. RateControlMode::Cbr { bitrate_kbps, buffer_ms, initial_ms }: the decoder buffer size and its level before the first frame (0..=buffer_ms, else Error::InvalidInitialBuffer). The CBR model is the encoder buffer (buffer size minus the decoder level); its drift starts at half the buffer minus the initial level, the windows steer it back to half the buffer, and each frame's qindex is raised until the predicted frame fits the buffer (unchanged). CLI: --buffer MS (default 1000) and --initial-buffer MS (default half the buffer), both with --rc. Defaults code the old stream. Measured 2026-11-01, niklas 720p 120 frames (60 frames forward then backward), p9, keyint 64, decoder buffer simulated from the packet sizes (remove a packet, then add a frame budget): 1000/2500/6000 kbps with 1000 ms buffer at 500 ms: -0.08/-0.16/-0.05%, 0 underflows, 0 overflows, level 0.22-0.63; initial 100 ms: 0 underflows (main, which assumes half full: 2/3/4), rate -10% as the buffer refills to half; initial 900 ms: 0 overflows (main: 1 each at 1000/2500 kbps), rate +10%. Not met: a 250 ms buffer still underflows 2/2/3 times, at the first mini-GOP base frame and after the key frame at 64, where the frame-size model mispredicts the base frame by 2-3x; the qindex limit cannot hold a buffer that small without a better model."
+notes = "B9 item: CBR buffer model. Encoder strategy; no new syntax. RateControlMode::Cbr { bitrate_kbps, buffer_ms, initial_ms }: the decoder buffer size and its level before the first frame (0..=buffer_ms, else Error::InvalidInitialBuffer). The CBR model is the encoder buffer (buffer size minus the decoder level); its drift starts at half the buffer minus the initial level, the windows steer it back to half the buffer, and each frame's qindex is raised until the predicted frame fits the buffer (unchanged). CLI: --buffer MS (default 1000) and --initial-buffer MS (default half the buffer), both with --rc. Defaults code the old stream. Measured 2026-11-01, niklas 720p 120 frames (60 frames forward then backward), p9, keyint 64, decoder buffer simulated from the packet sizes (remove a packet, then add a frame budget): 1000/2500/6000 kbps with 1000 ms buffer at 500 ms: -0.08/-0.16/-0.05%, 0 underflows, 0 overflows, level 0.22-0.63; initial 100 ms: 0 underflows (main, which assumes half full: 2/3/4), rate -10% as the buffer refills to half; initial 900 ms: 0 overflows (main: 1 each at 1000/2500 kbps), rate +10%. A 250 ms buffer underflowed 2/2/3 times, where the frame-size model mispredicts a base frame by 2-3x; the ENC-CAPPED-CRF re-code now codes such a frame again before its commit: 0/0/0 underflows, rate -0.35/-0.35/-0.07% (main +3.20/+1.63/+0.20%)."
 
 [feature.status]
 mapped = "done"
@@ -7119,7 +7151,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
-encode = "partial"
+encode = "done"
 decode_check = "done"
 tests = "done"
 avm_diff = "not-applicable"
@@ -7160,6 +7192,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/rate_control_tests.rs::two_pass_vbr_follows_the_first_pass", "crates/splot-cli/tests/cli.rs::encode_rejects_conflicting_rate_control_flags", "crates/splot-cli/tests/encode_decode_roundtrip.rs::crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode two_pass --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-CAPPED-CRF"
+name = "Capped CRF and the decoder-buffer re-code"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/encoder.rs"
+change_id = "enc-capped-crf"
+owner = "encoder"
+risk = "medium"
+notes = "B9 item 2. Encoder strategy, no syntax. RateControlMode::CappedCrf { crf, max_bitrate_kbps, buffer_ms, initial_ms } (CLI --crf N --max-bitrate KBPS with --buffer, default 1000 ms, and --initial-buffer, default half) codes CRF against a decoder buffer that fills at max_bitrate_kbps. rate_control::DecoderBuffer keeps that buffer for CappedCrf and Cbr (ENC-CBR-BUFFER): each temporal unit leaves, then one frame period arrives, up to the size. Before its commit a frame whose unit would underflow the buffer is coded again at a coarser qindex, at most MAX_RECODES = 3 times: the first retry takes the § 7.14.2 step that fits when bits ~ 1 / step, later ones a secant on log2(bits); a hidden frame leaves one frame period per later hidden frame of its unit and a quarter per shown frame, at most half the room. A new coding reruns only the frame coder; the lookahead motion, TPL, global motion and temporal filter are reused. Integer decisions; same bytes at 1/2/8 threads. Measured 2026-11-20 on d6914c0ae, niklas 720p 60 frames, p8, keyint 64, CRF 30, 1 thread: plain 1936.6 kbps, 40.921 dB, underflows a 1160 kbps 1000/500 ms buffer 6 times; --max-bitrate 10000 is the plain stream byte for byte; --max-bitrate 1160 (60%): 1401.0 kbps (the half-full start allows 1450 over 2 s), 39.195 dB, 0 underflows, 18 of 60 frames coded twice, 1.36x instructions. CBR 250/125 ms, niklas 120 frames forward and back, p9, keyint 64: underflows 2/2/3 on main at 1000/2500/6000 kbps, 0/0/0 here, 10-12 frames coded twice, 1.13-1.18x instructions. Not done: lifting the qindex of the later frames of a mini-GOP after a retry, so a re-coded base frame can end coarser than its leaves."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rate_control_tests.rs::capped_crf_with_a_loose_cap_is_the_crf_stream", "crates/splot-encode/src/rate_control_tests.rs::capped_crf_keeps_the_decoder_buffer_and_decodes_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::cbr_codes_a_frame_again_instead_of_underflowing_a_small_buffer", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_do_not_depend_on_the_thread_count", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot", "crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-cli/tests/cli.rs::encode_rejects_conflicting_rate_control_flags", "crates/splot-cli/tests/encode_decode_roundtrip.rs::crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats"]
+commands = ["cargo test -p splot-encode capped_crf --locked", "cargo test -p splot-encode rate_control --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
 fixtures = []
 diagnostics = []
 
