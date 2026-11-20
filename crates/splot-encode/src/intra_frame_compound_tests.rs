@@ -255,6 +255,7 @@ fn interintra_streams_decode_on_any_thread_count() {
 fn interintra_preset() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         interintra: true,
+        tcq_type_trellis: false,
         ..*Preset::new(6).unwrap().params()
     }))
 }
