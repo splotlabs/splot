@@ -1329,6 +1329,17 @@ pub(crate) fn two_pass_partition(
     Ok(search_guided(&mut trial, root, preset, lambda, levels.as_ref())?.0)
 }
 
+/// The `leaf_reuse` level of `context`. shortcut: 0 while `global_motion` is
+/// on, where a reused `GLOBALMV` leaf decodes unlike the encoder recon (open
+/// defect, `the_encoder_estimates_and_codes_global_motion` fails); lift it once
+/// that defect is fixed.
+fn reuse_level(preset: &PresetParams, context: crate::preset::PresetContext) -> u8 {
+    match preset.global_motion {
+        0 => preset.leaf_reuse.at(context),
+        _ => 0,
+    }
+}
+
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
 pub(crate) fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
@@ -1464,7 +1475,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     /// codes here, else searches it.
     fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
-        let reuse = self.preset.leaf_reuse.at(self.coder.context);
+        let reuse = reuse_level(self.preset, self.coder.context);
         let key = (leaf.row4(), leaf.col4(), leaf.block_size());
         let seen = self.leaves.get(&key).and_then(|seen| {
             seen.iter()

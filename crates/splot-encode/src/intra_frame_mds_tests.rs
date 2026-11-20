@@ -162,6 +162,7 @@ fn full_trials_255_code_the_old_full_trial_stream() {
         pd_window: u8::MAX,
         ref_intra_margin: u8::MAX,
         none_breakout: Levels::all(0),
+        leaf_reuse: Levels::all(0),
         ..*Preset::new(6).unwrap().params()
     }));
     MDS1_PRUNED.set(0);
