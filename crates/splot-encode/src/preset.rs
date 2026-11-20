@@ -78,6 +78,10 @@ pub struct PresetParams {
     pub tcq_search_trellis: bool,
     /// The luma transform-type search and the luma trial before the chroma
     /// search run the TCQ trellis; off, they price TCQ blocks as plain levels.
+    /// On from p0 to p6 (2026-11-20, keyint 30, park_joy, paris f30,
+    /// niklas): p6 CRF -0.58% BD-rate at 1.06x instructions, p5 -1.32%, p4
+    /// -1.05%; p6 flat qp about neutral to slightly worse (+0.90%, +0.52%,
+    /// -0.45%). It acts on the TCQ frames only (key and base).
     pub tcq_type_trellis: bool,
     /// The candidates of a mode, transform-partition or leaf choice that
     /// get a full trial, with RDOQ and the transform-type search: `0` gives
@@ -903,7 +907,7 @@ preset_table! {
         parity_hiding:         [false, false, false, false, false, false, false, false, false, false, false],
         tcq:                   frames([[true; 11], [true; 11], [false; 11], [false; 11]]),
         tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
-        tcq_type_trellis:      [ true,  true,  true,  true, false, false, false, false, false, false, false],
+        tcq_type_trellis:      [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
         tx_partition_search:   frames([
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],

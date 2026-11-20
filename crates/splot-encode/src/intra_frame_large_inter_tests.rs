@@ -12,6 +12,7 @@ use crate::tile_writer::Walk;
 pub(super) fn preset6(large_inter: bool) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         large_inter,
+        tcq_type_trellis: false,
         ..*Preset::new(6).unwrap().params()
     }))
 }
