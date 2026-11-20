@@ -365,6 +365,41 @@ fn early_exit_skips_rectangles_when_unsplit_is_close() {
     assert_eq!(fast.coded, found);
 }
 
+/// Leaf distortions by log2 size; any other size costs `1 << 20`. Rates
+/// are the partition rates alone, so `J` is distortion plus bits.
+fn sized(costs: &'static [((u32, u32), u64)]) -> impl Fn(Rect) -> RdCost {
+    move |(.., w, h)| RdCost {
+        distortion: costs
+            .iter()
+            .find(|&&(size, _)| size == (w, h))
+            .map_or(1 << 20, |&(_, d)| d),
+        rate: Bits(0),
+    }
+}
+
+/// A wide block decides the early exit on `VERT`, which halves its longer
+/// side: here `HORZ` loses to `NONE` and `VERT` wins.
+#[test]
+fn early_exit_of_a_wide_block_tries_vert_first() {
+    let cost = sized(&[((5, 4), 1000), ((5, 3), 600), ((4, 4), 200)]);
+    let preset = PresetParams {
+        partition_early_exit: crate::preset::Levels::all(true),
+        ..full_search()
+    };
+    let mut coder = Synthetic::new(32, cost);
+    let (tree, _) = search_partition(&mut coder, (0, 0, 5, 4), &preset, unit_lambda()).unwrap();
+    assert!(
+        matches!(
+            tree,
+            PartitionTree::Split {
+                kind: Partition::Vert,
+                ..
+            }
+        ),
+        "{tree:?}"
+    );
+}
+
 proptest! {
     #[test]
     fn exhaustive_search_is_optimal(seed in any::<u64>(), size in prop::sample::select(vec![16u32, 24, 32])) {
@@ -693,8 +728,9 @@ fn a_bound_skips_lower_budgets_and_searches_larger_ones() {
 }
 
 /// The `J` of the search with the early exit by plain recursion, without
-/// budgets: `NONE`, `SPLIT`, then the rest, and once `NONE` costs no more
-/// than the best other shape, only the extended shapes.
+/// budgets: `NONE`, `SPLIT`, the binary shape that halves the longer side,
+/// then the rest, and once `NONE` costs no more than the best other shape,
+/// only the extended shapes.
 fn early_exit_optimum<F: Fn(Rect) -> RdCost>(
     coder: &Synthetic<F>,
     node: Rect,
@@ -707,10 +743,16 @@ fn early_exit_optimum<F: Fn(Rect) -> RdCost>(
     let is_extended = |p: Partition| matches!(p, Partition::Horz3 | Partition::Horz4A);
     let mut partitions = coder.partitions(node).unwrap();
     partitions.retain(|&p| extended || !is_extended(p));
+    let long = if node.2 > node.3 {
+        Partition::Vert
+    } else {
+        Partition::Horz
+    };
     partitions.sort_by_key(|&p| match p {
         Partition::None => 0,
         Partition::Split => 1,
-        _ => 2,
+        _ if p == long => 2,
+        _ => 3,
     });
     let (mut best, mut unsplit, mut split, mut exited) = (u128::MAX, None, u128::MAX, false);
     for partition in partitions {

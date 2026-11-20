@@ -21,6 +21,15 @@ fn with_wiener_ns(
     }))
 }
 
+/// Preset 6 without the partition early exit, whose pans code luma and
+/// chroma banks.
+fn full_split() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        partition_early_exit: crate::preset::Levels::all(false),
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
 /// What each plane's restoration of a frame codes: `(type, temporal_pred_flag,
 /// NumFilterClasses)`.
 type FrameLr = [(FrameRestorationType, bool, u8); 3];
@@ -101,7 +110,7 @@ fn codes_wiener_ns(lr: &[FrameLr], planes: core::ops::Range<usize>) -> bool {
 /// Without the tool no plane codes it; without the chroma fits only luma does.
 #[test]
 fn wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count() {
-    let on = Preset::new(6).unwrap().params();
+    let on = full_split();
     let (one, recon, lr) = wiener_stream((1, PixelFormat::Yuv420), on);
     assert!(codes_wiener_ns(&lr[..1], 0..1), "{lr:?}");
     assert!(codes_wiener_ns(&lr[1..], 0..1), "{lr:?}");
@@ -198,7 +207,7 @@ fn avm_decodes_wiener_ns_frames_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let on = Preset::new(6).unwrap().params();
+    let on = full_split();
     for (speed, preset) in [(1, on), (0, with_wiener_ns(on, (1, 1)))] {
         let (units, recon, lr) = pan_stream((2, PixelFormat::Yuv420), preset, speed);
         assert!(
