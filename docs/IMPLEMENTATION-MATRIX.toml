@@ -4443,7 +4443,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/encoder.rs::tests", "crates/splot-encode/src/cancel_tests.rs"]
+tests = ["crates/splot-encode/src/encoder_tests.rs", "crates/splot-encode/src/cancel_tests.rs"]
 commands = ["cargo test -p splot-encode encoder --locked", "cargo test -p splot-encode cancel --locked"]
 fixtures = []
 diagnostics = []
@@ -4890,7 +4890,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/encoder.rs::tests::encodes_flat_frames_through_the_public_api", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/encoder_tests.rs::encodes_flat_frames_through_the_public_api", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode encoder --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -4986,7 +4986,7 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/gop_tests.rs::plans_a_hierarchical_mini_gop_and_a_short_last_one", "crates/splot-encode/src/encoder.rs::tests::packs_hidden_frames_into_the_next_output_unit", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/gop_tests.rs::plans_a_hierarchical_mini_gop_and_a_short_last_one", "crates/splot-encode/src/encoder_tests.rs::packs_hidden_frames_into_the_next_output_unit", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -5082,7 +5082,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-encode/src/encoder.rs::tests::codes_frames_in_order_with_stats", "crates/splot-encode/src/intra_frame_tests.rs::coding_is_deterministic_and_lower_qp_costs_more_bits", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats", "crates/splot-cli/tests/encode_decode_roundtrip.rs::ten_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-encode/src/encoder_tests.rs::codes_frames_in_order_with_stats", "crates/splot-encode/src/intra_frame_tests.rs::coding_is_deterministic_and_lower_qp_costs_more_bits", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats", "crates/splot-cli/tests/encode_decode_roundtrip.rs::ten_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode config --locked", "cargo test -p splot-encode encoder --locked", "cargo test -p splot-encode coding_is_deterministic --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -5240,7 +5240,7 @@ avm_diff = "not-applicable"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/tpl.rs::tests::upper_layers_keep_a_shrinking_share_of_the_decrease", "crates/splot-encode/src/rate_control_tests.rs::key_qindex_boost_lowers_only_key_frames_in_crf", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/tpl.rs::tests::referenced_frames_get_lower_qindex_on_static_and_moving_content", "crates/splot-encode/src/encoder.rs::tests::crf_gives_referenced_frames_lower_qindex_on_static_content"]
+tests = ["crates/splot-encode/src/tpl.rs::tests::upper_layers_keep_a_shrinking_share_of_the_decrease", "crates/splot-encode/src/rate_control_tests.rs::key_qindex_boost_lowers_only_key_frames_in_crf", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/tpl.rs::tests::referenced_frames_get_lower_qindex_on_static_and_moving_content", "crates/splot-encode/src/encoder_tests.rs::crf_gives_referenced_frames_lower_qindex_on_static_content"]
 commands = ["cargo test -p splot-encode tpl --locked", "cargo test -p splot-encode lookahead --locked", "cargo test -p splot-encode key_qindex_boost --locked"]
 fixtures = []
 diagnostics = []
@@ -5272,7 +5272,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/gop_tests.rs::scene_cuts_start_key_frames_and_restart_the_keyint_count", "crates/splot-encode/src/encoder.rs::tests::a_scene_cut_starts_a_key_frame", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
+tests = ["crates/splot-encode/src/gop_tests.rs::scene_cuts_start_key_frames_and_restart_the_keyint_count", "crates/splot-encode/src/encoder_tests.rs::a_scene_cut_starts_a_key_frame", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
 commands = ["cargo test -p splot-encode gop --locked", "cargo test -p splot-encode encoder --locked"]
 fixtures = []
 diagnostics = []
@@ -5464,7 +5464,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/preset.rs::tests::contexts_classify_frames", "crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder.rs::tests::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
+tests = ["crates/splot-encode/src/preset.rs::tests::contexts_classify_frames", "crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder_tests.rs::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
 commands = ["cargo test -p splot-encode preset --locked"]
 fixtures = []
 diagnostics = []
@@ -6582,7 +6582,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/encoder.rs::tests::mini_gop_and_lookahead_of_one_emit_each_frame_at_once", "crates/splot-cli/tests/encode_decode_roundtrip.rs::low_delay_clips_code_every_frame_in_input_order"]
+tests = ["crates/splot-encode/src/encoder_tests.rs::mini_gop_and_lookahead_of_one_emit_each_frame_at_once", "crates/splot-cli/tests/encode_decode_roundtrip.rs::low_delay_clips_code_every_frame_in_input_order"]
 commands = ["cargo test -p splot-encode mini_gop_and_lookahead --locked", "cargo test -p splot-cli --test encode_decode_roundtrip low_delay --locked"]
 fixtures = []
 diagnostics = []
@@ -6614,7 +6614,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/resize.rs::tests::same_size_is_a_copy", "crates/splot-encode/src/resize.rs::tests::flat_planes_stay_flat_at_every_ratio", "crates/splot-encode/src/resize.rs::tests::ramps_land_on_the_mapped_centres", "crates/splot-encode/src/config.rs::tests::resize_scales_the_coded_size_by_8_over_the_denominator", "crates/splot-encode/src/encoder.rs::tests::resized_streams_code_input_frames_at_the_scaled_size", "crates/splot-cli/tests/encode_decode_roundtrip.rs::resized_clips_code_and_decode_at_the_scaled_size"]
+tests = ["crates/splot-encode/src/resize.rs::tests::same_size_is_a_copy", "crates/splot-encode/src/resize.rs::tests::flat_planes_stay_flat_at_every_ratio", "crates/splot-encode/src/resize.rs::tests::ramps_land_on_the_mapped_centres", "crates/splot-encode/src/config.rs::tests::resize_scales_the_coded_size_by_8_over_the_denominator", "crates/splot-encode/src/encoder_tests.rs::resized_streams_code_input_frames_at_the_scaled_size", "crates/splot-cli/tests/encode_decode_roundtrip.rs::resized_clips_code_and_decode_at_the_scaled_size"]
 commands = ["cargo test -p splot-encode resize --locked", "cargo test -p splot-cli --test encode_decode_roundtrip resized --locked"]
 fixtures = []
 diagnostics = []
@@ -6838,7 +6838,7 @@ avm_diff = "not-applicable"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/hme.rs::tests::finds_a_pan_beyond_the_full_resolution_range", "crates/splot-encode/src/hme.rs::tests::worker_pools_give_the_same_motion", "crates/splot-encode/src/hme.rs::tests::levels_halve_and_pad", "crates/splot-encode/src/kernels/motion.rs::tests::sads_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::quads_and_best_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::downscale_matches_scalar", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/lookahead.rs::tests::quarter_level_blocks_take_their_own_vectors", "crates/splot-encode/src/lookahead.rs::tests::frames_smaller_than_a_block_are_one_block", "crates/splot-encode/src/hme.rs::tests::ten_bit_frames_shift_to_eight_bits", "crates/splot-encode/src/hme.rs::tests::frames_smaller_than_a_block_search_one_superblock", "crates/splot-encode/src/encoder.rs::tests::a_window_searches_against_the_last_coded_frame", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::open_loop_seed_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::avm_decodes_open_loop_seed_streams_like_splot", "crates/splot-encode/src/lookahead.rs::tests::keeps_open_loop_motion_only_for_readers"]
+tests = ["crates/splot-encode/src/hme.rs::tests::finds_a_pan_beyond_the_full_resolution_range", "crates/splot-encode/src/hme.rs::tests::worker_pools_give_the_same_motion", "crates/splot-encode/src/hme.rs::tests::levels_halve_and_pad", "crates/splot-encode/src/kernels/motion.rs::tests::sads_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::quads_and_best_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::downscale_matches_scalar", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/lookahead.rs::tests::quarter_level_blocks_take_their_own_vectors", "crates/splot-encode/src/lookahead.rs::tests::frames_smaller_than_a_block_are_one_block", "crates/splot-encode/src/hme.rs::tests::ten_bit_frames_shift_to_eight_bits", "crates/splot-encode/src/hme.rs::tests::frames_smaller_than_a_block_search_one_superblock", "crates/splot-encode/src/encoder_tests.rs::a_window_searches_against_the_last_coded_frame", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::open_loop_seed_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::avm_decodes_open_loop_seed_streams_like_splot", "crates/splot-encode/src/lookahead.rs::tests::keeps_open_loop_motion_only_for_readers"]
 commands = ["cargo test -p splot-encode hme --locked", "cargo test -p splot-encode kernels::motion --locked"]
 fixtures = []
 diagnostics = []
