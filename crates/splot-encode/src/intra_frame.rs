@@ -1232,6 +1232,14 @@ thread_local! {
         const { core::cell::RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Chroma pairs outside mode trials that code a CCTX rotation other than
+    /// the one that leaves V the least energy (tests only).
+    pub(crate) static CCTX_LATER_ROTATIONS: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
+}
+
 impl ResidualCoder for SourceResidualCoder<'_> {
     fn palette_map(
         &mut self,
@@ -1398,7 +1406,10 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let rotated = self.rotated_pairs(syntax, [u, v], predictions, &mut scratch, &mut pair);
         (self.scratch, self.pair) = (scratch, pair);
         let mut best: Option<(u128, [TransformDecision; 2])> = None;
-        for [u_levels, v_levels, cctx] in rotated? {
+        let rotated = rotated?;
+        #[cfg(test)]
+        let least_energy = rotated.first().map(|[_, _, cctx]| cctx[0] as u8);
+        for [u_levels, v_levels, cctx] in rotated {
             let coded = TransformBlock {
                 cctx: cctx[0] as u8,
                 ..*u
@@ -1442,6 +1453,14 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                     ],
                 ));
             }
+        }
+        #[cfg(test)]
+        if !self.trial
+            && best
+                .as_ref()
+                .is_some_and(|(_, [u, _])| u.cctx != 0 && Some(u.cctx) != least_energy)
+        {
+            CCTX_LATER_ROTATIONS.set(CCTX_LATER_ROTATIONS.get() + 1);
         }
         Ok(best.map_or(plain, |(_, pair)| pair))
     }

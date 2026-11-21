@@ -474,8 +474,11 @@ fn cctx_rd_over_every_rotation_decodes_to_the_encoder_recon_on_any_thread_count(
                     .collect(),
             )
         };
+        CCTX_LATER_ROTATIONS.set(0);
         let (units, expected) = stream(6, 1);
         let name = format!("{bit_depth:?}");
+        let later = CCTX_LATER_ROTATIONS.get();
+        assert!(later > 0, "{name}: only the least-energy rotation coded");
         assert_same_samples(&decode(&units), &expected, &name);
         assert!(
             stream(1, 1).0 != units,
