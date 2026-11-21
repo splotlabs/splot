@@ -1363,3 +1363,21 @@ fn wedge_dominant_lists_match_the_sample_count() {
     assert!(seen.iter().all(|&count| count > 0), "{seen:?}");
     assert!(wedge_dominant_lists(8, 8, (0, false), 8, 0).is_err());
 }
+
+#[test]
+fn furthest_future_ref_ignores_entries_past_num_total_refs() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = RefSlots::from_iter_checked([8, 15, 99]).unwrap();
+    assert_eq!(
+        facts(&reference, &[0, 1, 2], 10, 2)
+            .furthest_future_ref()
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        facts(&reference, &[0, 1, 2], 10, 3)
+            .furthest_future_ref()
+            .unwrap(),
+        Some(2)
+    );
+}

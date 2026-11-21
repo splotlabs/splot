@@ -40,7 +40,7 @@ const EDGE: usize = 80;
 /// Full samples, in `1/8` units.
 const FULL: i32 = 8;
 /// The eight neighbours of a sub-pixel refinement step, `(row, col)`.
-const NEIGHBOURS: [(i32, i32); 8] = [
+pub(crate) const NEIGHBOURS: [(i32, i32); 8] = [
     (-1, -1),
     (-1, 0),
     (-1, 1),

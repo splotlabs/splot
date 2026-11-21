@@ -300,6 +300,11 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
+    /// Compound leaves of the final passes on this thread: same-reference
+    /// `NEAR_NEWMV` and `NEW_NEWMV`, pairs with a reference ranked 4 or
+    /// later, and `JOINT_NEWMV` with `jmvd_scale_mode > 0`.
+    pub(crate) static CODED_MODES: core::cell::Cell<[usize; 4]> =
+        const { core::cell::Cell::new([0; 4]) };
     /// Leaves of the final passes on this thread that code explicit CFL
     /// alphas with alpha 0 in one plane.
     pub(crate) static CFL_ZERO_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -307,6 +312,16 @@ thread_local! {
 
 #[cfg(test)]
 fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
+    if let InterPrediction::Compound(modes) = prediction {
+        let mut modes_seen = CODED_MODES.get();
+        let same = modes.refs.0 == modes.refs.1;
+        modes_seen[0] += usize::from(same && modes.mode == CompoundMode::NearNew);
+        modes_seen[1] += usize::from(same && modes.mode == CompoundMode::NewNew);
+        modes_seen[2] += usize::from(modes.refs.1 >= 3);
+        modes_seen[3] +=
+            usize::from(modes.mode == CompoundMode::JointNew && modes.jmvd_scale_mode > 0);
+        CODED_MODES.set(modes_seen);
+    }
     let mut counts = CODED_TYPES.get();
     if let InterPrediction::Single(single) = prediction {
         counts[4] += usize::from(single.interintra.is_some());
