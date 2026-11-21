@@ -191,7 +191,23 @@ the **[developer guide](./docs/README.md)**.
 
 ## License.
 
-[PolyForm Noncommercial 1.0.0](./LICENSE.md). Commercial use of any component
-needs a separate written license from Bartosz Tomczyk (bartekplus@gmail.com).
-Third-party material is listed in
-[THIRD-PARTY-NOTICES](./docs/references/THIRD-PARTY-NOTICES.md).
+[PolyForm Noncommercial 1.0.0](./LICENSE.md). Uses outside that license, which
+includes typical commercial deployments, need a separate written license from
+Bartosz Tomczyk (bartekplus@gmail.com). SplotLabs and splot are project names
+he uses, not a separate company. Third-party material is listed in
+[THIRD-PARTY-NOTICES](./docs/references/THIRD-PARTY-NOTICES.md) and keeps its
+own terms.
+
+## Contributing.
+
+Read the [contribution policy](https://github.com/splotlabs/.github/blob/main/CONTRIBUTING.md)
+first. Other people's contributions are licensed by their authors under the
+unmodified MIT No Attribution License (MIT-0), through the
+[SplotLabs Contribution Terms](https://github.com/splotlabs/.github/blob/main/CLA.md).
+You keep your copyright. MIT-0 lets everyone who receives your contribution
+reuse it, including commercially. It covers only your own original material.
+The rest of splot, including the file you edit, keeps its license.
+
+A contribution is merged only after each rights holder's acceptance of the
+approved terms is recorded. This link, a ticked box in a pull request and a
+green CI run are not that acceptance.

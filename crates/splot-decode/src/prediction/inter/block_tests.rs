@@ -24,6 +24,14 @@ use super::{
 };
 
 #[test]
+fn restricted_references_do_not_count_as_a_side() {
+    assert!(super::references_on_one_side([4, 6].into_iter(), 8));
+    assert!(!super::references_on_one_side([4, 12].into_iter(), 8));
+    assert!(super::references_on_one_side([4, u32::MAX].into_iter(), 8));
+    assert!(super::references_on_one_side([u32::MAX, 12].into_iter(), 8));
+}
+
+#[test]
 fn scheduled_motion_fields_require_selected_metadata_only() -> TestResult {
     let Some(field) = crate::prediction::inter::TemporalMotionField::new(2, 2) else {
         return Err("test motion field allocation failed".into());

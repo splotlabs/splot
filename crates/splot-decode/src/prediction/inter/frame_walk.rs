@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use splot_core::headers::frame::{FrameHeaderCore, FrameSize};
+use splot_core::headers::frame::{FrameHeaderCore, FrameSize, FrameType};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
@@ -49,6 +49,7 @@ pub(crate) struct FrameDecodeGeometry {
     sb_h4: usize,
     motion_layout: MotionFieldLayout,
     frame_is_intra: bool,
+    is_switch: bool,
 }
 
 impl FrameDecodeGeometry {
@@ -102,6 +103,7 @@ impl FrameDecodeGeometry {
             sb_h4,
             motion_layout,
             frame_is_intra,
+            is_switch: core.frame_type == Some(FrameType::Switch),
         })
     }
 
@@ -152,6 +154,7 @@ impl FrameDecodeGeometry {
             reference_order_hints,
         )?;
         field.set_band_rows8(self.motion_layout.band_rows8());
+        field.set_switch(self.is_switch);
         Some(field)
     }
 }

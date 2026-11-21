@@ -54,7 +54,7 @@ fn topo_sort_reference(
     }
     visited[ref_index] = true;
     let Some(source) = reference_motion_field(ref_index, ref_frame_idx, ref_motion_fields)
-        .filter(|source| source.is_inter)
+        .filter(|source| source.is_inter && !source.is_switch)
     else {
         let _ = stack.push(ref_index);
         return;
@@ -62,21 +62,22 @@ fn topo_sort_reference(
     for target_hint in source.ref_order_hints.iter().flatten() {
         let Some(target) = ref_order_hints
             .iter()
-            .position(|hint| hint.is_some_and(|hint| relative_distance(hint, *target_hint) == 0))
+            .zip(overlays)
+            .position(|(hint, overlay)| {
+                !overlay && hint.is_some_and(|hint| relative_distance(hint, *target_hint) == 0)
+            })
         else {
             continue;
         };
-        if !overlays.get(target).copied().unwrap_or(false) {
-            topo_sort_reference(
-                target,
-                ref_frame_idx,
-                ref_order_hints,
-                ref_motion_fields,
-                overlays,
-                visited,
-                stack,
-            );
-        }
+        topo_sort_reference(
+            target,
+            ref_frame_idx,
+            ref_order_hints,
+            ref_motion_fields,
+            overlays,
+            visited,
+            stack,
+        );
     }
     stack.push(ref_index);
 }
@@ -116,22 +117,12 @@ fn closest_interpolation_distance(
         .unwrap_or(i32::MAX)
 }
 
-pub(super) fn projection_queue(
-    mi_dimensions: (usize, usize),
-    current_hint: u32,
-    config: TemporalProjectionConfig,
+/// The § 7 `MotionFieldStack`: the references in dependency order.
+fn reference_stack(
     ref_frame_idx: &[u32],
     ref_order_hints: &[Option<u32>],
     ref_motion_fields: &[Option<TemporalMotionFieldMetadata>],
-    ref_motion_layouts: &[Option<MotionFieldLayout>],
-) -> ProjectionQueue {
-    let mut sorted_buffer = [(0usize, 0i32); super::MAX_SORTED_REFS];
-    let sorted_len = sorted_reference_hints(ref_order_hints, &mut sorted_buffer);
-    let mut sorted_slots = [0usize; super::MAX_SORTED_REFS];
-    for (slot, &(index, _)) in sorted_slots.iter_mut().zip(&sorted_buffer[..sorted_len]) {
-        *slot = index;
-    }
-    let sorted = &sorted_slots[..sorted_len];
+) -> RefSlots<usize> {
     let mut overlays = RefSlots::<bool>::default();
     overlays.extend_within((0..ref_order_hints.len()).map(|index| {
         let Some(hint) = ref_order_hints[index] else {
@@ -149,6 +140,9 @@ pub(super) fn projection_queue(
     visited.extend_within(core::iter::repeat_n(false, ref_order_hints.len()));
     let mut stack = RefSlots::<usize>::default();
     for index in 0..ref_order_hints.len() {
+        if ref_order_hints[index].is_none() {
+            continue;
+        }
         topo_sort_reference(
             index,
             ref_frame_idx,
@@ -159,6 +153,26 @@ pub(super) fn projection_queue(
             &mut stack,
         );
     }
+    stack
+}
+
+pub(super) fn projection_queue(
+    mi_dimensions: (usize, usize),
+    current_hint: u32,
+    config: TemporalProjectionConfig,
+    ref_frame_idx: &[u32],
+    ref_order_hints: &[Option<u32>],
+    ref_motion_fields: &[Option<TemporalMotionFieldMetadata>],
+    ref_motion_layouts: &[Option<MotionFieldLayout>],
+) -> ProjectionQueue {
+    let mut sorted_buffer = [(0usize, 0i32); super::MAX_SORTED_REFS];
+    let sorted_len = sorted_reference_hints(ref_order_hints, &mut sorted_buffer);
+    let mut sorted_slots = [0usize; super::MAX_SORTED_REFS];
+    for (slot, &(index, _)) in sorted_slots.iter_mut().zip(&sorted_buffer[..sorted_len]) {
+        *slot = index;
+    }
+    let sorted = &sorted_slots[..sorted_len];
+    let stack = reference_stack(ref_frame_idx, ref_order_hints, ref_motion_fields);
     if stack.len() < 2 {
         return ProjectionQueue::default();
     }
@@ -349,6 +363,33 @@ mod tests {
             &hints.iter().copied().map(Some).collect::<Vec<_>>(),
         );
         (field.metadata(), field.layout())
+    }
+
+    fn stack_of(hints: &[u32], fields: Vec<TemporalMotionFieldMetadata>) -> Vec<usize> {
+        let slots = (0..hints.len() as u32).collect::<Vec<_>>();
+        let hints = hints.iter().copied().map(Some).collect::<Vec<_>>();
+        let fields = fields.into_iter().map(Some).collect::<Vec<_>>();
+        reference_stack(&slots, &hints, &fields).to_vec()
+    }
+
+    #[test]
+    fn topo_sort_skips_an_overlay_for_the_same_hint_base_reference() {
+        let field = |hints: &[u32]| reference_field(16, 16, hints).0;
+        let fields = vec![field(&[8, 6]), field(&[6]), field(&[8])];
+        assert_eq!(stack_of(&[8, 8, 12], fields), [1, 0, 2]);
+    }
+
+    #[test]
+    fn topo_sort_does_not_follow_the_references_of_a_switch_frame() {
+        let source = |is_switch: bool| {
+            let mut field = TemporalMotionField::new(16, 16).unwrap();
+            field.set_reference_metadata(true, (64, 64), &[Some(8)]);
+            field.set_switch(is_switch);
+            field.metadata()
+        };
+        let leaf = || reference_field(16, 16, &[]).0;
+        assert_eq!(stack_of(&[4, 8], vec![source(false), leaf()]), [1, 0]);
+        assert_eq!(stack_of(&[4, 8], vec![source(true), leaf()]), [0, 1]);
     }
 
     #[test]
