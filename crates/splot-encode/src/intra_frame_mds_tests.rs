@@ -172,6 +172,8 @@ fn full_trials_255_code_the_old_full_trial_stream() {
         motion_range: Levels::all(48),
         intra_modes: Levels::by_frame([6, 3, 3, 3]),
         tcq_type_trellis: false,
+        tx_type_depth: 1,
+        tx_type_model_keep: 0,
         cctx: false,
         ..*Preset::new(6).unwrap().params()
     }));
@@ -282,6 +284,8 @@ fn reference_intra() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         ref_intra_margin: 1,
         pd_window: Levels::all(u8::MAX),
+        tx_type_depth: 1,
+        tx_type_model_keep: 0,
         ..*Preset::new(6).unwrap().params()
     }))
 }

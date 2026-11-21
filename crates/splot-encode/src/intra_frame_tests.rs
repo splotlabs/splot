@@ -304,6 +304,143 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     }
 }
 
+/// The p6 row with every offered luma type and `keep` exact type trials.
+fn type_model_params(keep: u8) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        tx_type_depth: 8,
+        tx_type_model_keep: keep,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// Four frames (a key frame and the inter frames that reference it) of
+/// `config` coded with `params` on `threads` threads.
+fn type_model_stream(
+    config: &Config,
+    params: &'static PresetParams,
+    threads: usize,
+) -> Vec<CodedFrame> {
+    let mut config = config.clone();
+    config.keyint = core::num::NonZeroU32::new(3).unwrap();
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+    (0..4)
+        .map(|index| {
+            let plan = crate::gop::plan(index, config.keyint);
+            let source = synthetic_frame(&config, 70 + index as u32);
+            coder.encode_frame(&source, &plan, 60).unwrap()
+        })
+        .collect()
+}
+
+/// The type model with two exact trials, with the in-loop filters of the p6
+/// row, decodes to the encoder recon at both bit depths and in 4:2:0 and
+/// 4:4:4, with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn type_model_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    for (width, height, bit_depth, chroma) in [
+        (72, 40, BitDepth::Eight, PixelFormat::Yuv420),
+        (48, 32, BitDepth::Ten, PixelFormat::Yuv420),
+        (40, 24, BitDepth::Eight, PixelFormat::Yuv444),
+    ] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.chroma = chroma;
+        let params = type_model_params(2);
+        let coded = type_model_stream(&config, params, 1);
+        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+        let expected: Vec<u8> = coded
+            .iter()
+            .flat_map(|f| recon_bytes(f, bit_depth))
+            .collect();
+        let name = format!("{bit_depth:?} {chroma:?}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        for threads in [2, 8] {
+            let other: Vec<u8> = type_model_stream(&config, params, threads)
+                .iter()
+                .flat_map(|f| f.temporal_unit.clone())
+                .collect();
+            assert!(other == units, "{name}: {threads} threads");
+        }
+    }
+}
+
+/// A `keep` of at least the offered type count codes the exact search of
+/// every type: the stream of `keep` 0.
+#[test]
+fn type_model_keeping_every_type_is_the_exact_search() {
+    let config = config(72, 40, BitDepth::Eight, 6, 60);
+    let bytes = |keep| -> Vec<u8> {
+        type_model_stream(&config, type_model_params(keep), 1)
+            .iter()
+            .flat_map(|f| f.temporal_unit.clone())
+            .collect()
+    };
+    let exact = bytes(0);
+    assert_eq!(bytes(17), exact);
+    assert_ne!(bytes(1), exact);
+}
+
+/// On blocks of one DC level, horizontal and vertical edges and noise, the
+/// exact search of every type picks the model's first type on nearly every
+/// DC block, and the exact trials of the model's best two lose at most 0.2%
+/// of `D + lambda * R` on the edges and 1.5% on noise (measured 0, 0.07,
+/// 0.05 and 0.77%).
+#[test]
+fn type_model_ranks_the_exact_winner_first_on_constructed_blocks() {
+    let mut config = config(64, 64, BitDepth::Eight, 6, 100);
+    config.keyint = core::num::NonZeroU32::new(1).unwrap();
+    config.threads = splot_parallel::ThreadCount::from(1);
+    let max = u32::from(config.bit_depth.max_sample());
+    let mut state = 0x9E37_79B9u32;
+    for (name, sample) in [
+        (
+            "dc",
+            &mut (|x: usize, y: usize| 60 + ((x / 8 * 7 + y / 8 * 13) % 9) as u32 * 16)
+                as &mut dyn FnMut(usize, usize) -> u32,
+        ),
+        ("horizontal", &mut |_, y| if y % 8 < 3 { 40 } else { 200 }),
+        ("vertical", &mut |x, _| if x % 8 < 3 { 40 } else { 200 }),
+        ("noise", &mut |_, _| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state % max
+        }),
+    ] {
+        let sizes = config.plane_sizes().unwrap();
+        let planes = core::array::from_fn(|plane| {
+            let Some(&size) = sizes.get(plane) else {
+                return Vec::new();
+            };
+            (0..size.height())
+                .flat_map(|y| (0..size.width()).map(move |x| (x, y)))
+                .map(|(x, y)| if plane == 0 { sample(x, y) as u16 } else { 128 })
+                .collect()
+        });
+        let source = SourceFrame::new(&config, 0, planes).unwrap();
+        MODEL_RANKS.with_borrow_mut(Vec::clear);
+        let mut coder = IntraFrameCoder::with_preset(&config, type_model_params(0)).unwrap();
+        coder
+            .encode_frame(&source, &crate::gop::plan(0, config.keyint), 100)
+            .unwrap();
+        let ranks = MODEL_RANKS.with_borrow(Clone::clone);
+        let share =
+            |top: usize| ranks.iter().filter(|r| r.0 < top).count() * 100 / ranks.len().max(1);
+        let (all, two) = ranks.iter().fold((0, 0), |(a, t), r| (a + r.1, t + r.2));
+        let loss = (two - all) * 1000 / all.max(1);
+        assert!(ranks.len() > 300, "{name}: {} searches", ranks.len());
+        assert!(
+            share(1) >= if name == "dc" { 90 } else { 30 },
+            "{name}: first {}%",
+            share(1)
+        );
+        assert!(
+            loss <= if name == "noise" { 15 } else { 2 },
+            "{name}: top-2 loss {loss}/1000"
+        );
+    }
+}
+
 /// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
 /// frames only.
 #[test]

@@ -237,6 +237,20 @@ pub(crate) trait EncoderKernels: Sync {
         dequant: &mut [i32],
     ) -> Result<usize, KernelError>;
 
+    /// [`Self::quantize`] that also returns the squared error of `dequant`
+    /// against `coeffs`, `Σ (|c| - |dq|)²` (wrapping), from the same pass.
+    ///
+    /// # Errors
+    /// Returns [`KernelError::BufferLength`] if the three buffers differ in
+    /// length.
+    fn quantize_error(
+        &self,
+        quantizer: &Quantizer,
+        coeffs: &[i32],
+        levels: &mut [i32],
+        dequant: &mut [i32],
+    ) -> Result<(usize, u64), KernelError>;
+
     /// The forward § 7.15.3 secondary transform of the adjusted `coeffs`
     /// in place ([`ist::forward_simd`]).
     ///
@@ -450,6 +464,16 @@ impl EncoderKernels for ScalarKernels {
         quantize::quantize_scalar(quantizer, coeffs, levels, dequant)
     }
 
+    fn quantize_error(
+        &self,
+        quantizer: &Quantizer,
+        coeffs: &[i32],
+        levels: &mut [i32],
+        dequant: &mut [i32],
+    ) -> Result<(usize, u64), KernelError> {
+        quantize::quantize_error_scalar(quantizer, coeffs, levels, dequant)
+    }
+
     fn forward_ist(
         &self,
         layout: &SecondaryTransformLayout,
@@ -649,6 +673,16 @@ impl EncoderKernels for SimdKernels {
         dequant: &mut [i32],
     ) -> Result<usize, KernelError> {
         quantize::quantize_simd(quantizer, coeffs, levels, dequant)
+    }
+
+    fn quantize_error(
+        &self,
+        quantizer: &Quantizer,
+        coeffs: &[i32],
+        levels: &mut [i32],
+        dequant: &mut [i32],
+    ) -> Result<(usize, u64), KernelError> {
+        quantize::quantize_error_simd(quantizer, coeffs, levels, dequant)
     }
 
     fn forward_ist(
