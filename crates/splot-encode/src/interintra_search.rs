@@ -2,9 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Inter-intra (§ 5.20.7.15) and block adaptive weighted prediction
-//! (§ 5.20.7.6) search: the cheapest single-reference `NEWMV` of a leaf also
-//! tries each smooth-mask `interintra_mode` and each BAWP scale, scored by
-//! the decoder's own prediction, and the best of each joins the RD trials.
+//! (§ 5.20.7.6) search: the cheapest single-reference `NEWMV` of a leaf
+//! (and, with `bawp_search` 2, each `NEARMV`) also tries each smooth-mask
+//! `interintra_mode` and each BAWP scale, scored by the decoder's own
+//! prediction, and the best of each joins the RD trials.
 
 use splot_decode::encoder_syntax::{Bawp, INTERINTRA_MODES, InterIntra};
 
@@ -55,15 +56,17 @@ impl TrialCoder<'_, '_> {
     /// `base` with the BAWP scale (implicit, or explicit up or down) whose
     /// decoder luma prediction SATD plus mode rate is lowest, with chroma
     /// weighting where the block has chroma, for the full RD trial of the
-    /// leaf; `None` where the leaf reads no `use_bawp`.
+    /// leaf; with `preset.bawp_search` also that scale without chroma
+    /// weighting (`use_bawp_chroma = 0`), which luma cannot rank. Empty
+    /// where the leaf reads no `use_bawp`.
     pub(super) fn bawp_choice(
         &mut self,
         leaf: &LeafBlock,
         motion: &MotionSearch,
         base: InterModes,
-    ) -> Result<Option<InterModes>> {
+    ) -> Result<Vec<InterModes>> {
         if !codable(self.syntax.bawp_reads(leaf, base).map_err(Into::into))?.unwrap_or(false) {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let variants = [None, Some(true), Some(false)].map(|explicit_scale| InterModes {
             bawp: Some(Bawp {
@@ -72,7 +75,22 @@ impl TrialCoder<'_, '_> {
             }),
             ..base
         });
-        self.cheapest_variant(leaf, motion, variants)
+        let Some(best) = self.cheapest_variant(leaf, motion, variants)? else {
+            return Ok(Vec::new());
+        };
+        let mut out = vec![best];
+        if let (true, Some(bawp)) = (self.preset.bawp_search > 0, best.bawp)
+            && bawp.chroma
+        {
+            out.push(InterModes {
+                bawp: Some(Bawp {
+                    chroma: false,
+                    ..bawp
+                }),
+                ..best
+            });
+        }
+        Ok(out)
     }
 
     /// The codable variant of `variants` whose decoder luma prediction SATD
