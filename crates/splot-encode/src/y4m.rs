@@ -7,6 +7,8 @@ use std::io::{self, Read};
 
 use splot_recon::PixelFormat;
 
+use crate::content::{ChromaSamplePosition, ContentDescription};
+
 /// Longest accepted stream or frame header line, in bytes.
 const MAX_HEADER_LEN: usize = 4096;
 
@@ -101,6 +103,23 @@ pub struct Y4mHeader {
 }
 
 impl Y4mHeader {
+    /// What the header declares about the samples: the sample aspect ratio,
+    /// the range and the chroma sample position. `420jpeg` gives no position:
+    /// writers also use it for an unknown siting.
+    #[must_use]
+    pub fn content_description(&self) -> ContentDescription {
+        ContentDescription {
+            full_range: self.color_range == Some(Y4mColorRange::Full),
+            chroma_sample_position: match self.chroma_siting {
+                Some(Y4mChromaSiting::Mpeg2) => Some(ChromaSamplePosition::Left),
+                Some(Y4mChromaSiting::PalDv) => Some(ChromaSamplePosition::TopLeft),
+                Some(Y4mChromaSiting::Jpeg) | None => None,
+            },
+            sample_aspect_ratio: Some(self.aspect).filter(|&(w, h)| w != 0 && h != 0),
+            ..ContentDescription::default()
+        }
+    }
+
     /// Y, U and V plane sizes as `(width, height)`; chroma is `(0, 0)` for monochrome.
     #[must_use]
     pub fn plane_sizes(&self) -> [(usize, usize); 3] {
@@ -373,6 +392,15 @@ mod tests {
         assert_eq!(header.interlace, 'p');
         assert_eq!(header.color_range, Some(Y4mColorRange::Full));
         assert_eq!(header.chroma_siting, Some(Y4mChromaSiting::Mpeg2));
+        let content = header.content_description();
+        assert!(content.full_range);
+        assert_eq!(
+            content.chroma_sample_position,
+            Some(ChromaSamplePosition::Left)
+        );
+        assert_eq!(content.sample_aspect_ratio, Some((1, 1)));
+        let plain = *read(b"YUV4MPEG2 W2 H2 F1:1 A0:0 C420jpeg\n")?.header();
+        assert_eq!(plain.content_description(), ContentDescription::default());
         let frame = reader.read_frame()?;
         assert_eq!(
             frame,

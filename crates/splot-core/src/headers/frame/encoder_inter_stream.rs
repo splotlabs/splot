@@ -10,6 +10,7 @@
 //! bits, and [`encode_inter_frame_obu`] copies them into the tile group.
 
 use crate::bitio::BitReader;
+use crate::headers::content_interpretation::ContentInterpretation;
 use crate::headers::film_grain::{
     FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate,
 };
@@ -825,19 +826,34 @@ pub fn encode_film_grain_obu(
             model: model.clone(),
         }],
     };
-    let mut payload = BitWriter::new();
-    crate::write::write_obu_payload(
-        &mut payload,
+    annexb_obu(
+        ObuType::FilmGrain,
         &crate::obu::ParsedObu::FilmGrain(Box::new(obu)),
-        ObuType::FilmGrain.is_extensible_obu(),
-        &[],
-    )?;
+    )
+}
+
+/// Serializes the `OBU_CONTENT_INTERPRETATION` (§ 5.15) of `content`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for content the OBU cannot code.
+pub fn encode_content_interpretation_obu(
+    content: &ContentInterpretation,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    annexb_obu(
+        ObuType::ContentInterpretation,
+        &crate::obu::ParsedObu::ContentInterpretation(*content),
+    )
+}
+
+/// `obu` as an Annex B OBU of `obu_type` on layer 0.
+fn annexb_obu(
+    obu_type: ObuType,
+    obu: &crate::obu::ParsedObu,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    let mut payload = BitWriter::new();
+    crate::write::write_obu_payload(&mut payload, obu, obu_type.is_extensible_obu(), &[])?;
     let mut w = BitWriter::new();
-    write_annexb_obu(
-        &mut w,
-        &obu_header(ObuType::FilmGrain),
-        &payload.into_bytes(),
-    )?;
+    write_annexb_obu(&mut w, &obu_header(obu_type), &payload.into_bytes())?;
     Ok(w.into_bytes())
 }
 

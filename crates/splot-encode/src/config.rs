@@ -8,6 +8,7 @@ use core::num::NonZeroU32;
 use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
+use crate::content::ContentDescription;
 use crate::error::{Error, Result};
 use crate::preset::{Preset, PresetParams};
 use crate::rate_control::{Crf, check_bitrate, check_cbr, max_qindex};
@@ -124,6 +125,9 @@ pub struct Config {
     pub chroma: PixelFormat,
     /// Frame rate as `(numerator, denominator)` frames per second.
     pub frame_rate: (u32, u32),
+    /// What the source declares about its samples: colour, range, chroma
+    /// sample position, sample aspect ratio and timing. Nothing by default.
+    pub content: ContentDescription,
     /// Rate-control mode.
     pub rate_control: RateControlMode,
     /// Speed preset.
@@ -195,6 +199,7 @@ impl Config {
             bit_depth: BitDepth::Eight,
             chroma: PixelFormat::Yuv420,
             frame_rate: (30, 1),
+            content: ContentDescription::default(),
             rate_control: RateControlMode::ConstantQp {
                 qp: Self::DEFAULT_QP,
             },
@@ -215,7 +220,8 @@ impl Config {
     ///
     /// # Errors
     /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
-    /// [`Error::InvalidFrameRate`], [`Error::InvalidTiles`], [`Error::InvalidQp`],
+    /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
+    /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`] or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
         self.override_preset(self.preset.params())?;
@@ -238,6 +244,7 @@ impl Config {
                 denominator: self.frame_rate.1,
             });
         }
+        self.content.validate(self.chroma)?;
         if self.tiles.cols_log2 > TileLayout::MAX_LOG2
             || self.tiles.rows_log2 > TileLayout::MAX_LOG2
         {

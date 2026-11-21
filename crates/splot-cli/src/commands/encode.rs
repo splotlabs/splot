@@ -14,8 +14,8 @@ use clap::{Args, ValueEnum};
 use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{
-    BitDepth, Config, Encoder, FirstPass, Preset, RateControlMode, SourceFrame, ThreadCount,
-    TileLayout, Tune,
+    BitDepth, ChromaSamplePosition, Config, Encoder, FirstPass, Preset, RateControlMode,
+    SourceFrame, ThreadCount, TileLayout, Tune,
 };
 
 /// Arguments for `splot encode`.
@@ -97,6 +97,30 @@ pub(crate) struct EncodeArgs {
     /// include the grain.
     #[arg(long)]
     film_grain: bool,
+    /// H.273 colour primaries code point (1 BT.709, 9 BT.2020), written to
+    /// the stream as declared; the samples are not converted. Without the
+    /// colour flags the stream declares no colour.
+    #[arg(long, value_name = "N")]
+    color_primaries: Option<u8>,
+    /// H.273 transfer characteristics code point (1 BT.709, 16 PQ, 18 HLG).
+    #[arg(long, value_name = "N")]
+    transfer_characteristics: Option<u8>,
+    /// H.273 matrix coefficients code point (1 BT.709, 9 BT.2020 NCL).
+    #[arg(long, value_name = "N")]
+    matrix_coefficients: Option<u8>,
+    /// Sample range; the default is the Y4M `XCOLORRANGE`, else limited.
+    #[arg(long, value_enum)]
+    color_range: Option<ColorRangeArg>,
+    /// Chroma sample position of 4:2:0 or 4:2:2 input; the default is the
+    /// one of a `C420mpeg2` (left) or `C420paldv` (top-left) Y4M header.
+    #[arg(long, value_enum)]
+    chroma_sample_position: Option<ChromaPositionArg>,
+    /// Sample aspect ratio; the default is the Y4M `A` tag.
+    #[arg(long, value_name = "W:H", value_parser = parse_sar)]
+    sar: Option<(u32, u32)>,
+    /// Write the frame rate to the stream as timing info; off by default.
+    #[arg(long)]
+    timing_info: bool,
     /// Distance between key frames, in frames.
     #[arg(long, default_value_t = Config::DEFAULT_KEYINT)]
     keyint: NonZeroU32,
@@ -124,6 +148,32 @@ fn parse_tiles(value: &str) -> Result<TileLayout, String> {
         cols_log2: log2(cols)?,
         rows_log2: log2(rows)?,
     })
+}
+
+/// Parses `--sar W:H`.
+fn parse_sar(value: &str) -> Result<(u32, u32), String> {
+    value
+        .split_once(':')
+        .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
+        .ok_or_else(|| format!("`{value}` is not W:H"))
+}
+
+/// Ranges of `splot encode --color-range`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum ColorRangeArg {
+    Limited,
+    Full,
+}
+
+/// Positions of `splot encode --chroma-sample-position`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum ChromaPositionArg {
+    Left,
+    Center,
+    TopLeft,
+    Top,
+    BottomLeft,
+    Bottom,
 }
 
 /// Parses `--preset-set FIELD=VALUE`.
@@ -223,6 +273,32 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     };
     config.chroma = header.format;
     config.frame_rate = header.frame_rate;
+    config.content = header.content_description();
+    let content = &mut config.content;
+    if let Some(code_point) = args.color_primaries {
+        content.color_primaries = code_point;
+    }
+    if let Some(code_point) = args.transfer_characteristics {
+        content.transfer_characteristics = code_point;
+    }
+    if let Some(code_point) = args.matrix_coefficients {
+        content.matrix_coefficients = code_point;
+    }
+    if let Some(range) = args.color_range {
+        content.full_range = range == ColorRangeArg::Full;
+    }
+    if let Some(position) = args.chroma_sample_position {
+        content.chroma_sample_position = Some(match position {
+            ChromaPositionArg::Left => ChromaSamplePosition::Left,
+            ChromaPositionArg::Center => ChromaSamplePosition::Center,
+            ChromaPositionArg::TopLeft => ChromaSamplePosition::TopLeft,
+            ChromaPositionArg::Top => ChromaSamplePosition::Top,
+            ChromaPositionArg::BottomLeft => ChromaSamplePosition::BottomLeft,
+            ChromaPositionArg::Bottom => ChromaSamplePosition::Bottom,
+        });
+    }
+    content.sample_aspect_ratio = args.sar.or(content.sample_aspect_ratio);
+    content.timing_info = args.timing_info;
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
     if args.low_delay {

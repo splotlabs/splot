@@ -507,9 +507,9 @@ impl GopFrame {
     /// The OBUs of the frame `core` built by [`Self::header`] with
     /// `(qindex, filters, tools)`, whose tile group carries
     /// `tiles`, after a temporal delimiter when the frame opens its temporal
-    /// unit; a key frame repeats the sequence header, followed by the
-    /// `film_grain` OBUs. The header codes the smallest `TileSizeBytes` that
-    /// fits the tiles.
+    /// unit; a key frame repeats the sequence header, followed by `key_obus`,
+    /// its content interpretation and film grain OBUs. The header codes the
+    /// smallest `TileSizeBytes` that fits the tiles.
     pub(crate) fn temporal_unit(
         &self,
         seq: &SequenceHeader,
@@ -517,7 +517,7 @@ impl GopFrame {
         refs: &EncoderReferences,
         (qindex, filters, (tx, compound, mv_tools, layout)): (u32, &FrameFilterParams, FrameTools),
         core: &FrameHeaderCore,
-        (tiles, film_grain): (&[&[u8]], &[u8]),
+        (tiles, key_obus): (&[&[u8]], &[u8]),
     ) -> Result<Vec<u8>> {
         let longest = tiles.split_last().map_or(0, |(_, rest)| {
             rest.iter()
@@ -542,7 +542,7 @@ impl GopFrame {
             }
             let tools = (tx, compound, mv_tools, layout);
             let core = self.header(view, refs, qindex, filters, tools)?;
-            return encode_key_frame_temporal_unit(seq, &core, true, tiles, film_grain)
+            return encode_key_frame_temporal_unit(seq, &core, true, tiles, key_obus)
                 .map_err(header_error);
         }
         let header = inter_header(
