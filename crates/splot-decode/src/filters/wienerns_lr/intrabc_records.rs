@@ -1211,15 +1211,13 @@ pub(crate) fn max_bvp_drl_bits_minus_1(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
 ) -> Result<u32> {
-    if let Some(max) = core
+    let inter = sequence.inter.as_ref().ok_or_else(selectable_state_error)?;
+    let seq_max = inter.seq_max_bvp_drl_bits_minus_1;
+    let coded = core
         .intrabc
         .as_ref()
-        .and_then(|params| params.max_bvp_drl_bits_minus_1)
-    {
-        return Ok(max);
-    }
-    let inter = sequence.inter.as_ref().ok_or_else(selectable_state_error)?;
-    Ok(inter.seq_max_bvp_drl_bits_minus_1)
+        .and_then(|params| params.max_bvp_drl_bits_minus_1);
+    Ok(coded.map_or(seq_max, |coded| coded + u32::from(coded >= seq_max)))
 }
 
 #[cfg(test)]

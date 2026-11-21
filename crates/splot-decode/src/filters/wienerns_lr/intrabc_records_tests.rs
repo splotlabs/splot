@@ -141,6 +141,28 @@ fn selectable_fixture() -> (SequenceHeader, FrameHeaderCore) {
     (sequence, core)
 }
 
+#[test]
+fn frame_level_max_bvp_drl_bits_skips_the_sequence_value() {
+    let (mut sequence, mut core) = selectable_fixture();
+    for (seq_max, expected) in [(0u32, [1u32, 2]), (1, [0, 2]), (2, [0, 1])] {
+        sequence
+            .inter
+            .as_mut()
+            .unwrap()
+            .seq_max_bvp_drl_bits_minus_1 = seq_max;
+        core.intrabc.as_mut().unwrap().max_bvp_drl_bits_minus_1 = None;
+        assert_eq!(max_bvp_drl_bits_minus_1(&sequence, &core).unwrap(), seq_max);
+        for (coded, expected) in expected.into_iter().enumerate() {
+            core.intrabc.as_mut().unwrap().max_bvp_drl_bits_minus_1 = Some(coded as u32);
+            assert_eq!(
+                max_bvp_drl_bits_minus_1(&sequence, &core).unwrap(),
+                expected,
+                "seq {seq_max}, coded {coded}"
+            );
+        }
+    }
+}
+
 fn selectable_large_frame_fixture() -> (SequenceHeader, FrameHeaderCore) {
     let (sequence, mut core) = selectable_fixture();
     core.frame_size = Some(FrameSize::new(128, 128));

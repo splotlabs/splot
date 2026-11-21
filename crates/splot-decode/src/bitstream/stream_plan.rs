@@ -1000,7 +1000,7 @@ fn classify_obu(
         | ObuType::RegularTip
         | ObuType::BridgeFrame
         | ObuType::RasFrame => Ok(DecodePlannedObuRole::InterFrameCandidate),
-        ObuType::OperatingPointSet | ObuType::LayerConfigurationRecord
+        ObuType::OperatingPointSet | ObuType::LayerConfigurationRecord | ObuType::AtlasSegment
             if header.extended_layer_id == GLOBAL_XLAYER_ID =>
         {
             Ok(DecodePlannedObuRole::Global)
@@ -1008,6 +1008,7 @@ fn classify_obu(
         ObuType::SequenceHeader
         | ObuType::OperatingPointSet
         | ObuType::LayerConfigurationRecord
+        | ObuType::AtlasSegment
         | ObuType::MultiFrameHeader
         | ObuType::MetadataShort
         | ObuType::MetadataGroup
@@ -1015,11 +1016,11 @@ fn classify_obu(
         | ObuType::QuantizationMatrix
         | ObuType::FilmGrain
         | ObuType::ContentInterpretation => Ok(DecodePlannedObuRole::SelectedLayerState),
-        ObuType::Msdo | ObuType::AtlasSegment => unsupported(
+        ObuType::Msdo => unsupported(
             DecodeUnsupportedReason::MultistreamSelection,
             envelope,
             "7.1",
-            "multistream, atlas, and external-HLS selection are outside the initial decode stream planner tier",
+            "multistream and external-HLS selection are outside the initial decode stream planner tier",
         ),
         ObuType::Reserved0 | ObuType::Reserved(_) | ObuType::TemporalDelimiter => {
             Ok(DecodePlannedObuRole::Global)

@@ -1168,28 +1168,31 @@ fn frame_temporal_first<T: ReconSample>(
     current_order_hint: u32,
     num_total_refs: usize,
 ) -> bool {
-    let mut has_past = false;
-    let mut has_future = false;
-    for list_ref in 0..num_total_refs {
-        let Some(hint) = ref_frame_idx
+    let hints = (0..num_total_refs).filter_map(|list_ref| {
+        ref_frame_idx
             .get(list_ref)
             .and_then(|&slot| reference.ref_order_hint.get(slot as usize))
-        else {
-            continue;
-        };
-        let dist = super::get_relative_dist(
-            current_order_hint as i32,
-            i32::try_from(*hint).unwrap_or(i32::MAX),
-        );
-        if dist > 0 {
-            has_past = true;
-        } else if dist < 0 {
-            has_future = true;
-        }
-    }
+            .copied()
+    });
     sequence_drl_reorder(sequence) != DrlReorder::Always
         && frame_uses_temporal_mvs(core)
-        && (!has_past || !has_future)
+        && references_on_one_side(hints, current_order_hint)
+}
+
+/// Whether `NumPastRefs` or `NumFutureRefs` (§ 7) is zero: no two of the
+/// unrestricted references lie on opposite sides of the current frame.
+fn references_on_one_side(hints: impl Iterator<Item = u32>, current_order_hint: u32) -> bool {
+    let mut has_past = false;
+    let mut has_future = false;
+    for hint in hints.filter(|&hint| hint != u32::MAX) {
+        let dist = super::get_relative_dist(
+            current_order_hint as i32,
+            i32::try_from(hint).unwrap_or(i32::MAX),
+        );
+        has_past |= dist > 0;
+        has_future |= dist < 0;
+    }
+    !has_past || !has_future
 }
 
 /// The tile parse state and frame facts every [`decode_block`] call of a

@@ -968,6 +968,7 @@ mod tests {
             ref_order_hints.extend_within(source_hints.iter().copied());
             let metadata = TemporalMotionFieldMetadata {
                 is_inter: true,
+                is_switch: false,
                 frame_size: None,
                 ref_order_hints,
             };
