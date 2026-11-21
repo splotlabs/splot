@@ -27,25 +27,15 @@ use splot_recon::{
     subpel_predict_block_into, warp_predict_block_into, warp_shear_is_valid,
 };
 
+use crate::global_motion::{
+    ALPHA_MAX, ALPHA_STEP, MIN_PAIRS, MIN_TEXTURE, PREC, TRANS_MAX, TRANS_STEP, sampler,
+};
 use crate::lookahead::BlockMotion;
 
 /// RANSAC hypotheses per pair of frames.
 const ITERATIONS: usize = 128;
 /// The distance, in full-resolution luma samples, within which a pair fits.
 const INLIER_SAMPLES: f64 = 1.0;
-/// The pairs a frame needs before any model is trusted.
-const MIN_PAIRS: usize = 16;
-/// The intra SATD below which a block is too flat for its vector to count.
-const MIN_TEXTURE: u32 = 64;
-/// `WARPEDMODEL_PREC_BITS` (§ 3) as a scale.
-const PREC: f64 = 65536.0;
-/// The coded steps and ranges of the non-translational and translational
-/// terms (`GM_ALPHA_PREC_BITS`, `GM_TRANS_PREC_BITS`, `GM_ALPHA_MAX`,
-/// `GM_TRANS_MAX`), in `PREC` units and steps.
-const ALPHA_STEP: i32 = 1 << 6;
-const TRANS_STEP: i32 = 1 << 13;
-const ALPHA_MAX: i32 = 511;
-const TRANS_MAX: i32 = 16383;
 /// `Default_Warp_Params`.
 const IDENTITY: [i32; 6] = [0, 0, 1 << 16, 0, 0, 1 << 16];
 /// The largest step multiple of the lattice descent.
@@ -257,13 +247,7 @@ fn ransac(pairs: &[Pair], seed: u64) -> Option<Vec<Pair>> {
     if pairs.len() < MIN_PAIRS {
         return None;
     }
-    let mut state = seed | 1;
-    let mut next = |n: usize| {
-        state ^= state >> 12;
-        state ^= state << 25;
-        state ^= state >> 27;
-        (state.wrapping_mul(0x2545_F491_4F6C_DD1D) % n as u64) as usize
-    };
+    let mut next = sampler(seed);
     let fits = |model: &Model, &[x, y, u, v]: &Pair| {
         let (eu, ev) = (
             model[0] * x + model[1] * y + model[4] - u,

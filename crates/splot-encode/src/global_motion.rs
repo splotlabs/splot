@@ -39,18 +39,18 @@ const MIN_INLIER_PERCENT: usize = 50;
 /// kept model.
 const MIN_CORNER_SAMPLES: f64 = 1.0;
 /// The pairs a frame needs before any model is trusted.
-const MIN_PAIRS: usize = 16;
+pub(crate) const MIN_PAIRS: usize = 16;
 /// The intra SATD below which a block is too flat for its vector to count.
-const MIN_TEXTURE: u32 = 64;
+pub(crate) const MIN_TEXTURE: u32 = 64;
 /// `WARPEDMODEL_PREC_BITS` (§ 3).
-const PREC: f64 = 65536.0;
+pub(crate) const PREC: f64 = 65536.0;
 /// The coded steps of the scale and rotation terms and of the translation
 /// (`GM_ALPHA_PREC_BITS`, `GM_TRANS_PREC_BITS`), in `PREC` units.
-const ALPHA_STEP: i32 = 1 << 6;
-const TRANS_STEP: i32 = 1 << 13;
+pub(crate) const ALPHA_STEP: i32 = 1 << 6;
+pub(crate) const TRANS_STEP: i32 = 1 << 13;
 /// The coded ranges of those terms, in steps (`GM_ALPHA_MAX`, `GM_TRANS_MAX`).
-const ALPHA_MAX: i32 = 511;
-const TRANS_MAX: i32 = 16383;
+pub(crate) const ALPHA_MAX: i32 = 511;
+pub(crate) const TRANS_MAX: i32 = 16383;
 
 /// The models of the frames of `plan`, in coding order, against their
 /// nearest past and future coded frames, or with `level` 2 by
@@ -165,13 +165,7 @@ fn fit(pairs: &[Pair], (width, height): (f64, f64), seed: u64) -> Option<[i32; 6
     if pairs.len() < MIN_PAIRS {
         return None;
     }
-    let mut state = seed | 1;
-    let mut next = |n: usize| {
-        state ^= state >> 12;
-        state ^= state << 25;
-        state ^= state >> 27;
-        (state.wrapping_mul(0x2545_F491_4F6C_DD1D) % n as u64) as usize
-    };
+    let mut next = sampler(seed);
     let mut best: Option<(usize, Model)> = None;
     for _ in 0..ITERATIONS {
         let (i, j) = (next(pairs.len()), next(pairs.len()));
@@ -205,6 +199,18 @@ fn fit(pairs: &[Pair], (width, height): (f64, f64), seed: u64) -> Option<[i32; 6
         return None;
     }
     quantize(model)
+}
+
+/// A deterministic xorshift sampler of indices below its argument, seeded by
+/// `seed`.
+pub(crate) fn sampler(seed: u64) -> impl FnMut(usize) -> usize {
+    let mut state = seed | 1;
+    move |n| {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        (state.wrapping_mul(0x2545_F491_4F6C_DD1D) % n as u64) as usize
+    }
 }
 
 /// The rotation-zoom through two pairs; `None` when they coincide.
