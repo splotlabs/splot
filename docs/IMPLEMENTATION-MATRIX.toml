@@ -4397,7 +4397,7 @@ module = "crates/splot-encode/src/y4m.rs"
 change_id = "encoder-y4m-input"
 owner = "encoder"
 risk = "medium"
-notes = "Input format plumbing; not normative AV2 syntax. Y4mReader streams YUV4MPEG2 over any Read: W/H/F/I/A/C tags, XYSCSS fallback, 420jpeg/420mpeg2/420paldv/420/422/444/mono and pN high-bit-depth layouts, 8-bit and 2-byte little-endian samples. Malformed headers, oversized dimensions and truncated frames are typed errors, and frame buffers grow only with bytes read. SourceFrame owns u16 planes sized from Config and rejects short planes, bad strides and out-of-range samples."
+notes = "Input format plumbing; not normative AV2 syntax. Y4mReader streams YUV4MPEG2 over any Read: W/H/F/I/A/C tags, XYSCSS fallback, 420jpeg/420mpeg2/420paldv/420/422/444/mono and pN high-bit-depth layouts, 8-bit and 2-byte little-endian samples. The header gives XCOLORRANGE and the 4:2:0 siting as options and an absent I tag as unknown; Y4mReader::tags gives every stream tag as written. Malformed headers, oversized dimensions and truncated frames are typed errors, and frame buffers grow only with bytes read. SourceFrame owns u16 planes sized from Config and rejects short planes, bad strides and out-of-range samples."
 
 [feature.status]
 mapped = "done"
