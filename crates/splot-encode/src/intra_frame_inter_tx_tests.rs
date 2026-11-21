@@ -120,7 +120,7 @@ fn split_inter_leaves(trees: &[PartitionTree]) -> usize {
 /// the restored state; without it it picks none.
 #[test]
 fn the_search_picks_inter_tx_partitions() {
-    for chroma in CHROMAS {
+    each_case(CHROMAS, |chroma| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 90);
         config.chroma = chroma;
         let max = u32::from(config.bit_depth.max_sample());
@@ -143,7 +143,7 @@ fn the_search_picks_inter_tx_partitions() {
             let count = split_inter_leaves(&trees);
             assert_eq!(count > 0, split > 0, "{chroma:?} {count}");
         }
-    }
+    });
 }
 
 /// With `inter_tx_split`, panning streams of every chroma format and both
@@ -151,16 +151,19 @@ fn the_search_picks_inter_tx_partitions() {
 /// bytes on 1, 2 and 8 threads.
 #[test]
 fn inter_tx_partition_streams_decode_alike_on_any_thread_count() {
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Ten),
-        (PixelFormat::Yuv422, BitDepth::Eight),
-        (PixelFormat::Yuv444, BitDepth::Ten),
-    ] {
-        let mut config = config(96, 72, bit_depth, 6, 110);
-        config.chroma = chroma;
-        let (units, expected, ..) = super::carry::planned_stream(&config, with_split(24));
-        assert_same_samples(&decode(&units), &expected, &format!("{chroma:?}"));
-    }
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Ten),
+            (PixelFormat::Yuv422, BitDepth::Eight),
+            (PixelFormat::Yuv444, BitDepth::Ten),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(96, 72, bit_depth, 6, 110);
+            config.chroma = chroma;
+            let (units, expected, ..) = super::carry::planned_stream(&config, with_split(24));
+            assert_same_samples(&decode(&units), &expected, &format!("{chroma:?}"));
+        },
+    );
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 110);
         config.tiles = TileLayout {
@@ -172,9 +175,9 @@ fn inter_tx_partition_streams_decode_alike_on_any_thread_count() {
     };
     let (one, expected, ..) = stream(1);
     assert_same_samples(&decode(&one), &expected, "tiled");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// An inter leaf that tries its luma transform partitions ends coded by one

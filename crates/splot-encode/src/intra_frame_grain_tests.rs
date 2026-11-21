@@ -79,29 +79,32 @@ fn grain_stream(mut config: Config, threads: usize, on: bool) -> (Vec<Vec<u8>>, 
 /// the same stream without grain, which decodes to its recon.
 #[test]
 fn grain_streams_decode_to_the_recon_plus_grain() {
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Eight),
-        (PixelFormat::Yuv422, BitDepth::Eight),
-        (PixelFormat::Yuv422, BitDepth::Ten),
-        (PixelFormat::Yuv444, BitDepth::Eight),
-        (PixelFormat::Monochrome, BitDepth::Ten),
-    ] {
-        let mut config = config(72, 40, bit_depth, 6, 120);
-        config.chroma = chroma;
-        let name = format!("{chroma:?} {bit_depth:?}");
-        let (units, grained, recon) = grain_stream(config.clone(), 1, true);
-        assert_ne!(grained, recon, "{name}: no grain");
-        assert_same_samples(&decode(&units.concat()), &grained, &name);
-        let (plain, plain_grained, plain_recon) = grain_stream(config.clone(), 1, false);
-        assert_eq!(plain_recon, recon, "{name}: grain changed the recon");
-        assert_same_samples(&decode(&plain.concat()), &plain_grained, &name);
-        for threads in [2, 8] {
-            assert!(
-                grain_stream(config.clone(), threads, true).0 == units,
-                "{name}: {threads}"
-            );
-        }
-    }
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Eight),
+            (PixelFormat::Yuv422, BitDepth::Eight),
+            (PixelFormat::Yuv422, BitDepth::Ten),
+            (PixelFormat::Yuv444, BitDepth::Eight),
+            (PixelFormat::Monochrome, BitDepth::Ten),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(72, 40, bit_depth, 6, 120);
+            config.chroma = chroma;
+            let name = format!("{chroma:?} {bit_depth:?}");
+            let (units, grained, recon) = grain_stream(config.clone(), 1, true);
+            assert_ne!(grained, recon, "{name}: no grain");
+            assert_same_samples(&decode(&units.concat()), &grained, &name);
+            let (plain, plain_grained, plain_recon) = grain_stream(config.clone(), 1, false);
+            assert_eq!(plain_recon, recon, "{name}: grain changed the recon");
+            assert_same_samples(&decode(&plain.concat()), &plain_grained, &name);
+            each_case([2, 8], |threads| {
+                assert!(
+                    grain_stream(config.clone(), threads, true).0 == units,
+                    "{name}: {threads}"
+                );
+            });
+        },
+    );
 }
 
 /// The visible samples of `pictures` as the decoder's raw output.

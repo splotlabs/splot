@@ -17,7 +17,9 @@ use crate::gop::GopFrame;
 use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::tests::frame;
 use crate::preset::Preset;
-use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
+use crate::test_support::{
+    assert_same_samples, avm_decode, avm_decoder, decode, each_case, raw_bytes,
+};
 
 fn plan(frame_index: u64, frame_type: FrameType, offset: i16) -> FramePlanInfo {
     FramePlanInfo {
@@ -329,7 +331,7 @@ fn rate_controlled_streams_do_not_depend_on_the_thread_count() {
 /// frames every 30.
 #[test]
 fn vbr_meets_targets_within_three_percent() {
-    for target in [40, 100, 250] {
+    each_case([40, 100, 250], |target| {
         let mut config = Config::new(96, 64);
         config.preset = Preset::new(9).unwrap();
         config.rate_control = RateControlMode::Vbr {
@@ -355,7 +357,7 @@ fn vbr_meets_targets_within_three_percent() {
             bits.abs_diff(budget) * 100 <= budget * 3,
             "{target}: {bits} bits"
         );
-    }
+    });
 }
 
 /// AVM decodes the rate-controlled streams to the encoder recon.
