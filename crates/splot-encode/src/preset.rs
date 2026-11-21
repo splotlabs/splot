@@ -454,9 +454,9 @@ pub struct PresetParams {
     /// (2026-11-21, paris f10: Y +0.03%, 6:1:1 +0.10%).
     pub bawp_search: u8,
     /// TIP blocks also try `NEWMV` (`tip_pred_mode = 1`, § 5.20.7.6): a
-    /// pattern search scored by the decoder's TIP prediction. On at p0
-    /// (2026-11-21, paris f10: Y -0.22%, 6:1:1 -0.19% at 1.024x
-    /// instructions).
+    /// pattern search scored by the decoder's TIP prediction. Off in every
+    /// row until a p0 table; p0 paris f10 measured Y -0.22%, 6:1:1 -0.19%
+    /// at 1.024x instructions (2026-11-21).
     pub tip_newmv: bool,
     /// Staged mode decision: the inter candidates of a leaf that each class
     /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
@@ -1025,7 +1025,7 @@ preset_table! {
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
         bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         bawp_search:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        tip_newmv:             [ true, false, false, false, false, false, false, false, false, false, false],
+        tip_newmv:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
