@@ -166,7 +166,7 @@ pub(super) fn zooming_stream(
     count: impl Fn(&CodedFrame) -> (usize, usize),
 ) -> WarpStream {
     let RateControlMode::ConstantQp { qp } = config.rate_control else {
-        panic!("a constant-qp config");
+        unreachable!("these tests code at a constant qp")
     };
     let mini_gop = coder.preset.mini_gop_size.min(4);
     let mut planner = crate::gop::GopPlanner::new(config.keyint, mini_gop);
@@ -505,7 +505,10 @@ fn warp_interintra_and_compound_local_warp_decode_on_any_thread_count() {
     assert_warp_records_consumed(&one.frames, "warp tools");
     assert_same_samples(&decode(&one.units), &one.expected, "warp tools");
     for threads in [2, 8] {
-        assert!(warp_tools_stream(threads).0.units == one.units, "{threads} threads");
+        assert!(
+            warp_tools_stream(threads).0.units == one.units,
+            "{threads} threads"
+        );
     }
 }
 

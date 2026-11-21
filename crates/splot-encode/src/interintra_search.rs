@@ -116,8 +116,13 @@ impl TrialCoder<'_, '_> {
             return Ok(Vec::new());
         };
         let mut out = vec![best];
-        if let (2, InterPrediction::Warp(WarpModes { interintra: Some(ii), .. })) =
-            (self.preset.warp_interintra, best)
+        if let (
+            2,
+            InterPrediction::Warp(WarpModes {
+                interintra: Some(ii),
+                ..
+            }),
+        ) = (self.preset.warp_interintra, best)
         {
             let wedges = (0..WEDGE_TYPES).map(|index| with(ii.mode, Some(index)));
             out.extend(self.cheapest(leaf, motion, wedges)?);
@@ -133,7 +138,11 @@ impl TrialCoder<'_, '_> {
         motion: &MotionSearch,
         variants: impl IntoIterator<Item = InterModes>,
     ) -> Result<Option<InterModes>> {
-        let found = self.cheapest(leaf, motion, variants.into_iter().map(InterPrediction::Single))?;
+        let found = self.cheapest(
+            leaf,
+            motion,
+            variants.into_iter().map(InterPrediction::Single),
+        )?;
         Ok(match found {
             Some(InterPrediction::Single(modes)) => Some(modes),
             _ => None,
@@ -165,7 +174,8 @@ impl TrialCoder<'_, '_> {
             let mut sink = RateSink::adapting();
             self.syntax.price_inter_modes(leaf, prediction, &mut sink)?;
             if matches!(prediction, InterPrediction::Warp(_)) {
-                self.syntax.price_interp_filter(leaf, prediction, &mut sink)?;
+                self.syntax
+                    .price_interp_filter(leaf, prediction, &mut sink)?;
             }
             cost += motion.bits_cost(sink.bits);
             if best.is_none_or(|(c, _)| cost < c) {

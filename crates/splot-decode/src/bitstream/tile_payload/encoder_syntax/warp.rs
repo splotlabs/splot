@@ -234,7 +234,10 @@ impl IntraTileSyntax {
             ref_warp_idx: modes.warp_idx,
             mvd: (newmv || modes.mv.is_some()).then_some(Mv::default()),
             precision: modes.precision,
-            interintra: modes.interintra.map(super::InterIntra::prediction).transpose()?,
+            interintra: modes
+                .interintra
+                .map(super::InterIntra::prediction)
+                .transpose()?,
         };
         let tile = &self.inter_ref()?.tile;
         let checked = tile

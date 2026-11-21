@@ -762,7 +762,10 @@ impl EncoderInterTile {
         }
         if reads_local_warp {
             let ctx = neighbour.use_local_warp_ctx();
-            out.push((TileCdfSelector::UseLocalWarp { ctx }, u8::from(compound.local_warp)));
+            out.push((
+                TileCdfSelector::UseLocalWarp { ctx },
+                u8::from(compound.local_warp),
+            ));
         } else if compound.local_warp {
             return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
