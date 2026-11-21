@@ -1225,6 +1225,13 @@ impl<'a> SourceResidualCoder<'a> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The model rank of each exact type-search winner (tests only).
+    pub(crate) static MODEL_RANKS: core::cell::RefCell<Vec<(usize, u128, u128)>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
 impl ResidualCoder for SourceResidualCoder<'_> {
     fn palette_map(
         &mut self,
@@ -1256,10 +1263,24 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         };
         let ist_probe = if inter { 4 } else { 2 };
         let mut best: Option<(u128, TransformDecision)> = None;
-        let scalar_types = (count > 1 || ist_sets > 0) && !self.preset.tcq_type_trellis;
+        let keep = match self.preset.tx_type_model_keep {
+            0 => count,
+            keep => usize::from(keep).min(count),
+        };
+        let order = if keep < count {
+            self.model_order(syntax, tx, prediction, &tx_types[..count], keep)?
+        } else {
+            tx_types[..count].to_vec()
+        };
+        let scalar_types = (keep > 1 || ist_sets > 0) && !self.preset.tcq_type_trellis;
         let scalar = self.scalar;
         self.scalar |= scalar_types;
-        for &tx_type in &tx_types[..count] {
+        #[cfg(test)]
+        let mut exact = Vec::new();
+        for (tried, &tx_type) in order.iter().enumerate() {
+            if tried >= keep && best.is_some() {
+                break;
+            }
             let tx = TransformBlock { tx_type, ..*tx };
             let decision = self.code(syntax, &tx, prediction)?;
             let ist = ist_sets > 0
@@ -1285,7 +1306,10 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                     ist: decision.ist,
                     ..tx
                 };
-                if let Some(cost) = self.luma_cost(syntax, &coded, prediction, &decision.levels)?
+                let cost = self.luma_cost(syntax, &coded, prediction, &decision.levels)?;
+                #[cfg(test)]
+                exact.extend(cost.map(|cost| (tx_type, cost)));
+                if let Some(cost) = cost
                     && best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost)
                 {
                     best = Some((cost, decision));
@@ -1294,6 +1318,23 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         }
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
+        #[cfg(test)]
+        if keep == count && count > 1 {
+            let ranked = self.model_ranking(syntax, tx, prediction, &tx_types[..count])?;
+            let rank = ranked
+                .iter()
+                .position(|&(_, index)| tx_types[index] == decision.tx_type);
+            let best_of = |top: usize| {
+                exact
+                    .iter()
+                    .filter(|(t, _)| ranked[..top].iter().any(|&(_, i)| tx_types[i] == *t))
+                    .map(|&(_, cost)| cost)
+                    .min()
+            };
+            if let (Some(all), Some(two)) = (best_of(count), best_of(2)) {
+                MODEL_RANKS.with_borrow_mut(|ranks| ranks.push((rank.unwrap_or(count), all, two)));
+            }
+        }
         if scalar_types {
             return self.code(
                 syntax,
@@ -1589,6 +1630,102 @@ impl SourceResidualCoder<'_> {
             .forward_transform_2d(&forward, residual, coeffs)
             .map_err(kernel)?;
         Ok((params, forward))
+    }
+
+    /// The offered luma `types` of `tx`: the `keep` with the lowest
+    /// [`Self::model_cost`] in symbol order, then the others in symbol order.
+    fn model_order(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        types: &[TxType],
+        keep: usize,
+    ) -> core::result::Result<Vec<TxType>, TileWriterError> {
+        let mut ranked = self.model_ranking(syntax, tx, prediction, types)?;
+        let (best, rest) = ranked.split_at_mut(keep);
+        best.sort_unstable_by_key(|&(_, index)| index);
+        rest.sort_unstable_by_key(|&(_, index)| index);
+        Ok(ranked.iter().map(|&(_, index)| types[index]).collect())
+    }
+
+    /// `(model cost, index)` of each of `types`, lowest cost first (ties in
+    /// symbol order).
+    fn model_ranking(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        types: &[TxType],
+    ) -> core::result::Result<Vec<(u128, usize)>, TileWriterError> {
+        let mut scratch = core::mem::take(&mut self.scratch);
+        let mut levels = Vec::new();
+        syntax.set_scalar_trial(true);
+        let mut ranked = Vec::with_capacity(types.len());
+        let mut found = Ok(());
+        for (index, &tx_type) in types.iter().enumerate() {
+            let tx = TransformBlock { tx_type, ..*tx };
+            match self.model_cost(syntax, &tx, prediction, &mut scratch, &mut levels) {
+                Ok(cost) => ranked.push((cost.unwrap_or(u128::MAX), index)),
+                Err(error) => {
+                    found = Err(error);
+                    break;
+                }
+            }
+        }
+        syntax.set_scalar_trial(self.candidate || self.trial || self.scalar);
+        self.scratch = scratch;
+        found?;
+        ranked.sort_unstable();
+        Ok(ranked)
+    }
+
+    /// The model cost of luma block `tx` in RDOQ units: the coefficient-domain
+    /// squared error of its plain deadzone levels plus lambda times their
+    /// frozen rate; `None` when the decoder would infer another type for those
+    /// levels or cannot code them. The caller sets the scalar trial.
+    fn model_cost(
+        &self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        [residual, coeffs, dequant]: &mut [Vec<i32>; 3],
+        levels: &mut Vec<i32>,
+    ) -> core::result::Result<Option<u128>, TileWriterError> {
+        let (params, _) =
+            self.forward(tx, (false, syntax.uses_ddt()), prediction, residual, coeffs)?;
+        let quantizer = Quantizer::new(
+            params.dc_quant,
+            params.ac_quant,
+            params.dq_denom,
+            self.bit_depth,
+            DEADZONE_ROUNDING_Q8,
+        )
+        .map_err(kernel)?;
+        levels.resize(coeffs.len(), 0);
+        dequant.resize(coeffs.len(), 0);
+        let (_, error) = kernels()
+            .quantize_error(&quantizer, coeffs, levels, dequant)
+            .map_err(kernel)?;
+        let eob = eob(tx, levels)?;
+        if eob > 0
+            && syntax
+                .inferred_luma_tx_type(tx, eob)?
+                .is_some_and(|t| t != tx.tx_type)
+        {
+            return Ok(None);
+        }
+        let rate = block_rate(syntax, &mut RateSink::frozen(), tx, levels, false)?;
+        if rate == Bits::IMPOSSIBLE {
+            return Ok(None);
+        }
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        let lambda_q8 = self
+            .lambda
+            .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
+        Ok(Some(
+            (u128::from(error) << 16) + u128::from(lambda_q8) * u128::from(rate.0),
+        ))
     }
 
     /// The secondary transform of the first `sets` sets whose outputs keep the

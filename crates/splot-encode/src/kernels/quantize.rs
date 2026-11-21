@@ -28,7 +28,7 @@
 
 use fearless_simd::{
     Bytes as _, Level, Select as _, Simd, SimdBase as _, SimdCvtFloat as _, SimdCvtTruncate as _,
-    SimdInt as _, SimdMask as _, dispatch, f32x8, i32x8, u32x8,
+    SimdInt as _, SimdIntWiden as _, SimdMask as _, dispatch, f32x8, i32x8, u32x8, u64x4,
 };
 
 use splot_recon::BitDepth;
@@ -190,6 +190,26 @@ pub(super) fn quantize_scalar(
     Ok(nonzero)
 }
 
+/// [`quantize_scalar`] with `Σ (|c| - |dq|)²`, the squared error of the
+/// reconstruction in the coefficient domain (wrapping in `u64`).
+#[cfg(test)]
+pub(super) fn quantize_error_scalar(
+    quantizer: &Quantizer,
+    coeffs: &[i32],
+    levels: &mut [i32],
+    dequant: &mut [i32],
+) -> Result<(usize, u64), KernelError> {
+    let nonzero = quantize_scalar(quantizer, coeffs, levels, dequant)?;
+    let error = coeffs
+        .iter()
+        .zip(dequant.iter())
+        .fold(0u64, |sum, (&c, &dq)| {
+            let e = u64::from(c.unsigned_abs().abs_diff(dq.unsigned_abs()));
+            sum.wrapping_add(e * e)
+        });
+    Ok((nonzero, error))
+}
+
 /// Per-lane [`Step`] fields.
 struct StepLanes<S: Simd> {
     q2: u32x8<S>,
@@ -238,24 +258,52 @@ pub(super) fn quantize_simd(
 ) -> Result<usize, KernelError> {
     check_lengths(coeffs, levels, dequant)?;
     Ok(
-        dispatch!(Level::baseline(), simd => quantize_kernel(simd, quantizer, coeffs, levels, dequant)),
+        dispatch!(Level::baseline(), simd => quantize_kernel::<_, false>(simd, quantizer, coeffs, levels, dequant)).0,
     )
 }
 
+/// [`quantize_simd`] that also sums the squared coefficient-domain error in
+/// the same pass ([`quantize_error_scalar`]).
+pub(super) fn quantize_error_simd(
+    quantizer: &Quantizer,
+    coeffs: &[i32],
+    levels: &mut [i32],
+    dequant: &mut [i32],
+) -> Result<(usize, u64), KernelError> {
+    check_lengths(coeffs, levels, dequant)?;
+    Ok(
+        dispatch!(Level::baseline(), simd => quantize_kernel::<_, true>(simd, quantizer, coeffs, levels, dequant)),
+    )
+}
+
+/// `(|c| - |dq|)²` of eight lanes, summed into `acc`.
 #[inline]
-fn quantize_kernel<S: Simd>(
+fn add_error<S: Simd>(acc: &mut u64x4<S>, c: i32x8<S>, dq: i32x8<S>) {
+    let (a, b) = (
+        c.abs().bitcast::<u32x8<S>>(),
+        dq.abs().bitcast::<u32x8<S>>(),
+    );
+    let e = a.max(b) - a.min(b);
+    let (lo, hi) = e.widening_mul(e);
+    *acc = *acc + lo + hi;
+}
+
+#[inline]
+fn quantize_kernel<S: Simd, const ERROR: bool>(
     simd: S,
     quantizer: &Quantizer,
     coeffs: &[i32],
     levels: &mut [i32],
     dequant: &mut [i32],
-) -> usize {
+) -> (usize, u64) {
     let (c_chunks, c_tail) = coeffs.as_chunks::<LANES>();
     let (l_chunks, l_tail) = levels.as_chunks_mut::<LANES>();
     let (d_chunks, d_tail) = dequant.as_chunks_mut::<LANES>();
     let first = StepLanes::new(simd, quantizer.dc, quantizer.ac, quantizer.rounding_q8);
     let rest = StepLanes::new(simd, quantizer.ac, quantizer.ac, quantizer.rounding_q8);
     let mut count = 0;
+    let zero = i32x8::splat(simd, 0);
+    let mut error = u64x4::splat(simd, 0);
     for (i, ((c, l), d)) in c_chunks.iter().zip(l_chunks).zip(d_chunks).enumerate() {
         let steps = if i == 0 { &first } else { &rest };
         let c = i32x8::load_array_ref(simd, c);
@@ -265,9 +313,15 @@ fn quantize_kernel<S: Simd>(
             .all_true()
         {
             (*l, *d) = ([0; LANES], [0; LANES]);
+            if ERROR {
+                add_error(&mut error, c, zero);
+            }
             continue;
         }
         let (level, dq) = quantize_lanes(quantizer, steps, c);
+        if ERROR {
+            add_error(&mut error, c, dq);
+        }
         count += level.simd_ne(0).to_bitmask().count_ones() as usize;
         level.store_slice(l);
         dq.store_slice(d);
@@ -277,7 +331,11 @@ fn quantize_kernel<S: Simd>(
         let steps = if c_chunks.is_empty() { &first } else { &rest };
         let mut c = [0; LANES];
         c[..n].copy_from_slice(c_tail);
-        let (level, dq) = quantize_lanes(quantizer, steps, i32x8::load_array_ref(simd, &c));
+        let c = i32x8::load_array_ref(simd, &c);
+        let (level, dq) = quantize_lanes(quantizer, steps, c);
+        if ERROR {
+            add_error(&mut error, c, dq);
+        }
         count += level.simd_ne(0).to_bitmask().count_ones() as usize;
         let (mut l, mut d) = ([0; LANES], [0; LANES]);
         level.store_slice(&mut l);
@@ -285,7 +343,7 @@ fn quantize_kernel<S: Simd>(
         l_tail.copy_from_slice(&l[..n]);
         d_tail.copy_from_slice(&d[..n]);
     }
-    count
+    (count, error.reduce_sum())
 }
 
 #[allow(

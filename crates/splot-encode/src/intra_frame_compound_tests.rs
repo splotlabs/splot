@@ -338,6 +338,8 @@ fn bawp_stream(
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, usize) {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         bawp: true,
+        tx_type_depth: 1,
+        tx_type_model_keep: 0,
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(width, height, BitDepth::Ten, 6, 200);
