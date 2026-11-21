@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use splot_decode::encoder_syntax::{
-    ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
-    MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, PartitionNode, SingleMvs, SyntaxSnapshot, TxPartition,
-    tx_log2,
+    ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax,
+    JMVD_AMVD_SCALE_MODES, LeafBlock, MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, PartitionNode, SingleMvs,
+    SyntaxSnapshot, TxPartition, tx_log2,
 };
 use splot_recon::InterpolationFilter;
 
@@ -560,13 +560,8 @@ impl TrialCoder<'_, '_> {
         }
         if self.preset.tip > 0 && self.syntax.tip_allowed(leaf)? {
             let ref_frame = self.syntax.reference_count();
-            for (drl, &mv) in self
-                .syntax
-                .single_mvs(leaf, ref_frame)?
-                .near
-                .iter()
-                .enumerate()
-            {
+            let tip = self.syntax.single_mvs(leaf, ref_frame)?;
+            for (drl, &mv) in tip.near.iter().enumerate() {
                 push(
                     mv,
                     InterModes {
@@ -582,22 +577,45 @@ impl TrialCoder<'_, '_> {
                     },
                 );
             }
+            if let (true, Some(motion)) = (self.preset.tip_newmv, self.motion)
+                && let Some(modes) = self.tip_newmv(leaf, motion, &tip)?
+            {
+                push(modes.mv, modes);
+            }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
-        if let (Some(motion), Some(base)) = (self.motion, interintra_base) {
-            if self.preset.interintra {
-                let interintra = self
-                    .interintra_choice(leaf, motion, base)?
-                    .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)));
-                #[cfg(test)]
-                if let (Some(choice), true) = (interintra, FORCE_INTERINTRA.get()) {
-                    return Ok(vec![choice]);
-                }
-                choices.extend(interintra);
+        if let (Some(motion), Some(base), true) =
+            (self.motion, interintra_base, self.preset.interintra)
+        {
+            let interintra: Vec<_> = self
+                .interintra_choice(leaf, motion, base)?
+                .into_iter()
+                .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)))
+                .collect();
+            #[cfg(test)]
+            if let (Some(&choice), true) = (interintra.first(), FORCE_INTERINTRA.get()) {
+                return Ok(vec![choice]);
             }
-            if self.preset.bawp {
+            choices.extend(interintra);
+        }
+        if let (Some(motion), true) = (self.motion, self.preset.bawp) {
+            let mut bases: Vec<InterModes> = interintra_base.into_iter().collect();
+            if self.preset.bawp_search >= 2 {
+                let references = self.syntax.reference_count();
+                bases.extend(choices.iter().filter_map(|choice| match choice.inter {
+                    Some(InterPrediction::Single(modes))
+                        if modes.mode == InterMode::Near && modes.ref_frame < references =>
+                    {
+                        Some(modes)
+                    }
+                    _ => None,
+                }));
+            }
+            for base in bases {
+                let found = self.bawp_choice(leaf, motion, base)?;
                 choices.extend(
-                    self.bawp_choice(leaf, motion, base)?
+                    found
+                        .into_iter()
                         .map(|modes| LeafChoice::inter(InterPrediction::Single(modes))),
                 );
             }
@@ -861,7 +879,10 @@ impl TrialCoder<'_, '_> {
     }
 
     /// The `preset.compound_candidates` compound predictions of `leaf` with
-    /// the lowest luma SATD plus the exact rate of their mode and difference
+    /// the lowest luma SATD (of the decoder's prediction with
+    /// `preset.implicit_mask`, whose `COMPOUND_AVERAGE` blends with the
+    /// implicit mask, § 7.13.3.14; of the plain average otherwise) plus the
+    /// exact rate of their mode and difference
     /// syntax, DRL indices included (priced for the [`PRICED_COMPOUND_SHARE`]
     /// times as many lowest-SATD ones; a candidate with the references and
     /// vectors of an earlier one is dropped, which measured better than
@@ -901,6 +922,7 @@ impl TrialCoder<'_, '_> {
                 drl,
                 mvs,
                 jmvd_scale_mode: 0,
+                amvd: false,
                 filter: InterpolationFilter::EightTap,
                 optflow: false,
                 refinemv: false,
@@ -942,6 +964,20 @@ impl TrialCoder<'_, '_> {
                     trials.push(modes(CompoundMode::NewNew, [0; 2], [first, partner]));
                 }
             }
+            if self.preset.compound_amvd && self.syntax.adaptive_mvd() {
+                let amvd: Vec<_> = trials
+                    .iter()
+                    .filter(|trial| {
+                        trial.mode != CompoundMode::GlobalGlobal
+                            && trial.jmvd_scale_mode < JMVD_AMVD_SCALE_MODES
+                    })
+                    .map(|&trial| CompoundModes {
+                        amvd: true,
+                        ..trial
+                    })
+                    .collect();
+                trials.extend(amvd);
+            }
             derived.extend(trials.into_iter().map(|trial| (trial, None)));
             for (trial, mvs) in derived {
                 let trial = if mvs.is_some() || trial.mode == CompoundMode::GlobalGlobal {
@@ -978,12 +1014,20 @@ impl TrialCoder<'_, '_> {
                 {
                     continue;
                 }
-                let satd = motion.prediction_satd(
-                    self.syntax,
-                    &[(refs.0, mvs[0]), (refs.1, mvs[1])],
-                    InterpolationFilter::EightTap,
-                    leaf_rect(leaf)?,
-                )?;
+                let satd = if self.preset.implicit_mask {
+                    let prediction = InterPrediction::Compound(trial);
+                    let Some((satd, _)) = self.luma_score(leaf, prediction)? else {
+                        continue;
+                    };
+                    satd
+                } else {
+                    motion.prediction_satd(
+                        self.syntax,
+                        &[(refs.0, mvs[0]), (refs.1, mvs[1])],
+                        InterpolationFilter::EightTap,
+                        leaf_rect(leaf)?,
+                    )?
+                };
                 ranked.push((satd, mvs, trial));
             }
         }
@@ -1707,3 +1751,7 @@ impl TrialCoder<'_, '_> {
 mod compound_search;
 #[path = "interintra_search.rs"]
 mod interintra_search;
+#[path = "tip_search.rs"]
+mod tip_search;
+#[cfg(test)]
+pub(crate) use tip_search::TIP_NEWMV_ON_NEAR;

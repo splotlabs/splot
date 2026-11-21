@@ -148,6 +148,9 @@ fn inter_headers_parse_with_the_reference_state() {
                         high_precision_mv,
                         switchable_interp_filter,
                         tip_weight: None,
+                        tip_global_mv: TipGlobalMv::default(),
+                        tip_filter: None,
+                        tip_deblocking: false,
                         tip_hole_fill: false,
                         opfl_refine_type: 0,
                         force_integer_mv: sb == SuperblockSize::Block128x128 && !high_precision_mv,
@@ -235,6 +238,9 @@ fn order_hints_unwrap_against_the_reference_slots() {
         high_precision_mv: false,
         switchable_interp_filter: false,
         tip_weight: None,
+        tip_global_mv: TipGlobalMv::default(),
+        tip_filter: None,
+        tip_deblocking: false,
         tip_hole_fill: false,
         opfl_refine_type: 0,
         force_integer_mv: false,
@@ -335,6 +341,9 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             high_precision_mv: false,
             switchable_interp_filter: false,
             tip_weight: None,
+            tip_global_mv: TipGlobalMv::default(),
+            tip_filter: None,
+            tip_deblocking: false,
             tip_hole_fill: false,
             opfl_refine_type: 0,
             force_integer_mv: false,
@@ -492,6 +501,9 @@ fn rejects_out_of_range_inter_inputs() {
         high_precision_mv: false,
         switchable_interp_filter: false,
         tip_weight: None,
+        tip_global_mv: TipGlobalMv::default(),
+        tip_filter: None,
+        tip_deblocking: false,
         tip_hole_fill: false,
         opfl_refine_type: 0,
         force_integer_mv: false,
@@ -603,6 +615,123 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
     let seq = build_encoder_sequence_header(&stream).unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
     assert!(build_tip_output_frame_header(&view, &slots.view(), &params, &[0, 1]).is_err());
+}
+
+/// The TIP output options parse back: a global MV, each TIP filter,
+/// explicit quantization and TIP deblocking; out-of-range values are
+/// rejected before any bit is written, and a header cut inside the options
+/// does not parse complete.
+#[test]
+fn tip_output_options_round_trip() {
+    let stream = |explicit_qp| EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block128x128,
+        tools: EncoderToolFlags {
+            ref_frame_mvs: true,
+            tip: true,
+            tip_output: true,
+            df_sub_pu: true,
+            tip_explicit_qp: explicit_qp,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let mut slots = Slots::after_key(64, 64, 4);
+    slots.valid[1] = true;
+    slots.hints[1] = 8;
+    slots.counters[1] = 1;
+    let base = InterFrameParams {
+        base_q_idx: 120,
+        order_hint: 6,
+        show_frame: true,
+        tip_weight: Some(3),
+        ..InterFrameParams::default()
+    };
+    let filters = [
+        (None, InterpolationFilter::EighttapSharp),
+        (
+            Some(InterpolationFilter::Eighttap),
+            InterpolationFilter::Eighttap,
+        ),
+        (
+            Some(InterpolationFilter::EighttapSmooth),
+            InterpolationFilter::EighttapSmooth,
+        ),
+    ];
+    for explicit_qp in [false, true] {
+        let seq = build_encoder_sequence_header(&stream(explicit_qp)).unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        for (mv, (filter, parsed), deblocking) in [
+            (TipGlobalMv::new(3, -2), filters[0], false),
+            (TipGlobalMv::new(0, 15), filters[1], true),
+            (TipGlobalMv::new(-15, 0), filters[2], false),
+            (TipGlobalMv::default(), filters[1], true),
+        ] {
+            let params = InterFrameParams {
+                tip_global_mv: mv,
+                tip_filter: filter,
+                tip_deblocking: deblocking,
+                ..base
+            };
+            let header =
+                build_tip_output_frame_header(&view, &slots.view(), &params, &[0, 1]).unwrap();
+            let inter = header.core.inter.as_ref().unwrap();
+            assert_eq!(inter.tip_global_mv, Some(mv));
+            assert_eq!(inter.tip_interpolation_filter, Some(parsed));
+            assert_eq!(inter.allow_df_sub_pu, Some(deblocking));
+            assert_eq!(inter.apply_deblocking_filter_tip, Some(deblocking));
+            assert_eq!(header.core.tile_info.is_some(), deblocking);
+            let qp = header.core.quantization_params.map(|q| q.base_q_idx);
+            assert_eq!(qp, explicit_qp.then_some(120));
+            let total = header.core.consumed_bits;
+            for cut in [total / 16 * 8, (total - 1) / 8 * 8] {
+                let mut bits = BitWriter::new();
+                for index in 0..cut {
+                    bits.write_flag(header.bits.bit(index).unwrap()).unwrap();
+                }
+                let bytes = bits.into_bytes();
+                let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+                let prefix =
+                    parse_frame_header_prefix(&mut reader, ObuType::RegularTip, Some(true));
+                let complete = prefix.is_ok_and(|prefix| {
+                    let mut core = init_core_from_prefix(&prefix, ObuType::RegularTip, true);
+                    parse_core_body(&mut reader, &mut core, &view, None, &slots.view()).is_ok()
+                        && core.status == FrameHeaderParseStatus::InterHeaderComplete
+                        && reader.consumed_bits() == header.core.consumed_bits
+                });
+                assert!(!complete, "cut at {cut}");
+            }
+        }
+    }
+    let seq = build_encoder_sequence_header(&stream(false)).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    for bad in [
+        InterFrameParams {
+            tip_global_mv: TipGlobalMv::new(16, 0),
+            ..base
+        },
+        InterFrameParams {
+            tip_global_mv: TipGlobalMv::new(0, i32::MIN),
+            ..base
+        },
+        InterFrameParams {
+            tip_filter: Some(InterpolationFilter::Bilinear),
+            ..base
+        },
+    ] {
+        assert!(build_tip_output_frame_header(&view, &slots.view(), &bad, &[0, 1]).is_err());
+    }
+    let mut plain = stream(false);
+    plain.tools.df_sub_pu = false;
+    let seq = build_encoder_sequence_header(&plain).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let deblocked = InterFrameParams {
+        tip_deblocking: true,
+        ..base
+    };
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &deblocked, &[0, 1]).is_err());
 }
 
 #[test]
@@ -877,4 +1006,102 @@ fn global_motion_models_round_trip_through_the_parser() {
         ..off_lattice
     };
     assert!(build_inter_frame_header(&view, &refs, &no_reference).is_err());
+}
+
+/// The CDF controls of `KeyFrameTxParams` parse back (§ 5.18.2):
+/// `disable_cdf_update` in both frame types, and in an inter frame
+/// `disable_cross_frame_cdf_init` with a primary reference. Both off code the
+/// old header; a cut header does not parse.
+#[test]
+fn cdf_controls_parse_back_and_cut_headers_fail() {
+    let seq = sequence(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(64, 64, 0);
+    let params = InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 1,
+        refresh_frame_flags: 2,
+        show_frame: true,
+        filters: FrameFilterParams::default(),
+        tx: KeyFrameTxParams::default(),
+        tiles: UniformTiles::default(),
+        reference_select: false,
+        skip_mode_present: false,
+        primary_slot: Some(0),
+        use_ref_frame_mvs: false,
+        high_precision_mv: false,
+        switchable_interp_filter: false,
+        tip_weight: None,
+        tip_hole_fill: false,
+        opfl_refine_type: 0,
+        force_integer_mv: false,
+        warp: false,
+        global_motion: [None; 7],
+    };
+    let with = |tx: KeyFrameTxParams| {
+        build_inter_frame_header(&view, &slots.view(), &InterFrameParams { tx, ..params }).unwrap()
+    };
+    let off = with(KeyFrameTxParams::default());
+    let controls = |header: &EncodedFrameHeader| {
+        let inter = header.core.inter.as_ref().unwrap();
+        (
+            header.core.disable_cdf_update,
+            inter.signal_primary_ref_frame,
+            inter.disable_cross_frame_cdf_init,
+            inter.primary_ref_frame,
+        )
+    };
+    assert_eq!(
+        controls(&off),
+        (Some(false), Some(true), Some(false), Some(0))
+    );
+    let on = with(KeyFrameTxParams {
+        disable_cdf_update: true,
+        disable_cross_frame_cdf_init: true,
+        ..KeyFrameTxParams::default()
+    });
+    assert_eq!(controls(&on), (Some(true), Some(true), Some(true), Some(0)));
+    let key = |tx| {
+        crate::headers::frame::build_key_frame_header(
+            &view,
+            90,
+            0,
+            &FrameFilterParams::default(),
+            tx,
+            UniformTiles::default(),
+        )
+        .unwrap()
+    };
+    let fixed = KeyFrameTxParams {
+        disable_cdf_update: true,
+        ..KeyFrameTxParams::default()
+    };
+    assert_eq!(key(fixed).disable_cdf_update, Some(true));
+    assert_eq!(
+        key(KeyFrameTxParams::default()).disable_cdf_update,
+        Some(false)
+    );
+    let ignored = KeyFrameTxParams {
+        disable_cross_frame_cdf_init: true,
+        ..fixed
+    };
+    assert_eq!(key(ignored), key(fixed));
+    let obu = encode_inter_frame_obu(&on, &[&[0xab]]).unwrap();
+    let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
+    let cut = on.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::RegularTileGroup,
+        first_picture_in_tu: true,
+        active_sequence: Some(&seq),
+        mfh_record: None,
+        reference_state: slots.view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let mut reader = BitReader::new(&payload[..cut], ByteOffset::new(0));
+    assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
+    let cut_core = parse_frame_header_core(&mut reader, &input);
+    assert!(!matches!(
+        cut_core,
+        Ok(ref core) if core.status == FrameHeaderParseStatus::InterHeaderComplete
+    ));
 }

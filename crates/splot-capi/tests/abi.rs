@@ -23,6 +23,9 @@ const FIXTURES: &[&[u8]] = &[
     include_bytes!("../../../tests/conformance/vectors/valid/syn-crop-intra-64x64-q80.ivf"),
 ];
 
+const FILM_GRAIN: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf");
+
 fn units(ivf: &[u8]) -> Vec<Vec<u8>> {
     let mut reader = TemporalUnitReader::new(ivf);
     let mut units = Vec::new();
@@ -72,17 +75,20 @@ fn append(picture: &SplotPicture, out: &mut Vec<u8>) {
     }
 }
 
-/// Decodes `ivf` through the C ABI, keeping every picture until the end.
-fn decode(ivf: &[u8], threads: u32) -> (Vec<u8>, Vec<SplotDataProps>) {
+/// Decodes `ivf` through the C ABI and closes the decoder; the caller
+/// releases the pictures.
+fn pictures(ivf: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> {
     let mut settings = SplotSettings {
         n_threads: 0,
         max_frame_delay: 0,
-        reserved: [1; 32],
+        skip_film_grain: 1,
+        reserved: [1; 31],
     };
     let mut decoder = ptr::null_mut();
     unsafe {
         splot_default_settings(&raw mut settings);
         settings.n_threads = threads;
+        settings.skip_film_grain = skip_film_grain;
         assert_eq!(splot_open(&raw mut decoder, &raw const settings), SPLOT_OK);
         let mut pictures = Vec::new();
         let mut take = |decoder| loop {
@@ -114,27 +120,36 @@ fn decode(ivf: &[u8], threads: u32) -> (Vec<u8>, Vec<SplotDataProps>) {
         assert_eq!(splot_get_picture(decoder, &raw mut eof), SPLOT_EOF);
         splot_close(&raw mut decoder);
         assert!(decoder.is_null());
-        let mut raw = Vec::new();
-        let mut props = Vec::new();
-        for mut picture in pictures {
-            append(&picture, &mut raw);
-            props.push(picture.props);
-            splot_picture_unref(&raw mut picture);
-            assert!(picture.internal.is_null() && picture.data[0].is_null());
-        }
-        (raw, props)
+        pictures
     }
+}
+
+/// Decodes `ivf` through the C ABI, keeping every picture until the end.
+fn decode(ivf: &[u8], threads: u32) -> (Vec<u8>, Vec<SplotDataProps>) {
+    let mut raw = Vec::new();
+    let mut props = Vec::new();
+    for mut picture in pictures(ivf, threads, 0) {
+        append(&picture, &mut raw);
+        props.push(picture.props);
+        assert_eq!(picture.has_film_grain, 0);
+        unsafe { splot_picture_unref(&raw mut picture) };
+        assert!(picture.internal.is_null() && picture.data[0].is_null());
+    }
+    (raw, props)
+}
+
+fn batch_raw(ivf: &[u8], skip_film_grain: bool) -> Vec<u8> {
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+    let options = DecodeOptions::default().with_skip_film_grain(skip_film_grain);
+    let mut raw = Vec::new();
+    context.decode_raw_bytes(ivf, options, &mut raw).unwrap();
+    raw
 }
 
 #[test]
 fn pictures_from_the_c_abi_match_the_batch_decoder() {
     for fixture in FIXTURES {
-        let context =
-            DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
-        let mut expected = Vec::new();
-        context
-            .decode_raw_bytes(fixture, DecodeOptions::default(), &mut expected)
-            .unwrap();
+        let expected = batch_raw(fixture, false);
         let unit_count = units(fixture).len() as u64;
         for threads in [1, 4] {
             let (raw, props) = decode(fixture, threads);
@@ -147,20 +162,81 @@ fn pictures_from_the_c_abi_match_the_batch_decoder() {
 }
 
 #[test]
+fn skipped_film_grain_is_left_out_and_applied_on_request() {
+    let grained = batch_raw(FILM_GRAIN, false);
+    let clean = batch_raw(FILM_GRAIN, true);
+    assert!(clean != grained);
+    for (skip_film_grain, expected) in [(0, &grained), (1, &clean)] {
+        let (mut decoded, mut applied) = (Vec::new(), Vec::new());
+        for mut picture in pictures(FILM_GRAIN, 1, skip_film_grain) {
+            assert_eq!(picture.has_film_grain, 1);
+            append(&picture, &mut decoded);
+            unsafe {
+                assert_eq!(
+                    splot_apply_grain(&raw mut picture, &raw const picture),
+                    SPLOT_EINVAL
+                );
+                let mut with_grain = core::mem::zeroed::<SplotPicture>();
+                assert_eq!(
+                    splot_apply_grain(&raw mut with_grain, &raw const picture),
+                    SPLOT_OK
+                );
+                splot_picture_unref(&raw mut picture);
+                assert_eq!(with_grain.has_film_grain, 1);
+                append(&with_grain, &mut applied);
+                splot_picture_unref(&raw mut with_grain);
+            }
+        }
+        assert!(&decoded == expected, "skip_film_grain={skip_film_grain}");
+        assert!(applied == grained, "skip_film_grain={skip_film_grain}");
+    }
+}
+
+/// `skip_film_grain` and `has_film_grain` each took the first reserved byte:
+/// `reserved` was 32 bytes in the settings and 4 `usize` in the picture.
+#[test]
+fn the_new_fields_keep_the_struct_layouts() {
+    use core::mem::offset_of;
+    assert_eq!(size_of::<SplotSettings>(), 40);
+    assert_eq!(offset_of!(SplotSettings, skip_film_grain), 8);
+    assert_eq!(
+        offset_of!(SplotPicture, internal),
+        offset_of!(SplotPicture, has_film_grain) + 4 * size_of::<usize>()
+    );
+}
+
+#[test]
 fn null_and_bad_arguments_are_refused() {
     let mut decoder = ptr::null_mut();
     unsafe {
         assert_eq!(splot_open(&raw mut decoder, ptr::null()), SPLOT_EINVAL);
-        let settings = SplotSettings {
-            n_threads: 1,
-            max_frame_delay: 1,
-            reserved: [1; 32],
-        };
+        for (skip_film_grain, reserved) in [(0, [1; 31]), (2, [0; 31])] {
+            let settings = SplotSettings {
+                n_threads: 1,
+                max_frame_delay: 1,
+                skip_film_grain,
+                reserved,
+            };
+            assert_eq!(
+                splot_open(&raw mut decoder, &raw const settings),
+                SPLOT_EINVAL
+            );
+            assert!(decoder.is_null());
+        }
+        let mut picture = core::mem::zeroed::<SplotPicture>();
+        let released = core::mem::zeroed::<SplotPicture>();
         assert_eq!(
-            splot_open(&raw mut decoder, &raw const settings),
+            splot_apply_grain(&raw mut picture, &raw const released),
             SPLOT_EINVAL
         );
-        assert!(decoder.is_null());
+        assert_eq!(
+            splot_apply_grain(ptr::null_mut(), &raw const released),
+            SPLOT_EINVAL
+        );
+        assert_eq!(
+            splot_apply_grain(&raw mut picture, ptr::null()),
+            SPLOT_EINVAL
+        );
         assert_eq!(
             splot_send_data(ptr::null_mut(), ptr::null(), 0, ptr::null()),
             SPLOT_EINVAL

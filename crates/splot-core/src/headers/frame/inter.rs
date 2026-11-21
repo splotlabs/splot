@@ -152,6 +152,14 @@ pub struct TipGlobalMv {
     pub col: i32,
 }
 
+impl TipGlobalMv {
+    /// The global MV of `row` and `col`.
+    #[must_use]
+    pub const fn new(row: i32, col: i32) -> Self {
+        Self { row, col }
+    }
+}
+
 /// Why the inter control-region parse stopped (a **coverage** stop, never a truncation).
 ///
 /// The variants split into the two honest classes the module documents: a derivation
@@ -1007,7 +1015,7 @@ fn derive_implicit_ref_map(
         let valid = ref_valid.get(i).copied().unwrap_or(false);
         let order_hint = ref_order_hint
             .and_then(|s| s.get(i).copied())
-            .map_or(0, |oh| i32::try_from(oh).unwrap_or(i32::MAX));
+            .map_or(0, |oh| ref_order_hint_to_spec(oh).unwrap_or(i32::MAX));
         slot.valid = valid;
         slot.order_hint = order_hint;
         slot.counter = reference_state
@@ -1620,6 +1628,33 @@ mod tests {
         let map = derive_implicit_ref_map(&seq, &ctx, &rs, false, None).unwrap();
         assert_eq!(map.num_total_refs, 1);
         assert_eq!(map.ref_frame_idx.as_slice(), &[3]);
+    }
+
+    /// § 7.7: every restricted slot (`u32::MAX` in the model, `RESTRICTED_OH` in the spec)
+    /// is left out of the ranking and appended after the ranked references, so two
+    /// restricted slots with equal saved state both reach the list.
+    #[test]
+    fn inter_implicit_map_appends_each_restricted_slot() {
+        let mut seq = inter_seq();
+        seq.explicit_ref_frame_map = false;
+        let mut ctx = inter_ctx();
+        ctx.order_hint = Some(4);
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[..3].fill(true);
+        let mut ref_oh = [0u32; NUM_REF_FRAMES];
+        ref_oh[0] = 3;
+        ref_oh[1] = u32::MAX;
+        ref_oh[2] = u32::MAX;
+        let ref_w = [192u32; NUM_REF_FRAMES];
+        let ref_h = [192u32; NUM_REF_FRAMES];
+        let ref_q = [140u32; NUM_REF_FRAMES];
+        let rs = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &ref_valid, &ref_oh, &ref_w, &ref_h, &ref_q,
+        );
+        let map =
+            derive_implicit_ref_map(&seq, &ctx, &rs, true, Some(FrameSize::new(192, 192))).unwrap();
+        assert_eq!(map.num_total_refs, 3);
+        assert_eq!(map.ref_frame_idx.as_slice(), &[0, 1, 2]);
     }
 
     #[test]

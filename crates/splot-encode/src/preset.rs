@@ -238,6 +238,15 @@ pub struct PresetParams {
     /// (§ 5.20.7.6 `compound_mode_same_refs`), not only `NEAR_NEARMV`. Off
     /// in every row: on lost at p0 (2026-11-21, paris f10: Y +0.13%).
     pub same_ref_modes: bool,
+    /// With adaptive MVD (`mvd_tools[0]`), each compound `NEWMV` trial also
+    /// tries `use_amvd` (§ 5.20.7.6 `allow_amvd_mode`), `JOINT_NEWMV` with
+    /// the scales below `JOINT_AMVD_SCALE_FACTOR_CNT`. Off in every row (not
+    /// measured at p0; `mvd_tools` is off in every row).
+    pub compound_amvd: bool,
+    /// With adaptive MVD (`mvd_tools[0]`), the TIP `NEWMV` of `tip_newmv`
+    /// also tries `use_amvd` (§ 5.20.7.6 `allow_amvd_mode`) and keeps the
+    /// cheaper coding. Off in every row (not measured at p0).
+    pub tip_amvd: bool,
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
     pub cdf_carry: bool,
@@ -245,6 +254,18 @@ pub struct PresetParams {
     /// the saved CDFs across tiles instead of blending the primary
     /// reference's CDFs with a second reference's.
     pub cdf_avg_across_tiles: bool,
+    /// With `cdf_carry`, inter frames keep their primary reference but code
+    /// `disable_cross_frame_cdf_init = 1` (§ 5.18.2): they start from the
+    /// default CDFs.
+    pub primary_default_cdfs: bool,
+    /// Every frame codes `disable_cdf_update = 1` (§ 5.18.2): symbols code
+    /// with CDFs that do not adapt, and the frame saves the CDFs it started
+    /// from.
+    pub disable_cdf_update: bool,
+    /// The tile whose CDFs a frame of several tiles saves without
+    /// `avg_cdf_type = 1` (§ 5.18.7.2 `context_update_tile_id`), `0..=1`:
+    /// `0` the first tile, `1` the middle tile (`TileCols * TileRows / 2`).
+    pub cdf_update_tile: u8,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -318,6 +339,13 @@ pub struct PresetParams {
     pub wiener_ns: u8,
     /// The most CDEF strength sets a frame codes, `1..=8`.
     pub cdef_strengths: u8,
+    /// CDEF `(pri, sec)` strength pairs the search tries, `0..=64`: `0`
+    /// takes 8, 12 or 16 by `loop_filter_search`; more than 16 adds the other
+    /// pairs of § 5.18.7.10. Each pair costs one CDEF run of the frame.
+    pub cdef_pairs: u8,
+    /// The CDEF search also tries every `CdefDamping` `3..=6`, not only the
+    /// one derived from the qindex, and keeps the lowest RD cost.
+    pub cdef_damping_search: bool,
     /// Wiener-NS bank fits per frame of each chroma plane; `0` codes chroma
     /// restoration off.
     pub wiener_ns_chroma: u8,
@@ -425,9 +453,19 @@ pub struct PresetParams {
     /// frame coded normally; `0` is off. `100` in every row (2026-10-26):
     /// p6 measured park_joy -0.19%, paris -0.12%, niklas 0.00%.
     pub tip_output: u8,
+    /// TIP output frame search, `0..=2`: `0` codes zero global MV, the sharp
+    /// filter and no TIP deblocking; `1` also tries the regular and smooth
+    /// TIP filters; `2` then tries the global MV rows and columns `-2..=2`
+    /// (each axis alone, then the best row with the best column) and TIP
+    /// deblocking when the sequence enables `df_sub_pu`. Each candidate is a
+    /// whole TIP reconstruction scored by the TIP output RD cost.
+    pub tip_output_search: u8,
+    /// With `tip_output` and `df_sub_pu`, `enable_tip_explicit_qp`: TIP
+    /// output frames code `quantization_params()` at the frame qindex.
+    pub tip_explicit_qp: bool,
     /// With `tip`, `enable_tip_hole_fill`: every TIP frame codes
     /// `allow_tip_hole_fill = 1`, so the TIP motion field fills its holes
-    /// (§ 7.10.1).
+    /// (§ 7.10.3).
     pub tip_hole_fill: bool,
     /// Optical-flow refinement (`enable_opfl_refine = REFINE_AUTO`): inter
     /// frames with a past and a future reference code `REFINE_SWITCHABLE`,
@@ -473,23 +511,40 @@ pub struct PresetParams {
     /// park_joy -5.51% at the same CPU, so the weights stay off.
     pub compound_types: u8,
     /// `enable_imp_msk_bld`: `COMPOUND_AVERAGE` and TIP blocks blend with the
-    /// implicit mask the decoder derives; no search. Off in every row
-    /// (2026-10-30): on alone it measured park_joy +1.26%, paris +0.20% at
-    /// p6, as the compound search scores the plain average.
+    /// implicit mask the decoder derives, and the compound shortlist scores
+    /// that blend. Off in every row (2026-10-30): on alone it measured
+    /// park_joy +1.26%, paris +0.20% at p6 while the shortlist scored the
+    /// plain average.
     pub implicit_mask: bool,
     /// Inter-intra (`seq_enabled_motion_modes[INTERINTRA]`): the cheapest
     /// single-reference `NEWMV` of a leaf adds its best smooth-mask
-    /// `interintra_mode` by luma SATD to the RD trials. Off in every row
+    /// `interintra_mode` by luma SATD, and with `interintra_search` its best
+    /// wedge inter-intra, to the RD trials. Off in every row
     /// (2026-10-30): at p6 it measured park_joy +0.39% Y (-0.05% YUV) and
     /// paris +0.13% Y for 3% more CPU, largely the `inter_intra` flag every
     /// eligible block codes.
     pub interintra: bool,
+    /// With `interintra`, the leaf also tries its best wedge inter-intra
+    /// (`wedge_interintra`, § 5.20.7.15) in the RD trials, `0..=1`. `0` in
+    /// every row (not measured at p0).
+    pub interintra_search: u8,
     /// Block adaptive weighted prediction (`enable_bawp`, every inter frame
     /// codes `allow_bawp = 1`): the cheapest single-reference `NEWMV` of a
     /// leaf adds its best BAWP scale by luma SATD to the RD trials. On at
     /// p0-p6 (2026-10-30, p6 vs main): park_joy -0.28%, paris -0.11%, niklas
     /// -0.26% for about 3% more CPU; p7-p10 are not measured.
     pub bawp: bool,
+    /// BAWP variants past the luma-ranked scale of the cheapest `NEWMV`,
+    /// `0..=2`: `1` adds that scale without chroma weighting
+    /// (`use_bawp_chroma = 0`), `2` also tries BAWP on every single-reference
+    /// `NEARMV` candidate (§ 5.20.7.6). `0` in every row: `1` lost at p0
+    /// (2026-11-21, paris f10: Y +0.03%, 6:1:1 +0.10%).
+    pub bawp_search: u8,
+    /// TIP blocks also try `NEWMV` (`tip_pred_mode = 1`, § 5.20.7.6): a
+    /// pattern search scored by the decoder's TIP prediction. Off in every
+    /// row until a p0 table; p0 paris f10 measured Y -0.22%, 6:1:1 -0.19%
+    /// at 1.024x instructions (2026-11-21).
+    pub tip_newmv: bool,
     /// Staged mode decision: the inter candidates of a leaf that each class
     /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
     /// luma prediction SATD plus mode rate first. `255` keeps every one.
@@ -775,10 +830,15 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
+        check("interintra_search", self.interintra_search, 0, 1, "")?;
+        check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
+        check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
+        check("tip_output_search", self.tip_output_search, 0, 2, "")?;
         check(
             "tip_refinemv",
             u8::from(self.tip_refinemv),
@@ -1044,6 +1104,8 @@ preset_table! {
         compound_refs:         [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         jmvd_scales:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         same_ref_modes:        [false, false, false, false, false, false, false, false, false, false, false],
+        compound_amvd:         [false, false, false, false, false, false, false, false, false, false, false],
+        tip_amvd:              [false, false, false, false, false, false, false, false, false, false, false],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
@@ -1053,8 +1115,13 @@ preset_table! {
         interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         cdf_avg_across_tiles:  [false, false, false, false, false, false, false, false, false, false, false],
+        primary_default_cdfs:  [false, false, false, false, false, false, false, false, false, false, false],
+        disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
+        cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        tip_output_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        tip_explicit_qp:       [false, false, false, false, false, false, false, false, false, false, false],
         tip_hole_fill:         [false, false, false, false, false, false, false, false, false, false, false],
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         opfl_refine_all:       [false, false, false, false, false, false, false, false, false, false, false],
@@ -1065,7 +1132,10 @@ preset_table! {
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
+        interintra_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        bawp_search:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        tip_newmv:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -1075,6 +1145,8 @@ preset_table! {
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
         cdef_strengths:        [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
+        cdef_pairs:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        cdef_damping_search:   [false, false, false, false, false, false, false, false, false, false, false],
         cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
         df_sub_pu:             [false, false, false, false, false, false, false, false, false, false, false],
     }
@@ -1268,6 +1340,8 @@ mod tests {
             assert!(fast.compound_refs <= slow.compound_refs);
             assert!(fast.jmvd_scales <= slow.jmvd_scales);
             assert!(fast.same_ref_modes <= slow.same_ref_modes);
+            assert!(fast.compound_amvd <= slow.compound_amvd);
+            assert!(fast.tip_amvd <= slow.tip_amvd);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
@@ -1313,7 +1387,10 @@ mod tests {
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
+            assert!(fast.interintra_search <= slow.interintra_search);
             assert!(fast.bawp <= slow.bawp);
+            assert!(fast.bawp_search <= slow.bawp_search);
+            assert!(fast.tip_newmv <= slow.tip_newmv);
             assert!(fast.wavefront >= slow.wavefront);
             assert!(
                 fast.mds0_budgets
@@ -1495,12 +1572,17 @@ mod tests {
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),
             (&[("compound_refs", "8")], "compound_refs"),
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
+            (&[("interintra_search", "2")], "interintra_search"),
+            (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
+            (&[("cdf_update_tile", "2")], "cdf_update_tile"),
             (&[("tip_output", "201")], "tip_output"),
+            (&[("tip_output_search", "3")], "tip_output_search"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),
             (&[("global_motion", "2")], "global_motion"),

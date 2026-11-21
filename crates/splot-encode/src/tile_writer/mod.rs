@@ -16,6 +16,7 @@ use core::ops::Range;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
+use splot_core::symbol::CdfUpdateMode;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
@@ -120,7 +121,13 @@ impl KeyFrameTileWriter {
         let syntax = IntraTileSyntax::with_start(seq, core, refs, cdfs, tile)?;
         let (rows, cols) = syntax.tile_ranges();
         let sb4 = syntax.superblock_size4();
+        let update = if core.disable_cdf_update == Some(true) {
+            CdfUpdateMode::Disabled
+        } else {
+            CdfUpdateMode::Enabled
+        };
         let config = SymbolEncoderConfig::new()
+            .with_cdf_update_mode(update)
             .with_max_output_bytes(MAX_TILE_BYTES)
             .with_max_operations(MAX_TILE_OPERATIONS);
         Ok(Self {
@@ -302,13 +309,26 @@ thread_local! {
 thread_local! {
     /// Compound leaves of the final passes on this thread: same-reference
     /// `NEAR_NEWMV` and `NEW_NEWMV`, pairs with a reference ranked 4 or
-    /// later, and `JOINT_NEWMV` with `jmvd_scale_mode > 0`.
-    pub(crate) static CODED_MODES: core::cell::Cell<[usize; 4]> =
+    /// later, `JOINT_NEWMV` with `jmvd_scale_mode > 0`, and adaptive-MVD
+    /// compound leaves.
+    pub(crate) static CODED_MODES: core::cell::Cell<[usize; 5]> =
+        const { core::cell::Cell::new([0; 5]) };
+    /// Wedge inter-intra leaves of the final passes on this thread.
+    pub(crate) static CODED_WEDGE_INTERINTRA: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Single-reference leaves of the final passes on this thread: TIP
+    /// `NEWMV`, BAWP `NEARMV`, BAWP without chroma weighting, and TIP
+    /// `NEWMV` with `use_amvd`.
+    pub(crate) static CODED_SINGLE: core::cell::Cell<[usize; 4]> =
         const { core::cell::Cell::new([0; 4]) };
 }
 
 #[cfg(test)]
-fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
+fn count_coded_type(prediction: InterPrediction, tile_edge: bool, references: usize) {
     if let InterPrediction::Compound(modes) = prediction {
         let mut modes_seen = CODED_MODES.get();
         let same = modes.refs.0 == modes.refs.1;
@@ -317,10 +337,25 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
         modes_seen[2] += usize::from(modes.refs.1 >= 3);
         modes_seen[3] +=
             usize::from(modes.mode == CompoundMode::JointNew && modes.jmvd_scale_mode > 0);
+        modes_seen[4] += usize::from(
+            modes.amvd
+                && !matches!(
+                    modes.mode,
+                    CompoundMode::NearNear | CompoundMode::GlobalGlobal
+                ),
+        );
         CODED_MODES.set(modes_seen);
     }
     let mut counts = CODED_TYPES.get();
     if let InterPrediction::Single(single) = prediction {
+        let wedge = single.interintra.is_some_and(|ii| ii.wedge.is_some());
+        CODED_WEDGE_INTERINTRA.set(CODED_WEDGE_INTERINTRA.get() + usize::from(wedge));
+        let mut seen = CODED_SINGLE.get();
+        seen[0] += usize::from(single.ref_frame == references && single.mode == InterMode::New);
+        seen[1] += usize::from(single.bawp.is_some() && single.mode == InterMode::Near);
+        seen[2] += usize::from(single.bawp.is_some_and(|bawp| !bawp.chroma));
+        seen[3] += usize::from(single.ref_frame == references && single.amvd);
+        CODED_SINGLE.set(seen);
         counts[4] += usize::from(single.interintra.is_some());
         counts[5] += usize::from(single.interintra.is_some() && tile_edge);
         counts[6] += usize::from(single.bawp.is_some());
@@ -450,7 +485,11 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             #[cfg(test)]
             if self.filters.is_some() {
                 let cols = self.syntax.tile_ranges().1;
-                count_coded_type(modes, cols.start > 0 && leaf.col4() == cols.start);
+                count_coded_type(
+                    modes,
+                    cols.start > 0 && leaf.col4() == cols.start,
+                    self.syntax.reference_count(),
+                );
             }
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
@@ -800,7 +839,11 @@ pub(crate) fn snap_prediction(
             let bases = syntax.compound_bases(leaf, &modes)?;
             for (mv, base) in modes.mvs.iter_mut().zip(bases) {
                 if let Some(base) = base {
-                    *mv = snap_mv(*mv, base, step);
+                    *mv = if modes.amvd {
+                        snap_amvd(*mv, base)
+                    } else {
+                        snap_mv(*mv, base, step)
+                    };
                 }
             }
             InterPrediction::Compound(modes)

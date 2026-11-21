@@ -237,7 +237,7 @@ fn scan_type_without_ci_warns_unestablished_at_eos() {
         "report was: {report}"
     );
     assert!(
-        report.is_conformant(),
+        only_lacks_coded_layer(&report),
         "the unestablished case is a warning, not an error: {report}"
     );
 

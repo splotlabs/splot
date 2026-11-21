@@ -3,18 +3,55 @@
 
 use super::*;
 
-#[test]
-fn conformant_temporal_delimiter() {
-    let report = Validator::new(false).validate_bytes(&[0x01, 0x08]);
-    assert!(report.is_conformant());
-    assert_eq!(report.errors().count(), 0);
+fn coded_layer_errors(report: &ValidationReport) -> Vec<Option<u64>> {
+    report
+        .errors()
+        .filter(|d| d.rule_id == "obu-order/temporal-unit-without-coded-layer")
+        .map(|d| d.byte_offset.map(splot_core::span::ByteOffset::get))
+        .collect()
 }
 
 #[test]
-fn conformant_temporal_delimiter_in_ivf_is_accepted() {
+fn lone_temporal_delimiter_is_flagged() {
+    let report = Validator::new(false).validate_bytes(&[0x01, 0x08]);
+    assert_eq!(
+        coded_layer_errors(&report),
+        [Some(1)],
+        "report was: {report}"
+    );
+    assert_eq!(report.errors().count(), 1, "report was: {report}");
+
     let report = Validator::new(false).validate_bytes(&ivf_stream(&[&[0x01, 0x08]]));
-    assert!(report.is_conformant(), "report was: {report}");
-    assert_eq!(report.errors().count(), 0);
+    assert_eq!(
+        coded_layer_errors(&report),
+        [Some(45)],
+        "report was: {report}"
+    );
+}
+
+#[test]
+fn temporal_unit_without_coded_layer_is_flagged_once_per_unit() {
+    let header_only = |data: &mut Vec<u8>| {
+        data.extend(temporal_delimiter_obu());
+        data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+    };
+
+    let mut data = Vec::new();
+    header_only(&mut data);
+    let report = Validator::new(false).validate_bytes(&data);
+    assert_eq!(coded_layer_errors(&report), [], "report was: {report}");
+
+    let middle = data.len() as u64;
+    data.extend(global_padding_stream(&[0x80]));
+    header_only(&mut data);
+    let trailing = data.len() as u64;
+    data.extend(temporal_delimiter_obu());
+    let report = Validator::new(false).validate_bytes(&data);
+    assert_eq!(
+        coded_layer_errors(&report),
+        [Some(middle + 1), Some(trailing + 1)],
+        "offsets are past the Annex B size byte; report was: {report}"
+    );
 }
 
 #[test]
@@ -41,8 +78,7 @@ fn trailing_partial_ivf_frame_header_after_complete_frame_is_tolerated() {
     data.extend_from_slice(&1148u32.to_le_bytes());
     data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
     let report = Validator::new(false).validate_bytes(&data);
-    assert!(report.is_conformant(), "report was: {report}");
-    assert_eq!(report.errors().count(), 0);
+    assert!(only_lacks_coded_layer(&report), "report was: {report}");
     let warning_offset = report
         .warnings()
         .find(|d| d.rule_id == "ivf/trailing-partial-frame-header")

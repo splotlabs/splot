@@ -6,6 +6,7 @@ use splot_recon::math::{round2_signed, round2_signed_i32};
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
+use super::super::CompoundOrderHint;
 use super::{
     Mv, MvBlockContext, NeighbourCell, NeighbourMvGrid, RelativeProbe, TIP_REF_FRAME, WarpSubMvWalk,
 };
@@ -943,6 +944,7 @@ fn tip_projection(references: TipReferencePair) -> (TipReferencePair, [i64; 2]) 
 pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
+    restricted_refs: u8,
     field: ProjectedTemporalMotionField,
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
@@ -1214,15 +1216,22 @@ struct TemporalMvScratch {
 pub(crate) struct OrderHintMvContext<'a> {
     current_order_hint: u32,
     ref_order_hints: &'a [Option<u32>],
+    restricted_refs: u8,
 }
 
 impl<'a> OrderHintMvContext<'a> {
     /// The context of a frame at `current_order_hint` over the per-list
-    /// `ref_order_hints`.
-    pub(crate) const fn new(current_order_hint: u32, ref_order_hints: &'a [Option<u32>]) -> Self {
+    /// `ref_order_hints`, with bit `i` of `restricted_refs` set for a
+    /// restricted list reference `i`.
+    pub(crate) const fn new(
+        current_order_hint: u32,
+        ref_order_hints: &'a [Option<u32>],
+        restricted_refs: u8,
+    ) -> Self {
         Self {
             current_order_hint,
             ref_order_hints,
+            restricted_refs,
         }
     }
 
@@ -1234,14 +1243,22 @@ impl<'a> OrderHintMvContext<'a> {
     ) -> Option<Mv> {
         let dst = usize::try_from(dst_ref).ok()?;
         let candidate = usize::try_from(candidate_ref).ok()?;
-        let current = i32::try_from(self.current_order_hint).ok()?;
+        let current = CompoundOrderHint::current(self.current_order_hint);
         let distance = |index: usize| {
-            self.ref_order_hints
-                .get(index)
-                .copied()
-                .flatten()
-                .and_then(|hint| i32::try_from(hint).ok())
-                .map(|hint| super::super::get_relative_dist(current, hint))
+            let hint = if u32::try_from(index)
+                .ok()
+                .and_then(|index| self.restricted_refs.checked_shr(index))
+                .is_some_and(|bits| bits & 1 != 0)
+            {
+                Some(CompoundOrderHint::Restricted)
+            } else {
+                self.ref_order_hints
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map(CompoundOrderHint::reference)
+            };
+            hint.map(|hint| hint.frame_distance_from(current))
         };
         let dst_distance = distance(dst)?;
         let candidate_distance = distance(candidate)?;
@@ -1269,6 +1286,7 @@ impl TemporalMvContext {
         Self {
             current_order_hint: 0,
             ref_order_hints: Vec::new(),
+            restricted_refs: 0,
             field: ProjectedTemporalMotionField::default(),
             trajectories: None,
             trajectory_scratch: None,
@@ -1376,6 +1394,7 @@ impl TemporalMvContext {
                 .iter()
                 .map(|&slot| reference_order_hint(slot, ref_valid, ref_order_hint)),
         );
+        self.restricted_refs = restricted_reference_mask(ref_frame_idx, ref_valid, ref_order_hint);
         let mut ref_motion_metadata =
             crate::reference::buffer::RefSlots::<Option<TemporalMotionFieldMetadata>>::default();
         ref_motion_metadata.extend_within(
@@ -1507,6 +1526,7 @@ impl TemporalMvContext {
                 .iter()
                 .map(|&slot| reference_order_hint(slot, ref_valid, ref_order_hint)),
         );
+        self.restricted_refs = restricted_reference_mask(ref_frame_idx, ref_valid, ref_order_hint);
         let projections = projection_queue(
             mi_dimensions,
             current_order_hint,
@@ -1618,10 +1638,11 @@ impl TemporalMvContext {
     }
 
     pub(crate) fn order_hint_mv_context(&self) -> OrderHintMvContext<'_> {
-        OrderHintMvContext {
-            current_order_hint: self.current_order_hint,
-            ref_order_hints: &self.ref_order_hints,
-        }
+        OrderHintMvContext::new(
+            self.current_order_hint,
+            &self.ref_order_hints,
+            self.restricted_refs,
+        )
     }
 
     pub(crate) fn tip_references(&self) -> Option<TipReferencePair> {
@@ -1804,6 +1825,24 @@ fn reference_order_hint(slot: u32, ref_valid: &[bool], ref_order_hint: &[u32]) -
         .filter(|valid| *valid)
         .and_then(|_| ref_order_hint.get(slot as usize).copied())
         .filter(|&hint| hint != u32::MAX)
+}
+
+/// Bit `i` set when list reference `i` names a valid restricted slot, which
+/// [`reference_order_hints`] reports as `None`.
+pub(crate) fn restricted_reference_mask(
+    ref_frame_idx: &[u32],
+    ref_valid: &[bool],
+    ref_order_hint: &[u32],
+) -> u8 {
+    ref_frame_idx
+        .iter()
+        .enumerate()
+        .take(8)
+        .filter(|&(_, &slot)| {
+            ref_valid.get(slot as usize) == Some(&true)
+                && ref_order_hint.get(slot as usize) == Some(&u32::MAX)
+        })
+        .fold(0, |mask, (index, _)| mask | (1 << index))
 }
 
 pub(crate) fn reference_order_hints(

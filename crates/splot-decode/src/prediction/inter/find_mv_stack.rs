@@ -105,7 +105,7 @@ pub(crate) use neighbour_grid::{
 pub(crate) use temporal::{
     MotionFieldLayout, OrderHintMvContext, TemporalBandPlan, TemporalMotionBand,
     TemporalMotionBlock, TemporalMotionField, TemporalMotionFieldMetadata, TemporalMvContext,
-    TemporalProjectionConfig, TipReferencePair, reference_order_hints,
+    TemporalProjectionConfig, TipReferencePair, reference_order_hints, restricted_reference_mask,
     tip_reference_pair_from_hints,
 };
 pub(crate) use warp_bank::{WarpParamBank, WarpParamStack};

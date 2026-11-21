@@ -30,7 +30,7 @@ fn reserved_obu_with_nonzero_trailing_bits_shape_is_conformant() {
 #[test]
 fn temporal_delimiter_payload_trailing_bits_are_validated() {
     let valid = Validator::new(false).validate_bytes(&[0x02, 0x08, 0x80]);
-    assert!(valid.is_conformant(), "report was: {valid}");
+    assert!(only_lacks_coded_layer(&valid), "report was: {valid}");
 
     let invalid = Validator::new(false).validate_bytes(&[0x02, 0x08, 0x00]);
     assert!(

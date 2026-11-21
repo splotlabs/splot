@@ -108,6 +108,8 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         delta_q_res: [None, Some(0), Some(3)][index],
                         allow_intrabc: index == 1,
                         grain_seed: None,
+                        disable_cdf_update: index == 2,
+                        disable_cross_frame_cdf_init: false,
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -129,6 +131,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     assert_eq!(tail.tx_mode, tx.tx_mode);
                     assert_eq!(tail.reduced_tx_set, tx.reduced_tx_set);
                     assert_eq!(core.allow_intrabc, Some(tx.allow_intrabc));
+                    assert_eq!(core.disable_cdf_update, Some(tx.disable_cdf_update));
                     let intrabc = core.intrabc.unwrap();
                     let global = tx.allow_intrabc.then_some(true);
                     assert_eq!(intrabc.allow_global_intrabc, global);
@@ -168,6 +171,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         inter_ist: true,
         tip: true,
         tip_output: true,
+        tip_explicit_qp: true,
         tip_hole_fill: true,
         opfl_refine: true,
         refinemv: true,
@@ -222,6 +226,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.seq_frame_motion_modes_present_flag && inter.enable_six_param_warp_delta);
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
     assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
+    assert!(inter.enable_tip_explicit_qp);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);
@@ -766,19 +771,30 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
             cols_log2,
             rows_log2,
             size_bytes: 2,
+            middle_cdf_update_tile: false,
         };
-        let core = build_key_frame_header(
-            &view,
-            60,
-            0,
-            &FrameFilterParams::default(),
-            KeyFrameTxParams::default(),
-            tiles,
-        )
-        .unwrap();
+        let key = |tiles| {
+            build_key_frame_header(
+                &view,
+                60,
+                0,
+                &FrameFilterParams::default(),
+                KeyFrameTxParams::default(),
+                tiles,
+            )
+            .unwrap()
+        };
+        let core = key(tiles);
         let info = core.tile_info.as_ref().unwrap();
         assert_eq!((info.tile_cols, info.tile_rows), (cols, rows));
         assert_eq!(info.context_update_tile_id, 0);
+        let middle = key(UniformTiles {
+            middle_cdf_update_tile: true,
+            ..tiles
+        });
+        let middle_info = middle.tile_info.as_ref().unwrap();
+        assert_eq!(middle_info.context_update_tile_id, cols * rows / 2);
+        assert_eq!(reparse_core(&middle, &view), middle);
         let multi = cols * rows > 1;
         assert_eq!(info.tile_size_bytes, multi.then_some(2));
         assert_eq!(reparse_core(&core, &view), core);

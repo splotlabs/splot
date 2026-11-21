@@ -33,6 +33,12 @@ const SB256_INTRA_IVF_SHA256: &str =
 const SB256_INTRA_RAW_SHA256: &str =
     "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6";
 
+const FILM_GRAIN_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf");
+/// The fixture's `avmdec --rawvideo --skip-film-grain` output.
+const FILM_GRAIN_SKIPPED_RAW_SHA256: &str =
+    "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53";
+
 #[derive(Deserialize)]
 struct Manifest {
     schema_version: u32,
@@ -65,10 +71,18 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_raw(bytes: &[u8], threads: usize) -> splot_decode::Result<Vec<u8>> {
+    decode_raw_with(bytes, threads, &DecodeOptions::default())
+}
+
+fn decode_raw_with(
+    bytes: &[u8],
+    threads: usize,
+    options: &DecodeOptions,
+) -> splot_decode::Result<Vec<u8>> {
     let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))
         .expect("decode context");
     let mut out = Vec::new();
-    ctx.decode_raw_bytes(bytes, DecodeOptions::default(), &mut out)?;
+    ctx.decode_raw_bytes(bytes, *options, &mut out)?;
     Ok(out)
 }
 
@@ -197,6 +211,16 @@ fn sequence_sb256_intra_uses_effective_sb128_at_serial_and_parallel_widths() {
         decode_raw(truncated, 8),
         Err(splot_decode::DecodeError::MalformedSource { .. })
     ));
+}
+
+#[test]
+fn skipped_film_grain_output_matches_avmdec_skip_film_grain() {
+    let options = DecodeOptions::default().with_skip_film_grain(true);
+    for threads in THREAD_LEGS {
+        let raw = decode_raw_with(FILM_GRAIN_FIXTURE, threads, &options)
+            .unwrap_or_else(|error| panic!("film grain failed at {threads} threads: {error}"));
+        assert_eq!(sha256_hex(&raw), FILM_GRAIN_SKIPPED_RAW_SHA256);
+    }
 }
 
 /// A pass that fails mid-tile must settle, not spin the § 7.12 resolve chain.

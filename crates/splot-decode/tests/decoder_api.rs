@@ -116,12 +116,30 @@ fn raw_of(pictures: &[Picture]) -> Vec<u8> {
 }
 
 fn batch_raw(bytes: &[u8]) -> Vec<u8> {
+    batch_raw_with(bytes, &DecodeOptions::default())
+}
+
+fn batch_raw_with(bytes: &[u8], options: &DecodeOptions) -> Vec<u8> {
     let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
     let mut out = Vec::new();
-    context
-        .decode_raw_bytes(bytes, DecodeOptions::default(), &mut out)
-        .unwrap();
+    context.decode_raw_bytes(bytes, *options, &mut out).unwrap();
     out
+}
+
+/// The address of the picture's first stored luma sample.
+fn luma_storage(picture: &Picture) -> usize {
+    match picture.plane(PlaneId::Y) {
+        Some(PictureSamples::Eight(luma)) => luma.samples().as_ptr() as usize,
+        Some(PictureSamples::Ten(luma)) => luma.samples().as_ptr() as usize,
+        None => panic!("a luma plane"),
+    }
+}
+
+fn with_film_grain(pictures: &[Picture]) -> Vec<Picture> {
+    pictures
+        .iter()
+        .map(|picture| picture.apply_film_grain().unwrap())
+        .collect()
 }
 
 #[test]
@@ -138,6 +156,54 @@ fn pictures_match_the_batch_raw_output_at_every_width_and_depth() {
                 actual == expected,
                 "{threads} threads at depth {frame_delay} diverged from the batch output"
             );
+        }
+    }
+}
+
+#[test]
+fn skipped_film_grain_is_left_out_and_applied_on_request() {
+    let units = units(FILM_GRAIN);
+    let grained = batch_raw(FILM_GRAIN);
+    let clean = batch_raw_with(
+        FILM_GRAIN,
+        &DecodeOptions::default().with_skip_film_grain(true),
+    );
+    assert!(clean != grained, "the fixture's grain changes no sample");
+    for threads in [1, 4] {
+        let mut decoder = Decoder::new(
+            DecoderSettings::default()
+                .with_threads(ThreadCount::from(threads))
+                .with_skip_film_grain(true),
+        )
+        .unwrap();
+        let pictures = decode(&mut decoder, &units, |_| DataProps::default());
+        drop(decoder);
+        assert!(pictures.iter().all(Picture::has_film_grain));
+        assert!(raw_of(&pictures) == clean);
+        let (pictures, applied) = std::thread::spawn(move || {
+            let applied = with_film_grain(&pictures);
+            (pictures, applied)
+        })
+        .join()
+        .unwrap();
+        assert!(applied.iter().all(Picture::has_film_grain));
+        assert!(raw_of(&applied) == grained);
+        assert!(raw_of(&pictures) == clean, "the grain changed its source");
+        assert!(raw_of(&with_film_grain(&applied)) == grained);
+    }
+}
+
+#[test]
+fn a_picture_with_nothing_to_apply_shares_its_samples() {
+    for (fixture, has_film_grain) in [(FILM_GRAIN, true), (MULTIREF, false)] {
+        let pictures = decode(&mut decoder(1, 1), &units(fixture), |_| {
+            DataProps::default()
+        });
+        assert!(!pictures.is_empty());
+        for (picture, applied) in pictures.iter().zip(with_film_grain(&pictures)) {
+            assert_eq!(picture.has_film_grain(), has_film_grain);
+            assert_eq!(applied.has_film_grain(), has_film_grain);
+            assert_eq!(luma_storage(picture), luma_storage(&applied));
         }
     }
 }

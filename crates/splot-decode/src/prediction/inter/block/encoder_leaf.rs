@@ -13,7 +13,7 @@
 use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
     ALL_CANDIDATES, GridCheckpoint, GridEdge, ModeContext, OrderHintMvContext, RefMvBank,
-    WarpParamBank, reference_order_hints,
+    WarpParamBank, reference_order_hints, restricted_reference_mask,
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
 
@@ -35,7 +35,9 @@ mod warp;
 
 pub use blend::CompoundType;
 pub(crate) use blend::MAX_CWP_NUM;
-pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES, MvdCoding};
+pub(crate) use compound::{
+    EncoderCompoundMotion, JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MvdCoding,
+};
 pub(crate) use warp::{EncoderWarpMotion, EncoderWarpSource};
 
 /// The motion of one inter leaf.
@@ -827,7 +829,15 @@ impl EncoderInterTile {
             warp_param_bank: &mut self.warp_bank,
             core: &self.core,
             temporal: self.temporal.as_deref(),
-            order_hints: OrderHintMvContext::new(self.current_order_hint, &self.order_hints),
+            order_hints: OrderHintMvContext::new(
+                self.current_order_hint,
+                &self.order_hints,
+                restricted_reference_mask(
+                    &self.ref_frame_idx,
+                    &self.reference.ref_valid,
+                    &self.reference.ref_order_hint,
+                ),
+            ),
             drl_reorder: self.drl_reorder,
             max_drl_bits_minus_1: self.max_drl_bits_minus_1,
             frame_precision: self.precision,
@@ -963,7 +973,11 @@ impl EncoderInterTile {
             interp,
             precision: self.block_precision(motion),
             skip,
-            use_amvd: matches!(motion, EncoderMotion::Single(single) if single.use_amvd),
+            use_amvd: match motion {
+                EncoderMotion::Single(single) => single.use_amvd,
+                EncoderMotion::Compound(compound) => compound.use_amvd,
+                EncoderMotion::Warp(_) => false,
+            },
             tip_size_16x16: matches!(motion, EncoderMotion::Single(single) if single.tip)
                 && super::tip::reference_uses_16x16_units(
                     block.bw4,
