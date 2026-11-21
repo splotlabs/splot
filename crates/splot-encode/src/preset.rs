@@ -109,6 +109,8 @@ pub struct PresetParams {
     /// Luma types per block that get the exact trial: `0` tries every offered
     /// type; `k` ranks the offered types by the plain deadzone levels (error in
     /// the coefficient domain plus their frozen rate) and tries the best `k`.
+    /// p6 ranks 7 types and tries 2 (CRF keyint 30, 30 frames: 6:1:1 -0.30%
+    /// at about 1.01x instructions against 3 exact types).
     pub tx_type_model_keep: u8,
     /// Luma transform-partition search (`TX_MODE_SELECT`); off codes every
     /// block with its largest transform (`TX_MODE_LARGEST`). Off from p8
@@ -930,8 +932,8 @@ preset_table! {
         tcq:                   frames([[true; 11], [true; 11], [false; 11], [false; 11]]),
         tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         tcq_type_trellis:      [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
-        tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
-        tx_type_model_keep:    [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        tx_type_depth:         [    3,     3,     3,     2,     2,     2,     3,     1,     1,     0,     0],
+        tx_type_model_keep:    [    0,     0,     0,     0,     0,     0,     2,     0,     0,     0,     0],
         tx_partition_search:   frames([
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
@@ -1135,12 +1137,16 @@ mod tests {
             assert!(fast.tcq_search_trellis || !fast.tcq_type_trellis);
             assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
-            let exact = |p: &PresetParams| match p.tx_type_model_keep {
-                0 => crate::tx_choice::tx_type_candidates(p),
-                keep => crate::tx_choice::tx_type_candidates(p).min(usize::from(keep)),
+            // An exact type trial costs at least three model costs (RDOQ;
+            // a TCQ trial costs 10-50).
+            let type_work = |p: &PresetParams| {
+                let offered = crate::tx_choice::tx_type_candidates(p);
+                match p.tx_type_model_keep {
+                    0 => 3 * offered,
+                    keep => offered + 3 * offered.min(usize::from(keep)),
+                }
             };
-            assert!(exact(fast) <= exact(slow));
-            assert!(slow.tx_type_model_keep == 0 || fast.tx_type_model_keep > 0);
+            assert!(type_work(fast) <= type_work(slow));
             assert!(at_most(
                 &fast.tx_partition_search,
                 &slow.tx_partition_search
