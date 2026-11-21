@@ -153,6 +153,8 @@ pub struct Encoder {
     window: Vec<FramePlanInfo>,
     /// The preset's `tpl_delta_q` strength in percent.
     tpl_delta_q: u8,
+    /// The preset's `global_motion` estimator level.
+    global_motion: u8,
     /// The preset's temporal filter frames and strengths of key and base frames.
     temporal_filter: [(u8, u8); 2],
     /// The [`crate::preset::PresetParams::key_qindex_boost`] of the coded size.
@@ -246,6 +248,7 @@ impl Encoder {
             lookahead_frames: usize::from(params.lookahead_frames),
             window: Vec::new(),
             tpl_delta_q: params.tpl_delta_q,
+            global_motion: params.global_motion,
             temporal_filter: [FrameKind::Key, FrameKind::Base].map(|frame| {
                 let coded = config.coded();
                 let context = PresetContext {
@@ -437,8 +440,18 @@ impl Encoder {
             self.coder.set_open_loop_motion(fields);
         }
         if self.coder.wants_global_motion() {
-            let models =
-                crate::global_motion::estimate(&mut self.lookahead, &plan, coded_before, &sources);
+            let lambda = crate::rd::Lambda::from_qindex(
+                u32::from(self.qindex_estimate()),
+                self.config.bit_depth,
+            )
+            .map_err(crate::intra_frame::coding("global motion lambda"))?;
+            let sad_per_bit = lambda.sse_per_bit_q16().isqrt();
+            let models = crate::global_motion::estimate(
+                &mut self.lookahead,
+                &plan,
+                (coded_before, self.global_motion, sad_per_bit),
+                &sources,
+            );
             self.coder.set_global_motion(models);
             self.cancel.check()?;
         }
