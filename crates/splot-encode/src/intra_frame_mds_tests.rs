@@ -65,12 +65,12 @@ fn staged_streams_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "staged mode decision");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(
             staged_stream(preset, 200, threads).0 == one,
             "{threads} threads"
         );
-    }
+    });
 }
 
 /// The length and FNV-1a hash of the p5 stream of [`staged_stream`] at qp
@@ -142,12 +142,12 @@ fn mds1_streams_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "MDS1");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(
             staged_stream(full_staged(), 200, threads).0 == one,
             "{threads} threads"
         );
-    }
+    });
 }
 
 /// The length and FNV-1a hash of the [`staged_stream`] at qp 200 of preset
@@ -227,9 +227,9 @@ fn two_pass_streams_decode_on_any_thread_count() {
     assert!(passes > 0, "no first pass ran");
     assert!(breakouts > 0, "no NONE breakout ended a node");
     assert_same_samples(&decode(&one), &expected, "two-pass partition");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(two_pass_stream(6, threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// AVM decodes the two-pass stream, whose first pass ran, like splot.
@@ -318,12 +318,12 @@ fn reference_intra_skip_streams_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "reference intra skip");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(
             staged_stream(reference_intra(), 230, threads).0 == one,
             "{threads} threads"
         );
-    }
+    });
     INTRA_SKIPPED.set(0);
     let off = Box::leak(Box::new(PresetParams {
         ref_intra_margin: u8::MAX,

@@ -99,20 +99,20 @@ const WAVEFRONT_CASES: [WavefrontCase; 8] = [
 /// and differ from the raster-order search.
 #[test]
 fn wavefront_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for case in WAVEFRONT_CASES {
+    each_case(WAVEFRONT_CASES, |case| {
         let on = with_wavefront(case.0, true);
         let (one, recon) = wavefront_stream(1, on, case);
         let name = format!("{case:?}");
         assert_same_samples(&decode(&one.concat()), &recon, &name);
-        for threads in [2, 8] {
+        each_case([2, 8], |threads| {
             assert!(
                 wavefront_stream(threads, on, case).0 == one,
                 "{name}: {threads} threads"
             );
-        }
+        });
         let off = wavefront_stream(2, with_wavefront(case.0, false), case).0;
         assert_ne!(off, one, "{name}: the wavefront changes no byte");
-    }
+    });
 }
 
 /// AVM decodes wavefront streams like splot.

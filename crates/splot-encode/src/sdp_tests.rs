@@ -102,7 +102,7 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
 #[test]
 fn sdp_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     let mut coded = [false; 7];
-    for (index, case) in SDP_CASES.into_iter().enumerate() {
+    let tools = each_case(SDP_CASES.into_iter().enumerate(), |(index, case)| {
         let (one, expected, tools) = sdp_stream(case, 1);
         if index == 0 {
             assert!(
@@ -110,15 +110,18 @@ fn sdp_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 "64x64 superblocks code luma and chroma LR"
             );
         }
-        for (all, on) in coded.iter_mut().zip(tools) {
-            *all |= on;
-        }
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
-        for threads in [2, 8] {
+        each_case([2, 8], |threads| {
             assert!(
                 sdp_stream(case, threads).0 == one,
                 "{case:?} {threads} threads"
             );
+        });
+        tools
+    });
+    for tools in tools {
+        for (all, on) in coded.iter_mut().zip(tools) {
+            *all |= on;
         }
     }
     assert_eq!(coded, [true; 7], "some frame filter tool is never coded");
@@ -278,15 +281,15 @@ fn sdp_screen_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         count(|choice| choice.modes.palette.is_some()) > 0,
         "no palette luma leaf"
     );
-    for chroma in CHROMAS {
+    each_case(CHROMAS, |chroma| {
         let (units, recon) = screen_stream(2, chroma, BitDepth::Ten);
         assert_same_samples(&decode(&units), &recon, &format!("{chroma:?}"));
-    }
+    });
     let (one, _) = screen_stream(1, PixelFormat::Yuv420, BitDepth::Eight);
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         let (units, _) = screen_stream(threads, PixelFormat::Yuv420, BitDepth::Eight);
         assert!(units == one, "{threads} threads");
-    }
+    });
 }
 
 /// AVM decodes SDP screen-content streams to the encoder recon.

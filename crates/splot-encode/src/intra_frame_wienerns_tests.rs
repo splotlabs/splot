@@ -117,12 +117,12 @@ fn wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     assert!(codes_wiener_ns(&lr[1..], 0..1), "{lr:?}");
     assert!(codes_wiener_ns(&lr, 1..3), "{lr:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "wiener-ns");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(
             wiener_stream((threads, PixelFormat::Yuv420), on).0 == one,
             "{threads} threads"
         );
-    }
+    });
     let (off, off_recon, off_lr) =
         wiener_stream((1, PixelFormat::Yuv420), with_wiener_ns(on, (0, 0)));
     assert!(!codes_wiener_ns(&off_lr, 0..3), "{off_lr:?}");
@@ -194,14 +194,14 @@ fn temporal_wiener_ns_bank_decodes_to_the_encoder_recon() {
 #[test]
 fn wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon() {
     let on = Preset::new(6).unwrap().params();
-    for chroma in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
+    each_case([PixelFormat::Yuv422, PixelFormat::Yuv444], |chroma| {
         let (units, recon, lr) = wiener_stream((2, chroma), on);
         assert!(
             codes_wiener_ns(&lr, 0..1) && codes_wiener_ns(&lr, 1..3),
             "{chroma:?}: {lr:?}"
         );
         assert_same_samples(&decode(&units.concat()), &recon, &format!("{chroma:?}"));
-    }
+    });
 }
 
 /// AVM decodes the Wiener-NS key and inter frames, coded and temporal banks,
