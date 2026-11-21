@@ -270,6 +270,7 @@ impl IntraFrameCoder {
                 cwp: preset.compound_types >= 2,
                 implicit_mask: preset.implicit_mask,
                 df_sub_pu: preset.df_sub_pu,
+                df_par_bits_extra: preset.deblock_offset_bits.saturating_sub(3),
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,

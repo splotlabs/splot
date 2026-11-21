@@ -168,6 +168,12 @@ COVERAGE = [
     ("syn-mono-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv420p", "--i420", ["--monochrome"], "8", "120"),
     ("syn-2tile-intra-128x64", "testsrc2=size=128x64:rate=1:duration=1", "yuv420p", "--i420", ["--tile-columns=1"], "8", "120"),
     ("syn-filmgrain-intra-64x64", "color=c=gray:size=64x64:rate=1:duration=1", "yuv420p", "--i420", ["--film-grain-test=1"], "8", "120"),
+    ("syn-3frame-filmgrain-inter-64x64-10bit", "", "yuv420p10le", "--i420",
+     ["--film-grain-test=5", "--bit-depth=10", "--input-bit-depth=10", "--kf-min-dist=9999",
+      "--kf-max-dist=9999", "--lag-in-frames=0", "--limit=3", "--passes=1", "--threads=1",
+      "--quiet", "--disable-warning-prompt"], "8", "120",
+     {"format": "y4m", "ffmpeg_args": ["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=30:duration=0.1",
+                                       "-pix_fmt", "yuv420p10le", "-strict", "-1"]}),
     ("syn-fsc-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-fsc=1"], "2", "90"),
     ("syn-cctx-444-intra-128x128", "gradients=size=128x128:rate=1:duration=1:c0=red:c1=blue:c2=green:c3=yellow:c4=magenta:c5=cyan:nb_colors=6:x0=10:y0=10:x1=118:y1=118", "yuv444p", "--i444", BASE + ["--enable-intrabc=0", "--enable-cctx=1"], "2", "60"),
     ("syn-ist-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-ist=1"], "2", "90"),
@@ -481,6 +487,14 @@ COVERAGE = [
 ]
 
 PINNED_RECIPE_HASHES = {
+    "syn-3frame-filmgrain-inter-64x64-10bit": {
+        "avm_revision": "1cfda4fa4879ef2da411b02fe2f51597daab3451",
+        "ffmpeg_version": "8.0.1",
+        "source_sha256": "d80406619b2bf6c012a140db9799079aa8cdaf14052c446ff66591905768de4c",
+        "ivf_sha256": "a89ec4e25ef1f4c86c86fe8892c8356e24f81d043e3fa51bf568e41697832a51",
+        "avm_i420_raw_sha256": "e03fa2fe0bd341f21282ede12d527aea2066d00ab9603728a3acb31836f54b5b",
+        "reproducibility_runs": 2,
+    },
     "syn-segment-cdf-inheritance-96x96-q140": {
         "avm_revision": "1cfda4fa4879ef2da411b02fe2f51597daab3451",
         "source_sha256": "397cce3e7108e9417ba7d18b87f3cce8d01910f61f091ed480aa1afbac185f82",
