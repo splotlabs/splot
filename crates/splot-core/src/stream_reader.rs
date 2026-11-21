@@ -85,15 +85,6 @@ pub struct UnitPosition {
     index: usize,
 }
 
-impl UnitPosition {
-    /// Absolute offset the reader resumes at: the IVF frame record header, or
-    /// the Annex B unit's first OBU.
-    #[must_use]
-    pub const fn offset(self) -> u64 {
-        self.offset
-    }
-}
-
 /// One whole temporal unit borrowed from the reader: an IVF frame payload, or
 /// the Annex B OBUs from one temporal delimiter up to the next.
 #[derive(Debug)]
@@ -254,14 +245,14 @@ impl<R: Read> TemporalUnitReader<R> {
     /// the per-unit cap together.
     pub fn next_temporal_unit(&mut self) -> Result<Option<TemporalUnit<'_>>, ReaderError> {
         if self.detect_format()? == BitstreamFormat::Ivf {
-            let (index, pts, payload_offset) = match self.next_unit()? {
-                Some(StreamUnit::IvfFrame {
-                    index,
-                    pts,
-                    payload_offset,
-                    ..
-                }) => (index, pts, payload_offset),
-                _ => return Ok(None),
+            let Some(StreamUnit::IvfFrame {
+                index,
+                pts,
+                payload_offset,
+                ..
+            }) = self.next_unit()?
+            else {
+                return Ok(None);
             };
             return Ok(Some(TemporalUnit {
                 index,
@@ -457,25 +448,34 @@ impl<R: Read> TemporalUnitReader<R> {
         }))
     }
 
-    /// Frames the next IVF frame payload (parsing the file header on first use).
-    fn next_ivf_unit(&mut self) -> Result<Option<StreamUnit<'_>>, ReaderError> {
-        if self.ivf_header.is_none() {
-            self.buf.clear();
-            let got = self.read_into_buf(IVF_HEADER_SIZE_BYTES)?;
-            if got == IVF_HEADER_SIZE_BYTES {
-                let header_len = usize::from(u16::from_le_bytes([self.buf[6], self.buf[7]]));
-                if header_len > IVF_HEADER_SIZE_BYTES {
-                    self.read_into_buf(header_len - IVF_HEADER_SIZE_BYTES)?;
-                }
-            }
-            match parse_ivf_header(&self.buf) {
-                Ok(header) => self.ivf_header = Some(header),
-                Err(error) => {
-                    self.done = true;
-                    return Err(ReaderError::Ivf(error));
-                }
+    /// Reads and checks the IVF file header, once.
+    fn read_ivf_header(&mut self) -> Result<(), ReaderError> {
+        if self.ivf_header.is_some() {
+            return Ok(());
+        }
+        self.buf.clear();
+        let got = self.read_into_buf(IVF_HEADER_SIZE_BYTES)?;
+        if got == IVF_HEADER_SIZE_BYTES {
+            let header_len = usize::from(u16::from_le_bytes([self.buf[6], self.buf[7]]));
+            if header_len > IVF_HEADER_SIZE_BYTES {
+                self.read_into_buf(header_len - IVF_HEADER_SIZE_BYTES)?;
             }
         }
+        match parse_ivf_header(&self.buf) {
+            Ok(header) => {
+                self.ivf_header = Some(header);
+                Ok(())
+            }
+            Err(error) => {
+                self.done = true;
+                Err(ReaderError::Ivf(error))
+            }
+        }
+    }
+
+    /// Frames the next IVF frame payload (parsing the file header on first use).
+    fn next_ivf_unit(&mut self) -> Result<Option<StreamUnit<'_>>, ReaderError> {
+        self.read_ivf_header()?;
 
         self.buf.clear();
         let got = self.read_into_buf(IVF_FRAME_HEADER_SIZE)?;
@@ -540,15 +540,14 @@ impl<R: Read + Seek> TemporalUnitReader<R> {
     /// from this stream, so the next call yields that unit again.
     ///
     /// A list of positions is a seek index of the file: one forward pass
-    /// builds it with one unit in memory at a time. A reader that has read
-    /// nothing reads the first unit before it seeks, to learn the format.
+    /// builds it with one unit in memory at a time.
     ///
     /// # Errors
     /// Returns [`ReaderError`] when the stream start cannot be read or the
     /// underlying seek fails.
     pub fn seek(&mut self, position: UnitPosition) -> Result<(), ReaderError> {
-        if self.format.is_none() {
-            self.next_temporal_unit()?;
+        if self.detect_format()? == BitstreamFormat::Ivf {
+            self.read_ivf_header()?;
         }
         self.inner
             .seek(SeekFrom::Start(position.offset))
@@ -645,9 +644,12 @@ mod tests {
 
     #[test]
     fn seek_reads_a_unit_again_in_both_formats() {
-        let mut ivf = ivf_with_frame(&[0x01, 0x08]);
-        crate::ivf::write_ivf_frame(&mut ivf, 7, &[0x01, 0x08, 0x02, 0x04, 0xAB]).unwrap();
-        for data in [&TWO_ANNEX_B_UNITS[..], &ivf[..]] {
+        let mut ivf = ivf_with_frame(&[0x01, 0x08, 0x02, 0x04, 0xAB]);
+        crate::ivf::write_ivf_frame(&mut ivf, 7, &[0x01, 0x08]).unwrap();
+        let annex_b = [
+            0x01, 0x08, 0x03, 0x04, 0xAB, 0xAB, 0x01, 0x08, 0x02, 0x04, 0xCD,
+        ];
+        for data in [&annex_b[..], &ivf[..]] {
             let mut reader = TemporalUnitReader::new(io::Cursor::new(data));
             let mut positions = Vec::new();
             while let Some(unit) = reader.next_temporal_unit().unwrap() {
@@ -658,7 +660,9 @@ mod tests {
                 collect_temporal_units(&mut reader)
             };
             assert_eq!(units.len(), 2);
-            let mut fresh = TemporalUnitReader::new(io::Cursor::new(data));
+            let cap = units[1].1.len();
+            assert!(cap < units[0].1.len(), "the first unit is over the cap");
+            let mut fresh = TemporalUnitReader::with_max_unit_bytes(io::Cursor::new(data), cap);
             fresh.seek(positions[1]).unwrap();
             let last = fresh.next_temporal_unit().unwrap().unwrap();
             assert_eq!((last.index, last.bytes), (1, &units[1].1[..]));
@@ -883,8 +887,8 @@ mod proptests {
             positions.push((unit.position(), unit.bytes.to_vec()));
         }
         for (position, bytes) in positions.into_iter().rev() {
-            reader.seek(position).unwrap();
-            assert_eq!(reader.next_temporal_unit().unwrap().unwrap().bytes, bytes);
+            assert!(reader.seek(position).is_ok());
+            assert!(matches!(reader.next_temporal_unit(), Ok(Some(unit)) if unit.bytes == bytes));
         }
     }
 

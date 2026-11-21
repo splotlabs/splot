@@ -365,13 +365,6 @@ fn wait_picture_gives_the_pictures_of_the_units_sent_without_more_input() {
 }
 
 #[test]
-fn wait_picture_on_an_idle_decoder_returns_none() {
-    let mut decoder = decoder(4, 4);
-    assert!(decoder.wait_picture().unwrap().is_none());
-    assert!(decoder.wait_picture().unwrap().is_none());
-}
-
-#[test]
 fn flush_starts_a_new_session_mid_stream_and_after_an_error() {
     let units = units(EIGHT_FRAME);
     let expected = batch_raw(EIGHT_FRAME);

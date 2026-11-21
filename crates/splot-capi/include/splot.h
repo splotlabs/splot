@@ -193,8 +193,7 @@ void splot_drain(struct SplotDecoder *decoder);
 // `decoder` is null or came from [`splot_open`].
 void splot_flush(struct SplotDecoder *decoder);
 
-// Takes the next picture in display order into `*out`, without waiting for
-// the data the decoder still decodes.
+// Takes the next picture in display order into `*out`.
 //
 // Returns [`SPLOT_OK`], [`SPLOT_EAGAIN`] when more data is needed,
 // [`SPLOT_EOF`] after the last picture of a drained decoder,

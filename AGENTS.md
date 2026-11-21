@@ -131,18 +131,14 @@ Generated status markdown is not committed; render it on demand.
 
 ## Rust and C Decoder API
 
-`splot-capi` is the C form of the streaming decoder (`Decoder`,
-`DecoderSettings`, `Picture`). Keep the two in step:
+`splot-capi` mirrors the streaming decoder (`Decoder`, `DecoderSettings`,
+`Picture`) in dav1d/dav2d shape: open, send, get, flush, drain, close and
+plain structs; no demuxing or file access.
 
-- A PR that adds or changes public API on those types makes the same change in
-  `splot-capi` (function or field, `splot.h`, an `abi.rs` test), or says in the
-  PR why a C host does not need it.
-- The C API stays dav1d/dav2d-shaped: open, send, get, flush, drain, close and
-  plain structs. No demuxing, no file access, and no helper that only wraps
-  what a host's container already gives it. When unsure, check what dav2d
-  exposes and leave the rest in Rust.
-- A new struct field takes reserved space. Struct sizes and the offsets of
-  existing fields do not change.
+- A PR that changes public API on those types makes the same change in
+  `splot-capi` (`splot.h`, an `abi.rs` test), or says why a C host does not
+  need it. When unsure, leave out what dav2d does not expose.
+- New struct fields take reserved space; sizes and existing offsets stay.
 
 ## AV2 and Diagnostics
 

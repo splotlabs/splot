@@ -389,9 +389,7 @@ pub(crate) fn require_minimal_obu_order<'a>(
     Ok([obus[0], obus[indices.sequence], obus[indices.frame]])
 }
 
-/// Whether a decode can start at `unit`: it opens with a temporal delimiter
-/// and holds a sequence header and a closed-loop key, open-loop key or RAS
-/// frame.
+/// The start rule behind [`crate::Decoder::can_start_at`].
 pub(crate) fn starts_decode(unit: &[u8]) -> bool {
     let mut obus = Vec::new();
     runtime_obus(unit.into(), &mut obus).is_ok() && require_leading_frame_unit(&obus).is_ok()
