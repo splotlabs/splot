@@ -174,38 +174,41 @@ impl FrameCoder for Counting {
 /// vectors from.
 #[test]
 fn the_encoder_estimates_and_codes_global_motion() {
-    for (width, height, preset, qp) in [(160, 96, 6, 120), (160, 96, 6, 90), (192, 112, 9, 90)] {
-        let mut config = config(width, height, BitDepth::Eight, preset, qp);
-        config.preset_overrides = vec![("global_motion".to_owned(), "1".to_owned())];
-        let case = format!("estimated {width}x{height} p{preset} qp {qp}");
-        let (recons, global_frames) = (Arc::default(), Arc::default());
-        let coder = Counting {
-            coder: IntraFrameCoder::new(&config).unwrap(),
-            bit_depth: config.bit_depth,
-            recons: Arc::clone(&recons),
-            global_frames: Arc::clone(&global_frames),
-        };
-        let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
-        let mut units = Vec::new();
-        for index in 0..=8 {
-            if index == 8 {
-                encoder.flush().unwrap();
-            } else {
-                encoder
-                    .send_frame(super::warp::zooming_frame(&config, index))
-                    .unwrap();
+    each_case(
+        [(160, 96, 6, 120), (160, 96, 6, 90), (192, 112, 9, 90)],
+        |(width, height, preset, qp)| {
+            let mut config = config(width, height, BitDepth::Eight, preset, qp);
+            config.preset_overrides = vec![("global_motion".to_owned(), "1".to_owned())];
+            let case = format!("estimated {width}x{height} p{preset} qp {qp}");
+            let (recons, global_frames) = (Arc::default(), Arc::default());
+            let coder = Counting {
+                coder: IntraFrameCoder::new(&config).unwrap(),
+                bit_depth: config.bit_depth,
+                recons: Arc::clone(&recons),
+                global_frames: Arc::clone(&global_frames),
+            };
+            let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
+            let mut units = Vec::new();
+            for index in 0..=8 {
+                if index == 8 {
+                    encoder.flush().unwrap();
+                } else {
+                    encoder
+                        .send_frame(super::warp::zooming_frame(&config, index))
+                        .unwrap();
+                }
+                while let Some(packet) = encoder.receive_packet().unwrap() {
+                    units.extend(packet.data);
+                }
             }
-            while let Some(packet) = encoder.receive_packet().unwrap() {
-                units.extend(packet.data);
-            }
-        }
-        assert!(
-            *global_frames.lock().unwrap() > 0,
-            "{case}: no global frame"
-        );
-        let expected: Vec<u8> = recons.lock().unwrap().values().flatten().copied().collect();
-        assert_same_samples(&decode(&units), &expected, &case);
-    }
+            assert!(
+                *global_frames.lock().unwrap() > 0,
+                "{case}: no global frame"
+            );
+            let expected: Vec<u8> = recons.lock().unwrap().values().flatten().copied().collect();
+            assert_same_samples(&decode(&units), &expected, &case);
+        },
+    );
 }
 
 /// A mini-GOP zooming stream whose compound leaves code `GLOBAL_GLOBALMV`

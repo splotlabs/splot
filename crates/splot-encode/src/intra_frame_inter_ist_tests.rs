@@ -61,25 +61,28 @@ fn inter_luma_blocks_code_ist_as_the_decoder_reads_it() {
 /// 8-bit decode to the encoder recon; IST changes the stream.
 #[test]
 fn inter_ist_and_ddt_streams_decode_to_the_encoder_recon() {
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Ten),
-        (PixelFormat::Yuv444, BitDepth::Eight),
-    ] {
-        let mut config = config(72, 40, bit_depth, 6, 90);
-        config.chroma = chroma;
-        let mut streams = Vec::new();
-        for (ist, ddt) in [(true, false), (false, false), (false, true)] {
-            let (units, expected, cores, coder) =
-                super::carry::planned_stream(&config, with_tools(ist, ddt));
-            let tq = coder.sequence.transform_quant_entropy.unwrap();
-            assert_eq!((tq.enable_inter_ist, tq.enable_inter_ddt), (ist, ddt));
-            assert!(cores.iter().any(|core| core.inter.is_some()));
-            let name = format!("{chroma:?} ist {ist} ddt {ddt}");
-            assert_same_samples(&decode(&units), &expected, &name);
-            streams.push(units);
-        }
-        assert_ne!(streams[0], streams[1], "{chroma:?}");
-    }
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Ten),
+            (PixelFormat::Yuv444, BitDepth::Eight),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(72, 40, bit_depth, 6, 90);
+            config.chroma = chroma;
+            let mut streams = Vec::new();
+            for (ist, ddt) in [(true, false), (false, false), (false, true)] {
+                let (units, expected, cores, coder) =
+                    super::carry::planned_stream(&config, with_tools(ist, ddt));
+                let tq = coder.sequence.transform_quant_entropy.unwrap();
+                assert_eq!((tq.enable_inter_ist, tq.enable_inter_ddt), (ist, ddt));
+                assert!(cores.iter().any(|core| core.inter.is_some()));
+                let name = format!("{chroma:?} ist {ist} ddt {ddt}");
+                assert_same_samples(&decode(&units), &expected, &name);
+                streams.push(units);
+            }
+            assert_ne!(streams[0], streams[1], "{chroma:?}");
+        },
+    );
 }
 
 /// A tiled stream with inter IST codes the same bytes on 1, 2 and 8 threads.
@@ -95,9 +98,9 @@ fn inter_ist_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, with_tools(true, false)).0
     };
     let one = stream(1);
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads) == one, "{threads} threads");
-    }
+    });
 }
 
 /// DDT follows the planned leaf like the decoder's `useDdt`: an inter leaf of

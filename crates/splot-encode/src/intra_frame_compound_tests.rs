@@ -50,9 +50,9 @@ fn compound_type_streams_decode_on_any_thread_count() {
         "deblocking off"
     );
     assert_same_samples(&decode(&one), &expected, "compound types");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// `compound_types = 0` without the implicit mask codes the sequence with
@@ -193,9 +193,9 @@ fn searched_compound_types_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "searched compound types");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(searched_stream(150, threads).0 == one, "{threads} threads");
-    }
+    });
     let (coarse, expected, cores, coded) = searched_stream(240, 1);
     assert!(coded[1] + coded[2] > 0, "{coded:?}");
     assert!(cores.iter().any(|core| {
@@ -246,9 +246,9 @@ fn interintra_streams_decode_on_any_thread_count() {
             .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
     }));
     assert_same_samples(&decode(&one), &expected, "inter-intra");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// The inter-intra preset of the tiled stream tests.
@@ -374,12 +374,12 @@ fn bawp_streams_decode_on_any_thread_count() {
             .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
     }));
     assert_same_samples(&decode(&one), &expected, "BAWP");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(
             bawp_stream((136, 72), threads).0 == one,
             "{threads} threads"
         );
-    }
+    });
     let (odd, expected, _, bawp) = bawp_stream((130, 70), 1);
     assert!(bawp > 0, "no BAWP leaf at 130x70");
     assert_same_samples(&decode(&odd), &expected, "BAWP 130x70");

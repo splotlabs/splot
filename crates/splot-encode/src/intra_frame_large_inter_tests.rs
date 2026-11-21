@@ -115,7 +115,7 @@ fn a_128x128_inter_leaf_plans_the_chunked_residual() {
             .concat(),
         ),
     ];
-    for (chroma, top, bottom) in cases {
+    each_case(cases, |(chroma, top, bottom)| {
         let mut config = config(136, 136, BitDepth::Eight, 6, 110);
         config.chroma = chroma;
         let blocks = in_first_inter_frame(&config, preset6(true), |syntax, root, _| {
@@ -134,7 +134,7 @@ fn a_128x128_inter_leaf_plans_the_chunked_residual() {
             blocks.iter().all(|tx| tx.tx_size == 4),
             "{chroma:?} TX_64X64"
         );
-    }
+    });
 }
 
 /// A trial 128x128 inter leaf with a coded residual is rolled back whole: the
@@ -181,7 +181,7 @@ fn large_inter_streams_decode_to_the_encoder_recon() {
         (PixelFormat::Yuv422, BitDepth::Ten, true),
         (PixelFormat::Yuv444, BitDepth::Ten, false),
     ];
-    for (chroma, bit_depth, tiled) in cases {
+    each_case(cases, |(chroma, bit_depth, tiled)| {
         let mut config = config(if tiled { 264 } else { 136 }, 136, bit_depth, 6, 110);
         config.chroma = chroma;
         if tiled {
@@ -193,7 +193,7 @@ fn large_inter_streams_decode_to_the_encoder_recon() {
         let (units, expected, ..) = super::carry::planned_stream(&config, preset6(true));
         let name = format!("{chroma:?} {bit_depth:?} tiled {tiled}");
         assert_same_samples(&decode(&units), &expected, &name);
-    }
+    });
 }
 
 /// A tiled stream with `large_inter` codes the same bytes on 1, 2 and 8
@@ -210,9 +210,9 @@ fn large_inter_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, preset6(true)).0
     };
     let one = stream(1);
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads) == one, "{threads} threads");
-    }
+    });
 }
 
 /// The inter leaves wider or taller than 64 of the trees of 128x128
@@ -236,7 +236,7 @@ fn large_inter_leaves(trees: &[PartitionTree]) -> usize {
 /// one state, and rolls back; without `large_inter` it picks none.
 #[test]
 fn a_pan_codes_large_inter_leaves() {
-    for chroma in CHROMAS {
+    each_case(CHROMAS, |chroma| {
         let mut config = config(200, 136, BitDepth::Eight, 6, 90);
         config.chroma = chroma;
         for large_inter in [true, false] {
@@ -254,7 +254,7 @@ fn a_pan_codes_large_inter_leaves() {
             let count = large_inter_leaves(&trees);
             assert_eq!(count > 0, large_inter, "{chroma:?} {count}");
         }
-    }
+    });
 }
 
 /// With extended partitions on, every partition of a node wider or taller
@@ -387,15 +387,21 @@ fn large_leaf_stream(config: &Config) -> (Vec<Vec<u8>>, Vec<u8>, [usize; 2]) {
 #[test]
 fn compound_and_skip_mode_large_leaves_decode_to_the_writer_recon() {
     let mut total = [0; 2];
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Eight),
-        (PixelFormat::Yuv422, BitDepth::Eight),
-        (PixelFormat::Yuv444, BitDepth::Ten),
-    ] {
-        let mut config = config(264, 136, bit_depth, 6, 140);
-        config.chroma = chroma;
-        let (units, expected, counts) = large_leaf_stream(&config);
-        assert_same_samples(&decode(&units.concat()), &expected, &format!("{chroma:?}"));
+    let coded = each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Eight),
+            (PixelFormat::Yuv422, BitDepth::Eight),
+            (PixelFormat::Yuv444, BitDepth::Ten),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(264, 136, bit_depth, 6, 140);
+            config.chroma = chroma;
+            let (units, expected, counts) = large_leaf_stream(&config);
+            assert_same_samples(&decode(&units.concat()), &expected, &format!("{chroma:?}"));
+            counts
+        },
+    );
+    for counts in coded {
         total = [total[0] + counts[0], total[1] + counts[1]];
     }
     assert!(total.iter().all(|&count| count >= 2), "{total:?}");
