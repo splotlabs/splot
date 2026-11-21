@@ -305,6 +305,9 @@ pub struct UniformTiles {
     pub rows_log2: u8,
     /// `TileSizeBytes`, `1..=4`, which a frame of more than one tile codes.
     pub size_bytes: u8,
+    /// `context_update_tile_id = TileCols * TileRows / 2` (§ 5.18.7.2), the
+    /// middle tile, instead of `0` in a frame that codes it.
+    pub middle_cdf_update_tile: bool,
 }
 
 impl Default for UniformTiles {
@@ -313,6 +316,7 @@ impl Default for UniformTiles {
             cols_log2: 0,
             rows_log2: 0,
             size_bytes: 4,
+            middle_cdf_update_tile: false,
         }
     }
 }
@@ -905,7 +909,7 @@ fn write_filter_params(
 
 /// § 5.18.7.2 `tile_info()` with § 5.18.7.3 uniform spacing at level 31, where
 /// `minLog2TileCols` and `minLog2Tiles` are `0`: `tiles` capped at `maxLog2TileCols`
-/// and `maxLog2TileRows`, then `context_update_tile_id = 0` and `tiles.size_bytes`
+/// and `maxLog2TileRows`, then `context_update_tile_id` and `tiles.size_bytes`
 /// when the frame has more than one tile.
 fn write_uniform_tile_info(
     w: &mut BitWriter,
@@ -951,7 +955,13 @@ fn write_uniform_tile_info(
         if !seq.tile.enable_avg_cdf || seq.tile.avg_cdf_type == 0 {
             let bits =
                 crate::tile::tile_log2(1, cols.count) + crate::tile::tile_log2(1, rows.count);
-            w.write_bits(0, u32::from(bits))?; // context_update_tile_id
+            let middle = cols.count * rows.count / 2;
+            let id = if tiles.middle_cdf_update_tile {
+                middle
+            } else {
+                0
+            };
+            w.write_bits(id, u32::from(bits))?; // context_update_tile_id
         }
         if !(1..=4).contains(&tiles.size_bytes) {
             return Err(WriteError::NonCanonicalFrameHeader {

@@ -141,29 +141,30 @@ fn avm_decodes_tiled_mini_gops_like_splot() {
     assert!(avm == expected, "AVM output differs");
 }
 
-/// `disable_cdf_update` and `primary_default_cdfs` each reach the frame
-/// headers (§ 5.18.2); a 2x1-tile mini-GOP stream with either decodes to the
-/// encoder recon, differs from the stream with both off and codes the same
-/// bytes on 1, 2 and 8 threads.
+/// `disable_cdf_update`, `primary_default_cdfs` and `cdf_update_tile` each
+/// reach the frame headers (§ 5.18.2, § 5.18.7.2); a 2x2-tile mini-GOP stream
+/// with any one decodes to the encoder recon, differs from the stream with
+/// all off and codes the same bytes on 1, 2 and 8 threads.
 #[test]
 fn cdf_control_streams_decode_alike_on_any_thread_count() {
     let base = *Preset::new(6).unwrap().params();
     let stream = |preset: PresetParams, threads: usize| {
         let preset: &'static PresetParams = Box::leak(Box::new(preset));
-        let mut config = config(136, 72, BitDepth::Eight, 6, 150);
+        let mut config = config(136, 136, BitDepth::Eight, 6, 150);
         config.tiles = TileLayout {
             cols_log2: 1,
-            rows_log2: 0,
+            rows_log2: 1,
         };
         config.threads = splot_parallel::ThreadCount::from(threads);
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
         planned_stream_of(&config, coder, panning_frame, 150)
     };
     let plain = stream(base, 1).0;
-    for (fixed, default_cdfs) in [(true, false), (false, true)] {
+    for (fixed, default_cdfs, tile) in [(true, false, 0), (false, true, 0), (false, false, 1)] {
         let preset = PresetParams {
             disable_cdf_update: fixed,
             primary_default_cdfs: default_cdfs,
+            cdf_update_tile: tile,
             ..base
         };
         let (one, expected, cores, _) = stream(preset, 1);
@@ -177,6 +178,16 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
                 .all(|core| core.disable_cdf_update != Some(!fixed))
         );
         assert!(fixed_frames >= 8, "{fixed_frames} frames code {fixed}");
+        let tiled: Vec<_> = cores
+            .iter()
+            .filter_map(|core| core.tile_info.as_ref())
+            .filter(|info| info.tile_cols * info.tile_rows > 1)
+            .collect();
+        assert!(tiled.len() >= 8, "{} frames of several tiles", tiled.len());
+        for info in tiled {
+            let middle = info.tile_cols * info.tile_rows / 2;
+            assert_eq!(info.context_update_tile_id, middle * u32::from(tile));
+        }
         let carried: Vec<_> = cores
             .iter()
             .filter_map(|core| core.inter.as_ref())
@@ -194,7 +205,7 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
         for inter in carried {
             assert_eq!(inter.disable_cross_frame_cdf_init, Some(default_cdfs));
         }
-        assert!(one != plain, "fixed {fixed}, default CDFs {default_cdfs}");
+        assert!(one != plain, "case {fixed} {default_cdfs} {tile}");
         assert_same_samples(&decode(&one), &expected, "CDF controls");
         for threads in [2, 8] {
             assert!(stream(preset, threads).0 == one, "{threads} threads");

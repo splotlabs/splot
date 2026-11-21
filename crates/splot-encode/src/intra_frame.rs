@@ -287,6 +287,7 @@ impl IntraFrameCoder {
             tiles: UniformTiles {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
+                middle_cdf_update_tile: preset.cdf_update_tile == 1,
                 ..UniformTiles::default()
             },
             pool: (config.threads.resolve().get() > 1)

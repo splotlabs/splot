@@ -253,6 +253,10 @@ pub struct PresetParams {
     /// with CDFs that do not adapt, and the frame saves the CDFs it started
     /// from.
     pub disable_cdf_update: bool,
+    /// The tile whose CDFs a frame of several tiles saves without
+    /// `avg_cdf_type = 1` (§ 5.18.7.2 `context_update_tile_id`), `0..=1`:
+    /// `0` the first tile, `1` the middle tile (`TileCols * TileRows / 2`).
+    pub cdf_update_tile: u8,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -782,6 +786,7 @@ impl PresetParams {
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
         check("tip", self.tip, 0, 2, "")?;
+        check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check(
             "tip_refinemv",
@@ -1058,6 +1063,7 @@ preset_table! {
         cdf_avg_across_tiles:  [false, false, false, false, false, false, false, false, false, false, false],
         primary_default_cdfs:  [false, false, false, false, false, false, false, false, false, false, false],
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
+        cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tip_hole_fill:         [false, false, false, false, false, false, false, false, false, false, false],
@@ -1504,6 +1510,7 @@ mod tests {
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("tip", "3")], "tip"),
+            (&[("cdf_update_tile", "2")], "cdf_update_tile"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),
