@@ -803,6 +803,15 @@ mod tests {
     }
 
     #[test]
+    fn deblocking_eof_at_allow_df_sub_pu_is_structured_error() {
+        let mut r = reader(&[]);
+        assert!(matches!(
+            parse_deblocking_filter_params(&mut r, false, 3, 0, true, None),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
     fn deblocking_df_par_bits_widens_delta_q_read() {
         let mut bits = Bits::default();
         bits.bit(1); // apply[0]

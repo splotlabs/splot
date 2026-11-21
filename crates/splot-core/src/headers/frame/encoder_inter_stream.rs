@@ -500,7 +500,6 @@ pub fn build_tip_output_frame_header(
     if seq.enable_short_refresh_frame_flags
         || inter.enable_tip_hole_fill
         || inter.enable_tip_explicit_qp
-        || seq.filter.enable_df_sub_pu
     {
         return Err(unsupported("TIP output header tools"));
     }
@@ -534,6 +533,9 @@ pub fn build_tip_output_frame_header(
     write_tip_weight(&mut w, weight, weight_coded.unwrap_or(true))?;
     w.write_flag(true)?; // tip_global_mv_zero
     w.write_flag(true)?; // tip_sharp
+    if seq.filter.enable_df_sub_pu {
+        w.write_flag(false)?; // allow_df_sub_pu
+    }
     write_film_grain_config(&mut w, seq, params.show_frame, params.tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.write_trailing_bits(8 - bit_len % 8)?;

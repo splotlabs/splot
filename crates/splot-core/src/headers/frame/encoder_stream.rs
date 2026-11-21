@@ -156,6 +156,9 @@ pub struct EncoderToolFlags {
     /// `enable_imp_msk_bld` (§ 5.4.6): `COMPOUND_AVERAGE` blends with the
     /// implicit mask (§ 7.13.3.14).
     pub implicit_mask: bool,
+    /// `enable_df_sub_pu` (§ 5.4.6): inter frames code `allow_df_sub_pu`
+    /// (§ 5.18.5.2) and TIP output frames code it `0`.
+    pub df_sub_pu: bool,
     /// `seq_enabled_motion_modes[INTERINTRA]` with
     /// `seq_frame_motion_modes_present_flag` (§ 5.4.6): every inter frame
     /// enables inter-intra blocks (§ 5.20.7.15).
@@ -200,6 +203,9 @@ pub struct FrameFilterParams {
     /// `cdef_on_skip_txfm_frame_enable` (§ 5.18.7.10) of a frame with CDEF
     /// on; the encoder sequence codes `CDEF_ON_SKIP_TXFM_ADAPTIVE`.
     pub cdef_on_skip: bool,
+    /// `allow_df_sub_pu` (§ 5.18.5.2) of an inter frame of a sequence with
+    /// `enable_df_sub_pu`: deblocking also filters prediction sub-unit edges.
+    pub deblocking_sub_pu: bool,
     /// `LoopRestorationSize[0]` of luma restoration (§ 5.18.7.11); `None`
     /// turns luma restoration off.
     pub lr_luma_unit_size: Option<u32>,
@@ -517,7 +523,10 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_flag(tools.bawp)?; // enable_bawp
     w.write_flag(tools.cwp)?; // enable_cwp
     w.write_flag(tools.implicit_mask)?; // enable_imp_msk_bld
-    w.write_flag(false)?; // enable_df_sub_pu
+    w.write_flag(tools.df_sub_pu)?; // enable_df_sub_pu
+    if tools.tip && tools.tip_output && tools.df_sub_pu {
+        w.write_flag(false)?; // enable_tip_explicit_qp
+    }
     w.write_bits(if tools.opfl_refine { 3 } else { 0 }, 2)?; // enable_opfl_refine
     w.write_flag(tools.refinemv)?; // enable_refinemv
     if tools.tip && (tools.opfl_refine || tools.refinemv) {
@@ -748,7 +757,7 @@ pub(super) fn write_quant_and_filters(
         mi_col_starts: &col_starts.0,
         mi_row_starts: &row_starts.0,
     };
-    write_filter_params(w, seq, filters, (lr_refs, gdf))?;
+    write_filter_params(w, seq, filters, (lr_refs, gdf), frame_is_intra)?;
     if seq.ccso.enable_ccso {
         let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
         let on = planes.iter().any(|plane| plane.ccso_planes);
@@ -769,20 +778,32 @@ pub(super) fn write_quant_and_filters(
 
 /// § 5.18.5.2 `deblocking_filter_params()`, § 5.18.7.9 `gdf_params()`,
 /// § 5.18.7.10 `cdef_params()`, and § 5.18.7.11 `lr_params()` of `filters`.
+/// The encoder codes every frame that is not intra as `INTER_FRAME`.
 fn write_filter_params(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     filters: &FrameFilterParams,
     (lr_refs, gdf_geometry): (LrReferenceFilters<'_>, GdfGeometry<'_>),
+    frame_is_intra: bool,
 ) -> Result<(), WriteError> {
     let num_planes = seq.quant.num_planes;
     let delta = filters.deblocking_delta_q;
     let present = core::array::from_fn(|i| {
         filters.deblocking[i] && delta[i] != if i == 1 { delta[0] } else { 0 }
     });
-    let deblocking = DeblockingFilterParams::new(filters.deblocking, present, delta);
+    let mut deblocking = DeblockingFilterParams::new(filters.deblocking, present, delta);
+    deblocking.allow_df_sub_pu = filters.deblocking_sub_pu;
     let df_par_bits_minus_2 = seq.filter.df_par_bits_minus_2;
-    write_deblocking_filter_params(w, &deblocking, false, num_planes, df_par_bits_minus_2, None)?;
+    let sub_pu_coded = seq.filter.enable_df_sub_pu && !frame_is_intra;
+    write_deblocking_filter_params(
+        w,
+        &deblocking,
+        false,
+        num_planes,
+        df_par_bits_minus_2,
+        sub_pu_coded,
+        None,
+    )?;
     let off = GdfParams {
         gdf_frame_enable: false,
         gdf_per_block: None,

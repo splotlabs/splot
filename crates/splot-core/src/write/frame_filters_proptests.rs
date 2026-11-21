@@ -76,6 +76,7 @@ mod proptests {
                     coded_lossless,
                     num_planes,
                     df_par_bits_minus_2,
+                    false,
                     view.as_ref(),
                 )
                 .unwrap();
@@ -122,6 +123,7 @@ mod proptests {
                 coded_lossless,
                 num_planes,
                 df_par_bits_minus_2,
+                false,
                 view.as_ref(),
             );
             if result.is_err() {

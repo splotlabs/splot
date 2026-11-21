@@ -163,6 +163,21 @@ fn frame_level_max_bvp_drl_bits_skips_the_sequence_value() {
     }
 }
 
+#[test]
+fn frame_level_max_bvp_drl_bits_is_taken_from_an_inter_frame_header() {
+    let (mut sequence, mut core) = selectable_fixture();
+    sequence
+        .inter
+        .as_mut()
+        .unwrap()
+        .seq_max_bvp_drl_bits_minus_1 = 0;
+    core.intrabc = None;
+    let mut inter = splot_core::headers::frame::InterControl::default();
+    inter.max_bvp_drl_bits_minus_1 = Some(1);
+    core.inter = Some(inter);
+    assert_eq!(max_bvp_drl_bits_minus_1(&sequence, &core).unwrap(), 2);
+}
+
 fn selectable_large_frame_fixture() -> (SequenceHeader, FrameHeaderCore) {
     let (sequence, mut core) = selectable_fixture();
     core.frame_size = Some(FrameSize::new(128, 128));
