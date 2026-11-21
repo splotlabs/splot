@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use parking_lot::{Condvar, Mutex};
 use splot_core::headers::content_interpretation::ContentInterpretation;
+use splot_core::headers::frame::FrameType;
 use splot_core::headers::metadata::MetadataUnit;
 use splot_core::ivf::IvfHeader;
 use splot_parallel::{FrameDelay, ThreadCount};
@@ -144,6 +145,8 @@ pub struct Picture {
     has_film_grain: bool,
     /// The grain the stream signals for this picture and the samples lack.
     pending_grain: Option<ActiveFilmGrain>,
+    frame_type: Option<FrameType>,
+    key_frame: bool,
 }
 
 #[derive(Debug)]
@@ -184,7 +187,10 @@ impl Picture {
             PipelineDecodedFrame::Ten(frame) => Samples::Ten(display(frame, grain, pool.as_ref())?),
         };
         let metadata = &frame.output_effects.metadata;
+        let header = frame.ccso_header.as_deref();
         Ok(Self {
+            frame_type: header.and_then(|header| header.frame_type),
+            key_frame: header.is_some_and(|header| header.is_key_frame),
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
@@ -232,7 +238,23 @@ impl Picture {
             pool: self.pool.clone(),
             has_film_grain: self.has_film_grain,
             pending_grain: None,
+            frame_type: self.frame_type,
+            key_frame: self.key_frame,
         })
+    }
+
+    /// The `FrameType` of the frame this picture shows (AV2 § 5.18.2). A
+    /// show-existing picture has the type of the frame it shows again.
+    #[must_use]
+    pub const fn frame_type(&self) -> Option<FrameType> {
+        self.frame_type
+    }
+
+    /// Whether an `OBU_CLOSED_LOOP_KEY` or `OBU_OPEN_LOOP_KEY` coded the frame
+    /// this picture shows.
+    #[must_use]
+    pub const fn is_key_frame(&self) -> bool {
+        self.key_frame
     }
 
     /// Visible width in luma samples.
@@ -332,7 +354,8 @@ fn recycle<T: ReconSample>(frame: SharedFrame<T>, pool: &Arc<PlanePool>) {
 /// take the rest. The decoder runs on its own threads.
 ///
 /// An error ends the session: the call that sees it returns it, and later
-/// calls return [`DecoderStateError::Failed`].
+/// calls return [`DecoderStateError::Failed`] until [`Self::flush`] starts a
+/// new session on the same threads.
 ///
 /// ```no_run
 /// # fn run(units: &[&[u8]]) -> splot_decode::Result<()> {
@@ -384,7 +407,23 @@ struct State {
     sent_bytes: u64,
     draining: bool,
     closing: bool,
+    /// [`Decoder::flush`] waits for the driver to drop the session.
+    flushing: bool,
+    /// The driver thread is gone.
+    stopped: bool,
+    settle: Settle,
     outcome: Outcome,
+}
+
+/// Where a [`Decoder::wait_picture`] request for the frames still decoding is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Settle {
+    Idle,
+    Requested,
+    /// The driver hands the frames over.
+    Running,
+    /// The driver holds no unit and no frame that could give a picture now.
+    Done,
 }
 
 #[derive(Debug)]
@@ -401,29 +440,48 @@ impl Shared {
         self.driver.notify_all();
     }
 
-    /// Records the driver's outcome and wakes the caller.
-    fn finish(&self, result: Result<()>) {
+    /// Records the outcome of one session, then waits for a flush or the
+    /// close. Returns `true` when a flush starts the next session.
+    fn park(&self, result: Result<()>) -> bool {
         let mut state = self.state.lock();
-        if matches!(state.outcome, Outcome::Running) {
+        if !state.flushing && matches!(state.outcome, Outcome::Running) {
             state.outcome = match result {
                 Ok(()) => Outcome::Finished,
                 Err(error) => Outcome::Failed(Some(error)),
             };
         }
         state.input.clear();
+        self.caller.notify_all();
+        while !state.flushing && !state.closing {
+            self.driver.wait(&mut state);
+        }
+        if state.closing {
+            return false;
+        }
+        state.output.clear();
+        state.sent_bytes = 0;
+        state.draining = false;
+        state.flushing = false;
+        state.settle = Settle::Idle;
+        state.outcome = Outcome::Running;
         drop(state);
         self.caller.notify_all();
+        true
     }
 }
 
-/// Fails the session if the driver unwinds before it records an outcome.
+/// Marks the driver as gone, and fails the session if it unwound.
 struct DriverGuard(Arc<Shared>);
 
 impl Drop for DriverGuard {
     fn drop(&mut self) {
-        self.0.finish(Err(DecodeError::State {
-            source: DecoderStateError::Failed,
-        }));
+        let mut state = self.0.state.lock();
+        if matches!(state.outcome, Outcome::Running) {
+            state.outcome = Outcome::Failed(Some(DecoderStateError::Failed.into()));
+        }
+        state.stopped = true;
+        drop(state);
+        self.0.caller.notify_all();
     }
 }
 
@@ -446,6 +504,9 @@ impl Decoder {
                 sent_bytes: 0,
                 draining: false,
                 closing: false,
+                flushing: false,
+                stopped: false,
+                settle: Settle::Idle,
                 outcome: Outcome::Running,
             }),
             caller: Condvar::new(),
@@ -458,20 +519,24 @@ impl Decoder {
         let driver = splot_parallel::spawn_thread("splot-driver", move || {
             let guard = DriverGuard(driver);
             let session = DecodeSession::detaching_held(frame_delay, rows);
-            let mut units = ChannelUnits(Arc::clone(&guard.0));
-            let result = crate::pipeline::emit_frames(
-                &mut units,
-                &options,
-                &session,
-                |_| Ok(()),
-                |frame| {
-                    guard
-                        .0
-                        .push_picture(Picture::new(frame, session.planes(), &options)?);
-                    Ok(())
-                },
-            );
-            guard.0.finish(result);
+            loop {
+                let mut units = ChannelUnits(Arc::clone(&guard.0));
+                let result = crate::pipeline::emit_frames(
+                    &mut units,
+                    &options,
+                    &session,
+                    |_| Ok(()),
+                    |frame| {
+                        guard
+                            .0
+                            .push_picture(Picture::new(frame, session.planes(), &options)?);
+                        Ok(())
+                    },
+                );
+                if !guard.0.park(result) {
+                    break;
+                }
+            }
         })?;
         Ok(Self {
             shared,
@@ -497,6 +562,7 @@ impl Decoder {
         if state.input.len() >= state.input_capacity {
             return Ok(SendStatus::Full);
         }
+        state.settle = Settle::Idle;
         if data.is_empty() {
             return Ok(SendStatus::Accepted);
         }
@@ -543,6 +609,66 @@ impl Decoder {
         }
     }
 
+    /// Takes the next picture in display order, waiting for the units the
+    /// decoder holds.
+    ///
+    /// Returns `None` once every unit sent was decoded and no picture is
+    /// ready: a unit can give no picture, when its frame is shown later.
+    /// After [`Self::drain`] this is [`Self::get_picture`].
+    ///
+    /// # Errors
+    /// Returns the decode error that ended the session, then
+    /// [`DecoderStateError::Failed`] on later calls.
+    pub fn wait_picture(&mut self) -> Result<Option<Picture>> {
+        let mut state = self.shared.state.lock();
+        state.settle = Settle::Requested;
+        self.shared.driver.notify_all();
+        loop {
+            if let Some(picture) = state.output.pop_front() {
+                self.shared.bump(state);
+                return Ok(Some(picture));
+            }
+            match state.outcome {
+                Outcome::Running => {}
+                Outcome::Finished => return Ok(None),
+                Outcome::Failed(_) => return state.take_failure().map(|()| None),
+            }
+            if state.settle == Settle::Done {
+                state.settle = Settle::Idle;
+                return Ok(None);
+            }
+            self.shared.caller.wait(&mut state);
+        }
+    }
+
+    /// Whether the decoder can start at `data`, one whole temporal unit: after
+    /// [`Self::new`] or [`Self::flush`], the first unit sent must be one.
+    ///
+    /// Such a unit opens with a temporal delimiter and holds a sequence header
+    /// and an `OBU_CLOSED_LOOP_KEY`, `OBU_OPEN_LOOP_KEY` or `OBU_RAS_FRAME`.
+    #[must_use]
+    pub fn can_start_at(data: &[u8]) -> bool {
+        crate::pipeline::starts_decode(data)
+    }
+
+    /// Drops every unit and picture the decoder holds and starts a new
+    /// session on the same threads and sample storage, for a seek or after an
+    /// error. The next unit sent must be one [`Self::can_start_at`] accepts.
+    ///
+    /// Waits for the frames in decode, which are not interrupted. Pictures
+    /// taken earlier stay valid. [`DecodeLimitName::MaxInputBytes`] counts
+    /// from zero again.
+    pub fn flush(&mut self) {
+        let mut state = self.shared.state.lock();
+        state.flushing = true;
+        state.input.clear();
+        state.output.clear();
+        self.shared.driver.notify_all();
+        while state.flushing && !state.stopped {
+            self.shared.caller.wait(&mut state);
+        }
+    }
+
     /// Ends the input. The decoder decodes what it holds, and
     /// [`Self::get_picture`] returns the remaining pictures.
     pub fn drain(&mut self) {
@@ -560,11 +686,6 @@ impl Drop for Decoder {
         state.closing = true;
         state.output.clear();
         self.shared.bump(state);
-        let mut state = self.shared.state.lock();
-        while matches!(state.outcome, Outcome::Running) {
-            self.shared.caller.wait(&mut state);
-        }
-        drop(state);
         if let Some(driver) = self.driver.take() {
             let _ = driver.join();
         }
@@ -588,7 +709,7 @@ const MAX_OUTPUTS_PER_UNIT: usize = 2 * splot_core::headers::sequence::MAX_REF_F
 impl Shared {
     fn push_picture(&self, picture: Picture) {
         let mut state = self.state.lock();
-        if !state.closing {
+        if !state.closing && !state.flushing {
             state.output.push_back(picture);
         }
         drop(state);
@@ -604,7 +725,7 @@ impl UnitSource for ChannelUnits {
         let shared = &self.0;
         let mut state = shared.state.lock();
         loop {
-            if state.closing {
+            if state.closing || state.flushing {
                 return Ok(None);
             }
             if state.output.len() < state.output_capacity {
@@ -623,5 +744,30 @@ impl UnitSource for ChannelUnits {
 
     fn ivf_header(&self) -> Option<IvfHeader> {
         None
+    }
+
+    fn await_input(&mut self) -> bool {
+        let shared = &self.0;
+        let mut state = shared.state.lock();
+        loop {
+            let ready = state.output.len() < state.output_capacity && !state.input.is_empty();
+            if ready || state.closing || state.flushing || state.draining {
+                return false;
+            }
+            if state.input.is_empty() {
+                match state.settle {
+                    Settle::Requested => {
+                        state.settle = Settle::Running;
+                        return true;
+                    }
+                    Settle::Running => {
+                        state.settle = Settle::Done;
+                        shared.caller.notify_all();
+                    }
+                    Settle::Idle | Settle::Done => {}
+                }
+            }
+            shared.driver.wait(&mut state);
+        }
     }
 }

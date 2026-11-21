@@ -61,8 +61,12 @@ impl<'a> RuntimeStream<'a> {
             .map_or_else(crate::DataProps::default, |unit| unit.props)
     }
 
-    /// Makes the next unit current; `false` at end of input.
-    fn advance(&mut self) -> Result<bool> {
+    /// Makes the next unit current; `false` at end of input. While the input
+    /// is idle, `settle` hands over the frames still decoding on request.
+    fn advance(&mut self, settle: &mut dyn FnMut() -> Result<()>) -> Result<bool> {
+        while self.source.await_input() {
+            settle()?;
+        }
         let Some(unit) = self.source.next_unit(self.buffers)? else {
             return Ok(false);
         };
@@ -75,7 +79,7 @@ impl<'a> RuntimeStream<'a> {
     /// The first unit, or `None` when the input holds none.
     pub(super) fn first_unit(&mut self) -> Result<Option<UnitBytes>> {
         Ok(self
-            .advance()?
+            .advance(&mut || Ok(()))?
             .then(|| self.current.as_ref().map(|unit| unit.bytes.clone()))
             .flatten())
     }
@@ -109,10 +113,11 @@ impl<'a> RuntimeStream<'a> {
     /// The next frame candidate and the unit holding it; `None` at end of
     /// input. Each unit read on the way is checked as a key frame unit when
     /// the candidate is a closed-loop key, else in inter order. Units after
-    /// the last candidate are not checked.
+    /// the last candidate are not checked. `settle` is for [`Self::advance`].
     pub(super) fn candidate(
         &mut self,
         storage: &mut Vec<ObuEnvelope<'static>>,
+        settle: &mut dyn FnMut() -> Result<()>,
     ) -> Result<Option<(DecodePlannedObu, UnitBytes)>> {
         let mut skipped: Vec<UnitBytes> = Vec::new();
         let mut fresh = false;
@@ -134,7 +139,7 @@ impl<'a> RuntimeStream<'a> {
             if fresh && let Some(unit) = &self.current {
                 skipped.push(unit.bytes.clone());
             }
-            if !self.advance()? {
+            if !self.advance(settle)? {
                 return Ok(None);
             }
             fresh = true;
@@ -382,6 +387,14 @@ pub(crate) fn require_minimal_obu_order<'a>(
 ) -> Result<[ObuEnvelope<'a>; 3]> {
     let indices = minimal_frame_unit_indices(obus)?;
     Ok([obus[0], obus[indices.sequence], obus[indices.frame]])
+}
+
+/// Whether a decode can start at `unit`: it opens with a temporal delimiter
+/// and holds a sequence header and a closed-loop key, open-loop key or RAS
+/// frame.
+pub(crate) fn starts_decode(unit: &[u8]) -> bool {
+    let mut obus = Vec::new();
+    runtime_obus(unit.into(), &mut obus).is_ok() && require_leading_frame_unit(&obus).is_ok()
 }
 
 pub(super) fn require_leading_frame_unit<'a>(

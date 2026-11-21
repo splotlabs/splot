@@ -9,8 +9,8 @@
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
 use splot_decode::{
     DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig, Decoder,
-    DecoderSettings, DecoderStateError, FrameDelay, Picture, PictureSamples, PlaneId, SendStatus,
-    ThreadCount,
+    DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureSamples, PlaneId,
+    SendStatus, ThreadCount,
 };
 
 const MULTIREF: &[u8] =
@@ -326,4 +326,109 @@ fn a_decoder_dropped_mid_stream_stops_its_driver() {
         }
         drop(decoder);
     }
+}
+
+/// Sends every unit and takes pictures only with `wait_picture`, never
+/// draining before the end. Returns the pictures and how many were out after
+/// each unit.
+fn decode_waiting(decoder: &mut Decoder, units: &[Vec<u8>]) -> (Vec<Picture>, Vec<usize>) {
+    let mut pictures = Vec::new();
+    let mut counts = Vec::new();
+    for unit in units {
+        while decoder.send_data(unit, DataProps::default()).unwrap() == SendStatus::Full {
+            pictures.extend(decoder.wait_picture().unwrap());
+        }
+        pictures.extend(core::iter::from_fn(|| decoder.wait_picture().unwrap()));
+        counts.push(pictures.len());
+    }
+    decoder.drain();
+    pictures.extend(core::iter::from_fn(|| decoder.wait_picture().unwrap()));
+    (pictures, counts)
+}
+
+#[test]
+fn wait_picture_gives_the_pictures_of_the_units_sent_without_more_input() {
+    for fixture in FIXTURES {
+        let expected = batch_raw(fixture);
+        let units = units(fixture);
+        let (_, serial) = decode_waiting(&mut decoder(1, 1), &units);
+        for (threads, frame_delay) in [(2, 2), (4, 1), (4, 4), (8, 8)] {
+            let (pictures, counts) = decode_waiting(&mut decoder(threads, frame_delay), &units);
+            assert_eq!(raw_of(&with_film_grain(&pictures)), expected);
+            assert_eq!(
+                counts, serial,
+                "threads={threads} frame_delay={frame_delay}"
+            );
+        }
+        assert!(serial[0] >= 1, "the key frame is out at once");
+    }
+}
+
+#[test]
+fn wait_picture_on_an_idle_decoder_returns_none() {
+    let mut decoder = decoder(4, 4);
+    assert!(decoder.wait_picture().unwrap().is_none());
+    assert!(decoder.wait_picture().unwrap().is_none());
+}
+
+#[test]
+fn flush_starts_a_new_session_mid_stream_and_after_an_error() {
+    let units = units(EIGHT_FRAME);
+    let expected = batch_raw(EIGHT_FRAME);
+    for (threads, frame_delay) in [(1, 1), (4, 4)] {
+        let mut decoder = decoder(threads, frame_delay);
+        for unit in &units[..4] {
+            while decoder.send_data(unit, DataProps::default()).unwrap() == SendStatus::Full {
+                decoder.get_picture().unwrap();
+            }
+        }
+        decoder.flush();
+        assert!(decoder.wait_picture().unwrap().is_none());
+        assert_eq!(
+            raw_of(&decode(&mut decoder, &units, |_| DataProps::default())),
+            expected
+        );
+
+        decoder.flush();
+        assert!(!Decoder::can_start_at(&units[1]));
+        let _ = decoder.send_data(&units[1], DataProps::default()).unwrap();
+        assert!(decoder.wait_picture().is_err());
+        decoder.flush();
+        assert_eq!(
+            raw_of(&decode(&mut decoder, &units, |_| DataProps::default())),
+            expected
+        );
+    }
+}
+
+#[test]
+fn a_decoder_starts_at_the_units_can_start_at_accepts() {
+    for fixture in FIXTURES {
+        let units = units(fixture);
+        assert!(Decoder::can_start_at(&units[0]));
+        for unit in units.iter().filter(|unit| Decoder::can_start_at(unit)) {
+            let mut decoder = decoder(1, 1);
+            let _ = decoder.send_data(unit, DataProps::default()).unwrap();
+            decoder.wait_picture().unwrap();
+        }
+    }
+    assert!(!Decoder::can_start_at(&[]));
+    assert!(!Decoder::can_start_at(&[0xFF; 8]));
+}
+
+#[test]
+fn a_picture_reports_the_type_of_the_frame_it_shows() {
+    let pictures = decode(&mut decoder(1, 1), &units(MULTIREF), |_| {
+        DataProps::default()
+    });
+    let types: Vec<_> = pictures
+        .iter()
+        .map(|picture| (picture.frame_type(), picture.is_key_frame()))
+        .collect();
+    assert_eq!(types[0], (Some(FrameType::Key), true));
+    assert!(
+        types[1..]
+            .iter()
+            .all(|&(kind, key)| kind == Some(FrameType::Inter) && !key)
+    );
 }
