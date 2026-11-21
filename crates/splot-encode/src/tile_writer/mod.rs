@@ -305,6 +305,9 @@ thread_local! {
     /// later, and `JOINT_NEWMV` with `jmvd_scale_mode > 0`.
     pub(crate) static CODED_MODES: core::cell::Cell<[usize; 4]> =
         const { core::cell::Cell::new([0; 4]) };
+    /// Wedge inter-intra leaves of the final passes on this thread.
+    pub(crate) static CODED_WEDGE_INTERINTRA: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
     /// Leaves of the final passes on this thread that code explicit CFL
     /// alphas with alpha 0 in one plane.
     pub(crate) static CFL_ZERO_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -324,6 +327,8 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
     }
     let mut counts = CODED_TYPES.get();
     if let InterPrediction::Single(single) = prediction {
+        let wedge = single.interintra.is_some_and(|ii| ii.wedge.is_some());
+        CODED_WEDGE_INTERINTRA.set(CODED_WEDGE_INTERINTRA.get() + usize::from(wedge));
         counts[4] += usize::from(single.interintra.is_some());
         counts[5] += usize::from(single.interintra.is_some() && tile_edge);
         counts[6] += usize::from(single.bawp.is_some());
