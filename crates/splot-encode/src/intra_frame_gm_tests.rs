@@ -220,17 +220,15 @@ fn estimated_stream(
 /// vectors from. The first stream keeps the bytes main coded (FNV-1a golden).
 #[test]
 fn the_encoder_estimates_and_codes_global_motion() {
-    for (index, case) in [(160, 96, 6, 120), (160, 96, 6, 90), (192, 112, 9, 90)]
-        .into_iter()
-        .enumerate()
-    {
+    let cases = [(160, 96, 6, 120), (160, 96, 6, 90), (192, 112, 9, 90)];
+    each_case(cases.into_iter().enumerate(), |(index, case)| {
         let (units, expected, (frames, _)) = estimated_stream(case, 1, 1);
         assert!(frames > 0, "estimated {case:?}: no global frame");
         assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
         if index == 0 {
             assert_eq!(fnv1a(&units), LEVEL_1_GOLDEN, "{case:?}");
         }
-    }
+    });
 }
 
 /// The FNV-1a hash of the first `global_motion = 1` stream, recorded from main
@@ -248,7 +246,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// 1, 2 and 8 threads.
 #[test]
 fn the_quarter_sample_estimator_codes_global_motion_on_any_thread_count() {
-    for case in [(160, 96, 6, 120), (192, 112, 9, 90)] {
+    each_case([(160, 96, 6, 120), (192, 112, 9, 90)], |case| {
         let (units, expected, (frames, references)) = estimated_stream(case, 2, 1);
         assert!(
             frames > 0 && references >= frames,
@@ -261,7 +259,7 @@ fn the_quarter_sample_estimator_codes_global_motion_on_any_thread_count() {
                 "{case:?} {threads}"
             );
         }
-    }
+    });
 }
 
 /// A mini-GOP zooming stream whose compound leaves code `GLOBAL_GLOBALMV`

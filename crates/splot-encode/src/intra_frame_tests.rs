@@ -18,7 +18,7 @@ use crate::preset::{Levels, PRESETS, Preset, PresetParams};
 use crate::rate_control::FrameType;
 use crate::rd::partition::search_partition;
 use crate::test_support::{
-    assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes, refs_for,
+    assert_same_samples, avm_decode, avm_decoder, decode, each_case, raw_bytes, refs_for,
 };
 use crate::tile_writer::{
     CompoundModes, InterMode, InterModes, InterPrediction, LeafChoice, MotionVector, PARTITIONS,
@@ -144,20 +144,20 @@ fn chroma_cases() -> impl Iterator<Item = (usize, Config, String)> {
 
 #[test]
 fn coded_frames_decode_to_the_encoder_recon() {
-    for (index, config, name) in chroma_cases() {
+    each_case(chroma_cases(), |(index, config, name)| {
         let coded = code(&config, index as u32);
         assert_same_samples(
             &decode(&coded.temporal_unit),
             &recon_bytes(&coded, config.bit_depth),
             &name,
         );
-    }
+    });
 }
 
 /// Key frames every second frame, with an inter frame of unrelated content between them.
 #[test]
 fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
-    for (index, mut config, name) in chroma_cases() {
+    each_case(chroma_cases(), |(index, mut config, name)| {
         config.keyint = core::num::NonZeroU32::new(2).unwrap();
         let seeds: Vec<u32> = (0..3).map(|frame| index as u32 * 4 + frame).collect();
         let coded = code_stream(&config, &seeds);
@@ -172,7 +172,7 @@ fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
             .flat_map(|frame| recon_bytes(frame, config.bit_depth))
             .collect();
         assert_same_samples(&decode(&stream), &expected, &name);
-    }
+    });
 }
 
 /// A monochrome key frame and two inter frames that reference it code luma
@@ -217,7 +217,7 @@ fn monochrome_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 /// with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (preset, width, height) in [(1u8, 40, 24), (6, 72, 40)] {
+    each_case([(1u8, 40, 24), (6, 72, 40)], |(preset, width, height)| {
         let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
             parity_hiding: true,
             ..*Preset::new(preset).unwrap().params()
@@ -245,14 +245,14 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .flat_map(|frame| recon_bytes(frame, BitDepth::Ten))
             .collect();
         assert_same_samples(&decode(&units), &expected, &format!("preset {preset}"));
-        for threads in [2, 8] {
+        each_case([2, 8], |threads| {
             let other: Vec<u8> = stream(threads)
                 .iter()
                 .flat_map(|f| f.temporal_unit.clone())
                 .collect();
             assert!(other == units, "preset {preset}: {threads} threads");
-        }
-    }
+        });
+    });
 }
 
 /// TCQ on every frame: key and inter frames at a full-trial and a
@@ -260,48 +260,51 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 /// decode to the encoder recon, with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (preset, width, height, bit_depth, chroma) in [
-        (1u8, 40, 24, BitDepth::Ten, PixelFormat::Yuv420),
-        (6, 72, 40, BitDepth::Eight, PixelFormat::Yuv420),
-        (6, 48, 32, BitDepth::Ten, PixelFormat::Yuv422),
-        (6, 40, 24, BitDepth::Eight, PixelFormat::Yuv444),
-    ] {
-        let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
-            tcq: Levels::all(true),
-            ..*Preset::new(preset).unwrap().params()
-        }));
-        let mut config = config(width, height, bit_depth, preset, 60);
-        config.keyint = core::num::NonZeroU32::new(3).unwrap();
-        config.chroma = chroma;
-        let stream = |threads: usize| {
-            let mut config = config.clone();
-            config.threads = splot_parallel::ThreadCount::from(threads);
-            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
-            assert!(coder.sequence.transform_quant_entropy.unwrap().enable_tcq);
-            (0..4)
-                .map(|index| {
-                    let plan = crate::gop::plan(index, config.keyint);
-                    let source = synthetic_frame(&config, 40 + index as u32);
-                    coder.encode_frame(&source, &plan, 60).unwrap()
-                })
-                .collect::<Vec<_>>()
-        };
-        let coded = stream(1);
-        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
-        let expected: Vec<u8> = coded
-            .iter()
-            .flat_map(|frame| recon_bytes(frame, bit_depth))
-            .collect();
-        let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
-        assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
-            let other: Vec<u8> = stream(threads)
+    each_case(
+        [
+            (1u8, 40, 24, BitDepth::Ten, PixelFormat::Yuv420),
+            (6, 72, 40, BitDepth::Eight, PixelFormat::Yuv420),
+            (6, 48, 32, BitDepth::Ten, PixelFormat::Yuv422),
+            (6, 40, 24, BitDepth::Eight, PixelFormat::Yuv444),
+        ],
+        |(preset, width, height, bit_depth, chroma)| {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                tcq: Levels::all(true),
+                ..*Preset::new(preset).unwrap().params()
+            }));
+            let mut config = config(width, height, bit_depth, preset, 60);
+            config.keyint = core::num::NonZeroU32::new(3).unwrap();
+            config.chroma = chroma;
+            let stream = |threads: usize| {
+                let mut config = config.clone();
+                config.threads = splot_parallel::ThreadCount::from(threads);
+                let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+                assert!(coder.sequence.transform_quant_entropy.unwrap().enable_tcq);
+                (0..4)
+                    .map(|index| {
+                        let plan = crate::gop::plan(index, config.keyint);
+                        let source = synthetic_frame(&config, 40 + index as u32);
+                        coder.encode_frame(&source, &plan, 60).unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let coded = stream(1);
+            let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+            let expected: Vec<u8> = coded
                 .iter()
-                .flat_map(|f| f.temporal_unit.clone())
+                .flat_map(|frame| recon_bytes(frame, bit_depth))
                 .collect();
-            assert!(other == units, "{name}: {threads} threads");
-        }
-    }
+            let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
+            assert_same_samples(&decode(&units), &expected, &name);
+            each_case([2, 8], |threads| {
+                let other: Vec<u8> = stream(threads)
+                    .iter()
+                    .flat_map(|f| f.temporal_unit.clone())
+                    .collect();
+                assert!(other == units, "{name}: {threads} threads");
+            });
+        },
+    );
 }
 
 /// The p6 row with every offered luma type and `keep` exact type trials.
@@ -338,30 +341,33 @@ fn type_model_stream(
 /// 4:4:4, with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn type_model_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (width, height, bit_depth, chroma) in [
-        (72, 40, BitDepth::Eight, PixelFormat::Yuv420),
-        (48, 32, BitDepth::Ten, PixelFormat::Yuv420),
-        (40, 24, BitDepth::Eight, PixelFormat::Yuv444),
-    ] {
-        let mut config = config(width, height, bit_depth, 6, 60);
-        config.chroma = chroma;
-        let params = type_model_params(2);
-        let coded = type_model_stream(&config, params, 1);
-        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
-        let expected: Vec<u8> = coded
-            .iter()
-            .flat_map(|f| recon_bytes(f, bit_depth))
-            .collect();
-        let name = format!("{bit_depth:?} {chroma:?}");
-        assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
-            let other: Vec<u8> = type_model_stream(&config, params, threads)
+    each_case(
+        [
+            (72, 40, BitDepth::Eight, PixelFormat::Yuv420),
+            (48, 32, BitDepth::Ten, PixelFormat::Yuv420),
+            (40, 24, BitDepth::Eight, PixelFormat::Yuv444),
+        ],
+        |(width, height, bit_depth, chroma)| {
+            let mut config = config(width, height, bit_depth, 6, 60);
+            config.chroma = chroma;
+            let params = type_model_params(2);
+            let coded = type_model_stream(&config, params, 1);
+            let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+            let expected: Vec<u8> = coded
                 .iter()
-                .flat_map(|f| f.temporal_unit.clone())
+                .flat_map(|f| recon_bytes(f, bit_depth))
                 .collect();
-            assert!(other == units, "{name}: {threads} threads");
-        }
-    }
+            let name = format!("{bit_depth:?} {chroma:?}");
+            assert_same_samples(&decode(&units), &expected, &name);
+            each_case([2, 8], |threads| {
+                let other: Vec<u8> = type_model_stream(&config, params, threads)
+                    .iter()
+                    .flat_map(|f| f.temporal_unit.clone())
+                    .collect();
+                assert!(other == units, "{name}: {threads} threads");
+            });
+        },
+    );
 }
 
 /// A `keep` of at least the offered type count codes the exact search of
@@ -719,13 +725,13 @@ fn mini_gop_stream(
 
 #[test]
 fn mini_gops_decode_to_the_encoder_recon_in_display_order() {
-    for chroma in CHROMAS {
+    each_case(CHROMAS, |chroma| {
         for case in mini_gop_cases(chroma) {
             let (units, expected) = mini_gop_stream(case, chroma);
             let name = format!("{case:?} {chroma:?}");
             assert_same_samples(&decode(&units.concat()), &expected, &name);
         }
-    }
+    });
 }
 
 /// 520 frames in mini-GOPs of 8 and one key-frame period wrap the 8-bit
@@ -1370,9 +1376,12 @@ fn random_inter_cases() -> impl Iterator<Item = (usize, Config, String)> {
 #[test]
 fn random_inter_leaves_decode_to_the_writer_recon() {
     let mut total = [0; COVERAGE_SLOTS];
-    for (index, config, name) in random_inter_cases() {
+    let coverages = each_case(random_inter_cases(), |(index, config, name)| {
         let (units, expected, coverage) = random_inter_stream(&config, 0x5EED + index as u64);
         assert_same_samples(&decode(&units.concat()), &expected, &name);
+        coverage
+    });
+    for coverage in coverages {
         for (sum, count) in total.iter_mut().zip(coverage) {
             *sum += count;
         }
