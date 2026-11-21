@@ -376,6 +376,9 @@ pub struct PresetParams {
     /// every row: on top of MRL its BD-rate per CPU loses at every measured
     /// preset.
     pub ist_sets: u8,
+    /// An intra luma block gives an RD trial to every kernel of the
+    /// `ist_sets` sets in place of the one that keeps the most energy.
+    pub intra_ist_rd: bool,
     /// A chroma pair in a leaf's final trial tries the CCTX rotation that
     /// leaves V the least energy; off disables `enable_cctx`. On at p0-p8
     /// (2026-11-21, CRF against off, luma / U / V / 6:1:1 BD-rate): p6 paris
@@ -527,10 +530,13 @@ pub struct PresetParams {
     /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
     /// p0 park_joy +0.20%.
     pub warp: u8,
-    /// Global motion (`enable_global_motion`), `0..=1`: inter frames code
-    /// `use_global_motion` with the models the lookahead estimates. Off in
-    /// every row (2026-10-30): at `1` p6 measured paris +0.01%, niklas
-    /// +0.00%, park_joy +0.49%; the lookahead vectors are too coarse.
+    /// Global motion (`enable_global_motion`), `0..=2`: inter frames code
+    /// `use_global_motion` with the models the lookahead estimates; `2`
+    /// estimates `ROTZOOM` and `AFFINE` models (§ 5.18.9.1) from quarter-sample
+    /// vectors and keeps one only where its § 7.13.3.19 block warp beats the zero
+    /// model and the best translation by its parameter bits. Off in every row
+    /// (2026-10-30): at `1` p6 measured paris +0.01%, niklas +0.00%, park_joy
+    /// +0.49%; the lookahead vectors are too coarse.
     pub global_motion: u8,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
@@ -886,7 +892,7 @@ impl PresetParams {
             MAX_COMPOUND_TYPES,
             "",
         )?;
-        check("global_motion", self.global_motion, 0, 1, "")
+        check("global_motion", self.global_motion, 0, 2, "")
     }
 }
 
@@ -1108,6 +1114,7 @@ preset_table! {
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false]]),
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        intra_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
         cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
@@ -1407,6 +1414,7 @@ mod tests {
             assert!(fast.wiener_ns_classes <= slow.wiener_ns_classes);
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
+            assert!(fast.intra_ist_rd <= slow.intra_ist_rd);
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.cctx_candidates <= slow.cctx_candidates);
             assert!(fast.mhccp <= slow.mhccp);
@@ -1632,7 +1640,7 @@ mod tests {
             (&[("tip_output_search", "3")], "tip_output_search"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),
-            (&[("global_motion", "2")], "global_motion"),
+            (&[("global_motion", "3")], "global_motion"),
             (&[("compound_types", "4")], "compound_types"),
         ] {
             let mut params = PRESETS[6];

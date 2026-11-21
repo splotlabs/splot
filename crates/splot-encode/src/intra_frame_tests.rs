@@ -29,7 +29,6 @@ use splot_decode::encoder_syntax::{
     JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
 };
 
-/// Gradients, a ripple, and seeded noise, so blocks of every size split.
 /// Smooth curved surfaces (quadratic in x and y, a slow ripple) that the
 /// learned DIP predictors model better than the angular modes.
 fn smooth_frame(config: &Config, seed: u32) -> SourceFrame {
@@ -56,6 +55,7 @@ fn smooth_frame(config: &Config, seed: u32) -> SourceFrame {
     SourceFrame::new(config, u64::from(seed), planes).unwrap()
 }
 
+/// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
@@ -571,6 +571,62 @@ fn cfl_zero_alpha_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         }
     }
     assert!(total > 0 && differs, "no leaf coded alpha 0");
+}
+
+/// RD over every intra IST kernel of every set changes the stream against
+/// the most-energy kernel, decodes to the encoder recon at both bit depths
+/// (a key frame and the inter frames that reference it, p6 in-loop
+/// filters), with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (mut differs, mut chosen) = (false, 0);
+    for (width, height, bit_depth) in [(72, 40, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |rd: bool, threads: usize| -> (Vec<u8>, Vec<u8>) {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                ist_sets: 7,
+                intra_ist_rd: rd,
+                ..*Preset::new(6).unwrap().params()
+            }));
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let coded: Vec<_> = (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    coder
+                        .encode_frame(&synthetic_frame(&config, 130 + index as u32), &plan, 60)
+                        .unwrap()
+                })
+                .collect();
+            (
+                coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
+            )
+        };
+        IST_RD_OTHER.set(0);
+        let (units, expected) = stream(true, 1);
+        let name = format!("{bit_depth:?}");
+        let other = IST_RD_OTHER.get();
+        chosen += other;
+        assert_same_samples(&decode(&units), &expected, &name);
+        differs |= stream(false, 1).0 != units;
+        for threads in [2, 8] {
+            assert!(
+                stream(true, threads).0 == units,
+                "{name}: {threads} threads"
+            );
+        }
+    }
+    assert!(differs, "RD over the kernels coded the same streams");
+    assert!(
+        chosen > 0,
+        "RD never chose another kernel than the energy one"
+    );
 }
 
 /// RD trials of the four best DIP predictions, without the angular SATD
