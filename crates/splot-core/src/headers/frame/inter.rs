@@ -276,6 +276,9 @@ pub struct InterControl {
     pub allow_screen_content_tools: Option<bool>,
     /// `allow_intrabc` (mirror :4861), when read on the inter path.
     pub allow_intrabc: Option<bool>,
+    /// The coded `max_bvp_drl_bits_minus_1` `ns(2)` of § 5.18.3.4, when
+    /// `change_bvp_drl` was set on the inter path.
+    pub max_bvp_drl_bits_minus_1: Option<u32>,
     /// `true` when a parsed `ref_frame_idx[i]` names an index at or beyond the **active**
     /// reference-slot count (`idx >= NumRefFrames`). AV2 § 6.17.2 (mirror :4605-4606)
     /// requires `RefValid[ ref_frame_idx[i] ] == 1`, and RefValid is defined only over the
@@ -812,14 +815,13 @@ fn parse_inter_reference_region(
         seq.seq_force_integer_mv,
     )?;
     control.allow_screen_content_tools = Some(scc.allow_screen_content_tools);
-    control.allow_intrabc = Some(
-        parse_intrabc_params_full(
-            reader,
-            false, // FrameIsIntra == false on the inter path
-            seq.allow_frame_max_bvp_drl_bits,
-        )?
-        .allow_intrabc,
-    );
+    let intrabc = parse_intrabc_params_full(
+        reader,
+        false, // FrameIsIntra == false on the inter path
+        seq.allow_frame_max_bvp_drl_bits,
+    )?;
+    control.allow_intrabc = Some(intrabc.allow_intrabc);
+    control.max_bvp_drl_bits_minus_1 = intrabc.max_bvp_drl_bits_minus_1;
 
     let mut max_drl_bits_minus_1 = seq.seq_max_drl_bits_minus_1;
     if seq.allow_frame_max_drl_bits {
