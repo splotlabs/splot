@@ -172,3 +172,35 @@ fn avm_decodes_full_ccso_ladder_frames_like_splot() {
     let avm = avm_decode(&avmdec, &units, (200, 96), BitDepth::Eight, "ccso-ladder");
     assert!(avm == recon, "AVM output differs");
 }
+
+/// Whether some plane of `core` codes band offsets of more than 8 bands.
+fn wide_band_offsets(core: &FrameHeaderCore) -> bool {
+    core.ccso_params.as_ref().is_some_and(|params| {
+        params.planes.iter().any(|plane| {
+            plane.ccso_bo_only == Some(true)
+                && plane.ccso_max_band_log2.is_some_and(|log2| log2 > 3)
+        })
+    })
+}
+
+/// Band offsets of 16 to 64 bands (`ccso_bo_band_log2` 6, forced by the test
+/// hook) code in key and inter frames and decode to the encoder recon. With
+/// `ccso_bo_band_log2` 3 the hook finds no variant and no frame codes them.
+#[test]
+fn wide_band_offsets_decode_to_the_encoder_recon() {
+    let wide: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        ccso_bo_band_log2: 6,
+        ..*Preset::new(9).unwrap().params()
+    }));
+    let forced = |preset| {
+        crate::loop_filter::ccso::FORCE_WIDE_BANDS.with(|force| force.set(true));
+        let stream = ccso_stream_with((1, PixelFormat::Yuv420, 170), preset, wide_band_offsets);
+        crate::loop_filter::ccso::FORCE_WIDE_BANDS.with(|force| force.set(false));
+        stream
+    };
+    let (units, recon, flags, _) = forced(wide);
+    assert!(flags.iter().all(|&flag| flag), "{flags:?}");
+    assert_same_samples(&decode(&units.concat()), &recon, "wide band offsets");
+    let (_, _, off, _) = forced(Preset::new(9).unwrap().params());
+    assert!(!off.contains(&true), "{off:?}");
+}

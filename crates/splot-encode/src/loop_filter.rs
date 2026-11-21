@@ -871,6 +871,7 @@ impl Search<'_> {
                 pool: self.pool,
             },
             usize::from(preset.ccso_candidates),
+            preset.ccso_bo_band_log2,
         )
     }
 
@@ -1017,7 +1018,7 @@ fn cdef_rate(sets: usize, units: usize) -> Bits {
 }
 
 #[path = "loop_filter_ccso.rs"]
-mod ccso;
+pub(crate) mod ccso;
 #[path = "loop_filter_gdf.rs"]
 mod gdf;
 #[path = "loop_filter_wienerns.rs"]

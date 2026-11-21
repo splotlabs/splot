@@ -340,6 +340,10 @@ pub struct PresetParams {
     /// ladder, then every other triple of § 5.18.7.12; `0` disables CCSO in
     /// the sequence.
     pub ccso_candidates: u8,
+    /// The largest `ccso_max_band_log2` of CCSO band offsets only
+    /// (§ 5.18.7.12), `3..=6`: above `3` the search also tries 16, 32 and up
+    /// to 64 bands from 64-band statistics of each unit.
+    pub ccso_bo_band_log2: u8,
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
@@ -848,6 +852,7 @@ impl PresetParams {
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
         check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
+        check("ccso_bo_band_log2", self.ccso_bo_band_log2, 3, 6, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
         check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
@@ -1161,6 +1166,7 @@ preset_table! {
     filters {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
         ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
+        ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
@@ -1597,6 +1603,7 @@ mod tests {
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
             (&[("ccso_candidates", "113")], "ccso_candidates"),
+            (&[("ccso_bo_band_log2", "7")], "ccso_bo_band_log2"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
             (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),
