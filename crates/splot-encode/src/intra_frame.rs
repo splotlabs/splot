@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    GrainScaling, UniformTiles, build_encoder_sequence_header, encode_film_grain_obu,
-    encoder_film_grain_model,
+    GrainScaling, InterpolationFilter, TipGlobalMv, UniformTiles, build_encoder_sequence_header,
+    encode_film_grain_obu, encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -59,13 +59,6 @@ use crate::wavefront;
 const TCQ_LAMBDA_PERCENT: u64 = 60;
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
-/// `avg_cdf_type` of a stream that carries CDFs: `true` averages the saved
-/// CDFs across tiles, `false` blends the primary reference's CDFs with a
-/// second reference's.
-const AVG_CDF_ACROSS_TILES: bool = false;
-/// `constrain_drl_reorder` of a stream that reorders the DRL: `true`
-/// reorders under `DRL_REORDER_CONSTRAINT`, `false` always.
-const DRL_REORDER_CONSTRAINT: bool = true;
 
 /// Codes key frames and inter frames.
 pub(crate) struct IntraFrameCoder {
@@ -246,21 +239,29 @@ impl IntraFrameCoder {
                 inter_ist: preset.inter_ist,
                 tip: preset.tip > 0 && preset.mv_prediction,
                 tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
+                tip_explicit_qp: preset.tip > 0
+                    && preset.mv_prediction
+                    && preset.tip_output > 0
+                    && preset.df_sub_pu
+                    && preset.tip_explicit_qp,
+                tip_hole_fill: preset.tip > 0 && preset.mv_prediction && preset.tip_hole_fill,
                 opfl_refine: preset.opfl,
                 refinemv: preset.refinemv,
                 tip_refinemv: preset.tip > 0 && preset.mv_prediction && preset.tip_refinemv,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
+                idtx_intra: preset.idtx_intra && !preset.fsc,
                 screen_content: preset.palette || preset.integer_mv,
                 dip: preset.dip,
                 sdp: preset.sdp,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
-                avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),
+                avg_cdf: preset.cdf_carry.then_some(preset.cdf_avg_across_tiles),
                 ref_frame_mvs: preset.mv_prediction,
                 refmvbank: preset.mv_prediction,
-                drl_reorder: preset.mv_prediction.then_some(DRL_REORDER_CONSTRAINT),
+                drl_reorder: preset.mv_prediction.then_some(!preset.drl_reorder_always),
+                mv_traj: preset.mv_prediction && preset.mv_traj,
                 max_drl_bits_minus_1: u32::from(preset.drl_bits.saturating_sub(1)),
                 mvd_tools: preset.mvd_tools,
                 warp: preset.warp > 0,
@@ -268,6 +269,8 @@ impl IntraFrameCoder {
                 masked_compound: preset.compound_types >= 1,
                 cwp: preset.compound_types >= 2,
                 implicit_mask: preset.implicit_mask,
+                df_sub_pu: preset.df_sub_pu,
+                df_par_bits_extra: preset.deblock_offset_bits.saturating_sub(3),
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
@@ -290,6 +293,7 @@ impl IntraFrameCoder {
             tiles: UniformTiles {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
+                middle_cdf_update_tile: preset.cdf_update_tile == 1,
                 ..UniformTiles::default()
             },
             pool: (config.threads.resolve().get() > 1)
@@ -590,6 +594,9 @@ impl IntraFrameCoder {
         let context = self.preset_context(plan, qindex);
         let mut tools = gop::frame_tools((&self.preset, context), self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
+        tools.0.disable_cdf_update = self.preset.disable_cdf_update;
+        tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
+        tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
@@ -874,8 +881,9 @@ impl IntraFrameCoder {
     /// and film grain seed `grain_seed` as `coded`, as a `TIP_FRAME_AS_OUTPUT`
     /// frame with the same seed when its RD cost times 100
     /// is at most `PresetParams::tip_output` times that of `coded`; both
-    /// distortions are the squared error of every plane. The caller keeps
-    /// `coded` when this fails.
+    /// distortions are the squared error of every plane. The TIP frame takes
+    /// the candidate of least RD cost that `PresetParams::tip_output_search`
+    /// tries. The caller keeps `coded` when this fails.
     fn tip_output_frame(
         &self,
         source: &SourceFrame,
@@ -891,17 +899,6 @@ impl IntraFrameCoder {
             .ok_or(Error::Unsupported {
                 what: "a TIP frame without references",
             })?;
-        let (core, temporal_unit) = plan.tip_output_unit(
-            &self.view,
-            &self.references,
-            ref_frame_idx,
-            (weight, grain_seed),
-        )?;
-        let (core, frame) = self
-            .references
-            .tip_output(&core)
-            .map_err(coding("TIP output"))?;
-        let recon = visible_planes(&frame)?;
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
         let cost = |planes: &[Vec<u16>; 3], bytes: usize| {
             let distortion = planes
@@ -913,7 +910,81 @@ impl IntraFrameCoder {
             let rate = Bits((bytes as u64 * 8) << Bits::FRAC_BITS);
             RdCost { distortion, rate }.cost(lambda)
         };
-        let tip = cost(&recon, temporal_unit.len());
+        let trial = |(mv, filter, deblocking): (TipGlobalMv, Option<InterpolationFilter>, bool)| {
+            let (core, temporal_unit) = plan.tip_output_unit(
+                &self.view,
+                &self.references,
+                ref_frame_idx,
+                (weight, grain_seed),
+                (qindex, mv, filter, deblocking),
+            )?;
+            let (core, frame) = self
+                .references
+                .tip_output(&core)
+                .map_err(coding("TIP output"))?;
+            let recon = visible_planes(&frame)?;
+            let tip = cost(&recon, temporal_unit.len());
+            Ok::<_, Error>((tip, (mv, filter, deblocking), (core, temporal_unit, recon)))
+        };
+        let zero = TipGlobalMv::default();
+        #[cfg(test)]
+        if let Some(choice) = TIP_OUTPUT_FORCED.get() {
+            let (tip, _, (core, temporal_unit, recon)) = trial(choice)?;
+            let normal = cost(&coded.recon, coded.temporal_unit.len());
+            return Ok(
+                (tip * 100 <= normal * u128::from(self.preset.tip_output)).then(|| CodedFrame {
+                    temporal_unit,
+                    recon,
+                    frame_type: plan.frame_type,
+                    reference: None,
+                    tip_output: Some(core),
+                    warp: None,
+                    intra_cells: None,
+                    global_leaves: 0,
+                }),
+            );
+        }
+        let mut best = trial((zero, None, false))?;
+        let keep = |best: &mut (u128, _, _), candidate: (u128, _, _)| {
+            if candidate.0 < best.0 {
+                *best = candidate;
+            }
+        };
+        if self.preset.tip_output_search >= 1 {
+            for filter in [
+                InterpolationFilter::Eighttap,
+                InterpolationFilter::EighttapSmooth,
+            ] {
+                keep(&mut best, trial((zero, Some(filter), false))?);
+            }
+        }
+        if self.preset.tip_output_search >= 2 {
+            let filter = best.1.1;
+            let mut axis = |mv: fn(i32) -> TipGlobalMv| -> Result<i32> {
+                let mut pick = (best.0, 0);
+                for step in [-2, -1, 1, 2] {
+                    let candidate = trial((mv(step), filter, false))?;
+                    if candidate.0 < pick.0 {
+                        pick = (candidate.0, step);
+                    }
+                    keep(&mut best, candidate);
+                }
+                Ok(pick.1)
+            };
+            let row = axis(|step| TipGlobalMv::new(step, 0))?;
+            let col = axis(|step| TipGlobalMv::new(0, step))?;
+            if row != 0 && col != 0 {
+                keep(
+                    &mut best,
+                    trial((TipGlobalMv::new(row, col), filter, false))?,
+                );
+            }
+            if self.params.tools.df_sub_pu {
+                let (mv, filter, _) = best.1;
+                keep(&mut best, trial((mv, filter, true))?);
+            }
+        }
+        let (tip, _, (core, temporal_unit, recon)) = best;
         let normal = cost(&coded.recon, coded.temporal_unit.len());
         Ok(
             (tip * 100 <= normal * u128::from(self.preset.tip_output)).then(|| CodedFrame {
@@ -929,6 +1000,15 @@ impl IntraFrameCoder {
             }),
         )
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The `(TipGlobalMv, TipInterpFilter, TIP deblocking)` every TIP output
+    /// frame on this thread codes instead of the searched one.
+    pub(crate) static TIP_OUTPUT_FORCED: core::cell::Cell<
+        Option<(TipGlobalMv, Option<InterpolationFilter>, bool)>,
+    > = const { core::cell::Cell::new(None) };
 }
 
 /// The `(frame, reference)` display indices of each list reference of
@@ -1232,6 +1312,14 @@ thread_local! {
         const { core::cell::RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Chroma pairs outside mode trials that code a CCTX rotation other than
+    /// the one that leaves V the least energy (tests only).
+    pub(crate) static CCTX_LATER_ROTATIONS: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
+}
+
 impl ResidualCoder for SourceResidualCoder<'_> {
     fn palette_map(
         &mut self,
@@ -1395,61 +1483,83 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         }
         let mut scratch = core::mem::take(&mut self.scratch);
         let mut pair = core::mem::take(&mut self.pair);
-        let rotated = self.rotated_pair(syntax, [u, v], predictions, &mut scratch, &mut pair);
+        let rotated = self.rotated_pairs(syntax, [u, v], predictions, &mut scratch, &mut pair);
         (self.scratch, self.pair) = (scratch, pair);
-        let Some([u_levels, v_levels, cctx]) = rotated? else {
-            return Ok(plain);
-        };
-        let coded = TransformBlock {
-            cctx: cctx[0] as u8,
-            ..*u
-        };
-        if !syntax.cctx_coded(&coded, eob(&coded, &u_levels)?) {
-            return Ok(plain);
+        let mut best: Option<(u128, [TransformDecision; 2])> = None;
+        let rotated = rotated?;
+        #[cfg(test)]
+        let least_energy = rotated.first().map(|[_, _, cctx]| cctx[0] as u8);
+        for [u_levels, v_levels, cctx] in rotated {
+            let coded = TransformBlock {
+                cctx: cctx[0] as u8,
+                ..*u
+            };
+            if !syntax.cctx_coded(&coded, eob(&coded, &u_levels)?) {
+                continue;
+            }
+            if best.is_none() {
+                let plain_cost = self.pair_cost(
+                    syntax,
+                    [u, v],
+                    predictions,
+                    [&plain[0].levels, &plain[1].levels],
+                    None,
+                )?;
+                best = Some((plain_cost, plain.clone()));
+            }
+            let cost = self.pair_cost(
+                syntax,
+                [&coded, v],
+                predictions,
+                [&u_levels, &v_levels],
+                Some(()),
+            )?;
+            if best
+                .as_ref()
+                .is_some_and(|(best_cost, _)| cost < *best_cost)
+            {
+                best = Some((
+                    cost,
+                    [
+                        TransformDecision {
+                            cctx: coded.cctx,
+                            levels: u_levels,
+                            ..plain[0].clone()
+                        },
+                        TransformDecision {
+                            levels: v_levels,
+                            ..plain[1].clone()
+                        },
+                    ],
+                ));
+            }
         }
-        let plain_cost = self.pair_cost(
-            syntax,
-            [u, v],
-            predictions,
-            [&plain[0].levels, &plain[1].levels],
-            None,
-        )?;
-        let cost = self.pair_cost(
-            syntax,
-            [&coded, v],
-            predictions,
-            [&u_levels, &v_levels],
-            Some(()),
-        )?;
-        if cost >= plain_cost {
-            return Ok(plain);
+        #[cfg(test)]
+        if !self.trial
+            && best
+                .as_ref()
+                .is_some_and(|(_, [u, _])| u.cctx != 0 && Some(u.cctx) != least_energy)
+        {
+            CCTX_LATER_ROTATIONS.set(CCTX_LATER_ROTATIONS.get() + 1);
         }
-        Ok([
-            TransformDecision {
-                cctx: coded.cctx,
-                levels: u_levels,
-                ..plain[0].clone()
-            },
-            TransformDecision {
-                levels: v_levels,
-                ..plain[1].clone()
-            },
-        ])
+        Ok(best.map_or(plain, |(_, pair)| pair))
     }
 }
 
 impl SourceResidualCoder<'_> {
-    /// The levels of `u` and `v` rotated by the CCTX that leaves V the least
-    /// energy, and that `cctx_type` (as `[u, v, [cctx]]`); `None` when no
-    /// rotation leaves less than the smaller plain plane.
-    fn rotated_pair(
+    /// The levels of `u` and `v` rotated by each of the preset's
+    /// `cctx_candidates` CCTX rotations that leave V the least energy, with
+    /// their `cctx_type` (as `[u, v, [cctx]]`), least energy first. One
+    /// candidate is tried only when it leaves less than the smaller plain
+    /// plane.
+    fn rotated_pairs(
         &mut self,
         syntax: &mut IntraTileSyntax,
         [u, v]: [&TransformBlock; 2],
         [u_prediction, v_prediction]: [&[u16]; 2],
-        [residual, _, dequant]: &mut [Vec<i32>; 3],
+        [residual, plain_u, dequant]: &mut [Vec<i32>; 3],
         [u_coeffs, v_coeffs]: &mut [Vec<i32>; 2],
-    ) -> core::result::Result<Option<[Vec<i32>; 3]>, TileWriterError> {
+    ) -> core::result::Result<Vec<[Vec<i32>; 3]>, TileWriterError> {
         let ddt = (false, syntax.uses_ddt());
         let (u_params, u_forward) = self.forward(u, ddt, u_prediction, residual, u_coeffs)?;
         let (v_params, v_forward) = self.forward(v, ddt, v_prediction, residual, v_coeffs)?;
@@ -1458,27 +1568,40 @@ impl SourceResidualCoder<'_> {
             let (c, s) = (i128::from(c), i128::from(s));
             s * s * i128::from(uu) + c * c * i128::from(vv) - 2 * c * s * i128::from(uv)
         };
-        let Some((index, best)) = CCTX_ROTATIONS
+        let mut ranked: Vec<(i128, usize)> = CCTX_ROTATIONS
             .iter()
             .map(|&rotation| energy(rotation))
             .enumerate()
-            .min_by_key(|&(_, e)| e)
-        else {
-            return Ok(None);
-        };
-        if best >= i128::from(uu.min(vv)) << 16 {
-            return Ok(None);
+            .map(|(index, e)| (e, index))
+            .collect();
+        ranked.sort_unstable();
+        let keep = usize::from(self.preset.cctx_candidates.max(1));
+        if keep == 1
+            && ranked
+                .first()
+                .is_none_or(|&(e, _)| e >= i128::from(uu.min(vv)) << 16)
+        {
+            return Ok(Vec::new());
         }
-        kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
-        let cctx =
-            i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
-        let coded = TransformBlock {
-            cctx: cctx as u8,
-            ..*u
-        };
-        let u_levels = self.quantize(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
-        let v_levels = self.quantize(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
-        Ok(Some([u_levels, v_levels, vec![cctx]]))
+        let plain_v = v_coeffs.clone();
+        plain_u.clone_from(u_coeffs);
+        let mut out = Vec::with_capacity(keep);
+        for &(_, index) in ranked.iter().take(keep) {
+            u_coeffs.clone_from(plain_u);
+            v_coeffs.clone_from(&plain_v);
+            kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
+            let cctx =
+                i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
+            let coded = TransformBlock {
+                cctx: cctx as u8,
+                ..*u
+            };
+            let u_levels =
+                self.quantize(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
+            let v_levels = self.quantize(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
+            out.push([u_levels, v_levels, vec![cctx]]);
+        }
+        Ok(out)
     }
 
     /// `D + lambda * R` of chroma blocks `u` and `v` coded as `levels`, with

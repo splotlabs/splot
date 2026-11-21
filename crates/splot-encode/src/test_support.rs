@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
-use splot_parallel::ThreadCount;
+use splot_parallel::prelude::*;
+use splot_parallel::{ThreadCount, WorkerPool};
 use splot_recon::BitDepth;
 
 /// Planes as the decoder's raw output: `u8` samples at 8 bits, little-endian
@@ -37,6 +38,18 @@ pub(crate) fn decode(annexb: &[u8]) -> Vec<u8> {
     ctx.decode_raw_bytes(annexb, DecodeOptions::default(), &mut out)
         .unwrap();
     out
+}
+
+/// `check` of every case at once, in case order: a test of several encodes
+/// takes the time of its slowest one, not their sum. Each case runs on a
+/// worker thread, so a thread-local test counter counts inside `check` alone.
+pub(crate) fn each_case<T: Send, R: Send>(
+    cases: impl IntoIterator<Item = T>,
+    check: impl Fn(T) -> R + Send + Sync,
+) -> Vec<R> {
+    let cases: Vec<T> = cases.into_iter().collect();
+    let pool = WorkerPool::new(ThreadCount::from(cases.len().max(1))).unwrap();
+    pool.install(|| cases.into_par_iter().map(check).collect())
 }
 
 /// Asserts that `decoded` equals `expected` and names the first mismatch.

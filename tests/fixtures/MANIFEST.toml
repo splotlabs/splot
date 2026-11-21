@@ -64,9 +64,9 @@ expect = { diagnostics = ["bitstream/parse-error"] }
 name = "prefix-then-truncated"
 path = "prefix-then-truncated.av2"
 sha256 = "e1a42e659a1f589a982e5817d70449d8e80f979b44f61ef0c7ed8799580fd4be"
-description = "A valid TemporalDelimiter followed by a truncated OBU; inspect prints the valid prefix, then the tail error."
-category = "parse-error"
-expect = { diagnostics = ["bitstream/parse-error"] }
+description = "A valid TemporalDelimiter followed by a truncated OBU; inspect prints the valid prefix, then the tail error. The parsed prefix is a temporal unit with no coded extended layer unit."
+category = "validation-error"
+expect = { diagnostics = ["bitstream/parse-error", "obu-order/temporal-unit-without-coded-layer"] }
 
 [[fixture]]
 name = "frame-header-prefix"
@@ -96,17 +96,17 @@ expect = "clean"
 name = "operating-point-set"
 path = "operating-point-set.av2"
 sha256 = "72362c3a53e561598d76dc08dfc24355432451abe4c7e50618e2203759f6ef79"
-description = "TemporalDelimiter + a global operating_point_set_obu (ops_id 0, ops_cnt 1) with one minimal operating point."
-category = "valid"
-expect = "clean"
+description = "TemporalDelimiter + a global operating_point_set_obu (ops_id 0, ops_cnt 1) with one minimal operating point; no coded extended layer unit."
+category = "validation-error"
+expect = { diagnostics = ["obu-order/temporal-unit-without-coded-layer"] }
 
 [[fixture]]
 name = "buffer-removal-timing"
 path = "buffer-removal-timing.av2"
 sha256 = "879cef57729a3f3fd98b67a2a77ad692ba84ffdff7d0d52aa349e097334c29df"
 description = "operating-point-set plus an OPS-dependent buffer_removal_timing_obu referencing it (br_ops_cnt matches ops_cnt)."
-category = "valid"
-expect = "clean"
+category = "validation-error"
+expect = { diagnostics = ["obu-order/temporal-unit-without-coded-layer"] }
 
 [[fixture]]
 name = "quantizer-matrix"
@@ -128,22 +128,22 @@ expect = { diagnostics = ["celu/missing-output-frame-unit"] }
 name = "padding"
 path = "padding.av2"
 sha256 = "27a8119b2a621ec95852e2abcc7d9a3e86d6f89d10ef343a43199f4757c53c32"
-description = "TemporalDelimiter + a global padding_obu (one obu_padding_byte + trailing_bits)."
-category = "valid"
-expect = "clean"
+description = "TemporalDelimiter + a global padding_obu (one obu_padding_byte + trailing_bits); no coded extended layer unit."
+category = "validation-error"
+expect = { diagnostics = ["obu-order/temporal-unit-without-coded-layer"] }
 
 [[fixture]]
 name = "metadata-short"
 path = "metadata-short.av2"
 sha256 = "3bd5753814e0884bbf79a1fe88216ec87f52c4a8311aa0cf1acc6be61b9fdd5f"
-description = "TemporalDelimiter + a global metadata_short_obu carrying METADATA_TYPE_HDR_CLL."
-category = "valid"
-expect = "clean"
+description = "TemporalDelimiter + a global metadata_short_obu carrying METADATA_TYPE_HDR_CLL; no coded extended layer unit."
+category = "validation-error"
+expect = { diagnostics = ["obu-order/temporal-unit-without-coded-layer"] }
 
 [[fixture]]
 name = "metadata-group"
 path = "metadata-group.av2"
 sha256 = "9032d40149677b6f6f83d329c307384b15084ca550eca5261982253e9a61feb6"
-description = "TemporalDelimiter + a global metadata_group_obu with one non-cancelled METADATA_TYPE_HDR_CLL unit."
-category = "valid"
-expect = "clean"
+description = "TemporalDelimiter + a global metadata_group_obu with one non-cancelled METADATA_TYPE_HDR_CLL unit; no coded extended layer unit."
+category = "validation-error"
+expect = { diagnostics = ["obu-order/temporal-unit-without-coded-layer"] }

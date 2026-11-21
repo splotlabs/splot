@@ -18,7 +18,7 @@ use crate::preset::{Levels, PRESETS, Preset, PresetParams};
 use crate::rate_control::FrameType;
 use crate::rd::partition::search_partition;
 use crate::test_support::{
-    assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes, refs_for,
+    assert_same_samples, avm_decode, avm_decoder, decode, each_case, raw_bytes, refs_for,
 };
 use crate::tile_writer::{
     CompoundModes, InterMode, InterModes, InterPrediction, LeafChoice, MotionVector, PARTITIONS,
@@ -26,7 +26,7 @@ use crate::tile_writer::{
 };
 use splot_decode::encoder_syntax::{
     Bawp, COMPOUND_MODES, CompoundType, INTERINTRA_MODES, INTERP_FILTERS, InterIntra,
-    JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
+    JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
 };
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
@@ -144,20 +144,20 @@ fn chroma_cases() -> impl Iterator<Item = (usize, Config, String)> {
 
 #[test]
 fn coded_frames_decode_to_the_encoder_recon() {
-    for (index, config, name) in chroma_cases() {
+    each_case(chroma_cases(), |(index, config, name)| {
         let coded = code(&config, index as u32);
         assert_same_samples(
             &decode(&coded.temporal_unit),
             &recon_bytes(&coded, config.bit_depth),
             &name,
         );
-    }
+    });
 }
 
 /// Key frames every second frame, with an inter frame of unrelated content between them.
 #[test]
 fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
-    for (index, mut config, name) in chroma_cases() {
+    each_case(chroma_cases(), |(index, mut config, name)| {
         config.keyint = core::num::NonZeroU32::new(2).unwrap();
         let seeds: Vec<u32> = (0..3).map(|frame| index as u32 * 4 + frame).collect();
         let coded = code_stream(&config, &seeds);
@@ -172,7 +172,7 @@ fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
             .flat_map(|frame| recon_bytes(frame, config.bit_depth))
             .collect();
         assert_same_samples(&decode(&stream), &expected, &name);
-    }
+    });
 }
 
 /// A monochrome key frame and two inter frames that reference it code luma
@@ -217,7 +217,7 @@ fn monochrome_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 /// with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (preset, width, height) in [(1u8, 40, 24), (6, 72, 40)] {
+    each_case([(1u8, 40, 24), (6, 72, 40)], |(preset, width, height)| {
         let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
             parity_hiding: true,
             ..*Preset::new(preset).unwrap().params()
@@ -245,14 +245,14 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .flat_map(|frame| recon_bytes(frame, BitDepth::Ten))
             .collect();
         assert_same_samples(&decode(&units), &expected, &format!("preset {preset}"));
-        for threads in [2, 8] {
+        each_case([2, 8], |threads| {
             let other: Vec<u8> = stream(threads)
                 .iter()
                 .flat_map(|f| f.temporal_unit.clone())
                 .collect();
             assert!(other == units, "preset {preset}: {threads} threads");
-        }
-    }
+        });
+    });
 }
 
 /// TCQ on every frame: key and inter frames at a full-trial and a
@@ -260,48 +260,51 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 /// decode to the encoder recon, with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (preset, width, height, bit_depth, chroma) in [
-        (1u8, 40, 24, BitDepth::Ten, PixelFormat::Yuv420),
-        (6, 72, 40, BitDepth::Eight, PixelFormat::Yuv420),
-        (6, 48, 32, BitDepth::Ten, PixelFormat::Yuv422),
-        (6, 40, 24, BitDepth::Eight, PixelFormat::Yuv444),
-    ] {
-        let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
-            tcq: Levels::all(true),
-            ..*Preset::new(preset).unwrap().params()
-        }));
-        let mut config = config(width, height, bit_depth, preset, 60);
-        config.keyint = core::num::NonZeroU32::new(3).unwrap();
-        config.chroma = chroma;
-        let stream = |threads: usize| {
-            let mut config = config.clone();
-            config.threads = splot_parallel::ThreadCount::from(threads);
-            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
-            assert!(coder.sequence.transform_quant_entropy.unwrap().enable_tcq);
-            (0..4)
-                .map(|index| {
-                    let plan = crate::gop::plan(index, config.keyint);
-                    let source = synthetic_frame(&config, 40 + index as u32);
-                    coder.encode_frame(&source, &plan, 60).unwrap()
-                })
-                .collect::<Vec<_>>()
-        };
-        let coded = stream(1);
-        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
-        let expected: Vec<u8> = coded
-            .iter()
-            .flat_map(|frame| recon_bytes(frame, bit_depth))
-            .collect();
-        let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
-        assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
-            let other: Vec<u8> = stream(threads)
+    each_case(
+        [
+            (1u8, 40, 24, BitDepth::Ten, PixelFormat::Yuv420),
+            (6, 72, 40, BitDepth::Eight, PixelFormat::Yuv420),
+            (6, 48, 32, BitDepth::Ten, PixelFormat::Yuv422),
+            (6, 40, 24, BitDepth::Eight, PixelFormat::Yuv444),
+        ],
+        |(preset, width, height, bit_depth, chroma)| {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                tcq: Levels::all(true),
+                ..*Preset::new(preset).unwrap().params()
+            }));
+            let mut config = config(width, height, bit_depth, preset, 60);
+            config.keyint = core::num::NonZeroU32::new(3).unwrap();
+            config.chroma = chroma;
+            let stream = |threads: usize| {
+                let mut config = config.clone();
+                config.threads = splot_parallel::ThreadCount::from(threads);
+                let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+                assert!(coder.sequence.transform_quant_entropy.unwrap().enable_tcq);
+                (0..4)
+                    .map(|index| {
+                        let plan = crate::gop::plan(index, config.keyint);
+                        let source = synthetic_frame(&config, 40 + index as u32);
+                        coder.encode_frame(&source, &plan, 60).unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let coded = stream(1);
+            let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+            let expected: Vec<u8> = coded
                 .iter()
-                .flat_map(|f| f.temporal_unit.clone())
+                .flat_map(|frame| recon_bytes(frame, bit_depth))
                 .collect();
-            assert!(other == units, "{name}: {threads} threads");
-        }
-    }
+            let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
+            assert_same_samples(&decode(&units), &expected, &name);
+            each_case([2, 8], |threads| {
+                let other: Vec<u8> = stream(threads)
+                    .iter()
+                    .flat_map(|f| f.temporal_unit.clone())
+                    .collect();
+                assert!(other == units, "{name}: {threads} threads");
+            });
+        },
+    );
 }
 
 /// The p6 row with every offered luma type and `keep` exact type trials.
@@ -338,30 +341,33 @@ fn type_model_stream(
 /// 4:4:4, with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn type_model_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (width, height, bit_depth, chroma) in [
-        (72, 40, BitDepth::Eight, PixelFormat::Yuv420),
-        (48, 32, BitDepth::Ten, PixelFormat::Yuv420),
-        (40, 24, BitDepth::Eight, PixelFormat::Yuv444),
-    ] {
-        let mut config = config(width, height, bit_depth, 6, 60);
-        config.chroma = chroma;
-        let params = type_model_params(2);
-        let coded = type_model_stream(&config, params, 1);
-        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
-        let expected: Vec<u8> = coded
-            .iter()
-            .flat_map(|f| recon_bytes(f, bit_depth))
-            .collect();
-        let name = format!("{bit_depth:?} {chroma:?}");
-        assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
-            let other: Vec<u8> = type_model_stream(&config, params, threads)
+    each_case(
+        [
+            (72, 40, BitDepth::Eight, PixelFormat::Yuv420),
+            (48, 32, BitDepth::Ten, PixelFormat::Yuv420),
+            (40, 24, BitDepth::Eight, PixelFormat::Yuv444),
+        ],
+        |(width, height, bit_depth, chroma)| {
+            let mut config = config(width, height, bit_depth, 6, 60);
+            config.chroma = chroma;
+            let params = type_model_params(2);
+            let coded = type_model_stream(&config, params, 1);
+            let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+            let expected: Vec<u8> = coded
                 .iter()
-                .flat_map(|f| f.temporal_unit.clone())
+                .flat_map(|f| recon_bytes(f, bit_depth))
                 .collect();
-            assert!(other == units, "{name}: {threads} threads");
-        }
-    }
+            let name = format!("{bit_depth:?} {chroma:?}");
+            assert_same_samples(&decode(&units), &expected, &name);
+            each_case([2, 8], |threads| {
+                let other: Vec<u8> = type_model_stream(&config, params, threads)
+                    .iter()
+                    .flat_map(|f| f.temporal_unit.clone())
+                    .collect();
+                assert!(other == units, "{name}: {threads} threads");
+            });
+        },
+    );
 }
 
 /// A `keep` of at least the offered type count codes the exact search of
@@ -439,6 +445,106 @@ fn type_model_ranks_the_exact_winner_first_on_constructed_blocks() {
             "{name}: top-2 loss {loss}/1000"
         );
     }
+}
+
+/// RD over every CCTX rotation changes the stream, decodes to the encoder
+/// recon at both bit depths (a key frame and the inter frames that
+/// reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn cctx_rd_over_every_rotation_decodes_to_the_encoder_recon_on_any_thread_count() {
+    for (width, height, bit_depth) in [(72, 40, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |candidates: u8, threads: usize| -> (Vec<u8>, Vec<u8>) {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                cctx_candidates: candidates,
+                ..*Preset::new(6).unwrap().params()
+            }));
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let coded: Vec<_> = (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    coder
+                        .encode_frame(&synthetic_frame(&config, 110 + index as u32), &plan, 60)
+                        .unwrap()
+                })
+                .collect();
+            (
+                coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
+            )
+        };
+        CCTX_LATER_ROTATIONS.set(0);
+        let (units, expected) = stream(6, 1);
+        let name = format!("{bit_depth:?}");
+        let later = CCTX_LATER_ROTATIONS.get();
+        assert!(later > 0, "{name}: only the least-energy rotation coded");
+        assert_same_samples(&decode(&units), &expected, &name);
+        assert!(
+            stream(1, 1).0 != units,
+            "{name}: the wider CCTX search coded the same stream"
+        );
+        for threads in [2, 8] {
+            assert!(stream(6, threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+}
+
+/// Explicit CFL alphas with alpha 0 in one plane change the stream, decode
+/// to the encoder recon at both bit depths (a key frame and the inter frames
+/// that reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn cfl_zero_alpha_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (mut differs, mut total) = (false, 0);
+    for (width, height, bit_depth) in [(128, 64, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |zero: bool, threads: usize| -> (Vec<u8>, Vec<u8>) {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                cfl_zero_alpha: zero,
+                ..*Preset::new(6).unwrap().params()
+            }));
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let coded: Vec<_> = (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    coder
+                        .encode_frame(&synthetic_frame(&config, 90 + index as u32), &plan, 60)
+                        .unwrap()
+                })
+                .collect();
+            (
+                coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
+            )
+        };
+        crate::tile_writer::CFL_ZERO_CODED.set(0);
+        let (units, expected) = stream(true, 1);
+        let coded = crate::tile_writer::CFL_ZERO_CODED.get();
+        let name = format!("{bit_depth:?}");
+        total += coded;
+        assert_same_samples(&decode(&units), &expected, &name);
+        differs |= stream(false, 1).0 != units;
+        for threads in [2, 8] {
+            assert!(
+                stream(true, threads).0 == units,
+                "{name}: {threads} threads"
+            );
+        }
+    }
+    assert!(total > 0 && differs, "no leaf coded alpha 0");
 }
 
 /// RD trials of the four best DIP predictions, without the angular SATD
@@ -718,13 +824,13 @@ fn mini_gop_stream(
 
 #[test]
 fn mini_gops_decode_to_the_encoder_recon_in_display_order() {
-    for chroma in CHROMAS {
+    each_case(CHROMAS, |chroma| {
         for case in mini_gop_cases(chroma) {
             let (units, expected) = mini_gop_stream(case, chroma);
             let name = format!("{case:?} {chroma:?}");
             assert_same_samples(&decode(&units.concat()), &expected, &name);
         }
-    }
+    });
 }
 
 /// 520 frames in mini-GOPs of 8 and one key-frame period wrap the 8-bit
@@ -877,10 +983,11 @@ impl Rng {
 /// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference; a
 /// `COMPOUND_WEDGE`, a `COMPOUND_DIFFWTD` and a weighted `COMPOUND_AVERAGE`
 /// compound leaf; a smooth and a wedge inter-intra leaf; an implicit and an
-/// explicit BAWP leaf.
+/// explicit BAWP leaf; an adaptive-MVD compound leaf; a `WARPMV` inter-intra
+/// leaf; a compound `LOCALWARP` leaf.
 type Coverage = [usize; COVERAGE_SLOTS];
 /// The slots of [`Coverage`].
-const COVERAGE_SLOTS: usize = 35;
+const COVERAGE_SLOTS: usize = 38;
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -1008,19 +1115,60 @@ fn random_modes(
         for attempt in 0..8 {
             let refs = pairs[rng.below(pairs.len() as u64) as usize];
             let mode = (rarest + attempt) % COMPOUND_MODES.len();
+            let amvd = syntax.adaptive_mvd() && Rng(rng.0.rotate_left(29)).below(3) == 0;
             let modes = CompoundModes {
                 refs,
                 mode: COMPOUND_MODES[mode],
                 drl: [rng.below(drls) as usize, rng.below(drls) as usize],
                 mvs,
-                jmvd_scale_mode: rng.below(u64::from(JMVD_SCALE_MODES)) as u8,
+                jmvd_scale_mode: rng.below(u64::from(JMVD_SCALE_MODES)) as u8
+                    % if amvd {
+                        JMVD_AMVD_SCALE_MODES
+                    } else {
+                        JMVD_SCALE_MODES
+                    },
+                amvd,
                 filter,
                 optflow: false,
                 refinemv: false,
+                local_warp: false,
                 blend: CompoundType::default(),
             };
             if syntax.compound_bases(leaf, &modes).is_err() {
                 continue;
+            }
+            if modes.amvd && modes.mode == splot_decode::encoder_syntax::CompoundMode::JointNew {
+                let refused = CompoundModes {
+                    jmvd_scale_mode: JMVD_AMVD_SCALE_MODES,
+                    ..modes
+                };
+                assert!(
+                    syntax.compound_bases(leaf, &refused).is_err(),
+                    "{refused:?}"
+                );
+            }
+            let new_new = splot_decode::encoder_syntax::CompoundMode::NewNew;
+            let refused = CompoundModes {
+                local_warp: true,
+                ..modes
+            };
+            if modes.mode != new_new {
+                let prediction = InterPrediction::Compound(refused);
+                assert!(syntax.inter_mvs(leaf, prediction).is_err(), "{refused:?}");
+            }
+            let local = CompoundModes {
+                mode: new_new,
+                drl: [0; 2],
+                jmvd_scale_mode: 0,
+                filter: splot_recon::InterpolationFilter::EightTap,
+                ..refused
+            };
+            if syntax
+                .inter_mvs(leaf, InterPrediction::Compound(local))
+                .is_ok()
+            {
+                coverage[37] += 1;
+                return LeafChoice::inter(InterPrediction::Compound(local));
             }
             let mut side = Rng(rng.0.rotate_left(17));
             let (reads_optflow, _) = syntax.compound_refinements(leaf, modes).unwrap();
@@ -1085,6 +1233,7 @@ fn random_modes(
             coverage[12] += usize::from(refs.0 == refs.1);
             coverage[13] += usize::from(modes.drl[1] > 0 && mode < 2);
             coverage[14] += usize::from(modes.jmvd_scale_mode > 0 && mode == 4);
+            coverage[35] += usize::from(modes.amvd && mode != 3 && mode != 0);
             return LeafChoice::inter(InterPrediction::Compound(modes));
         }
     }
@@ -1334,11 +1483,12 @@ fn inter_stream_of(
 
 /// `(width, height, bit depth, preset, qp)` of the random inter streams: both
 /// superblock sizes, both bit depths, frame edges, and a qp that skips.
-const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u16); 4] = [
+const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u16); 5] = [
     (200, 104, BitDepth::Eight, 10, 90),
     (96, 72, BitDepth::Ten, 6, 160),
     (33, 17, BitDepth::Eight, 9, 250),
     (144, 80, BitDepth::Ten, 9, 60),
+    (192, 128, BitDepth::Ten, 10, 40),
 ];
 
 /// [`RANDOM_INTER_CASES`] in every chroma format.
@@ -1351,9 +1501,12 @@ fn random_inter_cases() -> impl Iterator<Item = (usize, Config, String)> {
 #[test]
 fn random_inter_leaves_decode_to_the_writer_recon() {
     let mut total = [0; COVERAGE_SLOTS];
-    for (index, config, name) in random_inter_cases() {
+    let coverages = each_case(random_inter_cases(), |(index, config, name)| {
         let (units, expected, coverage) = random_inter_stream(&config, 0x5EED + index as u64);
         assert_same_samples(&decode(&units.concat()), &expected, &name);
+        coverage
+    });
+    for coverage in coverages {
         for (sum, count) in total.iter_mut().zip(coverage) {
             *sum += count;
         }

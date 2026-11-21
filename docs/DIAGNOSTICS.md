@@ -322,6 +322,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `obu-order/non-global-hls-before-coded-layer` | error | § 7.3.6 | a non-global HLS header OBU (LCR / OPS / atlas / sequence header) appears after the coded frame region of its coded extended layer unit has begun |
 | `obu-order/padding-non-global-outside-coded-layer` | error | § 7.3.7 | OBU_PADDING outside a coded extended layer unit is not GLOBAL_XLAYER_ID |
 | `obu-order/temporal-unit-missing-delimiter` | error | § 7.3.7 | an OBU appears before a global temporal delimiter starts the temporal unit |
+| `obu-order/temporal-unit-without-coded-layer` | error | § 7.3.1 | a temporal unit ends, at the next global temporal delimiter or the end of the bitstream, with no coded extended layer unit: only its delimiter, or only global OBUs. This is also what a stream truncated after a temporal delimiter looks like. A unit with a coded extended layer unit but no output frame is `celu/missing-output-frame-unit` |
 | `obu-order/xlayer-order-not-ascending` | error | § 7.3.7 | coded extended layer units are not in ascending obu_xlayer_id order |
 
 ### `obu-reserved/`

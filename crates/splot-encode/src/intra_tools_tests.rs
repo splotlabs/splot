@@ -246,6 +246,45 @@ fn avm_decodes_fsc_frames_like_splot() {
     assert_avm_decodes(preset_with(|p| p.fsc = true), "fsc");
 }
 
+/// IDTX-intra streams (`enable_idtx_intra` without FSC) decode to the
+/// encoder recon on any thread count.
+#[test]
+fn idtx_intra_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(
+        preset_with(|p| p.idtx_intra = true),
+        preset_with(|_| {}),
+        |seq| {
+            let tq = seq.transform_quant_entropy.unwrap();
+            tq.enable_idtx_intra && !tq.enable_fsc
+        },
+    );
+}
+
+/// Without FSC, the key-frame search codes IDTX-intra leaves.
+#[test]
+fn search_picks_idtx_intra_leaves() {
+    let config = config(136, 72, BitDepth::Eight, 9, 90);
+    let preset = preset_with(|p| p.idtx_intra = true);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let plan = crate::gop::plan(0, config.keyint);
+    let trees = search_frame(
+        &coder,
+        &plan,
+        &synthetic_frame(&config, 3),
+        config.bit_depth,
+    );
+    let idtx = |choice: &LeafChoice| choice.inter.is_none() && choice.modes.fsc;
+    let count: usize = trees.iter().map(|tree| leaves(tree, idtx)).sum();
+    assert!(count > 0);
+}
+
+/// AVM decodes the IDTX-intra key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_idtx_intra_frames_like_splot() {
+    assert_avm_decodes(preset_with(|p| p.idtx_intra = true), "idtx-intra");
+}
+
 /// Frame `index` of drawn text panning by `(4, 2)` luma samples per frame:
 /// two luma levels with an edge level between, on flat chroma.
 fn screen_frame(config: &Config, index: u32) -> SourceFrame {
@@ -411,30 +450,33 @@ fn screen_streams_code_intrabc_leaves() {
     let preset = preset_with(|p| p.intrabc = true);
     let intrabc = |choice: &LeafChoice| choice.intrabc.is_some();
     let stream = |case| intrabc_stream(case, preset);
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Ten),
-        (PixelFormat::Yuv444, BitDepth::Eight),
-    ] {
-        let mut config = config(256, 128, bit_depth, 9, 90);
-        config.chroma = chroma;
-        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-        let key = crate::gop::plan(0, config.keyint);
-        let trees = search_frame(&coder, &key, &tiled_text(&config, 0), bit_depth);
-        let count: usize = trees.iter().map(|tree| leaves(tree, intrabc)).sum();
-        assert!(count > 0, "{chroma:?} {bit_depth:?}");
-    }
-    for chroma in CHROMAS {
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Ten),
+            (PixelFormat::Yuv444, BitDepth::Eight),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(256, 128, bit_depth, 9, 90);
+            config.chroma = chroma;
+            let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+            let key = crate::gop::plan(0, config.keyint);
+            let trees = search_frame(&coder, &key, &tiled_text(&config, 0), bit_depth);
+            let count: usize = trees.iter().map(|tree| leaves(tree, intrabc)).sum();
+            assert!(count > 0, "{chroma:?} {bit_depth:?}");
+        },
+    );
+    each_case(CHROMAS, |chroma| {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let (units, recon) = stream((2, chroma, bit_depth));
             let name = format!("{chroma:?} {bit_depth:?}");
             assert_same_samples(&decode(&units), &recon, &name);
         }
-    }
+    });
     let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
     let (one, _) = stream(case(1));
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(case(threads)).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// Integer-MV streams decode to the encoder recon on any thread count.

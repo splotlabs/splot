@@ -21,7 +21,7 @@ use splot_recon::{
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, fill_buffer};
 use crate::error::{DecodeError, DecoderStateError, Result};
-use crate::pipeline::{DecodeSession, PipelineDecodedFrame, PipelineFrame};
+use crate::pipeline::{ActiveFilmGrain, DecodeSession, PipelineDecodedFrame, PipelineFrame};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
 
 /// How a [`Decoder`] runs.
@@ -37,6 +37,9 @@ pub struct DecoderSettings {
     /// Resource limits. [`DecodeLimitName::MaxInputBytes`] counts every byte
     /// sent to the decoder.
     pub limits: DecodeLimits,
+    /// Leaves film grain out of the pictures; [`Picture::apply_film_grain`]
+    /// adds it to a picture later.
+    pub skip_film_grain: bool,
 }
 
 impl DecoderSettings {
@@ -58,6 +61,14 @@ impl DecoderSettings {
     #[must_use]
     pub const fn with_limits(mut self, limits: DecodeLimits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// Returns a copy that leaves film grain out of the pictures (`true`) or
+    /// applies it (`false`, the default).
+    #[must_use]
+    pub const fn with_skip_film_grain(mut self, skip: bool) -> Self {
+        self.skip_film_grain = skip;
         self
     }
 }
@@ -119,8 +130,9 @@ pub enum SendStatus {
 /// area may start inside it (see [`PlaneRef::visible_rect`]). The decoder never
 /// writes the planes again; dropping the last picture that holds them gives
 /// the storage back to the decoder, which reuses frame-sized planes for later
-/// pictures and frees smaller ones. Film grain, when the stream signals it, is
-/// applied into planes from that same storage, with the same layout guarantees.
+/// pictures and frees smaller ones. Film grain, when the stream signals it and
+/// [`DecoderSettings::skip_film_grain`] is not set, is applied into planes from
+/// that same storage, with the same layout guarantees.
 #[derive(Debug)]
 pub struct Picture {
     samples: Option<Samples>,
@@ -129,12 +141,24 @@ pub struct Picture {
     content_interpretation: Option<ContentInterpretation>,
     metadata: Option<Arc<[MetadataUnit]>>,
     pool: Option<Arc<PlanePool>>,
+    has_film_grain: bool,
+    /// The grain the stream signals for this picture and the samples lack.
+    pending_grain: Option<ActiveFilmGrain>,
 }
 
 #[derive(Debug)]
 enum Samples {
     Eight(SharedFrame<u8>),
     Ten(SharedFrame<u16>),
+}
+
+impl Samples {
+    fn info(&self) -> DecodedFrameInfo {
+        match self {
+            Self::Eight(frame) => frame.info(),
+            Self::Ten(frame) => frame.info(),
+        }
+    }
 }
 
 /// The samples of one picture plane, cropped to the visible area.
@@ -147,26 +171,67 @@ pub enum PictureSamples<'a> {
 }
 
 impl Picture {
-    fn new(frame: &PipelineFrame, pool: Option<Arc<PlanePool>>) -> Result<Self> {
-        let grain = frame.display_grain.as_ref();
+    fn new(
+        frame: &PipelineFrame,
+        pool: Option<Arc<PlanePool>>,
+        options: &DecodeOptions,
+    ) -> Result<Self> {
+        let grain = frame.output_grain(options);
         let samples = match frame.ready_frame()? {
             PipelineDecodedFrame::Eight(frame) => {
                 Samples::Eight(display(frame, grain, pool.as_ref())?)
             }
             PipelineDecodedFrame::Ten(frame) => Samples::Ten(display(frame, grain, pool.as_ref())?),
         };
-        let info = match &samples {
-            Samples::Eight(frame) => frame.info(),
-            Samples::Ten(frame) => frame.info(),
-        };
         let metadata = &frame.output_effects.metadata;
         Ok(Self {
+            info: samples.info(),
             samples: Some(samples),
-            info,
             props: frame.props,
             content_interpretation: frame.output_effects.content_interpretation,
             metadata: (!metadata.is_empty()).then(|| Arc::from(metadata.as_slice())),
             pool,
+            has_film_grain: frame.display_grain.is_some(),
+            pending_grain: match grain {
+                Some(_) => None,
+                None => frame.display_grain.clone(),
+            },
+        })
+    }
+
+    /// Whether the stream signals film grain for this picture (AV2 § 7.21.1),
+    /// whether or not [`DecoderSettings::skip_film_grain`] left it out.
+    #[must_use]
+    pub const fn has_film_grain(&self) -> bool {
+        self.has_film_grain
+    }
+
+    /// This picture with the film grain of AV2 § 7.21.7 applied.
+    ///
+    /// The grain goes into planes of its own. A picture that has its grain,
+    /// or whose stream signals none, shares its samples with the result.
+    ///
+    /// # Errors
+    /// Returns [`DecodeError::Reconstruction`] when the synthesis fails.
+    pub fn apply_film_grain(&self) -> Result<Self> {
+        let grain = self.pending_grain.as_ref();
+        let pool = self.pool.as_ref();
+        let samples = match self.samples.as_ref() {
+            Some(Samples::Eight(frame)) => {
+                Some(Samples::Eight(display(frame.share(), grain, pool)?))
+            }
+            Some(Samples::Ten(frame)) => Some(Samples::Ten(display(frame.share(), grain, pool)?)),
+            None => None,
+        };
+        Ok(Self {
+            info: samples.as_ref().map_or(self.info, Samples::info),
+            samples,
+            props: self.props,
+            content_interpretation: self.content_interpretation,
+            metadata: self.metadata.clone(),
+            pool: self.pool.clone(),
+            has_film_grain: self.has_film_grain,
+            pending_grain: None,
         })
     }
 
@@ -241,7 +306,7 @@ impl Drop for Picture {
 /// pool, which the picture gives them back to when the caller drops it.
 fn display<T: ReconSample>(
     frame: SharedFrame<T>,
-    grain: Option<&crate::pipeline::ActiveFilmGrain>,
+    grain: Option<&ActiveFilmGrain>,
     pool: Option<&Arc<PlanePool>>,
 ) -> Result<SharedFrame<T>> {
     let Some(grain) = grain else {
@@ -387,7 +452,8 @@ impl Decoder {
             driver: Condvar::new(),
         });
         let driver = Arc::clone(&shared);
-        let options = DecodeOptions::new(settings.limits);
+        let options =
+            DecodeOptions::new(settings.limits).with_skip_film_grain(settings.skip_film_grain);
         let rows = crate::pipeline::row_scheduler(threads)?;
         let driver = splot_parallel::spawn_thread("splot-driver", move || {
             let guard = DriverGuard(driver);
@@ -399,7 +465,9 @@ impl Decoder {
                 &session,
                 |_| Ok(()),
                 |frame| {
-                    guard.0.push_picture(Picture::new(frame, session.planes())?);
+                    guard
+                        .0
+                        .push_picture(Picture::new(frame, session.planes(), &options)?);
                     Ok(())
                 },
             );

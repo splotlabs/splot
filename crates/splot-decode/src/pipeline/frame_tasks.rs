@@ -148,12 +148,12 @@ pub(crate) struct SplitFrame<T: SplitSample> {
 impl<T: SplitSample> SplitFrame<T> {
     fn new(
         wake: RowWake,
-        options: DecodeOptions,
+        options: &DecodeOptions,
         workers: Arc<inter::InterReconScratchPool<T>>,
     ) -> Self {
         Self {
             wake,
-            options,
+            options: *options,
             stages: core::array::from_fn(|_| Stage::new(0)),
             precompute: ParallelStage::new(),
             filter: ParallelStage::new(),
@@ -720,7 +720,7 @@ impl<T: SplitSample> SplitFrames<T> {
     pub(crate) fn reserve(
         &mut self,
         rows: &RowScheduler,
-        options: DecodeOptions,
+        options: &DecodeOptions,
     ) -> (usize, Arc<inter::ParseProgress>) {
         let index = self.next;
         self.next = (index + 1) % self.depth;
@@ -735,7 +735,7 @@ impl<T: SplitSample> SplitFrames<T> {
         let slot = &mut self.slots[index];
         rows.wait(|| {
             Arc::get_mut(slot).is_some_and(|frame| {
-                frame.options = options;
+                frame.options = *options;
                 frame.reset()
             })
         });
@@ -844,10 +844,10 @@ pub(crate) struct TipFrame<T: SplitSample> {
 }
 
 impl<T: SplitSample> TipFrame<T> {
-    fn new(wake: RowWake, options: DecodeOptions, spares: Arc<inter::TipSpares>) -> Self {
+    fn new(wake: RowWake, options: &DecodeOptions, spares: Arc<inter::TipSpares>) -> Self {
         Self {
             wake,
-            options,
+            options: *options,
             inline: false,
             spares,
             stages: core::array::from_fn(|_| Stage::new(0)),
@@ -1520,7 +1520,7 @@ impl RowPools {
     pub(crate) fn push_tip<T: SplitSample>(
         &mut self,
         rows: Option<&RowScheduler>,
-        options: DecodeOptions,
+        options: &DecodeOptions,
         inputs: TipFrameInputs<T>,
     ) -> Result<()> {
         let SamplePools {
@@ -1538,7 +1538,7 @@ impl RowPools {
             TipFrame::reset,
         );
         tip.push_slot(rows, index, |work| {
-            work.options = options;
+            work.options = *options;
             work.inline = rows.is_none();
             work.arm(inputs);
         })
@@ -1631,7 +1631,7 @@ mod tests {
         let mut pools = RowPools::new(1, 1, &DecodeBuffers::new());
         let split = &mut pools.eight.split;
         let workers = Arc::clone(&split.workers);
-        let mut frame = SplitFrame::new(RowWake::detached(), DecodeOptions::default(), workers);
+        let mut frame = SplitFrame::new(RowWake::detached(), &DecodeOptions::default(), workers);
         let workspace = frame.workspace.get_mut();
         let _ = workspace
             .install_identities(Arc::new(core), state)
@@ -1650,11 +1650,11 @@ mod tests {
         let rows = RowScheduler::new(core::num::NonZeroUsize::MIN).expect("rows");
         let mut pools = RowPools::new(2, 1, &DecodeBuffers::new());
         let options = DecodeOptions::default();
-        let (index, first) = pools.eight.split.reserve(&rows, options);
+        let (index, first) = pools.eight.split.reserve(&rows, &options);
         assert_eq!(index, 0);
         first.cell().publish(1);
-        let (_, second) = pools.eight.split.reserve(&rows, options);
-        let (_, ten) = pools.ten.split.reserve(&rows, options);
+        let (_, second) = pools.eight.split.reserve(&rows, &options);
+        let (_, ten) = pools.ten.split.reserve(&rows, &options);
         assert!(!Arc::ptr_eq(&ten, &first), "the sample types share no slot");
         drop(ten);
         let (pointer, wake) = (Arc::as_ptr(&first) as usize, rows.wake());
@@ -1667,13 +1667,13 @@ mod tests {
             wake.notify();
         })
         .expect("reader thread");
-        let (index, reused) = pools.eight.split.reserve(&rows, options);
+        let (index, reused) = pools.eight.split.reserve(&rows, &options);
         assert_eq!((index, Arc::as_ptr(&reused) as usize), (0, pointer));
         assert_eq!(reused.cell().current(), 0);
         reader.join().expect("reader joins");
         drop((reused, second));
         for _ in 0..128 {
-            drop(pools.eight.split.reserve(&rows, options));
+            drop(pools.eight.split.reserve(&rows, &options));
         }
         assert_eq!(pools.eight.split.parse.len(), 2);
     }

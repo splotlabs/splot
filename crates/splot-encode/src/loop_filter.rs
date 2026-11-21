@@ -44,7 +44,7 @@ use crate::tile_writer::{
 };
 
 /// `(pri, sec)` CDEF strengths in the order the search tries them.
-const CDEF_LADDER: [(u8, u8); 16] = [
+pub(crate) const CDEF_LADDER: [(u8, u8); 16] = [
     (0, 0),
     (2, 0),
     (4, 1),
@@ -62,9 +62,6 @@ const CDEF_LADDER: [(u8, u8); 16] = [
     (8, 4),
     (1, 1),
 ];
-/// `DfDeltaQ` values in the order the search tries them, `0` and then by
-/// |offset|.
-const DEBLOCK_LADDER: [i32; 8] = [0, 1, -1, 2, -2, 3, -3, -4];
 /// Approximate frame-header bits of one CDEF strength set.
 const CDEF_SET_HEADER_BITS: u32 = 12;
 
@@ -531,11 +528,20 @@ impl Search<'_> {
         };
         let deblocked = deblocked.as_ref().unwrap_or(self.recon);
         if filter.enable_cdef {
-            let mut best = self.cdef(preset, deblocked, false)?;
-            if preset.cdef_on_skip {
-                let on_skip = self.cdef(preset, deblocked, true)?;
-                if on_skip.0 < best.0 {
-                    best = on_skip;
+            let derived = cdef_damping(self.qindex, self.recon.bit_depth());
+            let dampings = (3..=6).filter(|&d| preset.cdef_damping_search && d != derived);
+            let mut best = self.cdef(preset, deblocked, false, derived)?;
+            for damping in core::iter::once(derived).chain(dampings) {
+                for on_skip in [false, true]
+                    .into_iter()
+                    .filter(|&on| !on || preset.cdef_on_skip)
+                {
+                    if (damping, on_skip) != (derived, false) {
+                        let trial = self.cdef(preset, deblocked, on_skip, damping)?;
+                        if trial.0 < best.0 {
+                            best = trial;
+                        }
+                    }
                 }
             }
             let (_, cdef, indices) = best;
@@ -554,15 +560,32 @@ impl Search<'_> {
                 (Some(SuperblockSize::Block64x64) | None, _) => 64,
                 _ => 128,
             };
-            let candidate = FrameFilterParams {
-                lr_luma_unit_size: Some(unit),
+            let candidate = |size| FrameFilterParams {
+                lr_luma_unit_size: Some(size),
                 ..params
             };
             let (chosen, lr_on) = if preset.wiener_ns > 0 {
                 let pre_cdef = (filter.enable_cdef || ccso).then_some(deblocked);
-                self.restoration_rd(&candidate, &syntax, (preset, pre_cdef))?
+                let mut best =
+                    self.restoration_rd(&candidate(unit), &syntax, (preset, pre_cdef))?;
+                for size in (1..preset.lr_unit_sizes)
+                    .map(|k| unit << k)
+                    .filter(|&s| s <= 512)
+                {
+                    if wienerns::units_fit_tiles(&self.header(&candidate(size))?, size) {
+                        let trial =
+                            self.restoration_rd(&candidate(size), &syntax, (preset, pre_cdef))?;
+                        if trial.2 < best.2 {
+                            best = trial;
+                        }
+                    }
+                }
+                (best.0, best.1)
             } else {
-                (candidate, self.restoration(&candidate, &syntax)?)
+                (
+                    candidate(unit),
+                    self.restoration(&candidate(unit), &syntax)?,
+                )
             };
             if !lr_on.is_empty() {
                 params = chosen;
@@ -611,30 +634,37 @@ impl Search<'_> {
     }
 
     /// Deblocking on every plane at the qindex-derived level, or with the
-    /// per-plane `DfDeltaQ` of least SSE among the first 3, 5 or 8 offsets
-    /// of [`DEBLOCK_LADDER`] at depth 1, 2 or 3 that the sequence codes; on
-    /// equal SSE the earlier offset, so `0` and then the smallest |offset|.
+    /// per-plane `DfDeltaQ` of least SSE among the first 3 or 5 offsets of
+    /// [`deblock_ladder`] at depth 1 or 2, or all that the sequence codes at
+    /// depth 3; on equal SSE the earlier offset, so `0` and then the smallest
+    /// |offset|. With `deblock_luma_split` the vertical and then the
+    /// horizontal luma offset move alone (or turn off) when that lowers the
+    /// luma SSE.
+    /// An inter frame of a sequence with `enable_df_sub_pu` then also
+    /// filters prediction sub-unit edges unless that raises the summed SSE
+    /// (always without the search).
     fn deblocking(&self, preset: &PresetParams) -> Result<FrameFilterParams> {
         let chroma = self.recon.plane(PlaneId::U).is_some();
         let on = FrameFilterParams {
             deblocking: [true, true, chroma, chroma],
             ..FrameFilterParams::default()
         };
+        let sub_pu = self.seq.inter.is_some_and(|i| i.enable_df_sub_pu) && !self.frame_is_intra;
         if preset.loop_filter_search == 0 {
-            return Ok(on);
+            return Ok(FrameFilterParams {
+                deblocking_sub_pu: sub_pu,
+                ..on
+            });
         }
         let bits = self
             .seq
             .filter
             .map_or(3, |f| u32::from(f.df_par_bits_minus_2) + 2);
-        let range = -(1 << (bits - 1))..=(1 << (bits - 1)) - 1;
-        let levels = [0, 3, 5, 8][usize::from(preset.loop_filter_search).min(3)];
+        let levels = [0, 3, 5, usize::MAX][usize::from(preset.loop_filter_search).min(3)];
+        let ladder: Vec<i32> = deblock_ladder(bits).take(levels).collect();
         let off = self.plane_sse_all(self.recon);
         let mut best: [(u64, Option<i32>); 3] = core::array::from_fn(|plane| (off[plane], None));
-        for &delta in DEBLOCK_LADDER[..levels]
-            .iter()
-            .filter(|&&d| range.contains(&d))
-        {
+        for &delta in &ladder {
             let params = FrameFilterParams {
                 deblocking_delta_q: on.deblocking.map(|on| if on { delta } else { 0 }),
                 ..on
@@ -648,26 +678,60 @@ impl Search<'_> {
         }
         let [luma, u, v] = best.map(|(_, delta)| delta);
         let chroma = |delta: Option<i32>| luma.and(delta);
-        let planes = [luma, luma, chroma(u), chroma(v)];
-        Ok(FrameFilterParams {
+        let mut planes = [luma, luma, chroma(u), chroma(v)];
+        let params_of = |planes: [Option<i32>; 4]| FrameFilterParams {
             deblocking: planes.map(|delta| delta.is_some()),
             deblocking_delta_q: planes.map(|delta| delta.unwrap_or(0)),
             ..FrameFilterParams::default()
-        })
+        };
+        if preset.deblock_luma_split && luma.is_some() {
+            let mut luma_sse = best[0].0;
+            for direction in 0..2 {
+                for delta in core::iter::once(None).chain(ladder.iter().copied().map(Some)) {
+                    let mut trial = planes;
+                    trial[direction] = delta;
+                    if trial == planes || trial[..2] == [None, None] {
+                        continue;
+                    }
+                    let sse =
+                        self.plane_sse_all(&self.filtered(&params_of(trial), self.recon, &[])?)[0];
+                    if sse < luma_sse {
+                        (luma_sse, planes) = (sse, trial);
+                    }
+                }
+            }
+            best[0].0 = luma_sse;
+        }
+        let mut params = params_of(planes);
+        if sub_pu && params.deblocking != [false; 4] {
+            let on = FrameFilterParams {
+                deblocking_sub_pu: true,
+                ..params
+            };
+            let sse: u64 = self
+                .plane_sse_all(&self.filtered(&on, self.recon, &[])?)
+                .iter()
+                .sum();
+            params.deblocking_sub_pu = sse <= best.iter().map(|&(sse, _)| sse).sum();
+        }
+        Ok(params)
     }
 
-    /// The CDEF damping, strength sets and per-unit indices that minimize SSE
-    /// plus the approximate index rate on the deblocked frame, with CDEF on
-    /// skipped transform blocks when `on_skip`, and their RD cost.
+    /// The CDEF strength sets and per-unit indices at `damping` that minimize
+    /// SSE plus the approximate index rate on the deblocked frame, with CDEF
+    /// on skipped transform blocks when `on_skip`, and their RD cost.
     fn cdef(
         &self,
         preset: &PresetParams,
         deblocked: &DecodedFrame<u16>,
         on_skip: bool,
+        damping: u8,
     ) -> Result<(u128, FrameFilterParams, Vec<Option<usize>>)> {
-        let candidates = &CDEF_LADDER[..[8, 12, 16][usize::from(preset.loop_filter_search).min(2)]];
-        let qmax = u32::from(crate::rate_control::max_qindex(self.recon.bit_depth()));
-        let damping = 3 + (3 * self.qindex / qmax).min(3) as u8;
+        let count = match preset.cdef_pairs {
+            0 => [8, 12, 16][usize::from(preset.loop_filter_search).min(2)],
+            pairs => usize::from(pairs),
+        };
+        let candidates = &cdef_pairs(count);
         let (rows, cols) = self.cdef_grid();
         let units = rows * cols;
         let chroma = if deblocked.plane(PlaneId::U).is_some() {
@@ -925,6 +989,32 @@ fn plane_sse(
             kernels.sse_row(coded.unwrap_or(&[]), original.unwrap_or(&[]))
         })
         .sum()
+}
+
+/// `DfDeltaQ` values of `f(bits)` (§ 5.18.5.2) in the order the search tries
+/// them: `0`, then by |offset|, the positive one first.
+fn deblock_ladder(bits: u32) -> impl Iterator<Item = i32> {
+    let half = 1i32 << (bits - 1);
+    core::iter::once(0)
+        .chain((1..=half).flat_map(|k| [k, -k]))
+        .filter(move |delta| (-half..half).contains(delta))
+}
+
+/// `CdefDamping` from the frame qindex: `3` at qindex `0` up to `6` at the
+/// largest qindex of `bit_depth`.
+pub(crate) fn cdef_damping(qindex: u32, bit_depth: splot_recon::BitDepth) -> u8 {
+    let qmax = u32::from(crate::rate_control::max_qindex(bit_depth));
+    3 + (3 * qindex / qmax).min(3) as u8
+}
+
+/// The first `count` `(pri, sec)` pairs of the 64 that § 5.18.7.10 codes
+/// (`pri` `0..=15`, `sec` `0`, `1`, `2` or `4`): [`CDEF_LADDER`], then the
+/// others by `pri` and `sec`.
+fn cdef_pairs(count: usize) -> Vec<(u8, u8)> {
+    let rest = (0..16u8)
+        .flat_map(|pri| [0, 1, 2, 4].map(|sec| (pri, sec)))
+        .filter(|pair| !CDEF_LADDER.contains(pair));
+    CDEF_LADDER.into_iter().chain(rest).take(count).collect()
 }
 
 fn cdef_sets(sets: &[CdefStrengthSet]) -> Result<CdefStrengthSets> {

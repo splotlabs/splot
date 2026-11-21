@@ -179,7 +179,7 @@ impl Search<'_> {
         pc: &FrameFilterParams,
         syntax: &FilterSyntax,
         (preset, pre_cdef): (&PresetParams, Option<&DecodedFrame<u16>>),
-    ) -> Result<(FrameFilterParams, BTreeMap<LrUnit, LrUnitType>)> {
+    ) -> Result<(FrameFilterParams, BTreeMap<LrUnit, LrUnitType>, i128)> {
         let core = self.header(pc)?;
         let units = Units::new(self.seq, &core)?;
         let off = apply_loop_filters(
@@ -331,7 +331,7 @@ impl Search<'_> {
         if preset.wiener_ns_chroma > 0 && off.plane(PlaneId::U).is_some() {
             best = self.chroma(best, &off, preset, off_bits)?;
         }
-        Ok((best.params, best.lr_on))
+        Ok((best.params, best.lr_on, best.cost))
     }
 
     /// `best` with the cheapest Wiener-NS filter of U and then of V, each
@@ -474,7 +474,7 @@ impl Search<'_> {
     /// filters of `plane` (either chroma plane for a chroma plane).
     fn temporal_bank(&self, core: &FrameHeaderCore, plane: usize) -> Option<u8> {
         let inter = core.inter.as_ref()?;
-        let position = inter.primary_ref_frame?;
+        let position = self.refs.primary_ref_frame(core)?;
         if u32::from(position) >= inter.num_total_refs? {
             return None;
         }
@@ -756,7 +756,7 @@ impl Search<'_> {
 
 /// Whether units of `size` luma samples end on every internal tile edge of
 /// the frame `core` (§ 6.17.7.7 `check_ru_size`).
-fn units_fit_tiles(core: &FrameHeaderCore, size: u32) -> bool {
+pub(super) fn units_fit_tiles(core: &FrameHeaderCore, size: u32) -> bool {
     core.tile_info.as_ref().is_some_and(|tiles| {
         [&tiles.mi_col_starts[..], &tiles.mi_row_starts[..]]
             .iter()

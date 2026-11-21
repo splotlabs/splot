@@ -108,6 +108,9 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         delta_q_res: [None, Some(0), Some(3)][index],
                         allow_intrabc: index == 1,
                         grain_seed: None,
+                        disable_cdf_update: index == 2,
+                        disable_cross_frame_cdf_init: false,
+                        choose_primary_ref_frame: false,
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -129,6 +132,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     assert_eq!(tail.tx_mode, tx.tx_mode);
                     assert_eq!(tail.reduced_tx_set, tx.reduced_tx_set);
                     assert_eq!(core.allow_intrabc, Some(tx.allow_intrabc));
+                    assert_eq!(core.disable_cdf_update, Some(tx.disable_cdf_update));
                     let intrabc = core.intrabc.unwrap();
                     let global = tx.allow_intrabc.then_some(true);
                     assert_eq!(intrabc.allow_global_intrabc, global);
@@ -168,6 +172,8 @@ fn every_tool_flag_reaches_the_parsed_header() {
         inter_ist: true,
         tip: true,
         tip_output: true,
+        tip_explicit_qp: true,
+        tip_hole_fill: true,
         opfl_refine: true,
         refinemv: true,
         tip_refinemv: false,
@@ -179,6 +185,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         ref_frame_mvs: true,
         refmvbank: true,
         drl_reorder: Some(true),
+        mv_traj: true,
         max_drl_bits_minus_1: 3,
         mvd_tools: [true, false, true],
         warp: true,
@@ -186,6 +193,8 @@ fn every_tool_flag_reaches_the_parsed_header() {
         masked_compound: true,
         cwp: true,
         implicit_mask: true,
+        df_sub_pu: true,
+        df_par_bits_extra: 1,
         interintra: true,
         bawp: true,
     };
@@ -210,7 +219,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
     assert!(inter.enable_refmvbank && inter.drl_reorder == DrlReorder::Constraint);
     assert_eq!(inter.seq_max_drl_bits_minus_1, 3);
-    assert!(inter.enable_tip && inter.enable_tip_output && !inter.enable_tip_hole_fill);
+    assert!(inter.enable_tip && inter.enable_tip_output && inter.enable_tip_hole_fill);
     assert!(inter.enable_adaptive_mvd && !inter.enable_mvd_sign_derive && inter.enable_flex_mvres);
     assert_eq!(
         inter.seq_enabled_motion_modes,
@@ -218,10 +227,12 @@ fn every_tool_flag_reaches_the_parsed_header() {
     );
     assert!(inter.seq_frame_motion_modes_present_flag && inter.enable_six_param_warp_delta);
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
-    assert!(inter.enable_bawp && !inter.enable_mv_traj && !inter.enable_df_sub_pu);
+    assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
+    assert!(inter.enable_tip_explicit_qp);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);
+    assert_eq!(filter.df_par_bits_minus_2, 2);
     assert_eq!(
         seq.screen_content.unwrap().seq_force_screen_content_tools,
         2
@@ -294,6 +305,7 @@ fn filter_params_reach_the_parsed_header() {
                 ])
                 .unwrap(),
                 cdef_on_skip: lr_size % 256 == 0,
+                deblocking_sub_pu: false,
                 lr_luma_unit_size: Some(lr_size),
                 lr_luma_wiener_ns: None,
                 lr_chroma_unit_size: None,
@@ -762,19 +774,30 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
             cols_log2,
             rows_log2,
             size_bytes: 2,
+            middle_cdf_update_tile: false,
         };
-        let core = build_key_frame_header(
-            &view,
-            60,
-            0,
-            &FrameFilterParams::default(),
-            KeyFrameTxParams::default(),
-            tiles,
-        )
-        .unwrap();
+        let key = |tiles| {
+            build_key_frame_header(
+                &view,
+                60,
+                0,
+                &FrameFilterParams::default(),
+                KeyFrameTxParams::default(),
+                tiles,
+            )
+            .unwrap()
+        };
+        let core = key(tiles);
         let info = core.tile_info.as_ref().unwrap();
         assert_eq!((info.tile_cols, info.tile_rows), (cols, rows));
         assert_eq!(info.context_update_tile_id, 0);
+        let middle = key(UniformTiles {
+            middle_cdf_update_tile: true,
+            ..tiles
+        });
+        let middle_info = middle.tile_info.as_ref().unwrap();
+        assert_eq!(middle_info.context_update_tile_id, cols * rows / 2);
+        assert_eq!(reparse_core(&middle, &view), middle);
         let multi = cols * rows > 1;
         assert_eq!(info.tile_size_bytes, multi.then_some(2));
         assert_eq!(reparse_core(&core, &view), core);
@@ -834,4 +857,40 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
             )
         );
     }
+}
+
+/// `df_par_bits_extra` widens `df_par_bits_minus_2` (§ 5.4.10): a key frame
+/// codes the widest luma `DfDeltaQ` pair of `f(5)` and parses it back; `3`
+/// does not fit `f(2)`; a cut sequence header does not parse.
+#[test]
+fn wide_deblocking_offsets_parse_back() {
+    let mut p = params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    p.tools.df_par_bits_extra = 2;
+    let seq = build_encoder_sequence_header(&p).unwrap();
+    assert_eq!(seq.filter.unwrap().df_par_bits_minus_2, 3);
+    assert_eq!(reparse_sequence(&seq), seq);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let filters = FrameFilterParams {
+        deblocking: [true, true, false, false],
+        deblocking_delta_q: [-16, 15, 0, 0],
+        ..FrameFilterParams::default()
+    };
+    let core = build_key_frame_header(
+        &view,
+        90,
+        0,
+        &filters,
+        KeyFrameTxParams::default(),
+        UniformTiles::default(),
+    )
+    .unwrap();
+    let deblocking = core.deblocking_filter_params.unwrap();
+    assert_eq!(deblocking.df_delta_q[..2], [-16, 15]);
+    assert_eq!(reparse_core(&core, &view), core);
+    p.tools.df_par_bits_extra = 3;
+    assert!(build_encoder_sequence_header(&p).is_err());
+    p.tools.df_par_bits_extra = 2;
+    let bytes = sequence_header_bits(&p).unwrap();
+    let cut = &bytes[..bytes.len() - 2];
+    assert!(parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0))).is_err());
 }

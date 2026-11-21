@@ -224,9 +224,9 @@ fn deep_drl_streams_decode_alike_on_any_thread_count() {
     };
     let (one, expected) = stream(1);
     assert_same_samples(&decode(&one.concat()), &expected, "deep DRL");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// With the filter search every inter frame codes `SWITCHABLE` filters and
@@ -299,9 +299,9 @@ fn switchable_filter_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, preset).0
     };
     let one = stream(1);
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads) == one, "{threads} threads");
-    }
+    });
 }
 
 /// A tiled stream with every MVD tool on codes the same bytes on 1, 2 and 8
@@ -322,9 +322,9 @@ fn mvd_tool_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, preset).0
     };
     let one = stream(1);
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads) == one, "{threads} threads");
-    }
+    });
 }
 
 /// A panning mini-GOP stream of 136x72 in 2x2 tiles at preset 6 with
@@ -389,4 +389,55 @@ fn avm_decodes_open_loop_seed_streams_like_splot() {
     let (units, expected) = panning_stream(2, &SEEDED);
     let avm = avm_decode(&avmdec, &units, (136, 72), BitDepth::Eight, "seeded");
     assert!(avm == expected, "AVM output differs");
+}
+
+/// Each of `drl_reorder_always`, `mv_traj` and `cdf_avg_across_tiles` alone
+/// reaches the sequence header; a mini-GOP stream in 2x1 tiles decodes to
+/// the encoder recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn sequence_flag_streams_decode_alike_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let presets = [
+        PresetParams {
+            drl_reorder_always: true,
+            ..base
+        },
+        PresetParams {
+            mv_traj: true,
+            ..base
+        },
+        PresetParams {
+            cdf_avg_across_tiles: true,
+            ..base
+        },
+    ];
+    for preset in presets {
+        let preset: &'static PresetParams = Box::leak(Box::new(preset));
+        let stream = |threads: usize| {
+            let mut config = config(136, 72, BitDepth::Eight, 6, 150);
+            config.tiles = TileLayout {
+                cols_log2: 1,
+                rows_log2: 0,
+            };
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+            super::carry::planned_stream_of(&config, coder, panning_frame, 150)
+        };
+        let (one, expected, _, coder) = stream(1);
+        let inter = coder.sequence.inter.unwrap();
+        let tq = coder.sequence.transform_quant_entropy.unwrap();
+        assert_eq!(
+            inter.drl_reorder == DrlReorder::Always,
+            preset.drl_reorder_always
+        );
+        assert_eq!(inter.enable_mv_traj, preset.mv_traj);
+        assert_eq!(
+            tq.enable_avg_cdf && tq.avg_cdf_type == 1,
+            preset.cdf_avg_across_tiles
+        );
+        assert_same_samples(&decode(&one), &expected, "sequence flags");
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == one, "{threads} threads");
+        }
+    }
 }

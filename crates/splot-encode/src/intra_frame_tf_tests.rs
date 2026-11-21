@@ -177,41 +177,44 @@ const ON: [(&str, &str); 1] = [("tf_frames", "2,2,0,0")];
 /// and in 4:2:0 8-bit and 4:2:2 10-bit.
 #[test]
 fn filtered_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (preset, bit_depth, chroma, qp, mini_gop, bases) in [
-        (
-            6,
-            BitDepth::Eight,
-            PixelFormat::Yuv420,
-            160,
-            "8",
-            vec![0, 8],
-        ),
-        (
-            9,
-            BitDepth::Ten,
-            PixelFormat::Yuv422,
-            240,
-            "2",
-            vec![0, 2, 4, 6, 8],
-        ),
-    ] {
-        let on = [ON[0], ("mini_gop_size", mini_gop)];
-        let mut config = config(200, 136, bit_depth, preset, qp);
-        config.chroma = chroma;
-        let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
-        let stream = tf_stream(config.clone(), &on, 1);
-        assert_eq!(stream.filtered, bases, "{name}");
-        assert_eq!(stream.tools, [true; 5], "{name}");
-        assert_same_samples(&decode(&stream.units.concat()), &stream.recon, &name);
-        assert!(
-            tf_stream(config.clone(), &[], 1).units != stream.units,
-            "{name}"
-        );
-        for threads in [2, 8] {
-            let other = tf_stream(config.clone(), &on, threads);
-            assert!(other.units == stream.units, "{name}: {threads} threads");
-        }
-    }
+    each_case(
+        [
+            (
+                6,
+                BitDepth::Eight,
+                PixelFormat::Yuv420,
+                160,
+                "8",
+                vec![0, 8],
+            ),
+            (
+                9,
+                BitDepth::Ten,
+                PixelFormat::Yuv422,
+                240,
+                "2",
+                vec![0, 2, 4, 6, 8],
+            ),
+        ],
+        |(preset, bit_depth, chroma, qp, mini_gop, bases)| {
+            let on = [ON[0], ("mini_gop_size", mini_gop)];
+            let mut config = config(200, 136, bit_depth, preset, qp);
+            config.chroma = chroma;
+            let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
+            let stream = tf_stream(config.clone(), &on, 1);
+            assert_eq!(stream.filtered, bases, "{name}");
+            assert_eq!(stream.tools, [true; 5], "{name}");
+            assert_same_samples(&decode(&stream.units.concat()), &stream.recon, &name);
+            assert!(
+                tf_stream(config.clone(), &[], 1).units != stream.units,
+                "{name}"
+            );
+            each_case([2, 8], |threads| {
+                let other = tf_stream(config.clone(), &on, threads);
+                assert!(other.units == stream.units, "{name}: {threads} threads");
+            });
+        },
+    );
 }
 
 /// A zero frame count or strength codes the stream of the filter off, and

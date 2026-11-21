@@ -140,3 +140,117 @@ fn avm_decodes_tiled_mini_gops_like_splot() {
     let avm = avm_decode(&avmdec, &units, size, config.bit_depth, "carry");
     assert!(avm == expected, "AVM output differs");
 }
+
+/// `disable_cdf_update`, `primary_default_cdfs` and `cdf_update_tile` each
+/// reach the frame headers (§ 5.18.2, § 5.18.7.2); a 2x2-tile mini-GOP stream
+/// with any one decodes to the encoder recon, differs from the stream with
+/// all off and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn cdf_control_streams_decode_alike_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let stream = |preset: PresetParams, threads: usize| {
+        let preset: &'static PresetParams = Box::leak(Box::new(preset));
+        let mut config = config(136, 136, BitDepth::Eight, 6, 150);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        planned_stream_of(&config, coder, panning_frame, 150)
+    };
+    let plain = stream(base, 1).0;
+    for (fixed, default_cdfs, tile) in [(true, false, 0), (false, true, 0), (false, false, 1)] {
+        let preset = PresetParams {
+            disable_cdf_update: fixed,
+            primary_default_cdfs: default_cdfs,
+            cdf_update_tile: tile,
+            ..base
+        };
+        let (one, expected, cores, _) = stream(preset, 1);
+        let fixed_frames = cores
+            .iter()
+            .filter(|core| core.disable_cdf_update == Some(fixed))
+            .count();
+        assert!(
+            cores
+                .iter()
+                .all(|core| core.disable_cdf_update != Some(!fixed))
+        );
+        assert!(fixed_frames >= 8, "{fixed_frames} frames code {fixed}");
+        let tiled: Vec<_> = cores
+            .iter()
+            .filter_map(|core| core.tile_info.as_ref())
+            .filter(|info| info.tile_cols * info.tile_rows > 1)
+            .collect();
+        assert!(tiled.len() >= 8, "{} frames of several tiles", tiled.len());
+        for info in tiled {
+            let middle = info.tile_cols * info.tile_rows / 2;
+            assert_eq!(info.context_update_tile_id, middle * u32::from(tile));
+        }
+        let carried: Vec<_> = cores
+            .iter()
+            .filter_map(|core| core.inter.as_ref())
+            .filter(|inter| {
+                inter
+                    .primary_ref_frame
+                    .is_some_and(|p| p != PRIMARY_REF_NONE)
+            })
+            .collect();
+        assert!(
+            carried.len() >= 4,
+            "{} frames keep a primary",
+            carried.len()
+        );
+        for inter in carried {
+            assert_eq!(inter.disable_cross_frame_cdf_init, Some(default_cdfs));
+        }
+        assert!(one != plain, "case {fixed} {default_cdfs} {tile}");
+        assert_same_samples(&decode(&one), &expected, "CDF controls");
+        for threads in [2, 8] {
+            assert!(stream(preset, threads).0 == one, "{threads} threads");
+        }
+    }
+}
+
+/// With `primary_ref_choose` an inter frame codes `PRIMARY_REF_CHOOSE` when
+/// the decoder derives its primary reference (§ 5.18.2) and keeps the
+/// explicit signal when it derives another one. The recon equals the recon
+/// without the field (the same CDFs give the same decisions), the stream
+/// decodes to it, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn chosen_primary_references_keep_the_recon_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let stream = |preset: PresetParams, threads: usize| {
+        let preset: &'static PresetParams = Box::leak(Box::new(preset));
+        let mut config = config(136, 72, BitDepth::Eight, 6, 150);
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        planned_stream_of(&config, coder, panning_frame, 150)
+    };
+    let (plain, plain_recon, _, _) = stream(base, 1);
+    let choose = PresetParams {
+        primary_ref_choose: true,
+        ..base
+    };
+    let (one, expected, cores, _) = stream(choose, 1);
+    let signals: Vec<bool> = cores
+        .iter()
+        .filter_map(|core| core.inter.as_ref())
+        .filter(|inter| inter.disable_cross_frame_cdf_init.is_some())
+        .filter_map(|inter| inter.signal_primary_ref_frame)
+        .collect();
+    let chosen = signals.iter().filter(|&&signal| !signal).count();
+    assert!(chosen > 0 && chosen < signals.len(), "{signals:?}");
+    assert!(expected == plain_recon, "the recon moved");
+    assert!(
+        one.len() <= plain.len(),
+        "{} > {} bytes",
+        one.len(),
+        plain.len()
+    );
+    assert_same_samples(&decode(&one), &expected, "chosen primary");
+    for threads in [2, 8] {
+        assert!(stream(choose, threads).0 == one, "{threads} threads");
+    }
+}

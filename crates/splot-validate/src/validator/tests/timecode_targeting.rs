@@ -534,7 +534,7 @@ fn metadata_timecode_counting_type_reserved_is_warned() {
         "report was: {report}"
     );
     assert!(
-        report.is_conformant(),
+        only_lacks_coded_layer(&report),
         "a reserved counting_type is decoder-ignored, not a violation; \
          report was: {report}"
     );

@@ -32,6 +32,9 @@ use super::*;
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values without
 /// adaptive MVD.
 pub(crate) const JMVD_SCALE_MODES: u8 = 5;
+/// `JOINT_AMVD_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values with
+/// `use_amvd`.
+pub(crate) const JMVD_AMVD_SCALE_MODES: u8 = 3;
 
 /// The `pb_mv_precision` values a block codes.
 const PB_MV_PRECISION_SYMBOLS: u8 =
@@ -65,10 +68,14 @@ pub(crate) struct EncoderCompoundMotion {
     pub(crate) mvd: [Mv; 2],
     /// `jmvd_scale_mode`.
     pub(crate) jmvd_scale_mode: u8,
+    /// `use_amvd`, where the decoder reads it (`allow_amvd_mode`, § 5.20.7.6).
+    pub(crate) use_amvd: bool,
     /// `interp_filter`, where the decoder reads it.
     pub(crate) interp: ReconInterpolationFilter,
     /// `use_optflow`, where the decoder reads it (§ 5.20.7.6).
     pub(crate) use_optflow: bool,
+    /// `use_local_warp`, where the decoder reads it (§ 5.20.7.14).
+    pub(crate) local_warp: bool,
     /// `use_refinemv`, where the decoder reads it (§ 5.20.7.17); where it
     /// infers the flag, the block refines whenever refinement is reachable.
     pub(crate) use_refinemv: bool,
@@ -171,15 +178,19 @@ impl EncoderInterTile {
             ),
             EncoderMotion::Warp(_) => (false, false, 1),
             EncoderMotion::Compound(compound) => (
-                false,
+                compound.use_amvd,
                 matches!(
                     compound.y_mode,
                     CompoundYMode::JointNew | CompoundYMode::NewNew
                 ) && mvd_sign_derivation_block_scope_allowed(
-                    MotionMode::Simple,
+                    if compound.local_warp {
+                        MotionMode::LocalWarp
+                    } else {
+                        MotionMode::Simple
+                    },
                     false,
                     Some(compound.ref_mv_idx),
-                ) && allowed(false),
+                ) && allowed(compound.use_amvd),
                 compound.y_mode.mvd_sign_derivation_threshold(),
             ),
         };
@@ -339,7 +350,8 @@ impl EncoderInterTile {
         }
         block.use_optflow = compound.use_optflow;
         let refinemv_switchable = compound_refinemv_is_switchable(block, opfl);
-        let reached = compound_refinemv_reachable(enable_refinemv, opfl, facts, block, n4w, n4h)?;
+        let reached = !compound.local_warp
+            && compound_refinemv_reachable(enable_refinemv, opfl, facts, block, n4w, n4h)?;
         let reads_refinemv = reached && refinemv_switchable;
         if compound.use_refinemv && !reads_refinemv {
             return Err(invalid());
@@ -414,6 +426,9 @@ impl EncoderInterTile {
             let refinement = self.compound_refinement(frontier, compound)?;
             if refinement.use_optflow || refinement.refinemv_signalled {
                 return Ok((ReconInterpolationFilter::EightTapSharp, None));
+            }
+            if compound.local_warp {
+                return Ok((ReconInterpolationFilter::EightTap, None));
             }
         }
         let (global, interp) = match motion {
@@ -706,7 +721,7 @@ impl EncoderInterTile {
         &self,
         out: &mut Vec<(TileCdfSelector, u8)>,
         neighbour: &BlockNeighbourContext,
-        (mode_ctx, max_drl, reads_optflow, local_warp): (&ModeContext, usize, bool, bool),
+        (mode_ctx, max_drl, reads_optflow, reads_local_warp): (&ModeContext, usize, bool, bool),
         compound: EncoderCompoundMotion,
     ) -> Result<()> {
         let new_mv = mode_ctx.new_mv_context;
@@ -741,17 +756,32 @@ impl EncoderInterTile {
             compound.use_optflow,
             amvd_ctx,
         ) {
-            out.push((selector, 0));
+            out.push((selector, u8::from(compound.use_amvd)));
+        } else if compound.use_amvd {
+            return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
-        if local_warp {
+        if reads_local_warp {
             let ctx = neighbour.use_local_warp_ctx();
-            out.push((TileCdfSelector::UseLocalWarp { ctx }, 0));
+            out.push((
+                TileCdfSelector::UseLocalWarp { ctx },
+                u8::from(compound.local_warp),
+            ));
+        } else if compound.local_warp {
+            return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
         if y_mode == CompoundYMode::JointNew {
-            if compound.jmvd_scale_mode >= JMVD_SCALE_MODES {
+            let (selector, modes) = if compound.use_amvd {
+                (
+                    TileCdfSelector::JmvdAdaptiveScaleMode,
+                    JMVD_AMVD_SCALE_MODES,
+                )
+            } else {
+                (TileCdfSelector::JmvdScaleMode, JMVD_SCALE_MODES)
+            };
+            if compound.jmvd_scale_mode >= modes {
                 return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
             }
-            out.push((TileCdfSelector::JmvdScaleMode, compound.jmvd_scale_mode));
+            out.push((selector, compound.jmvd_scale_mode));
         }
         let selector = |idx| TileCdfSelector::DrlMode { idx, ctx: new_mv };
         match compound.independent_idx {
@@ -768,7 +798,12 @@ impl EncoderInterTile {
             None => drl_symbols(out, selector, 0, max_drl, compound.ref_mv_idx)?,
         }
         let precision = BlockPrecisionRecord::most_probable(self.precision);
-        self.precision_symbols(out, neighbour, y_mode.has_newmv(), (precision, false))
+        self.precision_symbols(
+            out,
+            neighbour,
+            y_mode.has_newmv(),
+            (precision, compound.use_amvd),
+        )
     }
 
     /// Whether the decoder reads `use_local_warp` of `compound` (§ 5.20.7.14).
@@ -808,8 +843,8 @@ impl EncoderInterTile {
         )
     }
 
-    /// The parse record of `compound` at `frontier` without local warp, as the
-    /// decoder builds it, and its blend.
+    /// The parse record of `compound` at `frontier`, as the decoder builds it,
+    /// and its blend.
     pub(super) fn compound_syntax(
         &self,
         frontier: &DecodeBlockFrontier,
@@ -822,7 +857,7 @@ impl EncoderInterTile {
             ref_frame1: ref1,
             skip_mode: compound.skip_mode,
             use_optflow: refinement.use_optflow,
-            local_warp: false,
+            local_warp: compound.local_warp,
             ref_mv_idx: compound.ref_mv_idx as u8,
             independent_idx: compound.independent_idx.map(|idx| idx.map(|i| i as u8)),
             mvd: compound.mvd,
@@ -841,7 +876,7 @@ impl EncoderInterTile {
         };
         Ok((
             syntax,
-            compound_warp_blend(refinement.blend, false, compound.y_mode),
+            compound_warp_blend(refinement.blend, compound.local_warp, compound.y_mode),
         ))
     }
 

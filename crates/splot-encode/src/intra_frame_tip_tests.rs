@@ -37,31 +37,34 @@ fn with_tip_output(tip: u8, tip_output: u8) -> &'static PresetParams {
 /// to the encoder recon; without it no frame codes TIP.
 #[test]
 fn tip_frames_reach_the_headers_and_the_decoder() {
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Ten),
-        (PixelFormat::Yuv422, BitDepth::Eight),
-        (PixelFormat::Yuv444, BitDepth::Ten),
-    ] {
-        let mut config = config(72, 40, bit_depth, 6, 110);
-        config.chroma = chroma;
-        for tip in [2, 1, 0] {
-            let (units, expected, cores, coder) =
-                super::carry::planned_stream(&config, with_tip(tip));
-            assert_eq!(coder.sequence.inter.unwrap().enable_tip, tip > 0);
-            let weights: Vec<_> = cores
-                .iter()
-                .filter_map(|core| core.inter.as_ref())
-                .filter(|inter| inter.tip_frame_mode == Some(TipFrameMode::AsRef))
-                .map(|inter| inter.tip_global_wtd_index.unwrap())
-                .collect();
-            assert_eq!(!weights.is_empty(), tip > 0, "{chroma:?} {weights:?}");
-            if tip == 1 {
-                assert!(weights.iter().all(|&weight| weight == 0), "{weights:?}");
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Ten),
+            (PixelFormat::Yuv422, BitDepth::Eight),
+            (PixelFormat::Yuv444, BitDepth::Ten),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(72, 40, bit_depth, 6, 110);
+            config.chroma = chroma;
+            for tip in [2, 1, 0] {
+                let (units, expected, cores, coder) =
+                    super::carry::planned_stream(&config, with_tip(tip));
+                assert_eq!(coder.sequence.inter.unwrap().enable_tip, tip > 0);
+                let weights: Vec<_> = cores
+                    .iter()
+                    .filter_map(|core| core.inter.as_ref())
+                    .filter(|inter| inter.tip_frame_mode == Some(TipFrameMode::AsRef))
+                    .map(|inter| inter.tip_global_wtd_index.unwrap())
+                    .collect();
+                assert_eq!(!weights.is_empty(), tip > 0, "{chroma:?} {weights:?}");
+                if tip == 1 {
+                    assert!(weights.iter().all(|&weight| weight == 0), "{weights:?}");
+                }
+                let name = format!("{chroma:?} tip {tip}");
+                assert_same_samples(&decode(&units), &expected, &name);
             }
-            let name = format!("{chroma:?} tip {tip}");
-            assert_same_samples(&decode(&units), &expected, &name);
-        }
-    }
+        },
+    );
 }
 
 /// A tiled stream with the TIP weight search codes the same bytes on 1, 2 and 8 threads and
@@ -79,9 +82,9 @@ fn tip_streams_match_on_any_thread_count() {
     };
     let (one, expected, ..) = stream(1);
     assert_same_samples(&decode(&one), &expected, "tiled");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// A frame whose references are all in its future has no TIP reference
@@ -253,6 +256,33 @@ fn tip_output_frames_decode_to_the_encoder_recon() {
     }
 }
 
+/// With `df_sub_pu` the sequence codes `enable_df_sub_pu` and
+/// `enable_tip_explicit_qp = 0`, each `TIP_FRAME_AS_OUTPUT` frame codes
+/// `allow_df_sub_pu = 0`, and the stream decodes to the encoder recon.
+#[test]
+fn tip_output_frames_decode_with_df_sub_pu() {
+    let config = config(72, 40, BitDepth::Ten, 6, 250);
+    let preset = Box::leak(Box::new(PresetParams {
+        df_sub_pu: true,
+        ..*with_tip_output(1, 200)
+    }));
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (units, expected, cores, coder) =
+        super::carry::planned_stream_of(&config, coder, panning_frame, 250);
+    let inter = coder.sequence.inter.unwrap();
+    assert!(inter.enable_df_sub_pu && !inter.enable_tip_explicit_qp);
+    let outputs: Vec<_> = cores
+        .iter()
+        .filter(|core| core.obu_type == splot_core::types::ObuType::RegularTip)
+        .collect();
+    assert!(!outputs.is_empty());
+    for core in outputs {
+        let inter = core.inter.as_ref().unwrap();
+        assert_eq!(inter.allow_df_sub_pu, Some(false));
+    }
+    assert_same_samples(&decode(&units), &expected, "tip output df_sub_pu");
+}
+
 /// `tip_output = 0` codes the same stream as a coder whose preset prefers
 /// TIP output but whose sequence disables it: the preset value reaches the
 /// stream only through `disable_tip_output` and the frame decision.
@@ -290,37 +320,40 @@ fn with_tip_refinement() -> &'static PresetParams {
 /// 160x96 4:2:0 stream with 16x16-capable TIP blocks.
 #[test]
 fn refined_tip_streams_decode_to_the_encoder_recon() {
-    for (chroma, bit_depth, (width, height)) in [
-        (PixelFormat::Yuv420, BitDepth::Ten, (72, 40)),
-        (PixelFormat::Yuv422, BitDepth::Eight, (72, 40)),
-        (PixelFormat::Yuv444, BitDepth::Ten, (72, 40)),
-        (PixelFormat::Yuv420, BitDepth::Eight, (160, 96)),
-    ] {
-        for qp in [110, 250] {
-            let mut config = config(width, height, bit_depth, 6, qp);
-            config.chroma = chroma;
-            let coder = IntraFrameCoder::with_preset(&config, with_tip_refinement()).unwrap();
-            let (units, expected, cores, coder) =
-                super::carry::planned_stream_of(&config, coder, panning_frame, qp);
-            assert!(coder.sequence.inter.unwrap().enable_tip_refinemv);
-            let tips: Vec<_> = cores
-                .iter()
-                .filter_map(|core| core.inter.as_ref())
-                .filter(|inter| {
-                    inter
-                        .tip_frame_mode
-                        .is_some_and(|mode| mode != TipFrameMode::Disabled)
-                })
-                .collect();
-            assert!(!tips.is_empty(), "{chroma:?} {qp}");
-            assert!(
-                tips.iter()
-                    .all(|inter| inter.tip_global_wtd_index == Some(0))
-            );
-            let name = format!("{chroma:?} qp {qp}");
-            assert_same_samples(&decode(&units), &expected, &name);
-        }
-    }
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Ten, (72, 40)),
+            (PixelFormat::Yuv422, BitDepth::Eight, (72, 40)),
+            (PixelFormat::Yuv444, BitDepth::Ten, (72, 40)),
+            (PixelFormat::Yuv420, BitDepth::Eight, (160, 96)),
+        ],
+        |(chroma, bit_depth, (width, height))| {
+            for qp in [110, 250] {
+                let mut config = config(width, height, bit_depth, 6, qp);
+                config.chroma = chroma;
+                let coder = IntraFrameCoder::with_preset(&config, with_tip_refinement()).unwrap();
+                let (units, expected, cores, coder) =
+                    super::carry::planned_stream_of(&config, coder, panning_frame, qp);
+                assert!(coder.sequence.inter.unwrap().enable_tip_refinemv);
+                let tips: Vec<_> = cores
+                    .iter()
+                    .filter_map(|core| core.inter.as_ref())
+                    .filter(|inter| {
+                        inter
+                            .tip_frame_mode
+                            .is_some_and(|mode| mode != TipFrameMode::Disabled)
+                    })
+                    .collect();
+                assert!(!tips.is_empty(), "{chroma:?} {qp}");
+                assert!(
+                    tips.iter()
+                        .all(|inter| inter.tip_global_wtd_index == Some(0))
+                );
+                let name = format!("{chroma:?} qp {qp}");
+                assert_same_samples(&decode(&units), &expected, &name);
+            }
+        },
+    );
 }
 
 /// AVM decodes refined TIP streams like splot.
@@ -491,14 +524,13 @@ fn tip_tree(
 fn refined_tip_units_match_the_decoder_in_a_zooming_frame() {
     let config = config(192, 128, BitDepth::Eight, 6, 110);
     assert!(config.preset.params().tip_refinemv);
-    let mut leaves = 0;
-    for seed in 0..4 {
+    let leaves = each_case(0..4, |seed| {
         let (units, expected, coverage) =
             super::inter_stream_of(&config, 0x71F + seed, zooming_frame, tip_tree);
-        leaves += coverage[19];
         assert_same_samples(&decode(&units.concat()), &expected, &format!("seed {seed}"));
-    }
-    assert!(leaves > 0);
+        coverage[19]
+    });
+    assert!(leaves.iter().sum::<usize>() > 0);
 }
 
 /// A noisy panning frame for the film grain tests.
@@ -600,4 +632,265 @@ fn avm_decodes_grain_tip_output_like_splot() {
         "tip-grain",
     );
     assert!(avm == decode(&units), "AVM output differs");
+}
+
+/// Preset 6 with TIP, TIP output and hole fill.
+fn with_hole_fill() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        tip_hole_fill: true,
+        ..*with_tip_output(1, 200)
+    }))
+}
+
+/// A panning mini-GOP stream with `tip_hole_fill` on `threads` threads in
+/// 2x1 tiles.
+fn hole_fill_stream(threads: usize) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
+    let mut config = config(136, 72, BitDepth::Eight, 6, 250);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, with_hole_fill()).unwrap();
+    super::carry::planned_stream_of(&config, coder, panning_frame, 250)
+}
+
+/// With `tip_hole_fill` the sequence enables hole fill, TIP frames (as a
+/// reference and as output) code `allow_tip_hole_fill = 1`, the stream
+/// decodes to the encoder recon, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn hole_fill_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (one, expected, cores, coder) = hole_fill_stream(1);
+    assert!(coder.sequence.inter.unwrap().enable_tip_hole_fill);
+    let filled: Vec<_> = cores
+        .iter()
+        .filter_map(|core| core.inter.as_ref())
+        .filter(|inter| {
+            inter
+                .tip_frame_mode
+                .is_some_and(|m| m != TipFrameMode::Disabled)
+        })
+        .map(|inter| (inter.tip_frame_mode, inter.allow_tip_hole_fill))
+        .collect();
+    assert!(!filled.is_empty());
+    assert!(
+        filled.iter().all(|&(_, fill)| fill == Some(true)),
+        "{filled:?}"
+    );
+    assert!(
+        filled
+            .iter()
+            .any(|&(mode, _)| mode == Some(TipFrameMode::AsOutput)),
+        "{filled:?}"
+    );
+    assert_same_samples(&decode(&one), &expected, "hole fill");
+    for threads in [2, 8] {
+        assert!(hole_fill_stream(threads).0 == one, "{threads} threads");
+    }
+}
+
+/// AVM decodes hole-filled TIP streams like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_hole_fill_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, expected, ..) = hole_fill_stream(2);
+    let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "hole-fill");
+    assert!(avm == expected, "AVM output differs");
+}
+
+/// A tiled 10-bit noisy [`zooming_frame`] mini-GOP stream at preset 6 with
+/// the TIP `NEWMV` search and every BAWP variant on, at `qp` on `threads`
+/// threads: the units, the recon, the headers and the
+/// [`crate::tile_writer::CODED_SINGLE`] counts of the final pass.
+fn tip_bawp_stream(
+    qp: u16,
+    threads: usize,
+    mvd_tools: [bool; 3],
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 4]) {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        tip_newmv: true,
+        tip_amvd: true,
+        mvd_tools,
+        bawp: true,
+        bawp_search: 2,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let mut config = config(136, 72, BitDepth::Ten, 6, qp);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    crate::tile_writer::CODED_SINGLE.set([0; 4]);
+    crate::mode_decision::TIP_NEWMV_ON_NEAR.set(0);
+    let noisy = |config: &Config, index: u32| {
+        super::grain_streams::with_noise(config, &zooming_frame(config, index), 3 + index)
+    };
+    let (units, expected, cores, _) = super::carry::planned_stream_of(&config, coder, noisy, qp);
+    (
+        units,
+        expected,
+        cores,
+        crate::tile_writer::CODED_SINGLE.get(),
+    )
+}
+
+/// The search codes TIP `NEWMV` leaves, BAWP `NEARMV` leaves and BAWP leaves
+/// without chroma weighting in frames that later frames reference, with the
+/// deblocking filter on; leaves whose TIP `NEWMV` search ends on a `NEARMV`
+/// vector add no `NEWMV` candidate, so they code `NEARMV`; the stream decodes
+/// to the encoder recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn tip_newmv_and_bawp_variants_decode_on_any_thread_count() {
+    let (one, expected, cores, coded) = tip_bawp_stream(180, 1, [false; 3]);
+    assert!(coded[..3].iter().all(|&count| count > 0), "{coded:?}");
+    let on_near = crate::mode_decision::TIP_NEWMV_ON_NEAR.get();
+    assert!(on_near > 0, "no TIP NEWMV search ended on a NEARMV vector");
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert_same_samples(&decode(&one), &expected, "TIP NEWMV and BAWP");
+    for threads in [2, 8] {
+        assert!(
+            tip_bawp_stream(180, threads, [false; 3]).0 == one,
+            "{threads} threads"
+        );
+    }
+}
+
+/// With adaptive MVD the TIP `NEWMV` search codes `use_amvd` TIP leaves in
+/// frames that later frames reference; the stream decodes to the encoder
+/// recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn tip_amvd_decodes_on_any_thread_count() {
+    let (one, expected, _, coded) = tip_bawp_stream(180, 1, [true; 3]);
+    assert!(coded[3] > 0, "{coded:?}");
+    assert_same_samples(&decode(&one), &expected, "TIP AMVD");
+    for threads in [2, 8] {
+        assert!(
+            tip_bawp_stream(180, threads, [true; 3]).0 == one,
+            "{threads} threads"
+        );
+    }
+}
+
+/// AVM decodes the TIP `NEWMV` and BAWP variant stream like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_tip_newmv_and_bawp_variants_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for mvd_tools in [[false; 3], [true; 3]] {
+        let (units, ..) = tip_bawp_stream(180, 1, mvd_tools);
+        let avm = avm_decode(
+            &avmdec,
+            std::slice::from_ref(&units),
+            (136, 72),
+            BitDepth::Ten,
+            "tip-bawp",
+        );
+        assert!(avm == decode(&units), "{mvd_tools:?}: AVM output differs");
+    }
+}
+
+/// Preset 6 with TIP output, deblocking of prediction sub-units, explicit
+/// TIP quantization and the TIP output search at `level`.
+fn with_tip_output_options(level: u8) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        df_sub_pu: true,
+        tip_explicit_qp: true,
+        tip_output_search: level,
+        ..*with_tip_output(1, 200)
+    }))
+}
+
+/// A panning mini-GOP stream with the TIP output options on `threads`
+/// threads in 2x1 tiles; `forced` sets what every TIP output frame codes.
+fn tip_output_options_stream(
+    threads: usize,
+    level: u8,
+    forced: Option<(TipGlobalMv, Option<InterpolationFilter>, bool)>,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
+    let mut config = config(136, 72, BitDepth::Eight, 6, 250);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    crate::intra_frame::TIP_OUTPUT_FORCED.set(forced);
+    let coder = IntraFrameCoder::with_preset(&config, with_tip_output_options(level)).unwrap();
+    let stream = super::carry::planned_stream_of(&config, coder, panning_frame, 250);
+    crate::intra_frame::TIP_OUTPUT_FORCED.set(None);
+    stream
+}
+
+/// TIP output frames that code a non-zero global MV, each TIP filter, TIP
+/// deblocking and explicit quantization decode to the encoder recon and
+/// code the same bytes on 1, 2 and 8 threads; the searched levels 1 and 2
+/// decode to the encoder recon too.
+#[test]
+fn tip_output_options_decode_to_the_encoder_recon_on_any_thread_count() {
+    for forced in [
+        (TipGlobalMv::new(2, -1), None, false),
+        (
+            TipGlobalMv::default(),
+            Some(InterpolationFilter::Eighttap),
+            true,
+        ),
+        (
+            TipGlobalMv::new(0, 2),
+            Some(InterpolationFilter::EighttapSmooth),
+            true,
+        ),
+    ] {
+        let (one, expected, cores, coder) = tip_output_options_stream(1, 0, Some(forced));
+        assert!(coder.sequence.inter.unwrap().enable_tip_explicit_qp);
+        let outputs: Vec<_> = cores
+            .iter()
+            .filter(|core| core.obu_type == splot_core::types::ObuType::RegularTip)
+            .collect();
+        assert!(!outputs.is_empty(), "{forced:?}");
+        for core in outputs {
+            let inter = core.inter.as_ref().unwrap();
+            let filter = forced.1.unwrap_or(InterpolationFilter::EighttapSharp);
+            assert_eq!(inter.tip_global_mv, Some(forced.0));
+            assert_eq!(inter.tip_interpolation_filter, Some(filter));
+            assert_eq!(inter.apply_deblocking_filter_tip, Some(forced.2));
+            assert!(core.quantization_params.is_some());
+        }
+        assert_same_samples(&decode(&one), &expected, &format!("{forced:?}"));
+        for threads in [2, 8] {
+            let stream = tip_output_options_stream(threads, 0, Some(forced)).0;
+            assert!(stream == one, "{forced:?}: {threads} threads");
+        }
+    }
+    for level in [1, 2] {
+        let (units, expected, ..) = tip_output_options_stream(1, level, None);
+        assert_same_samples(&decode(&units), &expected, &format!("level {level}"));
+    }
+}
+
+/// AVM decodes TIP output frames with a global MV, the smooth filter, TIP
+/// deblocking and explicit quantization like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_tip_output_options_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let forced = (
+        TipGlobalMv::new(0, 2),
+        Some(InterpolationFilter::EighttapSmooth),
+        true,
+    );
+    let (units, expected, ..) = tip_output_options_stream(2, 0, Some(forced));
+    let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "tip-options");
+    assert!(avm == expected, "AVM output differs");
 }

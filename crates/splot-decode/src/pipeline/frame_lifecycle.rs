@@ -118,6 +118,13 @@ impl PipelineFrame {
         Ok(splot_recon::visible_byte_len(self.frame.info())?)
     }
 
+    /// The grain output adds to this frame: none when the caller skips it.
+    pub(crate) fn output_grain(&self, options: &crate::DecodeOptions) -> Option<&ActiveFilmGrain> {
+        self.display_grain
+            .as_ref()
+            .filter(|_| !options.skip_film_grain())
+    }
+
     pub(crate) fn validate_output_effects(&self) -> Result<()> {
         self.output_effects.validate_for_output()
     }
