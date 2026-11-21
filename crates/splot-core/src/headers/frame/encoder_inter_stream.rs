@@ -500,9 +500,7 @@ pub fn build_tip_output_frame_header(
             "TIP output without TIP, reference MVs or two references",
         ));
     }
-    if seq.enable_short_refresh_frame_flags
-        || inter.enable_tip_explicit_qp
-    {
+    if seq.enable_short_refresh_frame_flags || inter.enable_tip_explicit_qp {
         return Err(unsupported("TIP output header tools"));
     }
     let weight = params
