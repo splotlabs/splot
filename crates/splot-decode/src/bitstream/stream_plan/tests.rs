@@ -21,6 +21,7 @@ const OBU_BRIDGE_FRAME: u8 = 0x4C;
 const OBU_RAS_FRAME: u8 = 0x54;
 const OBU_METADATA_SHORT: u8 = 0x20;
 const OBU_LAYER_CONFIGURATION_RECORD: u8 = 0x40;
+const OBU_ATLAS_SEGMENT: u8 = 0x44;
 const OBU_OPERATING_POINT_SET: u8 = 0x48;
 const OBU_MSDO: u8 = 0x50;
 const OBU_PADDING: u8 = 0x64;
@@ -252,6 +253,25 @@ fn operating_point_set_is_non_frame_state() {
     assert_eq!(obus[1].role(), DecodePlannedObuRole::SelectedLayerState);
     assert_eq!(obus[2].role(), DecodePlannedObuRole::Global);
     assert_eq!(obus[4].role(), DecodePlannedObuRole::FrameCandidate);
+}
+
+#[test]
+fn atlas_segment_is_non_frame_state() {
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_ATLAS_SEGMENT).as_slice(),
+        extended_obu(OBU_ATLAS_SEGMENT | 0x80, 0x1F).as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+    ]
+    .concat();
+
+    let plan = plan(&bytes);
+    let obus: Vec<_> = plan.obus().collect();
+
+    assert_eq!(plan.frame_candidate_count(), 1);
+    assert_eq!(obus[1].role(), DecodePlannedObuRole::SelectedLayerState);
+    assert_eq!(obus[2].role(), DecodePlannedObuRole::Global);
 }
 
 #[test]

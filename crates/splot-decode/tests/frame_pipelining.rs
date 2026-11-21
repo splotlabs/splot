@@ -304,6 +304,17 @@ fn a_planner_valid_corrupt_stream_fails_identically_at_every_width_and_capacity(
 }
 
 #[test]
+fn an_atlas_segment_obu_does_not_change_the_decoded_frames() {
+    let mut bytes = MULTIREF.to_vec();
+    bytes.splice(46..46, [0x04, 0x44, 0x1d, 0xbe, 0x40]);
+    bytes[32] += 5;
+    let context = depth_one();
+    let expected = collect_raw(&context, MULTIREF, DecodeOptions::default()).unwrap();
+    let actual = collect_raw(&context, &bytes, DecodeOptions::default()).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn orderhint_output_matches_depth_one_at_every_capacity() {
     let expected = collect_raw(&depth_one(), ORDER_HINT_WRAP, DecodeOptions::default()).unwrap();
 
