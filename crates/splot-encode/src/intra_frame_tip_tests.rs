@@ -695,3 +695,78 @@ fn avm_decodes_hole_fill_streams_like_splot() {
     let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "hole-fill");
     assert!(avm == expected, "AVM output differs");
 }
+
+/// A tiled 10-bit noisy [`zooming_frame`] mini-GOP stream at preset 6 with
+/// the TIP `NEWMV` search and every BAWP variant on, at `qp` on `threads`
+/// threads: the units, the recon, the headers and the
+/// [`crate::tile_writer::CODED_SINGLE`] counts of the final pass.
+fn tip_bawp_stream(
+    qp: u16,
+    threads: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 3]) {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        tip_newmv: true,
+        bawp: true,
+        bawp_search: 2,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let mut config = config(136, 72, BitDepth::Ten, 6, qp);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    crate::tile_writer::CODED_SINGLE.set([0; 3]);
+    crate::mode_decision::TIP_NEWMV_ON_NEAR.set(0);
+    let noisy = |config: &Config, index: u32| {
+        super::grain_streams::with_noise(config, &zooming_frame(config, index), 3 + index)
+    };
+    let (units, expected, cores, _) = super::carry::planned_stream_of(&config, coder, noisy, qp);
+    (
+        units,
+        expected,
+        cores,
+        crate::tile_writer::CODED_SINGLE.get(),
+    )
+}
+
+/// The search codes TIP `NEWMV` leaves, BAWP `NEARMV` leaves and BAWP leaves
+/// without chroma weighting in frames that later frames reference, with the
+/// deblocking filter on; leaves whose TIP `NEWMV` search ends on a `NEARMV`
+/// vector add no `NEWMV` candidate, so they code `NEARMV`; the stream decodes
+/// to the encoder recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn tip_newmv_and_bawp_variants_decode_on_any_thread_count() {
+    let (one, expected, cores, coded) = tip_bawp_stream(180, 1);
+    assert!(coded.iter().all(|&count| count > 0), "{coded:?}");
+    let on_near = crate::mode_decision::TIP_NEWMV_ON_NEAR.get();
+    assert!(on_near > 0, "no TIP NEWMV search ended on a NEARMV vector");
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert_same_samples(&decode(&one), &expected, "TIP NEWMV and BAWP");
+    for threads in [2, 8] {
+        assert!(tip_bawp_stream(180, threads).0 == one, "{threads} threads");
+    }
+}
+
+/// AVM decodes the TIP `NEWMV` and BAWP variant stream like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_tip_newmv_and_bawp_variants_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, ..) = tip_bawp_stream(180, 1);
+    let avm = avm_decode(
+        &avmdec,
+        std::slice::from_ref(&units),
+        (136, 72),
+        BitDepth::Ten,
+        "tip-bawp",
+    );
+    assert!(avm == decode(&units), "AVM output differs");
+}
