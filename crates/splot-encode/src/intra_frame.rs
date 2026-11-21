@@ -1225,6 +1225,13 @@ impl<'a> SourceResidualCoder<'a> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The model rank of each exact type-search winner (tests only).
+    pub(crate) static MODEL_RANKS: core::cell::RefCell<Vec<(usize, u128, u128)>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
 impl ResidualCoder for SourceResidualCoder<'_> {
     fn palette_map(
         &mut self,
@@ -1268,6 +1275,8 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let scalar_types = (keep > 1 || ist_sets > 0) && !self.preset.tcq_type_trellis;
         let scalar = self.scalar;
         self.scalar |= scalar_types;
+        #[cfg(test)]
+        let mut exact = Vec::new();
         for (tried, &tx_type) in order.iter().enumerate() {
             if tried >= keep && best.is_some() {
                 break;
@@ -1297,7 +1306,10 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                     ist: decision.ist,
                     ..tx
                 };
-                if let Some(cost) = self.luma_cost(syntax, &coded, prediction, &decision.levels)?
+                let cost = self.luma_cost(syntax, &coded, prediction, &decision.levels)?;
+                #[cfg(test)]
+                exact.extend(cost.map(|cost| (tx_type, cost)));
+                if let Some(cost) = cost
                     && best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost)
                 {
                     best = Some((cost, decision));
@@ -1306,6 +1318,23 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         }
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
+        #[cfg(test)]
+        if keep == count && count > 1 {
+            let ranked = self.model_ranking(syntax, tx, prediction, &tx_types[..count])?;
+            let rank = ranked
+                .iter()
+                .position(|&(_, index)| tx_types[index] == decision.tx_type);
+            let best_of = |top: usize| {
+                exact
+                    .iter()
+                    .filter(|(t, _)| ranked[..top].iter().any(|&(_, i)| tx_types[i] == *t))
+                    .map(|&(_, cost)| cost)
+                    .min()
+            };
+            if let (Some(all), Some(two)) = (best_of(count), best_of(2)) {
+                MODEL_RANKS.with_borrow_mut(|ranks| ranks.push((rank.unwrap_or(count), all, two)));
+            }
+        }
         if scalar_types {
             return self.code(
                 syntax,
@@ -1613,26 +1642,42 @@ impl SourceResidualCoder<'_> {
         types: &[TxType],
         keep: usize,
     ) -> core::result::Result<Vec<TxType>, TileWriterError> {
+        let mut ranked = self.model_ranking(syntax, tx, prediction, types)?;
+        let (best, rest) = ranked.split_at_mut(keep);
+        best.sort_unstable_by_key(|&(_, index)| index);
+        rest.sort_unstable_by_key(|&(_, index)| index);
+        Ok(ranked.iter().map(|&(_, index)| types[index]).collect())
+    }
+
+    /// `(model cost, index)` of each of `types`, lowest cost first (ties in
+    /// symbol order).
+    fn model_ranking(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        types: &[TxType],
+    ) -> core::result::Result<Vec<(u128, usize)>, TileWriterError> {
         let mut scratch = core::mem::take(&mut self.scratch);
         let mut levels = Vec::new();
         syntax.set_scalar_trial(true);
         let mut ranked = Vec::with_capacity(types.len());
+        let mut found = Ok(());
         for (index, &tx_type) in types.iter().enumerate() {
             let tx = TransformBlock { tx_type, ..*tx };
             match self.model_cost(syntax, &tx, prediction, &mut scratch, &mut levels) {
                 Ok(cost) => ranked.push((cost.unwrap_or(u128::MAX), index)),
                 Err(error) => {
-                    self.scratch = scratch;
-                    return Err(error);
+                    found = Err(error);
+                    break;
                 }
             }
         }
+        syntax.set_scalar_trial(self.candidate || self.trial || self.scalar);
         self.scratch = scratch;
+        found?;
         ranked.sort_unstable();
-        let (best, rest) = ranked.split_at_mut(keep);
-        best.sort_unstable_by_key(|&(_, index)| index);
-        rest.sort_unstable_by_key(|&(_, index)| index);
-        Ok(ranked.iter().map(|&(_, index)| types[index]).collect())
+        Ok(ranked)
     }
 
     /// The model cost of luma block `tx` in RDOQ units: the coefficient-domain
