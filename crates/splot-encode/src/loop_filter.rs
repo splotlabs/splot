@@ -560,15 +560,32 @@ impl Search<'_> {
                 (Some(SuperblockSize::Block64x64) | None, _) => 64,
                 _ => 128,
             };
-            let candidate = FrameFilterParams {
-                lr_luma_unit_size: Some(unit),
+            let candidate = |size| FrameFilterParams {
+                lr_luma_unit_size: Some(size),
                 ..params
             };
             let (chosen, lr_on) = if preset.wiener_ns > 0 {
                 let pre_cdef = (filter.enable_cdef || ccso).then_some(deblocked);
-                self.restoration_rd(&candidate, &syntax, (preset, pre_cdef))?
+                let mut best =
+                    self.restoration_rd(&candidate(unit), &syntax, (preset, pre_cdef))?;
+                for size in (1..preset.lr_unit_sizes)
+                    .map(|k| unit << k)
+                    .filter(|&s| s <= 512)
+                {
+                    if wienerns::units_fit_tiles(&self.header(&candidate(size))?, size) {
+                        let trial =
+                            self.restoration_rd(&candidate(size), &syntax, (preset, pre_cdef))?;
+                        if trial.2 < best.2 {
+                            best = trial;
+                        }
+                    }
+                }
+                (best.0, best.1)
             } else {
-                (candidate, self.restoration(&candidate, &syntax)?)
+                (
+                    candidate(unit),
+                    self.restoration(&candidate(unit), &syntax)?,
+                )
             };
             if !lr_on.is_empty() {
                 params = chosen;

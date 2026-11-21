@@ -2,8 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! CDEF on skipped transform blocks and the full CDEF strength and damping
-//! search (§ 5.18.7.10), and deblocking of prediction sub-units, split luma
-//! offsets and wide offsets (§ 5.18.5.2) in key and inter frames.
+//! search (§ 5.18.7.10), the luma loop-restoration unit size search
+//! (§ 5.18.7.11), and deblocking of prediction sub-units, split luma offsets
+//! and wide offsets (§ 5.18.5.2) in key and inter frames.
 
 use super::*;
 use crate::preset::PresetParams;
@@ -23,9 +24,19 @@ fn filter_stream(
     preset: &'static PresetParams,
     flag: fn(&FrameHeaderCore) -> bool,
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>) {
+    tiled_filter_stream(threads, preset, flag, 1)
+}
+
+/// [`filter_stream`] in `1 << cols_log2` tile columns.
+fn tiled_filter_stream(
+    threads: usize,
+    preset: &'static PresetParams,
+    flag: fn(&FrameHeaderCore) -> bool,
+    cols_log2: u8,
+) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>) {
     let mut config = config(200, 136, BitDepth::Eight, 9, 200);
     config.tiles = TileLayout {
-        cols_log2: 1,
+        cols_log2,
         rows_log2: 0,
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
@@ -250,5 +261,52 @@ fn avm_decodes_full_cdef_search_frames_like_splot() {
     let (units, recon, flags) = filter_stream(2, with_full_cdef(), new_cdef_choice);
     assert!(flags.contains(&true), "{flags:?}");
     let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Eight, "full-cdef");
+    assert!(avm == recon, "AVM output differs");
+}
+
+/// Preset 6 with every luma restoration unit size.
+fn with_lr_sizes() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        lr_unit_sizes: 4,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// Whether `core` codes luma restoration with units of 256 or 512, larger
+/// than every superblock of this stream (at most 128x128).
+fn large_lr_units(core: &FrameHeaderCore) -> bool {
+    core.lr_params
+        .as_ref()
+        .is_some_and(|lr| lr.uses_lr && lr.loop_restoration_size[0] >= 256)
+}
+
+/// With `lr_unit_sizes` 4 some frame of a one-tile pan codes luma
+/// restoration units larger than its superblock; the stream decodes to the encoder recon and 1, 2 and 8
+/// threads write the same bytes. Off, no frame does.
+#[test]
+fn lr_unit_size_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (one, recon, flags) = tiled_filter_stream(1, with_lr_sizes(), large_lr_units, 0);
+    assert!(flags.contains(&true), "{flags:?}");
+    assert_same_samples(&decode(&one.concat()), &recon, "lr unit sizes");
+    for threads in [2, 8] {
+        assert!(
+            tiled_filter_stream(threads, with_lr_sizes(), large_lr_units, 0).0 == one,
+            "{threads} threads"
+        );
+    }
+    let (_, _, off) = tiled_filter_stream(1, Preset::new(6).unwrap().params(), large_lr_units, 0);
+    assert!(!off.contains(&true), "{off:?}");
+}
+
+/// AVM decodes frames with large luma restoration units to the splot output.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_lr_unit_size_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, recon, flags) = tiled_filter_stream(2, with_lr_sizes(), large_lr_units, 0);
+    assert!(flags.contains(&true), "{flags:?}");
+    let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Eight, "lr-sizes");
     assert!(avm == recon, "AVM output differs");
 }
