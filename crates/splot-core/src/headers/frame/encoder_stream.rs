@@ -39,7 +39,8 @@ const UNCONSTRAINED_LEVEL_IDX: u32 = 31;
 const ORDER_HINT_BITS_MINUS_1: u32 = 7;
 /// `base_*_delta_q` value that gives a zero `Base*DeltaQ` (`-DELTA_DCQUANT_MIN`, § 3).
 const ZERO_BASE_DELTA_Q: u32 = 23;
-/// `df_par_bits_minus_2`: `DfDeltaQ` spans `-4..=3` (§ 5.18.5.2).
+/// `df_par_bits_minus_2` without `EncoderToolFlags::df_par_bits_extra`:
+/// `DfDeltaQ` spans `-4..=3` (§ 5.18.5.2).
 const DF_PAR_BITS_MINUS_2: u32 = 1;
 /// The largest `reduced_tx_set` (`f(2)`, § 5.18.2).
 pub(super) const MAX_REDUCED_TX_SET: u8 = 3;
@@ -165,6 +166,9 @@ pub struct EncoderToolFlags {
     /// `enable_df_sub_pu` (§ 5.4.6): inter frames code `allow_df_sub_pu`
     /// (§ 5.18.5.2) and TIP output frames code it `0`.
     pub df_sub_pu: bool,
+    /// `df_par_bits_minus_2 = 1 + df_par_bits_extra` (§ 5.4.10), `0..=2`:
+    /// frames code `df_delta_q` in `f(3 + df_par_bits_extra)` (§ 5.18.5.2).
+    pub df_par_bits_extra: u8,
     /// `seq_enabled_motion_modes[INTERINTRA]` with
     /// `seq_frame_motion_modes_present_flag` (§ 5.4.6): every inter frame
     /// enables inter-intra blocks (§ 5.20.7.15).
@@ -482,7 +486,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     }
     w.write_flag(false)?; // cdef_on_skip_txfm_always_on
     w.write_flag(false)?; // cdef_on_skip_txfm_disabled
-    w.write_bits(DF_PAR_BITS_MINUS_2, 2)?;
+    w.write_bits(DF_PAR_BITS_MINUS_2 + u32::from(tools.df_par_bits_extra), 2)?;
 
     w.write_flag(false)?; // seq_tile_info_present_flag
     w.write_flag(tools.film_grain)?; // film_grain_params_present
