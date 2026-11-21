@@ -302,9 +302,10 @@ thread_local! {
 thread_local! {
     /// Compound leaves of the final passes on this thread: same-reference
     /// `NEAR_NEWMV` and `NEW_NEWMV`, pairs with a reference ranked 4 or
-    /// later, and `JOINT_NEWMV` with `jmvd_scale_mode > 0`.
-    pub(crate) static CODED_MODES: core::cell::Cell<[usize; 4]> =
-        const { core::cell::Cell::new([0; 4]) };
+    /// later, `JOINT_NEWMV` with `jmvd_scale_mode > 0`, and adaptive-MVD
+    /// compound leaves.
+    pub(crate) static CODED_MODES: core::cell::Cell<[usize; 5]> =
+        const { core::cell::Cell::new([0; 5]) };
 }
 
 #[cfg(test)]
@@ -317,6 +318,13 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
         modes_seen[2] += usize::from(modes.refs.1 >= 3);
         modes_seen[3] +=
             usize::from(modes.mode == CompoundMode::JointNew && modes.jmvd_scale_mode > 0);
+        modes_seen[4] += usize::from(
+            modes.amvd
+                && !matches!(
+                    modes.mode,
+                    CompoundMode::NearNear | CompoundMode::GlobalGlobal
+                ),
+        );
         CODED_MODES.set(modes_seen);
     }
     let mut counts = CODED_TYPES.get();
@@ -800,7 +808,11 @@ pub(crate) fn snap_prediction(
             let bases = syntax.compound_bases(leaf, &modes)?;
             for (mv, base) in modes.mvs.iter_mut().zip(bases) {
                 if let Some(base) = base {
-                    *mv = snap_mv(*mv, base, step);
+                    *mv = if modes.amvd {
+                        snap_amvd(*mv, base)
+                    } else {
+                        snap_mv(*mv, base, step)
+                    };
                 }
             }
             InterPrediction::Compound(modes)

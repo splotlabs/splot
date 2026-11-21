@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use splot_decode::encoder_syntax::{
-    ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
-    MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, PartitionNode, SingleMvs, SyntaxSnapshot, TxPartition,
-    tx_log2,
+    ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax,
+    JMVD_AMVD_SCALE_MODES, LeafBlock, MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, PartitionNode, SingleMvs,
+    SyntaxSnapshot, TxPartition, tx_log2,
 };
 use splot_recon::InterpolationFilter;
 
@@ -901,6 +901,7 @@ impl TrialCoder<'_, '_> {
                 drl,
                 mvs,
                 jmvd_scale_mode: 0,
+                amvd: false,
                 filter: InterpolationFilter::EightTap,
                 optflow: false,
                 refinemv: false,
@@ -941,6 +942,20 @@ impl TrialCoder<'_, '_> {
                 if let Some(partner) = self.same_ref_partner(leaf, motion, refs.0, first)? {
                     trials.push(modes(CompoundMode::NewNew, [0; 2], [first, partner]));
                 }
+            }
+            if self.preset.compound_amvd && self.syntax.adaptive_mvd() {
+                let amvd: Vec<_> = trials
+                    .iter()
+                    .filter(|trial| {
+                        trial.mode != CompoundMode::GlobalGlobal
+                            && trial.jmvd_scale_mode < JMVD_AMVD_SCALE_MODES
+                    })
+                    .map(|&trial| CompoundModes {
+                        amvd: true,
+                        ..trial
+                    })
+                    .collect();
+                trials.extend(amvd);
             }
             derived.extend(trials.into_iter().map(|trial| (trial, None)));
             for (trial, mvs) in derived {

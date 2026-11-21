@@ -505,11 +505,14 @@ fn accelerating_frame(config: &Config, index: u32) -> SourceFrame {
 fn compound_modes_stream(
     qp: u16,
     threads: usize,
-) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 4]) {
+    mvd_tools: [bool; 3],
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 5]) {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         compound_refs: 7,
         jmvd_scales: 5,
         same_ref_modes: true,
+        compound_amvd: true,
+        mvd_tools,
         compound_candidates: 8,
         ..*Preset::new(6).unwrap().params()
     }));
@@ -520,7 +523,7 @@ fn compound_modes_stream(
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-    crate::tile_writer::CODED_MODES.set([0; 4]);
+    crate::tile_writer::CODED_MODES.set([0; 5]);
     let (units, expected, cores, _) =
         super::carry::planned_stream_of(&config, coder, accelerating_frame, qp);
     (
@@ -539,12 +542,12 @@ fn compound_modes_stream(
 /// decode to the encoder recon.
 #[test]
 fn searched_compound_modes_decode_on_any_thread_count() {
-    let (fine, expected, _, fine_coded) = compound_modes_stream(40, 1);
+    let (fine, expected, _, fine_coded) = compound_modes_stream(40, 1, [false; 3]);
     assert_same_samples(&decode(&fine), &expected, "fine compound modes");
-    let (one, expected, cores, coded) = compound_modes_stream(180, 1);
+    let (one, expected, cores, coded) = compound_modes_stream(180, 1, [false; 3]);
     let total: Vec<usize> = coded.iter().zip(fine_coded).map(|(a, b)| a + b).collect();
     assert!(
-        total.iter().all(|&count| count > 0),
+        total[..4].iter().all(|&count| count > 0),
         "{fine_coded:?} {coded:?}"
     );
     assert!(cores.iter().any(|core| {
@@ -560,9 +563,23 @@ fn searched_compound_modes_decode_on_any_thread_count() {
     assert_same_samples(&decode(&one), &expected, "searched compound modes");
     for threads in [2, 8] {
         assert!(
-            compound_modes_stream(180, threads).0 == one,
+            compound_modes_stream(180, threads, [false; 3]).0 == one,
             "{threads} threads"
         );
+    }
+}
+
+/// With adaptive MVD the compound search codes adaptive-MVD compound leaves,
+/// in frames that later frames reference; the stream decodes to the encoder
+/// recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn searched_compound_amvd_decodes_on_any_thread_count() {
+    let (one, expected, _, coded) = compound_modes_stream(120, 1, [true; 3]);
+    assert!(coded[4] > 0, "{coded:?}");
+    assert_same_samples(&decode(&one), &expected, "compound AMVD");
+    for threads in [2, 8] {
+        let other = compound_modes_stream(120, threads, [true; 3]).0;
+        assert!(other == one, "{threads} threads");
     }
 }
 
@@ -573,7 +590,7 @@ fn avm_decodes_searched_compound_modes_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let (units, ..) = compound_modes_stream(180, 1);
+    let (units, ..) = compound_modes_stream(180, 1, [false; 3]);
     let avm = avm_decode(
         &avmdec,
         std::slice::from_ref(&units),

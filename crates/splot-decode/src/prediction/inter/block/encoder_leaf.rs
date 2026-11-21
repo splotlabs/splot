@@ -35,7 +35,9 @@ mod warp;
 
 pub use blend::CompoundType;
 pub(crate) use blend::MAX_CWP_NUM;
-pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES, MvdCoding};
+pub(crate) use compound::{
+    EncoderCompoundMotion, JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MvdCoding,
+};
 pub(crate) use warp::{EncoderWarpMotion, EncoderWarpSource};
 
 /// The motion of one inter leaf.
@@ -963,7 +965,11 @@ impl EncoderInterTile {
             interp,
             precision: self.block_precision(motion),
             skip,
-            use_amvd: matches!(motion, EncoderMotion::Single(single) if single.use_amvd),
+            use_amvd: match motion {
+                EncoderMotion::Single(single) => single.use_amvd,
+                EncoderMotion::Compound(compound) => compound.use_amvd,
+                EncoderMotion::Warp(_) => false,
+            },
             tip_size_16x16: matches!(motion, EncoderMotion::Single(single) if single.tip)
                 && super::tip::reference_uses_16x16_units(
                     block.bw4,
