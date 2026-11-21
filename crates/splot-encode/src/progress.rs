@@ -19,10 +19,11 @@ const FRAME: u64 = 1 << 20;
 pub struct Progress(Arc<AtomicU64>);
 
 impl Progress {
-    /// Frames coded so far, in coding order. A frame being coded counts by the
-    /// fraction of its superblocks searched, so the value rises while
+    /// Frames coded so far, in coding order. Each frame being coded counts by
+    /// the fraction of its superblocks searched, so the value rises while
     /// [`Encoder::receive_packet`](crate::Encoder::receive_packet) runs; the
-    /// lookahead and the loop filters of a frame do not move it. It is a whole
+    /// frames of a wave are coded together and all add to it. The lookahead
+    /// and the loop filters of a frame do not move it. It is a whole
     /// number whenever no frame is being coded, and steps back by at most one
     /// frame when rate control codes a frame again.
     #[must_use]
