@@ -26,9 +26,7 @@ use super::coding;
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::intra_frame::map_tiles;
-use crate::kernels::ccso::{
-    BO_CLASSES, CLASSES, CcsoRow, CcsoStats, EDGE_CLASSES, accumulate_simd,
-};
+use crate::kernels::ccso::{BO_CLASSES, CcsoRow, CcsoStats, EDGE_CLASSES, accumulate_simd};
 use crate::rd::{Bits, Lambda, symbol_cost, unary_cost};
 
 /// `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` that the search tries
@@ -176,7 +174,7 @@ pub(super) fn search(
             .collect();
         let bands: Vec<CcsoStats<BO_CLASSES>> = rows
             .iter()
-            .flat_map(|(_, bands)| bands.get(plane * grid.cols..(plane + 1) * grid.cols))
+            .filter_map(|(_, bands)| bands.get(plane * grid.cols..(plane + 1) * grid.cols))
             .flatten()
             .cloned()
             .collect();
@@ -193,7 +191,7 @@ pub(super) fn search(
             } else {
                 merge(&stats[variant.candidate], variant)
             };
-            let choice = evaluate(input, (plane, &cdfs, grid.cols), merged, ladder, variant)?;
+            let choice = evaluate(input, (plane, &cdfs, grid.cols), &merged, ladder, variant)?;
             if best.as_ref().is_none_or(|best| choice.cost < best.cost) {
                 best = Some(choice);
             }
@@ -303,7 +301,7 @@ fn merge<const N: usize>(stats: &[CcsoStats<N>], variant: Variant) -> Vec<Vec<(i
 fn evaluate(
     input: &CcsoInput<'_>,
     (plane, cdfs, grid_cols): (usize, &[Vec<u16>], usize),
-    merged: Vec<Vec<(i64, u32)>>,
+    merged: &[Vec<(i64, u32)>],
     ladder: &[(u8, u8, u8)],
     variant: Variant,
 ) -> Result<PlaneChoice> {
@@ -564,7 +562,7 @@ pub(super) fn class_sums(
     for row in 0..grid.rows {
         let (stats, _) = unit_row_stats(input, grid, row, (plane + 1, false), &[entry])?;
         for unit in &stats[plane * grid.cols..] {
-            for class in 0..CLASSES {
+            for class in 0..crate::kernels::ccso::CLASSES {
                 let target = &mut sums[variant.class(class)];
                 target.0 += unit.sum[class];
                 target.1 += unit.count[class];
