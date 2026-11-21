@@ -13,6 +13,8 @@ pub(super) struct TemporalUnitState {
     /// `true` once any non-reserved, non-delimiter OBU has appeared since the most
     /// recent global temporal delimiter. Used to detect back-to-back delimiters.
     pub(super) saw_obu_since_delimiter: bool,
+    /// Offset of the delimiter that opened this temporal unit; `None` before one.
+    delimiter_offset: Option<ByteOffset>,
     /// `true` once a *global suffix* metadata OBU (`metadata_is_suffix == 1`) has
     /// appeared in this temporal unit. A global suffix metadata is part of a coded
     /// frame unit's suffix tail (§ 7.3.3 / § 7.3.4), which lies inside / after the
@@ -49,8 +51,11 @@ impl TemporalUnitState {
                          intervening OBU"
                             .to_owned(),
                     ));
+                } else {
+                    self.finish(report);
                 }
                 self.start_temporal_unit();
+                self.delimiter_offset = Some(obu.offset);
             } else if matches!(self.phase, TemporalUnitPhase::AwaitingDelimiter) {
                 self.report_missing_delimiter_once(obu, report);
             }
@@ -71,6 +76,27 @@ impl TemporalUnitState {
         } else if is_coded_extended_layer_obu(obu) {
             self.observe_coded_extended_layer_obu(obu, report);
         }
+    }
+
+    /// Reports the open temporal unit when it ends with no coded extended layer
+    /// unit (AV2 § 7.3.1). Called at the next global delimiter and at end of stream,
+    /// where a lone trailing delimiter is what a truncated stream looks like. A
+    /// unit that has a coded extended layer unit but no output frame is
+    /// `celu/missing-output-frame-unit`.
+    pub(super) fn finish(&self, report: &mut ValidationReport) {
+        let (TemporalUnitPhase::GlobalPrefix, Some(offset)) = (self.phase, self.delimiter_offset)
+        else {
+            return;
+        };
+        report.push(
+            Diagnostic::error(
+                "obu-order/temporal-unit-without-coded-layer",
+                "a temporal unit must contain at least one coded output frame unit; this \
+                 one ends without a coded extended layer unit (the stream may be truncated)",
+            )
+            .with_spec_section("7.3.1")
+            .with_byte_offset(offset),
+        );
     }
 
     /// Classifies a metadata OBU for temporal-unit ordering from its `metadata_is_suffix`

@@ -878,3 +878,101 @@ fn global_motion_models_round_trip_through_the_parser() {
     };
     assert!(build_inter_frame_header(&view, &refs, &no_reference).is_err());
 }
+
+/// The CDF controls of `KeyFrameTxParams` parse back (§ 5.18.2):
+/// `disable_cdf_update` in both frame types, and in an inter frame
+/// `disable_cross_frame_cdf_init` with a primary reference. Both off code the
+/// old header; a cut header does not parse.
+#[test]
+fn cdf_controls_parse_back_and_cut_headers_fail() {
+    let seq = sequence(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(64, 64, 0);
+    let params = InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 1,
+        refresh_frame_flags: 2,
+        show_frame: true,
+        filters: FrameFilterParams::default(),
+        tx: KeyFrameTxParams::default(),
+        tiles: UniformTiles::default(),
+        reference_select: false,
+        skip_mode_present: false,
+        primary_slot: Some(0),
+        use_ref_frame_mvs: false,
+        high_precision_mv: false,
+        switchable_interp_filter: false,
+        tip_weight: None,
+        tip_hole_fill: false,
+        opfl_refine_type: 0,
+        force_integer_mv: false,
+        warp: false,
+        global_motion: [None; 7],
+    };
+    let with = |tx: KeyFrameTxParams| {
+        build_inter_frame_header(&view, &slots.view(), &InterFrameParams { tx, ..params }).unwrap()
+    };
+    let off = with(KeyFrameTxParams::default());
+    let controls = |header: &EncodedFrameHeader| {
+        let inter = header.core.inter.as_ref().unwrap();
+        (
+            header.core.disable_cdf_update,
+            inter.signal_primary_ref_frame,
+            inter.disable_cross_frame_cdf_init,
+            inter.primary_ref_frame,
+        )
+    };
+    assert_eq!(
+        controls(&off),
+        (Some(false), Some(true), Some(false), Some(0))
+    );
+    let on = with(KeyFrameTxParams {
+        disable_cdf_update: true,
+        disable_cross_frame_cdf_init: true,
+        ..KeyFrameTxParams::default()
+    });
+    assert_eq!(controls(&on), (Some(true), Some(true), Some(true), Some(0)));
+    let key = |tx| {
+        crate::headers::frame::build_key_frame_header(
+            &view,
+            90,
+            0,
+            &FrameFilterParams::default(),
+            tx,
+            UniformTiles::default(),
+        )
+        .unwrap()
+    };
+    let fixed = KeyFrameTxParams {
+        disable_cdf_update: true,
+        ..KeyFrameTxParams::default()
+    };
+    assert_eq!(key(fixed).disable_cdf_update, Some(true));
+    assert_eq!(
+        key(KeyFrameTxParams::default()).disable_cdf_update,
+        Some(false)
+    );
+    let ignored = KeyFrameTxParams {
+        disable_cross_frame_cdf_init: true,
+        ..fixed
+    };
+    assert_eq!(key(ignored), key(fixed));
+    let obu = encode_inter_frame_obu(&on, &[&[0xab]]).unwrap();
+    let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
+    let cut = on.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::RegularTileGroup,
+        first_picture_in_tu: true,
+        active_sequence: Some(&seq),
+        mfh_record: None,
+        reference_state: slots.view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let mut reader = BitReader::new(&payload[..cut], ByteOffset::new(0));
+    assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
+    let cut_core = parse_frame_header_core(&mut reader, &input);
+    assert!(!matches!(
+        cut_core,
+        Ok(ref core) if core.status == FrameHeaderParseStatus::InterHeaderComplete
+    ));
+}

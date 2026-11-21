@@ -288,6 +288,7 @@ impl IntraFrameCoder {
             tiles: UniformTiles {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
+                middle_cdf_update_tile: preset.cdf_update_tile == 1,
                 ..UniformTiles::default()
             },
             pool: (config.threads.resolve().get() > 1)
@@ -588,6 +589,8 @@ impl IntraFrameCoder {
         let context = self.preset_context(plan, qindex);
         let mut tools = gop::frame_tools((&self.preset, context), self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
+        tools.0.disable_cdf_update = self.preset.disable_cdf_update;
+        tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;

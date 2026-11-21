@@ -254,6 +254,18 @@ pub struct PresetParams {
     /// the saved CDFs across tiles instead of blending the primary
     /// reference's CDFs with a second reference's.
     pub cdf_avg_across_tiles: bool,
+    /// With `cdf_carry`, inter frames keep their primary reference but code
+    /// `disable_cross_frame_cdf_init = 1` (§ 5.18.2): they start from the
+    /// default CDFs.
+    pub primary_default_cdfs: bool,
+    /// Every frame codes `disable_cdf_update = 1` (§ 5.18.2): symbols code
+    /// with CDFs that do not adapt, and the frame saves the CDFs it started
+    /// from.
+    pub disable_cdf_update: bool,
+    /// The tile whose CDFs a frame of several tiles saves without
+    /// `avg_cdf_type = 1` (§ 5.18.7.2 `context_update_tile_id`), `0..=1`:
+    /// `0` the first tile, `1` the middle tile (`TileCols * TileRows / 2`).
+    pub cdf_update_tile: u8,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -810,6 +822,7 @@ impl PresetParams {
         check("interintra_search", self.interintra_search, 0, 1, "")?;
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
+        check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check(
             "tip_refinemv",
@@ -1086,6 +1099,9 @@ preset_table! {
         interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         cdf_avg_across_tiles:  [false, false, false, false, false, false, false, false, false, false, false],
+        primary_default_cdfs:  [false, false, false, false, false, false, false, false, false, false, false],
+        disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
+        cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tip_hole_fill:         [false, false, false, false, false, false, false, false, false, false, false],
@@ -1545,6 +1561,7 @@ mod tests {
             (&[("interintra_search", "2")], "interintra_search"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
+            (&[("cdf_update_tile", "2")], "cdf_update_tile"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),

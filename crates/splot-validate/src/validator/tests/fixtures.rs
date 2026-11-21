@@ -331,3 +331,12 @@ pub(in crate::validator::tests) fn conformant_apart_from_header_only_celu(
         .errors()
         .all(|d| d.rule_id == "celu/missing-output-frame-unit")
 }
+
+/// Like [`conformant_apart_from_header_only_celu`], for a fixture with no coded
+/// extended layer unit at all (a lone delimiter, or global OBUs only): § 7.3.1
+/// makes it fire `obu-order/temporal-unit-without-coded-layer` and nothing else.
+pub(in crate::validator::tests) fn only_lacks_coded_layer(report: &ValidationReport) -> bool {
+    report
+        .errors()
+        .all(|d| d.rule_id == "obu-order/temporal-unit-without-coded-layer")
+}

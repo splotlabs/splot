@@ -119,6 +119,8 @@ impl Case {
                 delta_q_res: None,
                 allow_intrabc: false,
                 grain_seed: None,
+                disable_cdf_update: false,
+                disable_cross_frame_cdf_init: false,
             },
         }
     }

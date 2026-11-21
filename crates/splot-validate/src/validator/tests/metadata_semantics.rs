@@ -89,7 +89,7 @@ fn metadata_persistence_reserved_idc_warns() {
         "report was: {report}"
     );
     assert!(
-        report.is_conformant(),
+        only_lacks_coded_layer(&report),
         "a reserved value is a warning, not an error: {report}"
     );
 
@@ -99,7 +99,7 @@ fn metadata_persistence_reserved_idc_warns() {
         has_warning(&report, "metadata/persistence-idc-reserved"),
         "report was: {report}"
     );
-    assert!(report.is_conformant(), "report was: {report}");
+    assert!(only_lacks_coded_layer(&report), "report was: {report}");
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn metadata_group_layer_idc_reserved_warns() {
         has_warning(&report, "metadata/group-layer-idc-reserved"),
         "report was: {report}"
     );
-    assert!(report.is_conformant(), "report was: {report}");
+    assert!(only_lacks_coded_layer(&report), "report was: {report}");
 }
 
 #[test]
@@ -166,7 +166,7 @@ pub(in crate::validator::tests) fn metadata_short_obu_at(
 fn cancel_unknown_type_emits_nothing() {
     let report =
         Validator::new(false).validate_bytes(&global_metadata_short_stream(&[0x08, 0x05, 0x80]));
-    assert!(report.is_conformant(), "report was: {report}");
+    assert!(only_lacks_coded_layer(&report), "report was: {report}");
     assert_eq!(report.warnings().count(), 0, "report was: {report}");
     assert!(
         !report

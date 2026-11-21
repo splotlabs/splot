@@ -65,12 +65,15 @@ fn validate_header_only_sequence_header_reports_missing_output_frame_unit() {
 }
 
 #[test]
-fn validate_ivf_conformant_exits_zero() {
+fn validate_ivf_lone_temporal_delimiter_exits_one() {
     let path = temp_input("ivf", &ivf_stream(&[&[0x01, 0x08]]));
     let out = splot(&["validate", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("conformant"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("obu-order/temporal-unit-without-coded-layer"),
+        "stdout was: {stdout}"
+    );
 }
 
 #[test]
@@ -103,23 +106,21 @@ fn validate_reads_from_stdin_dash_and_matches_file() {
 }
 
 #[test]
-fn validate_ivf_trailing_partial_frame_header_exits_zero() {
+fn validate_ivf_trailing_partial_frame_header_is_a_warning() {
     let mut data = ivf_stream(&[&[0x01, 0x08]]);
     data.extend_from_slice(&1148u32.to_le_bytes());
     data.extend_from_slice(&6480u64.to_le_bytes()[..6]);
     let path = temp_input("ivf", &data);
     let out = splot(&["validate", path.to_str().unwrap()]);
-    assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("[WARNING] ivf/trailing-partial-frame-header"),
         "stdout was: {stdout}"
     );
     assert!(
-        stdout.contains("0 error(s), 1 warning(s)"),
+        stdout.contains("1 error(s), 1 warning(s)"),
         "stdout was: {stdout}"
     );
-    assert!(stdout.contains("conformant"), "stdout was: {stdout}");
 }
 
 #[test]
@@ -639,15 +640,17 @@ fn inspect_json_surfaces_film_grain() {
 }
 
 #[test]
-fn validate_operating_point_set_fixture_exits_zero() {
-    let out = validate("operating-point-set.av2", &[]);
-    assert_eq!(out.status.code(), Some(0));
-}
-
-#[test]
-fn validate_buffer_removal_timing_fixture_exits_zero() {
-    let out = validate("buffer-removal-timing.av2", &[]);
-    assert_eq!(out.status.code(), Some(0));
+fn validate_global_only_fixtures_report_only_the_missing_coded_layer() {
+    for name in ["operating-point-set.av2", "buffer-removal-timing.av2"] {
+        let out = validate(name, &[]);
+        assert_eq!(out.status.code(), Some(1));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("obu-order/temporal-unit-without-coded-layer")
+                && stdout.contains("1 error(s)"),
+            "{name} stdout was: {stdout}"
+        );
+    }
 }
 
 #[test]
@@ -709,7 +712,7 @@ fn validate_summary_only_preserves_exit_codes() {
         "stdout was: {bad_stdout}"
     );
 
-    let good = validate("operating-point-set.av2", &["--summary-only"]);
+    let good = validate("frame-header-core.av2", &["--summary-only"]);
     assert_eq!(good.status.code(), Some(0));
     assert!(
         String::from_utf8_lossy(&good.stdout).contains("conformant"),
