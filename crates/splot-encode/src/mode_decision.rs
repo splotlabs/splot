@@ -587,17 +587,17 @@ impl TrialCoder<'_, '_> {
             }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
-        if let (Some(motion), Some(base)) = (self.motion, interintra_base) {
-            if self.preset.interintra {
-                let interintra = self
-                    .interintra_choice(leaf, motion, base)?
-                    .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)));
-                #[cfg(test)]
-                if let (Some(choice), true) = (interintra, FORCE_INTERINTRA.get()) {
-                    return Ok(vec![choice]);
-                }
-                choices.extend(interintra);
+        if let (Some(motion), Some(base), true) =
+            (self.motion, interintra_base, self.preset.interintra)
+        {
+            let interintra = self
+                .interintra_choice(leaf, motion, base)?
+                .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)));
+            #[cfg(test)]
+            if let (Some(choice), true) = (interintra, FORCE_INTERINTRA.get()) {
+                return Ok(vec![choice]);
             }
+            choices.extend(interintra);
         }
         if let (Some(motion), true) = (self.motion, self.preset.bawp) {
             let mut bases: Vec<InterModes> = interintra_base.into_iter().collect();
