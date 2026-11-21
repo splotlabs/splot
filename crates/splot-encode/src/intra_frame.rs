@@ -1294,7 +1294,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 return Ok(decision);
             }
             let mut trials = vec![decision];
-            if ist {
+            if ist && !inter && self.preset.intra_ist_rd {
+                for ist in Self::ist_kernels(syntax, &tx, ist_sets)? {
+                    trials.push(self.code(syntax, &TransformBlock { ist, ..tx }, prediction)?);
+                }
+            } else if ist {
                 let ist = self.ist_choice(syntax, &tx, prediction, ist_sets)?;
                 if ist != Ist::OFF {
                     let tx = TransformBlock { ist, ..tx };
@@ -1726,6 +1730,27 @@ impl SourceResidualCoder<'_> {
         Ok(Some(
             (u128::from(error) << 16) + u128::from(lambda_q8) * u128::from(rate.0),
         ))
+    }
+
+    /// Every secondary transform of the first `sets` sets that `tx` can code.
+    fn ist_kernels(
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        sets: u8,
+    ) -> core::result::Result<Vec<Ist>, TileWriterError> {
+        let mut out = Vec::new();
+        for set in 0..sets.min(syntax.ist_sets(tx)?) {
+            for sec_tx_type in 1..=3 {
+                let ist = Ist { sec_tx_type, set };
+                if syntax
+                    .secondary_transform(&TransformBlock { ist, ..*tx })?
+                    .is_some()
+                {
+                    out.push(ist);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The secondary transform of the first `sets` sets whose outputs keep the

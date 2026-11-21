@@ -293,6 +293,9 @@ pub struct PresetParams {
     /// every row: on top of MRL its BD-rate per CPU loses at every measured
     /// preset.
     pub ist_sets: u8,
+    /// An intra luma block gives an RD trial to every kernel of the
+    /// `ist_sets` sets in place of the one that keeps the most energy.
+    pub intra_ist_rd: bool,
     /// A chroma pair in a leaf's final trial tries the CCTX rotation that
     /// leaves V the least energy; off disables `enable_cctx`. On at p0-p8
     /// (2026-11-21, CRF against off, luma / U / V / 6:1:1 BD-rate): p6 paris
@@ -945,6 +948,7 @@ preset_table! {
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false]]),
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        intra_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
@@ -1193,6 +1197,7 @@ mod tests {
             assert!(fast.wiener_ns_classes <= slow.wiener_ns_classes);
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
+            assert!(fast.intra_ist_rd <= slow.intra_ist_rd);
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
