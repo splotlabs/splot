@@ -85,6 +85,9 @@ pub struct InterFrameParams {
     /// frame without `enable_tip`, `use_ref_frame_mvs` or two references
     /// reads neither and is `TIP_FRAME_DISABLED`.
     pub tip_weight: Option<u8>,
+    /// `allow_tip_hole_fill` (§ 5.18.2) of a TIP frame of a sequence with
+    /// `enable_tip_hole_fill`: the TIP motion field fills its holes (§ 7.10.1).
+    pub tip_hole_fill: bool,
     /// `opfl_refine_type` (§ 5.18.3.2) of a sequence with `enable_opfl_refine
     /// = REFINE_AUTO`: `0` `REFINE_NONE`, `1` `REFINE_SWITCHABLE`, `2`
     /// `REFINE_ALL`. Other sequences code none and ignore it.
@@ -292,7 +295,7 @@ fn inter_frame_header_bits(
     }
     if let (true, Some(weight)) = (tip_gate, params.tip_weight) {
         if seq.inter.enable_tip_hole_fill {
-            w.write_flag(false)?; // allow_tip_hole_fill
+            w.write_flag(params.tip_hole_fill)?; // allow_tip_hole_fill
         }
         write_tip_weight(&mut w, weight, weight_coded)?;
     }
@@ -497,11 +500,7 @@ pub fn build_tip_output_frame_header(
             "TIP output without TIP, reference MVs or two references",
         ));
     }
-    if seq.enable_short_refresh_frame_flags
-        || inter.enable_tip_hole_fill
-        || inter.enable_tip_explicit_qp
-        || seq.filter.enable_df_sub_pu
-    {
+    if seq.enable_short_refresh_frame_flags || inter.enable_tip_explicit_qp {
         return Err(unsupported("TIP output header tools"));
     }
     let weight = params
@@ -524,6 +523,9 @@ pub fn build_tip_output_frame_header(
     if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
     }
+    if inter.enable_tip_hole_fill {
+        w.write_flag(params.tip_hole_fill)?; // allow_tip_hole_fill
+    }
     let weight_coded = tip_weight_coded(
         &build_inter_seq_view(seq),
         refs,
@@ -534,6 +536,9 @@ pub fn build_tip_output_frame_header(
     write_tip_weight(&mut w, weight, weight_coded.unwrap_or(true))?;
     w.write_flag(true)?; // tip_global_mv_zero
     w.write_flag(true)?; // tip_sharp
+    if seq.filter.enable_df_sub_pu {
+        w.write_flag(false)?; // allow_df_sub_pu
+    }
     write_film_grain_config(&mut w, seq, params.show_frame, params.tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.write_trailing_bits(8 - bit_len % 8)?;

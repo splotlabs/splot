@@ -253,6 +253,33 @@ fn tip_output_frames_decode_to_the_encoder_recon() {
     }
 }
 
+/// With `df_sub_pu` the sequence codes `enable_df_sub_pu` and
+/// `enable_tip_explicit_qp = 0`, each `TIP_FRAME_AS_OUTPUT` frame codes
+/// `allow_df_sub_pu = 0`, and the stream decodes to the encoder recon.
+#[test]
+fn tip_output_frames_decode_with_df_sub_pu() {
+    let config = config(72, 40, BitDepth::Ten, 6, 250);
+    let preset = Box::leak(Box::new(PresetParams {
+        df_sub_pu: true,
+        ..*with_tip_output(1, 200)
+    }));
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (units, expected, cores, coder) =
+        super::carry::planned_stream_of(&config, coder, panning_frame, 250);
+    let inter = coder.sequence.inter.unwrap();
+    assert!(inter.enable_df_sub_pu && !inter.enable_tip_explicit_qp);
+    let outputs: Vec<_> = cores
+        .iter()
+        .filter(|core| core.obu_type == splot_core::types::ObuType::RegularTip)
+        .collect();
+    assert!(!outputs.is_empty());
+    for core in outputs {
+        let inter = core.inter.as_ref().unwrap();
+        assert_eq!(inter.allow_df_sub_pu, Some(false));
+    }
+    assert_same_samples(&decode(&units), &expected, "tip output df_sub_pu");
+}
+
 /// `tip_output = 0` codes the same stream as a coder whose preset prefers
 /// TIP output but whose sequence disables it: the preset value reaches the
 /// stream only through `disable_tip_output` and the frame decision.
@@ -600,6 +627,73 @@ fn avm_decodes_grain_tip_output_like_splot() {
         "tip-grain",
     );
     assert!(avm == decode(&units), "AVM output differs");
+}
+
+/// Preset 6 with TIP, TIP output and hole fill.
+fn with_hole_fill() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        tip_hole_fill: true,
+        ..*with_tip_output(1, 200)
+    }))
+}
+
+/// A panning mini-GOP stream with `tip_hole_fill` on `threads` threads in
+/// 2x1 tiles.
+fn hole_fill_stream(threads: usize) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
+    let mut config = config(136, 72, BitDepth::Eight, 6, 250);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, with_hole_fill()).unwrap();
+    super::carry::planned_stream_of(&config, coder, panning_frame, 250)
+}
+
+/// With `tip_hole_fill` the sequence enables hole fill, TIP frames (as a
+/// reference and as output) code `allow_tip_hole_fill = 1`, the stream
+/// decodes to the encoder recon, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn hole_fill_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (one, expected, cores, coder) = hole_fill_stream(1);
+    assert!(coder.sequence.inter.unwrap().enable_tip_hole_fill);
+    let filled: Vec<_> = cores
+        .iter()
+        .filter_map(|core| core.inter.as_ref())
+        .filter(|inter| {
+            inter
+                .tip_frame_mode
+                .is_some_and(|m| m != TipFrameMode::Disabled)
+        })
+        .map(|inter| (inter.tip_frame_mode, inter.allow_tip_hole_fill))
+        .collect();
+    assert!(!filled.is_empty());
+    assert!(
+        filled.iter().all(|&(_, fill)| fill == Some(true)),
+        "{filled:?}"
+    );
+    assert!(
+        filled
+            .iter()
+            .any(|&(mode, _)| mode == Some(TipFrameMode::AsOutput)),
+        "{filled:?}"
+    );
+    assert_same_samples(&decode(&one), &expected, "hole fill");
+    for threads in [2, 8] {
+        assert!(hole_fill_stream(threads).0 == one, "{threads} threads");
+    }
+}
+
+/// AVM decodes hole-filled TIP streams like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_hole_fill_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, expected, ..) = hole_fill_stream(2);
+    let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "hole-fill");
+    assert!(avm == expected, "AVM output differs");
 }
 
 /// A tiled 10-bit noisy [`zooming_frame`] mini-GOP stream at preset 6 with

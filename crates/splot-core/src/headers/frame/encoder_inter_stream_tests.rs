@@ -87,6 +87,7 @@ fn filters(sb: SuperblockSize) -> FrameFilterParams {
         }])
         .unwrap(),
         cdef_on_skip: true,
+        deblocking_sub_pu: false,
         lr_luma_unit_size: Some(match sb {
             SuperblockSize::Block64x64 => 64,
             SuperblockSize::Block128x128 => 128,
@@ -147,6 +148,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         high_precision_mv,
                         switchable_interp_filter,
                         tip_weight: None,
+                        tip_hole_fill: false,
                         opfl_refine_type: 0,
                         force_integer_mv: sb == SuperblockSize::Block128x128 && !high_precision_mv,
                         warp: false,
@@ -233,6 +235,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         high_precision_mv: false,
         switchable_interp_filter: false,
         tip_weight: None,
+        tip_hole_fill: false,
         opfl_refine_type: 0,
         force_integer_mv: false,
         warp: false,
@@ -332,6 +335,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             high_precision_mv: false,
             switchable_interp_filter: false,
             tip_weight: None,
+            tip_hole_fill: false,
             opfl_refine_type: 0,
             force_integer_mv: false,
             warp: false,
@@ -488,6 +492,7 @@ fn rejects_out_of_range_inter_inputs() {
         high_precision_mv: false,
         switchable_interp_filter: false,
         tip_weight: None,
+        tip_hole_fill: false,
         opfl_refine_type: 0,
         force_integer_mv: false,
         warp: false,
@@ -542,6 +547,7 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
         order_hint: 6,
         show_frame: true,
         tip_weight: Some(3),
+        tip_hole_fill: false,
         ..InterFrameParams::default()
     };
     let seq = build_encoder_sequence_header(&stream).unwrap();
@@ -563,6 +569,7 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
     assert_eq!(parsed.obus[0].header.obu_type, ObuType::RegularTip);
     let no_weight = InterFrameParams {
         tip_weight: None,
+        tip_hole_fill: false,
         opfl_refine_type: 0,
         ..params
     };
@@ -632,6 +639,7 @@ fn opfl_refine_type_parses_with_and_without_tip() {
                 show_frame: true,
                 use_ref_frame_mvs: true,
                 tip_weight: tip.then_some(0),
+                tip_hole_fill: false,
                 opfl_refine_type: refine,
                 ..InterFrameParams::default()
             };
@@ -684,6 +692,7 @@ fn tip_weight_follows_tip_refinement() {
             show_frame: true,
             use_ref_frame_mvs: true,
             tip_weight: Some(weight),
+            tip_hole_fill: false,
             opfl_refine_type: 1,
             ..InterFrameParams::default()
         };
@@ -705,6 +714,7 @@ fn tip_weight_follows_tip_refinement() {
         );
         let weighted = InterFrameParams {
             tip_weight: Some(3),
+            tip_hole_fill: false,
             ..output
         };
         assert_eq!(
