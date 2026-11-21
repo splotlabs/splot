@@ -26,7 +26,7 @@ use crate::tile_writer::{
 };
 use splot_decode::encoder_syntax::{
     Bawp, COMPOUND_MODES, CompoundType, INTERINTRA_MODES, INTERP_FILTERS, InterIntra,
-    JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
+    JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
 };
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
@@ -878,10 +878,10 @@ impl Rng {
 /// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference; a
 /// `COMPOUND_WEDGE`, a `COMPOUND_DIFFWTD` and a weighted `COMPOUND_AVERAGE`
 /// compound leaf; a smooth and a wedge inter-intra leaf; an implicit and an
-/// explicit BAWP leaf.
+/// explicit BAWP leaf; an adaptive-MVD compound leaf.
 type Coverage = [usize; COVERAGE_SLOTS];
 /// The slots of [`Coverage`].
-const COVERAGE_SLOTS: usize = 35;
+const COVERAGE_SLOTS: usize = 36;
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -1009,12 +1009,19 @@ fn random_modes(
         for attempt in 0..8 {
             let refs = pairs[rng.below(pairs.len() as u64) as usize];
             let mode = (rarest + attempt) % COMPOUND_MODES.len();
+            let amvd = syntax.adaptive_mvd() && Rng(rng.0.rotate_left(29)).below(3) == 0;
             let modes = CompoundModes {
                 refs,
                 mode: COMPOUND_MODES[mode],
                 drl: [rng.below(drls) as usize, rng.below(drls) as usize],
                 mvs,
-                jmvd_scale_mode: rng.below(u64::from(JMVD_SCALE_MODES)) as u8,
+                jmvd_scale_mode: rng.below(u64::from(JMVD_SCALE_MODES)) as u8
+                    % if amvd {
+                        JMVD_AMVD_SCALE_MODES
+                    } else {
+                        JMVD_SCALE_MODES
+                    },
+                amvd,
                 filter,
                 optflow: false,
                 refinemv: false,
@@ -1022,6 +1029,16 @@ fn random_modes(
             };
             if syntax.compound_bases(leaf, &modes).is_err() {
                 continue;
+            }
+            if modes.amvd && modes.mode == splot_decode::encoder_syntax::CompoundMode::JointNew {
+                let refused = CompoundModes {
+                    jmvd_scale_mode: JMVD_AMVD_SCALE_MODES,
+                    ..modes
+                };
+                assert!(
+                    syntax.compound_bases(leaf, &refused).is_err(),
+                    "{refused:?}"
+                );
             }
             let mut side = Rng(rng.0.rotate_left(17));
             let (reads_optflow, _) = syntax.compound_refinements(leaf, modes).unwrap();
@@ -1086,6 +1103,7 @@ fn random_modes(
             coverage[12] += usize::from(refs.0 == refs.1);
             coverage[13] += usize::from(modes.drl[1] > 0 && mode < 2);
             coverage[14] += usize::from(modes.jmvd_scale_mode > 0 && mode == 4);
+            coverage[35] += usize::from(modes.amvd && mode != 3 && mode != 0);
             return LeafChoice::inter(InterPrediction::Compound(modes));
         }
     }

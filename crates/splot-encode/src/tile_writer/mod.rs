@@ -302,9 +302,10 @@ thread_local! {
 thread_local! {
     /// Compound leaves of the final passes on this thread: same-reference
     /// `NEAR_NEWMV` and `NEW_NEWMV`, pairs with a reference ranked 4 or
-    /// later, and `JOINT_NEWMV` with `jmvd_scale_mode > 0`.
-    pub(crate) static CODED_MODES: core::cell::Cell<[usize; 4]> =
-        const { core::cell::Cell::new([0; 4]) };
+    /// later, `JOINT_NEWMV` with `jmvd_scale_mode > 0`, and adaptive-MVD
+    /// compound leaves.
+    pub(crate) static CODED_MODES: core::cell::Cell<[usize; 5]> =
+        const { core::cell::Cell::new([0; 5]) };
     /// Wedge inter-intra leaves of the final passes on this thread.
     pub(crate) static CODED_WEDGE_INTERINTRA: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
@@ -316,9 +317,10 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     /// Single-reference leaves of the final passes on this thread: TIP
-    /// `NEWMV`, BAWP `NEARMV`, and BAWP without chroma weighting.
-    pub(crate) static CODED_SINGLE: core::cell::Cell<[usize; 3]> =
-        const { core::cell::Cell::new([0; 3]) };
+    /// `NEWMV`, BAWP `NEARMV`, BAWP without chroma weighting, and TIP
+    /// `NEWMV` with `use_amvd`.
+    pub(crate) static CODED_SINGLE: core::cell::Cell<[usize; 4]> =
+        const { core::cell::Cell::new([0; 4]) };
 }
 
 #[cfg(test)]
@@ -331,6 +333,13 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool, references: us
         modes_seen[2] += usize::from(modes.refs.1 >= 3);
         modes_seen[3] +=
             usize::from(modes.mode == CompoundMode::JointNew && modes.jmvd_scale_mode > 0);
+        modes_seen[4] += usize::from(
+            modes.amvd
+                && !matches!(
+                    modes.mode,
+                    CompoundMode::NearNear | CompoundMode::GlobalGlobal
+                ),
+        );
         CODED_MODES.set(modes_seen);
     }
     let mut counts = CODED_TYPES.get();
@@ -341,6 +350,7 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool, references: us
         seen[0] += usize::from(single.ref_frame == references && single.mode == InterMode::New);
         seen[1] += usize::from(single.bawp.is_some() && single.mode == InterMode::Near);
         seen[2] += usize::from(single.bawp.is_some_and(|bawp| !bawp.chroma));
+        seen[3] += usize::from(single.ref_frame == references && single.amvd);
         CODED_SINGLE.set(seen);
         counts[4] += usize::from(single.interintra.is_some());
         counts[5] += usize::from(single.interintra.is_some() && tile_edge);
@@ -833,7 +843,11 @@ pub(crate) fn snap_prediction(
             let bases = syntax.compound_bases(leaf, &modes)?;
             for (mv, base) in modes.mvs.iter_mut().zip(bases) {
                 if let Some(base) = base {
-                    *mv = snap_mv(*mv, base, step);
+                    *mv = if modes.amvd {
+                        snap_amvd(*mv, base)
+                    } else {
+                        snap_mv(*mv, base, step)
+                    };
                 }
             }
             InterPrediction::Compound(modes)

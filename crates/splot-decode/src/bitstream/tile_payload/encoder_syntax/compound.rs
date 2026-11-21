@@ -17,6 +17,10 @@ use crate::prediction::inter::{CompoundYMode, EncoderCompoundMotion, EncoderMoti
 /// `JOINT_NEWMV` block codes.
 pub const JMVD_SCALE_MODES: u8 = crate::prediction::inter::JMVD_SCALE_MODES;
 
+/// `JOINT_AMVD_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values a
+/// `JOINT_NEWMV` block with `use_amvd` codes.
+pub const JMVD_AMVD_SCALE_MODES: u8 = crate::prediction::inter::JMVD_AMVD_SCALE_MODES;
+
 /// `MAX_CWP_NUM` (§ 3): the `cwp` values of [`CompoundType::Average`].
 pub const MAX_CWP_NUM: u8 = crate::prediction::inter::MAX_CWP_NUM;
 
@@ -80,6 +84,13 @@ pub struct CompoundModes {
     /// `jmvd_scale_mode`, below [`JMVD_SCALE_MODES`]; only `JOINT_NEWMV`
     /// codes it.
     pub jmvd_scale_mode: u8,
+    /// `use_amvd` (§ 5.20.7.6 `allow_amvd_mode`): the lists that code a
+    /// difference code each component as zero or `±` an [`AMVD_STEPS`]
+    /// entry, and `jmvd_scale_mode` stays below
+    /// [`JMVD_AMVD_SCALE_MODES`].
+    ///
+    /// [`AMVD_STEPS`]: super::AMVD_STEPS
+    pub amvd: bool,
     /// `interp_filter`, as [`InterModes::filter`]; a refined block codes
     /// none and predicts with `EIGHTTAP_SHARP`.
     pub filter: InterpolationFilter,
@@ -180,6 +191,7 @@ impl IntraTileSyntax {
                 drl,
                 mvs: [MotionVector::default(); 2],
                 jmvd_scale_mode: 0,
+                amvd: false,
                 filter: InterpolationFilter::EightTap,
                 optflow: false,
                 refinemv: false,
@@ -240,11 +252,15 @@ impl IntraTileSyntax {
                     motion.mvd = tile
                         .compound_mvd(&leaf.frontier, motion, targets)
                         .map_err(rule("motion vector"))?;
-                    if motion
-                        .mvd
-                        .iter()
-                        .any(|d| d.row % step != 0 || d.col % step != 0)
-                    {
+                    let amvd = |d: i32| d == 0 || super::AMVD_STEPS.contains(&d.abs());
+                    let off_lattice = |d: &Mv| {
+                        if motion.use_amvd {
+                            !amvd(d.row) || !amvd(d.col)
+                        } else {
+                            d.row % step != 0 || d.col % step != 0
+                        }
+                    };
+                    if motion.mvd.iter().any(off_lattice) {
                         return Err(EncoderSyntaxError::Unsupported(
                             "a NEWMV vector off the precision lattice",
                         ));
@@ -268,6 +284,7 @@ impl IntraTileSyntax {
                     independent_idx: None,
                     mvd: [Mv::default(); 2],
                     jmvd_scale_mode: 0,
+                    use_amvd: false,
                     interp: InterpolationFilter::EightTapSharp,
                     use_optflow: false,
                     use_refinemv: false,
@@ -319,6 +336,7 @@ impl IntraTileSyntax {
             } else {
                 0
             },
+            use_amvd: modes.amvd && y_mode.has_newmv(),
             interp: modes.filter,
             use_optflow: modes.optflow,
             use_refinemv: modes.refinemv,

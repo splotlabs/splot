@@ -339,6 +339,7 @@ fn large_leaf_stream(config: &Config) -> (Vec<Vec<u8>>, Vec<u8>, [usize; 2]) {
                     drl: [0, 0],
                     mvs: [MotionVector::default(); 2],
                     jmvd_scale_mode: 0,
+                    amvd: false,
                     filter: splot_recon::InterpolationFilter::EightTap,
                     optflow: false,
                     refinemv: false,

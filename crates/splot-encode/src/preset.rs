@@ -238,6 +238,15 @@ pub struct PresetParams {
     /// (§ 5.20.7.6 `compound_mode_same_refs`), not only `NEAR_NEARMV`. Off
     /// in every row: on lost at p0 (2026-11-21, paris f10: Y +0.13%).
     pub same_ref_modes: bool,
+    /// With adaptive MVD (`mvd_tools[0]`), each compound `NEWMV` trial also
+    /// tries `use_amvd` (§ 5.20.7.6 `allow_amvd_mode`), `JOINT_NEWMV` with
+    /// the scales below `JOINT_AMVD_SCALE_FACTOR_CNT`. Off in every row (not
+    /// measured at p0; `mvd_tools` is off in every row).
+    pub compound_amvd: bool,
+    /// With adaptive MVD (`mvd_tools[0]`), the TIP `NEWMV` of `tip_newmv`
+    /// also tries `use_amvd` (§ 5.20.7.6 `allow_amvd_mode`) and keeps the
+    /// cheaper coding. Off in every row (not measured at p0).
+    pub tip_amvd: bool,
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
     pub cdf_carry: bool,
@@ -1061,6 +1070,8 @@ preset_table! {
         compound_refs:         [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         jmvd_scales:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         same_ref_modes:        [false, false, false, false, false, false, false, false, false, false, false],
+        compound_amvd:         [false, false, false, false, false, false, false, false, false, false, false],
+        tip_amvd:              [false, false, false, false, false, false, false, false, false, false, false],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
@@ -1288,6 +1299,8 @@ mod tests {
             assert!(fast.compound_refs <= slow.compound_refs);
             assert!(fast.jmvd_scales <= slow.jmvd_scales);
             assert!(fast.same_ref_modes <= slow.same_ref_modes);
+            assert!(fast.compound_amvd <= slow.compound_amvd);
+            assert!(fast.tip_amvd <= slow.tip_amvd);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
