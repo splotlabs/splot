@@ -314,9 +314,10 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     /// Single-reference leaves of the final passes on this thread: TIP
-    /// `NEWMV`, BAWP `NEARMV`, and BAWP without chroma weighting.
-    pub(crate) static CODED_SINGLE: core::cell::Cell<[usize; 3]> =
-        const { core::cell::Cell::new([0; 3]) };
+    /// `NEWMV`, BAWP `NEARMV`, BAWP without chroma weighting, and TIP
+    /// `NEWMV` with `use_amvd`.
+    pub(crate) static CODED_SINGLE: core::cell::Cell<[usize; 4]> =
+        const { core::cell::Cell::new([0; 4]) };
 }
 
 #[cfg(test)]
@@ -346,6 +347,7 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool, references: us
         seen[0] += usize::from(single.ref_frame == references && single.mode == InterMode::New);
         seen[1] += usize::from(single.bawp.is_some() && single.mode == InterMode::Near);
         seen[2] += usize::from(single.bawp.is_some_and(|bawp| !bawp.chroma));
+        seen[3] += usize::from(single.ref_frame == references && single.amvd);
         CODED_SINGLE.set(seen);
         counts[4] += usize::from(single.interintra.is_some());
         counts[5] += usize::from(single.interintra.is_some() && tile_edge);
