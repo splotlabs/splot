@@ -4,7 +4,7 @@ First-party material in this repository is offered by **Bartosz Tomczyk**, a nat
 
 Required Notice: Copyright (c) 2026 Bartosz Tomczyk.
 
-This notice identifies Bartosz Tomczyk's original material. Contributions and separately identified third-party material keep their own ownership, notices and license terms. The AV2 specification mirror under `docs/spec/av2/` is © Alliance for Open Media and is not covered by this license; see [THIRD-PARTY-NOTICES](./docs/references/THIRD-PARTY-NOTICES.md).
+This notice identifies Bartosz Tomczyk's original material. Material that other people contribute under the [SplotLabs Contribution Terms](https://github.com/splotlabs/.github/blob/main/CLA.md) is licensed by its authors under the MIT No Attribution License (MIT-0). That license covers only the contributor's own original material, as the repository history identifies it. It does not make any file, crate or this repository MIT-0. Separately identified third-party material keeps its own ownership, notices and license terms. The AV2 specification mirror under `docs/spec/av2/` is © Alliance for Open Media and is not covered by this license; see [THIRD-PARTY-NOTICES](./docs/references/THIRD-PARTY-NOTICES.md).
 
 The standard PolyForm Noncommercial License 1.0.0 below governs the permissions it grants. For uses outside those permissions, contact **bartekplus@gmail.com** about an alternative commercial license. This scope notice does not narrow the permissions granted by the standard license. An alternative agreement applies only to rights Bartosz Tomczyk is authorized to grant.
 

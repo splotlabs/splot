@@ -201,8 +201,13 @@ own terms.
 ## Contributing.
 
 Read the [contribution policy](https://github.com/splotlabs/.github/blob/main/CONTRIBUTING.md)
-first. Contributions are accepted under a non-exclusive
-[Contributor License Agreement](https://github.com/splotlabs/.github/blob/main/CLA.md)
-with Bartosz Tomczyk. You keep your copyright. He receives the right to
-license your contribution under alternative commercial terms and future public
-licenses.
+first. Other people's contributions are licensed by their authors under the
+unmodified MIT No Attribution License (MIT-0), through the
+[SplotLabs Contribution Terms](https://github.com/splotlabs/.github/blob/main/CLA.md).
+You keep your copyright. MIT-0 lets everyone who receives your contribution
+reuse it, including commercially. It covers only your own original material.
+The rest of splot, including the file you edit, keeps its license.
+
+A contribution is merged only after each rights holder's acceptance of the
+approved terms is recorded. This link, a ticked box in a pull request and a
+green CI run are not that acceptance.

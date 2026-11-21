@@ -16,15 +16,17 @@ Read `docs/references/THIRD-PARTY-NOTICES.md` before encoder-facing changes.
 
 ## Contribution rights
 
-- [ ] I have named the actual authors and co-authors of this change and any employer or client that owns it.
-- [ ] I have listed third-party code, assets, data or copied specification text with origin and license, or none was used.
-- [ ] I understand the [CLA](https://github.com/splotlabs/.github/blob/main/CLA.md) gives Bartosz Tomczyk non-exclusive rights for alternative commercial licensing and future public-license changes, and I have followed the CLA Assistant signing request where one appears.
-- [ ] My own use of splot while preparing this change is permitted; signing the CLA is not a commercial-use license.
+For the maintainer's own work with no third-party material, write `Maintainer's own work` and remove the list.
+
+- [ ] My original material in this pull request is submitted under the [SplotLabs Contribution Terms](https://github.com/splotlabs/.github/blob/main/CLA.md) (MIT-0). I understand that MIT-0 lets anyone reuse it, including commercially.
+- [ ] Every author and co-author is named below. Each has accepted the terms or will accept them before merge.
+- [ ] No employer or client owns this work, or its authorization is arranged.
+- [ ] Third-party code, tables, assets, data and copied specification text are listed below with origin and license, or none is included.
+- [ ] I know of no patent of mine or my employer's that this change necessarily infringes, or I have told the maintainer.
+- [ ] My own use of splot while preparing this change is permitted by its license.
 
 Authors and co-authors:
 
-Ownership needing private review:
+Third-party material and AI assistance:
 
-AI assistance used:
-
-These boxes are declarations for review. They are not the CLA signature. Do not post contracts, private email addresses or identity documents here; write to bartekplus@gmail.com.
+These boxes are declarations for review. They are not acceptance of the terms and they do not prove ownership. Do not post contracts, private email addresses, identity documents or patent applications here; write to bartekplus@gmail.com.
