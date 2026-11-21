@@ -1599,12 +1599,16 @@ impl SourceResidualCoder<'_> {
         {
             return Ok(Vec::new());
         }
-        let plain_v = v_coeffs.clone();
-        plain_u.clone_from(u_coeffs);
+        let plain_v = (keep > 1).then(|| {
+            plain_u.clone_from(u_coeffs);
+            v_coeffs.clone()
+        });
         let mut out = Vec::with_capacity(keep);
-        for &(_, index) in ranked.iter().take(keep) {
-            u_coeffs.clone_from(plain_u);
-            v_coeffs.clone_from(&plain_v);
+        for (tried, &(_, index)) in ranked.iter().take(keep).enumerate() {
+            if let Some(plain_v) = plain_v.as_ref().filter(|_| tried > 0) {
+                u_coeffs.clone_from(plain_u);
+                v_coeffs.clone_from(plain_v);
+            }
             kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
             let cctx =
                 i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
