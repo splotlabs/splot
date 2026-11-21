@@ -15,8 +15,15 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 - `Y4mHeader` gains `color_range` (`XCOLORRANGE=`) and `chroma_siting`
   (`420jpeg`, `420mpeg2`, `420paldv`), both `None` when the stream does not
   state them, and reports an absent `I` tag as `?` instead of `p`.
-  `Y4mReader::tags` gives every stream header tag as written. The encoder
-  does not signal these values yet.
+  `Y4mReader::tags` gives every stream header tag as written.
+- `Config::content` describes the source: H.273 colour code points, range,
+  chroma sample position, sample aspect ratio and timing. The encoder writes
+  it as a content interpretation OBU (§ 5.15) on every key frame and never
+  converts samples. `splot encode` takes `--color-primaries`,
+  `--transfer-characteristics`, `--matrix-coefficients`, `--color-range`,
+  `--chroma-sample-position`, `--sar` and `--timing-info`, and passes the Y4M
+  `A` tag, `XCOLORRANGE` and the `C420mpeg2` / `C420paldv` siting through. A
+  Y4M input with a nonzero `A` tag now codes a few more bytes per key frame.
 
 ### Encoder 4:2:2 and 4:4:4
 

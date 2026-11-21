@@ -4736,6 +4736,38 @@ fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
 diagnostics = []
 
 [[feature]]
+id = "ENC-CONTENT-INTERPRETATION"
+name = "Encoder content interpretation OBU"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.15", "6.14", "7.3.3", "7.3.8.10", "7.3.8.11"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/content.rs"
+change_id = "encoder-content-interpretation"
+owner = "encoder"
+risk = "low"
+notes = "Config::content describes colour, range, chroma sample position, sample aspect ratio and timing. The encoder writes it as one progressive content interpretation OBU after the sequence header of every key frame, with the shortest colour and aspect-ratio coding, and writes none when nothing is described. splot encode passes the Y4M aspect, range and chroma siting through and takes flags for the rest. Samples are never converted."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_content_tests.rs::key_frames_carry_the_content_description", "crates/splot-encode/src/intra_frame_content_tests.rs::avm_decodes_a_described_stream_like_splot", "crates/splot-encode/src/intra_frame_content_tests.rs::rejects_a_description_the_input_cannot_have", "crates/splot-core/src/headers/content_interpretation.rs::tests::shortest_descriptions_keep_the_derived_values", "crates/splot-cli/tests/encode_decode_roundtrip.rs::content_flags_write_a_content_interpretation_obu"]
+commands = ["cargo test -p splot-encode content", "cargo test -p splot-cli --test encode_decode_roundtrip content_flags"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MINIMAL-INTRA-IVF"
 name = "Encoder minimal-intra IVF temporal-unit assembler"
 category = "encoder"

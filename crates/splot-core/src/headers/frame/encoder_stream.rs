@@ -992,14 +992,14 @@ pub(super) fn write_uniform_tile_info(
 /// # Errors
 /// Returns [`EncoderHeaderError`] if `seq` has no complete view, a tile is empty or
 /// too long for `TileSizeBytes`, the tile count differs from the header, or an OBU
-/// does not serialize. The OBUs `film_grain` (empty for none) follow the
-/// sequence header.
+/// does not serialize. The OBUs `key_obus` (empty for none) follow the sequence
+/// header: a content interpretation OBU, then film grain OBUs (§ 7.3.3).
 pub fn encode_key_frame_temporal_unit(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,
     with_sequence_header: bool,
     tiles: &[&[u8]],
-    film_grain: &[u8],
+    key_obus: &[u8],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let view = CoreSeqView::from_sequence(seq).ok_or(EncoderHeaderError::Incomplete)?;
     let mut unit = encode_temporal_delimiter_obu()?;
@@ -1019,7 +1019,7 @@ pub fn encode_key_frame_temporal_unit(
         )?;
     }
     unit.extend_from_slice(&w.into_bytes());
-    unit.extend_from_slice(film_grain);
+    unit.extend_from_slice(key_obus);
     let mut w = BitWriter::new();
     let mut payload = BitWriter::new();
     write_tile_group_obu(

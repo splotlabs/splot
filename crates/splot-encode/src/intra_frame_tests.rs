@@ -1919,6 +1919,8 @@ mod ccso;
 mod cdef_skip;
 #[path = "intra_frame_compound_tests.rs"]
 mod compound;
+#[path = "intra_frame_content_tests.rs"]
+mod content;
 #[path = "intra_frame_delta_q_tests.rs"]
 mod delta_q;
 #[path = "intra_frame_gdf_tests.rs"]

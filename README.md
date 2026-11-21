@@ -72,6 +72,7 @@ You choose the trade-off:
 | More speed              | `--preset 10` (0 is best, 10 is fastest, 6 is the default) |
 | Low latency             | `--low-delay` (one packet per frame) |
 | Natural film look       | `--film-grain`                     |
+| HDR and colour tags     | `--color-primaries 9 --transfer-characteristics 16 --matrix-coefficients 9` |
 | More cores in parallel  | `--tiles 2x2 --threads 8`          |
 | Per-frame quality data  | `--stats` (CSV with bits and PSNR) |
 
