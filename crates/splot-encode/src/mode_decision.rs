@@ -323,6 +323,17 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         self.rank(leaf, candidates, LUMA, &mut ranked)?;
         ranked.sort_by_key(|&(satd, _)| satd);
         let trials = usize::from(self.preset.dip_trials.max(1));
+        #[cfg(test)]
+        if trials > 1 {
+            let key = (leaf.row4(), leaf.col4(), leaf.block_size());
+            let new = ranked
+                .iter()
+                .take(trials)
+                .enumerate()
+                .filter(|&(rank, &(satd, _))| rank > 0 || satd >= angular)
+                .filter_map(|(_, &(_, modes))| modes.dip.map(|dip| (key, dip)));
+            crate::tile_writer::DIP_NEW.with_borrow_mut(|set| set.extend(new));
+        }
         if trials == 1 {
             ranked.retain(|&(satd, _)| satd < angular);
         }
