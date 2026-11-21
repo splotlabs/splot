@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#![allow(clippy::unwrap_used)]
+
 use crate::reference::buffer::RefSlots;
 use splot_core::error::SymbolCdfErrorKind;
 use splot_core::headers::sequence::SuperblockSize;
@@ -18,9 +20,11 @@ use super::prediction::sub8x8_chroma_disables_compound;
 use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
-    frame_segment_id_map, frame_superblock_h4, inter_skip_txfm_ctx, leaf_uses_general_intra,
-    map_inter_multiblock_error, predict_interintra_planes, read_inter_intra_syntax_enabled,
-    scheduled_motion_field_inputs, skip_segment_reference, symbol_read_error, validate_segment_id,
+    DecodeBlockFrontier, FrameHeaderCore, SequenceHeader, TileSegmentIdState, frame_segment_id_map,
+    frame_superblock_h4, inter_skip_txfm_ctx, leaf_uses_general_intra, map_inter_multiblock_error,
+    predict_interintra_planes, read_inter_intra_syntax_enabled, read_segment_id,
+    scheduled_motion_field_inputs, segment_block_qindex, segment_feature_mask, segment_has,
+    skip_segment_reference, symbol_read_error, validate_segment_id,
 };
 
 #[test]
@@ -1204,4 +1208,137 @@ fn offset_chroma_motion_compensation_stays_leaf_scoped() {
             chroma_luma_h: 4,
         }
     );
+}
+
+const SEG_LVL_ALT_Q: usize = 0;
+
+fn extended_segmentation_fixture() -> (SequenceHeader, FrameHeaderCore) {
+    const FIXTURE: &[u8] = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-2frame-global-rotzoom-64x64-q80.ivf"
+    );
+    let (mut sequence, mut core, _) =
+        super::super::tests::parse_inter_core_for_validation(FIXTURE).unwrap();
+    sequence.segment = Some(splot_core::headers::sequence::SequenceSegmentConfig {
+        enable_ext_seg: true,
+        max_segments: 16,
+        seq_seg_info_present_flag: false,
+        seq_allow_seg_info_change: None,
+        segment_info: None,
+    });
+    let seg = core.segmentation_params.as_mut().unwrap();
+    seg.segmentation_enabled = true;
+    seg.segmentation_update_map = true;
+    seg.segmentation_temporal_update = false;
+    seg.last_active_seg_id = 15;
+    for (segment, data) in [(8, -30), (15, 20)] {
+        seg.features[segment][SEG_LVL_ALT_Q] = splot_core::segment::SegmentFeature {
+            enabled: true,
+            data,
+        };
+    }
+    core.lossless_info = None;
+    (sequence, core)
+}
+
+fn read_extended_segment_id(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    left_neighbour: Option<u8>,
+    symbols: &[(TileCdfSelector, u8)],
+) -> crate::Result<u8> {
+    let payload = crate::bitstream::tile_payload::encode_symbol_sequence(symbols);
+    let mut work_unit =
+        crate::bitstream::tile_payload::make_test_work_unit(&payload, CdfUpdateMode::Disabled);
+    let mut decoder = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    )
+    .unwrap();
+    let mut state = TileSegmentIdState::new_for_tile(0..64, 0..64).unwrap();
+    let col = if let Some(id) = left_neighbour {
+        state.record_block(0, 0, 1, 1, id);
+        1
+    } else {
+        0
+    };
+    let frontier = DecodeBlockFrontier::shared_leaf(0, col, BlockSize::new(0).unwrap());
+    read_segment_id(
+        &mut work_unit,
+        &mut decoder,
+        &state,
+        sequence,
+        core,
+        &frontier,
+        false,
+        ByteOffset::new(0),
+    )
+}
+
+#[test]
+fn extended_segment_ids_eight_to_fifteen_decode_through_the_ext_flag_path() {
+    let (sequence, core) = extended_segmentation_fixture();
+    for (raw, expected) in [(0, 8), (3, 11), (7, 15)] {
+        let symbols = [
+            (TileCdfSelector::SegIdExtFlag { ctx: 0 }, 1),
+            (TileCdfSelector::SegmentId { ctx: 0, ext: true }, raw),
+        ];
+        assert_eq!(
+            read_extended_segment_id(&sequence, &core, None, &symbols).unwrap(),
+            expected
+        );
+    }
+    let low = [
+        (TileCdfSelector::SegIdExtFlag { ctx: 0 }, 0),
+        (TileCdfSelector::SegmentId { ctx: 0, ext: false }, 7),
+    ];
+    assert_eq!(
+        read_extended_segment_id(&sequence, &core, None, &low).unwrap(),
+        7
+    );
+}
+
+#[test]
+fn extended_segment_id_is_deinterleaved_around_a_predictor_of_fifteen() {
+    let (sequence, core) = extended_segmentation_fixture();
+    for (ext, raw, expected) in [(false, 0, 15), (false, 1, 14), (true, 1, 6), (true, 7, 0)] {
+        let symbols = [
+            (TileCdfSelector::SegIdExtFlag { ctx: 0 }, u8::from(ext)),
+            (TileCdfSelector::SegmentId { ctx: 0, ext }, raw),
+        ];
+        assert_eq!(
+            read_extended_segment_id(&sequence, &core, Some(15), &symbols).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn extended_segment_id_above_last_active_is_malformed() {
+    let (sequence, mut core) = extended_segmentation_fixture();
+    core.segmentation_params
+        .as_mut()
+        .unwrap()
+        .last_active_seg_id = 9;
+    let symbols = [
+        (TileCdfSelector::SegIdExtFlag { ctx: 0 }, 1),
+        (TileCdfSelector::SegmentId { ctx: 0, ext: true }, 2),
+    ];
+    assert!(matches!(
+        read_extended_segment_id(&sequence, &core, None, &symbols),
+        Err(DecodeError::MalformedSource { issue }) if issue.spec_section() == Some("6.19.5.8")
+    ));
+}
+
+#[test]
+fn per_segment_state_accepts_segment_ids_up_to_fifteen() {
+    let (sequence, core) = extended_segmentation_fixture();
+    assert_eq!(splot_core::segment::MAX_SEGMENTS, 16);
+    let mask = segment_feature_mask(&core, SEG_LVL_ALT_Q);
+    assert_eq!(mask, 1 << 8 | 1 << 15);
+    assert!(segment_has(mask, 8) && segment_has(mask, 15));
+    assert!(!segment_has(mask, 7) && !segment_has(mask, 9));
+    assert_eq!(segment_block_qindex(&sequence, &core, 15, 100), 120);
+    assert_eq!(segment_block_qindex(&sequence, &core, 8, 100), 70);
+    assert_eq!(segment_block_qindex(&sequence, &core, 9, 100), 100);
 }

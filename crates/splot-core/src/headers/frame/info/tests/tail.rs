@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Frame-header EOF and activation-prefix tests.
+//! Frame-header EOF, activation-prefix and display-order-hint tests.
 
 use super::*;
 
@@ -200,4 +200,39 @@ fn frame_header_core_inter_mfh_default_frame_size_uses_mfh_dims() {
 
     assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
     assert_eq!(core.frame_size, Some(FrameSize::new(48, 32)));
+}
+
+#[test]
+fn closed_loop_key_display_order_hint_is_not_extended_past_the_lsb_window() {
+    let valid = [true];
+    let hints = [68];
+    let lsbs = [68];
+    let implicit = [false];
+    let immediate = [true];
+    let widths = [64];
+    let heights = [64];
+    let reference_state = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
+        .with_single_layer_order_hint_state(&lsbs, &implicit, &immediate);
+    assert_eq!(
+        get_disp_order_hint(
+            ObuType::ClosedLoopKey,
+            Some(FrameType::Key),
+            None,
+            0,
+            7,
+            &reference_state,
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        get_disp_order_hint(
+            ObuType::RegularTileGroup,
+            Some(FrameType::Inter),
+            None,
+            0,
+            7,
+            &reference_state,
+        ),
+        Some(128)
+    );
 }
