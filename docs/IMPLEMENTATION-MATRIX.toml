@@ -5879,7 +5879,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_ist_kernel_and_set_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/kernels/ist.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/ist.rs::tests::forward_undoes_inverse", "crates/splot-encode/src/intra_tools_tests.rs::ist_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_ist_blocks", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_ist_frames_like_splot"]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tile_writer/tests.rs::every_ist_kernel_and_set_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/kernels/ist.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/ist.rs::tests::forward_undoes_inverse", "crates/splot-encode/src/intra_tools_tests.rs::ist_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_ist_blocks", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_ist_frames_like_splot"]
 commands = ["cargo test -p splot-encode ist --locked"]
 fixtures = []
 diagnostics = []
