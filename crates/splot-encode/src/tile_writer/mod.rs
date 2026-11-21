@@ -16,6 +16,7 @@ use core::ops::Range;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
+use splot_core::symbol::CdfUpdateMode;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
@@ -120,7 +121,13 @@ impl KeyFrameTileWriter {
         let syntax = IntraTileSyntax::with_start(seq, core, refs, cdfs, tile)?;
         let (rows, cols) = syntax.tile_ranges();
         let sb4 = syntax.superblock_size4();
+        let update = if core.disable_cdf_update == Some(true) {
+            CdfUpdateMode::Disabled
+        } else {
+            CdfUpdateMode::Enabled
+        };
         let config = SymbolEncoderConfig::new()
+            .with_cdf_update_mode(update)
             .with_max_output_bytes(MAX_TILE_BYTES)
             .with_max_operations(MAX_TILE_OPERATIONS);
         Ok(Self {
@@ -313,6 +320,9 @@ thread_local! {
     /// passes on this thread.
     pub(crate) static CODED_WARP_TOOLS: core::cell::Cell<[usize; 2]> =
         const { core::cell::Cell::new([0; 2]) };
+    /// Leaves of the final passes on this thread that code explicit CFL
+    /// alphas with alpha 0 in one plane.
+    pub(crate) static CFL_ZERO_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -505,6 +515,14 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             tx_partition,
             ..
         } = choice;
+        #[cfg(test)]
+        if self.filters.is_some()
+            && matches!(modes.uv_mode,
+                splot_decode::encoder_syntax::ChromaMode::Cfl { alpha_u, alpha_v }
+                    if alpha_u == 0 || alpha_v == 0)
+        {
+            CFL_ZERO_CODED.set(CFL_ZERO_CODED.get() + 1);
+        }
         if let Some(palette) = &modes.palette {
             self.syntax
                 .set_palette_map(coder.palette_map(leaf, palette)?);
