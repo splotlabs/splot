@@ -98,9 +98,6 @@ impl UnitPosition {
 /// the Annex B OBUs from one temporal delimiter up to the next.
 #[derive(Debug)]
 pub struct TemporalUnit<'a> {
-    /// Where the unit starts; pass it to [`TemporalUnitReader::seek`] to read
-    /// the stream again from this unit.
-    pub position: UnitPosition,
     /// Zero-based index: the IVF frame record index, or the Annex B unit count.
     pub index: usize,
     /// Presentation timestamp from the IVF frame header; `None` for Annex B.
@@ -110,6 +107,22 @@ pub struct TemporalUnit<'a> {
     /// The unit's OBUs (`[leb128 length ++ OBU]` each). Empty for an IVF frame
     /// record with no payload.
     pub bytes: &'a [u8],
+}
+
+impl TemporalUnit<'_> {
+    /// Where the unit starts; pass it to [`TemporalUnitReader::seek`] to read
+    /// the stream again from this unit.
+    #[must_use]
+    pub const fn position(&self) -> UnitPosition {
+        let record_header = match self.pts {
+            Some(_) => IVF_FRAME_HEADER_SIZE as u64,
+            None => 0,
+        };
+        UnitPosition {
+            offset: self.offset.get() - record_header,
+            index: self.index,
+        }
+    }
 }
 
 /// An error that aborts streaming (as opposed to a malformed-but-reportable
@@ -155,7 +168,7 @@ pub struct TemporalUnitReader<R: Read> {
     format: Option<BitstreamFormat>,
     /// The IVF header, once consumed and validated.
     ivf_header: Option<IvfHeader>,
-    /// Next IVF frame index to assign.
+    /// Next index to assign: the IVF frame record, or the Annex B temporal unit.
     frame_index: usize,
     /// Once set, all further reads yield `Ok(None)`.
     done: bool,
@@ -164,8 +177,6 @@ pub struct TemporalUnitReader<R: Read> {
     unit_offset: u64,
     /// `buf` holds the temporal delimiter that opens the next Annex B unit.
     carried: bool,
-    /// The IVF warning that ended [`Self::next_temporal_unit`].
-    warning: Option<IvfWarning>,
 }
 
 impl<R: Read> TemporalUnitReader<R> {
@@ -191,7 +202,6 @@ impl<R: Read> TemporalUnitReader<R> {
             unit: Vec::new(),
             unit_offset: 0,
             carried: false,
-            warning: None,
         }
     }
 
@@ -235,7 +245,8 @@ impl<R: Read> TemporalUnitReader<R> {
     ///
     /// An IVF frame record is one unit. Annex B OBUs are collected from one
     /// temporal delimiter up to the next, so peak memory is one temporal unit.
-    /// Use either this or [`Self::next_unit`] on one reader, not both.
+    /// A trailing IVF container warning ends the stream here; [`Self::next_unit`]
+    /// reports it. Use either call on one reader, not both.
     ///
     /// # Errors
     /// Returns what [`Self::next_unit`] returns, and
@@ -250,17 +261,9 @@ impl<R: Read> TemporalUnitReader<R> {
                     payload_offset,
                     ..
                 }) => (index, pts, payload_offset),
-                Some(StreamUnit::IvfWarning(warning)) => {
-                    self.warning = Some(warning);
-                    return Ok(None);
-                }
-                Some(StreamUnit::AnnexBObu { .. }) | None => return Ok(None),
+                _ => return Ok(None),
             };
             return Ok(Some(TemporalUnit {
-                position: UnitPosition {
-                    offset: payload_offset.get() - IVF_FRAME_HEADER_SIZE as u64,
-                    index,
-                },
                 index,
                 pts: Some(pts),
                 offset: payload_offset,
@@ -298,28 +301,17 @@ impl<R: Read> TemporalUnitReader<R> {
         if self.unit.is_empty() {
             return Ok(None);
         }
-        let position = UnitPosition {
-            offset: self.unit_offset,
-            index: self.frame_index,
-        };
-        self.frame_index += 1;
+        let offset = ByteOffset::new(self.unit_offset);
         if self.carried {
             self.unit_offset = self.pos - self.buf.len() as u64;
         }
+        self.frame_index += 1;
         Ok(Some(TemporalUnit {
-            position,
-            index: position.index,
+            index: self.frame_index - 1,
             pts: None,
-            offset: ByteOffset::new(position.offset),
+            offset,
             bytes: &self.unit,
         }))
-    }
-
-    /// The IVF container warning that ended [`Self::next_temporal_unit`], if
-    /// the stream ended on one.
-    #[must_use]
-    pub const fn ivf_warning(&self) -> Option<&IvfWarning> {
-        self.warning.as_ref()
     }
 
     /// Resolves the container format on first use by probing up to 4 bytes.
@@ -548,7 +540,8 @@ impl<R: Read + Seek> TemporalUnitReader<R> {
     /// from this stream, so the next call yields that unit again.
     ///
     /// A list of positions is a seek index of the file: one forward pass
-    /// builds it with one unit in memory at a time.
+    /// builds it with one unit in memory at a time. A reader that has read
+    /// nothing reads the first unit before it seeks, to learn the format.
     ///
     /// # Errors
     /// Returns [`ReaderError`] when the stream start cannot be read or the
@@ -564,7 +557,6 @@ impl<R: Read + Seek> TemporalUnitReader<R> {
         self.pending_pos = self.pending_len;
         self.frame_index = position.index;
         self.carried = false;
-        self.warning = None;
         self.done = false;
         Ok(())
     }
@@ -659,7 +651,7 @@ mod tests {
             let mut reader = TemporalUnitReader::new(io::Cursor::new(data));
             let mut positions = Vec::new();
             while let Some(unit) = reader.next_temporal_unit().unwrap() {
-                positions.push(unit.position);
+                positions.push(unit.position());
             }
             let units = {
                 reader.seek(positions[0]).unwrap();
@@ -875,8 +867,8 @@ mod proptests {
     use super::*;
     use proptest::prelude::*;
 
-    /// Drains a reader to exhaustion (bounded), asserting only that it never
-    /// panics and always terminates.
+    /// Drains a reader to exhaustion (bounded), asserting that it never panics
+    /// and always terminates, and that a seek reads each temporal unit again.
     fn drain(data: &[u8]) {
         let mut reader = TemporalUnitReader::new(data);
         for _ in 0..100_000 {
@@ -884,6 +876,15 @@ mod proptests {
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => break,
             }
+        }
+        let mut reader = TemporalUnitReader::new(io::Cursor::new(data));
+        let mut positions = Vec::new();
+        while let Ok(Some(unit)) = reader.next_temporal_unit() {
+            positions.push((unit.position(), unit.bytes.to_vec()));
+        }
+        for (position, bytes) in positions.into_iter().rev() {
+            reader.seek(position).unwrap();
+            assert_eq!(reader.next_temporal_unit().unwrap().unwrap().bytes, bytes);
         }
     }
 

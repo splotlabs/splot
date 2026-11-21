@@ -36,7 +36,7 @@ pub struct DecoderSettings {
     /// [`SendStatus::Full`].
     pub frame_delay: FrameDelay,
     /// Resource limits. [`DecodeLimitName::MaxInputBytes`] counts every byte
-    /// sent to the decoder.
+    /// sent since the decoder opened or [`Decoder::flush`] ran.
     pub limits: DecodeLimits,
     /// Leaves film grain out of the pictures; [`Picture::apply_film_grain`]
     /// adds it to a picture later.

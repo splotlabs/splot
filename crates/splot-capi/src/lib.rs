@@ -303,8 +303,7 @@ pub unsafe extern "C" fn splot_flush(decoder: *mut SplotDecoder) {
     }
 }
 
-/// Takes the next picture in display order into `*out`, without waiting for
-/// the data the decoder still decodes.
+/// Takes the next picture in display order into `*out`.
 ///
 /// Returns [`SPLOT_OK`], [`SPLOT_EAGAIN`] when more data is needed,
 /// [`SPLOT_EOF`] after the last picture of a drained decoder,
