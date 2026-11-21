@@ -141,6 +141,12 @@ pub struct PresetParams {
     /// 16 at p0-p4 and 24 at p5-p10 (2026-10-31): 48 lost paris p6 +0.92%
     /// over 30 frames at 0.84x CPU; 24 measured +0.29% at 0.87x.
     pub compound_skip_sad: u8,
+    /// `NEWMV` reference pruning, per frame kind: when a leaf has more than
+    /// two references, only the two whose `GLOBALMV` and `NEARMV`
+    /// candidates score lowest in MDS0 terms (luma SATD plus mode rate),
+    /// and each other one within this margin, in 1/16, of the best, run the
+    /// `NEWMV` search. `255` searches every reference.
+    pub newmv_ref_margin: Levels<u8>,
     /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
     pub subpel_depth: u8,
     /// The largest frame `base_q_idx` that codes eighth-pel vectors when
@@ -968,6 +974,11 @@ preset_table! {
         me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     6,     4,     4],
         me_seeds:              [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         compound_skip_sad:     [   16,    16,    16,    16,    16,    24,    24,    24,    24,    24,    24],
+        newmv_ref_margin:      frames([
+                               [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0]]),
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     1],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     1,     1],
@@ -1161,6 +1172,7 @@ mod tests {
             assert!(at_most(&fast.motion_range, &slow.motion_range));
             assert!(fast.hme_range <= slow.hme_range && fast.me_range <= slow.me_range);
             assert!(slow.me_seeds == 0 || fast.me_seeds >= slow.me_seeds);
+            assert!(at_most(&fast.newmv_ref_margin, &slow.newmv_ref_margin));
             assert!(
                 slow.compound_skip_sad == 0 || fast.compound_skip_sad >= slow.compound_skip_sad
             );
