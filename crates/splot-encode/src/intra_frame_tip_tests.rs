@@ -718,6 +718,7 @@ fn tip_bawp_stream(
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     crate::tile_writer::CODED_SINGLE.set([0; 3]);
+    crate::mode_decision::TIP_NEWMV_ON_NEAR.set(0);
     let noisy = |config: &Config, index: u32| {
         super::grain_streams::with_noise(config, &zooming_frame(config, index), 3 + index)
     };
@@ -732,12 +733,15 @@ fn tip_bawp_stream(
 
 /// The search codes TIP `NEWMV` leaves, BAWP `NEARMV` leaves and BAWP leaves
 /// without chroma weighting in frames that later frames reference, with the
-/// deblocking filter on; the stream decodes to the encoder recon and codes
-/// the same bytes on 1, 2 and 8 threads.
+/// deblocking filter on; leaves whose TIP `NEWMV` search ends on a `NEARMV`
+/// vector add no `NEWMV` candidate, so they code `NEARMV`; the stream decodes
+/// to the encoder recon and codes the same bytes on 1, 2 and 8 threads.
 #[test]
 fn tip_newmv_and_bawp_variants_decode_on_any_thread_count() {
-    let (one, expected, cores, coded) = tip_bawp_stream(160, 1);
+    let (one, expected, cores, coded) = tip_bawp_stream(180, 1);
     assert!(coded.iter().all(|&count| count > 0), "{coded:?}");
+    let on_near = crate::mode_decision::TIP_NEWMV_ON_NEAR.get();
+    assert!(on_near > 0, "no TIP NEWMV search ended on a NEARMV vector");
     assert!(cores.iter().any(|core| {
         core.deblocking_filter_params
             .as_ref()
@@ -745,7 +749,7 @@ fn tip_newmv_and_bawp_variants_decode_on_any_thread_count() {
     }));
     assert_same_samples(&decode(&one), &expected, "TIP NEWMV and BAWP");
     for threads in [2, 8] {
-        assert!(tip_bawp_stream(160, threads).0 == one, "{threads} threads");
+        assert!(tip_bawp_stream(180, threads).0 == one, "{threads} threads");
     }
 }
 
@@ -756,7 +760,7 @@ fn avm_decodes_tip_newmv_and_bawp_variants_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let (units, ..) = tip_bawp_stream(160, 1);
+    let (units, ..) = tip_bawp_stream(180, 1);
     let avm = avm_decode(
         &avmdec,
         std::slice::from_ref(&units),

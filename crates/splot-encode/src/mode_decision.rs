@@ -561,11 +561,6 @@ impl TrialCoder<'_, '_> {
         if self.preset.tip > 0 && self.syntax.tip_allowed(leaf)? {
             let ref_frame = self.syntax.reference_count();
             let tip = self.syntax.single_mvs(leaf, ref_frame)?;
-            if let (true, Some(motion)) = (self.preset.tip_newmv, self.motion)
-                && let Some(modes) = self.tip_newmv(leaf, motion, &tip)?
-            {
-                push(modes.mv, modes);
-            }
             for (drl, &mv) in tip.near.iter().enumerate() {
                 push(
                     mv,
@@ -581,6 +576,11 @@ impl TrialCoder<'_, '_> {
                         bawp: None,
                     },
                 );
+            }
+            if let (true, Some(motion)) = (self.preset.tip_newmv, self.motion)
+                && let Some(modes) = self.tip_newmv(leaf, motion, &tip)?
+            {
+                push(modes.mv, modes);
             }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
@@ -1725,3 +1725,5 @@ mod compound_search;
 mod interintra_search;
 #[path = "tip_search.rs"]
 mod tip_search;
+#[cfg(test)]
+pub(crate) use tip_search::TIP_NEWMV_ON_NEAR;
