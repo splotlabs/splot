@@ -247,6 +247,13 @@ pub struct PresetParams {
     /// also tries `use_amvd` (§ 5.20.7.6 `allow_amvd_mode`) and keeps the
     /// cheaper coding. Off in every row (not measured at p0).
     pub tip_amvd: bool,
+    /// With `warp`, the best `WARPMV` of a leaf also tries each smooth-mask
+    /// `warp_inter_intra` mode (§ 5.20.7.15), and at `2` each wedge, by luma
+    /// SATD, `0..=2`. `0` in every row (not measured at p0).
+    pub warp_interintra: u8,
+    /// With `warp`, each compound `NEW_NEWMV` trial also tries
+    /// `use_local_warp` (§ 5.20.7.14). Off in every row (not measured at p0).
+    pub compound_local_warp: bool,
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
     pub cdf_carry: bool,
@@ -347,6 +354,10 @@ pub struct PresetParams {
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
+    /// Luma loop-restoration unit sizes the Wiener-NS search tries,
+    /// `1..=4`: the superblock size, then each larger size of § 5.18.7.11 up
+    /// to 512 whose units do not cross a tile edge; the lowest RD cost wins.
+    pub lr_unit_sizes: u8,
     /// The most CDEF strength sets a frame codes, `1..=8`.
     pub cdef_strengths: u8,
     /// CDEF `(pri, sec)` strength pairs the search tries, `0..=64`: `0`
@@ -853,11 +864,13 @@ impl PresetParams {
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
         check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
         check("ccso_bo_band_log2", self.ccso_bo_band_log2, 3, 6, "")?;
+        check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
         check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
         check("interintra_search", self.interintra_search, 0, 1, "")?;
+        check("warp_interintra", self.warp_interintra, 0, 2, "")?;
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
@@ -1131,6 +1144,8 @@ preset_table! {
         same_ref_modes:        [false, false, false, false, false, false, false, false, false, false, false],
         compound_amvd:         [false, false, false, false, false, false, false, false, false, false, false],
         tip_amvd:              [false, false, false, false, false, false, false, false, false, false, false],
+        warp_interintra:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        compound_local_warp:   [false, false, false, false, false, false, false, false, false, false, false],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
@@ -1168,6 +1183,7 @@ preset_table! {
         ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
         ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+        lr_unit_sizes:         [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
@@ -1371,6 +1387,8 @@ mod tests {
             assert!(fast.same_ref_modes <= slow.same_ref_modes);
             assert!(fast.compound_amvd <= slow.compound_amvd);
             assert!(fast.tip_amvd <= slow.tip_amvd);
+            assert!(fast.warp_interintra <= slow.warp_interintra);
+            assert!(fast.compound_local_warp <= slow.compound_local_warp);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
@@ -1604,6 +1622,7 @@ mod tests {
             (&[("cdef_strengths", "0")], "cdef_strengths"),
             (&[("ccso_candidates", "113")], "ccso_candidates"),
             (&[("ccso_bo_band_log2", "7")], "ccso_bo_band_log2"),
+            (&[("lr_unit_sizes", "0")], "lr_unit_sizes"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
             (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),
@@ -1611,6 +1630,7 @@ mod tests {
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("interintra_search", "2")], "interintra_search"),
+            (&[("warp_interintra", "3")], "warp_interintra"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
             (&[("cdf_update_tile", "2")], "cdf_update_tile"),

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use splot_decode::encoder_syntax::{
     ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax,
     JMVD_AMVD_SCALE_MODES, LeafBlock, MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, PartitionNode, SingleMvs,
-    SyntaxSnapshot, TxPartition, tx_log2,
+    SyntaxSnapshot, TxPartition, WarpModel, tx_log2,
 };
 use splot_recon::InterpolationFilter;
 
@@ -635,7 +635,15 @@ impl TrialCoder<'_, '_> {
                 (ref_frame, found, cost),
                 usize::from(self.preset.warp),
             )?;
+            let candidate = warps.iter().find_map(|&(_, warp)| match warp {
+                InterPrediction::Warp(modes) if modes.model == WarpModel::Candidate => Some(modes),
+                _ => None,
+            });
             choices.extend(warps.into_iter().map(|(_, warp)| LeafChoice::inter(warp)));
+            if let (Some(base), true) = (candidate, self.preset.warp_interintra > 0) {
+                let found = self.warp_interintra_choice(leaf, motion, base)?;
+                choices.extend(found.into_iter().map(LeafChoice::inter));
+            }
         }
         if self.preset.compound_candidates > 0 && self.syntax.skip_mode_allowed(leaf) {
             let mut cheapest: Vec<([MotionVector; 2], Bits, InterPrediction)> = Vec::new();
@@ -903,7 +911,9 @@ impl TrialCoder<'_, '_> {
     /// pair also tries `NEAR_NEWMV` over the list-0 DRL indices and
     /// `NEW_NEWMV` with [`Self::same_ref_partner`] (§ 5.20.7.6
     /// `compound_mode_same_refs`); its `GLOBAL_GLOBALMV` predicts the samples
-    /// of `GLOBALMV` at a higher rate, so it is not tried.
+    /// of `GLOBALMV` at a higher rate, so it is not tried. With
+    /// `preset.compound_local_warp` each kept `NEW_NEWMV` also enters with
+    /// `use_local_warp`.
     fn compound_candidates(
         &mut self,
         leaf: &LeafBlock,
@@ -932,6 +942,7 @@ impl TrialCoder<'_, '_> {
                 filter: InterpolationFilter::EightTap,
                 optflow: false,
                 refinemv: false,
+                local_warp: false,
                 blend: CompoundType::default(),
             };
             let zero = [MotionVector::default(); 2];
@@ -1056,6 +1067,20 @@ impl TrialCoder<'_, '_> {
         priced.truncate(keep);
         let mut out = Vec::with_capacity(priced.len());
         for (_, trial, typed) in priced {
+            let local = InterPrediction::Compound(CompoundModes {
+                local_warp: true,
+                filter: InterpolationFilter::EightTap,
+                optflow: false,
+                refinemv: false,
+                blend: CompoundType::default(),
+                ..trial
+            });
+            if self.preset.compound_local_warp
+                && trial.mode == CompoundMode::NewNew
+                && codable(self.syntax.inter_mvs(leaf, local).map_err(Into::into))?.is_some()
+            {
+                out.push(LeafChoice::inter(local));
+            }
             let trial = self.refined(leaf, motion, trial, &typed)?;
             #[cfg(test)]
             let trial = self.forced_type(leaf, trial)?;

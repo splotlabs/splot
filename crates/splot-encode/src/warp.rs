@@ -66,6 +66,7 @@ pub(crate) fn search(
         drl: 0,
         mv: None,
         precision: None,
+        interintra: None,
     };
     for warp_idx in 0..WARP_CANDIDATES {
         scorer.score(WarpModes { warp_idx, ..base })?;

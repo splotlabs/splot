@@ -7,6 +7,11 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 - `splot encode` without `--qp`, `--crf` or `--bitrate` codes `--crf 20`
   (8-bit base qindex 80); `--qp 80` keeps the old flat default.
+- `Y4mHeader` gains `color_range` (`XCOLORRANGE=`) and `chroma_siting`
+  (`420jpeg`, `420mpeg2`, `420paldv`), both `None` when the stream does not
+  state them, and reports an absent `I` tag as `?` instead of `p`.
+  `Y4mReader::tags` gives every stream header tag as written. The encoder
+  does not signal these values yet.
 
 ### Encoder 4:2:2 and 4:4:4
 
