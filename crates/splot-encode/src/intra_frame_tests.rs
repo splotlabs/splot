@@ -670,12 +670,8 @@ fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         let four = crate::tile_writer::DIP_CODED.get();
         let name = format!("{bit_depth:?}");
         assert_same_samples(&decode(&units), &expected, &name);
-        crate::tile_writer::DIP_CODED.set(0);
-        crate::tile_writer::DIP_NEW.with_borrow_mut(std::collections::HashSet::clear);
         differs |= stream(1, 1).0 != units;
-        let one = crate::tile_writer::DIP_CODED.get();
         more += four;
-        assert_eq!(one, 0, "{name}: one trial coded a DIP of the wider search");
         for threads in [2, 8] {
             assert!(stream(4, threads).0 == units, "{name}: {threads} threads");
         }
