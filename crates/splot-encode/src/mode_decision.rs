@@ -864,7 +864,10 @@ impl TrialCoder<'_, '_> {
     }
 
     /// The `preset.compound_candidates` compound predictions of `leaf` with
-    /// the lowest luma SATD plus the exact rate of their mode and difference
+    /// the lowest luma SATD (of the decoder's prediction with
+    /// `preset.implicit_mask`, whose `COMPOUND_AVERAGE` blends with the
+    /// implicit mask, § 7.13.3.14; of the plain average otherwise) plus the
+    /// exact rate of their mode and difference
     /// syntax, DRL indices included (priced for the [`PRICED_COMPOUND_SHARE`]
     /// times as many lowest-SATD ones; a candidate with the references and
     /// vectors of an earlier one is dropped, which measured better than
@@ -964,12 +967,20 @@ impl TrialCoder<'_, '_> {
                 {
                     continue;
                 }
-                let satd = motion.prediction_satd(
-                    self.syntax,
-                    &[(refs.0, mvs[0]), (refs.1, mvs[1])],
-                    InterpolationFilter::EightTap,
-                    leaf_rect(leaf)?,
-                )?;
+                let satd = if self.preset.implicit_mask {
+                    let prediction = InterPrediction::Compound(trial);
+                    let Some((satd, _)) = self.luma_score(leaf, prediction)? else {
+                        continue;
+                    };
+                    satd
+                } else {
+                    motion.prediction_satd(
+                        self.syntax,
+                        &[(refs.0, mvs[0]), (refs.1, mvs[1])],
+                        InterpolationFilter::EightTap,
+                        leaf_rect(leaf)?,
+                    )?
+                };
                 ranked.push((satd, mvs, trial));
             }
         }

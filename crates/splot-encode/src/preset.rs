@@ -430,9 +430,10 @@ pub struct PresetParams {
     /// park_joy -5.51% at the same CPU, so the weights stay off.
     pub compound_types: u8,
     /// `enable_imp_msk_bld`: `COMPOUND_AVERAGE` and TIP blocks blend with the
-    /// implicit mask the decoder derives; no search. Off in every row
-    /// (2026-10-30): on alone it measured park_joy +1.26%, paris +0.20% at
-    /// p6, as the compound search scores the plain average.
+    /// implicit mask the decoder derives, and the compound shortlist scores
+    /// that blend. Off in every row (2026-10-30): on alone it measured
+    /// park_joy +1.26%, paris +0.20% at p6 while the shortlist scored the
+    /// plain average.
     pub implicit_mask: bool,
     /// Inter-intra (`seq_enabled_motion_modes[INTERINTRA]`): the cheapest
     /// single-reference `NEWMV` of a leaf adds its best smooth-mask
