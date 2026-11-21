@@ -146,6 +146,7 @@ pub(crate) struct TemporalMotionField {
     band_rows8: usize,
     storage: TemporalMotionStorage,
     is_inter: bool,
+    is_switch: bool,
     frame_size: Option<(usize, usize)>,
     ref_order_hints: RefOrderHints,
     /// The cleared band list, kept while the field is contiguous.
@@ -220,6 +221,7 @@ impl MotionFieldLayout {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TemporalMotionFieldMetadata {
     is_inter: bool,
+    is_switch: bool,
     frame_size: Option<(usize, usize)>,
     ref_order_hints: RefOrderHints,
 }
@@ -232,6 +234,7 @@ impl TemporalMotionField {
             band_rows8: 8,
             storage: TemporalMotionStorage::Contiguous(Vec::new()),
             is_inter: false,
+            is_switch: false,
             frame_size: None,
             ref_order_hints: empty_ref_order_hints(),
             spare_bands: Vec::new(),
@@ -248,6 +251,7 @@ impl TemporalMotionField {
             band_rows8: 8,
             storage: TemporalMotionStorage::Contiguous(cells),
             is_inter: false,
+            is_switch: false,
             frame_size: None,
             ref_order_hints: empty_ref_order_hints(),
             spare_bands: Vec::new(),
@@ -271,10 +275,17 @@ impl TemporalMotionField {
             band_rows8: 8,
             storage: TemporalMotionStorage::Contiguous(cells),
             is_inter,
+            is_switch: false,
             frame_size: Some(frame_size),
             ref_order_hints: owned_ref_order_hints,
             spare_bands: Vec::new(),
         })
+    }
+
+    /// Marks the field of a `SWITCH_FRAME`, whose references the § 7 motion
+    /// field topological sort does not follow.
+    pub(crate) fn set_switch(&mut self, is_switch: bool) {
+        self.is_switch = is_switch;
     }
 
     #[cfg(test)]
@@ -307,6 +318,7 @@ impl TemporalMotionField {
     pub(crate) fn metadata(&self) -> TemporalMotionFieldMetadata {
         TemporalMotionFieldMetadata {
             is_inter: self.is_inter,
+            is_switch: self.is_switch,
             frame_size: self.frame_size,
             ref_order_hints: self.ref_order_hints,
         }
@@ -411,6 +423,7 @@ impl TemporalMotionField {
         self.height8 = layout.height8;
         self.band_rows8 = layout.band_rows8;
         self.is_inter = metadata.is_inter;
+        self.is_switch = metadata.is_switch;
         self.frame_size = metadata.frame_size;
         self.ref_order_hints = metadata.ref_order_hints;
         true
@@ -455,6 +468,7 @@ impl TemporalMotionField {
                     .collect(),
             ),
             is_inter: metadata.is_inter,
+            is_switch: metadata.is_switch,
             frame_size: metadata.frame_size,
             ref_order_hints: metadata.ref_order_hints,
             spare_bands: Vec::new(),
