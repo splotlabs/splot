@@ -1232,6 +1232,13 @@ thread_local! {
         const { core::cell::RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Intra luma blocks outside mode trials whose RD-chosen IST kernel is
+    /// not the one that keeps the most energy (tests only).
+    pub(crate) static IST_RD_OTHER: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
 impl ResidualCoder for SourceResidualCoder<'_> {
     fn palette_map(
         &mut self,
@@ -1322,6 +1329,16 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         }
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
+        #[cfg(test)]
+        if !self.trial && !inter && self.preset.intra_ist_rd && decision.ist != Ist::OFF {
+            let plain = TransformBlock {
+                tx_type: decision.tx_type,
+                ..*tx
+            };
+            if self.ist_choice(syntax, &plain, prediction, ist_sets)? != decision.ist {
+                IST_RD_OTHER.set(IST_RD_OTHER.get() + 1);
+            }
+        }
         #[cfg(test)]
         if keep == count && count > 1 {
             let ranked = self.model_ranking(syntax, tx, prediction, &tx_types[..count])?;

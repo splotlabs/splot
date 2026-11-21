@@ -447,7 +447,7 @@ fn type_model_ranks_the_exact_winner_first_on_constructed_blocks() {
 /// filters), with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    let mut differs = false;
+    let (mut differs, mut chosen) = (false, 0);
     for (width, height, bit_depth) in [(72, 40, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
         let mut config = config(width, height, bit_depth, 6, 60);
         config.keyint = core::num::NonZeroU32::new(3).unwrap();
@@ -476,8 +476,11 @@ fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                     .collect(),
             )
         };
+        IST_RD_OTHER.set(0);
         let (units, expected) = stream(true, 1);
         let name = format!("{bit_depth:?}");
+        let other = IST_RD_OTHER.get();
+        chosen += other;
         assert_same_samples(&decode(&units), &expected, &name);
         differs |= stream(false, 1).0 != units;
         for threads in [2, 8] {
@@ -488,6 +491,10 @@ fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         }
     }
     assert!(differs, "RD over the kernels coded the same streams");
+    assert!(
+        chosen > 0,
+        "RD never chose another kernel than the energy one"
+    );
 }
 
 /// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
