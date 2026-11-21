@@ -229,6 +229,10 @@ pub struct PresetParams {
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
     pub cdf_carry: bool,
+    /// With `cdf_carry`, `avg_cdf_type = 1` (§ 5.4.8): inter frames average
+    /// the saved CDFs across tiles instead of blending the primary
+    /// reference's CDFs with a second reference's.
+    pub cdf_avg_across_tiles: bool,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -236,6 +240,13 @@ pub struct PresetParams {
     /// `MaxDrlBits`, `1..=5`: `NEARMV` and `NEWMV` choose among the first
     /// `drl_bits + 1` entries of the reference MV stack.
     pub drl_bits: u8,
+    /// With `mv_prediction`, `constrain_drl_reorder = 0` (§ 5.4.6): the DRL
+    /// candidates are sorted by weight in every block (`DRL_REORDER_ALWAYS`)
+    /// instead of under `DRL_REORDER_CONSTRAINT`.
+    pub drl_reorder_always: bool,
+    /// With `mv_prediction`, `enable_mv_traj` (§ 5.4.6): the projected motion
+    /// field follows motion trajectories across references (§ 7.9.2).
+    pub mv_traj: bool,
     /// Interpolation filter search: `0` codes `EIGHTTAP` frames; `1` codes
     /// `SWITCHABLE` frames whose winning inter leaf takes the filter with
     /// the lowest luma prediction SATD plus `interp_filter` rate at its final
@@ -992,9 +1003,12 @@ preset_table! {
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
+        drl_reorder_always:    [false, false, false, false, false, false, false, false, false, false, false],
+        mv_traj:               [false, false, false, false, false, false, false, false, false, false, false],
         mvd_tools:             [[false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3]],
         interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        cdf_avg_across_tiles:  [false, false, false, false, false, false, false, false, false, false, false],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],

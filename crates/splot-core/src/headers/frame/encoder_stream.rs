@@ -130,6 +130,9 @@ pub struct EncoderToolFlags {
     /// `Some(true)` is `DRL_REORDER_CONSTRAINT`, `Some(false)`
     /// `DRL_REORDER_ALWAYS`; `None` disables reordering.
     pub drl_reorder: Option<bool>,
+    /// `enable_mv_traj` (§ 5.4.6): with `ref_frame_mvs`, the projected motion
+    /// field follows motion trajectories (§ 7.9.2).
+    pub mv_traj: bool,
     /// `seq_max_drl_bits_minus_1` (§ 5.4.6), `0..=4`: `NEARMV` and `NEWMV`
     /// code `RefMvIdx` below `seq_max_drl_bits_minus_1 + 2`.
     pub max_drl_bits_minus_1: u32,
@@ -510,7 +513,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         w.write_flag(!tools.tip_output)?; // disable_tip_output
         w.write_flag(false)?; // enable_tip_hole_fill
     }
-    w.write_flag(false)?; // enable_mv_traj
+    w.write_flag(tools.mv_traj)?; // enable_mv_traj
     w.write_flag(tools.bawp)?; // enable_bawp
     w.write_flag(tools.cwp)?; // enable_cwp
     w.write_flag(tools.implicit_mask)?; // enable_imp_msk_bld
