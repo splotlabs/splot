@@ -429,6 +429,14 @@ pub struct PresetParams {
     /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. Off
     /// in every row: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
     pub cdef_on_skip: bool,
+    /// With `loop_filter_search`, deblocking also moves the vertical and then
+    /// the horizontal luma `DfDeltaQ` alone, or turns one direction off,
+    /// when that lowers the luma SSE (§ 5.18.5.2).
+    pub deblock_luma_split: bool,
+    /// `dfParBits` of the sequence (§ 5.4.10), `3..=5`: `DfDeltaQ` spans
+    /// `-(1 << (bits - 1))..(1 << (bits - 1))`; `loop_filter_search` 3 tries
+    /// the whole span.
+    pub deblock_offset_bits: u8,
     /// `enable_df_sub_pu`: each inter frame's deblocking also filters
     /// prediction sub-unit edges unless that raises the summed frame SSE
     /// (always without the deblock search).
@@ -834,6 +842,7 @@ impl PresetParams {
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
         check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
+        check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
         check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
@@ -1153,6 +1162,8 @@ preset_table! {
         cdef_pairs:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cdef_damping_search:   [false, false, false, false, false, false, false, false, false, false, false],
         cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
+        deblock_luma_split:    [false, false, false, false, false, false, false, false, false, false, false],
+        deblock_offset_bits:   [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         df_sub_pu:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     screen_content {
@@ -1578,6 +1589,7 @@ mod tests {
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
             (&[("lr_unit_sizes", "0")], "lr_unit_sizes"),
+            (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
             (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),
             (&[("compound_refs", "8")], "compound_refs"),

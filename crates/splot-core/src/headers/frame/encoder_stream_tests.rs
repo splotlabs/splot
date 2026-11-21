@@ -193,6 +193,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         cwp: true,
         implicit_mask: true,
         df_sub_pu: true,
+        df_par_bits_extra: 1,
         interintra: true,
         bawp: true,
     };
@@ -230,6 +231,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);
+    assert_eq!(filter.df_par_bits_minus_2, 2);
     assert_eq!(
         seq.screen_content.unwrap().seq_force_screen_content_tools,
         2
@@ -854,4 +856,40 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
             )
         );
     }
+}
+
+/// `df_par_bits_extra` widens `df_par_bits_minus_2` (§ 5.4.10): a key frame
+/// codes the widest luma `DfDeltaQ` pair of `f(5)` and parses it back; `3`
+/// does not fit `f(2)`; a cut sequence header does not parse.
+#[test]
+fn wide_deblocking_offsets_parse_back() {
+    let mut p = params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    p.tools.df_par_bits_extra = 2;
+    let seq = build_encoder_sequence_header(&p).unwrap();
+    assert_eq!(seq.filter.unwrap().df_par_bits_minus_2, 3);
+    assert_eq!(reparse_sequence(&seq), seq);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let filters = FrameFilterParams {
+        deblocking: [true, true, false, false],
+        deblocking_delta_q: [-16, 15, 0, 0],
+        ..FrameFilterParams::default()
+    };
+    let core = build_key_frame_header(
+        &view,
+        90,
+        0,
+        &filters,
+        KeyFrameTxParams::default(),
+        UniformTiles::default(),
+    )
+    .unwrap();
+    let deblocking = core.deblocking_filter_params.unwrap();
+    assert_eq!(deblocking.df_delta_q[..2], [-16, 15]);
+    assert_eq!(reparse_core(&core, &view), core);
+    p.tools.df_par_bits_extra = 3;
+    assert!(build_encoder_sequence_header(&p).is_err());
+    p.tools.df_par_bits_extra = 2;
+    let bytes = sequence_header_bits(&p).unwrap();
+    let cut = &bytes[..bytes.len() - 2];
+    assert!(parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0))).is_err());
 }

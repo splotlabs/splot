@@ -33,11 +33,21 @@ const SB256_INTRA_IVF_SHA256: &str =
 const SB256_INTRA_RAW_SHA256: &str =
     "6304c67c4e126342e56bc55b26ef1750444fc3e55cde4416f7d385aba4226cc6";
 
-const FILM_GRAIN_FIXTURE: &[u8] =
-    include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf");
-/// The fixture's `avmdec --rawvideo --skip-film-grain` output.
-const FILM_GRAIN_SKIPPED_RAW_SHA256: &str =
-    "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53";
+/// Film grain fixtures with the SHA-256 of their
+/// `avmdec --i420 --rawvideo --skip-film-grain` output: an 8-bit key frame,
+/// and a 10-bit key frame with two inter frames.
+const FILM_GRAIN_SKIPPED: [(&[u8], &str); 2] = [
+    (
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf"),
+        "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53",
+    ),
+    (
+        include_bytes!(
+            "../../../tests/conformance/vectors/valid/syn-3frame-filmgrain-inter-64x64-10bit.ivf"
+        ),
+        "5e4da3a2658836d7f15696188ecf895b16992d6fd033d30e4c62f579b81cdf89",
+    ),
+];
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -216,10 +226,12 @@ fn sequence_sb256_intra_uses_effective_sb128_at_serial_and_parallel_widths() {
 #[test]
 fn skipped_film_grain_output_matches_avmdec_skip_film_grain() {
     let options = DecodeOptions::default().with_skip_film_grain(true);
-    for threads in THREAD_LEGS {
-        let raw = decode_raw_with(FILM_GRAIN_FIXTURE, threads, &options)
-            .unwrap_or_else(|error| panic!("film grain failed at {threads} threads: {error}"));
-        assert_eq!(sha256_hex(&raw), FILM_GRAIN_SKIPPED_RAW_SHA256);
+    for (fixture, skipped_sha256) in FILM_GRAIN_SKIPPED {
+        for threads in THREAD_LEGS {
+            let raw = decode_raw_with(fixture, threads, &options)
+                .unwrap_or_else(|error| panic!("film grain failed at {threads} threads: {error}"));
+            assert_eq!(sha256_hex(&raw), skipped_sha256);
+        }
     }
 }
 

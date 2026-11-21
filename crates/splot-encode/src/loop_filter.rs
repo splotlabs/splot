@@ -62,9 +62,6 @@ pub(crate) const CDEF_LADDER: [(u8, u8); 16] = [
     (8, 4),
     (1, 1),
 ];
-/// `DfDeltaQ` values in the order the search tries them, `0` and then by
-/// |offset|.
-const DEBLOCK_LADDER: [i32; 8] = [0, 1, -1, 2, -2, 3, -3, -4];
 /// Approximate frame-header bits of one CDEF strength set.
 const CDEF_SET_HEADER_BITS: u32 = 12;
 
@@ -637,9 +634,12 @@ impl Search<'_> {
     }
 
     /// Deblocking on every plane at the qindex-derived level, or with the
-    /// per-plane `DfDeltaQ` of least SSE among the first 3, 5 or 8 offsets
-    /// of [`DEBLOCK_LADDER`] at depth 1, 2 or 3 that the sequence codes; on
-    /// equal SSE the earlier offset, so `0` and then the smallest |offset|.
+    /// per-plane `DfDeltaQ` of least SSE among the first 3 or 5 offsets of
+    /// [`deblock_ladder`] at depth 1 or 2, or all that the sequence codes at
+    /// depth 3; on equal SSE the earlier offset, so `0` and then the smallest
+    /// |offset|. With `deblock_luma_split` the vertical and then the
+    /// horizontal luma offset move alone (or turn off) when that lowers the
+    /// luma SSE.
     /// An inter frame of a sequence with `enable_df_sub_pu` then also
     /// filters prediction sub-unit edges unless that raises the summed SSE
     /// (always without the search).
@@ -660,14 +660,11 @@ impl Search<'_> {
             .seq
             .filter
             .map_or(3, |f| u32::from(f.df_par_bits_minus_2) + 2);
-        let range = -(1 << (bits - 1))..=(1 << (bits - 1)) - 1;
-        let levels = [0, 3, 5, 8][usize::from(preset.loop_filter_search).min(3)];
+        let levels = [0, 3, 5, usize::MAX][usize::from(preset.loop_filter_search).min(3)];
+        let ladder: Vec<i32> = deblock_ladder(bits).take(levels).collect();
         let off = self.plane_sse_all(self.recon);
         let mut best: [(u64, Option<i32>); 3] = core::array::from_fn(|plane| (off[plane], None));
-        for &delta in DEBLOCK_LADDER[..levels]
-            .iter()
-            .filter(|&&d| range.contains(&d))
-        {
+        for &delta in &ladder {
             let params = FrameFilterParams {
                 deblocking_delta_q: on.deblocking.map(|on| if on { delta } else { 0 }),
                 ..on
@@ -681,12 +678,31 @@ impl Search<'_> {
         }
         let [luma, u, v] = best.map(|(_, delta)| delta);
         let chroma = |delta: Option<i32>| luma.and(delta);
-        let planes = [luma, luma, chroma(u), chroma(v)];
-        let mut params = FrameFilterParams {
+        let mut planes = [luma, luma, chroma(u), chroma(v)];
+        let params_of = |planes: [Option<i32>; 4]| FrameFilterParams {
             deblocking: planes.map(|delta| delta.is_some()),
             deblocking_delta_q: planes.map(|delta| delta.unwrap_or(0)),
             ..FrameFilterParams::default()
         };
+        if preset.deblock_luma_split && luma.is_some() {
+            let mut luma_sse = best[0].0;
+            for direction in 0..2 {
+                for delta in core::iter::once(None).chain(ladder.iter().copied().map(Some)) {
+                    let mut trial = planes;
+                    trial[direction] = delta;
+                    if trial == planes || trial[..2] == [None, None] {
+                        continue;
+                    }
+                    let sse =
+                        self.plane_sse_all(&self.filtered(&params_of(trial), self.recon, &[])?)[0];
+                    if sse < luma_sse {
+                        (luma_sse, planes) = (sse, trial);
+                    }
+                }
+            }
+            best[0].0 = luma_sse;
+        }
+        let mut params = params_of(planes);
         if sub_pu && params.deblocking != [false; 4] {
             let on = FrameFilterParams {
                 deblocking_sub_pu: true,
@@ -973,6 +989,15 @@ fn plane_sse(
             kernels.sse_row(coded.unwrap_or(&[]), original.unwrap_or(&[]))
         })
         .sum()
+}
+
+/// `DfDeltaQ` values of `f(bits)` (§ 5.18.5.2) in the order the search tries
+/// them: `0`, then by |offset|, the positive one first.
+fn deblock_ladder(bits: u32) -> impl Iterator<Item = i32> {
+    let half = 1i32 << (bits - 1);
+    core::iter::once(0)
+        .chain((1..=half).flat_map(|k| [k, -k]))
+        .filter(move |delta| (-half..half).contains(delta))
 }
 
 /// `CdefDamping` from the frame qindex: `3` at qindex `0` up to `6` at the
