@@ -1318,6 +1318,9 @@ thread_local! {
     /// the one that leaves V the least energy (tests only).
     pub(crate) static CCTX_LATER_ROTATIONS: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
+    /// Intra luma blocks outside mode trials whose RD-chosen IST kernel is
+    /// not the one that keeps the most energy (tests only).
+    pub(crate) static IST_RD_OTHER: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
@@ -1382,7 +1385,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 return Ok(decision);
             }
             let mut trials = vec![decision];
-            if ist {
+            if ist && !inter && self.preset.intra_ist_rd {
+                for ist in Self::ist_kernels(syntax, &tx, ist_sets)? {
+                    trials.push(self.code(syntax, &TransformBlock { ist, ..tx }, prediction)?);
+                }
+            } else if ist {
                 let ist = self.ist_choice(syntax, &tx, prediction, ist_sets)?;
                 if ist != Ist::OFF {
                     let tx = TransformBlock { ist, ..tx };
@@ -1406,6 +1413,16 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         }
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
+        #[cfg(test)]
+        if !self.trial && !inter && self.preset.intra_ist_rd && decision.ist != Ist::OFF {
+            let plain = TransformBlock {
+                tx_type: decision.tx_type,
+                ..*tx
+            };
+            if self.ist_choice(syntax, &plain, prediction, ist_sets)? != decision.ist {
+                IST_RD_OTHER.set(IST_RD_OTHER.get() + 1);
+            }
+        }
         #[cfg(test)]
         if keep == count && count > 1 {
             let ranked = self.model_ranking(syntax, tx, prediction, &tx_types[..count])?;
@@ -1583,12 +1600,16 @@ impl SourceResidualCoder<'_> {
         {
             return Ok(Vec::new());
         }
-        let plain_v = v_coeffs.clone();
-        plain_u.clone_from(u_coeffs);
+        let plain_v = (keep > 1).then(|| {
+            plain_u.clone_from(u_coeffs);
+            v_coeffs.clone()
+        });
         let mut out = Vec::with_capacity(keep);
-        for &(_, index) in ranked.iter().take(keep) {
-            u_coeffs.clone_from(plain_u);
-            v_coeffs.clone_from(&plain_v);
+        for (tried, &(_, index)) in ranked.iter().take(keep).enumerate() {
+            if let Some(plain_v) = plain_v.as_ref().filter(|_| tried > 0) {
+                u_coeffs.clone_from(plain_u);
+                v_coeffs.clone_from(plain_v);
+            }
             kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
             let cctx =
                 i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
@@ -1849,6 +1870,27 @@ impl SourceResidualCoder<'_> {
         Ok(Some(
             (u128::from(error) << 16) + u128::from(lambda_q8) * u128::from(rate.0),
         ))
+    }
+
+    /// Every secondary transform of the first `sets` sets that `tx` can code.
+    fn ist_kernels(
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        sets: u8,
+    ) -> core::result::Result<Vec<Ist>, TileWriterError> {
+        let mut out = Vec::new();
+        for set in 0..sets.min(syntax.ist_sets(tx)?) {
+            for sec_tx_type in 1..=3 {
+                let ist = Ist { sec_tx_type, set };
+                if syntax
+                    .secondary_transform(&TransformBlock { ist, ..*tx })?
+                    .is_some()
+                {
+                    out.push(ist);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The secondary transform of the first `sets` sets whose outputs keep the
