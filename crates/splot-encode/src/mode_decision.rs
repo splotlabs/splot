@@ -587,11 +587,13 @@ impl TrialCoder<'_, '_> {
         if let (Some(motion), Some(base), true) =
             (self.motion, interintra_base, self.preset.interintra)
         {
-            let interintra = self
+            let interintra: Vec<_> = self
                 .interintra_choice(leaf, motion, base)?
-                .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)));
+                .into_iter()
+                .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)))
+                .collect();
             #[cfg(test)]
-            if let (Some(choice), true) = (interintra, FORCE_INTERINTRA.get()) {
+            if let (Some(&choice), true) = (interintra.first(), FORCE_INTERINTRA.get()) {
                 return Ok(vec![choice]);
             }
             choices.extend(interintra);
@@ -1353,7 +1355,7 @@ impl TrialCoder<'_, '_> {
             }
             choice = self.best(leaf, candidates, LUMA, start)?;
         }
-        if self.preset.fsc && self.syntax.fsc_allowed(leaf) {
+        if (self.preset.fsc || self.preset.idtx_intra) && self.syntax.fsc_allowed(leaf) {
             let fsc = LeafChoice::largest(IntraModes {
                 fsc: true,
                 ..choice.modes

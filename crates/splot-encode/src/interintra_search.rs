@@ -11,24 +11,46 @@ use splot_decode::encoder_syntax::{Bawp, INTERINTRA_MODES, InterIntra};
 
 use super::*;
 
+/// `MAX_WEDGE_TYPES`: the `WedgeIndex` values (§ 5.20.7.18).
+const WEDGE_TYPES: u8 = 68;
+
 impl TrialCoder<'_, '_> {
-    /// `base` with the `interintra_mode` whose decoder luma prediction SATD
-    /// plus mode rate is lowest, for the full RD trial of the leaf; `None`
-    /// where the leaf reads no `inter_intra`.
+    /// `base` with the smooth-mask `interintra_mode` whose decoder luma
+    /// prediction SATD plus mode rate is lowest, and with
+    /// `preset.interintra_search` also its best wedge inter-intra
+    /// (`wedge_interintra = 1`, § 5.20.7.15): every `WedgeIndex` under that
+    /// mode, then every mode under the best index; each joins the full RD
+    /// trials of the leaf. Empty where the leaf reads no `inter_intra`.
     pub(super) fn interintra_choice(
         &mut self,
         leaf: &LeafBlock,
         motion: &MotionSearch,
         base: InterModes,
-    ) -> Result<Option<InterModes>> {
-        if !self.syntax.interintra_reads(leaf)?.0 {
-            return Ok(None);
+    ) -> Result<Vec<InterModes>> {
+        let (reads, reads_wedge) = self.syntax.interintra_reads(leaf)?;
+        if !reads {
+            return Ok(Vec::new());
         }
-        let variants = (0..INTERINTRA_MODES).map(|mode| InterModes {
-            interintra: Some(InterIntra { mode, wedge: None }),
+        let with = |mode, wedge| InterModes {
+            interintra: Some(InterIntra { mode, wedge }),
             ..base
-        });
-        self.cheapest_variant(leaf, motion, variants)
+        };
+        let smooth = (0..INTERINTRA_MODES).map(|mode| with(mode, None));
+        let Some(best) = self.cheapest_variant(leaf, motion, smooth)? else {
+            return Ok(Vec::new());
+        };
+        let mut out = vec![best];
+        let mode = best.interintra.map_or(0, |ii| ii.mode);
+        if self.preset.interintra_search == 0 || !reads_wedge {
+            return Ok(out);
+        }
+        let wedges = (0..WEDGE_TYPES).map(|index| with(mode, Some(index)));
+        if let Some(wedge) = self.cheapest_variant(leaf, motion, wedges)? {
+            let index = wedge.interintra.and_then(|ii| ii.wedge);
+            let modes = (0..INTERINTRA_MODES).map(|mode| with(mode, index));
+            out.extend(self.cheapest_variant(leaf, motion, modes)?);
+        }
+        Ok(out)
     }
 
     /// `base` with the BAWP scale (implicit, or explicit up or down) whose

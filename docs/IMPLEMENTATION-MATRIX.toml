@@ -5957,10 +5957,10 @@ spec_sections = ["5.20.5.5", "5.20.6.3", "5.20.7.27"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/tile_writer/coeffs.rs"
-change_id = "enc-fsc"
+change_id = "enc-idtx-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Implemented, OFF in every PRESETS row; ON in SCREEN_PRESETS, which a sequence uses when ENC-SCREEN-DETECT flags its first frame. PresetParams::fsc (off disables enable_fsc): the winning luma mode of an intra leaf gets one RD trial with fsc_mode. The encoder_syntax facade takes IntraModes::fsc, writes fsc_mode (neighbour context, or the inter context for intra leaves in mixed regions of inter frames), plans IDTX-only luma, uses the FSC transform-partition rows and txb_skip context, and offers the FSC coefficient rows (coeff_base_bob, coeff_base_idtx, coeff_br_idtx, idtx_sign); the tile writer codes FSC levels from the first nonzero scan position, also for inter IDTX blocks. FSC blocks skip TCQ (uses_tcq excludes useFsc) and RDOQ. On at p6 against main: screendata intra -28.01% (0.69x CPU), inter -24.45% (0.87x); paris intra +1.02%, inter +0.92%; park_joy intra +0.14%. Off writes the old stream byte-identically."
+notes = "Implemented, OFF in every PRESETS row; ON in SCREEN_PRESETS, which a sequence uses when ENC-SCREEN-DETECT flags its first frame. PresetParams::fsc (off disables enable_fsc): the winning luma mode of an intra leaf gets one RD trial with fsc_mode. The encoder_syntax facade takes IntraModes::fsc, writes fsc_mode (neighbour context, or the inter context for intra leaves in mixed regions of inter frames), plans IDTX-only luma, uses the FSC transform-partition rows and txb_skip context, and offers the FSC coefficient rows (coeff_base_bob, coeff_base_idtx, coeff_br_idtx, idtx_sign); the tile writer codes FSC levels from the first nonzero scan position, also for inter IDTX blocks. FSC blocks skip TCQ (uses_tcq excludes useFsc) and RDOQ. On at p6 against main: screendata intra -28.01% (0.69x CPU), inter -24.45% (0.87x); paris intra +1.02%, inter +0.92%; park_joy intra +0.14%. Off writes the old stream byte-identically. PresetParams::idtx_intra (change enc-idtx-intra, 2026-11-21; off in every row until its p0 table passes): without fsc the sequence codes enable_fsc = 0 with enable_idtx_intra = 1, and the same final fsc_mode trial codes a plain IDTX intra block without the FSC coefficient path (§ 5.20.5.5)."
 
 [feature.status]
 mapped = "done"
@@ -5975,8 +5975,8 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/tile_writer/tests.rs::fsc_leaves_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::fsc_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_fsc_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_fsc_frames_like_splot"]
-commands = ["cargo test -p splot-encode fsc --locked"]
+tests = ["crates/splot-encode/src/intra_tools_tests.rs::idtx_intra_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tile_writer/tests.rs::fsc_leaves_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::fsc_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_fsc_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_fsc_frames_like_splot"]
+commands = ["cargo test -p splot-encode fsc --locked", "cargo test -p splot-encode idtx_intra --locked"]
 fixtures = []
 diagnostics = []
 
@@ -6692,10 +6692,10 @@ spec_sections = ["5.4.6", "5.18.2", "5.20.7.14", "5.20.7.15", "5.20.7.18", "7.13
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/interintra_search.rs"
-change_id = "enc-interintra"
+change_id = "enc-interintra-wedge"
 owner = "encoder"
 risk = "medium"
-notes = "A7 part 1b. PresetParams::interintra sets seq_enabled_motion_modes[INTERINTRA] with seq_frame_motion_modes_present_flag, and every inter frame enables the mode (frame_enabled_motion_modes). In the encoder_syntax facade InterModes::interintra is an InterIntra (interintra_mode below INTERINTRA_MODES and an optional WedgeIndex); IntraTileSyntax::interintra_reads gives the decoder's gate (BLOCK_8X8 to 64x64, Wedge_Bits for the wedge). The writer codes inter_intra, interintra_mode, wedge_interintra and the wedge after use_amvd; the decoder's reconstruct_placed_inter_block predicts the block with the intra edges of the tile (EncoderInterTile keeps the tile start for the edge availability) and the MVD sign derivation takes MotionMode::InterIntra. The search adds the smooth-mask mode with the least decoder luma SATD plus rate on the single-reference NEWMV with the least cost to the leaf's RD trials; wedge inter-intra is coded but not searched. Off in every row (2026-10-30, p6 vs main): first search park_joy +0.59%, paris +0.24%; with the RD trial park_joy +0.39% Y (-0.05% YUV), paris +0.13% Y (+0.06% YUV). Off output is byte-identical."
+notes = "A7 part 1b. PresetParams::interintra sets seq_enabled_motion_modes[INTERINTRA] with seq_frame_motion_modes_present_flag, and every inter frame enables the mode (frame_enabled_motion_modes). In the encoder_syntax facade InterModes::interintra is an InterIntra (interintra_mode below INTERINTRA_MODES and an optional WedgeIndex); IntraTileSyntax::interintra_reads gives the decoder's gate (BLOCK_8X8 to 64x64, Wedge_Bits for the wedge). The writer codes inter_intra, interintra_mode, wedge_interintra and the wedge after use_amvd; the decoder's reconstruct_placed_inter_block predicts the block with the intra edges of the tile (EncoderInterTile keeps the tile start for the edge availability) and the MVD sign derivation takes MotionMode::InterIntra. The search adds the smooth-mask mode with the least decoder luma SATD plus rate on the single-reference NEWMV with the least cost to the leaf's RD trials; with interintra_search (off in every row) also the wedge inter-intra with the least decoder luma SATD plus rate (every WedgeIndex under the best smooth mode, then every mode under that index). Off in every row (2026-10-30, p6 vs main): first search park_joy +0.59%, paris +0.24%; with the RD trial park_joy +0.39% Y (-0.05% YUV), paris +0.13% Y (+0.06% YUV). Off output is byte-identical."
 
 [feature.status]
 mapped = "done"

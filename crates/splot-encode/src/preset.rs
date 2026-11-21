@@ -349,6 +349,10 @@ pub struct PresetParams {
     /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
+    /// Without `fsc`, `enable_idtx_intra` (§ 5.4.8): the winning luma mode of
+    /// an intra leaf gets one RD trial with `fsc_mode`, which then codes a
+    /// plain IDTX block without the FSC coefficient path (§ 5.20.5.5).
+    pub idtx_intra: bool,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -471,11 +475,16 @@ pub struct PresetParams {
     pub implicit_mask: bool,
     /// Inter-intra (`seq_enabled_motion_modes[INTERINTRA]`): the cheapest
     /// single-reference `NEWMV` of a leaf adds its best smooth-mask
-    /// `interintra_mode` by luma SATD to the RD trials. Off in every row
+    /// `interintra_mode` by luma SATD, and with `interintra_search` its best
+    /// wedge inter-intra, to the RD trials. Off in every row
     /// (2026-10-30): at p6 it measured park_joy +0.39% Y (-0.05% YUV) and
     /// paris +0.13% Y for 3% more CPU, largely the `inter_intra` flag every
     /// eligible block codes.
     pub interintra: bool,
+    /// With `interintra`, the leaf also tries its best wedge inter-intra
+    /// (`wedge_interintra`, § 5.20.7.15) in the RD trials, `0..=1`. `0` in
+    /// every row (not measured at p0).
+    pub interintra_search: u8,
     /// Block adaptive weighted prediction (`enable_bawp`, every inter frame
     /// codes `allow_bawp = 1`): the cheapest single-reference `NEWMV` of a
     /// leaf adds its best BAWP scale by luma SATD to the RD trials. On at
@@ -780,6 +789,7 @@ impl PresetParams {
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
+        check("interintra_search", self.interintra_search, 0, 1, "")?;
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
@@ -1068,6 +1078,7 @@ preset_table! {
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
+        interintra_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         bawp_search:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip_newmv:             [false, false, false, false, false, false, false, false, false, false, false],
@@ -1085,6 +1096,7 @@ preset_table! {
     }
     screen_content {
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
+        idtx_intra:            [false, false, false, false, false, false, false, false, false, false, false],
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
@@ -1316,6 +1328,7 @@ mod tests {
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
+            assert!(fast.interintra_search <= slow.interintra_search);
             assert!(fast.bawp <= slow.bawp);
             assert!(fast.bawp_search <= slow.bawp_search);
             assert!(fast.tip_newmv <= slow.tip_newmv);
@@ -1504,6 +1517,7 @@ mod tests {
             (&[("compound_refs", "8")], "compound_refs"),
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
+            (&[("interintra_search", "2")], "interintra_search"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),

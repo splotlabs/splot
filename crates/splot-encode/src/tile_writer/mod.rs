@@ -305,6 +305,9 @@ thread_local! {
     /// later, and `JOINT_NEWMV` with `jmvd_scale_mode > 0`.
     pub(crate) static CODED_MODES: core::cell::Cell<[usize; 4]> =
         const { core::cell::Cell::new([0; 4]) };
+    /// Wedge inter-intra leaves of the final passes on this thread.
+    pub(crate) static CODED_WEDGE_INTERINTRA: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -329,6 +332,8 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool, references: us
     }
     let mut counts = CODED_TYPES.get();
     if let InterPrediction::Single(single) = prediction {
+        let wedge = single.interintra.is_some_and(|ii| ii.wedge.is_some());
+        CODED_WEDGE_INTERINTRA.set(CODED_WEDGE_INTERINTRA.get() + usize::from(wedge));
         let mut seen = CODED_SINGLE.get();
         seen[0] += usize::from(single.ref_frame == references && single.mode == InterMode::New);
         seen[1] += usize::from(single.bawp.is_some() && single.mode == InterMode::Near);
