@@ -39,26 +39,28 @@ const MIN_INLIER_PERCENT: usize = 50;
 /// kept model.
 const MIN_CORNER_SAMPLES: f64 = 1.0;
 /// The pairs a frame needs before any model is trusted.
-const MIN_PAIRS: usize = 16;
+pub(crate) const MIN_PAIRS: usize = 16;
 /// The intra SATD below which a block is too flat for its vector to count.
-const MIN_TEXTURE: u32 = 64;
+pub(crate) const MIN_TEXTURE: u32 = 64;
 /// `WARPEDMODEL_PREC_BITS` (§ 3).
-const PREC: f64 = 65536.0;
+pub(crate) const PREC: f64 = 65536.0;
 /// The coded steps of the scale and rotation terms and of the translation
 /// (`GM_ALPHA_PREC_BITS`, `GM_TRANS_PREC_BITS`), in `PREC` units.
-const ALPHA_STEP: i32 = 1 << 6;
-const TRANS_STEP: i32 = 1 << 13;
+pub(crate) const ALPHA_STEP: i32 = 1 << 6;
+pub(crate) const TRANS_STEP: i32 = 1 << 13;
 /// The coded ranges of those terms, in steps (`GM_ALPHA_MAX`, `GM_TRANS_MAX`).
-const ALPHA_MAX: i32 = 511;
-const TRANS_MAX: i32 = 16383;
+pub(crate) const ALPHA_MAX: i32 = 511;
+pub(crate) const TRANS_MAX: i32 = 16383;
 
 /// The models of the frames of `plan`, in coding order, against their
-/// nearest past and future coded frames; `coded_before` is the last frame
-/// coded before the plan. The motion search reads `sources`.
+/// nearest past and future coded frames, or with `level` 2 by
+/// [`crate::global_motion_search`] against every coded frame whose source is
+/// held, weighing parameter bits by `sad_per_bit` (Q8); `coded_before` is the
+/// last frame coded before the plan. The motion search reads `sources`.
 pub(crate) fn estimate(
     lookahead: &mut Lookahead,
     plan: &[GopFrame],
-    coded_before: Option<u64>,
+    (coded_before, level, sad_per_bit): (Option<u64>, u8, u64),
     sources: Sources<'_>,
 ) -> GlobalModels {
     let (cols, rows) = lookahead.grid();
@@ -72,14 +74,44 @@ pub(crate) fn estimate(
         }
         let past = coded.iter().filter(|&&d| d < display).max().copied();
         let future = coded.iter().filter(|&&d| d > display).min().copied();
+        let references: Vec<u64> = if level >= 2 {
+            coded.iter().copied().filter(|&d| d != display).collect()
+        } else {
+            past.into_iter().chain(future).collect()
+        };
         coded.push(display);
         let Some(intra) = lookahead.intra(display).map(<[u32]>::to_vec) else {
             continue;
         };
-        for reference in past.into_iter().chain(future) {
+        for reference in references {
             let Some(motion) = lookahead.motion(display, reference, sources) else {
                 continue;
             };
+            if level >= 2 {
+                let (Some(now), Some(then)) = (sources(display), sources(reference)) else {
+                    continue;
+                };
+                let size = now.plane_sizes()[0];
+                let frames = crate::global_motion_search::LumaPair {
+                    current: &now.planes()[0],
+                    reference: &then.planes()[0],
+                    width: size.width(),
+                    height: size.height(),
+                    bit_depth: now.bit_depth(),
+                };
+                let seed = display ^ reference.rotate_left(32);
+                let found = crate::global_motion_search::estimate(
+                    &frames,
+                    (motion, &intra),
+                    ((cols, rows), block),
+                    sad_per_bit,
+                    seed,
+                );
+                if let Some(model) = found {
+                    models.insert((display, reference), model);
+                }
+                continue;
+            }
             let pairs = pairs(motion, &intra, (cols, rows), block);
             let frame = ((cols * block) as f64, (rows * block) as f64);
             if let Some(model) = fit(&pairs, frame, display ^ reference.rotate_left(32)) {
@@ -133,13 +165,7 @@ fn fit(pairs: &[Pair], (width, height): (f64, f64), seed: u64) -> Option<[i32; 6
     if pairs.len() < MIN_PAIRS {
         return None;
     }
-    let mut state = seed | 1;
-    let mut next = |n: usize| {
-        state ^= state >> 12;
-        state ^= state << 25;
-        state ^= state >> 27;
-        (state.wrapping_mul(0x2545_F491_4F6C_DD1D) % n as u64) as usize
-    };
+    let mut next = sampler(seed);
     let mut best: Option<(usize, Model)> = None;
     for _ in 0..ITERATIONS {
         let (i, j) = (next(pairs.len()), next(pairs.len()));
@@ -173,6 +199,18 @@ fn fit(pairs: &[Pair], (width, height): (f64, f64), seed: u64) -> Option<[i32; 6
         return None;
     }
     quantize(model)
+}
+
+/// A deterministic xorshift sampler of indices below its argument, seeded by
+/// `seed`.
+pub(crate) fn sampler(seed: u64) -> impl FnMut(usize) -> usize {
+    let mut state = seed | 1;
+    move |n| {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        (state.wrapping_mul(0x2545_F491_4F6C_DD1D) % n as u64) as usize
+    }
 }
 
 /// The rotation-zoom through two pairs; `None` when they coincide.

@@ -227,6 +227,33 @@ impl EncoderReferences {
         })
     }
 
+    /// The `primary_ref_frame` of the inter frame `core`: the coded value,
+    /// or for `PRIMARY_REF_CHOOSE` the reference that § 5.18.2
+    /// `choose_primary_secondary_ref_frame` derives (`PRIMARY_REF_NONE` when
+    /// none qualifies). `None` for a frame without an inter header.
+    pub fn primary_ref_frame(&self, core: &FrameHeaderCore) -> Option<u8> {
+        let inter = core.inter.as_ref()?;
+        if inter.signal_primary_ref_frame != Some(false) {
+            return inter.primary_ref_frame;
+        }
+        let state = &self.state;
+        let (derived, _) =
+            crate::prediction::inter::cross_frame::choose_primary_secondary_ref_frame(
+                Some(false),
+                None,
+                &inter.ref_frame_idx,
+                &state.ref_is_inter,
+                &state.ref_counter,
+                &state.ref_base_q_idx,
+                &state.ref_order_hint,
+                &state.ref_frame_width,
+                &state.ref_frame_height,
+                core.quantization_params.map_or(0, |q| q.base_q_idx),
+                i32::try_from(core.display_order_hint().unwrap_or(0)).unwrap_or(i32::MAX),
+            );
+        Some(derived)
+    }
+
     /// A fresh reference state for one tile.
     fn tile_state(&self) -> Result<InterReferenceState<u16>> {
         settled_state(&self.buffer, &self.frames)
@@ -396,7 +423,7 @@ pub struct InterIntra {
 }
 
 impl InterIntra {
-    fn prediction(self) -> Result<InterIntraPrediction> {
+    pub(super) fn prediction(self) -> Result<InterIntraPrediction> {
         let mode = match self.mode {
             0 => InterIntraMode::Dc,
             1 => InterIntraMode::Vertical,

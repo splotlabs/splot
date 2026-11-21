@@ -2224,7 +2224,7 @@ mod bawp;
 mod block;
 mod bridge;
 mod compound;
-mod cross_frame;
+pub(crate) mod cross_frame;
 mod find_mv_stack;
 mod frame_products;
 mod frame_walk;

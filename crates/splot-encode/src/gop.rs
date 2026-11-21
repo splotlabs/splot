@@ -45,11 +45,11 @@
 use core::num::NonZeroU32;
 
 use splot_core::headers::frame::{
-    CoreSeqView, FrameFilterParams, FrameHeaderCore, InterFrameParams, InterpolationFilter,
-    KeyFrameTxParams, REFS_PER_FRAME, TipGlobalMv, UniformTiles, build_inter_frame_header,
-    build_key_frame_header, build_tip_output_frame_header, encode_inter_frame_obu,
-    encode_key_frame_temporal_unit, encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
-    encode_tip_output_frame_obu,
+    CoreSeqView, EncodedFrameHeader, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
+    InterFrameParams, InterpolationFilter, KeyFrameTxParams, REFS_PER_FRAME, TipGlobalMv,
+    UniformTiles, build_inter_frame_header, build_key_frame_header, build_tip_output_frame_header,
+    encode_inter_frame_obu, encode_key_frame_temporal_unit, encode_show_existing_frame_obu,
+    encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
@@ -487,9 +487,9 @@ impl GopFrame {
             FrameType::Key => {
                 build_key_frame_header(view, qindex, self.order_hint, filters, tx, tiles)
             }
-            FrameType::Inter => build_inter_frame_header(
+            FrameType::Inter => inter_header(
                 view,
-                &refs.header_view(),
+                refs,
                 &self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles)),
             )
             .map(|header| header.core),
@@ -545,9 +545,9 @@ impl GopFrame {
             return encode_key_frame_temporal_unit(seq, &core, true, tiles, key_obus)
                 .map_err(header_error);
         }
-        let header = build_inter_frame_header(
+        let header = inter_header(
             view,
-            &refs.header_view(),
+            refs,
             &self.inter_params(qindex, filters, (tx, compound, mv_tools, layout)),
         )
         .map_err(header_error)?;
@@ -665,6 +665,39 @@ impl GopFrame {
             global_motion,
         }
     }
+}
+
+/// The inter header of `params` with an explicit `primary_ref_frame`; with
+/// `choose_primary_ref_frame` the `PRIMARY_REF_CHOOSE` header instead when
+/// the reference the decoder derives (§ 5.18.2) is the explicit one, which
+/// keeps the CDFs and every `DerivedPrimaryRefFrame` use.
+fn inter_header(
+    view: &CoreSeqView,
+    refs: &EncoderReferences,
+    params: &InterFrameParams,
+) -> core::result::Result<EncodedFrameHeader, EncoderHeaderError> {
+    let explicit = InterFrameParams {
+        tx: KeyFrameTxParams {
+            choose_primary_ref_frame: false,
+            ..params.tx
+        },
+        ..*params
+    };
+    let header = build_inter_frame_header(view, &refs.header_view(), &explicit)?;
+    if !params.tx.choose_primary_ref_frame {
+        return Ok(header);
+    }
+    let chosen = build_inter_frame_header(view, &refs.header_view(), params)?;
+    let coded = header
+        .core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.primary_ref_frame);
+    Ok(if refs.primary_ref_frame(&chosen.core) == coded {
+        chosen
+    } else {
+        header
+    })
 }
 
 fn header_error<E: std::error::Error + Send + Sync + 'static>(source: E) -> Error {

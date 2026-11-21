@@ -247,6 +247,13 @@ pub struct PresetParams {
     /// also tries `use_amvd` (§ 5.20.7.6 `allow_amvd_mode`) and keeps the
     /// cheaper coding. Off in every row (not measured at p0).
     pub tip_amvd: bool,
+    /// With `warp`, the best `WARPMV` of a leaf also tries each smooth-mask
+    /// `warp_inter_intra` mode (§ 5.20.7.15), and at `2` each wedge, by luma
+    /// SATD, `0..=2`. `0` in every row (not measured at p0).
+    pub warp_interintra: u8,
+    /// With `warp`, each compound `NEW_NEWMV` trial also tries
+    /// `use_local_warp` (§ 5.20.7.14). Off in every row (not measured at p0).
+    pub compound_local_warp: bool,
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
     pub cdf_carry: bool,
@@ -266,6 +273,10 @@ pub struct PresetParams {
     /// `avg_cdf_type = 1` (§ 5.18.7.2 `context_update_tile_id`), `0..=1`:
     /// `0` the first tile, `1` the middle tile (`TileCols * TileRows / 2`).
     pub cdf_update_tile: u8,
+    /// Inter frames code `signal_primary_ref_frame = 0` (`PRIMARY_REF_CHOOSE`,
+    /// § 5.18.2) when the reference the decoder derives is their primary
+    /// reference: the same CDFs for 3 fewer header bits.
+    pub primary_ref_choose: bool,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -337,6 +348,10 @@ pub struct PresetParams {
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
+    /// Luma loop-restoration unit sizes the Wiener-NS search tries,
+    /// `1..=4`: the superblock size, then each larger size of § 5.18.7.11 up
+    /// to 512 whose units do not cross a tile edge; the lowest RD cost wins.
+    pub lr_unit_sizes: u8,
     /// The most CDEF strength sets a frame codes, `1..=8`.
     pub cdef_strengths: u8,
     /// CDEF `(pri, sec)` strength pairs the search tries, `0..=64`: `0`
@@ -369,6 +384,10 @@ pub struct PresetParams {
     /// -1.83 / -0.27%, park_joy f10 +0.10 / -0.82 / -2.91 / -0.19%; p3 paris
     /// +0.18 / -0.83 / -4.26 / -0.42%, p8 -0.04 / -1.04 / -1.22 / -0.28%.
     pub cctx: bool,
+    /// CCTX rotations a chroma pair compares by RD, least V energy first; `1`
+    /// tries the best one only when it leaves less than the smaller plain
+    /// plane, `6` tries every rotation.
+    pub cctx_candidates: u8,
     /// The chroma candidates of a CFL leaf include the three MHCCP
     /// directions; off disables `enable_mhccp`. Off in every row: its
     /// `cfl_mhccp` flags lose luma BD-rate.
@@ -505,10 +524,13 @@ pub struct PresetParams {
     /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
     /// p0 park_joy +0.20%.
     pub warp: u8,
-    /// Global motion (`enable_global_motion`), `0..=1`: inter frames code
-    /// `use_global_motion` with the models the lookahead estimates. Off in
-    /// every row (2026-10-30): at `1` p6 measured paris +0.01%, niklas
-    /// +0.00%, park_joy +0.49%; the lookahead vectors are too coarse.
+    /// Global motion (`enable_global_motion`), `0..=2`: inter frames code
+    /// `use_global_motion` with the models the lookahead estimates; `2`
+    /// estimates `ROTZOOM` and `AFFINE` models (§ 5.18.9.1) from quarter-sample
+    /// vectors and keeps one only where its § 7.13.3.19 block warp beats the zero
+    /// model and the best translation by its parameter bits. Off in every row
+    /// (2026-10-30): at `1` p6 measured paris +0.01%, niklas +0.00%, park_joy
+    /// +0.49%; the lookahead vectors are too coarse.
     pub global_motion: u8,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
@@ -837,11 +859,13 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
         check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
         check("interintra_search", self.interintra_search, 0, 1, "")?;
+        check("warp_interintra", self.warp_interintra, 0, 2, "")?;
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
@@ -862,7 +886,7 @@ impl PresetParams {
             MAX_COMPOUND_TYPES,
             "",
         )?;
-        check("global_motion", self.global_motion, 0, 1, "")
+        check("global_motion", self.global_motion, 0, 2, "")
     }
 }
 
@@ -1084,6 +1108,7 @@ preset_table! {
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
+        cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
@@ -1114,6 +1139,8 @@ preset_table! {
         same_ref_modes:        [false, false, false, false, false, false, false, false, false, false, false],
         compound_amvd:         [false, false, false, false, false, false, false, false, false, false, false],
         tip_amvd:              [false, false, false, false, false, false, false, false, false, false, false],
+        warp_interintra:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        compound_local_warp:   [false, false, false, false, false, false, false, false, false, false, false],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
@@ -1126,6 +1153,7 @@ preset_table! {
         primary_default_cdfs:  [false, false, false, false, false, false, false, false, false, false, false],
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tip_output_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -1149,6 +1177,7 @@ preset_table! {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
         ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+        lr_unit_sizes:         [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
@@ -1352,6 +1381,8 @@ mod tests {
             assert!(fast.same_ref_modes <= slow.same_ref_modes);
             assert!(fast.compound_amvd <= slow.compound_amvd);
             assert!(fast.tip_amvd <= slow.tip_amvd);
+            assert!(fast.warp_interintra <= slow.warp_interintra);
+            assert!(fast.compound_local_warp <= slow.compound_local_warp);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
@@ -1376,6 +1407,7 @@ mod tests {
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
             assert!(fast.cctx <= slow.cctx);
+            assert!(fast.cctx_candidates <= slow.cctx_candidates);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
             assert!(fast.palette <= slow.palette);
@@ -1582,6 +1614,7 @@ mod tests {
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("lr_unit_sizes", "0")], "lr_unit_sizes"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
             (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),
@@ -1589,6 +1622,7 @@ mod tests {
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("interintra_search", "2")], "interintra_search"),
+            (&[("warp_interintra", "3")], "warp_interintra"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
             (&[("cdf_update_tile", "2")], "cdf_update_tile"),
@@ -1596,7 +1630,7 @@ mod tests {
             (&[("tip_output_search", "3")], "tip_output_search"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),
-            (&[("global_motion", "2")], "global_motion"),
+            (&[("global_motion", "3")], "global_motion"),
             (&[("compound_types", "4")], "compound_types"),
         ] {
             let mut params = PRESETS[6];

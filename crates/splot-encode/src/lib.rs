@@ -24,6 +24,7 @@ pub mod encoder;
 pub mod error;
 pub mod frame;
 mod global_motion;
+mod global_motion_search;
 mod gop;
 mod grain;
 mod hme;

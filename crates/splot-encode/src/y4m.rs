@@ -12,6 +12,9 @@ use crate::content::{ChromaSamplePosition, ContentDescription};
 /// Longest accepted stream or frame header line, in bytes.
 const MAX_HEADER_LEN: usize = 4096;
 
+/// Layout of a stream without a colourspace tag: 4:2:0, no siting stated.
+const UNSTATED_COLORSPACE: &str = "420";
+
 /// Errors of the Y4M reader.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -54,7 +57,29 @@ pub enum Y4mError {
     },
 }
 
-/// Parsed Y4M stream header.
+/// Sample range stated by an `XCOLORRANGE=` tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Y4mColorRange {
+    /// `XCOLORRANGE=LIMITED`.
+    Limited,
+    /// `XCOLORRANGE=FULL`.
+    Full,
+}
+
+/// 4:2:0 chroma siting stated by the `C` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Y4mChromaSiting {
+    /// `420jpeg`.
+    Jpeg,
+    /// `420mpeg2`.
+    Mpeg2,
+    /// `420paldv`.
+    PalDv,
+}
+
+/// Parsed Y4M stream header. A field never claims what the stream did not
+/// state: it holds the format's own unknown value, or `None` where the format
+/// has none. [`Y4mReader::tags`] gives every tag as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Y4mHeader {
     /// Luma width.
@@ -65,28 +90,31 @@ pub struct Y4mHeader {
     pub frame_rate: (u32, u32),
     /// Pixel aspect ratio as `(numerator, denominator)`; `(0, 0)` is unknown.
     pub aspect: (u32, u32),
-    /// Interlacing tag: `p`, `t`, `b`, `m` or `?`.
+    /// Interlacing tag: `p`, or `?` for unknown or absent.
     pub interlace: char,
     /// Chroma layout.
     pub format: PixelFormat,
     /// Bits per sample, `8..=16`. Samples above 8 bits are 2-byte little endian.
     pub bit_depth: u8,
-    /// `XCOLORRANGE`: `FULL` or `LIMITED`, when the header has it.
-    pub full_range: Option<bool>,
-    /// The chroma siting of `C420mpeg2` (left) and `C420paldv` (top left).
-    /// `C420jpeg` is also what writers use for an unknown siting, so it gives
-    /// none.
-    pub chroma_sample_position: Option<ChromaSamplePosition>,
+    /// Sample range; `None` when absent or not recognised.
+    pub color_range: Option<Y4mColorRange>,
+    /// Chroma siting; `None` when the colourspace value does not name one.
+    pub chroma_siting: Option<Y4mChromaSiting>,
 }
 
 impl Y4mHeader {
     /// What the header declares about the samples: the sample aspect ratio,
-    /// the range and the chroma sample position.
+    /// the range and the chroma sample position. `420jpeg` gives no position:
+    /// writers also use it for an unknown siting.
     #[must_use]
     pub fn content_description(&self) -> ContentDescription {
         ContentDescription {
-            full_range: self.full_range == Some(true),
-            chroma_sample_position: self.chroma_sample_position,
+            full_range: self.color_range == Some(Y4mColorRange::Full),
+            chroma_sample_position: match self.chroma_siting {
+                Some(Y4mChromaSiting::Mpeg2) => Some(ChromaSamplePosition::Left),
+                Some(Y4mChromaSiting::PalDv) => Some(ChromaSamplePosition::TopLeft),
+                Some(Y4mChromaSiting::Jpeg) | None => None,
+            },
             sample_aspect_ratio: Some(self.aspect).filter(|&(w, h)| w != 0 && h != 0),
             ..ContentDescription::default()
         }
@@ -116,6 +144,7 @@ impl Y4mHeader {
 pub struct Y4mReader<R> {
     reader: R,
     header: Y4mHeader,
+    tags: String,
     frames_read: u64,
     buffer: Vec<u8>,
 }
@@ -127,10 +156,15 @@ impl<R: Read> Y4mReader<R> {
     /// Returns a [`Y4mError`] for I/O failures and malformed or unsupported headers.
     pub fn new(mut reader: R) -> Result<Self, Y4mError> {
         let line = read_line(&mut reader)?.ok_or(Y4mError::BadSignature)?;
-        let header = parse_stream_header(&line)?;
+        let line = String::from_utf8(line).map_err(|_| Y4mError::BadSignature)?;
+        let tags = line
+            .strip_prefix("YUV4MPEG2 ")
+            .ok_or(Y4mError::BadSignature)?;
+        let header = parse_stream_header(tags)?;
         Ok(Self {
             reader,
             header,
+            tags: tags.to_owned(),
             frames_read: 0,
             buffer: Vec::new(),
         })
@@ -140,6 +174,12 @@ impl<R: Read> Y4mReader<R> {
     #[must_use]
     pub fn header(&self) -> &Y4mHeader {
         &self.header
+    }
+
+    /// Every stream header tag as `(letter, value)`, in stream order and as
+    /// written: repeated tags, extension (`X`) tags and unknown letters included.
+    pub fn tags(&self) -> impl Iterator<Item = (char, &str)> {
+        split_tags(&self.tags)
     }
 
     /// Reads the next frame as Y, U and V planes of `u16` samples, packed with
@@ -212,20 +252,21 @@ fn read_line(reader: &mut impl Read) -> Result<Option<Vec<u8>>, Y4mError> {
     }
 }
 
-fn parse_stream_header(line: &[u8]) -> Result<Y4mHeader, Y4mError> {
-    let line = std::str::from_utf8(line).map_err(|_| Y4mError::BadSignature)?;
-    let tags = line
-        .strip_prefix("YUV4MPEG2 ")
-        .ok_or(Y4mError::BadSignature)?;
+/// Splits the tags of a stream header line into `(letter, value)` pairs.
+fn split_tags(tags: &str) -> impl Iterator<Item = (char, &str)> {
+    tags.split(' ').filter_map(|token| {
+        let mut chars = token.chars();
+        Some((chars.next()?, chars.as_str()))
+    })
+}
+
+/// Parses the tags of a stream header line. A repeated tag replaces the earlier one.
+fn parse_stream_header(tags: &str) -> Result<Y4mHeader, Y4mError> {
     let (mut width, mut height, mut frame_rate) = (None, None, None);
     let mut aspect = (0, 0);
-    let mut interlace = 'p';
-    let (mut colorspace, mut extended) = (None, None);
-    let mut full_range = None;
-    for token in tags.split(' ').filter(|token| !token.is_empty()) {
-        let mut chars = token.chars();
-        let tag = chars.next().unwrap_or(' ');
-        let value = chars.as_str();
+    let mut interlace = '?';
+    let (mut colorspace, mut extended, mut color_range) = (None, None, None);
+    for (tag, value) in split_tags(tags) {
         let invalid = || Y4mError::InvalidTag {
             tag,
             value: value.to_owned(),
@@ -238,19 +279,19 @@ fn parse_stream_header(line: &[u8]) -> Result<Y4mHeader, Y4mError> {
                 frame_rate = Some(rate.ok_or_else(invalid)?);
             }
             'A' => aspect = parse_ratio(value).ok_or_else(invalid)?,
-            'I' if matches!(value, "p" | "?") => {
-                interlace = value.chars().next().unwrap_or('p');
+            'I' => {
+                interlace = match value {
+                    "p" => 'p',
+                    "?" => '?',
+                    _ => return Err(invalid()),
+                };
             }
-            'I' => return Err(invalid()),
             'C' => colorspace = Some(value),
             'X' => {
                 if let Some(subsampling) = value.strip_prefix("YSCSS=") {
                     extended = Some(subsampling);
-                }
-                match value.strip_prefix("COLORRANGE=") {
-                    Some("FULL") => full_range = Some(true),
-                    Some("LIMITED") => full_range = Some(false),
-                    _ => {}
+                } else if let Some(range) = value.strip_prefix("COLORRANGE=") {
+                    color_range = parse_color_range(range);
                 }
             }
             _ => {}
@@ -259,8 +300,8 @@ fn parse_stream_header(line: &[u8]) -> Result<Y4mHeader, Y4mError> {
     let width = width.ok_or(Y4mError::MissingTag('W'))?;
     let height = height.ok_or(Y4mError::MissingTag('H'))?;
     let frame_rate = frame_rate.ok_or(Y4mError::MissingTag('F'))?;
-    let colorspace = colorspace.or(extended).unwrap_or("420jpeg");
-    let (format, bit_depth) = parse_colorspace(colorspace)
+    let colorspace = colorspace.or(extended).unwrap_or(UNSTATED_COLORSPACE);
+    let (format, bit_depth, chroma_siting) = parse_colorspace(colorspace)
         .ok_or_else(|| Y4mError::UnsupportedColorspace(colorspace.to_owned()))?;
     Ok(Y4mHeader {
         width,
@@ -270,13 +311,19 @@ fn parse_stream_header(line: &[u8]) -> Result<Y4mHeader, Y4mError> {
         interlace,
         format,
         bit_depth,
-        full_range,
-        chroma_sample_position: match colorspace.to_ascii_lowercase().as_str() {
-            "420mpeg2" => Some(ChromaSamplePosition::Left),
-            "420paldv" => Some(ChromaSamplePosition::TopLeft),
-            _ => None,
-        },
+        color_range,
+        chroma_siting,
     })
+}
+
+fn parse_color_range(value: &str) -> Option<Y4mColorRange> {
+    if value.eq_ignore_ascii_case("FULL") {
+        Some(Y4mColorRange::Full)
+    } else if value.eq_ignore_ascii_case("LIMITED") {
+        Some(Y4mColorRange::Limited)
+    } else {
+        None
+    }
 }
 
 fn parse_dimension(value: &str) -> Option<u32> {
@@ -291,8 +338,8 @@ fn parse_ratio(value: &str) -> Option<(u32, u32)> {
     Some((numerator.parse().ok()?, denominator.parse().ok()?))
 }
 
-/// Maps a `C` (or `XYSCSS=`) colourspace value to a layout and bit depth.
-fn parse_colorspace(value: &str) -> Option<(PixelFormat, u8)> {
+/// Maps a `C` (or `XYSCSS=`) colourspace value to a layout, bit depth and siting.
+fn parse_colorspace(value: &str) -> Option<(PixelFormat, u8, Option<Y4mChromaSiting>)> {
     let value = value.to_ascii_lowercase();
     let (format, depth) = if let Some(depth) = value.strip_prefix("mono") {
         (PixelFormat::Monochrome, depth)
@@ -306,12 +353,20 @@ fn parse_colorspace(value: &str) -> Option<(PixelFormat, u8)> {
         };
         (format, depth)
     };
+    let siting = match (format, depth) {
+        (PixelFormat::Yuv420, "jpeg") => Some(Y4mChromaSiting::Jpeg),
+        (PixelFormat::Yuv420, "mpeg2") => Some(Y4mChromaSiting::Mpeg2),
+        (PixelFormat::Yuv420, "paldv") => Some(Y4mChromaSiting::PalDv),
+        _ => None,
+    };
     let bit_depth = match (format, depth) {
-        (_, "") | (PixelFormat::Yuv420, "jpeg" | "mpeg2" | "paldv") => 8,
+        _ if depth.is_empty() || siting.is_some() => 8,
         (PixelFormat::Monochrome, _) => depth.parse().ok()?,
         _ => depth.strip_prefix('p')?.parse().ok()?,
     };
-    (8..=16).contains(&bit_depth).then_some((format, bit_depth))
+    (8..=16)
+        .contains(&bit_depth)
+        .then_some((format, bit_depth, siting))
 }
 
 #[cfg(test)]
@@ -334,6 +389,9 @@ mod tests {
         assert_eq!((header.width, header.height), (3, 2));
         assert_eq!((header.frame_rate, header.aspect), ((25, 1), (1, 1)));
         assert_eq!((header.format, header.bit_depth), (PixelFormat::Yuv420, 8));
+        assert_eq!(header.interlace, 'p');
+        assert_eq!(header.color_range, Some(Y4mColorRange::Full));
+        assert_eq!(header.chroma_siting, Some(Y4mChromaSiting::Mpeg2));
         let content = header.content_description();
         assert!(content.full_range);
         assert_eq!(
@@ -366,9 +424,12 @@ mod tests {
 
     #[test]
     fn maps_every_colourspace_tag() {
+        use Y4mChromaSiting::{Jpeg, Mpeg2, PalDv};
+        for (tag, siting) in [("420jpeg", Jpeg), ("420MPEG2", Mpeg2), ("420paldv", PalDv)] {
+            let expected = Some((PixelFormat::Yuv420, 8, Some(siting)));
+            assert_eq!(parse_colorspace(tag), expected, "{tag}");
+        }
         let cases = [
-            ("420jpeg", PixelFormat::Yuv420, 8),
-            ("420paldv", PixelFormat::Yuv420, 8),
             ("420", PixelFormat::Yuv420, 8),
             ("420p10", PixelFormat::Yuv420, 10),
             ("422", PixelFormat::Yuv422, 8),
@@ -380,7 +441,7 @@ mod tests {
             ("mono12", PixelFormat::Monochrome, 12),
         ];
         for (tag, format, depth) in cases {
-            assert_eq!(parse_colorspace(tag), Some((format, depth)), "{tag}");
+            assert_eq!(parse_colorspace(tag), Some((format, depth, None)), "{tag}");
         }
         for tag in [
             "411", "444alpha", "420p7", "420p17", "422jpeg", "444mpeg2", "422p", "",
@@ -421,6 +482,40 @@ mod tests {
                 actual: 1
             })
         ));
+        Ok(())
+    }
+
+    /// What the stream does not state stays unknown, and no tag is dropped.
+    #[test]
+    fn keeps_unstated_values_unknown_and_every_tag() -> Result<(), Y4mError> {
+        let reader = read(b"YUV4MPEG2 W2 H2 F1:1\n")?;
+        let header = reader.header();
+        assert_eq!((header.interlace, header.aspect), ('?', (0, 0)));
+        assert_eq!((header.color_range, header.chroma_siting), (None, None));
+        assert_eq!((header.format, header.bit_depth), (PixelFormat::Yuv420, 8));
+
+        let reader = read(
+            b"YUV4MPEG2 W2 H2  F1:1 Ip I? XCOLORRANGE=FULL Zq XCOLORRANGE=limited XFOO=1 X\n",
+        )?;
+        assert_eq!(reader.header().interlace, '?');
+        assert_eq!(reader.header().color_range, Some(Y4mColorRange::Limited));
+        let tags: Vec<_> = reader.tags().collect();
+        let expected = [
+            ('W', "2"),
+            ('H', "2"),
+            ('F', "1:1"),
+            ('I', "p"),
+            ('I', "?"),
+            ('X', "COLORRANGE=FULL"),
+            ('Z', "q"),
+            ('X', "COLORRANGE=limited"),
+            ('X', "FOO=1"),
+            ('X', ""),
+        ];
+        assert_eq!(tags, expected);
+
+        let reader = read(b"YUV4MPEG2 W2 H2 F1:1 XCOLORRANGE=FULL XCOLORRANGE=wide\n")?;
+        assert_eq!(reader.header().color_range, None);
         Ok(())
     }
 

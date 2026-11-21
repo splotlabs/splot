@@ -447,6 +447,55 @@ fn type_model_ranks_the_exact_winner_first_on_constructed_blocks() {
     }
 }
 
+/// RD over every CCTX rotation changes the stream, decodes to the encoder
+/// recon at both bit depths (a key frame and the inter frames that
+/// reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn cctx_rd_over_every_rotation_decodes_to_the_encoder_recon_on_any_thread_count() {
+    for (width, height, bit_depth) in [(72, 40, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |candidates: u8, threads: usize| -> (Vec<u8>, Vec<u8>) {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                cctx_candidates: candidates,
+                ..*Preset::new(6).unwrap().params()
+            }));
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let coded: Vec<_> = (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    coder
+                        .encode_frame(&synthetic_frame(&config, 110 + index as u32), &plan, 60)
+                        .unwrap()
+                })
+                .collect();
+            (
+                coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
+            )
+        };
+        CCTX_LATER_ROTATIONS.set(0);
+        let (units, expected) = stream(6, 1);
+        let name = format!("{bit_depth:?}");
+        let later = CCTX_LATER_ROTATIONS.get();
+        assert!(later > 0, "{name}: only the least-energy rotation coded");
+        assert_same_samples(&decode(&units), &expected, &name);
+        assert!(
+            stream(1, 1).0 != units,
+            "{name}: the wider CCTX search coded the same stream"
+        );
+        for threads in [2, 8] {
+            assert!(stream(6, threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+}
+
 /// Explicit CFL alphas with alpha 0 in one plane change the stream, decode
 /// to the encoder recon at both bit depths (a key frame and the inter frames
 /// that reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
@@ -884,10 +933,11 @@ impl Rng {
 /// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference; a
 /// `COMPOUND_WEDGE`, a `COMPOUND_DIFFWTD` and a weighted `COMPOUND_AVERAGE`
 /// compound leaf; a smooth and a wedge inter-intra leaf; an implicit and an
-/// explicit BAWP leaf; an adaptive-MVD compound leaf.
+/// explicit BAWP leaf; an adaptive-MVD compound leaf; a `WARPMV` inter-intra
+/// leaf; a compound `LOCALWARP` leaf.
 type Coverage = [usize; COVERAGE_SLOTS];
 /// The slots of [`Coverage`].
-const COVERAGE_SLOTS: usize = 36;
+const COVERAGE_SLOTS: usize = 38;
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -1031,6 +1081,7 @@ fn random_modes(
                 filter,
                 optflow: false,
                 refinemv: false,
+                local_warp: false,
                 blend: CompoundType::default(),
             };
             if syntax.compound_bases(leaf, &modes).is_err() {
@@ -1045,6 +1096,29 @@ fn random_modes(
                     syntax.compound_bases(leaf, &refused).is_err(),
                     "{refused:?}"
                 );
+            }
+            let new_new = splot_decode::encoder_syntax::CompoundMode::NewNew;
+            let refused = CompoundModes {
+                local_warp: true,
+                ..modes
+            };
+            if modes.mode != new_new {
+                let prediction = InterPrediction::Compound(refused);
+                assert!(syntax.inter_mvs(leaf, prediction).is_err(), "{refused:?}");
+            }
+            let local = CompoundModes {
+                mode: new_new,
+                drl: [0; 2],
+                jmvd_scale_mode: 0,
+                filter: splot_recon::InterpolationFilter::EightTap,
+                ..refused
+            };
+            if syntax
+                .inter_mvs(leaf, InterPrediction::Compound(local))
+                .is_ok()
+            {
+                coverage[37] += 1;
+                return LeafChoice::inter(InterPrediction::Compound(local));
             }
             let mut side = Rng(rng.0.rotate_left(17));
             let (reads_optflow, _) = syntax.compound_refinements(leaf, modes).unwrap();
@@ -1359,11 +1433,12 @@ fn inter_stream_of(
 
 /// `(width, height, bit depth, preset, qp)` of the random inter streams: both
 /// superblock sizes, both bit depths, frame edges, and a qp that skips.
-const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u16); 4] = [
+const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u16); 5] = [
     (200, 104, BitDepth::Eight, 10, 90),
     (96, 72, BitDepth::Ten, 6, 160),
     (33, 17, BitDepth::Eight, 9, 250),
     (144, 80, BitDepth::Ten, 9, 60),
+    (192, 128, BitDepth::Ten, 10, 40),
 ];
 
 /// [`RANDOM_INTER_CASES`] in every chroma format.

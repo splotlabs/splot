@@ -45,6 +45,9 @@ pub(crate) struct EncoderWarpMotion {
     pub(crate) mvd: Option<Mv>,
     /// The explicit block `MvPrecision` of a `WARP_NEWMV`.
     pub(crate) precision: Option<u8>,
+    /// The inter-intra prediction of a `WARPMV` that codes
+    /// `warp_inter_intra = 1` (§ 5.20.7.15).
+    pub(crate) interintra: Option<InterIntraPrediction>,
 }
 
 /// The warp tools a leaf can code, see [`EncoderInterTile::warp_options`].
@@ -250,8 +253,8 @@ impl EncoderInterTile {
     }
 
     /// The symbols `warp` at `frontier` codes after its difference: the
-    /// `DELTAWARP` parameters (§ 5.20.7.7), then `warp_inter_intra = 0` of a
-    /// `WARPMV` (§ 5.20.7.15).
+    /// `DELTAWARP` parameters (§ 5.20.7.7), then `warp_inter_intra` and its
+    /// inter-intra tail of a `WARPMV` (§ 5.20.7.15).
     pub(crate) fn warp_tail_symbols(
         &self,
         frontier: &DecodeBlockFrontier,
@@ -259,6 +262,14 @@ impl EncoderInterTile {
     ) -> Result<Vec<(TileCdfSelector, u8)>> {
         let block = self.block(frontier, (warp.ref_frame, None))?;
         let mut out = Vec::new();
+        let (n4w, n4h) = (block.bw4, block.bh4);
+        let reads_interintra = warp.source == EncoderWarpSource::Candidate
+            && n4w >= 2
+            && n4h >= 2
+            && n4w.max(n4h) <= CHUNK_64_N4;
+        if warp.interintra.is_some() && !reads_interintra {
+            return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
+        }
         match (warp.source, self.warp_syntax(&block, warp)?.source) {
             (
                 EncoderWarpSource::Delta {
@@ -293,11 +304,16 @@ impl EncoderInterTile {
                     }
                 }
             }
-            (EncoderWarpSource::Candidate, _) => {
-                let (n4w, n4h) = (block.bw4, block.bh4);
-                if n4w >= 2 && n4h >= 2 && n4w.max(n4h) <= CHUNK_64_N4 {
-                    let bsize_group = SIZE_GROUP_LOOKUP[frontier.b_size.index()];
-                    out.push((TileCdfSelector::WarpInterIntra { bsize_group }, 0));
+            (EncoderWarpSource::Candidate, _) if reads_interintra => {
+                let b_size = frontier.b_size.index();
+                let bsize_group = SIZE_GROUP_LOOKUP[b_size];
+                out.push((
+                    TileCdfSelector::WarpInterIntra { bsize_group },
+                    u8::from(warp.interintra.is_some()),
+                ));
+                if let Some(prediction) = warp.interintra {
+                    let reads_wedge = super::super::WEDGE_USED_BY_BSIZE[b_size];
+                    super::blend::interintra_tail(&mut out, bsize_group, reads_wedge, prediction)?;
                 }
             }
             _ => {}

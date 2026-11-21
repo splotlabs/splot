@@ -270,9 +270,12 @@ fn inter_frame_header_bits(
     w.write_flag(false)?; // frame_size_override_flag
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
-    w.write_flag(true)?; // signal_primary_ref_frame
+    let choose = params.tx.choose_primary_ref_frame;
+    w.write_flag(!choose)?; // signal_primary_ref_frame
     w.write_flag(primary_ref_frame.is_none() || params.tx.disable_cross_frame_cdf_init)?;
-    w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
+    if !choose {
+        w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
+    }
     if seq.enable_short_refresh_frame_flags || seq.seq_force_screen_content_tools == 1 {
         return Err(unsupported(
             "short refresh flags or forced screen content tools",
