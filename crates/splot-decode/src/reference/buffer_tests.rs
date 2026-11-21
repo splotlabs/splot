@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
+use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame};
 use crate::test_support::decoded_frame;
 use splot_recon::SharedFrame;
@@ -610,4 +611,201 @@ fn a_held_snapshot_keeps_its_frame_filter_taps_across_a_refresh() {
     let cleared = buf.state::<u8>(&frames).unwrap();
     assert!(taps(&cleared, 1)[0].is_empty());
     assert_eq!(taps(&reused, 1)[0][0], coeffs(7));
+}
+
+fn unit_grid(seed: u8) -> Arc<crate::filters::ccso::CcsoUnitGrid> {
+    let (rows, cols) = (2, 3);
+    let blocks = std::array::from_fn(|plane| {
+        (0..rows * cols)
+            .map(|cell| seed.wrapping_add(plane as u8 * 7).wrapping_add(cell as u8))
+            .collect()
+    });
+    Arc::new(
+        crate::filters::ccso::CcsoUnitGrid::new(true, 2, [true; 3], blocks, rows, cols).unwrap(),
+    )
+}
+
+struct CcsoFrame {
+    header: Arc<splot_core::headers::frame::FrameHeaderCore>,
+    grid: Arc<crate::filters::ccso::CcsoUnitGrid>,
+}
+
+fn ccso_frame(
+    header: &splot_core::headers::frame::FrameHeaderCore,
+    seed: u8,
+) -> (PipelineFrame, CcsoFrame) {
+    let mut header = header.clone();
+    for plane in &mut header.ccso_params.as_mut().unwrap().planes {
+        plane.ccso_scale_idx = Some(seed & 3);
+    }
+    let owned = CcsoFrame {
+        header: Arc::new(header),
+        grid: unit_grid(seed),
+    };
+    let mut frame = pipeline_frame(64, 64);
+    frame.ccso_header = Some(Arc::clone(&owned.header));
+    frame.ccso_grid =
+        crate::prediction::inter::CcsoGridHandle::settled(Some(Arc::clone(&owned.grid)));
+    (frame, owned)
+}
+
+fn reuse_header(
+    base: &splot_core::headers::frame::FrameHeaderCore,
+    ref_frame_idx: [u32; 3],
+    plane_refs: [Option<u32>; 3],
+) -> splot_core::headers::frame::FrameHeaderCore {
+    let mut core = base.clone();
+    let mut inter = splot_core::headers::frame::InterControl::default();
+    inter.ref_frame_idx = ref_frame_idx.into_iter().collect();
+    core.inter = Some(inter);
+    let ccso = core.ccso_params.as_mut().unwrap();
+    ccso.ccso_frame_flag = Some(true);
+    ccso.planes = splot_core::tile::InlineVec::from_iter_checked(plane_refs.map(|reference| {
+        splot_core::headers::frame::CcsoPlaneParams {
+            ccso_planes: true,
+            sb_reuse_ccso: reference.is_some(),
+            ccso_ref_idx: reference,
+            ..Default::default()
+        }
+    }))
+    .unwrap();
+    core
+}
+
+fn reused_product(
+    handle: Option<&crate::prediction::inter::CcsoGridHandle>,
+) -> Option<&Arc<crate::filters::ccso::CcsoUnitGrid>> {
+    handle
+        .and_then(crate::prediction::inter::CcsoGridHandle::product)
+        .and_then(Option::as_ref)
+}
+
+const CCSO_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
+);
+
+fn ccso_sequence_and_core() -> (
+    splot_core::headers::sequence::SequenceHeader,
+    splot_core::headers::frame::FrameHeaderCore,
+) {
+    let (mut sequence, core) =
+        crate::prediction::inter::test_support::fixture_sequence_and_key_core(CCSO_FIXTURE);
+    sequence.filter.as_mut().unwrap().enable_ccso = true;
+    (sequence, core)
+}
+
+#[test]
+fn sb_reuse_resolves_the_referenced_frames_grid_after_a_key_frame_is_shown_by_sef() {
+    let (sequence, base) = ccso_sequence_and_core();
+    let (key_frame, key) = ccso_frame(&base, 1);
+    let (inter_frame, inter) = ccso_frame(&base, 2);
+
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update(), true);
+    let mut update = inter_update();
+    update.refresh_frame_flags = 1 << 1;
+    buf.update(1, &update, false);
+
+    let mut sef_frame = pipeline_frame(64, 64);
+    sef_frame.ccso_header.clone_from(&key_frame.ccso_header);
+    sef_frame.ccso_grid = key_frame.ccso_grid.clone();
+    let frames: FrameStore = vec![Some(key_frame), Some(inter_frame), Some(sef_frame)].into();
+    let reuse = reuse_header(&base, [1, 0, 0], [Some(0), Some(1), None]);
+    let before = buf.state::<u8>(&frames).unwrap();
+    let grids_before = crate::prediction::inter::reused_ccso_grids(&reuse, &sequence, &before);
+
+    buf.note_show_existing();
+    let after = buf.state::<u8>(&frames).unwrap();
+    let grids_after = crate::prediction::inter::reused_ccso_grids(&reuse, &sequence, &after);
+
+    assert_eq!(after.ref_valid.iter().filter(|valid| **valid).count(), 2);
+    assert!(Arc::ptr_eq(
+        after.ref_ccso_headers[0].as_ref().unwrap(),
+        &key.header
+    ));
+    assert!(Arc::ptr_eq(
+        after.ref_ccso_headers[1].as_ref().unwrap(),
+        &inter.header
+    ));
+    assert!(Arc::ptr_eq(
+        reused_product(grids_after[0].as_ref()).unwrap(),
+        &inter.grid
+    ));
+    assert!(Arc::ptr_eq(
+        reused_product(grids_after[1].as_ref()).unwrap(),
+        &key.grid
+    ));
+    assert!(grids_after[2].is_none());
+    for (plane, expected) in [(0, &inter.grid), (1, &key.grid)] {
+        let reused = reused_product(grids_after[plane].as_ref()).unwrap();
+        assert_eq!(**reused, **expected);
+        assert_eq!(reused.plane_blocks(plane), expected.plane_blocks(plane));
+        assert!(Arc::ptr_eq(
+            reused_product(grids_before[plane].as_ref()).unwrap(),
+            reused
+        ));
+    }
+    assert_ne!(*key.grid, *inter.grid);
+}
+
+#[test]
+fn sb_reuse_cannot_reach_an_old_sequences_grid_after_a_new_sequence_starts() {
+    let (sequence, base) = ccso_sequence_and_core();
+    let (old_key_frame, old_key) = ccso_frame(&base, 1);
+    let (old_inter_frame, old_inter) = ccso_frame(&base, 2);
+    let (new_key_frame, new_key) = ccso_frame(&base, 3);
+
+    let mut old = RuntimeReferenceBuffer::new(8).unwrap();
+    old.update(0, &key_update(), true);
+    let mut update = inter_update();
+    update.refresh_frame_flags = 1 << 1;
+    old.update(1, &update, false);
+    let frames: FrameStore = vec![
+        Some(old_key_frame),
+        Some(old_inter_frame),
+        Some(new_key_frame),
+    ]
+    .into();
+    let reuse = reuse_header(&base, [1, 0, 0], [Some(0), Some(1), Some(2)]);
+    let populated = old.state::<u8>(&frames).unwrap();
+    let grids = crate::prediction::inter::reused_ccso_grids(&reuse, &sequence, &populated);
+    assert!(Arc::ptr_eq(
+        reused_product(grids[0].as_ref()).unwrap(),
+        &old_inter.grid
+    ));
+    assert!(Arc::ptr_eq(
+        reused_product(grids[1].as_ref()).unwrap(),
+        &old_key.grid
+    ));
+
+    let mut fresh = RuntimeReferenceBuffer::new(8).unwrap();
+    fresh.update(2, &key_update(), true);
+    let state = fresh.state::<u8>(&frames).unwrap();
+    let grids = crate::prediction::inter::reused_ccso_grids(&reuse, &sequence, &state);
+
+    assert!(!fresh.retains(0) && !fresh.retains(1) && fresh.retains(2));
+    assert!(Arc::ptr_eq(
+        state.ref_ccso_headers[0].as_ref().unwrap(),
+        &new_key.header
+    ));
+    assert!(state.ref_ccso_headers[1..].iter().all(Option::is_none));
+    assert!(state.ref_ccso_unit_grids[1..].iter().all(Option::is_none));
+    assert!(
+        grids[0].is_none(),
+        "slot 1 must not resolve to the old inter frame"
+    );
+    assert!(Arc::ptr_eq(
+        reused_product(grids[1].as_ref()).unwrap(),
+        &new_key.grid
+    ));
+    assert!(Arc::ptr_eq(
+        reused_product(grids[2].as_ref()).unwrap(),
+        &new_key.grid
+    ));
+    for grid in grids
+        .iter()
+        .filter_map(|handle| reused_product(handle.as_ref()))
+    {
+        assert!(!Arc::ptr_eq(grid, &old_key.grid) && !Arc::ptr_eq(grid, &old_inter.grid));
+    }
 }
