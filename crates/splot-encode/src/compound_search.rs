@@ -168,6 +168,45 @@ impl TrialCoder<'_, '_> {
     }
 }
 
+impl TrialCoder<'_, '_> {
+    /// The list-1 vector of a same-reference `NEW_NEWMV` whose list 0 is
+    /// `first`: the neighbour of `first` at one or one half sample whose
+    /// two-vector average has the least luma SATD; `None` without one inside
+    /// the reference.
+    pub(super) fn same_ref_partner(
+        &mut self,
+        leaf: &LeafBlock,
+        motion: &MotionSearch,
+        ref_frame: usize,
+        first: MotionVector,
+    ) -> Result<Option<MotionVector>> {
+        let rect = leaf_rect(leaf)?;
+        let mut best: Option<(u64, MotionVector)> = None;
+        for step in [FULL_PEL, FULL_PEL / 2] {
+            for (dr, dc) in crate::motion_search::NEIGHBOURS {
+                let partner = MotionVector {
+                    row: first.row + dr * step,
+                    col: first.col + dc * step,
+                };
+                let lists = [(ref_frame, first), (ref_frame, partner)];
+                let Some(satd) = codable(motion.prediction_satd(
+                    self.syntax,
+                    &lists,
+                    InterpolationFilter::EightTap,
+                    rect,
+                ))?
+                else {
+                    continue;
+                };
+                if best.is_none_or(|(cost, _)| satd < cost) {
+                    best = Some((satd, partner));
+                }
+            }
+        }
+        Ok(best.map(|(_, partner)| partner))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

@@ -236,9 +236,8 @@ impl EncoderInterTile {
             (
                 inter
                     .tip_frame_mode
-                    .is_some_and(|mode| mode == TipFrameMode::AsOutput)
-                    || seq_inter.enable_mv_traj,
-                "TIP output or motion vector trajectories",
+                    .is_some_and(|mode| mode == TipFrameMode::AsOutput),
+                "TIP output",
             ),
             (
                 inter.frame_enabled_motion_modes.is_some_and(|modes| {
