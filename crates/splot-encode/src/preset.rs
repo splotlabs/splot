@@ -369,6 +369,10 @@ pub struct PresetParams {
     /// -1.83 / -0.27%, park_joy f10 +0.10 / -0.82 / -2.91 / -0.19%; p3 paris
     /// +0.18 / -0.83 / -4.26 / -0.42%, p8 -0.04 / -1.04 / -1.22 / -0.28%.
     pub cctx: bool,
+    /// CCTX rotations a chroma pair compares by RD, least V energy first; `1`
+    /// tries the best one only when it leaves less than the smaller plain
+    /// plane, `6` tries every rotation.
+    pub cctx_candidates: u8,
     /// The chroma candidates of a CFL leaf include the three MHCCP
     /// directions; off disables `enable_mhccp`. Off in every row: its
     /// `cfl_mhccp` flags lose luma BD-rate.
@@ -1084,6 +1088,7 @@ preset_table! {
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
+        cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
@@ -1376,6 +1381,7 @@ mod tests {
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
             assert!(fast.cctx <= slow.cctx);
+            assert!(fast.cctx_candidates <= slow.cctx_candidates);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
             assert!(fast.palette <= slow.palette);
