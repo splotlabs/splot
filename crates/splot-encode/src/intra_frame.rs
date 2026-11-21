@@ -1331,7 +1331,7 @@ thread_local! {
     /// the one that leaves V the least energy (tests only).
     pub(crate) static CCTX_LATER_ROTATIONS: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
-    /// Intra luma blocks outside mode trials whose RD-chosen IST kernel is
+    /// Luma blocks outside mode trials whose RD-chosen IST kernel is
     /// not the one that keeps the most energy (tests only).
     pub(crate) static IST_RD_OTHER: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
@@ -1365,7 +1365,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             (false, true) => u8::from(self.preset.inter_ist && !self.trial),
             (false, false) => self.preset.ist_sets,
         };
-        let ist_probe = if inter { 4 } else { 2 };
+        let (ist_probe, ist_rd) = if inter {
+            (4, self.preset.inter_ist_rd)
+        } else {
+            (2, self.preset.intra_ist_rd)
+        };
         let mut best: Option<(u128, TransformDecision)> = None;
         let keep = match self.preset.tx_type_model_keep {
             0 => count,
@@ -1398,7 +1402,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 return Ok(decision);
             }
             let mut trials = vec![decision];
-            if ist && !inter && self.preset.intra_ist_rd {
+            if ist && ist_rd {
                 for ist in Self::ist_kernels(syntax, &tx, ist_sets)? {
                     trials.push(self.code(syntax, &TransformBlock { ist, ..tx }, prediction)?);
                 }
@@ -1427,7 +1431,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
         #[cfg(test)]
-        if !self.trial && !inter && self.preset.intra_ist_rd && decision.ist != Ist::OFF {
+        if !self.trial && ist_rd && decision.ist != Ist::OFF {
             let plain = TransformBlock {
                 tx_type: decision.tx_type,
                 ..*tx

@@ -85,6 +85,43 @@ fn inter_ist_and_ddt_streams_decode_to_the_encoder_recon() {
     );
 }
 
+/// RD over the inter IST kernels changes the stream against the
+/// most-energy kernel and chooses another kernel; the streams decode to the
+/// encoder recon at both bit depths with the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn inter_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (mut chosen, mut differs) = (0, false);
+    for (width, height, bit_depth, qp) in [
+        (136, 72, BitDepth::Eight, 150),
+        (72, 40, BitDepth::Ten, 190),
+    ] {
+        let stream = |rd: bool, threads: usize| {
+            let mut config = config(width, height, bit_depth, 6, 90);
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let params = Box::leak(Box::new(PresetParams {
+                inter_ist_rd: rd,
+                ..*with_tools(true, false)
+            }));
+            let coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            super::carry::planned_stream_of(&config, coder, super::panning_frame, qp)
+        };
+        IST_RD_OTHER.set(0);
+        let (units, expected, _, _) = stream(true, 1);
+        chosen += IST_RD_OTHER.get();
+        assert_same_samples(&decode(&units), &expected, &format!("{bit_depth:?}"));
+        differs |= stream(false, 1).0 != units;
+        for threads in [2, 8] {
+            assert!(stream(true, threads).0 == units, "{bit_depth:?} {threads}");
+        }
+    }
+    assert!(differs, "RD over the kernels coded the same streams");
+    assert!(
+        chosen > 0,
+        "RD never chose another kernel than the energy one"
+    );
+}
+
 /// A tiled stream with inter IST codes the same bytes on 1, 2 and 8 threads.
 #[test]
 fn inter_ist_streams_match_on_any_thread_count() {
