@@ -323,6 +323,7 @@ fn is_frame_prefix_obu(envelope: &ObuEnvelope<'_>) -> bool {
         ObuType::SequenceHeader
             | ObuType::LayerConfigurationRecord
             | ObuType::OperatingPointSet
+            | ObuType::AtlasSegment
             | ObuType::ContentInterpretation
             | ObuType::MultiFrameHeader
             | ObuType::BufferRemovalTiming
@@ -453,7 +454,7 @@ fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUn
     while obus.get(sequence).is_some_and(|envelope| {
         matches!(
             envelope.header.obu_type,
-            ObuType::LayerConfigurationRecord | ObuType::OperatingPointSet
+            ObuType::LayerConfigurationRecord | ObuType::OperatingPointSet | ObuType::AtlasSegment
         )
     }) {
         sequence += 1;

@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::mode_decision::{
-    CHAINED_REFERENCES, INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES,
+    CHAINED_REFERENCES, INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, NEWMV_PRUNED, PD0_PASSES,
 };
 use crate::preset::{FrameKind, Levels, PresetContext, PresetParams};
 use crate::rd::partition::BREAKOUTS;
@@ -427,32 +427,10 @@ fn leaf_coded_follows_the_last_coded_leaf() {
     assert_eq!(flags, [false, true, false]);
 }
 
-/// Preset 10 with the light leaf decision at `margin` in every frame.
-fn light_leaf(margin: u8) -> &'static PresetParams {
-    Box::leak(Box::new(PresetParams {
-        light_leaf: Levels::all(margin),
-        ..*Preset::new(10).unwrap().params()
-    }))
-}
-
-/// The length and FNV-1a hash of the p10 stream of [`staged_stream`] at qp
-/// 160, recorded from main ac27288bb before the light leaf decision.
-const P10_GOLDEN: (usize, u64) = (13796, 0xb977_9e15_e32d_ccae);
-
-/// The light leaf decision drops more MDS0 candidates in frames that later
-/// frames reference, under deblocking, CDEF, LR, CCSO and GDF; the stream
-/// decodes to the encoder recon and codes the same bytes on 1, 2 and 8
-/// threads. A margin of 255 codes the stream of main before it.
-#[test]
-fn light_leaf_streams_decode_on_any_thread_count() {
-    let (one, expected, cores, pruned) = staged_stream(light_leaf(0), 160, 1);
-    let (off, _, _, open) = staged_stream(light_leaf(u8::MAX), 160, 1);
-    assert!(
-        pruned > open,
-        "the light leaf decision dropped no candidate"
-    );
+/// Some frame of `cores` codes each of deblocking, CDEF, LR, CCSO and GDF.
+fn assert_every_loop_filter(cores: &[FrameHeaderCore]) {
     let mut filters = [false; 5];
-    for core in &cores {
+    for core in cores {
         let used = [
             core.deblocking_filter_params
                 .is_some_and(|df| df.apply_deblocking_filter.contains(&true)),
@@ -466,6 +444,68 @@ fn light_leaf_streams_decode_on_any_thread_count() {
         filters = core::array::from_fn(|i| filters[i] || used[i]);
     }
     assert_eq!(filters, [true; 5], "deblock, CDEF, LR, CCSO, GDF");
+}
+
+/// Preset 10 with `NEWMV` reference pruning at `margin` in every frame.
+fn newmv_pruned(margin: u8) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        newmv_ref_margin: Levels::all(margin),
+        ..*Preset::new(10).unwrap().params()
+    }))
+}
+
+/// The length and FNV-1a hash of the p10 stream of [`staged_stream`] at qp
+/// 160, recorded from main ac27288bb before `NEWMV` reference pruning.
+const P10_GOLDEN: (usize, u64) = (13796, 0xb977_9e15_e32d_ccae);
+
+/// `NEWMV` reference pruning skips searches in frames that later frames
+/// reference, under deblocking, CDEF, LR, CCSO and GDF; the stream decodes to
+/// the encoder recon and codes the same bytes on 1, 2 and 8 threads. A
+/// margin of 255 codes the stream of main before the pruning.
+#[test]
+fn newmv_pruned_streams_decode_on_any_thread_count() {
+    let preset = newmv_pruned(0);
+    NEWMV_PRUNED.set(0);
+    let (one, expected, cores, _) = staged_stream(preset, 160, 1);
+    assert!(NEWMV_PRUNED.get() > 0, "no reference skipped NEWMV");
+    assert_every_loop_filter(&cores);
+    assert_same_samples(&decode(&one), &expected, "NEWMV reference pruning");
+    for threads in [2, 8] {
+        assert!(
+            staged_stream(preset, 160, threads).0 == one,
+            "{threads} threads"
+        );
+    }
+    let off = staged_stream(newmv_pruned(u8::MAX), 160, 1).0;
+    assert_ne!(off, one, "the pruning changes no byte");
+    assert_eq!((off.len(), fnv(&off)), P10_GOLDEN);
+}
+
+/// Preset 10 with the light leaf decision at `margin` in every frame.
+fn light_leaf(margin: u8) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        light_leaf: Levels::all(margin),
+        ..*Preset::new(10).unwrap().params()
+    }))
+}
+
+/// The length and FNV-1a hash of the p10 stream of [`staged_stream`] at qp
+/// 160, recorded from main 4ebedb463 before the light leaf decision.
+const P10_LEAF_GOLDEN: (usize, u64) = (13878, 0x6936_9075_26d2_1156);
+
+/// The light leaf decision drops more MDS0 candidates in frames that later
+/// frames reference, under deblocking, CDEF, LR, CCSO and GDF; the stream
+/// decodes to the encoder recon and codes the same bytes on 1, 2 and 8
+/// threads. A margin of 255 codes the stream of main before it.
+#[test]
+fn light_leaf_streams_decode_on_any_thread_count() {
+    let (one, expected, cores, pruned) = staged_stream(light_leaf(0), 160, 1);
+    let (off, _, _, open) = staged_stream(light_leaf(u8::MAX), 160, 1);
+    assert!(
+        pruned > open,
+        "the light leaf decision dropped no candidate"
+    );
+    assert_every_loop_filter(&cores);
     assert_same_samples(&decode(&one), &expected, "light leaf decision");
     for threads in [2, 8] {
         assert!(
@@ -474,5 +514,5 @@ fn light_leaf_streams_decode_on_any_thread_count() {
         );
     }
     assert_ne!(off, one, "the light leaf decision changes no byte");
-    assert_eq!((off.len(), fnv(&off)), P10_GOLDEN);
+    assert_eq!((off.len(), fnv(&off)), P10_LEAF_GOLDEN);
 }

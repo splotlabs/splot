@@ -304,6 +304,39 @@ fn a_planner_valid_corrupt_stream_fails_identically_at_every_width_and_capacity(
 }
 
 #[test]
+fn an_atlas_segment_obu_does_not_change_the_decoded_frames() {
+    let mut bytes = MULTIREF.to_vec();
+    bytes.splice(46..46, [0x04, 0x44, 0x1d, 0xbe, 0x40]);
+    bytes[32] += 5;
+    let context = depth_one();
+    let expected = collect_raw(&context, MULTIREF, DecodeOptions::default()).unwrap();
+    let actual = collect_raw(&context, &bytes, DecodeOptions::default()).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn a_failed_frame_releases_its_slot_to_the_next_reservation() {
+    let depth_one = depth_one();
+    let mut checked = 0usize;
+    let step = EIGHT_FRAME.len() / 40;
+    for offset in (EIGHT_FRAME.len() / 4..EIGHT_FRAME.len() * 3 / 4).step_by(step) {
+        let mut bytes = EIGHT_FRAME.to_vec();
+        bytes[offset] ^= 0x94;
+        if DecodeContext::plan_bytes(&bytes, DecodeOptions::default()).is_err()
+            || collect_raw(&depth_one, &bytes, DecodeOptions::default()).is_ok()
+        {
+            continue;
+        }
+        checked += 1;
+        for threads in [2usize, 3] {
+            collect_raw_with_timeout(threads, FrameDelay::from(2usize), bytes.clone())
+                .expect_err("a corrupt stream must fail at every width");
+        }
+    }
+    assert!(checked > 0, "no mutated byte produced a decode failure");
+}
+
+#[test]
 fn orderhint_output_matches_depth_one_at_every_capacity() {
     let expected = collect_raw(&depth_one(), ORDER_HINT_WRAP, DecodeOptions::default()).unwrap();
 

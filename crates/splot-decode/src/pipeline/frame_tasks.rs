@@ -194,6 +194,16 @@ impl<T: SplitSample> SplitFrame<T> {
     /// reader of the last frame still holds part of it.
     fn reset(&mut self) -> bool {
         self.tile_jobs.take();
+        self.inputs.get_mut().take();
+        self.motion.get_mut().take();
+        self.entropy.take();
+        self.motion_deps.take();
+        self.parse_progress.take();
+        self.early.get_mut().take();
+        self.deferred.get_mut().take();
+        self.pending_filters.get_mut().take();
+        self.finish.get_mut().take();
+        self.output_filter.get_mut().take();
         if let Some(recon) = self.recon.take() {
             *self.workspace.get_mut() = recon.retire();
         }
@@ -222,16 +232,6 @@ impl<T: SplitSample> SplitFrame<T> {
         *self.closed_rows.get_mut() = 0;
         *self.output_ready.get_mut() = false;
         *self.failed.get_mut() = false;
-        self.inputs.get_mut().take();
-        self.motion.get_mut().take();
-        self.entropy.take();
-        self.motion_deps.take();
-        self.parse_progress.take();
-        self.early.get_mut().take();
-        self.deferred.get_mut().take();
-        self.pending_filters.get_mut().take();
-        self.finish.get_mut().take();
-        self.output_filter.get_mut().take();
         true
     }
 
