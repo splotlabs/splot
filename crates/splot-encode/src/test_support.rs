@@ -48,7 +48,7 @@ pub(crate) fn each_case<T: Send, R: Send>(
     check: impl Fn(T) -> R + Send + Sync,
 ) -> Vec<R> {
     let cases: Vec<T> = cases.into_iter().collect();
-    let pool = WorkerPool::new(ThreadCount::from(cases.len())).unwrap();
+    let pool = WorkerPool::new(ThreadCount::from(cases.len().max(1))).unwrap();
     pool.install(|| cases.into_par_iter().map(check).collect())
 }
 
