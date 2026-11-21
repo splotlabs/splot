@@ -70,27 +70,29 @@ fn delta_q_stream(mut config: Config, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>,
 /// encoder recon, with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn superblock_offsets_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (index, (bit_depth, preset, qp)) in [
-        (BitDepth::Eight, 9, 200),
-        (BitDepth::Ten, 6, 240),
-        (BitDepth::Eight, 10, 200),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut config = config(200, 136, bit_depth, preset, qp);
-        config.chroma = CHROMAS[index];
-        let name = format!("{:?} {bit_depth:?} preset {preset}", config.chroma);
-        let (one, recon, present) = delta_q_stream(config.clone(), 1);
-        assert!(present.iter().all(|&on| on), "{name}");
-        assert_same_samples(&decode(&one.concat()), &recon, &name);
-        for threads in [2, 8] {
-            assert!(
-                delta_q_stream(config.clone(), threads).0 == one,
-                "{name}: {threads} threads"
-            );
-        }
-    }
+    each_case(
+        [
+            (BitDepth::Eight, 9, 200),
+            (BitDepth::Ten, 6, 240),
+            (BitDepth::Eight, 10, 200),
+        ]
+        .into_iter()
+        .enumerate(),
+        |(index, (bit_depth, preset, qp))| {
+            let mut config = config(200, 136, bit_depth, preset, qp);
+            config.chroma = CHROMAS[index];
+            let name = format!("{:?} {bit_depth:?} preset {preset}", config.chroma);
+            let (one, recon, present) = delta_q_stream(config.clone(), 1);
+            assert!(present.iter().all(|&on| on), "{name}");
+            assert_same_samples(&decode(&one.concat()), &recon, &name);
+            each_case([2, 8], |threads| {
+                assert!(
+                    delta_q_stream(config.clone(), threads).0 == one,
+                    "{name}: {threads} threads"
+                );
+            });
+        },
+    );
 }
 
 /// Offsets change the coded frame, no offsets code no `delta_q_present`, and
@@ -232,33 +234,35 @@ fn tpl_stream_of(
 /// codes in some frame.
 #[test]
 fn tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (index, (preset, bit_depth, qp)) in [
-        (6, BitDepth::Eight, 0),
-        (9, BitDepth::Ten, 0),
-        (8, BitDepth::Eight, 200),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut config = config(200, 136, bit_depth, preset, qp);
-        config.chroma = CHROMAS[index];
-        let name = format!("preset {preset} {bit_depth:?} {:?}", config.chroma);
-        let (units, recon, tools) = tpl_stream(config.clone(), 100, 1);
-        assert_same_samples(&decode(&units.concat()), &recon, &name);
-        let used: [bool; 6] = core::array::from_fn(|i| tools.iter().any(|t| t[i]));
-        assert_eq!(used, [true; 6], "{name}: {tools:?}");
-        assert!(tools.iter().any(|t| !t[0]), "{name}: {tools:?}");
-        assert!(
-            units != tpl_stream(config.clone(), 0, 1).0,
-            "{name}: no change"
-        );
-        for threads in [2, 8] {
+    each_case(
+        [
+            (6, BitDepth::Eight, 0),
+            (9, BitDepth::Ten, 0),
+            (8, BitDepth::Eight, 200),
+        ]
+        .into_iter()
+        .enumerate(),
+        |(index, (preset, bit_depth, qp))| {
+            let mut config = config(200, 136, bit_depth, preset, qp);
+            config.chroma = CHROMAS[index];
+            let name = format!("preset {preset} {bit_depth:?} {:?}", config.chroma);
+            let (units, recon, tools) = tpl_stream(config.clone(), 100, 1);
+            assert_same_samples(&decode(&units.concat()), &recon, &name);
+            let used: [bool; 6] = core::array::from_fn(|i| tools.iter().any(|t| t[i]));
+            assert_eq!(used, [true; 6], "{name}: {tools:?}");
+            assert!(tools.iter().any(|t| !t[0]), "{name}: {tools:?}");
             assert!(
-                tpl_stream(config.clone(), 100, threads).0 == units,
-                "{name}: {threads}"
+                units != tpl_stream(config.clone(), 0, 1).0,
+                "{name}: no change"
             );
-        }
-    }
+            each_case([2, 8], |threads| {
+                assert!(
+                    tpl_stream(config.clone(), 100, threads).0 == units,
+                    "{name}: {threads}"
+                );
+            });
+        },
+    );
 }
 
 /// [`panning_frame`] with flat luma on its left half.
@@ -288,26 +292,26 @@ fn ssim_tuned_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     assert_same_samples(&decode(&units.concat()), &recon, "ssim");
     let used: [bool; 6] = core::array::from_fn(|i| tools.iter().any(|t| t[i]));
     assert_eq!(used, [true; 6], "{tools:?}");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == units, "{threads}");
-    }
+    });
 }
 
 /// `Tune::Ssim` and `Tune::Vq` with the temporal model at a wavefront preset
 /// write the same bytes on 1, 2 and 8 threads.
 #[test]
 fn tuned_wavefront_streams_are_thread_count_invariant() {
-    for tune in [crate::Tune::Ssim, crate::Tune::Vq] {
+    each_case([crate::Tune::Ssim, crate::Tune::Vq], |tune| {
         let config = Config {
             tune,
             ..config(200, 136, BitDepth::Eight, 8, 0)
         };
         let stream = |threads| tpl_stream_of(config.clone(), 100, threads, half_flat_frame);
         let (units, ..) = stream(1);
-        for threads in [2, 8] {
+        each_case([2, 8], |threads| {
             assert!(stream(threads).0 == units, "{tune:?}: {threads} threads");
-        }
-    }
+        });
+    });
 }
 
 /// With 256x256 sequence superblocks the key frame takes its superblock

@@ -224,9 +224,9 @@ fn deep_drl_streams_decode_alike_on_any_thread_count() {
     };
     let (one, expected) = stream(1);
     assert_same_samples(&decode(&one.concat()), &expected, "deep DRL");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// With the filter search every inter frame codes `SWITCHABLE` filters and
@@ -299,9 +299,9 @@ fn switchable_filter_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, preset).0
     };
     let one = stream(1);
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads) == one, "{threads} threads");
-    }
+    });
 }
 
 /// A tiled stream with every MVD tool on codes the same bytes on 1, 2 and 8
@@ -322,9 +322,9 @@ fn mvd_tool_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, preset).0
     };
     let one = stream(1);
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads) == one, "{threads} threads");
-    }
+    });
 }
 
 /// A panning mini-GOP stream of 136x72 in 2x2 tiles at preset 6 with

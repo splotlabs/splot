@@ -1038,6 +1038,9 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         force_integer_mv: false,
         warp: false,
         global_motion: [None; 7],
+        tip_global_mv: TipGlobalMv::default(),
+        tip_filter: None,
+        tip_deblocking: false,
     };
     let with = |tx: KeyFrameTxParams| {
         build_inter_frame_header(&view, &slots.view(), &InterFrameParams { tx, ..params }).unwrap()

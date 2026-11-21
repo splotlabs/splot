@@ -29,12 +29,12 @@ fn long_mini_gops_decode_to_the_encoder_recon_on_any_thread_count() {
     assert_eq!(long.bases, [0, 16, 32, 33]);
     assert_eq!(long.tools, [true; 5]);
     assert_same_samples(&decode(&long.units.concat()), &long.recon, "long");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(
             stream(&config, threads, false).units == long.units,
             "{threads} threads"
         );
-    }
+    });
     assert!(stream(&config, 1, true).units == long.units, "bulk");
     config.rate_control = RateControlMode::Vbr { bitrate_kbps: 200 };
     let vbr = stream(&config, 1, false);
@@ -74,9 +74,9 @@ fn p6_leaf_frames_reuse_intra_choices_and_decode_to_the_recon() {
     let one = stream(1);
     assert!(crate::mode_decision::REUSED_INTRA.get() > 0);
     assert_same_samples(&decode(&one.units.concat()), &one.recon, "p6");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).units == one.units, "{threads} threads");
-    }
+    });
 }
 
 /// AVM decodes a stream with a 32-frame mini-GOP to the encoder recon.
