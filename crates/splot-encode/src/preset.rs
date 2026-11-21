@@ -49,6 +49,18 @@ pub struct PresetParams {
     /// niklas `4` +1.06% at 0.76x (`1,1,1,4`: +0.54% at 0.82x), paris f30
     /// -1.17% at 0.70x. Levels from 8 up lose more than the ladder buys.
     pub none_breakout: Levels<u8>,
+    /// The largest log2 luma area (`log2 w + log2 h`) of a block whose
+    /// `NONE` leaf with no coefficient ends the search under `none_breakout`,
+    /// per frame kind; a larger skip leaf still tries the other partitions.
+    /// `255` at any size. `10` (blocks under 64x32) on mid and leaf frames
+    /// at p0-p8 (2026-11-21, CRF against 255): p6 paris f30 -1.49% at 1.060x
+    /// instructions, niklas f30 -0.83% at 1.053x, rush_hour_444 f60 -0.26%
+    /// at 1.050x, park_joy f10 -0.04%; p4 paris f30 -5.08% at 1.101x, p5
+    /// -5.89% at 1.094x (full first-pass window); p8 paris -2.77% at
+    /// 1.065x, niklas -0.65% at 1.015x. p10 (paris -2.34% at 1.115x, niklas
+    /// -0.78% at 1.039x) sits at the ladder edge and keeps `255`. Flat qp
+    /// p6: paris +0.87%, rush_hour +0.51%, niklas 0.00%.
+    pub breakout_area: Levels<u8>,
     /// A block that a second partition path reaches codes the choice its
     /// first search found, with one final trial, per frame kind: `1` when
     /// that choice is inter, `2` any choice, `0` searches it again. Reused
@@ -859,6 +871,11 @@ preset_table! {
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4]]),
+        breakout_area:         frames([
+                               [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,   255],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,   255],
+                               [   10,    10,    10,    10,    10,    10,    10,    10,    10,   255,   255],
+                               [   10,    10,    10,    10,    10,    10,    10,    10,    10,   255,   255]]),
         leaf_reuse:            frames_sd([
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
@@ -1100,6 +1117,7 @@ mod tests {
                 &fast.partition_early_exit
             ));
             assert!(at_most(&slow.none_breakout, &fast.none_breakout));
+            assert!(at_most(&slow.breakout_area, &fast.breakout_area));
             assert!(at_most(&slow.leaf_reuse, &fast.leaf_reuse));
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);

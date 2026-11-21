@@ -10,11 +10,12 @@
 //! vector covers in that reference, split by overlap area, and split evenly
 //! between both references when they tie. A frame's
 //! importance is `(intra + received) / intra` over all its blocks. Its qindex
-//! offset is `-12 * log2(importance)`, bounded: the § 7.14.2 quantizer step
-//! doubles every 24 qindex, so the step shrinks by `sqrt(importance)` and
-//! `lambda`, which goes with the squared step, by `importance`. A frame above
-//! the base layer keeps [`LAYER_DECREASE_PERCENT`] of that decrease, and deeper
-//! layers of the mini-GOP add [`LAYER_QINDEX_OFFSET`] per layer.
+//! decrease is `12 * log2(importance)`: the § 7.14.2 quantizer step doubles
+//! every 24 qindex, so the step shrinks by `sqrt(importance)` and `lambda`,
+//! which goes with the squared step, by `importance`. The frame keeps the
+//! [`LAYER_DECREASE_PERCENT`] share of its layer of that decrease, bounded at
+//! [`MAX_TPL_QINDEX_DECREASE`], and deeper layers of the mini-GOP add
+//! [`LAYER_QINDEX_OFFSET`] per layer.
 
 use std::collections::BTreeMap;
 

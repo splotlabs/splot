@@ -843,6 +843,32 @@ fn breakout_ends_a_node_whose_none_leaf_codes_no_coefficient() {
     }
 }
 
+/// `breakout_area` lets only blocks up to its log2 area end on an uncoded
+/// `NONE` leaf: a 32x32 root with no coefficient searches on under 9 and
+/// ends under 10.
+#[test]
+fn breakout_area_bounds_the_uncoded_breakout() {
+    let busy = |(.., w, h): Rect| RdCost {
+        distortion: 1 << (2 * (w + h)),
+        rate: Bits::whole(1),
+    };
+    let root = (0, 0, 5, 5);
+    for (area, leaf) in [(9, false), (10, true)] {
+        let mut coder = Synthetic::new(32, busy);
+        coder.uncoded.push(root);
+        let preset = PresetParams {
+            breakout_area: crate::preset::Levels::all(area),
+            ..breakout(1)
+        };
+        let (tree, _) = search_partition(&mut coder, root, &preset, unit_lambda()).unwrap();
+        assert_eq!(
+            matches!(tree, PartitionTree::Leaf(_)),
+            leaf,
+            "area {area}: {tree:?}"
+        );
+    }
+}
+
 /// A coded `NONE` leaf ends the node only under the level's thresholds: the
 /// root's distortion of half a unit lambda per sample passes level 16 and
 /// fails level 4, which leave the cheaper split to the search.
