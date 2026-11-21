@@ -563,13 +563,13 @@ impl TrialCoder<'_, '_> {
         }
         if self.preset.tip > 0 && self.syntax.tip_allowed(leaf)? {
             let ref_frame = self.syntax.reference_count();
-            for (drl, &mv) in self
-                .syntax
-                .single_mvs(leaf, ref_frame)?
-                .near
-                .iter()
-                .enumerate()
+            let tip = self.syntax.single_mvs(leaf, ref_frame)?;
+            if let (true, Some(motion)) = (self.preset.tip_newmv, self.motion)
+                && let Some(modes) = self.tip_newmv(leaf, motion, &tip)?
             {
+                push(modes.mv, modes);
+            }
+            for (drl, &mv) in tip.near.iter().enumerate() {
                 push(
                     mv,
                     InterModes {
@@ -598,9 +598,25 @@ impl TrialCoder<'_, '_> {
                 }
                 choices.extend(interintra);
             }
-            if self.preset.bawp {
+        }
+        if let (Some(motion), true) = (self.motion, self.preset.bawp) {
+            let mut bases: Vec<InterModes> = interintra_base.into_iter().collect();
+            if self.preset.bawp_search >= 2 {
+                let references = self.syntax.reference_count();
+                bases.extend(choices.iter().filter_map(|choice| match choice.inter {
+                    Some(InterPrediction::Single(modes))
+                        if modes.mode == InterMode::Near && modes.ref_frame < references =>
+                    {
+                        Some(modes)
+                    }
+                    _ => None,
+                }));
+            }
+            for base in bases {
+                let found = self.bawp_choice(leaf, motion, base)?;
                 choices.extend(
-                    self.bawp_choice(leaf, motion, base)?
+                    found
+                        .into_iter()
                         .map(|modes| LeafChoice::inter(InterPrediction::Single(modes))),
                 );
             }
@@ -1693,3 +1709,5 @@ impl TrialCoder<'_, '_> {
 mod compound_search;
 #[path = "interintra_search.rs"]
 mod interintra_search;
+#[path = "tip_search.rs"]
+mod tip_search;

@@ -447,6 +447,14 @@ pub struct PresetParams {
     /// p0-p6 (2026-10-30, p6 vs main): park_joy -0.28%, paris -0.11%, niklas
     /// -0.26% for about 3% more CPU; p7-p10 are not measured.
     pub bawp: bool,
+    /// BAWP variants past the luma-ranked scale of the cheapest `NEWMV`,
+    /// `0..=2`: `1` adds that scale without chroma weighting
+    /// (`use_bawp_chroma = 0`), `2` also tries BAWP on every single-reference
+    /// `NEARMV` candidate (§ 5.20.7.6). `2` at p0, `0` elsewhere.
+    pub bawp_search: u8,
+    /// TIP blocks also try `NEWMV` (`tip_pred_mode = 1`, § 5.20.7.6): a
+    /// pattern search scored by the decoder's TIP prediction. On at p0.
+    pub tip_newmv: bool,
     /// Staged mode decision: the inter candidates of a leaf that each class
     /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
     /// luma prediction SATD plus mode rate first. `255` keeps every one.
@@ -732,6 +740,7 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check(
@@ -1012,6 +1021,8 @@ preset_table! {
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
         bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        bawp_search:           [    2,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        tip_newmv:             [ true, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -1254,6 +1265,8 @@ mod tests {
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
             assert!(fast.bawp <= slow.bawp);
+            assert!(fast.bawp_search <= slow.bawp_search);
+            assert!(fast.tip_newmv <= slow.tip_newmv);
             assert!(fast.wavefront >= slow.wavefront);
             assert!(
                 fast.mds0_budgets
@@ -1435,6 +1448,7 @@ mod tests {
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),

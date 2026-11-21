@@ -299,9 +299,22 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
+thread_local! {
+    /// Single-reference leaves of the final passes on this thread: TIP
+    /// `NEWMV`, BAWP `NEARMV`, and BAWP without chroma weighting.
+    pub(crate) static CODED_SINGLE: core::cell::Cell<[usize; 3]> =
+        const { core::cell::Cell::new([0; 3]) };
+}
+
+#[cfg(test)]
+fn count_coded_type(prediction: InterPrediction, tile_edge: bool, references: usize) {
     let mut counts = CODED_TYPES.get();
     if let InterPrediction::Single(single) = prediction {
+        let mut seen = CODED_SINGLE.get();
+        seen[0] += usize::from(single.ref_frame == references && single.mode == InterMode::New);
+        seen[1] += usize::from(single.bawp.is_some() && single.mode == InterMode::Near);
+        seen[2] += usize::from(single.bawp.is_some_and(|bawp| !bawp.chroma));
+        CODED_SINGLE.set(seen);
         counts[4] += usize::from(single.interintra.is_some());
         counts[5] += usize::from(single.interintra.is_some() && tile_edge);
         counts[6] += usize::from(single.bawp.is_some());
@@ -431,7 +444,11 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             #[cfg(test)]
             if self.filters.is_some() {
                 let cols = self.syntax.tile_ranges().1;
-                count_coded_type(modes, cols.start > 0 && leaf.col4() == cols.start);
+                count_coded_type(
+                    modes,
+                    cols.start > 0 && leaf.col4() == cols.start,
+                    self.syntax.reference_count(),
+                );
             }
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
