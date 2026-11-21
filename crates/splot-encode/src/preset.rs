@@ -1137,8 +1137,6 @@ mod tests {
             assert!(fast.tcq_search_trellis || !fast.tcq_type_trellis);
             assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
-            // An exact type trial costs at least three model costs (RDOQ;
-            // a TCQ trial costs 10-50).
             let type_work = |p: &PresetParams| {
                 let offered = crate::tx_choice::tx_type_candidates(p);
                 match p.tx_type_model_keep {

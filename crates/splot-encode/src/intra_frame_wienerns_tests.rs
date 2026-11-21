@@ -175,7 +175,11 @@ fn class_banks_decode_to_the_encoder_recon() {
 /// the encoder recon.
 #[test]
 fn temporal_wiener_ns_bank_decodes_to_the_encoder_recon() {
-    let on = Preset::new(6).unwrap().params();
+    let on: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        tx_type_depth: 1,
+        tx_type_model_keep: 0,
+        ..*Preset::new(6).unwrap().params()
+    }));
     let (units, recon, lr) = pan_stream((2, PixelFormat::Yuv420), with_wiener_ns(on, (1, 1)), 0);
     assert!(
         lr.iter().flatten().any(|&(_, temporal, _)| temporal),
