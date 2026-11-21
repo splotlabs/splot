@@ -37,31 +37,34 @@ fn with_tip_output(tip: u8, tip_output: u8) -> &'static PresetParams {
 /// to the encoder recon; without it no frame codes TIP.
 #[test]
 fn tip_frames_reach_the_headers_and_the_decoder() {
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Ten),
-        (PixelFormat::Yuv422, BitDepth::Eight),
-        (PixelFormat::Yuv444, BitDepth::Ten),
-    ] {
-        let mut config = config(72, 40, bit_depth, 6, 110);
-        config.chroma = chroma;
-        for tip in [2, 1, 0] {
-            let (units, expected, cores, coder) =
-                super::carry::planned_stream(&config, with_tip(tip));
-            assert_eq!(coder.sequence.inter.unwrap().enable_tip, tip > 0);
-            let weights: Vec<_> = cores
-                .iter()
-                .filter_map(|core| core.inter.as_ref())
-                .filter(|inter| inter.tip_frame_mode == Some(TipFrameMode::AsRef))
-                .map(|inter| inter.tip_global_wtd_index.unwrap())
-                .collect();
-            assert_eq!(!weights.is_empty(), tip > 0, "{chroma:?} {weights:?}");
-            if tip == 1 {
-                assert!(weights.iter().all(|&weight| weight == 0), "{weights:?}");
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Ten),
+            (PixelFormat::Yuv422, BitDepth::Eight),
+            (PixelFormat::Yuv444, BitDepth::Ten),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(72, 40, bit_depth, 6, 110);
+            config.chroma = chroma;
+            for tip in [2, 1, 0] {
+                let (units, expected, cores, coder) =
+                    super::carry::planned_stream(&config, with_tip(tip));
+                assert_eq!(coder.sequence.inter.unwrap().enable_tip, tip > 0);
+                let weights: Vec<_> = cores
+                    .iter()
+                    .filter_map(|core| core.inter.as_ref())
+                    .filter(|inter| inter.tip_frame_mode == Some(TipFrameMode::AsRef))
+                    .map(|inter| inter.tip_global_wtd_index.unwrap())
+                    .collect();
+                assert_eq!(!weights.is_empty(), tip > 0, "{chroma:?} {weights:?}");
+                if tip == 1 {
+                    assert!(weights.iter().all(|&weight| weight == 0), "{weights:?}");
+                }
+                let name = format!("{chroma:?} tip {tip}");
+                assert_same_samples(&decode(&units), &expected, &name);
             }
-            let name = format!("{chroma:?} tip {tip}");
-            assert_same_samples(&decode(&units), &expected, &name);
-        }
-    }
+        },
+    );
 }
 
 /// A tiled stream with the TIP weight search codes the same bytes on 1, 2 and 8 threads and
@@ -79,9 +82,9 @@ fn tip_streams_match_on_any_thread_count() {
     };
     let (one, expected, ..) = stream(1);
     assert_same_samples(&decode(&one), &expected, "tiled");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// A frame whose references are all in its future has no TIP reference
@@ -317,37 +320,40 @@ fn with_tip_refinement() -> &'static PresetParams {
 /// 160x96 4:2:0 stream with 16x16-capable TIP blocks.
 #[test]
 fn refined_tip_streams_decode_to_the_encoder_recon() {
-    for (chroma, bit_depth, (width, height)) in [
-        (PixelFormat::Yuv420, BitDepth::Ten, (72, 40)),
-        (PixelFormat::Yuv422, BitDepth::Eight, (72, 40)),
-        (PixelFormat::Yuv444, BitDepth::Ten, (72, 40)),
-        (PixelFormat::Yuv420, BitDepth::Eight, (160, 96)),
-    ] {
-        for qp in [110, 250] {
-            let mut config = config(width, height, bit_depth, 6, qp);
-            config.chroma = chroma;
-            let coder = IntraFrameCoder::with_preset(&config, with_tip_refinement()).unwrap();
-            let (units, expected, cores, coder) =
-                super::carry::planned_stream_of(&config, coder, panning_frame, qp);
-            assert!(coder.sequence.inter.unwrap().enable_tip_refinemv);
-            let tips: Vec<_> = cores
-                .iter()
-                .filter_map(|core| core.inter.as_ref())
-                .filter(|inter| {
-                    inter
-                        .tip_frame_mode
-                        .is_some_and(|mode| mode != TipFrameMode::Disabled)
-                })
-                .collect();
-            assert!(!tips.is_empty(), "{chroma:?} {qp}");
-            assert!(
-                tips.iter()
-                    .all(|inter| inter.tip_global_wtd_index == Some(0))
-            );
-            let name = format!("{chroma:?} qp {qp}");
-            assert_same_samples(&decode(&units), &expected, &name);
-        }
-    }
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Ten, (72, 40)),
+            (PixelFormat::Yuv422, BitDepth::Eight, (72, 40)),
+            (PixelFormat::Yuv444, BitDepth::Ten, (72, 40)),
+            (PixelFormat::Yuv420, BitDepth::Eight, (160, 96)),
+        ],
+        |(chroma, bit_depth, (width, height))| {
+            for qp in [110, 250] {
+                let mut config = config(width, height, bit_depth, 6, qp);
+                config.chroma = chroma;
+                let coder = IntraFrameCoder::with_preset(&config, with_tip_refinement()).unwrap();
+                let (units, expected, cores, coder) =
+                    super::carry::planned_stream_of(&config, coder, panning_frame, qp);
+                assert!(coder.sequence.inter.unwrap().enable_tip_refinemv);
+                let tips: Vec<_> = cores
+                    .iter()
+                    .filter_map(|core| core.inter.as_ref())
+                    .filter(|inter| {
+                        inter
+                            .tip_frame_mode
+                            .is_some_and(|mode| mode != TipFrameMode::Disabled)
+                    })
+                    .collect();
+                assert!(!tips.is_empty(), "{chroma:?} {qp}");
+                assert!(
+                    tips.iter()
+                        .all(|inter| inter.tip_global_wtd_index == Some(0))
+                );
+                let name = format!("{chroma:?} qp {qp}");
+                assert_same_samples(&decode(&units), &expected, &name);
+            }
+        },
+    );
 }
 
 /// AVM decodes refined TIP streams like splot.
@@ -518,14 +524,13 @@ fn tip_tree(
 fn refined_tip_units_match_the_decoder_in_a_zooming_frame() {
     let config = config(192, 128, BitDepth::Eight, 6, 110);
     assert!(config.preset.params().tip_refinemv);
-    let mut leaves = 0;
-    for seed in 0..4 {
+    let leaves = each_case(0..4, |seed| {
         let (units, expected, coverage) =
             super::inter_stream_of(&config, 0x71F + seed, zooming_frame, tip_tree);
-        leaves += coverage[19];
         assert_same_samples(&decode(&units.concat()), &expected, &format!("seed {seed}"));
-    }
-    assert!(leaves > 0);
+        coverage[19]
+    });
+    assert!(leaves.iter().sum::<usize>() > 0);
 }
 
 /// A noisy panning frame for the film grain tests.
