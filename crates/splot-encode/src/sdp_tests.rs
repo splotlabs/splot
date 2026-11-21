@@ -44,6 +44,7 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
     let preset = PresetParams {
         sdp: true,
         min_block_log2: Levels::by_frame([3, kinds[9], kinds[18], kinds[27]]),
+        cctx: false,
         ..*params
     };
     let mut coder = IntraFrameCoder::with_preset(&config, &preset).unwrap();
