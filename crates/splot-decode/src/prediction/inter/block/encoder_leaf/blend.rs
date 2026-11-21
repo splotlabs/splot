@@ -160,7 +160,7 @@ impl EncoderInterTile {
             jmvd_scale_mode: compound.jmvd_scale_mode,
             use_optflow: compound.use_optflow,
             use_refinemv: refinemv,
-            motion_simple: true,
+            motion_simple: !compound.local_warp,
             ref_frame0: ref0,
             ref_frame1: ref1,
             blend: mc::CompoundBlend::default(),
@@ -296,37 +296,49 @@ impl EncoderInterTile {
             TileCdfSelector::InterIntra { bsize_group },
             u8::from(interintra.is_some()),
         ));
-        let Some(prediction) = interintra else {
-            return Ok(());
-        };
-        let mode = match prediction.mode() {
-            InterIntraMode::Dc => 0,
-            InterIntraMode::Vertical => 1,
-            InterIntraMode::Horizontal => 2,
-            InterIntraMode::Smooth => 3,
-        };
-        out.push((TileCdfSelector::InterIntraMode { bsize_group }, mode));
-        let wedge = match prediction {
-            InterIntraPrediction::WedgeMask { wedge_index, .. } => Some(wedge_index),
-            InterIntraPrediction::SmoothMask { .. } => None,
-        };
-        if reads_wedge {
-            out.push((TileCdfSelector::WedgeInterIntra, u8::from(wedge.is_some())));
+        match interintra {
+            Some(prediction) => interintra_tail(out, bsize_group, reads_wedge, prediction),
+            None => Ok(()),
         }
-        if let Some(index) = wedge {
-            if !reads_wedge {
-                return Err(invalid_type());
-            }
-            let mut symbols = TypeSymbols::default();
-            wedge_symbols(&mut symbols, index)?;
-            out.extend(
-                symbols
-                    .into_iter()
-                    .filter_map(|(selector, value)| selector.map(|selector| (selector, value))),
-            );
-        }
-        Ok(())
     }
+}
+
+/// Pushes the `interintra_mode`, `wedge_interintra` and wedge symbols of an
+/// inter-intra block after its `inter_intra` or `warp_inter_intra` flag
+/// (§ 5.20.7.15).
+pub(super) fn interintra_tail(
+    out: &mut Vec<(TileCdfSelector, u8)>,
+    bsize_group: usize,
+    reads_wedge: bool,
+    prediction: InterIntraPrediction,
+) -> Result<()> {
+    let mode = match prediction.mode() {
+        InterIntraMode::Dc => 0,
+        InterIntraMode::Vertical => 1,
+        InterIntraMode::Horizontal => 2,
+        InterIntraMode::Smooth => 3,
+    };
+    out.push((TileCdfSelector::InterIntraMode { bsize_group }, mode));
+    let wedge = match prediction {
+        InterIntraPrediction::WedgeMask { wedge_index, .. } => Some(wedge_index),
+        InterIntraPrediction::SmoothMask { .. } => None,
+    };
+    if reads_wedge {
+        out.push((TileCdfSelector::WedgeInterIntra, u8::from(wedge.is_some())));
+    }
+    if let Some(index) = wedge {
+        if !reads_wedge {
+            return Err(invalid_type());
+        }
+        let mut symbols = TypeSymbols::default();
+        wedge_symbols(&mut symbols, index)?;
+        out.extend(
+            symbols
+                .into_iter()
+                .filter_map(|(selector, value)| selector.map(|selector| (selector, value))),
+        );
+    }
+    Ok(())
 }
 
 impl EncoderInterTile {

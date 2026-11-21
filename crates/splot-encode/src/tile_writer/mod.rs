@@ -316,6 +316,10 @@ thread_local! {
     /// Wedge inter-intra leaves of the final passes on this thread.
     pub(crate) static CODED_WEDGE_INTERINTRA: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
+    /// `WARPMV` inter-intra and compound `LOCALWARP` leaves of the final
+    /// passes on this thread.
+    pub(crate) static CODED_WARP_TOOLS: core::cell::Cell<[usize; 2]> =
+        const { core::cell::Cell::new([0; 2]) };
     /// Leaves of the final passes on this thread that code explicit CFL
     /// alphas with alpha 0 in one plane.
     pub(crate) static CFL_ZERO_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -332,6 +336,13 @@ thread_local! {
 
 #[cfg(test)]
 fn count_coded_type(prediction: InterPrediction, tile_edge: bool, references: usize) {
+    let mut warp_tools = CODED_WARP_TOOLS.get();
+    match prediction {
+        InterPrediction::Warp(modes) => warp_tools[0] += usize::from(modes.interintra.is_some()),
+        InterPrediction::Compound(modes) => warp_tools[1] += usize::from(modes.local_warp),
+        _ => {}
+    }
+    CODED_WARP_TOOLS.set(warp_tools);
     if let InterPrediction::Compound(modes) = prediction {
         let mut modes_seen = CODED_MODES.get();
         let same = modes.refs.0 == modes.refs.1;
@@ -824,7 +835,8 @@ fn chroma_partner(blocks: &[TransformBlock], u: &TransformBlock) -> Option<usize
 /// `prediction` with each coded vector moved onto the lattice of its base. A
 /// `LOCALWARP` or `EXTENDWARP` model the leaf cannot code, which a memoized
 /// subtree recoded under other neighbours meets, codes the zero `DELTAWARP`;
-/// a BAWP whose § 7.13.3.25 template no longer fits is dropped.
+/// such a compound `LOCALWARP` and a BAWP whose § 7.13.3.25 template no longer
+/// fits are dropped.
 pub(crate) fn snap_prediction(
     syntax: &mut IntraTileSyntax,
     leaf: &LeafBlock,
@@ -847,6 +859,9 @@ pub(crate) fn snap_prediction(
             InterPrediction::Single(modes)
         }
         InterPrediction::Compound(mut modes) => {
+            if modes.local_warp && syntax.compound_bases(leaf, &modes).is_err() {
+                modes.local_warp = false;
+            }
             let bases = syntax.compound_bases(leaf, &modes)?;
             for (mv, base) in modes.mvs.iter_mut().zip(bases) {
                 if let Some(base) = base {
