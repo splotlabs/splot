@@ -451,6 +451,12 @@ pub struct PresetParams {
     /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
     /// luma prediction SATD plus mode rate first. `255` keeps every one.
     pub mds0_budgets: Levels<[u8; 3]>,
+    /// Light leaf decision, per frame kind: after `mds0_budgets`, only the
+    /// inter candidate with the lowest MDS0 cost, and the second when its
+    /// cost is within this margin, in 1/16, of the first, get a trial; a
+    /// leaf left with one candidate codes it with its final trial alone.
+    /// `255` is off.
+    pub light_leaf: Levels<u8>,
     /// Psychovisual RD in percent: the trial distortion of a luma block adds
     /// its AC-energy loss (`PaddedSource::ac_loss`). `0` in every row;
     /// `Tune::Vq` sets 50 (alone it costs SSIM: paris p6 SSIM-BD +0.11% at
@@ -1050,6 +1056,11 @@ preset_table! {
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]],
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]],
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]]]),
+        light_leaf:            frames([
+                               [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,     2],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,     2],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,     2],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,     2]]),
     }
     threading {
         wavefront:             [false, false, false, false, false, false,  true,  true,  true,  true,  true],
@@ -1183,6 +1194,7 @@ mod tests {
             assert!(fast.hme_range <= slow.hme_range && fast.me_range <= slow.me_range);
             assert!(slow.me_seeds == 0 || fast.me_seeds >= slow.me_seeds);
             assert!(at_most(&fast.newmv_ref_margin, &slow.newmv_ref_margin));
+            assert!(at_most(&fast.light_leaf, &slow.light_leaf));
             assert!(
                 slow.compound_skip_sad == 0 || fast.compound_skip_sad >= slow.compound_skip_sad
             );
