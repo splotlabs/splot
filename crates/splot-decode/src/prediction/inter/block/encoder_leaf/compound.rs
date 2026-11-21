@@ -32,6 +32,9 @@ use super::*;
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values without
 /// adaptive MVD.
 pub(crate) const JMVD_SCALE_MODES: u8 = 5;
+/// `JOINT_AMVD_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values with
+/// `use_amvd`.
+pub(crate) const JMVD_AMVD_SCALE_MODES: u8 = 3;
 
 /// The `pb_mv_precision` values a block codes.
 const PB_MV_PRECISION_SYMBOLS: u8 =
@@ -65,6 +68,8 @@ pub(crate) struct EncoderCompoundMotion {
     pub(crate) mvd: [Mv; 2],
     /// `jmvd_scale_mode`.
     pub(crate) jmvd_scale_mode: u8,
+    /// `use_amvd`, where the decoder reads it (`allow_amvd_mode`, § 5.20.7.6).
+    pub(crate) use_amvd: bool,
     /// `interp_filter`, where the decoder reads it.
     pub(crate) interp: ReconInterpolationFilter,
     /// `use_optflow`, where the decoder reads it (§ 5.20.7.6).
@@ -171,7 +176,7 @@ impl EncoderInterTile {
             ),
             EncoderMotion::Warp(_) => (false, false, 1),
             EncoderMotion::Compound(compound) => (
-                false,
+                compound.use_amvd,
                 matches!(
                     compound.y_mode,
                     CompoundYMode::JointNew | CompoundYMode::NewNew
@@ -179,7 +184,7 @@ impl EncoderInterTile {
                     MotionMode::Simple,
                     false,
                     Some(compound.ref_mv_idx),
-                ) && allowed(false),
+                ) && allowed(compound.use_amvd),
                 compound.y_mode.mvd_sign_derivation_threshold(),
             ),
         };
@@ -741,17 +746,27 @@ impl EncoderInterTile {
             compound.use_optflow,
             amvd_ctx,
         ) {
-            out.push((selector, 0));
+            out.push((selector, u8::from(compound.use_amvd)));
+        } else if compound.use_amvd {
+            return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
         if local_warp {
             let ctx = neighbour.use_local_warp_ctx();
             out.push((TileCdfSelector::UseLocalWarp { ctx }, 0));
         }
         if y_mode == CompoundYMode::JointNew {
-            if compound.jmvd_scale_mode >= JMVD_SCALE_MODES {
+            let (selector, modes) = if compound.use_amvd {
+                (
+                    TileCdfSelector::JmvdAdaptiveScaleMode,
+                    JMVD_AMVD_SCALE_MODES,
+                )
+            } else {
+                (TileCdfSelector::JmvdScaleMode, JMVD_SCALE_MODES)
+            };
+            if compound.jmvd_scale_mode >= modes {
                 return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
             }
-            out.push((TileCdfSelector::JmvdScaleMode, compound.jmvd_scale_mode));
+            out.push((selector, compound.jmvd_scale_mode));
         }
         let selector = |idx| TileCdfSelector::DrlMode { idx, ctx: new_mv };
         match compound.independent_idx {
@@ -768,7 +783,12 @@ impl EncoderInterTile {
             None => drl_symbols(out, selector, 0, max_drl, compound.ref_mv_idx)?,
         }
         let precision = BlockPrecisionRecord::most_probable(self.precision);
-        self.precision_symbols(out, neighbour, y_mode.has_newmv(), (precision, false))
+        self.precision_symbols(
+            out,
+            neighbour,
+            y_mode.has_newmv(),
+            (precision, compound.use_amvd),
+        )
     }
 
     /// Whether the decoder reads `use_local_warp` of `compound` (§ 5.20.7.14).

@@ -26,7 +26,9 @@ thread_local! {
 impl TrialCoder<'_, '_> {
     /// The TIP `NEWMV` of `leaf` with the least decoder luma prediction SATD
     /// plus mode rate: a pattern search from the best `NEARMV` vector of the
-    /// TIP stack `tip`, with the DRL base whose price is lowest at the end;
+    /// TIP stack `tip`, with the DRL base whose price is lowest at the end,
+    /// and with `preset.tip_amvd` and adaptive MVD its `use_amvd` coding
+    /// where that costs less;
     /// `None` where no TIP `NEWMV` is codable or the search ends on a
     /// `NEARMV` vector, which `NEARMV` codes at a lower rate.
     pub(super) fn tip_newmv(
@@ -113,7 +115,28 @@ impl TrialCoder<'_, '_> {
                 cheapest = Some((sink.bits, candidate));
             }
         }
-        Ok(cheapest.map(|(_, modes)| modes))
+        let Some((_, coded)) = cheapest else {
+            return Ok(None);
+        };
+        if !self.preset.tip_amvd || !self.syntax.adaptive_mvd() {
+            return Ok(Some(coded));
+        }
+        let amvd = InterPrediction::Single(InterModes {
+            amvd: true,
+            ..coded
+        });
+        let Some(amvd @ InterPrediction::Single(amvd_modes)) =
+            codable(snap_prediction(self.syntax, leaf, amvd))?
+        else {
+            return Ok(Some(coded));
+        };
+        let plain = self.tip_cost(leaf, motion, InterPrediction::Single(coded))?;
+        let adaptive = self.tip_cost(leaf, motion, amvd)?;
+        Ok(Some(match (plain, adaptive) {
+            (Some(plain), Some(adaptive)) if adaptive < plain => amvd_modes,
+            (None, Some(_)) => amvd_modes,
+            _ => coded,
+        }))
     }
 
     /// The decoder luma prediction SATD plus mode rate of the TIP
