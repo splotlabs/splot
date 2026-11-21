@@ -393,7 +393,11 @@ pub(crate) fn frame_tools(
             preset.interp_filter_search > 0,
             (preset.tip > 0 && preset.mv_prediction).then_some(TIP_EQUAL_WEIGHT),
             preset.integer_mv,
-            if preset.opfl { REFINE_SWITCHABLE } else { 0 },
+            match (preset.opfl, preset.opfl_refine_all) {
+                (false, _) => 0,
+                (true, false) => REFINE_SWITCHABLE,
+                (true, true) => REFINE_ALL,
+            },
             preset.warp > 0,
             [None; REFS_PER_FRAME],
         ),
@@ -404,6 +408,10 @@ pub(crate) fn frame_tools(
 /// `opfl_refine_type` `REFINE_SWITCHABLE` (§ 3): compound blocks code
 /// `use_optflow`.
 const REFINE_SWITCHABLE: u8 = 1;
+
+/// `opfl_refine_type` `REFINE_ALL` (§ 3): every compound block that allows
+/// it refines with optical flow.
+const REFINE_ALL: u8 = 2;
 
 /// `tip_global_wtd_index` of `Tip_Weighting_Factor` 8 (`CWP_EQUAL`), the
 /// plain average of the two TIP references (§ 7.13.3.1).

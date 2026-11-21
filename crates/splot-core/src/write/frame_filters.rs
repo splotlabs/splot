@@ -75,13 +75,15 @@ const GDF_IDX_MAX_PLUS_1: u8 = 4;
 /// absent, the offset is inferred (`DfDeltaQ[0]` for `i == 1`, else `0`). When `!apply[i]`,
 /// nothing is written and the offset is inferred `0`.
 ///
-/// `df_par_bits_minus_2` is the § 5.4.10 sequence field; `mfh` is the resolved multi-frame
-/// header's deblocking-update state on the `cur_mfh_id > 0` path (`None` on the direct path).
+/// `df_par_bits_minus_2` is the § 5.4.10 sequence field; `write_allow_df_sub_pu` is the
+/// caller-derived `enable_df_sub_pu && FrameType == INTER_FRAME` gate of the `allow_df_sub_pu`
+/// `f(1)`, written first; `mfh` is the resolved multi-frame header's deblocking-update state
+/// on the `cur_mfh_id > 0` path (`None` on the direct path).
 /// The model is fully validated before any bit is written (reject-before-write).
 ///
 /// # Errors
-/// - [`WriteError::NonCanonicalFrameHeader`] when `allow_df_sub_pu` is `true`; this writer
-///   currently serves paths where the inter-only syntax gate is closed.
+/// - [`WriteError::NonCanonicalFrameHeader`] when `allow_df_sub_pu` is `true` but the gate is
+///   closed or the frame is `coded_lossless`.
 /// - [`WriteError::BitWidthTooLarge`] if `dfParBits = df_par_bits_minus_2 + 2` exceeds `32` on
 ///   the non-`coded_lossless` path (the `f(dfParBits)` field width the reader could never have
 ///   consumed). On the `coded_lossless` path the width is never coded, so it is not checked —
@@ -97,12 +99,21 @@ pub fn write_deblocking_filter_params(
     coded_lossless: bool,
     num_planes: u8,
     df_par_bits_minus_2: u8,
+    write_allow_df_sub_pu: bool,
     mfh: Option<&MfhDeblockingView>,
 ) -> WriteResult<()> {
+    if params.allow_df_sub_pu && (coded_lossless || !write_allow_df_sub_pu) {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "allow_df_sub_pu",
+        });
+    }
     let plan =
         check_deblocking_encodable(params, coded_lossless, num_planes, df_par_bits_minus_2, mfh)?;
     if coded_lossless {
         return Ok(());
+    }
+    if write_allow_df_sub_pu {
+        writer.write_flag(params.allow_df_sub_pu)?;
     }
 
     if !plan.use_mfh_update {
@@ -152,11 +163,6 @@ fn check_deblocking_encodable(
     df_par_bits_minus_2: u8,
     mfh: Option<&MfhDeblockingView>,
 ) -> WriteResult<DeblockingPlan> {
-    if params.allow_df_sub_pu {
-        return Err(WriteError::NonCanonicalFrameHeader {
-            what: "allow_df_sub_pu",
-        });
-    }
     if coded_lossless {
         if params.apply_deblocking_filter != [false; 4]
             || params.df_delta_q_present != [false; 4]

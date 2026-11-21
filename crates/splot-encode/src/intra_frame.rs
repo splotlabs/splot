@@ -262,6 +262,7 @@ impl IntraFrameCoder {
                 masked_compound: preset.compound_types >= 1,
                 cwp: preset.compound_types >= 2,
                 implicit_mask: preset.implicit_mask,
+                df_sub_pu: preset.df_sub_pu,
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,

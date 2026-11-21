@@ -87,6 +87,7 @@ fn filters(sb: SuperblockSize) -> FrameFilterParams {
         }])
         .unwrap(),
         cdef_on_skip: true,
+        deblocking_sub_pu: false,
         lr_luma_unit_size: Some(match sb {
             SuperblockSize::Block64x64 => 64,
             SuperblockSize::Block128x128 => 128,
