@@ -422,3 +422,53 @@ fn leaf_coded_follows_the_last_coded_leaf() {
         .unwrap();
     assert_eq!(flags, [false, true, false]);
 }
+
+/// Preset 10 with the light leaf decision at `margin` in every frame.
+fn light_leaf(margin: u8) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        light_leaf: Levels::all(margin),
+        ..*Preset::new(10).unwrap().params()
+    }))
+}
+
+/// The length and FNV-1a hash of the p10 stream of [`staged_stream`] at qp
+/// 160, recorded from main 381da1f9d before the light leaf decision.
+const P10_GOLDEN: (usize, u64) = (13147, 0xa130_f2ca_67af_f6f8);
+
+/// The light leaf decision drops more MDS0 candidates in frames that later
+/// frames reference, under deblocking, CDEF, LR, CCSO and GDF; the stream
+/// decodes to the encoder recon and codes the same bytes on 1, 2 and 8
+/// threads. A margin of 255 codes the stream of main before it.
+#[test]
+fn light_leaf_streams_decode_on_any_thread_count() {
+    let (one, expected, cores, pruned) = staged_stream(light_leaf(0), 160, 1);
+    let (off, _, _, open) = staged_stream(light_leaf(u8::MAX), 160, 1);
+    assert!(
+        pruned > open,
+        "the light leaf decision dropped no candidate"
+    );
+    let mut filters = [false; 5];
+    for core in &cores {
+        let used = [
+            core.deblocking_filter_params
+                .is_some_and(|df| df.apply_deblocking_filter.contains(&true)),
+            core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable),
+            core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
+            core.ccso_params
+                .as_ref()
+                .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true)),
+            core.gdf_params.is_some_and(|gdf| gdf.gdf_frame_enable),
+        ];
+        filters = core::array::from_fn(|i| filters[i] || used[i]);
+    }
+    assert_eq!(filters, [true; 5], "deblock, CDEF, LR, CCSO, GDF");
+    assert_same_samples(&decode(&one), &expected, "light leaf decision");
+    for threads in [2, 8] {
+        assert!(
+            staged_stream(light_leaf(0), 160, threads).0 == one,
+            "{threads} threads"
+        );
+    }
+    assert_ne!(off, one, "the light leaf decision changes no byte");
+    assert_eq!((off.len(), fnv(&off)), P10_GOLDEN);
+}

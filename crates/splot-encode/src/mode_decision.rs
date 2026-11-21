@@ -1142,6 +1142,7 @@ impl TrialCoder<'_, '_> {
     fn mds0(&mut self, leaf: &LeafBlock, candidates: Vec<LeafChoice>) -> Result<Vec<LeafChoice>> {
         let limits = StageLimits {
             budgets: self.preset.mds0_budgets.at(self.coder.context),
+            light_margin: self.preset.light_leaf.at(self.coder.context),
         };
         let Some(motion) = self.motion.filter(|_| !limits.keeps_all()) else {
             return Ok(candidates);
