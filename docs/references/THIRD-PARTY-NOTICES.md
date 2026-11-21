@@ -16,6 +16,11 @@
 Tomczyk under the PolyForm Noncommercial License 1.0.0, except for explicitly
 listed third-party materials.
 
+Material that other people contribute under the SplotLabs Contribution Terms
+(<https://github.com/splotlabs/.github/blob/main/CLA.md>) is licensed by its
+authors under MIT-0. That covers the contributor's own original material only.
+It does not change the license of the surrounding code or of this repository.
+
 ```text
 SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 ```
@@ -263,8 +268,11 @@ authorised by the maintainer.
   sha256 `c3837e1c3b333e9ed51885c642562b519e3c3ed2ab385557d296c30a29c04ca1`). It is
   the same AOMedia copyright and version, carries no PolyForm SPDX header, and is
   pinned in `provenance.toml [attachments]` and `CHECKSUMS`. `cargo xtask gen-tables`
-  generates `crates/splot-core/src/tables/` from it; the generated Rust is original
-  `splot` code (PolyForm), not part of this exception.
+  generates `crates/splot-core/src/tables/` and `crates/splot-tables/src/tables/`
+  from it. The generator and the generated modules carry the project's SPDX
+  header, but every table value is taken directly from the AOM attachment. Whether
+  those values, their selection or their arrangement are protected, and on what
+  terms they may be redistributed, is not established; see the open items below.
 - **Isolation & integrity:** the mirror lives only under `docs/spec/av2/`, carries
   **no** PolyForm SPDX header, declares its AOM copyright in
   `docs/spec/av2/1.0.0/README.md`, and is excluded from `typos`. The
@@ -275,10 +283,31 @@ authorised by the maintainer.
   before converting). Do not hand-edit the mirror; regenerate it.
 - **Usage:** cite mirror sections (`§ N.M` + path); do **not** paste mirror text
   into `splot` source or original docs.
-- **Commercial caution:** AOM reserves rights in the specification text and grants
-  no explicit redistribution license; the maintainer accepted this reproduction
-  for a source-available, noncommercial project. Revisit before any commercial
-  distribution (see §8).
+- **Open rights-clearance items (recorded 2026-11-21, unresolved):**
+  1. *Specification text.* The specification states "Copyright 2026, Alliance for
+     Open Media" and refers to <https://www.aomedia.org/license/> for licensing.
+     That address leads to <https://aomedia.org/about/legal/>. On 2026-11-21 that
+     page listed the AOM Patent License 1.0 for Final Deliverables and, for
+     software released by AOMedia, the BSD 3-Clause Clear License together with
+     that patent license. No copyright permission to reproduce or redistribute the
+     specification document was found there. The charter documents linked from
+     that page were not reviewed. The maintainer's approval, the attribution and
+     the quarantine described above are project controls, not permission from the
+     rights holder. This concerns the present public repository, not only a
+     commercial release.
+  2. *Tables.* `all_tables.h` is published as an attachment to the specification
+     and carries no license notice. It is not established whether it is software
+     released by AOMedia under the licenses above, or whether the generated Rust
+     needs an AOM notice.
+  3. *Needed to close.* An express permission from AOM, an identified license term
+     that covers these materials, or a reasoned analysis of an applicable
+     exception or of non-protectability, kept separately for the text and for the
+     tables; then whatever notices that outcome requires.
+
+  These items record an open question. They are not a finding of infringement and
+  not a clearance. MIT-0 contributions from other people do not affect them. No
+  assurance that covers these materials is given to commercial licensees while
+  they are open (see §8).
 
 ---
 
