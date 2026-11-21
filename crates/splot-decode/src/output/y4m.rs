@@ -38,7 +38,7 @@ pub(crate) fn write_y4m_stream_to_writer(
             let frame_rate = || {
                 frame_rate_override.map_or_else(|| Y4mFrameRate::new(numerator, denominator), Ok)
             };
-            let grain = output.display_grain.as_ref();
+            let grain = output.output_grain(options);
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Eight)?;

@@ -65,10 +65,10 @@ fn depth_one() -> DecodeContext {
 fn collect_raw(
     context: &DecodeContext,
     bytes: &[u8],
-    options: DecodeOptions,
+    options: &DecodeOptions,
 ) -> Result<Vec<u8>, DecodeError> {
     let mut raw = Vec::new();
-    context.decode_raw_bytes(bytes, options, &mut raw)?;
+    context.decode_raw_bytes(bytes, *options, &mut raw)?;
     Ok(raw)
 }
 
@@ -83,7 +83,7 @@ fn collect_raw_with_timeout(
         let decoded = collect_raw(
             &context(threads, frame_delay),
             &bytes,
-            DecodeOptions::default(),
+            &DecodeOptions::default(),
         );
         let (slot, ready) = &*worker_result;
         *slot.lock() = Some(decoded);
@@ -113,13 +113,13 @@ fn collect_raw_with_timeout(
 fn raw_output_matches_depth_one_at_every_capacity() {
     let depth_one = depth_one();
     for (name, fixture) in FIXTURES {
-        let expected = collect_raw(&depth_one, fixture, DecodeOptions::default())
+        let expected = collect_raw(&depth_one, fixture, &DecodeOptions::default())
             .unwrap_or_else(|error| panic!("depth-one decode of {name} failed: {error}"));
         assert!(!expected.is_empty(), "{name} decoded to no bytes");
 
         for depth in [1usize, 2, 4, 64] {
             let context = context(4, FrameDelay::from(depth));
-            let actual = collect_raw(&context, fixture, DecodeOptions::default())
+            let actual = collect_raw(&context, fixture, &DecodeOptions::default())
                 .unwrap_or_else(|error| panic!("depth {depth} decode of {name} failed: {error}"));
             assert_eq!(actual, expected, "{name} diverged at frame delay {depth}");
         }
@@ -153,7 +153,7 @@ fn hash_report_matches_depth_one_at_every_capacity() {
 
 #[test]
 fn scheduled_context_reuse_retires_active_temporal_owner() {
-    let expected = collect_raw(&depth_one(), EIGHT_FRAME, DecodeOptions::default())
+    let expected = collect_raw(&depth_one(), EIGHT_FRAME, &DecodeOptions::default())
         .expect("depth-one eight-frame decode");
     let actual = collect_raw_with_timeout(4, FrameDelay::from(2usize), EIGHT_FRAME.to_vec())
         .expect("scheduled contexts retire active temporal owners");
@@ -177,12 +177,12 @@ fn y4m_output_matches_depth_one() {
 
 #[test]
 fn key_filter_publication_repeatedly_admits_sef_reconstruction() {
-    let expected = collect_raw(&depth_one(), SEF_FAMILIES, DecodeOptions::default()).unwrap();
+    let expected = collect_raw(&depth_one(), SEF_FAMILIES, &DecodeOptions::default()).unwrap();
     for _ in 0..32 {
         let actual = collect_raw(
             &context(8, FrameDelay::Auto),
             SEF_FAMILIES,
-            DecodeOptions::default(),
+            &DecodeOptions::default(),
         )
         .unwrap();
         assert_eq!(actual, expected);
@@ -193,11 +193,11 @@ fn key_filter_publication_repeatedly_admits_sef_reconstruction() {
 fn an_early_output_limit_break_matches_depth_one() {
     let options =
         DecodeOptions::default().with_output_frame_limit(Some(NonZeroU64::new(2).unwrap()));
-    let expected = collect_raw(&depth_one(), EIGHT_FRAME, options).unwrap();
+    let expected = collect_raw(&depth_one(), EIGHT_FRAME, &options).unwrap();
 
     for depth in [2usize, 4] {
         let actual =
-            collect_raw(&context(4, FrameDelay::from(depth)), EIGHT_FRAME, options).unwrap();
+            collect_raw(&context(4, FrameDelay::from(depth)), EIGHT_FRAME, &options).unwrap();
         assert_eq!(actual, expected, "limited decode diverged at depth {depth}");
     }
 }
@@ -219,7 +219,7 @@ fn fixed_one_and_auto_complete_on_one_worker() {
     let expected = collect_raw(
         &context(4, FrameDelay::Auto),
         MULTIREF,
-        DecodeOptions::default(),
+        &DecodeOptions::default(),
     )
     .unwrap();
     for frame_delay in [FrameDelay::from(1usize), FrameDelay::Auto] {
@@ -230,13 +230,13 @@ fn fixed_one_and_auto_complete_on_one_worker() {
 
 #[test]
 fn fixed_one_and_auto_match_across_worker_widths() {
-    let expected = collect_raw(&depth_one(), MULTIREF, DecodeOptions::default()).unwrap();
+    let expected = collect_raw(&depth_one(), MULTIREF, &DecodeOptions::default()).unwrap();
     for threads in [1usize, 2, 3, 4, 8, 10] {
         for frame_delay in [FrameDelay::from(1usize), FrameDelay::Auto] {
             let actual = collect_raw(
                 &context(threads, frame_delay),
                 MULTIREF,
-                DecodeOptions::default(),
+                &DecodeOptions::default(),
             )
             .unwrap();
             assert_eq!(
@@ -257,7 +257,7 @@ fn a_planner_valid_corrupt_stream_fails_identically_at_every_width_and_capacity(
         if DecodeContext::plan_bytes(&bytes, DecodeOptions::default()).is_err() {
             continue;
         }
-        let Err(expected) = collect_raw(&depth_one, &bytes, DecodeOptions::default()) else {
+        let Err(expected) = collect_raw(&depth_one, &bytes, &DecodeOptions::default()) else {
             continue;
         };
         checked += 1;
@@ -266,7 +266,7 @@ fn a_planner_valid_corrupt_stream_fails_identically_at_every_width_and_capacity(
             let actual = collect_raw(
                 &context(4, FrameDelay::from(depth)),
                 &bytes,
-                DecodeOptions::default(),
+                &DecodeOptions::default(),
             )
             .expect_err("a corrupt stream must fail at every frame delay");
             assert_eq!(
@@ -309,8 +309,8 @@ fn an_atlas_segment_obu_does_not_change_the_decoded_frames() {
     bytes.splice(46..46, [0x04, 0x44, 0x1d, 0xbe, 0x40]);
     bytes[32] += 5;
     let context = depth_one();
-    let expected = collect_raw(&context, MULTIREF, DecodeOptions::default()).unwrap();
-    let actual = collect_raw(&context, &bytes, DecodeOptions::default()).unwrap();
+    let expected = collect_raw(&context, MULTIREF, &DecodeOptions::default()).unwrap();
+    let actual = collect_raw(&context, &bytes, &DecodeOptions::default()).unwrap();
     assert_eq!(actual, expected);
 }
 
@@ -323,7 +323,7 @@ fn a_failed_frame_releases_its_slot_to_the_next_reservation() {
         let mut bytes = EIGHT_FRAME.to_vec();
         bytes[offset] ^= 0x94;
         if DecodeContext::plan_bytes(&bytes, DecodeOptions::default()).is_err()
-            || collect_raw(&depth_one, &bytes, DecodeOptions::default()).is_ok()
+            || collect_raw(&depth_one, &bytes, &DecodeOptions::default()).is_ok()
         {
             continue;
         }
@@ -338,13 +338,13 @@ fn a_failed_frame_releases_its_slot_to_the_next_reservation() {
 
 #[test]
 fn orderhint_output_matches_depth_one_at_every_capacity() {
-    let expected = collect_raw(&depth_one(), ORDER_HINT_WRAP, DecodeOptions::default()).unwrap();
+    let expected = collect_raw(&depth_one(), ORDER_HINT_WRAP, &DecodeOptions::default()).unwrap();
 
     for depth in [1usize, 2, 4, 8, 64] {
         let actual = collect_raw(
             &context(8, FrameDelay::from(depth)),
             ORDER_HINT_WRAP,
-            DecodeOptions::default(),
+            &DecodeOptions::default(),
         )
         .unwrap();
         assert_eq!(actual, expected, "output diverged at frame delay {depth}");
@@ -356,7 +356,7 @@ fn orderhint_output_matches_depth_one_at_every_capacity() {
 /// frame store holds; the full store must not wait for those slots' reuse.
 #[test]
 fn tip_output_run_does_not_exhaust_the_frame_store() {
-    let expected = collect_raw(&depth_one(), TIP_OUTPUT_WINDOW, DecodeOptions::default()).unwrap();
+    let expected = collect_raw(&depth_one(), TIP_OUTPUT_WINDOW, &DecodeOptions::default()).unwrap();
 
     for depth in [8usize, 12, 16] {
         let actual =
@@ -439,7 +439,7 @@ fn deep_pipeline_shrinks_to_the_reference_store_limit() {
     let expected = collect_raw(
         &depth_one(),
         ORDER_HINT_WRAP,
-        reference_store_capped(SERIAL_PEAK),
+        &reference_store_capped(SERIAL_PEAK),
     )
     .unwrap();
 
@@ -448,7 +448,7 @@ fn deep_pipeline_shrinks_to_the_reference_store_limit() {
         let actual = collect_raw(
             &decoder,
             ORDER_HINT_WRAP,
-            reference_store_capped(SERIAL_PEAK),
+            &reference_store_capped(SERIAL_PEAK),
         )
         .unwrap_or_else(|error| panic!("{threads} workers exceeded {SERIAL_PEAK}: {error}"));
         assert_eq!(actual, expected, "output diverged at {threads} workers");
@@ -456,7 +456,7 @@ fn deep_pipeline_shrinks_to_the_reference_store_limit() {
         let error = collect_raw(
             &decoder,
             ORDER_HINT_WRAP,
-            reference_store_capped(SERIAL_PEAK - 1),
+            &reference_store_capped(SERIAL_PEAK - 1),
         )
         .unwrap_err();
         let DecodeError::Limit { source } = error else {

@@ -52,6 +52,34 @@ fn decode_explicit_raw_success_for_minimal_fixture() {
     assert_eq!(std::fs::read(&output).unwrap(), expected_minimal_raw());
 }
 
+#[test]
+fn decode_raw_skip_film_grain_leaves_the_grain_out() {
+    let input = conformance_vector("syn-filmgrain-intra-64x64.ivf");
+    let decode = |flags: &[&str]| {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw", input.to_str().unwrap()];
+        args.extend_from_slice(flags);
+        args.extend_from_slice(&["-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(out.status.code(), Some(0));
+        std::fs::read(&output).unwrap()
+    };
+    let context =
+        splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::default()).unwrap();
+    let mut expected = Vec::new();
+    context
+        .decode_raw_bytes(
+            &std::fs::read(&input).unwrap(),
+            splot_decode::DecodeOptions::default().with_skip_film_grain(true),
+            &mut expected,
+        )
+        .unwrap();
+
+    let skipped = decode(&["--skip-film-grain"]);
+    assert_eq!(skipped, expected);
+    assert_ne!(skipped, decode(&[]));
+}
+
 #[cfg(unix)]
 #[test]
 fn decode_raw_writes_to_null_device() {

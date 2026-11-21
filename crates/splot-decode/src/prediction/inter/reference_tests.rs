@@ -109,13 +109,9 @@ fn reference_waits_for_mi_padding_rows_to_be_published() {
     assert_eq!(progress.published_luma_rows(), 272);
 }
 
-fn collect_raw(
-    context: &DecodeContext,
-    bytes: &[u8],
-    options: DecodeOptions,
-) -> Result<Vec<u8>, DecodeError> {
+fn collect_raw(context: &DecodeContext, bytes: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut raw = Vec::new();
-    context.decode_raw_bytes(bytes, options, &mut raw)?;
+    context.decode_raw_bytes(bytes, DecodeOptions::default(), &mut raw)?;
     Ok(raw)
 }
 
@@ -377,7 +373,7 @@ fn forced_banded_reads_decode_every_inter_fixture_byte_identically() {
     let expected: Vec<Vec<u8>> = FIXTURES
         .iter()
         .map(|(name, fixture)| {
-            let output = collect_raw(&context, fixture, DecodeOptions::default())
+            let output = collect_raw(&context, fixture)
                 .unwrap_or_else(|error| panic!("settled decode of {name} failed: {error}"));
             assert!(!output.is_empty(), "{name} decoded to no bytes");
             output
@@ -386,7 +382,7 @@ fn forced_banded_reads_decode_every_inter_fixture_byte_identically() {
 
     let _guard = forced_band_scope();
     for ((name, fixture), expected) in FIXTURES.iter().zip(&expected) {
-        let actual = collect_raw(&context, fixture, DecodeOptions::default())
+        let actual = collect_raw(&context, fixture)
             .unwrap_or_else(|error| panic!("banded decode of {name} failed: {error}"));
         assert_eq!(&actual, expected, "{name} diverged under banded reads");
     }

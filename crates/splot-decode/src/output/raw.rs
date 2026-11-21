@@ -29,7 +29,7 @@ pub(crate) fn write_raw_stream_from_plan(
         |_| Ok(()),
         |output| {
             let frame = output.ready_frame()?;
-            write_display_frame(&frame, output.display_grain.as_ref(), &mut spare, writer)
+            write_display_frame(&frame, output.output_grain(options), &mut spare, writer)
         },
     )?;
     Ok(())
@@ -68,7 +68,7 @@ pub(crate) fn discard_raw_stream_from_plan(
         session,
         |_| Ok(()),
         |output| {
-            let grain = output.display_grain.as_ref();
+            let grain = output.output_grain(options);
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
                     write_display(frame.get(), grain, &mut spare.eight, |_| Ok(()))

@@ -135,18 +135,18 @@ impl DecodeContext {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        self.decode_hash_report(&mut reader, options)
+        self.decode_hash_report(&mut reader, &options)
     }
 
     fn decode_hash_report(
         &self,
         reader: &mut dyn ReadSend,
-        options: DecodeOptions,
+        options: &DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        Self::run(reader, &options, |source| {
+        Self::run(reader, options, |source| {
             crate::output::hash::decode_hash_report_from_plan(
                 source,
-                &options,
+                options,
                 self.threads(),
                 &self.session,
             )
@@ -176,12 +176,12 @@ impl DecodeContext {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<()> {
-        self.decode_discard(&mut reader, options)
+        self.decode_discard(&mut reader, &options)
     }
 
-    fn decode_discard(&self, reader: &mut dyn ReadSend, options: DecodeOptions) -> Result<()> {
-        Self::run(reader, &options, |source| {
-            crate::output::raw::discard_raw_stream_from_plan(source, &options, &self.session)
+    fn decode_discard(&self, reader: &mut dyn ReadSend, options: &DecodeOptions) -> Result<()> {
+        Self::run(reader, options, |source| {
+            crate::output::raw::discard_raw_stream_from_plan(source, options, &self.session)
         })
     }
 
@@ -215,17 +215,17 @@ impl DecodeContext {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        self.decode_raw(&mut reader, options, &mut writer)
+        self.decode_raw(&mut reader, &options, &mut writer)
     }
 
     fn decode_raw(
         &self,
         reader: &mut dyn ReadSend,
-        options: DecodeOptions,
+        options: &DecodeOptions,
         writer: &mut dyn WriteSend,
     ) -> Result<()> {
-        Self::run(reader, &options, |source| {
-            crate::output::raw::write_raw_stream_from_plan(source, &options, &self.session, writer)
+        Self::run(reader, options, |source| {
+            crate::output::raw::write_raw_stream_from_plan(source, options, &self.session, writer)
         })
     }
 
@@ -259,17 +259,17 @@ impl DecodeContext {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        self.decode_y4m(&mut reader, options, &mut writer)
+        self.decode_y4m(&mut reader, &options, &mut writer)
     }
 
     fn decode_y4m(
         &self,
         reader: &mut dyn ReadSend,
-        options: DecodeOptions,
+        options: &DecodeOptions,
         writer: &mut dyn WriteSend,
     ) -> Result<()> {
-        Self::run(reader, &options, |source| {
-            crate::output::y4m::write_y4m_stream_to_writer(source, &options, &self.session, writer)
+        Self::run(reader, options, |source| {
+            crate::output::y4m::write_y4m_stream_to_writer(source, options, &self.session, writer)
         })
     }
 

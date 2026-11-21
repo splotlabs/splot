@@ -25,7 +25,8 @@
 #define SPLOT_EINVAL -3
 
 // The bitstream failed to decode, or a resource limit stopped it. The
-// decoder takes no more data; close it.
+// decoder takes no more data; close it. [`splot_apply_grain`]: the synthesis
+// failed; no decoder is affected.
 #define SPLOT_EDECODE -4
 
 // The decoder takes no more data: it is draining, or it failed earlier.
@@ -54,8 +55,11 @@ typedef struct SplotSettings {
   // Frames decoded in parallel; 0 picks a value from `n_threads`. 1 is
   // lowest latency.
   uint32_t max_frame_delay;
+  // 1 leaves film grain out of the pictures; [`splot_apply_grain`] adds it
+  // to a picture later. 0 applies it.
+  uint8_t skip_film_grain;
   // Reserved; keep zero.
-  uint8_t reserved[32];
+  uint8_t reserved[31];
 } SplotSettings;
 
 // Caller data that goes with one temporal unit to the pictures it codes.
@@ -80,8 +84,8 @@ typedef struct SplotColor {
   uint8_t full_range;
 } SplotColor;
 
-// A decoded picture. Valid from [`splot_get_picture`] until
-// [`splot_picture_unref`].
+// A decoded picture. Valid from [`splot_get_picture`] or
+// [`splot_apply_grain`] until [`splot_picture_unref`].
 typedef struct SplotPicture {
   // Y, U and V planes at their first stored sample, 64-byte aligned.
   // The visible area starts `crop_top` rows and `crop_left` samples in
@@ -107,8 +111,11 @@ typedef struct SplotPicture {
   struct SplotColor color;
   // The caller data of the unit that coded or showed this picture.
   struct SplotDataProps props;
+  // 1 when the stream signals film grain for this picture, whether or not
+  // `skip_film_grain` left it out; else 0.
+  uint8_t has_film_grain;
   // Reserved.
-  size_t reserved[4];
+  size_t reserved[3];
   // The decoder's handle on the samples; do not touch.
   void *internal;
 } SplotPicture;
@@ -128,8 +135,9 @@ void splot_default_settings(struct SplotSettings *settings);
 
 // Opens a decoder and stores it in `*out`.
 //
-// Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument or nonzero
-// reserved bytes, or [`SPLOT_EDECODE`] when the worker pool cannot start.
+// Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a
+// `skip_film_grain` above 1 or nonzero reserved bytes, or [`SPLOT_EDECODE`]
+// when the worker pool cannot start.
 //
 // # Safety
 // `out` is null or writable; `settings` is null or points to a
@@ -170,11 +178,27 @@ void splot_drain(struct SplotDecoder *decoder);
 // `*out` that was not released with [`splot_picture_unref`] leaks.
 int splot_get_picture(struct SplotDecoder *decoder, struct SplotPicture *out);
 
-// Releases a picture from [`splot_get_picture`] and zeroes it.
+// Stores in `*out` the picture `picture` with the film grain of AV2 § 7.21.7
+// applied. A picture that has its grain, or whose stream signals none,
+// shares its samples with `*out`. `picture` stays valid; release both.
+//
+// Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a zeroed
+// picture or `out` equal to `picture`, or [`SPLOT_EDECODE`] when the
+// synthesis fails. On [`SPLOT_EDECODE`], `*out` is zeroed.
 //
 // # Safety
-// `picture` is null or points to a picture from [`splot_get_picture`] that
-// was not released yet, or to a zeroed picture.
+// `picture` is null or points to a picture from [`splot_get_picture`] or
+// this function that was not released yet, or to a zeroed picture. `out` is
+// null or points to a zeroed or released picture: this call overwrites
+// `*out`.
+int splot_apply_grain(struct SplotPicture *out, const struct SplotPicture *picture);
+
+// Releases a picture from [`splot_get_picture`] or [`splot_apply_grain`] and
+// zeroes it.
+//
+// # Safety
+// `picture` is null or points to a picture from one of those calls that was
+// not released yet, or to a zeroed picture.
 void splot_picture_unref(struct SplotPicture *picture);
 
 // Closes a decoder and sets `*decoder` to null. Pictures already taken stay
