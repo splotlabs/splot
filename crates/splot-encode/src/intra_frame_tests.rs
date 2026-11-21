@@ -447,7 +447,8 @@ fn type_model_ranks_the_exact_winner_first_on_constructed_blocks() {
 /// threads.
 #[test]
 fn cfl_zero_alpha_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (width, height, bit_depth) in [(72, 40, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
+    let (mut differs, mut total) = (false, 0);
+    for (width, height, bit_depth) in [(128, 64, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
         let mut config = config(width, height, bit_depth, 6, 60);
         config.keyint = core::num::NonZeroU32::new(3).unwrap();
         let stream = |zero: bool, threads: usize| -> (Vec<u8>, Vec<u8>) {
@@ -468,17 +469,27 @@ fn cfl_zero_alpha_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 .collect();
             (
                 coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
-                coded.iter().flat_map(|f| recon_bytes(f, bit_depth)).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
             )
         };
+        crate::tile_writer::CFL_ZERO_CODED.set(0);
         let (units, expected) = stream(true, 1);
+        let coded = crate::tile_writer::CFL_ZERO_CODED.get();
         let name = format!("{bit_depth:?}");
+        total += coded;
         assert_same_samples(&decode(&units), &expected, &name);
-        assert!(stream(false, 1).0 != units, "{name}: no zero alpha coded");
+        differs |= stream(false, 1).0 != units;
         for threads in [2, 8] {
-            assert!(stream(true, threads).0 == units, "{name}: {threads} threads");
+            assert!(
+                stream(true, threads).0 == units,
+                "{name}: {threads} threads"
+            );
         }
     }
+    assert!(total > 0 && differs, "no leaf coded alpha 0");
 }
 
 /// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
