@@ -129,6 +129,17 @@ Generated status markdown is not committed; render it on demand.
   `splot-decode`, the `splot-recon` plane allocator and the `splot-capi` C ABI
   (`deny` plus module `allow`).
 
+## Rust and C Decoder API
+
+`splot-capi` mirrors the streaming decoder (`Decoder`, `DecoderSettings`,
+`Picture`) in dav1d/dav2d shape: open, send, get, flush, drain, close and
+plain structs; no demuxing or file access.
+
+- A PR that changes public API on those types makes the same change in
+  `splot-capi` (`splot.h`, an `abi.rs` test), or says why a C host does not
+  need it. When unsure, leave out what dav2d does not expose.
+- New struct fields take reserved space; sizes and existing offsets stay.
+
 ## AV2 and Diagnostics
 
 - Never invent AV2 syntax, constants, tables, or semantics.

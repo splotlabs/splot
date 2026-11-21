@@ -342,9 +342,15 @@ pub struct PresetParams {
     /// that only merges luma leaves. On in every row: intra frames gain luma
     /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
     pub sdp: bool,
-    /// CCSO classifications the filter search tries per plane; `0` disables
-    /// CCSO in the sequence.
+    /// CCSO `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` triples the
+    /// filter search tries per plane, `0..=112`: the first 8 of a fixed
+    /// ladder, then every other triple of § 5.18.7.12; `0` disables CCSO in
+    /// the sequence.
     pub ccso_candidates: u8,
+    /// The largest `ccso_max_band_log2` of CCSO band offsets only
+    /// (§ 5.18.7.12), `3..=6`: above `3` the search also tries 16, 32 and up
+    /// to 64 bands from 64-band statistics of each unit.
+    pub ccso_bo_band_log2: u8,
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
@@ -472,6 +478,9 @@ pub struct PresetParams {
     /// (2026-10-25): every such block with `eob > 3` then pays a
     /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
     pub inter_ist: bool,
+    /// With `inter_ist`, an inter luma block gives an RD trial to every
+    /// kernel in place of the one that keeps the most energy.
+    pub inter_ist_rd: bool,
     /// TIP (`enable_tip`), `0..=2`: `1` inter frames with reference MVs and
     /// a TIP reference pair code `TIP_FRAME_AS_REF` with equal weights, and
     /// inter leaves also try the TIP `NEARMV` candidates; `2` also picks the
@@ -538,6 +547,10 @@ pub struct PresetParams {
     /// (2026-10-30): at `1` p6 measured paris +0.01%, niklas +0.00%, park_joy
     /// +0.49%; the lookahead vectors are too coarse.
     pub global_motion: u8,
+    /// With `global_motion`, inter frames code the `our_ref` and `their_ref`
+    /// (§ 5.18.9.1) of the fewest parameter bits; off, `our_ref =
+    /// NumTotalRefs` predicts every model from the identity.
+    pub global_motion_predict: bool,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
     /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows that search
@@ -865,6 +878,8 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
+        check("ccso_bo_band_log2", self.ccso_bo_band_log2, 3, 6, "")?;
         check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
         check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
@@ -1118,6 +1133,7 @@ preset_table! {
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
         cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
+        inter_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     inter {
@@ -1173,6 +1189,7 @@ preset_table! {
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        global_motion_predict: [false, false, false, false, false, false, false, false, false, false, false],
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
@@ -1184,6 +1201,7 @@ preset_table! {
     filters {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
         ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
+        ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         lr_unit_sizes:         [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
@@ -1433,9 +1451,11 @@ mod tests {
             assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
+            assert!(fast.inter_ist_rd <= slow.inter_ist_rd);
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
             assert!(fast.global_motion <= slow.global_motion);
+            assert!(fast.global_motion_predict <= slow.global_motion_predict);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
@@ -1624,6 +1644,8 @@ mod tests {
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("ccso_candidates", "113")], "ccso_candidates"),
+            (&[("ccso_bo_band_log2", "7")], "ccso_bo_band_log2"),
             (&[("lr_unit_sizes", "0")], "lr_unit_sizes"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
             (&[("cdef_pairs", "65")], "cdef_pairs"),

@@ -156,6 +156,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         force_integer_mv: sb == SuperblockSize::Block128x128 && !high_precision_mv,
                         warp: false,
                         global_motion: [None; 7],
+                        global_motion_predict: false,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -246,6 +247,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         force_integer_mv: false,
         warp: false,
         global_motion: [None; 7],
+        global_motion_predict: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -349,6 +351,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             force_integer_mv: false,
             warp: false,
             global_motion: [None; 7],
+            global_motion_predict: false,
         },
     )
     .unwrap();
@@ -509,6 +512,7 @@ fn rejects_out_of_range_inter_inputs() {
         force_integer_mv: false,
         warp: false,
         global_motion: [None; 7],
+        global_motion_predict: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -1038,6 +1042,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         force_integer_mv: false,
         warp: false,
         global_motion: [None; 7],
+        global_motion_predict: false,
         tip_global_mv: TipGlobalMv::default(),
         tip_filter: None,
         tip_deblocking: false,
@@ -1103,15 +1108,25 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         ..fixed
     };
     assert_eq!(key(ignored), key(fixed));
-    let obu = encode_inter_frame_obu(&on, &[&[0xab]]).unwrap();
+    assert_cut_header_fails(&seq, &on, &slots.view());
+}
+
+/// The inter header `header` cut by its last byte does not parse to a
+/// complete header with the § 7.23 state `refs`.
+fn assert_cut_header_fails(
+    seq: &SequenceHeader,
+    header: &EncodedFrameHeader,
+    refs: &FrameReferenceStateView<'_>,
+) {
+    let obu = encode_inter_frame_obu(header, &[&[0xab]]).unwrap();
     let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
-    let cut = on.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
+    let cut = header.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
     let input = FrameHeaderParseInput {
         obu_type: ObuType::RegularTileGroup,
         first_picture_in_tu: true,
-        active_sequence: Some(&seq),
+        active_sequence: Some(seq),
         mfh_record: None,
-        reference_state: slots.view(),
+        reference_state: *refs,
         mode: FrameHeaderParseMode::Core,
     };
     let mut reader = BitReader::new(&payload[..cut], ByteOffset::new(0));
@@ -1121,4 +1136,83 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         cut_core,
         Ok(ref core) if core.status == FrameHeaderParseStatus::InterHeaderComplete
     ));
+}
+
+/// Each slot saved `model` against a frame as far behind it as the current
+/// frame is ahead. With `global_motion_predict` the header codes the `our_ref`
+/// and `their_ref` (§ 5.18.9.1) whose saved model predicts the coded one: fewer
+/// bits and the same `gm_params`. A restricted saved order hint (§ 6.17.9.1)
+/// is never chosen, so the header keeps `our_ref = NumTotalRefs`. A cut
+/// header does not parse.
+#[test]
+fn global_motion_predict_codes_their_ref_and_the_same_models() {
+    let seq = build_encoder_sequence_header(&EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            global_motion: true,
+            ..EncoderToolFlags::default()
+        },
+    })
+    .unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let mut slots = Slots::after_key(64, 64, 4);
+    slots.valid[1] = true;
+    slots.hints[1] = 8;
+    slots.counters[1] = 1;
+    let model = [
+        7 << 13,
+        -(11 << 13),
+        (1 << 16) + (40 << 6),
+        -(23 << 6),
+        23 << 6,
+        (1 << 16) + (40 << 6),
+    ];
+    let mut models = [None; 7];
+    models[0] = Some(model);
+    let params = InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 6,
+        show_frame: true,
+        global_motion: models,
+        ..InterFrameParams::default()
+    };
+    let predict = InterFrameParams {
+        global_motion_predict: true,
+        ..params
+    };
+    let counts = [1; 8];
+    let saved = [[model; 7]; 8];
+    let mut hints = [[0; 7]; 8];
+    for (saved_hint, &hint) in hints.iter_mut().zip(&slots.hints) {
+        saved_hint[0] = 2 * hint - 6;
+    }
+    let refs = slots
+        .view()
+        .with_global_motion_state(&counts, &hints, &saved);
+    let off = build_inter_frame_header(&view, &refs, &params).unwrap();
+    let on = build_inter_frame_header(&view, &refs, &predict).unwrap();
+    let gm = |header: &EncodedFrameHeader| header.core.inter_tail.clone().unwrap().global_motion;
+    let num_total_refs = on.core.inter.as_ref().unwrap().num_total_refs;
+    assert!(on.bits.num_frame_header_bits() < off.bits.num_frame_header_bits());
+    assert_eq!(gm(&off).our_ref, num_total_refs);
+    assert_ne!(gm(&on).our_ref, num_total_refs);
+    assert_eq!(gm(&on).references, gm(&off).references);
+    assert_eq!(gm(&on).references[0].gm_params, model);
+    let restricted = [[u32::MAX; 7]; 8];
+    let refs_restricted = slots
+        .view()
+        .with_global_motion_state(&counts, &restricted, &saved);
+    let kept = build_inter_frame_header(&view, &refs_restricted, &predict).unwrap();
+    assert_eq!(gm(&kept).our_ref, num_total_refs);
+    assert_eq!(
+        kept.bits,
+        build_inter_frame_header(&view, &refs_restricted, &params)
+            .unwrap()
+            .bits
+    );
+    assert_cut_header_fails(&seq, &on, &refs);
 }

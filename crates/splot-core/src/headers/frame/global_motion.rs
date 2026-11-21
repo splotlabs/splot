@@ -438,14 +438,18 @@ fn order_hint_to_spec(reader: &BitReader<'_>, raw: u32) -> Result<i32> {
 }
 
 /// `PrevGmParams` of a reference with order hint `ref_hint` (`u32::MAX` is
-/// `RESTRICTED_OH`) in a frame with order hint `order_hint` that codes
-/// `our_ref = NumTotalRefs` (§ 5.18.9.1); `None` where the reference reads no
-/// model.
-pub(crate) fn default_base_prediction(order_hint: u32, ref_hint: u32) -> Option<[i32; 6]> {
+/// `RESTRICTED_OH`) in a frame with order hint `order_hint` whose
+/// `baseParams` and `baseDistance` are `base` (§ 5.18.9.1); `None` where the
+/// reference reads no model.
+pub(crate) fn base_prediction(
+    order_hint: u32,
+    ref_hint: u32,
+    (base_params, base_distance): ([i32; 6], i32),
+) -> Option<[i32; 6]> {
     let current = i32::try_from(order_hint).ok()?;
     let hint = i32::try_from(ref_hint).ok()?;
     let dist = get_relative_dist(current, hint);
-    (dist != 0 && hint != RESTRICTED_OH).then(|| scale_warp_model(DEFAULT_WARP_PARAMS, 1, dist))
+    (dist != 0 && hint != RESTRICTED_OH).then(|| scale_warp_model(base_params, base_distance, dist))
 }
 
 /// `scale_warp_model()` from AV2 § 5.18.9.1.
