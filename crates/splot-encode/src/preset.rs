@@ -141,6 +141,12 @@ pub struct PresetParams {
     /// 16 at p0-p4 and 24 at p5-p10 (2026-10-31): 48 lost paris p6 +0.92%
     /// over 30 frames at 0.84x CPU; 24 measured +0.29% at 0.87x.
     pub compound_skip_sad: u8,
+    /// `NEWMV` reference pruning, per frame kind: when a leaf has more than
+    /// two references, only the two whose `GLOBALMV` and `NEARMV`
+    /// candidates score lowest in MDS0 terms (luma SATD plus mode rate),
+    /// and each other one within this margin, in 1/16, of the best, run the
+    /// `NEWMV` search. `255` searches every reference.
+    pub newmv_ref_margin: Levels<u8>,
     /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
     pub subpel_depth: u8,
     /// The largest frame `base_q_idx` that codes eighth-pel vectors when
@@ -205,6 +211,12 @@ pub struct PresetParams {
     /// weight decay, so larger values keep more of the neighbours. `0` is
     /// off.
     pub tf_strength: Levels<u8>,
+    /// The qindex decrease a key frame takes besides its TPL offset in
+    /// `--crf` and bitrate modes, per resolution class (the key-frame cell is
+    /// read); constant-qp mode ignores it. `4` on SD key frames at p0-p8
+    /// (6:1:1 PSNR at p6: paris -0.72%, rush_hour_444 -0.61%, park_joy
+    /// -0.28%); `6` lost park_joy +0.35%, and `4` at 720p lost niklas +0.14%.
+    pub key_qindex_boost: Levels<u8>,
     /// `delta_q_res` of a frame with superblock qindex offsets: the qindex
     /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
     /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
@@ -253,6 +265,11 @@ pub struct PresetParams {
     /// main): paris f30 -1.42% BD-rate at 0.767x instructions, park_joy f10
     /// -0.85% at 0.797x. 720p keeps the old cells: niklas f10 lost +2.76%
     /// at 0.924x with mid 1, and the rest without it +0.43% at 0.926x.
+    /// p10 searches 1 level, with `mds0_budgets` 1,1,1, inter-frame
+    /// `intra_modes` 1, `leaf_reuse` 2, `motion_range` 8 and
+    /// `gdf_candidates` 4 (2026-11-21, CRF, 6:1:1 BD-rate against main): paris
+    /// f30 +0.35% at 0.792x instructions, niklas f30 +4.56% at 0.615x,
+    /// rush_hour_444 f60 +1.97% at 0.769x, park_joy f10 +2.84% at 0.731x.
     pub pd_window: Levels<u8>,
     /// The first pass charges each square this many bits besides its
     /// open-loop SAD.
@@ -594,7 +611,8 @@ const fn frames<T: Copy>(rows: [[T; 11]; 4]) -> [Levels<T>; 11] {
 
 /// [`frames`] of `rows`, with the [`ResolutionClass::Sd`] contexts from
 /// `sd` instead. In the table, the `sd` cells that differ search less on
-/// inter frames from p6 (see `pd_window`); 720p loses with them.
+/// inter frames from p6 (see `pd_window`) or boost the key frame (see
+/// `key_qindex_boost`); 720p loses with them.
 const fn frames_sd<T: Copy>(rows: [[T; 11]; 4], sd: [[T; 11]; 4]) -> [Levels<T>; 11] {
     let (mut out, sd) = (frames(rows), frames(sd));
     let mut i = 0;
@@ -891,26 +909,26 @@ preset_table! {
                                [   10,    10,    10,    10,    10,    10,    10,    10,    10,   255,   255],
                                [   10,    10,    10,    10,    10,    10,    10,    10,    10,   255,   255]]),
         leaf_reuse:            frames_sd([
-                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
-                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
-                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
-                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1]], [
-                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
-                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
-                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2]], [
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
+                               [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
                                [    1,     1,     1,     1,     1,     1,     2,     2,     2,     2,     2]]),
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         pd_window:             frames_sd([
-                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
-                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
-                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
-                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2]], [
-                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
-                               [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     2],
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     1],
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     1],
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     1],
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     1]], [
+                               [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     1],
+                               [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     1],
                                [  255,   255,   255,   255,   255,   255,     1,     1,     1,     1,     1],
-                               [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     2]]),
+                               [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     1]]),
         pd0_leaf_bits:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         ref_intra_margin:      [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
@@ -919,13 +937,13 @@ preset_table! {
     intra {
         intra_modes:           frames_sd([
                                [   13,    12,    12,    10,     9,     8,     6,     5,     4,     3,     2],
-                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
-                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
-                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2]], [
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     1],
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     1],
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     1]], [
                                [   13,    12,    12,    10,     9,     8,     6,     5,     4,     3,     2],
-                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
-                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
-                               [   13,    12,    12,    10,     9,     8,     2,     2,     2,     2,     2]]),
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     1],
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     1],
+                               [   13,    12,    12,    10,     9,     8,     2,     2,     2,     2,     1]]),
         mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
         cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
@@ -955,18 +973,23 @@ preset_table! {
     }
     inter {
         motion_range:          frames_sd([
-                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16]], [
-                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-                               [  256,   192,   128,    96,    64,    64,    24,    24,    24,    16,    16]]),
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8]], [
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
+                               [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
+                               [  256,   192,   128,    96,    64,    64,    24,    24,    24,    16,     8]]),
         hme_range:             [   16,    16,    16,    12,    12,     8,     8,     8,     8,     8,     8],
         me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     6,     4,     4],
         me_seeds:              [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         compound_skip_sad:     [   16,    16,    16,    16,    16,    24,    24,    24,    24,    24,    24],
+        newmv_ref_margin:      frames([
+                               [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
+                               [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0]]),
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     1],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     1,     1],
@@ -994,7 +1017,7 @@ preset_table! {
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
-        gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,    16],
+        gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
         cdef_strengths:        [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
     }
@@ -1015,19 +1038,22 @@ preset_table! {
                                [4; 11],
                                [0; 11], [0; 11], [0; 11]]),
         tf_strength:           frames([[100; 11], [25; 11], [25; 11], [25; 11]]),
+        key_qindex_boost:      frames_sd([[0; 11]; 4], [
+                               [4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0],
+                               [0; 11], [0; 11], [0; 11]]),
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     mode_decision {
         psy_rd:                [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         mds0_budgets:          frames_sd([
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]]], [
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1]],
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1]],
-                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1]]]),
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [1, 1, 1]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [1, 1, 1]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [1, 1, 1]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [1, 1, 1]]], [
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [1, 1, 1]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]],
+                               [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]]]),
     }
     threading {
         wavefront:             [false, false, false, false, false, false,  true,  true,  true,  true,  true],
@@ -1160,6 +1186,7 @@ mod tests {
             assert!(at_most(&fast.motion_range, &slow.motion_range));
             assert!(fast.hme_range <= slow.hme_range && fast.me_range <= slow.me_range);
             assert!(slow.me_seeds == 0 || fast.me_seeds >= slow.me_seeds);
+            assert!(at_most(&fast.newmv_ref_margin, &slow.newmv_ref_margin));
             assert!(
                 slow.compound_skip_sad == 0 || fast.compound_skip_sad >= slow.compound_skip_sad
             );
