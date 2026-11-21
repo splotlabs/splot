@@ -119,7 +119,11 @@ impl TemporalUnit<'_> {
 /// Whether `unit`, the bytes of one whole temporal unit, is a random access
 /// point: it opens with a temporal delimiter, and a sequence header comes
 /// before its first frame, which is an `OBU_CLOSED_LOOP_KEY`,
-/// `OBU_OPEN_LOOP_KEY` or `OBU_RAS_FRAME`. A decoder can start at such a unit.
+/// `OBU_OPEN_LOOP_KEY` or `OBU_RAS_FRAME`.
+///
+/// A decoder can only start at such a unit. The test reads OBU headers and
+/// does not check the order of the other OBUs, so a decoder can still refuse
+/// a unit it accepts.
 #[must_use]
 pub fn is_random_access_point(unit: &[u8]) -> bool {
     let mut obus = AnnexBObuCursor::new(unit, ByteOffset::new(0));
