@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    GrainScaling, UniformTiles, build_encoder_sequence_header, encode_film_grain_obu,
-    encoder_film_grain_model,
+    GrainScaling, InterpolationFilter, TipGlobalMv, UniformTiles, build_encoder_sequence_header,
+    encode_film_grain_obu, encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -239,6 +239,11 @@ impl IntraFrameCoder {
                 inter_ist: preset.inter_ist,
                 tip: preset.tip > 0 && preset.mv_prediction,
                 tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
+                tip_explicit_qp: preset.tip > 0
+                    && preset.mv_prediction
+                    && preset.tip_output > 0
+                    && preset.df_sub_pu
+                    && preset.tip_explicit_qp,
                 tip_hole_fill: preset.tip > 0 && preset.mv_prediction && preset.tip_hole_fill,
                 opfl_refine: preset.opfl,
                 refinemv: preset.refinemv,
@@ -874,8 +879,9 @@ impl IntraFrameCoder {
     /// and film grain seed `grain_seed` as `coded`, as a `TIP_FRAME_AS_OUTPUT`
     /// frame with the same seed when its RD cost times 100
     /// is at most `PresetParams::tip_output` times that of `coded`; both
-    /// distortions are the squared error of every plane. The caller keeps
-    /// `coded` when this fails.
+    /// distortions are the squared error of every plane. The TIP frame takes
+    /// the candidate of least RD cost that `PresetParams::tip_output_search`
+    /// tries. The caller keeps `coded` when this fails.
     fn tip_output_frame(
         &self,
         source: &SourceFrame,
@@ -891,17 +897,6 @@ impl IntraFrameCoder {
             .ok_or(Error::Unsupported {
                 what: "a TIP frame without references",
             })?;
-        let (core, temporal_unit) = plan.tip_output_unit(
-            &self.view,
-            &self.references,
-            ref_frame_idx,
-            (weight, grain_seed),
-        )?;
-        let (core, frame) = self
-            .references
-            .tip_output(&core)
-            .map_err(coding("TIP output"))?;
-        let recon = visible_planes(&frame)?;
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
         let cost = |planes: &[Vec<u16>; 3], bytes: usize| {
             let distortion = planes
@@ -913,7 +908,81 @@ impl IntraFrameCoder {
             let rate = Bits((bytes as u64 * 8) << Bits::FRAC_BITS);
             RdCost { distortion, rate }.cost(lambda)
         };
-        let tip = cost(&recon, temporal_unit.len());
+        let trial = |(mv, filter, deblocking): (TipGlobalMv, Option<InterpolationFilter>, bool)| {
+            let (core, temporal_unit) = plan.tip_output_unit(
+                &self.view,
+                &self.references,
+                ref_frame_idx,
+                (weight, grain_seed),
+                (qindex, mv, filter, deblocking),
+            )?;
+            let (core, frame) = self
+                .references
+                .tip_output(&core)
+                .map_err(coding("TIP output"))?;
+            let recon = visible_planes(&frame)?;
+            let tip = cost(&recon, temporal_unit.len());
+            Ok::<_, Error>((tip, (mv, filter, deblocking), (core, temporal_unit, recon)))
+        };
+        let zero = TipGlobalMv::default();
+        #[cfg(test)]
+        if let Some(choice) = TIP_OUTPUT_FORCED.get() {
+            let (tip, _, (core, temporal_unit, recon)) = trial(choice)?;
+            let normal = cost(&coded.recon, coded.temporal_unit.len());
+            return Ok(
+                (tip * 100 <= normal * u128::from(self.preset.tip_output)).then(|| CodedFrame {
+                    temporal_unit,
+                    recon,
+                    frame_type: plan.frame_type,
+                    reference: None,
+                    tip_output: Some(core),
+                    warp: None,
+                    intra_cells: None,
+                    global_leaves: 0,
+                }),
+            );
+        }
+        let mut best = trial((zero, None, false))?;
+        let keep = |best: &mut (u128, _, _), candidate: (u128, _, _)| {
+            if candidate.0 < best.0 {
+                *best = candidate;
+            }
+        };
+        if self.preset.tip_output_search >= 1 {
+            for filter in [
+                InterpolationFilter::Eighttap,
+                InterpolationFilter::EighttapSmooth,
+            ] {
+                keep(&mut best, trial((zero, Some(filter), false))?);
+            }
+        }
+        if self.preset.tip_output_search >= 2 {
+            let filter = best.1.1;
+            let mut axis = |mv: fn(i32) -> TipGlobalMv| -> Result<i32> {
+                let mut pick = (best.0, 0);
+                for step in [-2, -1, 1, 2] {
+                    let candidate = trial((mv(step), filter, false))?;
+                    if candidate.0 < pick.0 {
+                        pick = (candidate.0, step);
+                    }
+                    keep(&mut best, candidate);
+                }
+                Ok(pick.1)
+            };
+            let row = axis(|step| TipGlobalMv::new(step, 0))?;
+            let col = axis(|step| TipGlobalMv::new(0, step))?;
+            if row != 0 && col != 0 {
+                keep(
+                    &mut best,
+                    trial((TipGlobalMv::new(row, col), filter, false))?,
+                );
+            }
+            if self.params.tools.df_sub_pu {
+                let (mv, filter, _) = best.1;
+                keep(&mut best, trial((mv, filter, true))?);
+            }
+        }
+        let (tip, _, (core, temporal_unit, recon)) = best;
         let normal = cost(&coded.recon, coded.temporal_unit.len());
         Ok(
             (tip * 100 <= normal * u128::from(self.preset.tip_output)).then(|| CodedFrame {
@@ -929,6 +998,15 @@ impl IntraFrameCoder {
             }),
         )
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The `(TipGlobalMv, TipInterpFilter, TIP deblocking)` every TIP output
+    /// frame on this thread codes instead of the searched one.
+    pub(crate) static TIP_OUTPUT_FORCED: core::cell::Cell<
+        Option<(TipGlobalMv, Option<InterpolationFilter>, bool)>,
+    > = const { core::cell::Cell::new(None) };
 }
 
 /// The `(frame, reference)` display indices of each list reference of

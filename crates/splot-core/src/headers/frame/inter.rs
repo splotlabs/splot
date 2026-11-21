@@ -152,6 +152,14 @@ pub struct TipGlobalMv {
     pub col: i32,
 }
 
+impl TipGlobalMv {
+    /// The global MV of `row` and `col`.
+    #[must_use]
+    pub const fn new(row: i32, col: i32) -> Self {
+        Self { row, col }
+    }
+}
+
 /// Why the inter control-region parse stopped (a **coverage** stop, never a truncation).
 ///
 /// The variants split into the two honest classes the module documents: a derivation
