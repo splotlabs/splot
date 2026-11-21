@@ -560,13 +560,8 @@ impl TrialCoder<'_, '_> {
         }
         if self.preset.tip > 0 && self.syntax.tip_allowed(leaf)? {
             let ref_frame = self.syntax.reference_count();
-            for (drl, &mv) in self
-                .syntax
-                .single_mvs(leaf, ref_frame)?
-                .near
-                .iter()
-                .enumerate()
-            {
+            let tip = self.syntax.single_mvs(leaf, ref_frame)?;
+            for (drl, &mv) in tip.near.iter().enumerate() {
                 push(
                     mv,
                     InterModes {
@@ -582,24 +577,45 @@ impl TrialCoder<'_, '_> {
                     },
                 );
             }
+            if let (true, Some(motion)) = (self.preset.tip_newmv, self.motion)
+                && let Some(modes) = self.tip_newmv(leaf, motion, &tip)?
+            {
+                push(modes.mv, modes);
+            }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
-        if let (Some(motion), Some(base)) = (self.motion, interintra_base) {
-            if self.preset.interintra {
-                let interintra: Vec<_> = self
-                    .interintra_choice(leaf, motion, base)?
-                    .into_iter()
-                    .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)))
-                    .collect();
-                #[cfg(test)]
-                if let (Some(&choice), true) = (interintra.first(), FORCE_INTERINTRA.get()) {
-                    return Ok(vec![choice]);
-                }
-                choices.extend(interintra);
+        if let (Some(motion), Some(base), true) =
+            (self.motion, interintra_base, self.preset.interintra)
+        {
+            let interintra: Vec<_> = self
+                .interintra_choice(leaf, motion, base)?
+                .into_iter()
+                .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)))
+                .collect();
+            #[cfg(test)]
+            if let (Some(&choice), true) = (interintra.first(), FORCE_INTERINTRA.get()) {
+                return Ok(vec![choice]);
             }
-            if self.preset.bawp {
+            choices.extend(interintra);
+        }
+        if let (Some(motion), true) = (self.motion, self.preset.bawp) {
+            let mut bases: Vec<InterModes> = interintra_base.into_iter().collect();
+            if self.preset.bawp_search >= 2 {
+                let references = self.syntax.reference_count();
+                bases.extend(choices.iter().filter_map(|choice| match choice.inter {
+                    Some(InterPrediction::Single(modes))
+                        if modes.mode == InterMode::Near && modes.ref_frame < references =>
+                    {
+                        Some(modes)
+                    }
+                    _ => None,
+                }));
+            }
+            for base in bases {
+                let found = self.bawp_choice(leaf, motion, base)?;
                 choices.extend(
-                    self.bawp_choice(leaf, motion, base)?
+                    found
+                        .into_iter()
                         .map(|modes| LeafChoice::inter(InterPrediction::Single(modes))),
                 );
             }
@@ -1724,3 +1740,7 @@ impl TrialCoder<'_, '_> {
 mod compound_search;
 #[path = "interintra_search.rs"]
 mod interintra_search;
+#[path = "tip_search.rs"]
+mod tip_search;
+#[cfg(test)]
+pub(crate) use tip_search::TIP_NEWMV_ON_NEAR;
