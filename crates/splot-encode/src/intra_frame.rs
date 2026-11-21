@@ -252,6 +252,7 @@ impl IntraFrameCoder {
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
+                idtx_intra: preset.idtx_intra && !preset.fsc,
                 screen_content: preset.palette || preset.integer_mv,
                 dip: preset.dip,
                 sdp: preset.sdp,

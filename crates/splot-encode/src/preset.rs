@@ -326,6 +326,10 @@ pub struct PresetParams {
     /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
+    /// Without `fsc`, `enable_idtx_intra` (§ 5.4.8): the winning luma mode of
+    /// an intra leaf gets one RD trial with `fsc_mode`, which then codes a
+    /// plain IDTX block without the FSC coefficient path (§ 5.20.5.5).
+    pub idtx_intra: bool,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -1019,6 +1023,7 @@ preset_table! {
     }
     screen_content {
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
+        idtx_intra:            [false, false, false, false, false, false, false, false, false, false, false],
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
