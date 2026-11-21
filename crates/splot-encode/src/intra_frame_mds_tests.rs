@@ -423,6 +423,25 @@ fn leaf_coded_follows_the_last_coded_leaf() {
     assert_eq!(flags, [false, true, false]);
 }
 
+/// Some frame of `cores` codes each of deblocking, CDEF, LR, CCSO and GDF.
+fn assert_every_loop_filter(cores: &[FrameHeaderCore]) {
+    let mut filters = [false; 5];
+    for core in cores {
+        let used = [
+            core.deblocking_filter_params
+                .is_some_and(|df| df.apply_deblocking_filter.contains(&true)),
+            core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable),
+            core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
+            core.ccso_params
+                .as_ref()
+                .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true)),
+            core.gdf_params.is_some_and(|gdf| gdf.gdf_frame_enable),
+        ];
+        filters = core::array::from_fn(|i| filters[i] || used[i]);
+    }
+    assert_eq!(filters, [true; 5], "deblock, CDEF, LR, CCSO, GDF");
+}
+
 /// Preset 10 with `NEWMV` reference pruning at `margin` in every frame.
 fn newmv_pruned(margin: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
@@ -445,21 +464,7 @@ fn newmv_pruned_streams_decode_on_any_thread_count() {
     NEWMV_PRUNED.set(0);
     let (one, expected, cores, _) = staged_stream(preset, 160, 1);
     assert!(NEWMV_PRUNED.get() > 0, "no reference skipped NEWMV");
-    let mut filters = [false; 5];
-    for core in &cores {
-        let used = [
-            core.deblocking_filter_params
-                .is_some_and(|df| df.apply_deblocking_filter.contains(&true)),
-            core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable),
-            core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
-            core.ccso_params
-                .as_ref()
-                .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true)),
-            core.gdf_params.is_some_and(|gdf| gdf.gdf_frame_enable),
-        ];
-        filters = core::array::from_fn(|i| filters[i] || used[i]);
-    }
-    assert_eq!(filters, [true; 5], "deblock, CDEF, LR, CCSO, GDF");
+    assert_every_loop_filter(&cores);
     assert_same_samples(&decode(&one), &expected, "NEWMV reference pruning");
     for threads in [2, 8] {
         assert!(
