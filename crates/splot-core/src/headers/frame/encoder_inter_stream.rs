@@ -257,7 +257,7 @@ fn inter_frame_header_bits(
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
     w.write_flag(true)?; // signal_primary_ref_frame
-    w.write_flag(primary_ref_frame.is_none())?; // disable_cross_frame_cdf_init
+    w.write_flag(primary_ref_frame.is_none() || params.tx.disable_cross_frame_cdf_init)?;
     w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
     if seq.enable_short_refresh_frame_flags || seq.seq_force_screen_content_tools == 1 {
         return Err(unsupported(
@@ -336,7 +336,7 @@ fn inter_frame_header_bits(
     {
         w.write_flag(mode == INTERINTRA || warp)?; // frame_enabled_motion_modes[mode]
     }
-    w.write_flag(false)?; // disable_cdf_update
+    w.write_flag(params.tx.disable_cdf_update)?;
     let tx = params.tx;
     if tx.allow_intrabc {
         return Err(unsupported("intra block copy in an inter frame"));

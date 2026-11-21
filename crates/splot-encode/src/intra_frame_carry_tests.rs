@@ -140,3 +140,64 @@ fn avm_decodes_tiled_mini_gops_like_splot() {
     let avm = avm_decode(&avmdec, &units, size, config.bit_depth, "carry");
     assert!(avm == expected, "AVM output differs");
 }
+
+/// `disable_cdf_update` and `primary_default_cdfs` each reach the frame
+/// headers (§ 5.18.2); a 2x1-tile mini-GOP stream with either decodes to the
+/// encoder recon, differs from the stream with both off and codes the same
+/// bytes on 1, 2 and 8 threads.
+#[test]
+fn cdf_control_streams_decode_alike_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let stream = |preset: PresetParams, threads: usize| {
+        let preset: &'static PresetParams = Box::leak(Box::new(preset));
+        let mut config = config(136, 72, BitDepth::Eight, 6, 150);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 0,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        planned_stream_of(&config, coder, panning_frame, 150)
+    };
+    let plain = stream(base, 1).0;
+    for (fixed, default_cdfs) in [(true, false), (false, true)] {
+        let preset = PresetParams {
+            disable_cdf_update: fixed,
+            primary_default_cdfs: default_cdfs,
+            ..base
+        };
+        let (one, expected, cores, _) = stream(preset, 1);
+        let fixed_frames = cores
+            .iter()
+            .filter(|core| core.disable_cdf_update == Some(fixed))
+            .count();
+        assert!(
+            cores
+                .iter()
+                .all(|core| core.disable_cdf_update != Some(!fixed))
+        );
+        assert!(fixed_frames >= 8, "{fixed_frames} frames code {fixed}");
+        let carried: Vec<_> = cores
+            .iter()
+            .filter_map(|core| core.inter.as_ref())
+            .filter(|inter| {
+                inter
+                    .primary_ref_frame
+                    .is_some_and(|p| p != PRIMARY_REF_NONE)
+            })
+            .collect();
+        assert!(
+            carried.len() >= 4,
+            "{} frames keep a primary",
+            carried.len()
+        );
+        for inter in carried {
+            assert_eq!(inter.disable_cross_frame_cdf_init, Some(default_cdfs));
+        }
+        assert!(one != plain, "fixed {fixed}, default CDFs {default_cdfs}");
+        assert_same_samples(&decode(&one), &expected, "CDF controls");
+        for threads in [2, 8] {
+            assert!(stream(preset, threads).0 == one, "{threads} threads");
+        }
+    }
+}

@@ -16,6 +16,7 @@ use core::ops::Range;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
+use splot_core::symbol::CdfUpdateMode;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
@@ -120,7 +121,13 @@ impl KeyFrameTileWriter {
         let syntax = IntraTileSyntax::with_start(seq, core, refs, cdfs, tile)?;
         let (rows, cols) = syntax.tile_ranges();
         let sb4 = syntax.superblock_size4();
+        let update = if core.disable_cdf_update == Some(true) {
+            CdfUpdateMode::Disabled
+        } else {
+            CdfUpdateMode::Enabled
+        };
         let config = SymbolEncoderConfig::new()
+            .with_cdf_update_mode(update)
             .with_max_output_bytes(MAX_TILE_BYTES)
             .with_max_operations(MAX_TILE_OPERATIONS);
         Ok(Self {

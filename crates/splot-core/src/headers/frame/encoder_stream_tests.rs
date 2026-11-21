@@ -108,6 +108,8 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         delta_q_res: [None, Some(0), Some(3)][index],
                         allow_intrabc: index == 1,
                         grain_seed: None,
+                        disable_cdf_update: index == 2,
+                        disable_cross_frame_cdf_init: false,
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -129,6 +131,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     assert_eq!(tail.tx_mode, tx.tx_mode);
                     assert_eq!(tail.reduced_tx_set, tx.reduced_tx_set);
                     assert_eq!(core.allow_intrabc, Some(tx.allow_intrabc));
+                    assert_eq!(core.disable_cdf_update, Some(tx.disable_cdf_update));
                     let intrabc = core.intrabc.unwrap();
                     let global = tx.allow_intrabc.then_some(true);
                     assert_eq!(intrabc.allow_global_intrabc, global);

@@ -271,6 +271,12 @@ pub struct KeyFrameTxParams {
     /// `film_grain_params_present`, which codes `apply_grain = 1` with
     /// `fgm_id = 0` (§ 5.18.10.1); `None` codes `apply_grain = 0`.
     pub grain_seed: Option<u16>,
+    /// `disable_cdf_update` (§ 5.18.2): the frame codes every symbol with
+    /// CDFs that do not adapt.
+    pub disable_cdf_update: bool,
+    /// `disable_cross_frame_cdf_init = 1` with a primary reference (§ 5.18.2):
+    /// an inter frame starts from the default CDFs; a key frame ignores it.
+    pub disable_cross_frame_cdf_init: bool,
 }
 
 impl Default for KeyFrameTxParams {
@@ -282,6 +288,8 @@ impl Default for KeyFrameTxParams {
             delta_q_res: None,
             allow_intrabc: false,
             grain_seed: None,
+            disable_cdf_update: false,
+            disable_cross_frame_cdf_init: false,
         }
     }
 }
@@ -658,7 +666,7 @@ fn key_frame_header_bits(
         max_bvp_drl_bits_minus_1: None,
     };
     write_intrabc_params(&mut w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
-    w.write_flag(false)?; // disable_cdf_update
+    w.write_flag(tx.disable_cdf_update)?;
     write_quant_and_filters(
         &mut w,
         seq,
