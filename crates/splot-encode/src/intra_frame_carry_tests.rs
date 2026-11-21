@@ -212,3 +212,45 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
         }
     }
 }
+
+/// With `primary_ref_choose` an inter frame codes `PRIMARY_REF_CHOOSE` when
+/// the decoder derives its primary reference (§ 5.18.2) and keeps the
+/// explicit signal when it derives another one. The recon equals the recon
+/// without the field (the same CDFs give the same decisions), the stream
+/// decodes to it, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn chosen_primary_references_keep_the_recon_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let stream = |preset: PresetParams, threads: usize| {
+        let preset: &'static PresetParams = Box::leak(Box::new(preset));
+        let mut config = config(136, 72, BitDepth::Eight, 6, 150);
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        planned_stream_of(&config, coder, panning_frame, 150)
+    };
+    let (plain, plain_recon, _, _) = stream(base, 1);
+    let choose = PresetParams {
+        primary_ref_choose: true,
+        ..base
+    };
+    let (one, expected, cores, _) = stream(choose, 1);
+    let signals: Vec<bool> = cores
+        .iter()
+        .filter_map(|core| core.inter.as_ref())
+        .filter(|inter| inter.disable_cross_frame_cdf_init.is_some())
+        .filter_map(|inter| inter.signal_primary_ref_frame)
+        .collect();
+    let chosen = signals.iter().filter(|&&signal| !signal).count();
+    assert!(chosen > 0 && chosen < signals.len(), "{signals:?}");
+    assert!(expected == plain_recon, "the recon moved");
+    assert!(
+        one.len() <= plain.len(),
+        "{} > {} bytes",
+        one.len(),
+        plain.len()
+    );
+    assert_same_samples(&decode(&one), &expected, "chosen primary");
+    for threads in [2, 8] {
+        assert!(stream(choose, threads).0 == one, "{threads} threads");
+    }
+}

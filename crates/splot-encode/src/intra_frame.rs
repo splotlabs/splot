@@ -596,6 +596,7 @@ impl IntraFrameCoder {
         tools.0.allow_tcq = self.preset.tcq.at(context);
         tools.0.disable_cdf_update = self.preset.disable_cdf_update;
         tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
+        tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
