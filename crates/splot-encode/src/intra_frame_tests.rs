@@ -29,6 +29,32 @@ use splot_decode::encoder_syntax::{
     JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
 };
 
+/// Smooth curved surfaces (quadratic in x and y, a slow ripple) that the
+/// learned DIP predictors model better than the angular modes.
+fn smooth_frame(config: &Config, seed: u32) -> SourceFrame {
+    let max = config.bit_depth.max_sample() as f64;
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
+        let (w, h) = (size.width() as f64, size.height() as f64);
+        (0..size.height())
+            .flat_map(|y| (0..size.width()).map(move |x| (x as f64, y as f64)))
+            .map(|(x, y)| {
+                let (u, v) = (x / w - 0.5, y / h - 0.5);
+                let phase = f64::from(seed % 7) * 0.4 + plane as f64;
+                let value = 0.5
+                    + 0.6 * u * v
+                    + 0.25 * (u * u - v * v)
+                    + 0.08 * (7.0 * (u + v) + phase).sin();
+                (value.clamp(0.0, 1.0) * max) as u16
+            })
+            .collect()
+    });
+    SourceFrame::new(config, u64::from(seed), planes).unwrap()
+}
+
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
@@ -602,6 +628,72 @@ fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         "RD never chose another kernel than the energy one"
     );
 }
+
+/// RD trials of the four best DIP predictions, without the angular SATD
+/// gate, change the stream against one gated trial, and decode to the
+/// encoder recon at both bit depths (a key frame and the inter frames that
+/// reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
+/// threads. The 8-bit single-trial stream pins the single-trial path to the
+/// bytes main coded with `dip` (FNV-1a golden).
+#[test]
+fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (mut differs, mut more) = (false, 0);
+    for (width, height, bit_depth) in [(128, 64, BitDepth::Eight), (96, 64, BitDepth::Ten)] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |trials: u8, threads: usize| -> (Vec<u8>, Vec<u8>) {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                dip: true,
+                dip_trials: trials,
+                ..*Preset::new(6).unwrap().params()
+            }));
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let coded: Vec<_> = (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    coder
+                        .encode_frame(&smooth_frame(&config, 150 + index as u32), &plan, 60)
+                        .unwrap()
+                })
+                .collect();
+            (
+                coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
+            )
+        };
+        crate::tile_writer::DIP_CODED.set(0);
+        let (units, expected) = stream(4, 1);
+        let four = crate::tile_writer::DIP_CODED.get();
+        let name = format!("{bit_depth:?}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        let one = stream(1, 1).0;
+        if bit_depth == BitDepth::Eight {
+            assert_eq!(gm::fnv1a(&one), DIP_ONE_TRIAL_GOLDEN, "{name}: one trial");
+        }
+        differs |= one != units;
+        more += four;
+        for threads in [2, 8] {
+            assert!(stream(4, threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+    assert!(
+        differs,
+        "four DIP trials coded the streams of one gated trial"
+    );
+    assert!(
+        more > 0,
+        "four DIP trials never coded a DIP of the wider search"
+    );
+}
+
+/// The FNV-1a hash of the 8-bit `dip` stream of one trial, recorded from main
+/// c449dab0f.
+const DIP_ONE_TRIAL_GOLDEN: u64 = 7_325_615_198_436_183_569;
 
 /// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
 /// frames only.

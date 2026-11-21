@@ -304,11 +304,12 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         Ok(shortlist)
     }
 
-    /// The DIP prediction of `leaf` with the lowest SATD, when it beats the
-    /// best angular SATD `angular`.
-    fn dip_candidate(&mut self, leaf: &LeafBlock, angular: u64) -> Result<Option<LeafChoice>> {
+    /// The DIP predictions of `leaf` with the lowest SATD: one, when it beats
+    /// the best angular SATD `angular`, or the preset's `dip_trials` best
+    /// when it asks for more than one.
+    fn dip_candidate(&mut self, leaf: &LeafBlock, angular: u64) -> Result<Vec<LeafChoice>> {
         if !self.syntax.dip_allowed(leaf, IntraModes::DC) {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let candidates: Vec<IntraModes> = (0..self.syntax.dip_modes()?)
             .flat_map(|mode| {
@@ -320,11 +321,27 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             .collect();
         let mut ranked = Vec::new();
         self.rank(leaf, candidates, LUMA, &mut ranked)?;
+        ranked.sort_by_key(|&(satd, _)| satd);
+        let trials = usize::from(self.preset.dip_trials.max(1));
+        #[cfg(test)]
+        if trials > 1 {
+            let key = (leaf.row4(), leaf.col4(), leaf.block_size());
+            let new = ranked
+                .iter()
+                .take(trials)
+                .enumerate()
+                .filter(|&(rank, &(satd, _))| rank > 0 || satd >= angular)
+                .filter_map(|(_, &(_, modes))| modes.dip.map(|dip| (key, dip)));
+            crate::tile_writer::DIP_NEW.with_borrow_mut(|set| set.extend(new));
+        }
+        if trials == 1 {
+            ranked.retain(|&(satd, _)| satd < angular);
+        }
         Ok(ranked
             .into_iter()
-            .min_by_key(|&(satd, _)| satd)
-            .filter(|&(satd, _)| satd < angular)
-            .map(|(_, modes)| LeafChoice::largest(modes)))
+            .take(trials)
+            .map(|(_, modes)| LeafChoice::largest(modes))
+            .collect())
     }
 
     /// The candidate with the lowest `D + lambda * R` over `planes`; each
