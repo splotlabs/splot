@@ -1214,14 +1214,14 @@ impl TrialCoder<'_, '_> {
         Ok(Some((satd, sink.bits)))
     }
 
-    /// Whether each reference searches `NEWMV` at `leaf`: every one unless
-    /// `preset.newmv_ref_margin` prunes; then the two references whose
+    /// Whether each reference searches `NEWMV` at `leaf`: empty (every one)
+    /// unless `preset.newmv_ref_margin` prunes; then the two references whose
     /// `GLOBALMV` and `NEARMV` candidates (`all_mvs`) score lowest in MDS0
     /// terms, and each reference within the margin, in 1/16, of the best.
     fn newmv_references(&mut self, leaf: &LeafBlock, all_mvs: &[SingleMvs]) -> Result<Vec<bool>> {
         let margin = self.preset.newmv_ref_margin.at(self.coder.context);
         let (true, Some(motion)) = (margin != u8::MAX && all_mvs.len() > 2, self.motion) else {
-            return Ok(vec![true; all_mvs.len()]);
+            return Ok(Vec::new());
         };
         let (w, h) = leaf.dimensions()?;
         let rate_scale = if w.min(h) >= 8 { 8 } else { 4 };
