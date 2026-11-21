@@ -211,6 +211,12 @@ pub struct PresetParams {
     /// weight decay, so larger values keep more of the neighbours. `0` is
     /// off.
     pub tf_strength: Levels<u8>,
+    /// The qindex decrease a key frame takes besides its TPL offset in
+    /// `--crf` and bitrate modes, per resolution class (the key-frame cell is
+    /// read); constant-qp mode ignores it. `4` on SD key frames at p0-p8
+    /// (6:1:1 PSNR at p6: paris -0.72%, rush_hour_444 -0.61%, park_joy
+    /// -0.28%); `6` lost park_joy +0.35%, and `4` at 720p lost niklas +0.14%.
+    pub key_qindex_boost: Levels<u8>,
     /// `delta_q_res` of a frame with superblock qindex offsets: the qindex
     /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
     /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
@@ -602,7 +608,8 @@ const fn frames<T: Copy>(rows: [[T; 11]; 4]) -> [Levels<T>; 11] {
 
 /// [`frames`] of `rows`, with the [`ResolutionClass::Sd`] contexts from
 /// `sd` instead. In the table, the `sd` cells that differ search less on
-/// inter frames from p6 (see `pd_window`); 720p loses with them.
+/// inter frames from p6 (see `pd_window`) or boost the key frame (see
+/// `key_qindex_boost`); 720p loses with them.
 const fn frames_sd<T: Copy>(rows: [[T; 11]; 4], sd: [[T; 11]; 4]) -> [Levels<T>; 11] {
     let (mut out, sd) = (frames(rows), frames(sd));
     let mut i = 0;
@@ -1027,6 +1034,9 @@ preset_table! {
                                [4; 11],
                                [0; 11], [0; 11], [0; 11]]),
         tf_strength:           frames([[100; 11], [25; 11], [25; 11], [25; 11]]),
+        key_qindex_boost:      frames_sd([[0; 11]; 4], [
+                               [4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0],
+                               [0; 11], [0; 11], [0; 11]]),
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     mode_decision {
