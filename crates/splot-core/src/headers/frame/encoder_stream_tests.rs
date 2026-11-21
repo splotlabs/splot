@@ -179,6 +179,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         ref_frame_mvs: true,
         refmvbank: true,
         drl_reorder: Some(true),
+        mv_traj: true,
         max_drl_bits_minus_1: 3,
         mvd_tools: [true, false, true],
         warp: true,
@@ -218,7 +219,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     );
     assert!(inter.seq_frame_motion_modes_present_flag && inter.enable_six_param_warp_delta);
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
-    assert!(inter.enable_bawp && !inter.enable_mv_traj && !inter.enable_df_sub_pu);
+    assert!(inter.enable_bawp && inter.enable_mv_traj && !inter.enable_df_sub_pu);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);
