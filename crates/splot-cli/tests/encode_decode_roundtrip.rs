@@ -351,3 +351,50 @@ fn two_tile_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
         ],
     );
 }
+
+/// The content flags and the Y4M `A` tag reach the stream: every key frame
+/// has a content interpretation OBU, and the clip still validates and decodes.
+#[test]
+fn content_flags_write_a_content_interpretation_obu() {
+    let content = [
+        ["--color-primaries", "9"],
+        ["--transfer-characteristics", "16"],
+        ["--matrix-coefficients", "9"],
+        ["--color-range", "full"],
+        ["--chroma-sample-position", "left"],
+        ["--sar", "4:3"],
+    ];
+    let mut flags = vec!["--qp", "90", "--timing-info"];
+    flags.extend(content.as_flattened());
+    round_trip(8, YUV420, &flags);
+
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let mut args = vec!["encode", input.to_str().unwrap(), "-o"];
+    args.extend([ivf.to_str().unwrap(), "--keyint", "4"]);
+    args.extend(flags);
+    assert!(splot(&args).status.success());
+    let inspect = splot(&["inspect", "--json", ivf.to_str().unwrap()]);
+    assert!(inspect.status.success(), "{inspect:?}");
+    let json = String::from_utf8(inspect.stdout).unwrap();
+    let described = json.matches("\"color_description_present\": true").count();
+    assert_eq!(described, FRAMES.div_ceil(4), "{json}");
+    for field in ["chroma_sample_position", "aspect_ratio_info", "timing_info"] {
+        let present = format!("\"{field}_present\": true");
+        assert_eq!(json.matches(&present).count(), described, "{field}");
+    }
+
+    let rejected = splot(&[
+        "encode",
+        input.to_str().unwrap(),
+        "-o",
+        ivf.to_str().unwrap(),
+        "--sar",
+        "4:0",
+    ]);
+    assert!(!rejected.status.success());
+    for path in [input, ivf] {
+        let _ = std::fs::remove_file(path);
+    }
+}

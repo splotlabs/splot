@@ -342,9 +342,15 @@ pub struct PresetParams {
     /// that only merges luma leaves. On in every row: intra frames gain luma
     /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
     pub sdp: bool,
-    /// CCSO classifications the filter search tries per plane; `0` disables
-    /// CCSO in the sequence.
+    /// CCSO `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` triples the
+    /// filter search tries per plane, `0..=112`: the first 8 of a fixed
+    /// ladder, then every other triple of § 5.18.7.12; `0` disables CCSO in
+    /// the sequence.
     pub ccso_candidates: u8,
+    /// The largest `ccso_max_band_log2` of CCSO band offsets only
+    /// (§ 5.18.7.12), `3..=6`: above `3` the search also tries 16, 32 and up
+    /// to 64 bands from 64-band statistics of each unit.
+    pub ccso_bo_band_log2: u8,
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
@@ -381,6 +387,9 @@ pub struct PresetParams {
     /// every row: on top of MRL its BD-rate per CPU loses at every measured
     /// preset.
     pub ist_sets: u8,
+    /// An intra luma block gives an RD trial to every kernel of the
+    /// `ist_sets` sets in place of the one that keeps the most energy.
+    pub intra_ist_rd: bool,
     /// A chroma pair in a leaf's final trial tries the CCTX rotation that
     /// leaves V the least energy; off disables `enable_cctx`. On at p0-p8
     /// (2026-11-21, CRF against off, luma / U / V / 6:1:1 BD-rate): p6 paris
@@ -864,6 +873,8 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
+        check("ccso_bo_band_log2", self.ccso_bo_band_log2, 3, 6, "")?;
         check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
         check("lr_chroma_unit_sizes", self.lr_chroma_unit_sizes, 1, 4, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
@@ -1113,6 +1124,7 @@ preset_table! {
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false]]),
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        intra_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
         cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
@@ -1182,6 +1194,7 @@ preset_table! {
     filters {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
         ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
+        ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         lr_unit_sizes:         [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         lr_chroma_unit_sizes:  [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
@@ -1413,6 +1426,7 @@ mod tests {
             assert!(fast.wiener_ns_classes <= slow.wiener_ns_classes);
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
+            assert!(fast.intra_ist_rd <= slow.intra_ist_rd);
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.cctx_candidates <= slow.cctx_candidates);
             assert!(fast.mhccp <= slow.mhccp);
@@ -1621,6 +1635,8 @@ mod tests {
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("ccso_candidates", "113")], "ccso_candidates"),
+            (&[("ccso_bo_band_log2", "7")], "ccso_bo_band_log2"),
             (&[("lr_unit_sizes", "0")], "lr_unit_sizes"),
             (&[("lr_chroma_unit_sizes", "5")], "lr_chroma_unit_sizes"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),

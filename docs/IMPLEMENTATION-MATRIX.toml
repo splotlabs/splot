@@ -4428,7 +4428,7 @@ module = "crates/splot-encode/src/encoder.rs"
 change_id = "encoder-context-state-machine"
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder API lifecycle. Encoder has accepting, flushed and failed states: send_frame queues owned SourceFrames checked against Config, receive_packet codes the next mini-GOP through the crate-private FrameCoder seam once the lookahead window is full (or after flush) and returns one Packet per temporal unit, flush ends input, and a coding error is terminal. Encoder::cancel_token returns a CancelToken that any thread can cancel: a running send_frame or receive_packet stops at its next check (per lookahead search, frame, superblock, searched leaf and filter candidate) and returns Error::Cancelled, as does every later call; the encoder can then only be dropped, and a token that is never cancelled changes no byte. Encoder::new builds the frame coder for the Config; unit tests also drive the state machine through a test-double coder."
+notes = "Non-normative encoder API lifecycle. Encoder has accepting, flushed and failed states: send_frame queues owned SourceFrames checked against Config, receive_packet starts the next mini-GOP through the crate-private FrameCoder seam once the lookahead window is full (or after flush), codes it one wave per step only until a temporal unit is complete and returns one Packet per temporal unit, flush ends input, and a coding error is terminal. Encoder::cancel_token returns a CancelToken that any thread can cancel: a running send_frame or receive_packet stops at its next check (per lookahead search, frame, superblock, searched leaf and filter candidate) and returns Error::Cancelled, as does every later call; the encoder can then only be dropped, and a token that is never cancelled changes no byte. Encoder::progress returns a Progress that any thread can read: frames coded so far, each frame in coding counted by the fraction of its superblocks searched; the encoder only writes it. Encoder::new builds the frame coder for the Config; unit tests also drive the state machine through a test-double coder."
 
 [feature.status]
 mapped = "done"
@@ -4443,7 +4443,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/encoder.rs::tests", "crates/splot-encode/src/cancel_tests.rs"]
+tests = ["crates/splot-encode/src/encoder_tests.rs", "crates/splot-encode/src/cancel_tests.rs"]
 commands = ["cargo test -p splot-encode encoder --locked", "cargo test -p splot-encode cancel --locked"]
 fixtures = []
 diagnostics = []
@@ -4736,6 +4736,38 @@ fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
 diagnostics = []
 
 [[feature]]
+id = "ENC-CONTENT-INTERPRETATION"
+name = "Encoder content interpretation OBU"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.15", "6.14", "7.3.3", "7.3.8.10", "7.3.8.11"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/content.rs"
+change_id = "encoder-content-interpretation"
+owner = "encoder"
+risk = "low"
+notes = "Config::content describes colour, range, chroma sample position, sample aspect ratio and timing. The encoder writes it as one progressive content interpretation OBU after the sequence header of every key frame, with the shortest colour and aspect-ratio coding, and writes none when nothing is described. splot encode passes the Y4M aspect, range and chroma siting through and takes flags for the rest. Samples are never converted."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_content_tests.rs::key_frames_carry_the_content_description", "crates/splot-encode/src/intra_frame_content_tests.rs::avm_decodes_a_described_stream_like_splot", "crates/splot-encode/src/intra_frame_content_tests.rs::rejects_a_description_the_input_cannot_have", "crates/splot-core/src/headers/content_interpretation.rs::tests::shortest_descriptions_keep_the_derived_values", "crates/splot-cli/tests/encode_decode_roundtrip.rs::content_flags_write_a_content_interpretation_obu"]
+commands = ["cargo test -p splot-encode content", "cargo test -p splot-cli --test encode_decode_roundtrip content_flags"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MINIMAL-INTRA-IVF"
 name = "Encoder minimal-intra IVF temporal-unit assembler"
 category = "encoder"
@@ -4826,7 +4858,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/encoder.rs::tests::encodes_flat_frames_through_the_public_api", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/encoder_tests.rs::encodes_flat_frames_through_the_public_api", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode encoder --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -4922,7 +4954,7 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/gop_tests.rs::plans_a_hierarchical_mini_gop_and_a_short_last_one", "crates/splot-encode/src/encoder.rs::tests::packs_hidden_frames_into_the_next_output_unit", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/gop_tests.rs::plans_a_hierarchical_mini_gop_and_a_short_last_one", "crates/splot-encode/src/encoder_tests.rs::packs_hidden_frames_into_the_next_output_unit", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -5018,7 +5050,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-encode/src/encoder.rs::tests::codes_frames_in_order_with_stats", "crates/splot-encode/src/intra_frame_tests.rs::coding_is_deterministic_and_lower_qp_costs_more_bits", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats", "crates/splot-cli/tests/encode_decode_roundtrip.rs::ten_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-encode/src/encoder_tests.rs::codes_frames_in_order_with_stats", "crates/splot-encode/src/intra_frame_tests.rs::coding_is_deterministic_and_lower_qp_costs_more_bits", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats", "crates/splot-cli/tests/encode_decode_roundtrip.rs::ten_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode config --locked", "cargo test -p splot-encode encoder --locked", "cargo test -p splot-encode coding_is_deterministic --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -5176,7 +5208,7 @@ avm_diff = "not-applicable"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/tpl.rs::tests::upper_layers_keep_a_shrinking_share_of_the_decrease", "crates/splot-encode/src/rate_control_tests.rs::key_qindex_boost_lowers_only_key_frames_in_crf", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/tpl.rs::tests::referenced_frames_get_lower_qindex_on_static_and_moving_content", "crates/splot-encode/src/encoder.rs::tests::crf_gives_referenced_frames_lower_qindex_on_static_content"]
+tests = ["crates/splot-encode/src/tpl.rs::tests::upper_layers_keep_a_shrinking_share_of_the_decrease", "crates/splot-encode/src/rate_control_tests.rs::key_qindex_boost_lowers_only_key_frames_in_crf", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/tpl.rs::tests::referenced_frames_get_lower_qindex_on_static_and_moving_content", "crates/splot-encode/src/encoder_tests.rs::crf_gives_referenced_frames_lower_qindex_on_static_content"]
 commands = ["cargo test -p splot-encode tpl --locked", "cargo test -p splot-encode lookahead --locked", "cargo test -p splot-encode key_qindex_boost --locked"]
 fixtures = []
 diagnostics = []
@@ -5208,7 +5240,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/gop_tests.rs::scene_cuts_start_key_frames_and_restart_the_keyint_count", "crates/splot-encode/src/encoder.rs::tests::a_scene_cut_starts_a_key_frame", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
+tests = ["crates/splot-encode/src/gop_tests.rs::scene_cuts_start_key_frames_and_restart_the_keyint_count", "crates/splot-encode/src/encoder_tests.rs::a_scene_cut_starts_a_key_frame", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
 commands = ["cargo test -p splot-encode gop --locked", "cargo test -p splot-encode encoder --locked"]
 fixtures = []
 diagnostics = []
@@ -5400,7 +5432,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/preset.rs::tests::contexts_classify_frames", "crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder.rs::tests::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
+tests = ["crates/splot-encode/src/preset.rs::tests::contexts_classify_frames", "crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder_tests.rs::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
 commands = ["cargo test -p splot-encode preset --locked"]
 fixtures = []
 diagnostics = []
@@ -5830,10 +5862,10 @@ spec_sections = ["5.18.7.12", "5.20.10.2", "7.19"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/loop_filter_ccso.rs"
-change_id = "enc-ccso"
+change_id = "enc-ccso-ranges"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::ccso_candidates (0 disables enable_ccso): after CDEF, one statistics pass per (ccso_ext_filter, ccso_scale_idx, ccso_quant_idx) candidate classifies every sample on the deblocked luma and sums source minus CDEF output per class and CCSO unit, one CCSO unit row per worker-pool job. Band and edge-classifier variants are sums of these classes; each class takes the offset index with the least squared error plus tu(7) rate, each unit turns on with the exact ccso_blk rate of the adapting CDF, and a plane codes CCSO when the total RD beats off. The encoder_syntax facade exposes CcsoGrid, CcsoBlockMap (the decoder's CcsoState), the decoder's taps and offset table, and apply_loop_filters runs the decoder's CCSO. Off writes the old stream byte-identically."
+notes = "PresetParams::ccso_candidates (0 disables enable_ccso): after CDEF, one statistics pass per (ccso_ext_filter, ccso_scale_idx, ccso_quant_idx) candidate classifies every sample on the deblocked luma and sums source minus CDEF output per class and CCSO unit, one CCSO unit row per worker-pool job. Band and edge-classifier variants are sums of these classes; each class takes the offset index with the least squared error plus tu(7) rate, each unit turns on with the exact ccso_blk rate of the adapting CDF, and a plane codes CCSO when the total RD beats off. The encoder_syntax facade exposes CcsoGrid, CcsoBlockMap (the decoder's CcsoState), the decoder's taps and offset table, and apply_loop_filters runs the decoder's CCSO. Off writes the old stream byte-identically. Change enc-ccso-ranges (2026-11-21), each row keeps its value until its p0 table passes: PresetParams::ccso_candidates now counts up to 112 triples, the first 8 of the fixed ladder and then every other (ccso_ext_filter 0..=6, ccso_scale_idx 0..=3, ccso_quant_idx 0..=3) of § 5.18.7.12, and band offsets are tried at every scale; PresetParams::ccso_bo_band_log2 (3..=6, 3 in every row) lets band offsets reach ccso_max_band_log2 6 from 64-band unit statistics (the statistics kernel takes the class count as a const generic). reuse_ccso and sb_reuse_ccso are not searched yet."
 
 [feature.status]
 mapped = "done"
@@ -5848,7 +5880,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/loop_filter_tests.rs::ccso_search_classes_match_the_decoder_output", "crates/splot-encode/src/loop_filter_tests.rs::filtered_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::avm_decodes_ccso_frames_like_splot", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/kernels/ccso.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::filter_params_reach_the_parsed_header", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
+tests = ["crates/splot-encode/src/intra_frame_ccso_tests.rs::full_ccso_ladder_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::wide_band_offsets_decode_to_the_encoder_recon", "crates/splot-encode/src/loop_filter_tests.rs::ccso_search_classes_match_the_decoder_output", "crates/splot-encode/src/loop_filter_tests.rs::filtered_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::avm_decodes_ccso_frames_like_splot", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/kernels/ccso.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::filter_params_reach_the_parsed_header", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
 commands = ["cargo test -p splot-encode ccso --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []
@@ -5861,10 +5893,10 @@ spec_sections = ["5.20.8.2", "7.15.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/kernels/ist.rs"
-change_id = "enc-ist"
+change_id = "enc-intra-ist-rd"
 owner = "encoder"
 risk = "medium"
-notes = "Implemented, OFF in every preset. PresetParams::ist_sets (0 disables enable_intra_ist): in a leaf's final trial, each DCT_DCT or ADST_ADST luma type whose plain levels code eob > 1 ranks the three kernels of its first ist_sets most_probable_stx_set values by the energy their forward outputs keep, and the best gets one RD trial. The forward IST (std::simd and scalar) is the transpose of the decoder's kernel over splot_recon::secondary_transform_layout, which the decoder's inverse shares. The encoder_syntax facade carries Ist in TransformBlock, writes sec_tx_type and most_probable_stx_set, and reconstructs with the decoder's secondary transform; a block whose final levels code no sec_tx_type is recoded without IST. On at p0-p6 (7 sets) against main with MRL: park_joy intra +0.68% (1.13x CPU) and inter +0.57%, paris intra -0.37% (1.14x) and inter +0.14%, park_joy p0 intra +0.10% (1.17x) and inter +0.61%; the sec_tx_type flag of every eligible block costs about 0.5-1%. IST may pay inside mode decision (Phase B3 multi-stage MD). Off writes the old stream byte-identically."
+notes = "PresetParams::intra_ist_rd (2026-11-21, off in every row): an intra luma block gives an RD trial to every kernel of the first ist_sets sets in place of the one that keeps the most energy. Implemented, OFF in every preset. PresetParams::ist_sets (0 disables enable_intra_ist): in a leaf's final trial, each DCT_DCT or ADST_ADST luma type whose plain levels code eob > 1 ranks the three kernels of its first ist_sets most_probable_stx_set values by the energy their forward outputs keep, and the best gets one RD trial. The forward IST (std::simd and scalar) is the transpose of the decoder's kernel over splot_recon::secondary_transform_layout, which the decoder's inverse shares. The encoder_syntax facade carries Ist in TransformBlock, writes sec_tx_type and most_probable_stx_set, and reconstructs with the decoder's secondary transform; a block whose final levels code no sec_tx_type is recoded without IST. On at p0-p6 (7 sets) against main with MRL: park_joy intra +0.68% (1.13x CPU) and inter +0.57%, paris intra -0.37% (1.14x) and inter +0.14%, park_joy p0 intra +0.10% (1.17x) and inter +0.61%; the sec_tx_type flag of every eligible block costs about 0.5-1%. IST may pay inside mode decision (Phase B3 multi-stage MD). Off writes the old stream byte-identically."
 
 [feature.status]
 mapped = "done"
@@ -5879,7 +5911,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_ist_kernel_and_set_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/kernels/ist.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/ist.rs::tests::forward_undoes_inverse", "crates/splot-encode/src/intra_tools_tests.rs::ist_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_ist_blocks", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_ist_frames_like_splot"]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tile_writer/tests.rs::every_ist_kernel_and_set_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/kernels/ist.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/ist.rs::tests::forward_undoes_inverse", "crates/splot-encode/src/intra_tools_tests.rs::ist_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_ist_blocks", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_ist_frames_like_splot"]
 commands = ["cargo test -p splot-encode ist --locked"]
 fixtures = []
 diagnostics = []
@@ -6518,7 +6550,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/encoder.rs::tests::mini_gop_and_lookahead_of_one_emit_each_frame_at_once", "crates/splot-cli/tests/encode_decode_roundtrip.rs::low_delay_clips_code_every_frame_in_input_order"]
+tests = ["crates/splot-encode/src/encoder_tests.rs::mini_gop_and_lookahead_of_one_emit_each_frame_at_once", "crates/splot-cli/tests/encode_decode_roundtrip.rs::low_delay_clips_code_every_frame_in_input_order"]
 commands = ["cargo test -p splot-encode mini_gop_and_lookahead --locked", "cargo test -p splot-cli --test encode_decode_roundtrip low_delay --locked"]
 fixtures = []
 diagnostics = []
@@ -6550,7 +6582,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/resize.rs::tests::same_size_is_a_copy", "crates/splot-encode/src/resize.rs::tests::flat_planes_stay_flat_at_every_ratio", "crates/splot-encode/src/resize.rs::tests::ramps_land_on_the_mapped_centres", "crates/splot-encode/src/config.rs::tests::resize_scales_the_coded_size_by_8_over_the_denominator", "crates/splot-encode/src/encoder.rs::tests::resized_streams_code_input_frames_at_the_scaled_size", "crates/splot-cli/tests/encode_decode_roundtrip.rs::resized_clips_code_and_decode_at_the_scaled_size"]
+tests = ["crates/splot-encode/src/resize.rs::tests::same_size_is_a_copy", "crates/splot-encode/src/resize.rs::tests::flat_planes_stay_flat_at_every_ratio", "crates/splot-encode/src/resize.rs::tests::ramps_land_on_the_mapped_centres", "crates/splot-encode/src/config.rs::tests::resize_scales_the_coded_size_by_8_over_the_denominator", "crates/splot-encode/src/encoder_tests.rs::resized_streams_code_input_frames_at_the_scaled_size", "crates/splot-cli/tests/encode_decode_roundtrip.rs::resized_clips_code_and_decode_at_the_scaled_size"]
 commands = ["cargo test -p splot-encode resize --locked", "cargo test -p splot-cli --test encode_decode_roundtrip resized --locked"]
 fixtures = []
 diagnostics = []
@@ -6774,7 +6806,7 @@ avm_diff = "not-applicable"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/hme.rs::tests::finds_a_pan_beyond_the_full_resolution_range", "crates/splot-encode/src/hme.rs::tests::worker_pools_give_the_same_motion", "crates/splot-encode/src/hme.rs::tests::levels_halve_and_pad", "crates/splot-encode/src/kernels/motion.rs::tests::sads_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::quads_and_best_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::downscale_matches_scalar", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/lookahead.rs::tests::quarter_level_blocks_take_their_own_vectors", "crates/splot-encode/src/lookahead.rs::tests::frames_smaller_than_a_block_are_one_block", "crates/splot-encode/src/hme.rs::tests::ten_bit_frames_shift_to_eight_bits", "crates/splot-encode/src/hme.rs::tests::frames_smaller_than_a_block_search_one_superblock", "crates/splot-encode/src/encoder.rs::tests::a_window_searches_against_the_last_coded_frame", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::open_loop_seed_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::avm_decodes_open_loop_seed_streams_like_splot", "crates/splot-encode/src/lookahead.rs::tests::keeps_open_loop_motion_only_for_readers"]
+tests = ["crates/splot-encode/src/hme.rs::tests::finds_a_pan_beyond_the_full_resolution_range", "crates/splot-encode/src/hme.rs::tests::worker_pools_give_the_same_motion", "crates/splot-encode/src/hme.rs::tests::levels_halve_and_pad", "crates/splot-encode/src/kernels/motion.rs::tests::sads_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::quads_and_best_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::downscale_matches_scalar", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/lookahead.rs::tests::quarter_level_blocks_take_their_own_vectors", "crates/splot-encode/src/lookahead.rs::tests::frames_smaller_than_a_block_are_one_block", "crates/splot-encode/src/hme.rs::tests::ten_bit_frames_shift_to_eight_bits", "crates/splot-encode/src/hme.rs::tests::frames_smaller_than_a_block_search_one_superblock", "crates/splot-encode/src/encoder_tests.rs::a_window_searches_against_the_last_coded_frame", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::open_loop_seed_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::avm_decodes_open_loop_seed_streams_like_splot", "crates/splot-encode/src/lookahead.rs::tests::keeps_open_loop_motion_only_for_readers"]
 commands = ["cargo test -p splot-encode hme --locked", "cargo test -p splot-encode kernels::motion --locked"]
 fixtures = []
 diagnostics = []

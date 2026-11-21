@@ -98,6 +98,30 @@ impl DerivedColorInfo {
 }
 
 impl ColorDescription {
+    /// The shortest description of the H.273 code points `(color_primaries,
+    /// transfer_characteristics, matrix_coefficients)` with `full_range_flag`: the
+    /// Table 6.13 preset id whose triple they equal, else the explicit triple.
+    #[must_use]
+    pub fn from_code_points(code_points: (u8, u8, u8), full_range_flag: bool) -> Self {
+        let preset = |color_description_idc| Self {
+            color_description_idc,
+            primaries: None,
+            full_range_flag,
+        };
+        (1..=5)
+            .map(preset)
+            .find(|preset| preset.derived().primaries == code_points)
+            .unwrap_or(Self {
+                color_description_idc: 0,
+                primaries: Some(ColorPrimariesTriple {
+                    color_primaries: code_points.0,
+                    transfer_characteristics: code_points.1,
+                    matrix_coefficients: code_points.2,
+                }),
+                full_range_flag,
+            })
+    }
+
     /// Returns the derived color information per AV2 § 6.14 (Table 6.13): the explicit
     /// values for `idc == 0`, the preset triple for `idc` in `1..=5`, or the
     /// unspecified `(2, 2, 2)` for a reserved `idc` (`6..=127`), which decoders ignore
@@ -179,6 +203,28 @@ pub struct AspectRatioInfo {
 }
 
 impl AspectRatioInfo {
+    /// The shortest description of the sample aspect ratio `width:height`: the
+    /// `ci_aspect_ratio_idc` in `1..=16` whose ratio it equals, else the explicit
+    /// pair (AV2 § 5.15). A zero term is the unspecified ratio.
+    #[must_use]
+    pub fn from_sample_aspect_ratio(width: u32, height: u32) -> Self {
+        let table = |aspect_ratio_idc| Self {
+            aspect_ratio_idc,
+            extended_sar: None,
+        };
+        let explicit = Self {
+            aspect_ratio_idc: 255,
+            extended_sar: Some(ExtendedSampleAspectRatio {
+                sar_width: width,
+                sar_height: height,
+            }),
+        };
+        (1..=16)
+            .map(table)
+            .find(|table| table.derived_sar() == explicit.derived_sar())
+            .unwrap_or(explicit)
+    }
+
     /// Returns the derived sample aspect ratio as a *normalized* `(width, height)`
     /// ratio (AV2 § 5.15): the explicit SAR for `ci_aspect_ratio_idc == 255`, the
     /// `Aspect_Ratio_Width`/`Aspect_Ratio_Height` entry for `idc` in `0..=16`, or
@@ -244,6 +290,19 @@ pub struct ContentInterpretation {
 }
 
 impl ContentInterpretation {
+    /// A progressive-frame OBU (`ci_scan_type_idc == 1`) with no optional payload.
+    #[must_use]
+    pub const fn progressive() -> Self {
+        Self {
+            scan_type_idc: ScanTypeIdc::from_bits(1),
+            color_description: None,
+            chroma_sample_position: None,
+            aspect_ratio: None,
+            timing_info: None,
+            reserved_2bit: 0,
+        }
+    }
+
     /// Returns the derived color information, resolving an absent color description
     /// to its § 5.15 default (`*_UNSPECIFIED`, full range 0). Suitable for § 6.14
     /// "same information" comparisons across OBUs regardless of how (or whether) the
@@ -638,6 +697,31 @@ mod tests {
             full_range_flag: true,
         };
         assert_eq!(reserved.derived(), explicit_unspecified.derived());
+    }
+
+    #[test]
+    fn shortest_descriptions_keep_the_derived_values() {
+        for (code_points, idc) in [((1, 1, 1), 1), ((9, 16, 9), 2), ((1, 13, 5), 5)] {
+            let color = ColorDescription::from_code_points(code_points, true);
+            assert_eq!((color.color_description_idc, color.primaries), (idc, None));
+            assert_eq!(color.derived().primaries, code_points);
+            assert!(color.full_range_flag);
+        }
+        let explicit = ColorDescription::from_code_points((9, 16, 0), false);
+        assert_eq!(explicit.color_description_idc, 0);
+        assert_eq!(explicit.derived().primaries, (9, 16, 0));
+
+        for (sar, idc) in [((1, 1), 1), ((8, 8), 1), ((80, 33), 9), ((4, 2), 16)] {
+            let aspect = AspectRatioInfo::from_sample_aspect_ratio(sar.0, sar.1);
+            assert_eq!((aspect.aspect_ratio_idc, aspect.extended_sar), (idc, None));
+        }
+        let explicit = AspectRatioInfo::from_sample_aspect_ratio(5, 7);
+        assert_eq!(explicit.aspect_ratio_idc, 255);
+        assert_eq!(explicit.derived_sar(), Some((5, 7)));
+
+        let ci = ContentInterpretation::progressive();
+        assert!(ci.scan_type_idc.is_progressive_frame());
+        assert_eq!(ci.derived_color(), DerivedColorInfo::UNSPECIFIED);
     }
 
     #[test]

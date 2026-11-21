@@ -72,6 +72,8 @@ pub(crate) struct IntraFrameCoder {
     /// [`Self::preset`].
     screen: Option<PresetParams>,
     references: EncoderReferences,
+    /// The content interpretation OBU of every key frame; empty for none.
+    content_obu: Vec<u8>,
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
@@ -95,6 +97,8 @@ pub(crate) struct IntraFrameCoder {
     slot_intra: [Option<Arc<IntraCells>>; 8],
     /// Stops the frames of a cancelled encoder.
     pub(crate) cancel: crate::cancel::CancelToken,
+    /// Counts the searched superblocks of the encoder's frames.
+    pub(crate) progress: crate::progress::Progress,
 }
 
 /// One flag per 8x8 luma cell of a frame, in raster order: whether an
@@ -283,6 +287,7 @@ impl IntraFrameCoder {
         Ok(Self {
             params,
             references,
+            content_obu: config.content.obu(config.frame_rate)?,
             sequence,
             view,
             bit_depth: config.bit_depth,
@@ -310,6 +315,7 @@ impl IntraFrameCoder {
             warp_gate: crate::warp::WarpGate::default(),
             slot_intra: Default::default(),
             cancel: crate::cancel::CancelToken::default(),
+            progress: crate::progress::Progress::default(),
         })
     }
 }
@@ -620,6 +626,11 @@ impl IntraFrameCoder {
         tools.2.6 &= self.warp_gate.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
+        let key_obus = if plan.frame_type == FrameType::Key {
+            [self.content_obu.as_slice(), &grain_obu].concat()
+        } else {
+            grain_obu
+        };
         tools.0.grain_seed = grain_seed;
         if tools.2.3.is_some() || tools.2.5 != 0 {
             let probe = plan.header(
@@ -684,7 +695,8 @@ impl IntraFrameCoder {
         let (padded, motion, bv_search) = (&padded, motion.as_ref(), bv_search.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
-        if !sb_quant.is_empty() && sb_quant.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
+        let superblocks = sb_cols * mi_rows.div_ceil(sb / 4);
+        if !sb_quant.is_empty() && sb_quant.len() != superblocks {
             return Err(Error::Unsupported {
                 what: "superblock offsets that do not cover the superblock grid",
             });
@@ -759,6 +771,7 @@ impl IntraFrameCoder {
                     })?
                     .extend(leaves);
             }
+            self.progress.superblock(superblocks);
             Ok((SuperblockDecision { tree }, target))
         };
         let new_coder = || {
@@ -842,7 +855,7 @@ impl IntraFrameCoder {
             &self.references,
             (qindex, &filters, tools),
             &core,
-            (&tiles, &grain_obu),
+            (&tiles, &key_obus),
         )?;
         let coded = CodedFrame {
             temporal_unit,
@@ -1318,6 +1331,9 @@ thread_local! {
     /// the one that leaves V the least energy (tests only).
     pub(crate) static CCTX_LATER_ROTATIONS: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
+    /// Intra luma blocks outside mode trials whose RD-chosen IST kernel is
+    /// not the one that keeps the most energy (tests only).
+    pub(crate) static IST_RD_OTHER: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
@@ -1382,7 +1398,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 return Ok(decision);
             }
             let mut trials = vec![decision];
-            if ist {
+            if ist && !inter && self.preset.intra_ist_rd {
+                for ist in Self::ist_kernels(syntax, &tx, ist_sets)? {
+                    trials.push(self.code(syntax, &TransformBlock { ist, ..tx }, prediction)?);
+                }
+            } else if ist {
                 let ist = self.ist_choice(syntax, &tx, prediction, ist_sets)?;
                 if ist != Ist::OFF {
                     let tx = TransformBlock { ist, ..tx };
@@ -1406,6 +1426,16 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         }
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
+        #[cfg(test)]
+        if !self.trial && !inter && self.preset.intra_ist_rd && decision.ist != Ist::OFF {
+            let plain = TransformBlock {
+                tx_type: decision.tx_type,
+                ..*tx
+            };
+            if self.ist_choice(syntax, &plain, prediction, ist_sets)? != decision.ist {
+                IST_RD_OTHER.set(IST_RD_OTHER.get() + 1);
+            }
+        }
         #[cfg(test)]
         if keep == count && count > 1 {
             let ranked = self.model_ranking(syntax, tx, prediction, &tx_types[..count])?;
@@ -1583,12 +1613,16 @@ impl SourceResidualCoder<'_> {
         {
             return Ok(Vec::new());
         }
-        let plain_v = v_coeffs.clone();
-        plain_u.clone_from(u_coeffs);
+        let plain_v = (keep > 1).then(|| {
+            plain_u.clone_from(u_coeffs);
+            v_coeffs.clone()
+        });
         let mut out = Vec::with_capacity(keep);
-        for &(_, index) in ranked.iter().take(keep) {
-            u_coeffs.clone_from(plain_u);
-            v_coeffs.clone_from(&plain_v);
+        for (tried, &(_, index)) in ranked.iter().take(keep).enumerate() {
+            if let Some(plain_v) = plain_v.as_ref().filter(|_| tried > 0) {
+                u_coeffs.clone_from(plain_u);
+                v_coeffs.clone_from(plain_v);
+            }
             kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
             let cctx =
                 i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
@@ -1849,6 +1883,27 @@ impl SourceResidualCoder<'_> {
         Ok(Some(
             (u128::from(error) << 16) + u128::from(lambda_q8) * u128::from(rate.0),
         ))
+    }
+
+    /// Every secondary transform of the first `sets` sets that `tx` can code.
+    fn ist_kernels(
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        sets: u8,
+    ) -> core::result::Result<Vec<Ist>, TileWriterError> {
+        let mut out = Vec::new();
+        for set in 0..sets.min(syntax.ist_sets(tx)?) {
+            for sec_tx_type in 1..=3 {
+                let ist = Ist { sec_tx_type, set };
+                if syntax
+                    .secondary_transform(&TransformBlock { ist, ..*tx })?
+                    .is_some()
+                {
+                    out.push(ist);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The secondary transform of the first `sets` sets whose outputs keep the
