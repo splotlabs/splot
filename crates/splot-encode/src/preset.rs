@@ -532,6 +532,10 @@ pub struct PresetParams {
     /// (2026-10-30): at `1` p6 measured paris +0.01%, niklas +0.00%, park_joy
     /// +0.49%; the lookahead vectors are too coarse.
     pub global_motion: u8,
+    /// With `global_motion`, inter frames code the `our_ref` and `their_ref`
+    /// (§ 5.18.9.1) of the fewest parameter bits; off, `our_ref =
+    /// NumTotalRefs` predicts every model from the identity.
+    pub global_motion_predict: bool,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
     /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows that search
@@ -1165,6 +1169,7 @@ preset_table! {
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        global_motion_predict: [false, false, false, false, false, false, false, false, false, false, false],
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
@@ -1426,6 +1431,7 @@ mod tests {
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
             assert!(fast.global_motion <= slow.global_motion);
+            assert!(fast.global_motion_predict <= slow.global_motion_predict);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);

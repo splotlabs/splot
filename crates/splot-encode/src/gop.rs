@@ -401,6 +401,7 @@ pub(crate) fn frame_tools(
             },
             preset.warp > 0,
             [None; REFS_PER_FRAME],
+            preset.global_motion_predict,
         ),
         tiles,
     )
@@ -424,7 +425,8 @@ const TIP_EQUAL_WEIGHT: u8 = 0;
 
 /// `(tx, compound, (high_precision_mv, use_ref_frame_mvs,
 /// switchable_interp_filter, tip_weight, force_integer_mv,
-/// opfl_refine_type, warp, global_motion), tiles)` of [`frame_tools`].
+/// opfl_refine_type, warp, global_motion, global_motion_predict), tiles)` of
+/// [`frame_tools`].
 pub(crate) type FrameTools = (
     KeyFrameTxParams,
     bool,
@@ -437,6 +439,7 @@ pub(crate) type FrameTools = (
         u8,
         bool,
         [Option<[i32; 6]>; REFS_PER_FRAME],
+        bool,
     ),
     UniformTiles,
 );
@@ -633,6 +636,7 @@ impl GopFrame {
                 opfl_refine_type,
                 warp,
                 global_motion,
+                global_motion_predict,
             ),
             tiles,
         ): FrameTools,
@@ -663,6 +667,7 @@ impl GopFrame {
             opfl_refine_type,
             warp,
             global_motion,
+            global_motion_predict,
         }
     }
 }
