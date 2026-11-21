@@ -39,7 +39,8 @@ const UNCONSTRAINED_LEVEL_IDX: u32 = 31;
 const ORDER_HINT_BITS_MINUS_1: u32 = 7;
 /// `base_*_delta_q` value that gives a zero `Base*DeltaQ` (`-DELTA_DCQUANT_MIN`, § 3).
 const ZERO_BASE_DELTA_Q: u32 = 23;
-/// `df_par_bits_minus_2`: `DfDeltaQ` spans `-4..=3` (§ 5.18.5.2).
+/// `df_par_bits_minus_2` without `EncoderToolFlags::df_par_bits_extra`:
+/// `DfDeltaQ` spans `-4..=3` (§ 5.18.5.2).
 const DF_PAR_BITS_MINUS_2: u32 = 1;
 /// The largest `reduced_tx_set` (`f(2)`, § 5.18.2).
 pub(super) const MAX_REDUCED_TX_SET: u8 = 3;
@@ -101,6 +102,12 @@ pub struct EncoderToolFlags {
     /// With `tip`, `disable_tip_output = 0`: `OBU_REGULAR_TIP` frames code
     /// `TIP_FRAME_AS_OUTPUT`.
     pub tip_output: bool,
+    /// With `tip_output` and `df_sub_pu`, `enable_tip_explicit_qp` (§ 5.4.6):
+    /// `TIP_FRAME_AS_OUTPUT` frames code `quantization_params()`.
+    pub tip_explicit_qp: bool,
+    /// With `tip`, `enable_tip_hole_fill` (§ 5.4.6): TIP frames may code
+    /// `allow_tip_hole_fill` (§ 5.18.2).
+    pub tip_hole_fill: bool,
     /// `enable_opfl_refine = REFINE_AUTO`: each inter frame codes its
     /// `opfl_refine_type`.
     pub opfl_refine: bool,
@@ -156,6 +163,12 @@ pub struct EncoderToolFlags {
     /// `enable_imp_msk_bld` (§ 5.4.6): `COMPOUND_AVERAGE` blends with the
     /// implicit mask (§ 7.13.3.14).
     pub implicit_mask: bool,
+    /// `enable_df_sub_pu` (§ 5.4.6): inter frames code `allow_df_sub_pu`
+    /// (§ 5.18.5.2) and TIP output frames code it `0`.
+    pub df_sub_pu: bool,
+    /// `df_par_bits_minus_2 = 1 + df_par_bits_extra` (§ 5.4.10), `0..=2`:
+    /// frames code `df_delta_q` in `f(3 + df_par_bits_extra)` (§ 5.18.5.2).
+    pub df_par_bits_extra: u8,
     /// `seq_enabled_motion_modes[INTERINTRA]` with
     /// `seq_frame_motion_modes_present_flag` (§ 5.4.6): every inter frame
     /// enables inter-intra blocks (§ 5.20.7.15).
@@ -200,6 +213,9 @@ pub struct FrameFilterParams {
     /// `cdef_on_skip_txfm_frame_enable` (§ 5.18.7.10) of a frame with CDEF
     /// on; the encoder sequence codes `CDEF_ON_SKIP_TXFM_ADAPTIVE`.
     pub cdef_on_skip: bool,
+    /// `allow_df_sub_pu` (§ 5.18.5.2) of an inter frame of a sequence with
+    /// `enable_df_sub_pu`: deblocking also filters prediction sub-unit edges.
+    pub deblocking_sub_pu: bool,
     /// `LoopRestorationSize[0]` of luma restoration (§ 5.18.7.11); `None`
     /// turns luma restoration off.
     pub lr_luma_unit_size: Option<u32>,
@@ -262,6 +278,12 @@ pub struct KeyFrameTxParams {
     /// `film_grain_params_present`, which codes `apply_grain = 1` with
     /// `fgm_id = 0` (§ 5.18.10.1); `None` codes `apply_grain = 0`.
     pub grain_seed: Option<u16>,
+    /// `disable_cdf_update` (§ 5.18.2): the frame codes every symbol with
+    /// CDFs that do not adapt.
+    pub disable_cdf_update: bool,
+    /// `disable_cross_frame_cdf_init = 1` with a primary reference (§ 5.18.2):
+    /// an inter frame starts from the default CDFs; a key frame ignores it.
+    pub disable_cross_frame_cdf_init: bool,
 }
 
 impl Default for KeyFrameTxParams {
@@ -273,6 +295,8 @@ impl Default for KeyFrameTxParams {
             delta_q_res: None,
             allow_intrabc: false,
             grain_seed: None,
+            disable_cdf_update: false,
+            disable_cross_frame_cdf_init: false,
         }
     }
 }
@@ -288,6 +312,9 @@ pub struct UniformTiles {
     pub rows_log2: u8,
     /// `TileSizeBytes`, `1..=4`, which a frame of more than one tile codes.
     pub size_bytes: u8,
+    /// `context_update_tile_id = TileCols * TileRows / 2` (§ 5.18.7.2), the
+    /// middle tile, instead of `0` in a frame that codes it.
+    pub middle_cdf_update_tile: bool,
 }
 
 impl Default for UniformTiles {
@@ -296,6 +323,7 @@ impl Default for UniformTiles {
             cols_log2: 0,
             rows_log2: 0,
             size_bytes: 4,
+            middle_cdf_update_tile: false,
         }
     }
 }
@@ -458,7 +486,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     }
     w.write_flag(false)?; // cdef_on_skip_txfm_always_on
     w.write_flag(false)?; // cdef_on_skip_txfm_disabled
-    w.write_bits(DF_PAR_BITS_MINUS_2, 2)?;
+    w.write_bits(DF_PAR_BITS_MINUS_2 + u32::from(tools.df_par_bits_extra), 2)?;
 
     w.write_flag(false)?; // seq_tile_info_present_flag
     w.write_flag(tools.film_grain)?; // film_grain_params_present
@@ -511,13 +539,16 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_flag(tools.tip)?; // enable_tip
     if tools.tip {
         w.write_flag(!tools.tip_output)?; // disable_tip_output
-        w.write_flag(false)?; // enable_tip_hole_fill
+        w.write_flag(tools.tip_hole_fill)?; // enable_tip_hole_fill
     }
     w.write_flag(tools.mv_traj)?; // enable_mv_traj
     w.write_flag(tools.bawp)?; // enable_bawp
     w.write_flag(tools.cwp)?; // enable_cwp
     w.write_flag(tools.implicit_mask)?; // enable_imp_msk_bld
-    w.write_flag(false)?; // enable_df_sub_pu
+    w.write_flag(tools.df_sub_pu)?; // enable_df_sub_pu
+    if tools.tip && tools.tip_output && tools.df_sub_pu {
+        w.write_flag(tools.tip_explicit_qp)?; // enable_tip_explicit_qp
+    }
     w.write_bits(if tools.opfl_refine { 3 } else { 0 }, 2)?; // enable_opfl_refine
     w.write_flag(tools.refinemv)?; // enable_refinemv
     if tools.tip && (tools.opfl_refine || tools.refinemv) {
@@ -646,7 +677,7 @@ fn key_frame_header_bits(
         max_bvp_drl_bits_minus_1: None,
     };
     write_intrabc_params(&mut w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
-    w.write_flag(false)?; // disable_cdf_update
+    w.write_flag(tx.disable_cdf_update)?;
     write_quant_and_filters(
         &mut w,
         seq,
@@ -748,7 +779,7 @@ pub(super) fn write_quant_and_filters(
         mi_col_starts: &col_starts.0,
         mi_row_starts: &row_starts.0,
     };
-    write_filter_params(w, seq, filters, (lr_refs, gdf))?;
+    write_filter_params(w, seq, filters, (lr_refs, gdf), frame_is_intra)?;
     if seq.ccso.enable_ccso {
         let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
         let on = planes.iter().any(|plane| plane.ccso_planes);
@@ -769,20 +800,32 @@ pub(super) fn write_quant_and_filters(
 
 /// § 5.18.5.2 `deblocking_filter_params()`, § 5.18.7.9 `gdf_params()`,
 /// § 5.18.7.10 `cdef_params()`, and § 5.18.7.11 `lr_params()` of `filters`.
+/// The encoder codes every frame that is not intra as `INTER_FRAME`.
 fn write_filter_params(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     filters: &FrameFilterParams,
     (lr_refs, gdf_geometry): (LrReferenceFilters<'_>, GdfGeometry<'_>),
+    frame_is_intra: bool,
 ) -> Result<(), WriteError> {
     let num_planes = seq.quant.num_planes;
     let delta = filters.deblocking_delta_q;
     let present = core::array::from_fn(|i| {
         filters.deblocking[i] && delta[i] != if i == 1 { delta[0] } else { 0 }
     });
-    let deblocking = DeblockingFilterParams::new(filters.deblocking, present, delta);
+    let mut deblocking = DeblockingFilterParams::new(filters.deblocking, present, delta);
+    deblocking.allow_df_sub_pu = filters.deblocking_sub_pu;
     let df_par_bits_minus_2 = seq.filter.df_par_bits_minus_2;
-    write_deblocking_filter_params(w, &deblocking, false, num_planes, df_par_bits_minus_2, None)?;
+    let sub_pu_coded = seq.filter.enable_df_sub_pu && !frame_is_intra;
+    write_deblocking_filter_params(
+        w,
+        &deblocking,
+        false,
+        num_planes,
+        df_par_bits_minus_2,
+        sub_pu_coded,
+        None,
+    )?;
     let off = GdfParams {
         gdf_frame_enable: false,
         gdf_per_block: None,
@@ -873,9 +916,9 @@ fn write_filter_params(
 
 /// § 5.18.7.2 `tile_info()` with § 5.18.7.3 uniform spacing at level 31, where
 /// `minLog2TileCols` and `minLog2Tiles` are `0`: `tiles` capped at `maxLog2TileCols`
-/// and `maxLog2TileRows`, then `context_update_tile_id = 0` and `tiles.size_bytes`
+/// and `maxLog2TileRows`, then `context_update_tile_id` and `tiles.size_bytes`
 /// when the frame has more than one tile.
-fn write_uniform_tile_info(
+pub(super) fn write_uniform_tile_info(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     tiles: UniformTiles,
@@ -919,7 +962,13 @@ fn write_uniform_tile_info(
         if !seq.tile.enable_avg_cdf || seq.tile.avg_cdf_type == 0 {
             let bits =
                 crate::tile::tile_log2(1, cols.count) + crate::tile::tile_log2(1, rows.count);
-            w.write_bits(0, u32::from(bits))?; // context_update_tile_id
+            let middle = cols.count * rows.count / 2;
+            let id = if tiles.middle_cdf_update_tile {
+                middle
+            } else {
+                0
+            };
+            w.write_bits(id, u32::from(bits))?; // context_update_tile_id
         }
         if !(1..=4).contains(&tiles.size_bytes) {
             return Err(WriteError::NonCanonicalFrameHeader {

@@ -74,16 +74,16 @@ fn sb256_stream(case: Sb256Case, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
 /// 2 and 8 threads write the same bytes.
 #[test]
 fn sb256_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for case in SB256_CASES {
+    each_case(SB256_CASES, |case| {
         let (one, expected) = sb256_stream(case, 1);
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
-        for threads in [2, 8] {
+        each_case([2, 8], |threads| {
             assert!(
                 sb256_stream(case, threads).0 == one,
                 "{case:?} {threads} threads"
             );
-        }
-    }
+        });
+    });
 }
 
 /// A still diagonal ramp.

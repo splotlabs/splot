@@ -582,6 +582,7 @@ impl ValidatorContext {
     /// [`ValidatorContext::flush_scan_type_scope`]). Called once by the validator
     /// after the last OBU.
     pub(crate) fn finish(&mut self, options: &ValidationOptions, report: &mut ValidationReport) {
+        self.temporal_unit.finish(report);
         self.cvs.flush_completed_tu(report);
         let cmvs_window_before_completion = self.cmvs.current_cmvs_start_tu_index();
         self.cmvs.complete_temporal_unit(self.cvs.tu_index, report);

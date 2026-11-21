@@ -6,6 +6,7 @@
 use super::*;
 use crate::encoder::Encoder;
 use splot_core::types::ObuType;
+use splot_decode::{DataProps, Decoder, DecoderSettings, Picture, PictureSamples, SendStatus};
 use splot_recon::apply_film_grain;
 
 /// [`synthetic_frame`] with seeded noise of about 4 8-bit samples on every
@@ -78,28 +79,97 @@ fn grain_stream(mut config: Config, threads: usize, on: bool) -> (Vec<Vec<u8>>, 
 /// the same stream without grain, which decodes to its recon.
 #[test]
 fn grain_streams_decode_to_the_recon_plus_grain() {
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Eight),
+            (PixelFormat::Yuv422, BitDepth::Eight),
+            (PixelFormat::Yuv422, BitDepth::Ten),
+            (PixelFormat::Yuv444, BitDepth::Eight),
+            (PixelFormat::Monochrome, BitDepth::Ten),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(72, 40, bit_depth, 6, 120);
+            config.chroma = chroma;
+            let name = format!("{chroma:?} {bit_depth:?}");
+            let (units, grained, recon) = grain_stream(config.clone(), 1, true);
+            assert_ne!(grained, recon, "{name}: no grain");
+            assert_same_samples(&decode(&units.concat()), &grained, &name);
+            let (plain, plain_grained, plain_recon) = grain_stream(config.clone(), 1, false);
+            assert_eq!(plain_recon, recon, "{name}: grain changed the recon");
+            assert_same_samples(&decode(&plain.concat()), &plain_grained, &name);
+            each_case([2, 8], |threads| {
+                assert!(
+                    grain_stream(config.clone(), threads, true).0 == units,
+                    "{name}: {threads}"
+                );
+            });
+        },
+    );
+}
+
+/// The visible samples of `pictures` as the decoder's raw output.
+fn picture_bytes(pictures: &[Picture]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for picture in pictures {
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            match picture.plane(plane) {
+                Some(PictureSamples::Eight(plane)) => {
+                    plane
+                        .visible_rows()
+                        .for_each(|row| out.extend_from_slice(row));
+                }
+                Some(PictureSamples::Ten(plane)) => plane
+                    .visible_rows()
+                    .flatten()
+                    .for_each(|sample| out.extend_from_slice(&sample.to_le_bytes())),
+                None => {}
+            }
+        }
+    }
+    out
+}
+
+fn with_grain(pictures: &[Picture]) -> Vec<Picture> {
+    pictures
+        .iter()
+        .map(|picture| picture.apply_film_grain().unwrap())
+        .collect()
+}
+
+/// A decoder that skips grain outputs the recon, in frame-sized planes that
+/// the plane pool takes back. The grain applied later, with the decoder gone,
+/// gives the grained output. A picture that shares its samples keeps them
+/// when the other owner is dropped and the pool hands out planes again.
+#[test]
+fn skipped_grain_decodes_to_the_recon_and_applies_later() {
     for (chroma, bit_depth) in [
         (PixelFormat::Yuv420, BitDepth::Eight),
-        (PixelFormat::Yuv422, BitDepth::Eight),
         (PixelFormat::Yuv422, BitDepth::Ten),
-        (PixelFormat::Yuv444, BitDepth::Eight),
-        (PixelFormat::Monochrome, BitDepth::Ten),
     ] {
-        let mut config = config(72, 40, bit_depth, 6, 120);
+        let mut config = config(176, 96, bit_depth, 10, 120);
         config.chroma = chroma;
         let name = format!("{chroma:?} {bit_depth:?}");
-        let (units, grained, recon) = grain_stream(config.clone(), 1, true);
-        assert_ne!(grained, recon, "{name}: no grain");
-        assert_same_samples(&decode(&units.concat()), &grained, &name);
-        let (plain, plain_grained, plain_recon) = grain_stream(config.clone(), 1, false);
-        assert_eq!(plain_recon, recon, "{name}: grain changed the recon");
-        assert_same_samples(&decode(&plain.concat()), &plain_grained, &name);
-        for threads in [2, 8] {
-            assert!(
-                grain_stream(config.clone(), threads, true).0 == units,
-                "{name}: {threads}"
-            );
+        let (units, grained, recon) = grain_stream(config, 1, true);
+        let mut decoder =
+            Decoder::new(DecoderSettings::default().with_skip_film_grain(true)).unwrap();
+        let mut clean = Vec::new();
+        for unit in &units {
+            while decoder.send_data(unit, DataProps::default()).unwrap() == SendStatus::Full {
+                clean.extend(core::iter::from_fn(|| decoder.get_picture().unwrap()));
+            }
         }
+        decoder.drain();
+        clean.extend(core::iter::from_fn(|| decoder.get_picture().unwrap()));
+        drop(decoder);
+        assert!(clean.iter().all(Picture::has_film_grain), "{name}");
+        assert_same_samples(&picture_bytes(&clean), &recon, &name);
+
+        let first = with_grain(&clean);
+        let shared = with_grain(&first);
+        drop(first);
+        let second = with_grain(&clean);
+        assert_same_samples(&picture_bytes(&shared), &grained, &name);
+        assert_same_samples(&picture_bytes(&second), &grained, &name);
     }
 }
 

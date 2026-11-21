@@ -50,9 +50,9 @@ fn compound_type_streams_decode_on_any_thread_count() {
         "deblocking off"
     );
     assert_same_samples(&decode(&one), &expected, "compound types");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// `compound_types = 0` without the implicit mask codes the sequence with
@@ -193,9 +193,9 @@ fn searched_compound_types_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "searched compound types");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(searched_stream(150, threads).0 == one, "{threads} threads");
-    }
+    });
     let (coarse, expected, cores, coded) = searched_stream(240, 1);
     assert!(coded[1] + coded[2] > 0, "{coded:?}");
     assert!(cores.iter().any(|core| {
@@ -215,13 +215,15 @@ fn searched_compound_types_decode_on_any_thread_count() {
     );
 }
 
-/// A noisy mini-GOP stream with the inter-intra search codes inter-intra
-/// leaves through the filtered frames that later frames reference, decodes
-/// to the encoder recon, and codes the same bytes on 1, 2 and 8 threads.
+/// A noisy mini-GOP stream with the inter-intra search codes smooth and
+/// wedge inter-intra leaves through the filtered frames that later frames
+/// reference, decodes to the encoder recon, and codes the same bytes on 1, 2
+/// and 8 threads.
 #[test]
 fn interintra_streams_decode_on_any_thread_count() {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         interintra: true,
+        interintra_search: 1,
         tcq_type_trellis: false,
         ..*Preset::new(6).unwrap().params()
     }));
@@ -236,25 +238,28 @@ fn interintra_streams_decode_on_any_thread_count() {
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
     crate::tile_writer::CODED_TYPES.set([0; 7]);
+    crate::tile_writer::CODED_WEDGE_INTERINTRA.set(0);
     let (one, expected, cores, coder) = stream(1);
     assert!(coder.sequence.inter.unwrap().seq_enabled_motion_modes[1]);
     let interintra = crate::tile_writer::CODED_TYPES.get()[4];
-    assert!(interintra > 0, "no inter-intra leaf");
+    let wedges = crate::tile_writer::CODED_WEDGE_INTERINTRA.get();
+    assert!(wedges > 0 && interintra > wedges, "{interintra} {wedges}");
     assert!(cores.iter().any(|core| {
         core.deblocking_filter_params
             .as_ref()
             .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
     }));
     assert_same_samples(&decode(&one), &expected, "inter-intra");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// The inter-intra preset of the tiled stream tests.
 fn interintra_preset() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         interintra: true,
+        interintra_search: 1,
         tcq_type_trellis: false,
         ..*Preset::new(6).unwrap().params()
     }))
@@ -313,11 +318,11 @@ fn avm_decodes_interintra_like_splot() {
     };
     config.threads = splot_parallel::ThreadCount::from(1);
     let coder = IntraFrameCoder::with_preset(&config, interintra_preset()).unwrap();
-    crate::tile_writer::CODED_TYPES.set([0; 7]);
+    crate::tile_writer::CODED_WEDGE_INTERINTRA.set(0);
     let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
     assert!(
-        crate::tile_writer::CODED_TYPES.get()[4] > 0,
-        "no inter-intra leaf"
+        crate::tile_writer::CODED_WEDGE_INTERINTRA.get() > 0,
+        "no wedge inter-intra leaf"
     );
     let avm = avm_decode(
         &avmdec,
@@ -374,12 +379,12 @@ fn bawp_streams_decode_on_any_thread_count() {
             .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
     }));
     assert_same_samples(&decode(&one), &expected, "BAWP");
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(
             bawp_stream((136, 72), threads).0 == one,
             "{threads} threads"
         );
-    }
+    });
     let (odd, expected, _, bawp) = bawp_stream((130, 70), 1);
     assert!(bawp > 0, "no BAWP leaf at 130x70");
     assert_same_samples(&decode(&odd), &expected, "BAWP 130x70");
@@ -505,11 +510,14 @@ fn accelerating_frame(config: &Config, index: u32) -> SourceFrame {
 fn compound_modes_stream(
     qp: u16,
     threads: usize,
-) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 4]) {
+    mvd_tools: [bool; 3],
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 5]) {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         compound_refs: 7,
         jmvd_scales: 5,
         same_ref_modes: true,
+        compound_amvd: true,
+        mvd_tools,
         compound_candidates: 8,
         ..*Preset::new(6).unwrap().params()
     }));
@@ -520,7 +528,7 @@ fn compound_modes_stream(
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-    crate::tile_writer::CODED_MODES.set([0; 4]);
+    crate::tile_writer::CODED_MODES.set([0; 5]);
     let (units, expected, cores, _) =
         super::carry::planned_stream_of(&config, coder, accelerating_frame, qp);
     (
@@ -539,12 +547,12 @@ fn compound_modes_stream(
 /// decode to the encoder recon.
 #[test]
 fn searched_compound_modes_decode_on_any_thread_count() {
-    let (fine, expected, _, fine_coded) = compound_modes_stream(40, 1);
+    let (fine, expected, _, fine_coded) = compound_modes_stream(40, 1, [false; 3]);
     assert_same_samples(&decode(&fine), &expected, "fine compound modes");
-    let (one, expected, cores, coded) = compound_modes_stream(180, 1);
+    let (one, expected, cores, coded) = compound_modes_stream(180, 1, [false; 3]);
     let total: Vec<usize> = coded.iter().zip(fine_coded).map(|(a, b)| a + b).collect();
     assert!(
-        total.iter().all(|&count| count > 0),
+        total[..4].iter().all(|&count| count > 0),
         "{fine_coded:?} {coded:?}"
     );
     assert!(cores.iter().any(|core| {
@@ -560,9 +568,23 @@ fn searched_compound_modes_decode_on_any_thread_count() {
     assert_same_samples(&decode(&one), &expected, "searched compound modes");
     for threads in [2, 8] {
         assert!(
-            compound_modes_stream(180, threads).0 == one,
+            compound_modes_stream(180, threads, [false; 3]).0 == one,
             "{threads} threads"
         );
+    }
+}
+
+/// With adaptive MVD the compound search codes adaptive-MVD compound leaves,
+/// in frames that later frames reference; the stream decodes to the encoder
+/// recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn searched_compound_amvd_decodes_on_any_thread_count() {
+    let (one, expected, _, coded) = compound_modes_stream(120, 1, [true; 3]);
+    assert!(coded[4] > 0, "{coded:?}");
+    assert_same_samples(&decode(&one), &expected, "compound AMVD");
+    for threads in [2, 8] {
+        let other = compound_modes_stream(120, threads, [true; 3]).0;
+        assert!(other == one, "{threads} threads");
     }
 }
 
@@ -573,7 +595,7 @@ fn avm_decodes_searched_compound_modes_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let (units, ..) = compound_modes_stream(180, 1);
+    let (units, ..) = compound_modes_stream(180, 1, [false; 3]);
     let avm = avm_decode(
         &avmdec,
         std::slice::from_ref(&units),

@@ -14,10 +14,12 @@
 //! obeying the one-way crate dependency rule (nothing — including this test crate — makes the writer
 //! depend on the validator).
 //!
-//! It reuses the three committed conformant fixtures whose OBUs are all *writable* types (temporal
-//! delimiter + padding / metadata HDR_CLL — `tests/fixtures/{padding,metadata-short,metadata-group}.av2`,
-//! all `expect = "clean"` in `MANIFEST.toml`): it re-emits each through the complete-OBU writer and
-//! asserts the re-emission is byte-exact and still validator-clean.
+//! It reuses the three committed fixtures whose OBUs are all *writable* types (temporal
+//! delimiter + padding / metadata HDR_CLL — `tests/fixtures/{padding,metadata-short,metadata-group}.av2`).
+//! They hold no coded extended layer unit, so § 7.3.1 makes each fire
+//! `obu-order/temporal-unit-without-coded-layer` and nothing else; that one finding is set aside. It
+//! re-emits each through the complete-OBU writer and asserts the re-emission is byte-exact and still
+//! otherwise validator-clean.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -75,6 +77,12 @@ fn rewrite_annexb(bytes: &[u8]) -> Vec<u8> {
     out.into_bytes()
 }
 
+fn only_lacks_coded_layer(report: &splot_validate::ValidationReport) -> bool {
+    report
+        .errors()
+        .all(|d| d.rule_id == "obu-order/temporal-unit-without-coded-layer")
+}
+
 #[test]
 fn writer_reemission_of_conformant_fixtures_stays_conformant() {
     let root = fixtures_root();
@@ -85,7 +93,7 @@ fn writer_reemission_of_conformant_fixtures_stays_conformant() {
             std::fs::read(root.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"));
 
         assert!(
-            validator.validate_bytes(&original).is_conformant(),
+            only_lacks_coded_layer(&validator.validate_bytes(&original)),
             "fixture {name} is not validator-clean to begin with"
         );
 
@@ -96,7 +104,7 @@ fn writer_reemission_of_conformant_fixtures_stays_conformant() {
         );
         let report = validator.validate_bytes(&rewritten);
         assert!(
-            report.is_conformant(),
+            only_lacks_coded_layer(&report),
             "writer re-emission of {name} has error diagnostics: {:?}",
             report
                 .errors()

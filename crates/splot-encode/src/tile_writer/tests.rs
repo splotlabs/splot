@@ -85,6 +85,8 @@ impl Case {
                 inter_ist: false,
                 tip: false,
                 tip_output: false,
+                tip_explicit_qp: false,
+                tip_hole_fill: false,
                 opfl_refine: false,
                 refinemv: false,
                 tip_refinemv: false,
@@ -104,6 +106,8 @@ impl Case {
                 masked_compound: false,
                 cwp: false,
                 implicit_mask: false,
+                df_sub_pu: false,
+                df_par_bits_extra: 0,
                 interintra: false,
                 bawp: false,
             },
@@ -116,6 +120,8 @@ impl Case {
                 delta_q_res: None,
                 allow_intrabc: false,
                 grain_seed: None,
+                disable_cdf_update: false,
+                disable_cross_frame_cdf_init: false,
             },
         }
     }

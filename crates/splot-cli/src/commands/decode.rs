@@ -82,6 +82,9 @@ pub(crate) struct DecodeArgs {
     /// Stop after emitting this many output frames.
     #[arg(long)]
     limit: Option<NonZeroU64>,
+    /// Output frames without film grain synthesis. Hash output never has it.
+    #[arg(long)]
+    skip_film_grain: bool,
 }
 
 fn parse_y4m_frame_rate(value: &str) -> core::result::Result<Y4mFrameRate, String> {
@@ -452,7 +455,8 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
 
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
-        .with_y4m_frame_rate_override(args.frame_rate);
+        .with_y4m_frame_rate_override(args.frame_rate)
+        .with_skip_film_grain(args.skip_film_grain);
     let input = open_decode_input(&args.input)
         .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
     let context = DecodeContext::new(

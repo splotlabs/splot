@@ -15,7 +15,7 @@ use crate::headers::film_grain::{
 };
 use crate::headers::frame::encoder_stream::{
     MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_film_grain_config,
-    write_quant_and_filters,
+    write_quant_and_filters, write_uniform_tile_info,
 };
 use crate::headers::frame::global_motion::{REFS_PER_FRAME, default_base_prediction};
 use crate::headers::frame::info::build_inter_seq_view;
@@ -28,10 +28,12 @@ use crate::headers::frame::{
     parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
+use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::span::ByteOffset;
 use crate::types::ObuType;
+use crate::write::write_quantization_params;
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, global_motion::write_global_param, write_annexb_obu,
     write_tile_group_payload, write_tile_group_structure,
@@ -85,6 +87,20 @@ pub struct InterFrameParams {
     /// frame without `enable_tip`, `use_ref_frame_mvs` or two references
     /// reads neither and is `TIP_FRAME_DISABLED`.
     pub tip_weight: Option<u8>,
+    /// `TipGlobalMv` of a `TIP_FRAME_AS_OUTPUT` frame (§ 5.18.2), each
+    /// component in `-15..=15`; zero codes `tip_mv_zero = 1`.
+    pub tip_global_mv: TipGlobalMv,
+    /// `TipInterpFilter` of a `TIP_FRAME_AS_OUTPUT` frame: `None` and
+    /// `EIGHTTAP_SHARP` code `tip_sharp = 1`; `EIGHTTAP` and `EIGHTTAP_SMOOTH`
+    /// code `tip_regular`.
+    pub tip_filter: Option<InterpolationFilter>,
+    /// `allow_df_sub_pu = apply_deblocking_filter_tip = 1` of a
+    /// `TIP_FRAME_AS_OUTPUT` frame of a sequence with `enable_df_sub_pu`: the
+    /// TIP frame is deblocked (§ 7.16) and codes a one-tile `tile_info()`.
+    pub tip_deblocking: bool,
+    /// `allow_tip_hole_fill` (§ 5.18.2) of a TIP frame of a sequence with
+    /// `enable_tip_hole_fill`: the TIP motion field fills its holes (§ 7.10.3).
+    pub tip_hole_fill: bool,
     /// `opfl_refine_type` (§ 5.18.3.2) of a sequence with `enable_opfl_refine
     /// = REFINE_AUTO`: `0` `REFINE_NONE`, `1` `REFINE_SWITCHABLE`, `2`
     /// `REFINE_ALL`. Other sequences code none and ignore it.
@@ -254,7 +270,7 @@ fn inter_frame_header_bits(
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
     w.write_flag(true)?; // signal_primary_ref_frame
-    w.write_flag(primary_ref_frame.is_none())?; // disable_cross_frame_cdf_init
+    w.write_flag(primary_ref_frame.is_none() || params.tx.disable_cross_frame_cdf_init)?;
     w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
     if seq.enable_short_refresh_frame_flags || seq.seq_force_screen_content_tools == 1 {
         return Err(unsupported(
@@ -292,7 +308,7 @@ fn inter_frame_header_bits(
     }
     if let (true, Some(weight)) = (tip_gate, params.tip_weight) {
         if seq.inter.enable_tip_hole_fill {
-            w.write_flag(false)?; // allow_tip_hole_fill
+            w.write_flag(params.tip_hole_fill)?; // allow_tip_hole_fill
         }
         write_tip_weight(&mut w, weight, weight_coded)?;
     }
@@ -333,7 +349,7 @@ fn inter_frame_header_bits(
     {
         w.write_flag(mode == INTERINTRA || warp)?; // frame_enabled_motion_modes[mode]
     }
-    w.write_flag(false)?; // disable_cdf_update
+    w.write_flag(params.tx.disable_cdf_update)?;
     let tx = params.tx;
     if tx.allow_intrabc {
         return Err(unsupported("intra block copy in an inter frame"));
@@ -472,15 +488,20 @@ pub fn encode_inter_frame_obu(
 /// (§ 5.18.2) over the reference map `ref_frame_idx` for `seq` and the
 /// § 7.23 reference state `refs`: the `order_hint`, `refresh_frame_flags`,
 /// `show_frame` and `tip_weight` of `params`, `PRIMARY_REF_NONE`,
-/// `use_ref_frame_mvs = 1`, a zero `tip_global_mv`, the `EIGHTTAP_SHARP`
-/// filter and the `film_grain_config()` of `params.tx.grain_seed`.
+/// `use_ref_frame_mvs = 1`, the `tip_global_mv` and `tip_filter` of
+/// `params`, `quantization_params()` at `base_q_idx` with
+/// `enable_tip_explicit_qp`, TIP deblocking with a one-tile `tile_info()`
+/// when `tip_deblocking`, and the `film_grain_config()` of
+/// `params.tx.grain_seed`.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a sequence without TIP output, the
-/// tools the header does not write, a missing `tip_weight`, a `grain_seed`
-/// in a sequence without film grain or in a frame that is not shown
-/// ([`WriteError::NonCanonicalFrameHeader`]), or bits that do not parse to a
-/// complete TIP output header with `refs`.
+/// tools the header does not write, a missing `tip_weight`, a
+/// `tip_global_mv` component outside `-15..=15`, a `tip_filter` other than
+/// sharp, regular or smooth, `tip_deblocking` without `enable_df_sub_pu` or
+/// with tiles, a `grain_seed` in a sequence without film grain or in a frame
+/// that is not shown ([`WriteError::NonCanonicalFrameHeader`]), or bits that
+/// do not parse to a complete TIP output header with `refs`.
 pub fn build_tip_output_frame_header(
     seq: &CoreSeqView,
     refs: &FrameReferenceStateView<'_>,
@@ -497,12 +518,25 @@ pub fn build_tip_output_frame_header(
             "TIP output without TIP, reference MVs or two references",
         ));
     }
-    if seq.enable_short_refresh_frame_flags
-        || inter.enable_tip_hole_fill
-        || inter.enable_tip_explicit_qp
-        || seq.filter.enable_df_sub_pu
-    {
+    if seq.enable_short_refresh_frame_flags {
         return Err(unsupported("TIP output header tools"));
+    }
+    let mv = params.tip_global_mv;
+    if mv.row.unsigned_abs() > 15 || mv.col.unsigned_abs() > 15 {
+        return Err(unsupported("TipGlobalMv outside -15..=15"));
+    }
+    let tip_regular = match params.tip_filter {
+        None | Some(InterpolationFilter::EighttapSharp) => None,
+        Some(InterpolationFilter::Eighttap) => Some(true),
+        Some(InterpolationFilter::EighttapSmooth) => Some(false),
+        Some(_) => return Err(unsupported("TipInterpFilter")),
+    };
+    if params.tip_deblocking
+        && (!seq.filter.enable_df_sub_pu || params.tiles != UniformTiles::default())
+    {
+        return Err(unsupported(
+            "TIP deblocking without enable_df_sub_pu or in tiles",
+        ));
     }
     let weight = params
         .tip_weight
@@ -524,6 +558,9 @@ pub fn build_tip_output_frame_header(
     if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
     }
+    if inter.enable_tip_hole_fill {
+        w.write_flag(params.tip_hole_fill)?; // allow_tip_hole_fill
+    }
     let weight_coded = tip_weight_coded(
         &build_inter_seq_view(seq),
         refs,
@@ -532,8 +569,29 @@ pub fn build_tip_output_frame_header(
         0,
     );
     write_tip_weight(&mut w, weight, weight_coded.unwrap_or(true))?;
-    w.write_flag(true)?; // tip_global_mv_zero
-    w.write_flag(true)?; // tip_sharp
+    w.write_flag(mv == TipGlobalMv::default())?; // tip_mv_zero
+    if mv != TipGlobalMv::default() {
+        w.write_bits(mv.row.unsigned_abs(), 4)?; // tip_mv_row
+        w.write_bits(mv.col.unsigned_abs(), 4)?; // tip_mv_col
+        for value in [mv.row, mv.col].into_iter().filter(|&value| value != 0) {
+            w.write_flag(value < 0)?; // tip_mv_row_sign, tip_mv_col_sign
+        }
+    }
+    w.write_flag(tip_regular.is_none())?; // tip_sharp
+    if let Some(regular) = tip_regular {
+        w.write_flag(regular)?; // tip_regular
+    }
+    if inter.enable_tip_explicit_qp {
+        let quant = QuantizationParams::inferred_tip(params.base_q_idx, 0, 0);
+        write_quantization_params(&mut w, &quant, &seq.quant, true)?;
+    }
+    if seq.filter.enable_df_sub_pu {
+        w.write_flag(params.tip_deblocking)?; // allow_df_sub_pu
+        if params.tip_deblocking {
+            w.write_flag(true)?; // apply_deblocking_filter_tip
+            write_uniform_tile_info(&mut w, seq, params.tiles, false)?;
+        }
+    }
     write_film_grain_config(&mut w, seq, params.show_frame, params.tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.write_trailing_bits(8 - bit_len % 8)?;

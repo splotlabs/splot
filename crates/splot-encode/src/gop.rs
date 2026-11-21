@@ -45,10 +45,11 @@
 use core::num::NonZeroU32;
 
 use splot_core::headers::frame::{
-    CoreSeqView, FrameFilterParams, FrameHeaderCore, InterFrameParams, KeyFrameTxParams,
-    REFS_PER_FRAME, UniformTiles, build_inter_frame_header, build_key_frame_header,
-    build_tip_output_frame_header, encode_inter_frame_obu, encode_key_frame_temporal_unit,
-    encode_show_existing_frame_obu, encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
+    CoreSeqView, FrameFilterParams, FrameHeaderCore, InterFrameParams, InterpolationFilter,
+    KeyFrameTxParams, REFS_PER_FRAME, TipGlobalMv, UniformTiles, build_inter_frame_header,
+    build_key_frame_header, build_tip_output_frame_header, encode_inter_frame_obu,
+    encode_key_frame_temporal_unit, encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
+    encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
@@ -393,7 +394,11 @@ pub(crate) fn frame_tools(
             preset.interp_filter_search > 0,
             (preset.tip > 0 && preset.mv_prediction).then_some(TIP_EQUAL_WEIGHT),
             preset.integer_mv,
-            if preset.opfl { REFINE_SWITCHABLE } else { 0 },
+            match (preset.opfl, preset.opfl_refine_all) {
+                (false, _) => 0,
+                (true, false) => REFINE_SWITCHABLE,
+                (true, true) => REFINE_ALL,
+            },
             preset.warp > 0,
             [None; REFS_PER_FRAME],
         ),
@@ -401,9 +406,17 @@ pub(crate) fn frame_tools(
     )
 }
 
+/// `(qindex, TipGlobalMv, TipInterpFilter, TIP deblocking)` of a
+/// `TIP_FRAME_AS_OUTPUT` frame; see [`GopFrame::tip_output_unit`].
+pub(crate) type TipOutputChoice = (u32, TipGlobalMv, Option<InterpolationFilter>, bool);
+
 /// `opfl_refine_type` `REFINE_SWITCHABLE` (§ 3): compound blocks code
 /// `use_optflow`.
 const REFINE_SWITCHABLE: u8 = 1;
+
+/// `opfl_refine_type` `REFINE_ALL` (§ 3): every compound block that allows
+/// it refines with optical flow.
+const REFINE_ALL: u8 = 2;
 
 /// `tip_global_wtd_index` of `Tip_Weighting_Factor` 8 (`CWP_EQUAL`), the
 /// plain average of the two TIP references (§ 7.13.3.1).
@@ -555,19 +568,27 @@ impl GopFrame {
     /// The header and OBUs of the frame as a `TIP_FRAME_AS_OUTPUT` frame with
     /// `tip_global_wtd_index` `weight` and the film grain of `grain_seed` over
     /// the reference map `ref_frame_idx` references, after a temporal
-    /// delimiter when the frame opens its temporal unit.
+    /// delimiter when the frame opens its temporal unit; `tip` is its
+    /// `(qindex, TipGlobalMv, TipInterpFilter, TIP deblocking)`, the qindex
+    /// coded only with `enable_tip_explicit_qp`.
     pub(crate) fn tip_output_unit(
         &self,
         view: &CoreSeqView,
         refs: &EncoderReferences,
         ref_frame_idx: &[u32],
         (weight, grain_seed): (u8, Option<u16>),
+        (qindex, mv, filter, deblocking): TipOutputChoice,
     ) -> Result<(FrameHeaderCore, Vec<u8>)> {
         let params = InterFrameParams {
+            base_q_idx: qindex,
+            tip_global_mv: mv,
+            tip_filter: filter,
+            tip_deblocking: deblocking,
             order_hint: self.order_hint,
             refresh_frame_flags: self.refresh_frame_flags,
             show_frame: self.show_frame,
             tip_weight: Some(weight),
+            tip_hole_fill: true,
             tx: KeyFrameTxParams {
                 grain_seed,
                 ..KeyFrameTxParams::default()
@@ -592,6 +613,10 @@ impl GopFrame {
         Ok((header.core, unit))
     }
 
+    /// The inter frame parameters; `tip_hole_fill` is always set here and
+    /// in [`Self::tip_output_unit`], because the sequence flag
+    /// `enable_tip_hole_fill` (`PresetParams::tip_hole_fill`) gates whether
+    /// `allow_tip_hole_fill` is coded.
     fn inter_params(
         &self,
         qindex: u32,
@@ -630,6 +655,10 @@ impl GopFrame {
             switchable_interp_filter,
             primary_slot: self.primary_slot,
             tip_weight,
+            tip_global_mv: TipGlobalMv::default(),
+            tip_filter: None,
+            tip_deblocking: false,
+            tip_hole_fill: true,
             force_integer_mv,
             opfl_refine_type,
             warp,

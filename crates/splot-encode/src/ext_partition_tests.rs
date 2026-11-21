@@ -17,19 +17,22 @@ static EXT: PresetParams = PresetParams {
 /// and 1, 2 and 8 threads write the same bytes.
 #[test]
 fn ext_partitions_decode_to_the_encoder_recon_on_any_thread_count() {
-    for case in [
-        (136, 72, BitDepth::Eight, 9, 120, (1, 0)),
-        (97, 70, BitDepth::Ten, 9, 60, (0, 0)),
-    ] {
-        let (one, expected) = tiled_stream(case, 1, Some(&EXT));
-        assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
-        for threads in [2, 8] {
-            assert!(
-                tiled_stream(case, threads, Some(&EXT)).0 == one,
-                "{threads} threads"
-            );
-        }
-    }
+    each_case(
+        [
+            (136, 72, BitDepth::Eight, 9, 120, (1, 0)),
+            (97, 70, BitDepth::Ten, 9, 60, (0, 0)),
+        ],
+        |case| {
+            let (one, expected) = tiled_stream(case, 1, Some(&EXT));
+            assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
+            each_case([2, 8], |threads| {
+                assert!(
+                    tiled_stream(case, threads, Some(&EXT)).0 == one,
+                    "{threads} threads"
+                );
+            });
+        },
+    );
 }
 
 /// Luma bands that each extended shape of a 64x64 quadrant fits: 1:2:1 rows

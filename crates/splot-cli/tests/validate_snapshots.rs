@@ -61,7 +61,7 @@ fn validate_summary_only_json() {
 
 #[test]
 fn validate_summary_only_clean_text() {
-    let (code, stdout) = validate("operating-point-set.av2", &["--summary-only"]);
+    let (code, stdout) = validate("frame-header-core.av2", &["--summary-only"]);
     assert_eq!(code, Some(0));
     insta::assert_snapshot!("validate_summary_only_clean_text", stdout);
 }

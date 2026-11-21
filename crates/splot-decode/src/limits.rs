@@ -37,6 +37,7 @@ pub struct DecodeOptions {
     limits: DecodeLimits,
     output_frame_limit: Option<NonZeroU64>,
     y4m_frame_rate_override: Option<Y4mFrameRate>,
+    skip_film_grain: bool,
 }
 
 impl DecodeOptions {
@@ -45,6 +46,7 @@ impl DecodeOptions {
         limits: DecodeLimits::DEFAULT,
         output_frame_limit: None,
         y4m_frame_rate_override: None,
+        skip_film_grain: false,
     };
 
     /// Creates decoder options from caller-provided resource limits.
@@ -54,6 +56,7 @@ impl DecodeOptions {
             limits,
             output_frame_limit: None,
             y4m_frame_rate_override: None,
+            skip_film_grain: false,
         }
     }
 
@@ -86,6 +89,22 @@ impl DecodeOptions {
     #[must_use]
     pub const fn with_y4m_frame_rate_override(mut self, frame_rate: Option<Y4mFrameRate>) -> Self {
         self.y4m_frame_rate_override = frame_rate;
+        self
+    }
+
+    /// Returns whether output leaves out film grain synthesis.
+    #[must_use]
+    pub const fn skip_film_grain(self) -> bool {
+        self.skip_film_grain
+    }
+
+    /// Returns a copy that outputs frames with (`false`, the default) or
+    /// without (`true`) the film grain of AV2 § 7.21.7. Without it, the
+    /// output is the intermediate frame of § 7.21.2, which hash reports
+    /// always use.
+    #[must_use]
+    pub const fn with_skip_film_grain(mut self, skip: bool) -> Self {
+        self.skip_film_grain = skip;
         self
     }
 }

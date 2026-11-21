@@ -1216,7 +1216,12 @@ pub(crate) fn max_bvp_drl_bits_minus_1(
     let coded = core
         .intrabc
         .as_ref()
-        .and_then(|params| params.max_bvp_drl_bits_minus_1);
+        .and_then(|params| params.max_bvp_drl_bits_minus_1)
+        .or_else(|| {
+            core.inter
+                .as_ref()
+                .and_then(|inter| inter.max_bvp_drl_bits_minus_1)
+        });
     Ok(coded.map_or(seq_max, |coded| coded + u32::from(coded >= seq_max)))
 }
 

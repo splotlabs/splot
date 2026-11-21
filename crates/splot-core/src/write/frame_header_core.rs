@@ -689,6 +689,7 @@ fn write_intra_header_into(
         coded_lossless,
         seq.quant.num_planes,
         seq.filter.df_par_bits_minus_2,
+        seq.filter.enable_df_sub_pu && core.frame_type == Some(FrameType::Inter),
         mfh_deblocking,
     )?;
 

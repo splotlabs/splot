@@ -152,6 +152,14 @@ pub struct TipGlobalMv {
     pub col: i32,
 }
 
+impl TipGlobalMv {
+    /// The global MV of `row` and `col`.
+    #[must_use]
+    pub const fn new(row: i32, col: i32) -> Self {
+        Self { row, col }
+    }
+}
+
 /// Why the inter control-region parse stopped (a **coverage** stop, never a truncation).
 ///
 /// The variants split into the two honest classes the module documents: a derivation
@@ -276,6 +284,9 @@ pub struct InterControl {
     pub allow_screen_content_tools: Option<bool>,
     /// `allow_intrabc` (mirror :4861), when read on the inter path.
     pub allow_intrabc: Option<bool>,
+    /// The coded `max_bvp_drl_bits_minus_1` `ns(2)` of § 5.18.3.4, when
+    /// `change_bvp_drl` was set on the inter path.
+    pub max_bvp_drl_bits_minus_1: Option<u32>,
     /// `true` when a parsed `ref_frame_idx[i]` names an index at or beyond the **active**
     /// reference-slot count (`idx >= NumRefFrames`). AV2 § 6.17.2 (mirror :4605-4606)
     /// requires `RefValid[ ref_frame_idx[i] ] == 1`, and RefValid is defined only over the
@@ -812,14 +823,13 @@ fn parse_inter_reference_region(
         seq.seq_force_integer_mv,
     )?;
     control.allow_screen_content_tools = Some(scc.allow_screen_content_tools);
-    control.allow_intrabc = Some(
-        parse_intrabc_params_full(
-            reader,
-            false, // FrameIsIntra == false on the inter path
-            seq.allow_frame_max_bvp_drl_bits,
-        )?
-        .allow_intrabc,
-    );
+    let intrabc = parse_intrabc_params_full(
+        reader,
+        false, // FrameIsIntra == false on the inter path
+        seq.allow_frame_max_bvp_drl_bits,
+    )?;
+    control.allow_intrabc = Some(intrabc.allow_intrabc);
+    control.max_bvp_drl_bits_minus_1 = intrabc.max_bvp_drl_bits_minus_1;
 
     let mut max_drl_bits_minus_1 = seq.seq_max_drl_bits_minus_1;
     if seq.allow_frame_max_drl_bits {
@@ -1005,7 +1015,7 @@ fn derive_implicit_ref_map(
         let valid = ref_valid.get(i).copied().unwrap_or(false);
         let order_hint = ref_order_hint
             .and_then(|s| s.get(i).copied())
-            .map_or(0, |oh| i32::try_from(oh).unwrap_or(i32::MAX));
+            .map_or(0, |oh| ref_order_hint_to_spec(oh).unwrap_or(i32::MAX));
         slot.valid = valid;
         slot.order_hint = order_hint;
         slot.counter = reference_state
@@ -1618,6 +1628,33 @@ mod tests {
         let map = derive_implicit_ref_map(&seq, &ctx, &rs, false, None).unwrap();
         assert_eq!(map.num_total_refs, 1);
         assert_eq!(map.ref_frame_idx.as_slice(), &[3]);
+    }
+
+    /// § 7.7: every restricted slot (`u32::MAX` in the model, `RESTRICTED_OH` in the spec)
+    /// is left out of the ranking and appended after the ranked references, so two
+    /// restricted slots with equal saved state both reach the list.
+    #[test]
+    fn inter_implicit_map_appends_each_restricted_slot() {
+        let mut seq = inter_seq();
+        seq.explicit_ref_frame_map = false;
+        let mut ctx = inter_ctx();
+        ctx.order_hint = Some(4);
+        let mut ref_valid = [false; NUM_REF_FRAMES];
+        ref_valid[..3].fill(true);
+        let mut ref_oh = [0u32; NUM_REF_FRAMES];
+        ref_oh[0] = 3;
+        ref_oh[1] = u32::MAX;
+        ref_oh[2] = u32::MAX;
+        let ref_w = [192u32; NUM_REF_FRAMES];
+        let ref_h = [192u32; NUM_REF_FRAMES];
+        let ref_q = [140u32; NUM_REF_FRAMES];
+        let rs = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &ref_valid, &ref_oh, &ref_w, &ref_h, &ref_q,
+        );
+        let map =
+            derive_implicit_ref_map(&seq, &ctx, &rs, true, Some(FrameSize::new(192, 192))).unwrap();
+        assert_eq!(map.num_total_refs, 3);
+        assert_eq!(map.ref_frame_idx.as_slice(), &[0, 1, 2]);
     }
 
     #[test]
