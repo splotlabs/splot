@@ -7,7 +7,7 @@
 //! `random_inter_leaves_decode_to_the_writer_recon`.
 
 use super::*;
-use splot_core::headers::frame::REFS_PER_FRAME;
+use splot_core::headers::frame::{GmType, REFS_PER_FRAME};
 
 /// `ROTZOOM` models of list references 0 and 1 from `seed`: a scale and a
 /// rotation within 1/32 and a translation within 4 samples, on the coded
@@ -119,12 +119,13 @@ fn global_motion_streams_match_on_any_thread_count() {
     }
 }
 
-/// The encoder's coder with the recon and the global motion use of each frame.
+/// The encoder's coder with the recon of each frame, and the frames and
+/// references that code a global model.
 struct Counting {
     coder: IntraFrameCoder,
     bit_depth: BitDepth,
     recons: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
-    global_frames: Arc<Mutex<usize>>,
+    global_frames: Arc<Mutex<(usize, usize)>>,
 }
 
 impl FrameCoder for Counting {
@@ -136,12 +137,20 @@ impl FrameCoder for Counting {
                 .lock()
                 .unwrap()
                 .insert(plan.display_index, recon);
-            let global = frame
+            let tail = frame
                 .reference
                 .as_ref()
-                .and_then(|(core, ..)| core.inter_tail.as_ref())
-                .is_some_and(|tail| tail.global_motion.use_global_motion);
-            *self.global_frames.lock().unwrap() += usize::from(global);
+                .and_then(|(core, ..)| core.inter_tail.as_ref());
+            let Some(global) = tail
+                .map(|tail| &tail.global_motion)
+                .filter(|global| global.use_global_motion)
+            else {
+                continue;
+            };
+            let models = global.references.iter();
+            let models = models.filter(|model| model.gm_type != GmType::Identity);
+            let mut counts = self.global_frames.lock().unwrap();
+            *counts = (counts.0 + 1, counts.1 + models.count());
         }
         Ok(coded)
     }
@@ -167,44 +176,91 @@ impl FrameCoder for Counting {
     }
 }
 
+/// The encoded units and the recon of nine zooming frames at `global_motion`
+/// `level` on `threads` threads, and the frames and references that code a
+/// global model.
+fn estimated_stream(
+    (width, height, preset, qp): (u32, u32, u8, u16),
+    level: u8,
+    threads: usize,
+) -> (Vec<u8>, Vec<u8>, (usize, usize)) {
+    let mut config = config(width, height, BitDepth::Eight, preset, qp);
+    config.preset_overrides = vec![("global_motion".to_owned(), level.to_string())];
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let (recons, global_frames) = (Arc::default(), Arc::default());
+    let coder = Counting {
+        coder: IntraFrameCoder::new(&config).unwrap(),
+        bit_depth: config.bit_depth,
+        recons: Arc::clone(&recons),
+        global_frames: Arc::clone(&global_frames),
+    };
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
+    let mut units = Vec::new();
+    for index in 0..=8 {
+        if index == 8 {
+            encoder.flush().unwrap();
+        } else {
+            encoder
+                .send_frame(super::warp::zooming_frame(&config, index))
+                .unwrap();
+        }
+        while let Some(packet) = encoder.receive_packet().unwrap() {
+            units.extend(packet.data);
+        }
+    }
+    let expected: Vec<u8> = recons.lock().unwrap().values().flatten().copied().collect();
+    let counts = *global_frames.lock().unwrap();
+    (units, expected, counts)
+}
+
 /// The encoder with `global_motion = 1` estimates zoom models from its
 /// lookahead for zooming content, codes them in inter frames, and the stream
 /// decodes to the encoder recon, also at qps and presets whose
 /// `GLOBAL_GLOBALMV` leaves land in frames that later frames take temporal
-/// vectors from.
+/// vectors from. The first stream keeps the bytes main coded (FNV-1a golden).
 #[test]
 fn the_encoder_estimates_and_codes_global_motion() {
-    for (width, height, preset, qp) in [(160, 96, 6, 120), (160, 96, 6, 90), (192, 112, 9, 90)] {
-        let mut config = config(width, height, BitDepth::Eight, preset, qp);
-        config.preset_overrides = vec![("global_motion".to_owned(), "1".to_owned())];
-        let case = format!("estimated {width}x{height} p{preset} qp {qp}");
-        let (recons, global_frames) = (Arc::default(), Arc::default());
-        let coder = Counting {
-            coder: IntraFrameCoder::new(&config).unwrap(),
-            bit_depth: config.bit_depth,
-            recons: Arc::clone(&recons),
-            global_frames: Arc::clone(&global_frames),
-        };
-        let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
-        let mut units = Vec::new();
-        for index in 0..=8 {
-            if index == 8 {
-                encoder.flush().unwrap();
-            } else {
-                encoder
-                    .send_frame(super::warp::zooming_frame(&config, index))
-                    .unwrap();
-            }
-            while let Some(packet) = encoder.receive_packet().unwrap() {
-                units.extend(packet.data);
-            }
+    for (index, case) in [(160, 96, 6, 120), (160, 96, 6, 90), (192, 112, 9, 90)]
+        .into_iter()
+        .enumerate()
+    {
+        let (units, expected, (frames, _)) = estimated_stream(case, 1, 1);
+        assert!(frames > 0, "estimated {case:?}: no global frame");
+        assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
+        if index == 0 {
+            assert_eq!(fnv1a(&units), LEVEL_1_GOLDEN, "{case:?}");
         }
+    }
+}
+
+/// The FNV-1a hash of the first `global_motion = 1` stream, recorded from main
+/// 44b2ed044.
+const LEVEL_1_GOLDEN: u64 = 0;
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// With `global_motion = 2` the encoder codes estimated models in zooming
+/// frames and the streams decode to the encoder recon, with the same bytes on
+/// 1, 2 and 8 threads.
+#[test]
+fn the_quarter_sample_estimator_codes_global_motion_on_any_thread_count() {
+    for case in [(160, 96, 6, 120), (192, 112, 9, 90)] {
+        let (units, expected, (frames, references)) = estimated_stream(case, 2, 1);
         assert!(
-            *global_frames.lock().unwrap() > 0,
-            "{case}: no global frame"
+            frames > 0 && references >= frames,
+            "{case:?}: {frames} {references}"
         );
-        let expected: Vec<u8> = recons.lock().unwrap().values().flatten().copied().collect();
-        assert_same_samples(&decode(&units), &expected, &case);
+        assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
+        for threads in [2, 8] {
+            assert!(
+                estimated_stream(case, 2, threads).0 == units,
+                "{case:?} {threads}"
+            );
+        }
     }
 }
 
@@ -254,4 +310,16 @@ fn avm_decodes_global_motion_streams_like_splot() {
             "integer_mv {integer_mv}: AVM output differs"
         );
     }
+}
+
+/// AVM decodes a `global_motion = 2` stream like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_estimated_global_motion_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, expected, _) = estimated_stream((160, 96, 6, 120), 2, 1);
+    let avm = avm_decode(&avmdec, &[units], (160, 96), BitDepth::Eight, "gm-2");
+    assert!(avm == expected, "AVM output differs");
 }
