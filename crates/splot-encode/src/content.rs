@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! What the source declares about its samples, coded as a content
-//! interpretation OBU (§ 5.15) in front of every key frame.
+//! What the source declares about its samples, coded in front of every key
+//! frame as a content interpretation OBU (§ 5.15) and HDR metadata OBUs
+//! (§ 5.17.5, § 5.17.6).
 
 use splot_core::headers::content_interpretation::{
     AspectRatioInfo, ChromaSamplePosition as CodedChromaSamplePosition, ColorDescription,
     ContentInterpretation,
 };
-use splot_core::headers::frame::encode_content_interpretation_obu;
+use splot_core::headers::frame::{
+    encode_content_interpretation_obu, encode_hdr_cll_obu, encode_hdr_mdcv_obu,
+};
+use splot_core::headers::metadata::{MetadataHdrCll, MetadataHdrMdcv};
 use splot_core::headers::sequence::TimingInfo;
 use splot_recon::PixelFormat;
 
@@ -32,9 +36,35 @@ pub enum ChromaSamplePosition {
     Bottom = 5,
 }
 
+/// The colour volume of the mastering display (`metadata_hdr_mdcv()`,
+/// § 6.16.6), in the integer units of SMPTE ST 2086. A value outside the
+/// range the specification gives for it means unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MasteringDisplay {
+    /// CIE 1931 `(x, y)` of the green, blue and red primaries, in units of
+    /// 0.00002.
+    pub primaries: [(u16, u16); 3],
+    /// CIE 1931 `(x, y)` of the white point, in units of 0.00002.
+    pub white_point: (u16, u16),
+    /// Nominal maximum luminance in units of 0.0001 cd/m².
+    pub luminance_max: u32,
+    /// Nominal minimum luminance in units of 0.0001 cd/m².
+    pub luminance_min: u32,
+}
+
+/// Upper bounds of the light level of the content (`metadata_hdr_cll()`,
+/// § 6.16.5) in cd/m²; 0 gives no bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentLightLevel {
+    /// Maximum light level of any sample (MaxCLL).
+    pub max_cll: u16,
+    /// Maximum frame-average light level (MaxFALL).
+    pub max_fall: u16,
+}
+
 /// The description of the source content. The default describes nothing, and
-/// the stream then has no content interpretation OBU. The encoder never
-/// guesses a value and never converts samples to match one.
+/// the stream then has no content interpretation or HDR metadata OBU. The
+/// encoder never guesses a value and never converts samples to match one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ContentDescription {
@@ -53,6 +83,10 @@ pub struct ContentDescription {
     /// Codes the frame rate of the configuration as `timing_info()`
     /// (§ 5.4.12) with one tick per picture.
     pub timing_info: bool,
+    /// Mastering display colour volume of HDR content.
+    pub mastering_display: Option<MasteringDisplay>,
+    /// Content light level of HDR content.
+    pub content_light_level: Option<ContentLightLevel>,
 }
 
 impl Default for ContentDescription {
@@ -65,6 +99,8 @@ impl Default for ContentDescription {
             chroma_sample_position: None,
             sample_aspect_ratio: None,
             timing_info: false,
+            mastering_display: None,
+            content_light_level: None,
         }
     }
 }
@@ -73,7 +109,8 @@ impl ContentDescription {
     /// `CP_UNSPECIFIED`, `TC_UNSPECIFIED` and `MC_UNSPECIFIED` (§ 6.14).
     pub const UNSPECIFIED: u8 = 2;
 
-    /// Checks the description against the chroma format `chroma`.
+    /// Checks the description against the chroma format `chroma` and the
+    /// § 6.16.6 rule that a display maximum of 50000 forbids that minimum.
     pub(crate) fn validate(&self, chroma: PixelFormat) -> Result<()> {
         let invalid = |what| Err(Error::InvalidContentDescription { what });
         match (self.chroma_sample_position, chroma) {
@@ -93,12 +130,19 @@ impl ContentDescription {
         if matches!(self.sample_aspect_ratio, Some((0, _) | (_, 0))) {
             return invalid("a sample aspect ratio has nonzero terms");
         }
+        if self
+            .mastering_display
+            .is_some_and(|display| (display.luminance_max, display.luminance_min) == (50000, 50000))
+        {
+            return invalid("a mastering display maximum of 50000 needs another minimum");
+        }
         Ok(())
     }
 
-    /// The Annex B content interpretation OBU of a progressive stream at
-    /// `frame_rate`; empty when nothing is described.
-    pub(crate) fn obu(&self, frame_rate: (u32, u32)) -> Result<Vec<u8>> {
+    /// The Annex B OBUs of a progressive stream at `frame_rate`, in the order
+    /// of § 7.3.3: the content interpretation OBU, then the mastering display
+    /// and content light level metadata OBUs. Empty when nothing is described.
+    pub(crate) fn obus(&self, frame_rate: (u32, u32)) -> Result<Vec<u8>> {
         let code_points = (
             self.color_primaries,
             self.transfer_characteristics,
@@ -123,10 +167,27 @@ impl ContentDescription {
             equal_picture_interval: true,
             num_ticks_per_picture_minus_1: Some(0),
         });
-        if content == ContentInterpretation::progressive() {
-            return Ok(Vec::new());
+        let mut obus = Vec::new();
+        if content != ContentInterpretation::progressive() {
+            obus = encode_content_interpretation_obu(&content)
+                .map_err(crate::intra_frame::coding("content interpretation"))?;
         }
-        encode_content_interpretation_obu(&content)
-            .map_err(crate::intra_frame::coding("content interpretation"))
+        if let Some(display) = self.mastering_display {
+            let [(gx, gy), (bx, by), (rx, ry)] = display.primaries;
+            let obu = encode_hdr_mdcv_obu(MetadataHdrMdcv {
+                primary_chromaticity_x: [gx, bx, rx],
+                primary_chromaticity_y: [gy, by, ry],
+                white_point_chromaticity_x: display.white_point.0,
+                white_point_chromaticity_y: display.white_point.1,
+                luminance_max: display.luminance_max,
+                luminance_min: display.luminance_min,
+            });
+            obus.extend(obu.map_err(crate::intra_frame::coding("mastering display"))?);
+        }
+        if let Some(ContentLightLevel { max_cll, max_fall }) = self.content_light_level {
+            let obu = encode_hdr_cll_obu(MetadataHdrCll { max_cll, max_fall });
+            obus.extend(obu.map_err(crate::intra_frame::coding("content light level"))?);
+        }
+        Ok(obus)
     }
 }

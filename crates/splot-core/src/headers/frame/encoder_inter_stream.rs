@@ -30,6 +30,9 @@ use crate::headers::frame::{
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
+use crate::headers::metadata::{
+    MetadataHdrCll, MetadataHdrMdcv, MetadataPayload, MetadataShortObu, MetadataType, MetadataUnit,
+};
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::span::ByteOffset;
@@ -842,6 +845,55 @@ pub fn encode_content_interpretation_obu(
     annexb_obu(
         ObuType::ContentInterpretation,
         &crate::obu::ParsedObu::ContentInterpretation(*content),
+    )
+}
+
+/// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) with the
+/// `metadata_hdr_cll()` (§ 5.17.5) of `light_level`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] if the OBU does not serialize.
+pub fn encode_hdr_cll_obu(light_level: MetadataHdrCll) -> Result<Vec<u8>, EncoderHeaderError> {
+    hdr_metadata_obu(
+        MetadataType::HdrCll,
+        4,
+        MetadataPayload::HdrCll(light_level),
+    )
+}
+
+/// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) with the
+/// `metadata_hdr_mdcv()` (§ 5.17.6) of `display`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] if the OBU does not serialize.
+pub fn encode_hdr_mdcv_obu(display: MetadataHdrMdcv) -> Result<Vec<u8>, EncoderHeaderError> {
+    hdr_metadata_obu(MetadataType::HdrMdcv, 24, MetadataPayload::HdrMdcv(display))
+}
+
+/// A prefix `OBU_METADATA_SHORT` of `payload_size` bytes for every layer of
+/// its extended layer (`LAYER_GLOBAL`: Table 6.17 lists both types as not
+/// layer-specific) and the whole sequence (`GLOBAL_PERSISTENCE`, § 6.16.3).
+fn hdr_metadata_obu(
+    metadata_type: MetadataType,
+    payload_size: usize,
+    payload: MetadataPayload,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    let obu = MetadataShortObu {
+        metadata_is_suffix: false,
+        muh_layer_idc: 1,
+        muh_cancel_flag: false,
+        muh_persistence_idc: 0,
+        metadata_type,
+        metadata_type_leb128_bytes: 1,
+        unit: Some(MetadataUnit {
+            metadata_type,
+            payload_size,
+            payload,
+        }),
+    };
+    annexb_obu(
+        ObuType::MetadataShort,
+        &crate::obu::ParsedObu::MetadataShort(Box::new(obu)),
     )
 }
 

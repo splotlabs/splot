@@ -4768,6 +4768,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-HDR-METADATA"
+name = "Encoder HDR mastering display and content light level metadata"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.17.2", "5.17.5", "5.17.6", "6.16.3", "6.16.5", "6.16.6", "7.3.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/content.rs"
+change_id = "encoder-hdr-metadata"
+owner = "encoder"
+risk = "low"
+notes = "Config::content takes a mastering display colour volume and a content light level in the integer units of the specification. The encoder writes each as a prefix metadata short OBU with LAYER_GLOBAL and GLOBAL_PERSISTENCE, after the content interpretation OBU of every key frame and before its film grain OBU. Values pass through as given; only the luminance pair that § 6.16.6 forbids is rejected. splot encode takes --mastering-display and --content-light."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_content_tests.rs::key_frames_carry_the_content_description", "crates/splot-encode/src/intra_frame_content_tests.rs::hdr_metadata_needs_no_content_interpretation", "crates/splot-encode/src/intra_frame_content_tests.rs::avm_decodes_a_described_stream_like_splot", "crates/splot-encode/src/intra_frame_content_tests.rs::rejects_a_description_the_input_cannot_have", "crates/splot-cli/tests/encode_decode_roundtrip.rs::content_flags_write_a_content_interpretation_obu"]
+commands = ["cargo test -p splot-encode content", "cargo test -p splot-cli --test encode_decode_roundtrip content_flags"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MINIMAL-INTRA-IVF"
 name = "Encoder minimal-intra IVF temporal-unit assembler"
 category = "encoder"

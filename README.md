@@ -73,6 +73,7 @@ You choose the trade-off:
 | Low latency             | `--low-delay` (one packet per frame) |
 | Natural film look       | `--film-grain`                     |
 | HDR and colour tags     | `--color-primaries 9 --transfer-characteristics 16 --matrix-coefficients 9` |
+| HDR10 static metadata   | `--mastering-display "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)" --content-light 1000,400` (chromaticity in 0.00002, luminance in 0.0001 cd/m²) |
 | More cores in parallel  | `--tiles 2x2 --threads 8`          |
 | Per-frame quality data  | `--stats` (CSV with bits and PSNR) |
 

@@ -62,6 +62,10 @@ Options:
           Sample aspect ratio; the default is the Y4M `A` tag
       --timing-info
           Write the frame rate to the stream as timing info; off by default
+      --mastering-display <G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)>
+          HDR mastering display as `G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)`: chromaticities in units of 0.00002, luminance in units of 0.0001 cd/m2 (the SMPTE ST 2086 integers)
+      --content-light <CLL,FALL>
+          HDR content light level, MaxCLL and MaxFALL in cd/m2
       --keyint <KEYINT>
           Distance between key frames, in frames [default: 120]
       --stats
