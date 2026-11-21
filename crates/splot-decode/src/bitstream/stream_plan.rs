@@ -65,6 +65,12 @@ pub struct DecodeLayerSelection {
     extended_layer_id: ExtendedLayerId,
 }
 
+impl Default for DecodeLayerSelection {
+    fn default() -> Self {
+        Self::BASE
+    }
+}
+
 impl DecodeLayerSelection {
     /// The only selected layer in planner v1: temporal 0, embedded 0, extended 0.
     pub const BASE: Self = Self {
@@ -77,6 +83,27 @@ impl DecodeLayerSelection {
     #[must_use]
     pub const fn base() -> Self {
         Self::BASE
+    }
+
+    /// The selection once `layer` is seen: `selected` if a stream layer was
+    /// already chosen, else `layer` when it is not the global one.
+    fn adopt(selected: &mut Option<Self>, layer: ExtendedLayerId) -> Self {
+        if selected.is_none() && layer != GLOBAL_XLAYER_ID {
+            *selected = Some(Self::of_stream(core::iter::once(layer)));
+        }
+        selected.unwrap_or_default()
+    }
+
+    /// The selection of a single-stream bitstream: the first extended layer
+    /// in `layers` that is not the global one, or layer 0 when there is none.
+    pub(crate) fn of_stream(mut layers: impl Iterator<Item = ExtendedLayerId>) -> Self {
+        let extended_layer_id = layers
+            .find(|&layer| layer != GLOBAL_XLAYER_ID)
+            .unwrap_or(Self::BASE.extended_layer_id);
+        Self {
+            extended_layer_id,
+            ..Self::BASE
+        }
     }
 
     /// Selected temporal layer id.
@@ -805,7 +832,7 @@ impl IvfPlanner {
 
 pub(crate) struct PlanBuilder {
     format: BitstreamFormat,
-    selected_layer: DecodeLayerSelection,
+    selected_layer: Option<DecodeLayerSelection>,
     pub(crate) input_len_bytes: u64,
     limits: crate::DecodeLimits,
     keep_obus: bool,
@@ -825,7 +852,7 @@ impl PlanBuilder {
     ) -> Self {
         Self {
             format,
-            selected_layer: DecodeLayerSelection::base(),
+            selected_layer: None,
             input_len_bytes,
             limits,
             keep_obus,
@@ -882,7 +909,11 @@ impl PlanBuilder {
             .ensure(DecodeLimitName::MaxObus, next_obu_count)?;
         self.traversed_obu_count = next_obu_count;
 
-        let role = classify_obu(envelope, self.selected_layer)?;
+        let selected_layer = DecodeLayerSelection::adopt(
+            &mut self.selected_layer,
+            envelope.header.extended_layer_id,
+        );
+        let role = classify_obu(envelope, selected_layer)?;
         if role.is_frame_candidate() {
             let next_frame_count = self.frame_candidate_count.saturating_add(1);
             self.limits
@@ -915,7 +946,7 @@ impl PlanBuilder {
     fn finish(self) -> DecodeStreamPlan {
         DecodeStreamPlan {
             format: self.format,
-            selected_layer: self.selected_layer,
+            selected_layer: self.selected_layer.unwrap_or_default(),
             input_len_bytes: self.input_len_bytes,
             obu_count: self.obu_count,
             obus: self.obus,
@@ -978,7 +1009,7 @@ fn classify_obu(
             DecodeUnsupportedReason::NonBaseExtendedLayer,
             envelope,
             "6.2.2",
-            "only extended layer 0 and global-scope OBUs are accepted by the initial decode stream planner",
+            "only one extended layer and global-scope OBUs are accepted by the initial decode stream planner",
         );
     }
     if header.temporal_layer_id != selected_layer.temporal_layer_id {
@@ -1036,6 +1067,7 @@ struct Replan<'a> {
     index: u64,
     source_kind: DecodeObuSourceKind,
     ivf_frame: Option<DecodeIvfFrameContext>,
+    selected_layer: Option<DecodeLayerSelection>,
 }
 
 impl<'a> Replan<'a> {
@@ -1045,8 +1077,10 @@ impl<'a> Replan<'a> {
         end: u64,
         index: u64,
         ivf_frame: Option<DecodeIvfFrameContext>,
+        selected_layer: Option<DecodeLayerSelection>,
     ) -> Self {
         Self {
+            selected_layer,
             cursor: AnnexBObuCursor::new(
                 bytes.get(from, end).unwrap_or_default(),
                 ByteOffset::new(from),
@@ -1081,11 +1115,13 @@ impl Iterator for Replan<'_> {
         };
         let index = self.index;
         self.index += 1;
-        Some(
-            classify_obu(envelope, DecodeLayerSelection::BASE).map(|role| {
-                DecodePlannedObu::new(index, self.source_kind, self.ivf_frame, envelope, role)
-            }),
-        )
+        let selected_layer = DecodeLayerSelection::adopt(
+            &mut self.selected_layer,
+            envelope.header.extended_layer_id,
+        );
+        Some(classify_obu(envelope, selected_layer).map(|role| {
+            DecodePlannedObu::new(index, self.source_kind, self.ivf_frame, envelope, role)
+        }))
     }
 }
 
@@ -1096,6 +1132,7 @@ pub(crate) struct CandidateScan {
     resume: u64,
     index: u64,
     frames: u64,
+    selected_layer: Option<DecodeLayerSelection>,
 }
 
 impl CandidateScan {
@@ -1108,8 +1145,17 @@ impl CandidateScan {
         limits: crate::DecodeLimits,
     ) -> Result<Option<DecodePlannedObu>> {
         let from = self.resume.max(bytes.base());
-        for planned in Replan::new(bytes, from, bytes.end(), self.index, ivf_frame) {
+        let replan = Replan::new(
+            bytes,
+            from,
+            bytes.end(),
+            self.index,
+            ivf_frame,
+            self.selected_layer,
+        );
+        for planned in replan {
             let planned = planned?;
+            DecodeLayerSelection::adopt(&mut self.selected_layer, planned.header.extended_layer_id);
             limits.ensure(DecodeLimitName::MaxObus, planned.index + 1)?;
             self.resume = planned.end();
             self.index = planned.index + 1;
@@ -1142,6 +1188,9 @@ pub(crate) fn tile_group_continuations<'a>(
         end,
         candidate.index + 1,
         candidate.ivf_frame,
+        Some(DecodeLayerSelection::of_stream(core::iter::once(
+            candidate.header.extended_layer_id,
+        ))),
     )
     .map_while(Result::ok)
     .filter(|planned| planned.obu_type() != ObuType::Padding)

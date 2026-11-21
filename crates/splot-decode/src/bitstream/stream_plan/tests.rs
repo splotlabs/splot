@@ -837,6 +837,23 @@ fn byte_planner_limits_reject_before_unbounded_traversal() {
 }
 
 #[test]
+fn a_stream_on_one_nonzero_extended_layer_is_planned() {
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        extended_obu(OBU_SEQUENCE_HEADER | 0x80, 0x01).as_slice(),
+        extended_obu(OBU_CLOSED_LOOP_KEY | 0x80, 0x01).as_slice(),
+    ]
+    .concat();
+
+    let parsed = plan(&bytes);
+    let from_bytes = DecodeContext::plan_bytes(&bytes, DecodeOptions::default()).unwrap();
+    for plan in [parsed, from_bytes] {
+        assert_eq!(plan.frame_candidate_count(), 1);
+        assert_eq!(plan.selected_layer().extended_layer_id().get(), 1);
+    }
+}
+
+#[test]
 fn unsupported_layers_and_obu_types_are_typed() {
     let cases = [
         (
@@ -848,7 +865,11 @@ fn unsupported_layers_and_obu_types_are_typed() {
             DecodeUnsupportedReason::NonBaseEmbeddedLayer,
         ),
         (
-            extended_obu(0x90, 0x01).to_vec(),
+            [
+                obu(OBU_SEQUENCE_HEADER).as_slice(),
+                extended_obu(0x90, 0x01).as_slice(),
+            ]
+            .concat(),
             DecodeUnsupportedReason::NonBaseExtendedLayer,
         ),
         (
@@ -856,7 +877,11 @@ fn unsupported_layers_and_obu_types_are_typed() {
             DecodeUnsupportedReason::NonBaseEmbeddedLayer,
         ),
         (
-            extended_obu(0x91, 0x01).to_vec(),
+            [
+                obu(OBU_SEQUENCE_HEADER).as_slice(),
+                extended_obu(0x91, 0x01).as_slice(),
+            ]
+            .concat(),
             DecodeUnsupportedReason::NonBaseExtendedLayer,
         ),
         (
