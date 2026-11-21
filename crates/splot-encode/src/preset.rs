@@ -335,8 +335,10 @@ pub struct PresetParams {
     /// that only merges luma leaves. On in every row: intra frames gain luma
     /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
     pub sdp: bool,
-    /// CCSO classifications the filter search tries per plane; `0` disables
-    /// CCSO in the sequence.
+    /// CCSO `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` triples the
+    /// filter search tries per plane, `0..=112`: the first 8 of a fixed
+    /// ladder, then every other triple of § 5.18.7.12; `0` disables CCSO in
+    /// the sequence.
     pub ccso_candidates: u8,
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
@@ -845,6 +847,7 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
         check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
@@ -1593,6 +1596,7 @@ mod tests {
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("ccso_candidates", "113")], "ccso_candidates"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
             (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),

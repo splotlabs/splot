@@ -29,8 +29,8 @@ use crate::intra_frame::map_tiles;
 use crate::kernels::ccso::{BANDS, CLASSES, CcsoRow, CcsoStats, EDGE_CLASSES, accumulate_simd};
 use crate::rd::{Bits, Lambda, symbol_cost, unary_cost};
 
-/// `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` in the order the
-/// search tries them.
+/// `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` that the search tries
+/// first, in order; [`ladder`] then adds every other triple of § 5.18.7.12.
 const LADDER: [(u8, u8, u8); 8] = [
     (0, 0, 0),
     (1, 0, 0),
@@ -139,7 +139,7 @@ const fn offset_delta(sum: i64, count: u32, offset: i32) -> i64 {
 /// The CCSO choice of each plane, `candidates` ladder entries deep.
 pub(super) fn search(input: &CcsoInput<'_>, candidates: usize) -> Result<CcsoChoice> {
     let grid = CcsoGrid::new(input.seq, input.core).map_err(coding("ccso grid"))?;
-    let ladder = &LADDER[..candidates.min(LADDER.len())];
+    let ladder = &ladder(candidates);
     let planes = if input.filtered.plane(PlaneId::U).is_some() {
         3
     } else {
@@ -187,14 +187,28 @@ pub(super) fn search(input: &CcsoInput<'_>, candidates: usize) -> Result<CcsoCho
     Ok((params, blocks))
 }
 
-/// Every variant of the ladder: band-offset-only classes of the first
-/// candidate, and the band and edge classes of each candidate.
+/// The first `count` triples: [`LADDER`], then the other values of
+/// `ccso_ext_filter` `0..=6` (its semantics forbid 7), `ccso_scale_idx` `0..=3` and
+/// `ccso_quant_idx` `0..=3`, by ext filter, scale and quant.
+fn ladder(count: usize) -> Vec<(u8, u8, u8)> {
+    let rest = (0..7u8)
+        .flat_map(|ext| {
+            (0..4u8).flat_map(move |scale| (0..4u8).map(move |quant| (ext, scale, quant)))
+        })
+        .filter(|entry| !LADDER.contains(entry));
+    LADDER.into_iter().chain(rest).take(count).collect()
+}
+
+/// Every variant of the ladder: band-offset-only classes of each candidate
+/// with `ccso_ext_filter` and `ccso_quant_idx` `0` (one per scale), and the
+/// band and edge classes of each candidate.
 fn variants(ladder: &[(u8, u8, u8)]) -> impl Iterator<Item = Variant> + '_ {
     ladder
         .iter()
         .enumerate()
-        .flat_map(|(candidate, &(_, scale, quant))| {
+        .flat_map(|(candidate, &(ext, scale, quant))| {
             let edge = ccso_quant_step(scale, quant) != 0;
+            let bo_only = (ext, quant) == (0, 0);
             (0..4u8).flat_map(move |band_log2| {
                 let variant = |bo_only, edge_clf| Variant {
                     candidate,
@@ -203,7 +217,7 @@ fn variants(ladder: &[(u8, u8, u8)]) -> impl Iterator<Item = Variant> + '_ {
                     band_log2,
                 };
                 [
-                    (candidate == 0).then(|| variant(true, false)),
+                    bo_only.then(|| variant(true, false)),
                     Some(variant(false, false)),
                     edge.then(|| variant(false, true)),
                 ]
