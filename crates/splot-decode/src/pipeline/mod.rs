@@ -724,7 +724,7 @@ fn push_split_inter<T: SplitSample>(
     inter::MotionFieldHandle,
 )> {
     let frame_tasks::SamplePools { scratch, split, .. } = T::pools(pools);
-    let (slot_index, parse_progress) = split.reserve(rows, *options);
+    let (slot_index, parse_progress) = split.reserve(rows, options);
     let records = scratch.take_frame_filter_records();
     let quantizer = crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
     let shared = share_sequence(shared_sequence, sequence);
@@ -1405,7 +1405,7 @@ fn decode_frames_in_order(
                         let core = Arc::clone(&inter_core);
                         pools.push_tip::<T>(
                             rows,
-                            *options,
+                            options,
                             frame_tasks::TipFrameInputs {
                                 candidate: next_candidate.clone(),
                                 core: inter_core,

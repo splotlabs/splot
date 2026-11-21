@@ -54,13 +54,9 @@ fn context(threads: ThreadCount) -> DecodeContext {
     DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
 }
 
-fn collect_raw(
-    context: &DecodeContext,
-    bytes: &[u8],
-    options: DecodeOptions,
-) -> Result<Vec<u8>, DecodeError> {
+fn collect_raw(context: &DecodeContext, bytes: &[u8]) -> Result<Vec<u8>, DecodeError> {
     let mut raw = Vec::new();
-    context.decode_raw_bytes(bytes, options, &mut raw)?;
+    context.decode_raw_bytes(bytes, DecodeOptions::default(), &mut raw)?;
     Ok(raw)
 }
 
@@ -82,7 +78,7 @@ fn minimal_fixture_with_advisory_metadata_and_empty_record() -> Vec<u8> {
 #[test]
 fn minimal_fixture_decodes_to_exact_raw_bytes() {
     let context = context(ThreadCount::from(1usize));
-    let bytes = collect_raw(&context, MINIMAL_FIXTURE, DecodeOptions::default()).unwrap();
+    let bytes = collect_raw(&context, MINIMAL_FIXTURE).unwrap();
 
     assert_eq!(bytes, expected_minimal_raw());
 }
@@ -432,7 +428,6 @@ fn intra_only_tile_group_fixture_matches_exact_raw_bytes() {
         let bytes = collect_raw(
             &context(ThreadCount::from(threads)),
             INTRA_ONLY_TILE_GROUP_FIXTURE,
-            DecodeOptions::default(),
         )
         .unwrap();
         assert_eq!(bytes, vec![0x80; 512]);
