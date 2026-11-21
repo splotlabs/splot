@@ -475,6 +475,9 @@ pub struct PresetParams {
     /// (2026-10-25): every such block with `eob > 3` then pays a
     /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
     pub inter_ist: bool,
+    /// With `inter_ist`, an inter luma block gives an RD trial to every
+    /// kernel in place of the one that keeps the most energy.
+    pub inter_ist_rd: bool,
     /// TIP (`enable_tip`), `0..=2`: `1` inter frames with reference MVs and
     /// a TIP reference pair code `TIP_FRAME_AS_REF` with equal weights, and
     /// inter leaves also try the TIP `NEARMV` candidates; `2` also picks the
@@ -1126,6 +1129,7 @@ preset_table! {
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
         cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
+        inter_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     inter {
@@ -1442,6 +1446,7 @@ mod tests {
             assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
+            assert!(fast.inter_ist_rd <= slow.inter_ist_rd);
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
             assert!(fast.global_motion <= slow.global_motion);
