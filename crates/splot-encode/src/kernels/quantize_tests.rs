@@ -67,6 +67,19 @@ proptest! {
     }
 
     #[test]
+    fn error_matches_scalar_and_the_plain_quantizer((q, ..) in quantizer(0u32..=128), coeffs in coefficients()) {
+        let error = |k: &dyn EncoderKernels| {
+            let mut levels = vec![0; coeffs.len()];
+            let mut dequant = vec![0; coeffs.len()];
+            let found = k.quantize_error(&q, &coeffs, &mut levels, &mut dequant).unwrap();
+            (levels, dequant, found)
+        };
+        let (levels, dequant, (nonzero, sse)) = error(&SimdKernels);
+        prop_assert_eq!((levels.clone(), dequant.clone(), nonzero), run(&SimdKernels, &q, &coeffs));
+        prop_assert_eq!((levels, dequant, (nonzero, sse)), error(&ScalarKernels));
+    }
+
+    #[test]
     fn dequant_is_the_decoder_value_and_levels_are_in_range(
         (q, dc, ac, denom, bd) in quantizer(0u32..=128),
         coeffs in coefficients(),

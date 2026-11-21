@@ -106,6 +106,10 @@ pub struct PresetParams {
     /// types a block offers, most probable first. `0` codes every intra luma
     /// block with `DCT_DCT` and signals no type (`reduced_tx_set = 2`).
     pub tx_type_depth: u8,
+    /// Luma types per block that get the exact trial: `0` tries every offered
+    /// type; `k` ranks the offered types by the plain deadzone levels (error in
+    /// the coefficient domain plus their frozen rate) and tries the best `k`.
+    pub tx_type_model_keep: u8,
     /// Luma transform-partition search (`TX_MODE_SELECT`); off codes every
     /// block with its largest transform (`TX_MODE_LARGEST`). Off from p8
     /// (paris p6 f10: +2.99% BD-rate at 0.77x CPU), so p6, p7 and p8 step
@@ -926,6 +930,7 @@ preset_table! {
         tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         tcq_type_trellis:      [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
+        tx_type_model_keep:    [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tx_partition_search:   frames([
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
@@ -1129,7 +1134,12 @@ mod tests {
             assert!(fast.tcq_search_trellis || !fast.tcq_type_trellis);
             assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
-            assert!(fast.tx_type_depth <= slow.tx_type_depth);
+            let exact = |p: &PresetParams| match p.tx_type_model_keep {
+                0 => crate::tx_choice::tx_type_candidates(p),
+                keep => crate::tx_choice::tx_type_candidates(p).min(usize::from(keep)),
+            };
+            assert!(exact(fast) <= exact(slow));
+            assert!(slow.tx_type_model_keep == 0 || fast.tx_type_model_keep > 0);
             assert!(at_most(
                 &fast.tx_partition_search,
                 &slow.tx_partition_search
