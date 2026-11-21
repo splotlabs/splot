@@ -423,7 +423,7 @@ pub struct InterIntra {
 }
 
 impl InterIntra {
-    fn prediction(self) -> Result<InterIntraPrediction> {
+    pub(super) fn prediction(self) -> Result<InterIntraPrediction> {
         let mode = match self.mode {
             0 => InterIntraMode::Dc,
             1 => InterIntraMode::Vertical,

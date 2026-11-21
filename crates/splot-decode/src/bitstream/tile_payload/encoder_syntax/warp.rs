@@ -62,6 +62,10 @@ pub struct WarpModes {
     /// The block `MvPrecision` of a `WARP_NEWMV`, one of
     /// [`IntraTileSyntax::newmv_precisions`]; `None` codes the frame precision.
     pub precision: Option<u8>,
+    /// The inter-intra prediction of a `WARPMV` block of at most 64x64 that
+    /// codes `warp_inter_intra = 1` (§ 5.20.7.15); a wedge needs
+    /// [`IntraTileSyntax::interintra_reads`] to allow `wedge_interintra`.
+    pub interintra: Option<super::InterIntra>,
 }
 
 /// The warp tools a leaf can code.
@@ -230,6 +234,10 @@ impl IntraTileSyntax {
             ref_warp_idx: modes.warp_idx,
             mvd: (newmv || modes.mv.is_some()).then_some(Mv::default()),
             precision: modes.precision,
+            interintra: modes
+                .interintra
+                .map(super::InterIntra::prediction)
+                .transpose()?,
         };
         let tile = &self.inter_ref()?.tile;
         let checked = tile
