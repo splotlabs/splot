@@ -633,7 +633,8 @@ fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 /// gate, change the stream against one gated trial, and decode to the
 /// encoder recon at both bit depths (a key frame and the inter frames that
 /// reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
-/// threads.
+/// threads. The 8-bit single-trial stream pins the single-trial path to the
+/// bytes main coded with `dip` (FNV-1a golden).
 #[test]
 fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     let (mut differs, mut more) = (false, 0);
@@ -670,7 +671,11 @@ fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         let four = crate::tile_writer::DIP_CODED.get();
         let name = format!("{bit_depth:?}");
         assert_same_samples(&decode(&units), &expected, &name);
-        differs |= stream(1, 1).0 != units;
+        let one = stream(1, 1).0;
+        if bit_depth == BitDepth::Eight {
+            assert_eq!(gm::fnv1a(&one), DIP_ONE_TRIAL_GOLDEN, "{name}: one trial");
+        }
+        differs |= one != units;
         more += four;
         for threads in [2, 8] {
             assert!(stream(4, threads).0 == units, "{name}: {threads} threads");
@@ -685,6 +690,10 @@ fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         "four DIP trials never coded a DIP of the wider search"
     );
 }
+
+/// The FNV-1a hash of the 8-bit `dip` stream of one trial, recorded from main
+/// c449dab0f.
+const DIP_ONE_TRIAL_GOLDEN: u64 = 7_325_615_198_436_183_569;
 
 /// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
 /// frames only.

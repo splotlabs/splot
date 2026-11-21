@@ -235,7 +235,7 @@ fn the_encoder_estimates_and_codes_global_motion() {
 /// 44b2ed044.
 const LEVEL_1_GOLDEN: u64 = 15_796_104_231_302_014_708;
 
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(super) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
     })
