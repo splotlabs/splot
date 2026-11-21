@@ -226,6 +226,18 @@ pub struct PresetParams {
     /// `0` codes neither compound nor skip-mode blocks. At least `1` in every
     /// row: `0` at p9 cost niklas f10 +9.8% BD-rate for 0.85x instructions.
     pub compound_candidates: u8,
+    /// References whose pairs the compound search takes, closest first by
+    /// the § 7.7 ranking, `1..=7` (`REFS_PER_FRAME`, § 3). `7` (every pair)
+    /// at p0; `3` elsewhere, as before.
+    pub compound_refs: u8,
+    /// `jmvd_scale_mode` values a `JOINT_NEWMV` candidate tries, `1..=5`
+    /// (`JOINT_NEWMV_SCALE_FACTOR_CNT`, § 3). `5` at p0; `1` (scale 0 only)
+    /// elsewhere.
+    pub jmvd_scales: u8,
+    /// Same-reference compound pairs also try `NEAR_NEWMV` and `NEW_NEWMV`
+    /// (§ 5.20.7.6 `compound_mode_same_refs`), not only `NEAR_NEARMV`. On at
+    /// p0.
+    pub same_ref_modes: bool,
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
     pub cdf_carry: bool,
@@ -732,6 +744,8 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("compound_refs", self.compound_refs, 1, 7, "")?;
+        check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check(
@@ -995,6 +1009,9 @@ preset_table! {
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     1],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     1,     1],
+        compound_refs:         [    7,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
+        jmvd_scales:           [    5,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        same_ref_modes:        [ true, false, false, false, false, false, false, false, false, false, false],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
@@ -1209,6 +1226,9 @@ mod tests {
             assert!(fast.psy_rd <= slow.psy_rd);
             assert!(at_most(&fast.tf_frames, &slow.tf_frames));
             assert!(fast.compound_candidates <= slow.compound_candidates);
+            assert!(fast.compound_refs <= slow.compound_refs);
+            assert!(fast.jmvd_scales <= slow.jmvd_scales);
+            assert!(fast.same_ref_modes <= slow.same_ref_modes);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
@@ -1435,6 +1455,10 @@ mod tests {
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("compound_refs", "0")], "compound_refs"),
+            (&[("compound_refs", "8")], "compound_refs"),
+            (&[("jmvd_scales", "0")], "jmvd_scales"),
+            (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
