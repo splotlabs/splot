@@ -239,6 +239,7 @@ impl IntraFrameCoder {
                 inter_ist: preset.inter_ist,
                 tip: preset.tip > 0 && preset.mv_prediction,
                 tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
+                tip_hole_fill: preset.tip > 0 && preset.mv_prediction && preset.tip_hole_fill,
                 opfl_refine: preset.opfl,
                 refinemv: preset.refinemv,
                 tip_refinemv: preset.tip > 0 && preset.mv_prediction && preset.tip_refinemv,

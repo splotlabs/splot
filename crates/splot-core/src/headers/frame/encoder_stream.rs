@@ -101,6 +101,9 @@ pub struct EncoderToolFlags {
     /// With `tip`, `disable_tip_output = 0`: `OBU_REGULAR_TIP` frames code
     /// `TIP_FRAME_AS_OUTPUT`.
     pub tip_output: bool,
+    /// With `tip`, `enable_tip_hole_fill` (§ 5.4.6): TIP frames may code
+    /// `allow_tip_hole_fill` (§ 5.18.2).
+    pub tip_hole_fill: bool,
     /// `enable_opfl_refine = REFINE_AUTO`: each inter frame codes its
     /// `opfl_refine_type`.
     pub opfl_refine: bool,
@@ -517,7 +520,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_flag(tools.tip)?; // enable_tip
     if tools.tip {
         w.write_flag(!tools.tip_output)?; // disable_tip_output
-        w.write_flag(false)?; // enable_tip_hole_fill
+        w.write_flag(tools.tip_hole_fill)?; // enable_tip_hole_fill
     }
     w.write_flag(tools.mv_traj)?; // enable_mv_traj
     w.write_flag(tools.bawp)?; // enable_bawp
