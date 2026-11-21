@@ -146,7 +146,6 @@ pub struct Picture {
     /// The grain the stream signals for this picture and the samples lack.
     pending_grain: Option<ActiveFilmGrain>,
     frame_type: Option<FrameType>,
-    key_frame: bool,
 }
 
 #[derive(Debug)]
@@ -187,10 +186,11 @@ impl Picture {
             PipelineDecodedFrame::Ten(frame) => Samples::Ten(display(frame, grain, pool.as_ref())?),
         };
         let metadata = &frame.output_effects.metadata;
-        let header = frame.ccso_header.as_deref();
         Ok(Self {
-            frame_type: header.and_then(|header| header.frame_type),
-            key_frame: header.is_some_and(|header| header.is_key_frame),
+            frame_type: frame
+                .ccso_header
+                .as_ref()
+                .and_then(|header| header.frame_type),
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
@@ -239,22 +239,15 @@ impl Picture {
             has_film_grain: self.has_film_grain,
             pending_grain: None,
             frame_type: self.frame_type,
-            key_frame: self.key_frame,
         })
     }
 
-    /// The `FrameType` of the frame this picture shows (AV2 § 5.18.2). A
+    /// The `FrameType` of the frame this picture shows (AV2 § 5.18.2):
+    /// [`FrameType::Key`] for a closed-loop or open-loop key frame. A
     /// show-existing picture has the type of the frame it shows again.
     #[must_use]
     pub const fn frame_type(&self) -> Option<FrameType> {
         self.frame_type
-    }
-
-    /// Whether an `OBU_CLOSED_LOOP_KEY` or `OBU_OPEN_LOOP_KEY` coded the frame
-    /// this picture shows.
-    #[must_use]
-    pub const fn is_key_frame(&self) -> bool {
-        self.key_frame
     }
 
     /// Visible width in luma samples.

@@ -421,14 +421,11 @@ fn a_picture_reports_the_type_of_the_frame_it_shows() {
     let pictures = decode(&mut decoder(1, 1), &units(MULTIREF), |_| {
         DataProps::default()
     });
-    let types: Vec<_> = pictures
-        .iter()
-        .map(|picture| (picture.frame_type(), picture.is_key_frame()))
-        .collect();
-    assert_eq!(types[0], (Some(FrameType::Key), true));
+    let types: Vec<_> = pictures.iter().map(Picture::frame_type).collect();
+    assert_eq!(types[0], Some(FrameType::Key));
     assert!(
         types[1..]
             .iter()
-            .all(|&(kind, key)| kind == Some(FrameType::Inter) && !key)
+            .all(|&kind| kind == Some(FrameType::Inter))
     );
 }

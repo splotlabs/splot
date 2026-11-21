@@ -15,7 +15,8 @@
 #define SPLOT_OK 0
 
 // [`splot_send_data`]: the decoder is full; take pictures, then send the
-// same data again. [`splot_get_picture`]: send more data first.
+// same data again. [`splot_get_picture`] and [`splot_wait_picture`]: send
+// more data first.
 #define SPLOT_EAGAIN -1
 
 // [`splot_get_picture`]: the decoder is drained; no picture follows.
@@ -25,11 +26,12 @@
 #define SPLOT_EINVAL -3
 
 // The bitstream failed to decode, or a resource limit stopped it. The
-// decoder takes no more data; close it. [`splot_apply_grain`]: the synthesis
+// decoder takes no more data; flush or close it. [`splot_apply_grain`]: the synthesis
 // failed; no decoder is affected.
 #define SPLOT_EDECODE -4
 
-// The decoder takes no more data: it is draining, or it failed earlier.
+// The decoder takes no more data until [`splot_flush`]: it is draining, or
+// it failed earlier.
 #define SPLOT_ESTATE -5
 
 // Chroma layout of a picture.
@@ -43,6 +45,20 @@ typedef enum SplotPixelLayout {
   // 4:4:4.
   SPLOT_PIXEL_LAYOUT_I444 = 3,
 } SplotPixelLayout;
+
+// The values of [`SplotPicture::frame_type`].
+typedef enum SplotFrameType {
+  // A zeroed picture, or a frame whose type the decoder did not derive.
+  SPLOT_FRAME_TYPE_NONE = 0,
+  // A closed-loop or open-loop key frame.
+  SPLOT_FRAME_TYPE_KEY = 1,
+  // An inter frame.
+  SPLOT_FRAME_TYPE_INTER = 2,
+  // An intra-only frame.
+  SPLOT_FRAME_TYPE_INTRA_ONLY = 3,
+  // A switch frame.
+  SPLOT_FRAME_TYPE_SWITCH = 4,
+} SplotFrameType;
 
 // An open decoder.
 typedef struct SplotDecoder SplotDecoder;
@@ -114,6 +130,8 @@ typedef struct SplotPicture {
   // 1 when the stream signals film grain for this picture, whether or not
   // `skip_film_grain` left it out; else 0.
   uint8_t has_film_grain;
+  // A [`SplotFrameType`] value: the type of the frame this picture shows.
+  uint8_t frame_type;
   // Reserved.
   size_t reserved[3];
   // The decoder's handle on the samples; do not touch.
@@ -165,7 +183,18 @@ int splot_send_data(struct SplotDecoder *decoder,
 // `decoder` is null or came from [`splot_open`].
 void splot_drain(struct SplotDecoder *decoder);
 
-// Takes the next picture in display order into `*out`.
+// Drops every unit and picture the decoder holds and starts a new session
+// on the same threads, for a seek or after [`SPLOT_EDECODE`]. Decoding
+// starts again at a temporal unit with a sequence header and a closed-loop
+// key, open-loop key or RAS frame.
+// Pictures already taken stay valid until released.
+//
+// # Safety
+// `decoder` is null or came from [`splot_open`].
+void splot_flush(struct SplotDecoder *decoder);
+
+// Takes the next picture in display order into `*out`, without waiting for
+// the data the decoder still decodes.
 //
 // Returns [`SPLOT_OK`], [`SPLOT_EAGAIN`] when more data is needed,
 // [`SPLOT_EOF`] after the last picture of a drained decoder,
@@ -177,6 +206,13 @@ void splot_drain(struct SplotDecoder *decoder);
 // zeroed or released picture: this call overwrites `*out`, so a picture in
 // `*out` that was not released with [`splot_picture_unref`] leaks.
 int splot_get_picture(struct SplotDecoder *decoder, struct SplotPicture *out);
+
+// [`splot_get_picture`], but waits until the data sent so far is decoded:
+// [`SPLOT_EAGAIN`] then means that data gives no further picture yet.
+//
+// # Safety
+// As [`splot_get_picture`].
+int splot_wait_picture(struct SplotDecoder *decoder, struct SplotPicture *out);
 
 // Stores in `*out` the picture `picture` with the film grain of AV2 § 7.21.7
 // applied. A picture that has its grain, or whose stream signals none,
