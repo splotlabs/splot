@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! CCSO statistics: each sample takes the § 7.19.1 class of its deblocked luma
-//! centre and taps with `ccso_edge_clf = 0` and eight bands, and the class
+//! centre and taps with `ccso_edge_clf = 0` and a power-of-two band count
+//! (eight for the edge classes, 64 for band offsets only), and the class
 //! accumulates `source - filtered` and a sample count. Coarser band and edge
 //! classes are sums of these classes.
 //!
@@ -17,23 +18,34 @@ pub(crate) const EDGE_CLASSES: usize = 3;
 pub(crate) const BANDS: usize = 8;
 /// Classes of a table: `(cls0 * EDGE_CLASSES + cls1) * BANDS + band`.
 pub(crate) const CLASSES: usize = EDGE_CLASSES * EDGE_CLASSES * BANDS;
+/// Bands of the band-offset statistics: `ccso_max_band_log2 = 6`
+/// (`CCSO_BAND_NUM`).
+pub(crate) const BO_BANDS: usize = 64;
+/// Classes of a band-offset table, laid out as [`CLASSES`].
+pub(crate) const BO_CLASSES: usize = EDGE_CLASSES * EDGE_CLASSES * BO_BANDS;
 
 const LANES: usize = 16;
 
-/// Per-class sums of `source - filtered` and sample counts.
+/// Per-class sums of `source - filtered` and sample counts over `N` classes:
+/// `N / (EDGE_CLASSES * EDGE_CLASSES)` bands, a power of two.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CcsoStats {
-    pub(crate) sum: [i64; CLASSES],
-    pub(crate) count: [u32; CLASSES],
+pub(crate) struct CcsoStats<const N: usize = CLASSES> {
+    pub(crate) sum: [i64; N],
+    pub(crate) count: [u32; N],
 }
 
-impl Default for CcsoStats {
+impl<const N: usize> Default for CcsoStats<N> {
     fn default() -> Self {
         Self {
-            sum: [0; CLASSES],
-            count: [0; CLASSES],
+            sum: [0; N],
+            count: [0; N],
         }
     }
+}
+
+/// The band count of a table of `classes` classes.
+const fn bands(classes: usize) -> usize {
+    classes / (EDGE_CLASSES * EDGE_CLASSES)
 }
 
 /// One row of samples: the deblocked luma centre and taps of each sample, and
@@ -57,7 +69,12 @@ impl CcsoRow<'_> {
 
 /// The class of `center` and its taps (§ 7.19.1 `ccso_score` with
 /// `edgeClassifier = 0`).
-fn class_of(center: u16, taps: [u16; 2], quant_step: u16, band_shift: u32) -> usize {
+fn class_of<const N: usize>(
+    center: u16,
+    taps: [u16; 2],
+    quant_step: u16,
+    band_shift: u32,
+) -> usize {
     let score = |tap: u16| {
         let diff = i32::from(tap) - i32::from(center);
         if diff > i32::from(quant_step) {
@@ -66,20 +83,20 @@ fn class_of(center: u16, taps: [u16; 2], quant_step: u16, band_shift: u32) -> us
             usize::from(diff >= -i32::from(quant_step))
         }
     };
-    (score(taps[0]) * EDGE_CLASSES + score(taps[1])) * BANDS
-        + usize::from(center >> band_shift) % BANDS
+    (score(taps[0]) * EDGE_CLASSES + score(taps[1])) * bands(N)
+        + usize::from(center >> band_shift) % bands(N)
 }
 
 /// Accumulates samples `range` of `row` one at a time.
-fn accumulate_samples(
+fn accumulate_samples<const N: usize>(
     row: CcsoRow<'_>,
     range: core::ops::Range<usize>,
     quant_step: u16,
     band_shift: u32,
-    stats: &mut CcsoStats,
+    stats: &mut CcsoStats<N>,
 ) {
     for x in range {
-        let class = class_of(
+        let class = class_of::<N>(
             row.center[x],
             [row.tap0[x], row.tap1[x]],
             quant_step,
@@ -92,21 +109,22 @@ fn accumulate_samples(
 
 /// The scalar reference of [`accumulate_simd`].
 #[cfg(test)]
-pub(crate) fn accumulate_scalar(
+pub(crate) fn accumulate_scalar<const N: usize>(
     row: CcsoRow<'_>,
     quant_step: u16,
     band_shift: u32,
-    stats: &mut CcsoStats,
+    stats: &mut CcsoStats<N>,
 ) {
     accumulate_samples(row, 0..row.len(), quant_step, band_shift, stats);
 }
 
-/// Accumulates `row` into `stats`; `band_shift` is `BitDepth - 3`.
-pub(crate) fn accumulate_simd(
+/// Accumulates `row` into `stats`; `band_shift` is `BitDepth` minus the
+/// base 2 logarithm of the band count of `N`.
+pub(crate) fn accumulate_simd<const N: usize>(
     row: CcsoRow<'_>,
     quant_step: u16,
     band_shift: u32,
-    stats: &mut CcsoStats,
+    stats: &mut CcsoStats<N>,
 ) {
     dispatch!(Level::baseline(), simd => {
         accumulate_kernel(simd, row, quant_step, band_shift, stats);
@@ -114,12 +132,12 @@ pub(crate) fn accumulate_simd(
 }
 
 #[inline]
-fn accumulate_kernel<S: Simd>(
+fn accumulate_kernel<S: Simd, const N: usize>(
     simd: S,
     row: CcsoRow<'_>,
     quant_step: u16,
     band_shift: u32,
-    stats: &mut CcsoStats,
+    stats: &mut CcsoStats<N>,
 ) {
     let len = row.len();
     let q = u16x16::splat(simd, quant_step);
@@ -132,10 +150,10 @@ fn accumulate_kernel<S: Simd>(
     let mut x = 0;
     while x + LANES <= len {
         let center = load(row.center, x);
-        let band = (center >> band_shift) & (BANDS as u16 - 1);
+        let band = (center >> band_shift) & (bands(N) as u16 - 1);
         let class = (classify(load(row.tap0, x), center) * EDGE_CLASSES as u16
             + classify(load(row.tap1, x), center))
-            * BANDS as u16
+            * bands(N) as u16
             + band;
         let (source, filtered) = (load(row.source, x), load(row.filtered, x));
         for ((&class, &source), &filtered) in class.iter().zip(source.iter()).zip(filtered.iter()) {
@@ -167,7 +185,23 @@ mod tests {
         })
     }
 
+    /// The SIMD and scalar forms agree at `N` classes, `bits`-bit samples.
+    fn check<const N: usize>(
+        row: CcsoRow<'_>,
+        quant_step: u16,
+        bits: u32,
+    ) -> Result<(), TestCaseError> {
+        let band_shift = bits - bands(N).trailing_zeros();
+        let (mut scalar, mut simd) = (CcsoStats::<N>::default(), CcsoStats::<N>::default());
+        accumulate_scalar(row, quant_step, band_shift, &mut scalar);
+        accumulate_simd(row, quant_step, band_shift, &mut simd);
+        prop_assert_eq!(&scalar, &simd);
+        prop_assert_eq!(scalar.count.iter().sum::<u32>() as usize, row.len());
+        Ok(())
+    }
+
     proptest! {
+        /// Every band count of § 5.18.7.12, 1 to 64.
         #[test]
         fn simd_matches_scalar((samples, quant_step, band_shift) in case()) {
             let column = |i: usize| samples.iter().map(|s| s[i]).collect::<Vec<_>>();
@@ -179,11 +213,14 @@ mod tests {
                 source: &planes[3],
                 filtered: &planes[4],
             };
-            let (mut scalar, mut simd) = (CcsoStats::default(), CcsoStats::default());
-            accumulate_scalar(row, quant_step, band_shift, &mut scalar);
-            accumulate_simd(row, quant_step, band_shift, &mut simd);
-            prop_assert_eq!(&scalar, &simd);
-            prop_assert_eq!(scalar.count.iter().sum::<u32>() as usize, samples.len());
+            let bits = band_shift + 3;
+            check::<9>(row, quant_step, bits)?;
+            check::<18>(row, quant_step, bits)?;
+            check::<36>(row, quant_step, bits)?;
+            check::<CLASSES>(row, quant_step, bits)?;
+            check::<144>(row, quant_step, bits)?;
+            check::<288>(row, quant_step, bits)?;
+            check::<BO_CLASSES>(row, quant_step, bits)?;
         }
     }
 
@@ -199,7 +236,7 @@ mod tests {
             source: &[10, 20, 30],
             filtered: &[4, 25, 30],
         };
-        let mut stats = CcsoStats::default();
+        let mut stats = CcsoStats::<CLASSES>::default();
         accumulate_simd(row, 16, 7, &mut stats);
         let class = |cls0: usize, cls1: usize| (cls0 * EDGE_CLASSES + cls1) * BANDS + 4;
         assert_eq!(stats.sum[class(2, 1)], 6);
