@@ -53,12 +53,14 @@ const ALPHA_MAX: i32 = 511;
 const TRANS_MAX: i32 = 16383;
 
 /// The models of the frames of `plan`, in coding order, against their
-/// nearest past and future coded frames; `coded_before` is the last frame
-/// coded before the plan. The motion search reads `sources`.
+/// nearest past and future coded frames, or with `level` 2 by
+/// [`crate::global_motion_search`] against every coded frame whose source is
+/// held, weighing parameter bits by `sad_per_bit` (Q8); `coded_before` is the
+/// last frame coded before the plan. The motion search reads `sources`.
 pub(crate) fn estimate(
     lookahead: &mut Lookahead,
     plan: &[GopFrame],
-    coded_before: Option<u64>,
+    (coded_before, level, sad_per_bit): (Option<u64>, u8, u64),
     sources: Sources<'_>,
 ) -> GlobalModels {
     let (cols, rows) = lookahead.grid();
@@ -72,14 +74,44 @@ pub(crate) fn estimate(
         }
         let past = coded.iter().filter(|&&d| d < display).max().copied();
         let future = coded.iter().filter(|&&d| d > display).min().copied();
+        let references: Vec<u64> = if level >= 2 {
+            coded.iter().copied().filter(|&d| d != display).collect()
+        } else {
+            past.into_iter().chain(future).collect()
+        };
         coded.push(display);
         let Some(intra) = lookahead.intra(display).map(<[u32]>::to_vec) else {
             continue;
         };
-        for reference in past.into_iter().chain(future) {
+        for reference in references {
             let Some(motion) = lookahead.motion(display, reference, sources) else {
                 continue;
             };
+            if level >= 2 {
+                let (Some(now), Some(then)) = (sources(display), sources(reference)) else {
+                    continue;
+                };
+                let size = now.plane_sizes()[0];
+                let frames = crate::global_motion_search::LumaPair {
+                    current: &now.planes()[0],
+                    reference: &then.planes()[0],
+                    width: size.width(),
+                    height: size.height(),
+                    bit_depth: now.bit_depth(),
+                };
+                let seed = display ^ reference.rotate_left(32);
+                let found = crate::global_motion_search::estimate(
+                    &frames,
+                    (motion, &intra),
+                    ((cols, rows), block),
+                    sad_per_bit,
+                    seed,
+                );
+                if let Some(model) = found {
+                    models.insert((display, reference), model);
+                }
+                continue;
+            }
             let pairs = pairs(motion, &intra, (cols, rows), block);
             let frame = ((cols * block) as f64, (rows * block) as f64);
             if let Some(model) = fit(&pairs, frame, display ^ reference.rotate_left(32)) {
