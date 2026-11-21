@@ -645,8 +645,6 @@ impl Decoder {
     pub fn flush(&mut self) {
         let mut state = self.shared.state.lock();
         state.flushing = true;
-        state.input.clear();
-        state.output.clear();
         self.shared.driver.notify_all();
         while state.flushing && !state.stopped {
             self.shared.caller.wait(&mut state);

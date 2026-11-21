@@ -686,10 +686,8 @@ mod tests {
             while let Some(unit) = reader.next_temporal_unit().unwrap() {
                 positions.push(unit.position());
             }
-            let units = {
-                reader.seek(positions[0]).unwrap();
-                collect_temporal_units(&mut reader)
-            };
+            reader.seek(positions[0]).unwrap();
+            let units = collect_temporal_units(&mut reader);
             assert_eq!(units.len(), 2);
             let cap = units[1].1.len();
             assert!(cap < units[0].1.len(), "the first unit is over the cap");
