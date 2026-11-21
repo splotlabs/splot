@@ -1395,61 +1395,72 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         }
         let mut scratch = core::mem::take(&mut self.scratch);
         let mut pair = core::mem::take(&mut self.pair);
-        let rotated = self.rotated_pair(syntax, [u, v], predictions, &mut scratch, &mut pair);
+        let rotated = self.rotated_pairs(syntax, [u, v], predictions, &mut scratch, &mut pair);
         (self.scratch, self.pair) = (scratch, pair);
-        let Some([u_levels, v_levels, cctx]) = rotated? else {
-            return Ok(plain);
-        };
-        let coded = TransformBlock {
-            cctx: cctx[0] as u8,
-            ..*u
-        };
-        if !syntax.cctx_coded(&coded, eob(&coded, &u_levels)?) {
-            return Ok(plain);
+        let mut best: Option<(u128, [TransformDecision; 2])> = None;
+        for [u_levels, v_levels, cctx] in rotated? {
+            let coded = TransformBlock {
+                cctx: cctx[0] as u8,
+                ..*u
+            };
+            if !syntax.cctx_coded(&coded, eob(&coded, &u_levels)?) {
+                continue;
+            }
+            if best.is_none() {
+                let plain_cost = self.pair_cost(
+                    syntax,
+                    [u, v],
+                    predictions,
+                    [&plain[0].levels, &plain[1].levels],
+                    None,
+                )?;
+                best = Some((plain_cost, plain.clone()));
+            }
+            let cost = self.pair_cost(
+                syntax,
+                [&coded, v],
+                predictions,
+                [&u_levels, &v_levels],
+                Some(()),
+            )?;
+            if best
+                .as_ref()
+                .is_some_and(|(best_cost, _)| cost < *best_cost)
+            {
+                best = Some((
+                    cost,
+                    [
+                        TransformDecision {
+                            cctx: coded.cctx,
+                            levels: u_levels,
+                            ..plain[0].clone()
+                        },
+                        TransformDecision {
+                            levels: v_levels,
+                            ..plain[1].clone()
+                        },
+                    ],
+                ));
+            }
         }
-        let plain_cost = self.pair_cost(
-            syntax,
-            [u, v],
-            predictions,
-            [&plain[0].levels, &plain[1].levels],
-            None,
-        )?;
-        let cost = self.pair_cost(
-            syntax,
-            [&coded, v],
-            predictions,
-            [&u_levels, &v_levels],
-            Some(()),
-        )?;
-        if cost >= plain_cost {
-            return Ok(plain);
-        }
-        Ok([
-            TransformDecision {
-                cctx: coded.cctx,
-                levels: u_levels,
-                ..plain[0].clone()
-            },
-            TransformDecision {
-                levels: v_levels,
-                ..plain[1].clone()
-            },
-        ])
+        Ok(best.map_or(plain, |(_, pair)| pair))
     }
 }
 
 impl SourceResidualCoder<'_> {
-    /// The levels of `u` and `v` rotated by the CCTX that leaves V the least
-    /// energy, and that `cctx_type` (as `[u, v, [cctx]]`); `None` when no
-    /// rotation leaves less than the smaller plain plane.
-    fn rotated_pair(
+    /// The levels of `u` and `v` rotated by each of the preset's
+    /// `cctx_candidates` CCTX rotations that leave V the least energy, with
+    /// their `cctx_type` (as `[u, v, [cctx]]`), least energy first. One
+    /// candidate is tried only when it leaves less than the smaller plain
+    /// plane.
+    fn rotated_pairs(
         &mut self,
         syntax: &mut IntraTileSyntax,
         [u, v]: [&TransformBlock; 2],
         [u_prediction, v_prediction]: [&[u16]; 2],
-        [residual, _, dequant]: &mut [Vec<i32>; 3],
+        [residual, plain_u, dequant]: &mut [Vec<i32>; 3],
         [u_coeffs, v_coeffs]: &mut [Vec<i32>; 2],
-    ) -> core::result::Result<Option<[Vec<i32>; 3]>, TileWriterError> {
+    ) -> core::result::Result<Vec<[Vec<i32>; 3]>, TileWriterError> {
         let ddt = (false, syntax.uses_ddt());
         let (u_params, u_forward) = self.forward(u, ddt, u_prediction, residual, u_coeffs)?;
         let (v_params, v_forward) = self.forward(v, ddt, v_prediction, residual, v_coeffs)?;
@@ -1458,27 +1469,40 @@ impl SourceResidualCoder<'_> {
             let (c, s) = (i128::from(c), i128::from(s));
             s * s * i128::from(uu) + c * c * i128::from(vv) - 2 * c * s * i128::from(uv)
         };
-        let Some((index, best)) = CCTX_ROTATIONS
+        let mut ranked: Vec<(i128, usize)> = CCTX_ROTATIONS
             .iter()
             .map(|&rotation| energy(rotation))
             .enumerate()
-            .min_by_key(|&(_, e)| e)
-        else {
-            return Ok(None);
-        };
-        if best >= i128::from(uu.min(vv)) << 16 {
-            return Ok(None);
+            .map(|(index, e)| (e, index))
+            .collect();
+        ranked.sort_unstable();
+        let keep = usize::from(self.preset.cctx_candidates.max(1));
+        if keep == 1
+            && ranked
+                .first()
+                .is_none_or(|&(e, _)| e >= i128::from(uu.min(vv)) << 16)
+        {
+            return Ok(Vec::new());
         }
-        kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
-        let cctx =
-            i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
-        let coded = TransformBlock {
-            cctx: cctx as u8,
-            ..*u
-        };
-        let u_levels = self.quantize(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
-        let v_levels = self.quantize(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
-        Ok(Some([u_levels, v_levels, vec![cctx]]))
+        let plain_v = v_coeffs.clone();
+        plain_u.clone_from(u_coeffs);
+        let mut out = Vec::with_capacity(keep);
+        for &(_, index) in ranked.iter().take(keep) {
+            u_coeffs.clone_from(plain_u);
+            v_coeffs.clone_from(&plain_v);
+            kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
+            let cctx =
+                i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
+            let coded = TransformBlock {
+                cctx: cctx as u8,
+                ..*u
+            };
+            let u_levels =
+                self.quantize(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
+            let v_levels = self.quantize(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
+            out.push([u_levels, v_levels, vec![cctx]]);
+        }
+        Ok(out)
     }
 
     /// `D + lambda * R` of chroma blocks `u` and `v` coded as `levels`, with
