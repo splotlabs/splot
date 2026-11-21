@@ -309,6 +309,10 @@ thread_local! {
     /// Wedge inter-intra leaves of the final passes on this thread.
     pub(crate) static CODED_WEDGE_INTERINTRA: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
+    /// `WARPMV` inter-intra and compound `LOCALWARP` leaves of the final
+    /// passes on this thread.
+    pub(crate) static CODED_WARP_TOOLS: core::cell::Cell<[usize; 2]> =
+        const { core::cell::Cell::new([0; 2]) };
 }
 
 #[cfg(test)]
@@ -322,6 +326,13 @@ thread_local! {
 
 #[cfg(test)]
 fn count_coded_type(prediction: InterPrediction, tile_edge: bool, references: usize) {
+    let mut warp_tools = CODED_WARP_TOOLS.get();
+    match prediction {
+        InterPrediction::Warp(modes) => warp_tools[0] += usize::from(modes.interintra.is_some()),
+        InterPrediction::Compound(modes) => warp_tools[1] += usize::from(modes.local_warp),
+        _ => {}
+    }
+    CODED_WARP_TOOLS.set(warp_tools);
     if let InterPrediction::Compound(modes) = prediction {
         let mut modes_seen = CODED_MODES.get();
         let same = modes.refs.0 == modes.refs.1;

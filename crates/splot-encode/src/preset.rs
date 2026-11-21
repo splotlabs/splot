@@ -247,6 +247,13 @@ pub struct PresetParams {
     /// also tries `use_amvd` (§ 5.20.7.6 `allow_amvd_mode`) and keeps the
     /// cheaper coding. Off in every row (not measured at p0).
     pub tip_amvd: bool,
+    /// With `warp`, the best `WARPMV` of a leaf also tries each smooth-mask
+    /// `warp_inter_intra` mode (§ 5.20.7.15), and at `2` each wedge, by luma
+    /// SATD, `0..=2`. `0` in every row (not measured at p0).
+    pub warp_interintra: u8,
+    /// With `warp`, each compound `NEW_NEWMV` trial also tries
+    /// `use_local_warp` (§ 5.20.7.14). Off in every row (not measured at p0).
+    pub compound_local_warp: bool,
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
     pub cdf_carry: bool,
@@ -799,6 +806,7 @@ impl PresetParams {
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
         check("interintra_search", self.interintra_search, 0, 1, "")?;
+        check("warp_interintra", self.warp_interintra, 0, 2, "")?;
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
@@ -1068,6 +1076,8 @@ preset_table! {
         same_ref_modes:        [false, false, false, false, false, false, false, false, false, false, false],
         compound_amvd:         [false, false, false, false, false, false, false, false, false, false, false],
         tip_amvd:              [false, false, false, false, false, false, false, false, false, false, false],
+        warp_interintra:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        compound_local_warp:   [false, false, false, false, false, false, false, false, false, false, false],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
@@ -1297,6 +1307,8 @@ mod tests {
             assert!(fast.same_ref_modes <= slow.same_ref_modes);
             assert!(fast.compound_amvd <= slow.compound_amvd);
             assert!(fast.tip_amvd <= slow.tip_amvd);
+            assert!(fast.warp_interintra <= slow.warp_interintra);
+            assert!(fast.compound_local_warp <= slow.compound_local_warp);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
@@ -1531,6 +1543,7 @@ mod tests {
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("interintra_search", "2")], "interintra_search"),
+            (&[("warp_interintra", "3")], "warp_interintra"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),

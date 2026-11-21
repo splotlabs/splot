@@ -962,7 +962,8 @@ impl EncoderInterTile {
             },
             interintra: match motion {
                 EncoderMotion::Single(single) => single.interintra,
-                EncoderMotion::Compound(_) | EncoderMotion::Warp(_) => None,
+                EncoderMotion::Warp(warp) => warp.interintra,
+                EncoderMotion::Compound(_) => None,
             },
             optflow_distances,
             compound_blend: blend,

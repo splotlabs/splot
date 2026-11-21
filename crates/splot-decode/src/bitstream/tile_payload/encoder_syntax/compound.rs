@@ -100,6 +100,12 @@ pub struct CompoundModes {
     /// `use_refinemv`, where [`IntraTileSyntax::compound_refinements`] says
     /// the block reads it.
     pub refinemv: bool,
+    /// `use_local_warp` (§ 5.20.7.14): `NEW_NEWMV` over two different
+    /// references, both with warp samples, sides of at least 8, without
+    /// `use_optflow`, `REFINE_ALL` or `force_integer_mv`, in a frame that
+    /// enables `LOCALWARP`. Such a block reads no `use_refinemv`,
+    /// `cwp_idx` or `interp_filter`.
+    pub local_warp: bool,
     /// The compound type, one [`IntraTileSyntax::compound_types`] allows.
     pub blend: CompoundType,
 }
@@ -195,6 +201,7 @@ impl IntraTileSyntax {
                 filter: InterpolationFilter::EightTap,
                 optflow: false,
                 refinemv: false,
+                local_warp: false,
                 blend: CompoundType::default(),
             };
             if let Ok(motion) = self.compound_choice(leaf, &modes) {
@@ -287,6 +294,7 @@ impl IntraTileSyntax {
                     use_amvd: false,
                     interp: InterpolationFilter::EightTapSharp,
                     use_optflow: false,
+                    local_warp: false,
                     use_refinemv: false,
                     blend: CompoundType::default(),
                 })
@@ -339,6 +347,7 @@ impl IntraTileSyntax {
             use_amvd: modes.amvd && y_mode.has_newmv(),
             interp: modes.filter,
             use_optflow: modes.optflow,
+            local_warp: modes.local_warp,
             use_refinemv: modes.refinemv,
             blend: modes.blend,
         };

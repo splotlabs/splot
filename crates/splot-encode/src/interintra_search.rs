@@ -5,9 +5,11 @@
 //! (§ 5.20.7.6) search: the cheapest single-reference `NEWMV` of a leaf
 //! (and, with `bawp_search` 2, each `NEARMV`) also tries each smooth-mask
 //! `interintra_mode` and each BAWP scale, scored by the decoder's own
-//! prediction, and the best of each joins the RD trials.
+//! prediction, and the best of each joins the RD trials. With
+//! `warp_interintra` the best `WARPMV` of a leaf tries `warp_inter_intra`
+//! the same way.
 
-use splot_decode::encoder_syntax::{Bawp, INTERINTRA_MODES, InterIntra};
+use splot_decode::encoder_syntax::{Bawp, INTERINTRA_MODES, InterIntra, WarpModes};
 
 use super::*;
 
@@ -93,6 +95,36 @@ impl TrialCoder<'_, '_> {
         Ok(out)
     }
 
+    /// The `WARPMV` `base` with its best smooth-mask `warp_inter_intra`
+    /// mode and, with `preset.warp_interintra` 2, its best wedge under that
+    /// mode, each scored as [`Self::cheapest_variant`] scores them; empty
+    /// where the block codes none.
+    pub(super) fn warp_interintra_choice(
+        &mut self,
+        leaf: &LeafBlock,
+        motion: &MotionSearch,
+        base: WarpModes,
+    ) -> Result<Vec<InterPrediction>> {
+        let with = |mode, wedge| {
+            InterPrediction::Warp(WarpModes {
+                interintra: Some(InterIntra { mode, wedge }),
+                ..base
+            })
+        };
+        let smooth = (0..INTERINTRA_MODES).map(|mode| with(mode, None));
+        let Some(best) = self.cheapest(leaf, motion, smooth)? else {
+            return Ok(Vec::new());
+        };
+        let mut out = vec![best];
+        if let (2, InterPrediction::Warp(WarpModes { interintra: Some(ii), .. })) =
+            (self.preset.warp_interintra, best)
+        {
+            let wedges = (0..WEDGE_TYPES).map(|index| with(ii.mode, Some(index)));
+            out.extend(self.cheapest(leaf, motion, wedges)?);
+        }
+        Ok(out)
+    }
+
     /// The codable variant of `variants` whose decoder luma prediction SATD
     /// plus mode rate is lowest.
     fn cheapest_variant(
@@ -101,9 +133,23 @@ impl TrialCoder<'_, '_> {
         motion: &MotionSearch,
         variants: impl IntoIterator<Item = InterModes>,
     ) -> Result<Option<InterModes>> {
-        let mut best: Option<(u64, InterModes)> = None;
-        for modes in variants {
-            let prediction = InterPrediction::Single(modes);
+        let found = self.cheapest(leaf, motion, variants.into_iter().map(InterPrediction::Single))?;
+        Ok(match found {
+            Some(InterPrediction::Single(modes)) => Some(modes),
+            _ => None,
+        })
+    }
+
+    /// The codable prediction of `variants` with the lowest decoder luma
+    /// prediction SATD plus mode and warp tail rate.
+    fn cheapest(
+        &mut self,
+        leaf: &LeafBlock,
+        motion: &MotionSearch,
+        variants: impl IntoIterator<Item = InterPrediction>,
+    ) -> Result<Option<InterPrediction>> {
+        let mut best: Option<(u64, InterPrediction)> = None;
+        for prediction in variants {
             let Some(blocks) = codable(
                 self.syntax
                     .luma_prediction(leaf, prediction)
@@ -118,11 +164,14 @@ impl TrialCoder<'_, '_> {
             }
             let mut sink = RateSink::adapting();
             self.syntax.price_inter_modes(leaf, prediction, &mut sink)?;
+            if matches!(prediction, InterPrediction::Warp(_)) {
+                self.syntax.price_interp_filter(leaf, prediction, &mut sink)?;
+            }
             cost += motion.bits_cost(sink.bits);
             if best.is_none_or(|(c, _)| cost < c) {
-                best = Some((cost, modes));
+                best = Some((cost, prediction));
             }
         }
-        Ok(best.map(|(_, modes)| modes))
+        Ok(best.map(|(_, prediction)| prediction))
     }
 }

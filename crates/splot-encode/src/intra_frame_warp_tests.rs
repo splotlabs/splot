@@ -76,6 +76,25 @@ pub(super) fn random_warp(
                 .get(rng.below(precisions.len() as u64 + 1) as usize)
                 .copied()
         },
+        interintra: None,
+    };
+    let interintra = InterIntra {
+        mode: rng.below(u64::from(INTERINTRA_MODES)) as u8,
+        wedge: (rng.below(2) == 0).then(|| rng.below(68) as u8),
+    };
+    let with = WarpModes {
+        interintra: Some(interintra),
+        ..modes
+    };
+    let codes = syntax
+        .inter_mvs(leaf, InterPrediction::Warp(WarpModes { mv: None, ..with }))
+        .is_ok();
+    assert!(codes <= candidate, "{with:?}");
+    let modes = if codes {
+        coverage[36] += 1;
+        with
+    } else {
+        modes
     };
     coverage[22] += 1;
     coverage[23 + kind] += 1;
@@ -139,13 +158,16 @@ fn warp_stream(config: &Config, preset: &PresetParams) -> WarpStream {
     })
 }
 
-/// Nine zooming frames of `coder` in mini-GOPs at qp 180, each coded frame
-/// with the leaf counts `count` takes from it.
+/// Nine zooming frames of `coder` in mini-GOPs at the constant qp of
+/// `config`, each coded frame with the leaf counts `count` takes from it.
 pub(super) fn zooming_stream(
     config: &Config,
     mut coder: IntraFrameCoder,
     count: impl Fn(&CodedFrame) -> (usize, usize),
 ) -> WarpStream {
+    let RateControlMode::ConstantQp { qp } = config.rate_control else {
+        panic!("a constant-qp config");
+    };
     let mini_gop = coder.preset.mini_gop_size.min(4);
     let mut planner = crate::gop::GopPlanner::new(config.keyint, mini_gop);
     let (mut units, mut recons, mut frames) = (Vec::new(), BTreeMap::new(), Vec::new());
@@ -156,7 +178,7 @@ pub(super) fn zooming_stream(
             match step {
                 crate::gop::GopStep::Code(plan) => {
                     let source = zooming_frame(config, plan.display_index as u32);
-                    let mut coded = coder.code_frame(&source, &plan, 180, &[]).unwrap();
+                    let mut coded = coder.code_frame(&source, &plan, qp, &[]).unwrap();
                     let core = coded
                         .tip_output
                         .clone()
@@ -450,4 +472,58 @@ fn avm_decodes_warp_streams_like_splot() {
             "{chroma:?} integer_mv {integer_mv}: AVM output differs"
         );
     }
+}
+
+/// A tiled qp-40 stream with `warp_interintra` 2, `compound_local_warp`
+/// and every inter candidate in the trials, on `threads` threads, and the
+/// `WARPMV` inter-intra and compound `LOCALWARP` leaves it codes.
+fn warp_tools_stream(threads: usize) -> (WarpStream, [usize; 2]) {
+    let mut config = config(136, 72, BitDepth::Eight, 6, 40);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    crate::tile_writer::CODED_WARP_TOOLS.set([0; 2]);
+    let preset = with_warp(|p| {
+        p.warp_interintra = 2;
+        p.compound_local_warp = true;
+        p.mds0_budgets = crate::preset::Levels::all([u8::MAX; 3]);
+        p.light_leaf = crate::preset::Levels::all(u8::MAX);
+    });
+    let stream = warp_stream(&config, preset);
+    (stream, crate::tile_writer::CODED_WARP_TOOLS.get())
+}
+
+/// The warp search codes `WARPMV` inter-intra and compound `LOCALWARP`
+/// leaves in frames that later frames reference; the stream decodes to the
+/// encoder recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn warp_interintra_and_compound_local_warp_decode_on_any_thread_count() {
+    let (one, coded) = warp_tools_stream(1);
+    assert!(coded.iter().all(|&count| count > 0), "{coded:?}");
+    assert_warp_records_consumed(&one.frames, "warp tools");
+    assert_same_samples(&decode(&one.units), &one.expected, "warp tools");
+    for threads in [2, 8] {
+        assert!(warp_tools_stream(threads).0.units == one.units, "{threads} threads");
+    }
+}
+
+/// AVM decodes the warp inter-intra and compound `LOCALWARP` stream like
+/// splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_warp_tools_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (stream, _) = warp_tools_stream(1);
+    let avm = avm_decode(
+        &avmdec,
+        std::slice::from_ref(&stream.units),
+        (136, 72),
+        BitDepth::Eight,
+        "warp-tools",
+    );
+    assert!(avm == decode(&stream.units), "AVM output differs");
 }
