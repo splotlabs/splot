@@ -156,6 +156,7 @@ fn tip_context(
     TemporalMvContext {
         current_order_hint,
         ref_order_hints,
+        restricted_refs: 0,
         field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
         trajectories: None,
         trajectory_scratch: None,
@@ -475,6 +476,25 @@ fn spatial_derivation_projects_references_on_the_same_side() {
     assert_eq!(
         context.derive_spatial_mv(0, 1, Mv { row: 8, col: 12 }, 0, 0),
         Some(Mv { row: 4, col: 6 })
+    );
+}
+
+/// § 7.12.2.16 with § 5.18.2 `FrameDistance`: a restricted candidate
+/// reference lies at distance 127 on the past side, so a past target projects
+/// it with the denominator clamped to `MAX_FRAME_DISTANCE`.
+#[test]
+fn spatial_derivation_projects_a_restricted_candidate_as_past() {
+    let ref_frame_idx = [0, 1, 2];
+    let ref_valid = [true; 3];
+    let ref_order_hint = [3, u32::MAX, u32::MAX];
+    let hints = reference_order_hints(&ref_frame_idx, &ref_valid, &ref_order_hint);
+    let restricted = restricted_reference_mask(&ref_frame_idx, &ref_valid, &ref_order_hint);
+    assert_eq!(restricted, 0b110);
+    let context = OrderHintMvContext::new(4, &hints, restricted);
+
+    assert_eq!(
+        context.derive_spatial_mv(0, 2, Mv { row: -80, col: 32 }),
+        Some(Mv { row: -3, col: 1 })
     );
 }
 
