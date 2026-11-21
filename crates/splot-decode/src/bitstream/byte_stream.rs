@@ -453,7 +453,12 @@ fn parse_bounded_annex_b_at<'a>(
 
         match cursor.next_obu() {
             Ok(Some(envelope)) => {
-                if is_selected_frame_candidate(envelope.header) {
+                let selected_layer = DecodeLayerSelection::of_stream(
+                    obus.iter()
+                        .chain(core::iter::once(&envelope))
+                        .map(|obu| obu.header.extended_layer_id),
+                );
+                if is_selected_frame_candidate(envelope.header, selected_layer) {
                     let next_frame_candidate_count = frame_candidate_count.saturating_add(1);
                     ensure_or_first_unsupported(
                         limits,
@@ -467,7 +472,7 @@ fn parse_bounded_annex_b_at<'a>(
                 *obu_count = next_obu_count;
                 record_first_unsupported(
                     first_unsupported,
-                    ensure_supported_obu(envelope, DecodeLayerSelection::base()),
+                    ensure_supported_obu(envelope, selected_layer),
                 )?;
             }
             Ok(None) => {
@@ -515,8 +520,7 @@ fn record_first_unsupported(
     }
 }
 
-fn is_selected_frame_candidate(header: ObuHeader) -> bool {
-    let selected_layer = DecodeLayerSelection::base();
+fn is_selected_frame_candidate(header: ObuHeader, selected_layer: DecodeLayerSelection) -> bool {
     matches!(
         header.obu_type,
         ObuType::ClosedLoopKey | ObuType::RegularTileGroup | ObuType::RegularTip
