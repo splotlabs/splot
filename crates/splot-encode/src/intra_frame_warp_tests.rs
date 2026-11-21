@@ -530,3 +530,51 @@ fn avm_decodes_warp_tools_like_splot() {
     );
     assert!(avm == decode(&stream.units), "AVM output differs");
 }
+
+/// At the first leaf of an inter frame no neighbour has warp samples, so a
+/// compound `NEW_NEWMV` with `use_local_warp` (which a memoized subtree,
+/// coded again under other neighbours, can carry there) is not codable;
+/// `snap_prediction` drops `use_local_warp` instead of failing the frame.
+#[test]
+fn snapping_drops_compound_local_warp_a_block_cannot_code() {
+    let config = config(96, 72, BitDepth::Eight, 9, 60);
+    let mut checked = 0;
+    let tree = |syntax: &mut IntraTileSyntax,
+                node: PartitionNode,
+                rng: &mut Rng,
+                coverage: &mut Coverage| {
+        let leaf = syntax.leaf(node)?;
+        let first = leaf.row4() == 0 && leaf.col4() == 0;
+        let pair = syntax
+            .compound_pairs()
+            .into_iter()
+            .find(|refs| refs.0 != refs.1);
+        if let (true, Some(refs), true) = (first, pair, syntax.compound_allowed(&leaf)) {
+            let plain = CompoundModes {
+                refs,
+                mode: splot_decode::encoder_syntax::CompoundMode::NewNew,
+                drl: [0; 2],
+                mvs: [MotionVector { row: 8, col: -8 }; 2],
+                jmvd_scale_mode: 0,
+                amvd: false,
+                filter: splot_recon::InterpolationFilter::EightTap,
+                optflow: false,
+                refinemv: false,
+                local_warp: false,
+                blend: CompoundType::default(),
+            };
+            let local = CompoundModes {
+                local_warp: true,
+                ..plain
+            };
+            assert!(syntax.compound_bases(&leaf, &local).is_err());
+            let mut snap = |modes| crate::tile_writer::snap_prediction(syntax, &leaf, modes);
+            let want = snap(InterPrediction::Compound(plain))?;
+            assert_eq!(snap(InterPrediction::Compound(local))?, want);
+            checked += 1;
+        }
+        super::random_tree(syntax, node, rng, coverage)
+    };
+    super::inter_stream_with(&config, 0x10CA, tree);
+    assert!(checked > 0);
+}
