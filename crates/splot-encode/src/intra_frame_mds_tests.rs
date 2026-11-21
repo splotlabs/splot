@@ -436,8 +436,8 @@ fn light_leaf(margin: u8) -> &'static PresetParams {
 }
 
 /// The length and FNV-1a hash of the p10 stream of [`staged_stream`] at qp
-/// 160, recorded from main 381da1f9d before the light leaf decision.
-const P10_GOLDEN: (usize, u64) = (13147, 0xa130_f2ca_67af_f6f8);
+/// 160, recorded from main ac27288bb before the light leaf decision.
+const P10_GOLDEN: (usize, u64) = (13796, 0xb977_9e15_e32d_ccae);
 
 /// The light leaf decision drops more MDS0 candidates in frames that later
 /// frames reference, under deblocking, CDEF, LR, CCSO and GDF; the stream
