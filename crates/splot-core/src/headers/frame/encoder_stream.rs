@@ -101,6 +101,9 @@ pub struct EncoderToolFlags {
     /// With `tip`, `disable_tip_output = 0`: `OBU_REGULAR_TIP` frames code
     /// `TIP_FRAME_AS_OUTPUT`.
     pub tip_output: bool,
+    /// With `tip_output` and `df_sub_pu`, `enable_tip_explicit_qp` (§ 5.4.6):
+    /// `TIP_FRAME_AS_OUTPUT` frames code `quantization_params()`.
+    pub tip_explicit_qp: bool,
     /// With `tip`, `enable_tip_hole_fill` (§ 5.4.6): TIP frames may code
     /// `allow_tip_hole_fill` (§ 5.18.2).
     pub tip_hole_fill: bool,
@@ -545,7 +548,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_flag(tools.implicit_mask)?; // enable_imp_msk_bld
     w.write_flag(tools.df_sub_pu)?; // enable_df_sub_pu
     if tools.tip && tools.tip_output && tools.df_sub_pu {
-        w.write_flag(false)?; // enable_tip_explicit_qp
+        w.write_flag(tools.tip_explicit_qp)?; // enable_tip_explicit_qp
     }
     w.write_bits(if tools.opfl_refine { 3 } else { 0 }, 2)?; // enable_opfl_refine
     w.write_flag(tools.refinemv)?; // enable_refinemv
@@ -916,7 +919,7 @@ fn write_filter_params(
 /// `minLog2TileCols` and `minLog2Tiles` are `0`: `tiles` capped at `maxLog2TileCols`
 /// and `maxLog2TileRows`, then `context_update_tile_id` and `tiles.size_bytes`
 /// when the frame has more than one tile.
-fn write_uniform_tile_info(
+pub(super) fn write_uniform_tile_info(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     tiles: UniformTiles,

@@ -432,7 +432,8 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
     }
 
     /// Every chroma mode, CFL with derived alphas, CFL with the explicit
-    /// alphas of the lowest SATD per plane, and the MHCCP directions.
+    /// alphas of the lowest SATD per plane (alpha 0, `CFL_SIGN_ZERO`, in at
+    /// most one plane, § 5.20.7.32), and the MHCCP directions.
     fn chroma_candidates(
         &mut self,
         leaf: &LeafBlock,
@@ -446,21 +447,26 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             return Ok(candidates);
         }
         candidates.push(with(ChromaMode::CflDerived));
+        let cfl = |alpha_u, alpha_v| with(ChromaMode::Cfl { alpha_u, alpha_v });
         let mut alpha_u = (u64::MAX, 0);
         let mut alpha_v = (u64::MAX, 0);
         for alpha in (-MAX_CFL_ALPHA..=MAX_CFL_ALPHA).filter(|&alpha| alpha != 0) {
-            let both = with(ChromaMode::Cfl {
-                alpha_u: alpha,
-                alpha_v: alpha,
-            });
-            let [_, u, v] = self.plane_satd(leaf, both, 1..3)?;
+            let [_, u, v] = self.plane_satd(leaf, cfl(alpha, alpha), 1..3)?;
             alpha_u = alpha_u.min((u, alpha));
             alpha_v = alpha_v.min((v, alpha));
         }
-        candidates.push(with(ChromaMode::Cfl {
-            alpha_u: alpha_u.1,
-            alpha_v: alpha_v.1,
-        }));
+        if self.preset.cfl_zero_alpha {
+            let [_, zero_u, _] = self.plane_satd(leaf, cfl(0, alpha_v.1), 1..2)?;
+            let [_, _, zero_v] = self.plane_satd(leaf, cfl(alpha_u.1, 0), 2..3)?;
+            let gain = |zero: u64, (best, _): (u64, i8)| best.saturating_sub(zero);
+            let (gain_u, gain_v) = (gain(zero_u, alpha_u), gain(zero_v, alpha_v));
+            if gain_u > 0 && gain_u >= gain_v {
+                alpha_u.1 = 0;
+            } else if gain_v > 0 {
+                alpha_v.1 = 0;
+            }
+        }
+        candidates.push(cfl(alpha_u.1, alpha_v.1));
         if self.preset.mhccp && self.syntax.mhccp_allowed(leaf) {
             candidates.extend((0..3).map(|direction| with(ChromaMode::Mhccp { direction })));
         }
@@ -879,7 +885,10 @@ impl TrialCoder<'_, '_> {
     }
 
     /// The `preset.compound_candidates` compound predictions of `leaf` with
-    /// the lowest luma SATD plus the exact rate of their mode and difference
+    /// the lowest luma SATD (of the decoder's prediction with
+    /// `preset.implicit_mask`, whose `COMPOUND_AVERAGE` blends with the
+    /// implicit mask, § 7.13.3.14; of the plain average otherwise) plus the
+    /// exact rate of their mode and difference
     /// syntax, DRL indices included (priced for the [`PRICED_COMPOUND_SHARE`]
     /// times as many lowest-SATD ones; a candidate with the references and
     /// vectors of an earlier one is dropped, which measured better than
@@ -1011,12 +1020,20 @@ impl TrialCoder<'_, '_> {
                 {
                     continue;
                 }
-                let satd = motion.prediction_satd(
-                    self.syntax,
-                    &[(refs.0, mvs[0]), (refs.1, mvs[1])],
-                    InterpolationFilter::EightTap,
-                    leaf_rect(leaf)?,
-                )?;
+                let satd = if self.preset.implicit_mask {
+                    let prediction = InterPrediction::Compound(trial);
+                    let Some((satd, _)) = self.luma_score(leaf, prediction)? else {
+                        continue;
+                    };
+                    satd
+                } else {
+                    motion.prediction_satd(
+                        self.syntax,
+                        &[(refs.0, mvs[0]), (refs.1, mvs[1])],
+                        InterpolationFilter::EightTap,
+                        leaf_rect(leaf)?,
+                    )?
+                };
                 ranked.push((satd, mvs, trial));
             }
         }
