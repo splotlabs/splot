@@ -100,8 +100,9 @@ pub(crate) trait PartitionSearch {
 /// context instead of searching it again.
 ///
 /// With the preset's `none_breakout` level, a node whose `NONE` leaf codes
-/// no coefficient, or whose `NONE` distortion and rate per sample are under
-/// the level's thresholds ([`cheap`]), tries no other shape.
+/// no coefficient and whose log2 area is at most `breakout_area`, or whose
+/// `NONE` distortion and rate per sample are under the level's thresholds
+/// ([`cheap`]), tries no other shape.
 ///
 /// Each shape after the first searches under a budget, the lower of the best
 /// cost so far and the node's own budget: its children search under what the
@@ -378,6 +379,7 @@ fn search<S: PartitionSearch>(
     let mut exited = false;
     let early_exit = preset.partition_early_exit.at(coder.context());
     let breakout = preset.none_breakout.at(coder.context());
+    let area = preset.breakout_area.at(coder.context());
     for (index, (partition, children)) in candidates.iter().enumerate() {
         let best_j = best.as_ref().map(|(j, ..)| *j);
         let gate = match extended_shape(*partition) {
@@ -410,8 +412,10 @@ fn search<S: PartitionSearch>(
             };
             leaf = Some(choice);
             cost.rate += rate;
+            let (w, h) = coder.block_log2(node)?;
             ends = breakout > 0
-                && (!coder.leaf_coded() || cheap(cost, coder.block_log2(node)?, lambda, breakout));
+                && (!coder.leaf_coded() && w + h <= u32::from(area)
+                    || cheap(cost, (w, h), lambda, breakout));
             Some((PartitionTree::Leaf(choice), cost))
         } else {
             let nested = extended && extended_shape(*partition).is_none();
