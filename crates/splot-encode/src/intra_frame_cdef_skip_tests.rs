@@ -129,3 +129,63 @@ fn avm_decodes_df_sub_pu_frames_like_splot() {
     let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Eight, "df-sub-pu");
     assert!(avm == recon, "AVM output differs");
 }
+
+/// Preset 6 with the whole deblocking ladder of `f(5)` and split luma offsets.
+fn with_split_deblock() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        loop_filter_search: 3,
+        deblock_luma_split: true,
+        deblock_offset_bits: 5,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// Whether `core` deblocks luma with different vertical and horizontal
+/// offsets, in one direction only, or with an offset outside `-4..=3`.
+fn new_deblock_choice(core: &FrameHeaderCore) -> bool {
+    core.deblocking_filter_params
+        .as_ref()
+        .is_some_and(|params| {
+            let [v, h, ..] = params.df_delta_q;
+            let [v_on, h_on, ..] = params.apply_deblocking_filter;
+            v != h || v_on != h_on || !(-4..=3).contains(&v) || !(-4..=3).contains(&h)
+        })
+}
+
+/// With split luma offsets and `f(5)` offsets some frame codes a new luma
+/// deblocking choice; the stream decodes to the encoder recon and 1, 2 and 8
+/// threads write the same bytes. With the search of preset 6, no frame does.
+#[test]
+fn split_deblock_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (one, recon, flags) = filter_stream(1, with_split_deblock(), new_deblock_choice);
+    assert!(flags.contains(&true), "{flags:?}");
+    assert_same_samples(&decode(&one.concat()), &recon, "split deblock");
+    for threads in [2, 8] {
+        assert!(
+            filter_stream(threads, with_split_deblock(), new_deblock_choice).0 == one,
+            "{threads} threads"
+        );
+    }
+    let (_, _, off) = filter_stream(1, Preset::new(6).unwrap().params(), new_deblock_choice);
+    assert!(!off.contains(&true), "{off:?}");
+}
+
+/// AVM decodes frames with split and wide luma deblocking offsets to the
+/// splot output.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_split_deblock_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, recon, flags) = filter_stream(2, with_split_deblock(), new_deblock_choice);
+    assert!(flags.contains(&true), "{flags:?}");
+    let avm = avm_decode(
+        &avmdec,
+        &units,
+        (200, 136),
+        BitDepth::Eight,
+        "split-deblock",
+    );
+    assert!(avm == recon, "AVM output differs");
+}

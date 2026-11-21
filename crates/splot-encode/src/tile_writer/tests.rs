@@ -106,6 +106,7 @@ impl Case {
                 cwp: false,
                 implicit_mask: false,
                 df_sub_pu: false,
+                df_par_bits_extra: 0,
                 interintra: false,
                 bawp: false,
             },
