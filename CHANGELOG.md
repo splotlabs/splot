@@ -7,6 +7,11 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 - `splot encode` without `--qp`, `--crf` or `--bitrate` codes `--crf 20`
   (8-bit base qindex 80); `--qp 80` keeps the old flat default.
+- `Encoder::receive_packet` codes a mini-GOP one wave at a time and returns
+  each temporal unit when its frames are coded, not after the whole mini-GOP.
+  `Encoder::progress` returns a `Progress` handle that another thread reads
+  while a call runs: frames coded, with the frame in coding counted by the
+  fraction of its superblocks searched. The stream bytes do not change.
 
 ### Encoder 4:2:2 and 4:4:4
 

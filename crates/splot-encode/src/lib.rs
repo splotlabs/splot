@@ -5,7 +5,8 @@
 //!
 //! [`Encoder`] takes owned [`SourceFrame`]s built for a validated [`Config`]
 //! and returns one [`Packet`] (an AV2 Annex B temporal unit) per frame, with
-//! [`FrameStats`]; a [`CancelToken`] stops it from another thread.
+//! [`FrameStats`]; from another thread a [`CancelToken`] stops it and a
+//! [`Progress`] reads how far it has come.
 //! [`y4m::Y4mReader`] reads input and [`ivf::IvfWriter`] writes
 //! output. Speed presets are rows of [`PRESETS`]; rate control goes through
 //! [`RateController`], fed by a lookahead that detects scene cuts and models
@@ -36,6 +37,7 @@ mod mode_decision;
 mod motion_search;
 mod palette;
 pub mod preset;
+pub mod progress;
 pub mod rate_control;
 mod rd;
 mod resize;
@@ -57,6 +59,7 @@ pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};
 pub use frame::SourceFrame;
 pub use preset::{PRESETS, Preset, PresetError, PresetParams};
+pub use progress::Progress;
 pub use rate_control::{
     Cbr, ConstantQp, Crf, FirstPass, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };

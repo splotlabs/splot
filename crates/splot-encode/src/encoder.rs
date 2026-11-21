@@ -3,7 +3,8 @@
 
 //! The push/pull [`Encoder`]: frames go in with [`Encoder::send_frame`], and
 //! [`Encoder::receive_packet`] returns one temporal unit per frame, in coding
-//! order, which outputs the frames in send order.
+//! order, which outputs the frames in send order. A call codes only as far as
+//! its packet needs, and [`Encoder::progress`] reports how far a call has come.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -20,6 +21,7 @@ use crate::gop::{self, GopFrame, GopPlanner, GopStep};
 use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::Lookahead;
 use crate::preset::{FrameKind, PresetContext, ResolutionClass};
+use crate::progress::Progress;
 use crate::rate_control::{
     Cbr, ConstantQp, Crf, DecoderBuffer, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };
@@ -102,7 +104,26 @@ pub(crate) trait FrameCoder {
     }
 }
 
-/// Callback that receives the statistics of every coded frame.
+/// A mini-GOP in coding: [`Encoder::receive_packet`] codes it one wave at a time.
+struct MiniGop {
+    frames: Vec<SourceFrame>,
+    /// The display index of the first of `frames`.
+    first: u64,
+    steps: Vec<GopStep>,
+    /// The number of `steps` done.
+    position: usize,
+    /// The coded frame type of each of `frames`.
+    frame_types: Vec<FrameType>,
+    /// The OBUs of the frames coded since the last packet.
+    data: Vec<u8>,
+    /// The statistics of the frames coded since the last packet.
+    stats: Vec<FrameStats>,
+}
+
+/// Callback that receives the statistics of every coded frame, in coding
+/// order, once the frame is final: after the other frames of its wave are
+/// coded and rate control has settled its quantizer. For how far the encoder
+/// has come, read [`Progress`].
 pub type StatsSink = Box<dyn FnMut(&FrameStats) + Send>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,9 +161,14 @@ pub struct Encoder {
     last_qindex: Option<u16>,
     /// The decoder buffer of [`RateControlMode::CappedCrf`] and [`RateControlMode::Cbr`].
     buffer: Option<DecoderBuffer>,
+    /// The mini-GOP whose next wave [`Self::receive_packet`] codes.
+    coding: Option<MiniGop>,
     ready: VecDeque<Packet>,
     state: State,
     cancel: CancelToken,
+    progress: Progress,
+    /// The frames committed so far.
+    frames_coded: u64,
 }
 
 impl fmt::Debug for Encoder {
@@ -182,22 +208,23 @@ impl Encoder {
         rate_control: Box<dyn RateController + Send>,
     ) -> Result<Self> {
         config.validate()?;
-        let cancel = CancelToken::default();
-        let coder = frame_coder(&config.coded(), cancel.clone())?;
-        Self::with_parts(config, coder, rate_control, cancel)
+        let (cancel, progress) = (CancelToken::default(), Progress::default());
+        let coder = frame_coder(&config.coded(), cancel.clone(), progress.clone())?;
+        Self::with_parts(config, coder, rate_control, (cancel, progress))
     }
 
     #[cfg(test)]
     pub(crate) fn with_coder(config: Config, coder: Box<dyn FrameCoder + Send>) -> Result<Self> {
         let rate_control = rate_controller(&config)?;
-        Self::with_parts(config, coder, rate_control, CancelToken::default())
+        let handles = (CancelToken::default(), Progress::default());
+        Self::with_parts(config, coder, rate_control, handles)
     }
 
     fn with_parts(
         config: Config,
         coder: Box<dyn FrameCoder + Send>,
         rate_control: Box<dyn RateController + Send>,
-        cancel: CancelToken,
+        (cancel, progress): (CancelToken, Progress),
     ) -> Result<Self> {
         let params = config.override_preset(config.preset.params())?;
         let mut lookahead = Lookahead::new(&config.coded(), &params, coder.pool());
@@ -242,9 +269,12 @@ impl Encoder {
             resized: config.resize_denominator.map(|_| config.coded()),
             config,
             coder,
+            coding: None,
             ready: VecDeque::new(),
             state: State::Accepting,
             cancel,
+            progress,
+            frames_coded: 0,
         })
     }
 
@@ -259,6 +289,13 @@ impl Encoder {
     #[must_use]
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()
+    }
+
+    /// The handle that reads this encoder's progress from another thread; see
+    /// [`Progress`].
+    #[must_use]
+    pub fn progress(&self) -> Progress {
+        self.progress.clone()
     }
 
     /// Calls `sink` with the statistics of every frame coded from now on.
@@ -315,10 +352,12 @@ impl Encoder {
         Ok(())
     }
 
-    /// Returns the next temporal unit. A mini-GOP is coded once the preset's
-    /// `lookahead_frames` frames are queued, or after [`Self::flush`]. Returns
-    /// `None` when no unit is ready: send more frames, or after
-    /// [`Self::flush`] the stream is complete.
+    /// Returns the next temporal unit. A mini-GOP starts once the preset's
+    /// `lookahead_frames` frames are queued, or after [`Self::flush`]; a call
+    /// codes its frames only until a unit is complete, so the units of a
+    /// mini-GOP come out as they are coded. Returns `None` when no unit is
+    /// ready: send more frames, or after [`Self::flush`] the stream is
+    /// complete.
     ///
     /// # Errors
     /// Returns [`Error::Cancelled`] when [`CancelToken::cancel`] was called
@@ -329,16 +368,28 @@ impl Encoder {
         if self.state == State::Failed {
             return Err(Error::Failed);
         }
-        let ended = self.state == State::Flushed;
-        let queued = self.pending.len();
-        if self.ready.is_empty()
-            && (ended || queued >= self.lookahead_frames)
-            && let Some(len) = self.planner.next_len(queued, ended)
-            && let Err(error) = self.code_mini_gop(len)
-        {
-            self.state = State::Failed;
-            self.cancel.check()?;
-            return Err(error);
+        while self.ready.is_empty() {
+            let coded = if let Some(mini_gop) = self.coding.take() {
+                self.code_wave(mini_gop)
+            } else {
+                let ended = self.state == State::Flushed;
+                let queued = self.pending.len();
+                if !ended && queued < self.lookahead_frames {
+                    break;
+                }
+                let Some(len) = self.planner.next_len(queued, ended) else {
+                    break;
+                };
+                self.start_mini_gop(len).map(Some)
+            };
+            match coded {
+                Ok(mini_gop) => self.coding = mini_gop,
+                Err(error) => {
+                    self.state = State::Failed;
+                    self.cancel.check()?;
+                    return Err(error);
+                }
+            }
         }
         Ok(self.ready.pop_front())
     }
@@ -429,9 +480,9 @@ impl Encoder {
         Ok(())
     }
 
-    /// Codes the next `len` queued frames, the next frames of the plan, into
-    /// ready packets.
-    fn code_mini_gop(&mut self, len: usize) -> Result<()> {
+    /// Plans the next `len` queued frames, the next frames of the plan, as
+    /// the mini-GOP that [`Self::code_wave`] codes.
+    fn start_mini_gop(&mut self, len: usize) -> Result<MiniGop> {
         self.plan_window()?;
         let frames: Vec<SourceFrame> = self.pending.drain(..len).collect();
         let first = self.planner.next_display();
@@ -440,6 +491,30 @@ impl Encoder {
         {
             self.coder.start_sequence(frame)?;
         }
+        Ok(MiniGop {
+            frame_types: vec![FrameType::Inter; frames.len()],
+            steps: self.planner.plan(frames.len())?,
+            frames,
+            first,
+            position: 0,
+            data: Vec::new(),
+            stats: Vec::new(),
+        })
+    }
+
+    /// Codes the next wave of `mini_gop` into ready packets and returns the
+    /// mini-GOP while it has more waves.
+    fn code_wave(&mut self, mut mini_gop: MiniGop) -> Result<Option<MiniGop>> {
+        let MiniGop {
+            frames,
+            first,
+            steps,
+            position,
+            frame_types,
+            data,
+            stats,
+        } = &mut mini_gop;
+        let (frames, first) = (frames.as_slice(), *first);
         let source = |display_index: u64| {
             usize::try_from(display_index - first)
                 .ok()
@@ -448,71 +523,72 @@ impl Encoder {
                     what: "a plan outside its mini-GOP",
                 })
         };
-        let mut frame_types = vec![FrameType::Inter; frames.len()];
-        let (mut data, mut stats) = (Vec::new(), Vec::new());
-        let steps = self.planner.plan(frames.len())?;
-        let mut position = 0;
-        for wave in gop::waves(&steps) {
-            let mut planned = Vec::new();
-            for step in wave {
-                if let GopStep::Code(plan) = *step {
-                    planned.push((plan, self.frame_qp(&plan)?));
-                }
+        let wave = gop::waves(steps.get(*position..).unwrap_or(&[]))
+            .next()
+            .unwrap_or(&[]);
+        let mut planned = Vec::new();
+        for step in wave {
+            if let GopStep::Code(plan) = *step {
+                planned.push((plan, self.frame_qp(&plan)?));
             }
-            let filtered = self.temporal_filter(&planned, &frames, first);
-            self.cancel.check()?;
-            let mut jobs = Vec::new();
-            for (&(plan, qp), filtered) in planned.iter().zip(&filtered) {
-                let frame = match filtered {
-                    Some(filtered) => filtered,
-                    None => source(plan.display_index)?,
-                };
-                jobs.push((frame, plan, qp));
-            }
-            let mut coded = jobs.iter().zip(self.coder.encode_wave(&jobs)?);
-            for step in wave {
-                position += 1;
-                match *step {
-                    GopStep::Code(_) => {
-                        let (&(coded_source, plan, qp), coded) =
-                            coded.next().ok_or(Error::Unsupported {
-                                what: "a wave with fewer coded frames than planned",
-                            })?;
-                        let later = frames_later_in_unit(steps.get(position - 1..).unwrap_or(&[]));
-                        let (qp, mut coded) =
-                            self.fit_buffer((coded_source, plan, qp), coded, later)?;
-                        let frame = source(plan.display_index)?;
-                        stats.push(self.commit(frame, &plan, qp, &mut coded)?);
-                        frame_types[(plan.display_index - first) as usize] = coded.frame_type;
-                        data.extend(coded.temporal_unit);
-                    }
-                    GopStep::ShowExisting { slot, .. } => {
-                        let unit = self.coder.show_existing_frame(slot)?;
-                        if let Some(buffer) = &mut self.buffer {
-                            buffer.add(unit.len() as u64 * 8);
-                        }
-                        self.rate_control
-                            .update_show_existing(unit.len() as u64 * 8);
-                        data.extend(unit);
-                    }
+        }
+        let filtered = self.temporal_filter(&planned, frames, first);
+        self.cancel.check()?;
+        let mut jobs = Vec::new();
+        for (&(plan, qp), filtered) in planned.iter().zip(&filtered) {
+            let frame = match filtered {
+                Some(filtered) => filtered,
+                None => source(plan.display_index)?,
+            };
+            jobs.push((frame, plan, qp));
+        }
+        let mut coded = jobs.iter().zip(self.coder.encode_wave(&jobs)?);
+        for step in wave {
+            *position += 1;
+            match *step {
+                GopStep::Code(_) => {
+                    let (&(coded_source, plan, qp), coded) =
+                        coded.next().ok_or(Error::Unsupported {
+                            what: "a wave with fewer coded frames than planned",
+                        })?;
+                    let later = frames_later_in_unit(steps.get(*position - 1..).unwrap_or(&[]));
+                    let (qp, mut coded) =
+                        self.fit_buffer((coded_source, plan, qp), coded, later)?;
+                    let frame = source(plan.display_index)?;
+                    stats.push(self.commit(frame, &plan, qp, &mut coded)?);
+                    frame_types[(plan.display_index - first) as usize] = coded.frame_type;
+                    data.extend(coded.temporal_unit);
                 }
-                if let Some(display_index) = step.output() {
+                GopStep::ShowExisting { slot, .. } => {
+                    let unit = self.coder.show_existing_frame(slot)?;
                     if let Some(buffer) = &mut self.buffer {
-                        buffer.drain();
+                        buffer.add(unit.len() as u64 * 8);
                     }
-                    self.ready.push_back(Packet {
-                        data: core::mem::take(&mut data),
-                        pts: source(display_index)?.pts(),
-                        frame_type: frame_types[(display_index - first) as usize],
-                        stats: core::mem::take(&mut stats),
-                    });
+                    self.rate_control
+                        .update_show_existing(unit.len() as u64 * 8);
+                    data.extend(unit);
                 }
             }
+            if let Some(display_index) = step.output() {
+                if let Some(buffer) = &mut self.buffer {
+                    buffer.drain();
+                }
+                self.ready.push_back(Packet {
+                    data: core::mem::take(data),
+                    pts: source(display_index)?.pts(),
+                    frame_type: frame_types[(display_index - first) as usize],
+                    stats: core::mem::take(stats),
+                });
+            }
+        }
+        self.progress.set_frames(self.frames_coded);
+        if *position < steps.len() {
+            return Ok(Some(mini_gop));
         }
         self.lookahead
             .retain_from(self.planner.next_display().saturating_sub(1));
-        self.last_coded = frames.into_iter().last();
-        Ok(())
+        self.last_coded = mini_gop.frames.pop();
+        Ok(None)
     }
 
     /// `coded`, the frame `plan` coded from `source` at `qp`, with its qindex;
@@ -533,6 +609,7 @@ impl Encoder {
         let mut tries = vec![(qp, coded.temporal_unit.len() as u64 * 8)];
         while let Some(coarser) = buffer.coarser(&tries, later, self.config.bit_depth) {
             qp = coarser;
+            self.progress.rewind_frame(self.frames_coded);
             coded =
                 self.coder
                     .encode_wave(&[(source, plan, qp)])?
@@ -631,6 +708,7 @@ impl Encoder {
         coded: &mut CodedFrame,
     ) -> Result<FrameStats> {
         self.coder.commit(coded)?;
+        self.frames_coded += 1;
         let bit_depth = frame.bit_depth();
         let [source_y, source_u, source_v] = frame.planes();
         let [recon_y, recon_u, recon_v] = &coded.recon;
@@ -704,9 +782,14 @@ fn frames_later_in_unit(steps: &[GopStep]) -> (u64, u64) {
     later
 }
 
-fn frame_coder(config: &Config, cancel: CancelToken) -> Result<Box<dyn FrameCoder + Send>> {
+fn frame_coder(
+    config: &Config,
+    cancel: CancelToken,
+    progress: Progress,
+) -> Result<Box<dyn FrameCoder + Send>> {
     let mut coder = IntraFrameCoder::new(config)?;
     coder.cancel = cancel;
+    coder.progress = progress;
     Ok(Box::new(coder))
 }
 
@@ -1004,6 +1087,65 @@ mod tests {
         Ok(())
     }
 
+    /// A call codes the waves its packet needs and no more: of a key frame
+    /// and a mini-GOP of 8, the last wave (frames 5 and 7) waits for the call
+    /// after the units of frames 1 to 4.
+    #[test]
+    fn a_call_codes_only_the_waves_of_its_packet() -> Result<()> {
+        let mut config = encoder(None, 6)?.config().clone();
+        config.keyint = Config::DEFAULT_KEYINT;
+        let mut encoder = Encoder::with_coder(config, Box::new(FakeCoder { fail_at: None }))?;
+        let progress = encoder.progress();
+        for pts in 0..9 {
+            encoder.send_frame(frame(&encoder, pts)?)?;
+        }
+        encoder.flush()?;
+        let mut coded = Vec::new();
+        while let Some(packet) = encoder.receive_packet()? {
+            coded.push((packet.pts, progress.frames() as u64));
+        }
+        let expected = [0, 1, 2, 3, 4, 5, 6, 7, 8].map(|pts| match pts {
+            0 => (0, 1),
+            1..=4 => (pts, 7),
+            _ => (pts, 9),
+        });
+        assert_eq!(coded, expected);
+        Ok(())
+    }
+
+    /// The superblocks of a frame add up to one frame before its commit, and
+    /// the count is whole after it.
+    #[test]
+    fn progress_counts_the_superblocks_of_a_frame() -> Result<()> {
+        let mut config = Config::new(320, 192);
+        config.preset = Preset::new(Preset::MAX)?;
+        let mut encoder = Encoder::new(config.clone())?;
+        let progress = encoder.progress();
+        let at_commit = Arc::new(Mutex::new(Vec::new()));
+        let (seen, sink_progress) = (Arc::clone(&at_commit), progress.clone());
+        encoder.set_stats_sink(Box::new(move |_| {
+            if let Ok(mut seen) = seen.lock() {
+                seen.push(sink_progress.frames());
+            }
+        }));
+        let planes = [
+            vec![90; 320 * 192],
+            vec![128; 160 * 96],
+            vec![160; 160 * 96],
+        ];
+        encoder.send_frame(SourceFrame::new(&config, 0, planes)?)?;
+        encoder.flush()?;
+        assert_eq!(progress.frames().to_bits(), 0f64.to_bits());
+        assert_eq!(drain(&mut encoder)?.len(), 1);
+        let at_commit = at_commit.lock().map(|seen| seen.clone()).ok();
+        let [searched] = at_commit.as_deref().unwrap_or(&[]) else {
+            return Err(Error::Failed);
+        };
+        assert!((0.999..1.0).contains(searched), "{searched}");
+        assert_eq!(progress.frames().to_bits(), 1f64.to_bits());
+        Ok(())
+    }
+
     /// Codes `frames` frames of a 64x64 texture panning by `shift` samples a
     /// frame, with a new texture from frame `cut`, through the fake coder.
     fn textured(rate_control: RateControlMode, shift: usize, cut: u64) -> Result<Vec<Packet>> {
@@ -1154,6 +1296,7 @@ mod tests {
         for packet in drain(&mut encoder)? {
             bytes.extend(packet.data);
         }
+        assert_eq!(encoder.progress().frames().to_bits(), 20f64.to_bits());
         Ok(bytes)
     }
 
