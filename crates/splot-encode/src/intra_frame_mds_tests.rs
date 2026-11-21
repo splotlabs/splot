@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::mode_decision::{
-    CHAINED_REFERENCES, INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES,
+    CHAINED_REFERENCES, INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, NEWMV_PRUNED, PD0_PASSES,
 };
 use crate::preset::{FrameKind, Levels, PresetContext, PresetParams};
 use crate::rd::partition::BREAKOUTS;
@@ -421,4 +421,53 @@ fn leaf_coded_follows_the_last_coded_leaf() {
         })
         .unwrap();
     assert_eq!(flags, [false, true, false]);
+}
+
+/// Preset 10 with `NEWMV` reference pruning at `margin` in every frame.
+fn newmv_pruned(margin: u8) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        newmv_ref_margin: Levels::all(margin),
+        ..*Preset::new(10).unwrap().params()
+    }))
+}
+
+/// The length and FNV-1a hash of the p10 stream of [`staged_stream`] at qp
+/// 160, recorded from main 381da1f9d before `NEWMV` reference pruning.
+const P10_GOLDEN: (usize, u64) = (13147, 0xa130_f2ca_67af_f6f8);
+
+/// `NEWMV` reference pruning skips searches in frames that later frames
+/// reference, under deblocking, CDEF, LR, CCSO and GDF; the stream decodes to
+/// the encoder recon and codes the same bytes on 1, 2 and 8 threads. A
+/// margin of 255 codes the stream of main before the pruning.
+#[test]
+fn newmv_pruned_streams_decode_on_any_thread_count() {
+    let preset = newmv_pruned(0);
+    NEWMV_PRUNED.set(0);
+    let (one, expected, cores, _) = staged_stream(preset, 160, 1);
+    assert!(NEWMV_PRUNED.get() > 0, "no reference skipped NEWMV");
+    let mut filters = [false; 5];
+    for core in &cores {
+        let used = [
+            core.deblocking_filter_params
+                .is_some_and(|df| df.apply_deblocking_filter.contains(&true)),
+            core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable),
+            core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
+            core.ccso_params
+                .as_ref()
+                .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true)),
+            core.gdf_params.is_some_and(|gdf| gdf.gdf_frame_enable),
+        ];
+        filters = core::array::from_fn(|i| filters[i] || used[i]);
+    }
+    assert_eq!(filters, [true; 5], "deblock, CDEF, LR, CCSO, GDF");
+    assert_same_samples(&decode(&one), &expected, "NEWMV reference pruning");
+    for threads in [2, 8] {
+        assert!(
+            staged_stream(preset, 160, threads).0 == one,
+            "{threads} threads"
+        );
+    }
+    let off = staged_stream(newmv_pruned(u8::MAX), 160, 1).0;
+    assert_ne!(off, one, "the pruning changes no byte");
+    assert_eq!((off.len(), fnv(&off)), P10_GOLDEN);
 }
