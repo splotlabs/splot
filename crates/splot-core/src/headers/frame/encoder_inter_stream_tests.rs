@@ -881,8 +881,9 @@ fn global_motion_models_round_trip_through_the_parser() {
 
 /// The CDF controls of `KeyFrameTxParams` parse back (§ 5.18.2):
 /// `disable_cdf_update` in both frame types, and in an inter frame
-/// `disable_cross_frame_cdf_init` with a primary reference. Both off code the
-/// old header; a cut header does not parse.
+/// `disable_cross_frame_cdf_init` with a primary reference and
+/// `PRIMARY_REF_CHOOSE`, which saves the 3 bits of `primary_ref_frame`. All off
+/// code the old header; a cut header does not parse.
 #[test]
 fn cdf_controls_parse_back_and_cut_headers_fail() {
     let seq = sequence(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
@@ -932,6 +933,18 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         ..KeyFrameTxParams::default()
     });
     assert_eq!(controls(&on), (Some(true), Some(true), Some(true), Some(0)));
+    let choose = with(KeyFrameTxParams {
+        choose_primary_ref_frame: true,
+        ..KeyFrameTxParams::default()
+    });
+    assert_eq!(
+        controls(&choose),
+        (Some(false), Some(false), Some(false), Some(8))
+    );
+    assert_eq!(
+        choose.bits.num_frame_header_bits() + 3,
+        off.bits.num_frame_header_bits()
+    );
     let key = |tx| {
         crate::headers::frame::build_key_frame_header(
             &view,
@@ -954,6 +967,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
     );
     let ignored = KeyFrameTxParams {
         disable_cross_frame_cdf_init: true,
+        choose_primary_ref_frame: true,
         ..fixed
     };
     assert_eq!(key(ignored), key(fixed));

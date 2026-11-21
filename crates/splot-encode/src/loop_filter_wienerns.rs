@@ -474,7 +474,7 @@ impl Search<'_> {
     /// filters of `plane` (either chroma plane for a chroma plane).
     fn temporal_bank(&self, core: &FrameHeaderCore, plane: usize) -> Option<u8> {
         let inter = core.inter.as_ref()?;
-        let position = inter.primary_ref_frame?;
+        let position = self.refs.primary_ref_frame(core)?;
         if u32::from(position) >= inter.num_total_refs? {
             return None;
         }

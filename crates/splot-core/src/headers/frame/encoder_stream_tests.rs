@@ -110,6 +110,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         grain_seed: None,
                         disable_cdf_update: index == 2,
                         disable_cross_frame_cdf_init: false,
+                        choose_primary_ref_frame: false,
                     };
                     let core = build_key_frame_header(
                         &view,

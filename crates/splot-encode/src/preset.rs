@@ -266,6 +266,10 @@ pub struct PresetParams {
     /// `avg_cdf_type = 1` (§ 5.18.7.2 `context_update_tile_id`), `0..=1`:
     /// `0` the first tile, `1` the middle tile (`TileCols * TileRows / 2`).
     pub cdf_update_tile: u8,
+    /// Inter frames code `signal_primary_ref_frame = 0` (`PRIMARY_REF_CHOOSE`,
+    /// § 5.18.2) when the reference the decoder derives is their primary
+    /// reference: the same CDFs for 3 fewer header bits.
+    pub primary_ref_choose: bool,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -1093,6 +1097,7 @@ preset_table! {
         primary_default_cdfs:  [false, false, false, false, false, false, false, false, false, false, false],
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tip_hole_fill:         [false, false, false, false, false, false, false, false, false, false, false],

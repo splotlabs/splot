@@ -277,6 +277,10 @@ pub struct KeyFrameTxParams {
     /// `disable_cross_frame_cdf_init = 1` with a primary reference (§ 5.18.2):
     /// an inter frame starts from the default CDFs; a key frame ignores it.
     pub disable_cross_frame_cdf_init: bool,
+    /// `signal_primary_ref_frame = 0` (§ 5.18.2): an inter frame codes
+    /// `PRIMARY_REF_CHOOSE`, so the decoder derives `primary_ref_frame`; a
+    /// key frame ignores it.
+    pub choose_primary_ref_frame: bool,
 }
 
 impl Default for KeyFrameTxParams {
@@ -290,6 +294,7 @@ impl Default for KeyFrameTxParams {
             grain_seed: None,
             disable_cdf_update: false,
             disable_cross_frame_cdf_init: false,
+            choose_primary_ref_frame: false,
         }
     }
 }
