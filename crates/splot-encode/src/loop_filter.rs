@@ -614,14 +614,21 @@ impl Search<'_> {
     /// per-plane `DfDeltaQ` of least SSE among the first 3, 5 or 8 offsets
     /// of [`DEBLOCK_LADDER`] at depth 1, 2 or 3 that the sequence codes; on
     /// equal SSE the earlier offset, so `0` and then the smallest |offset|.
+    /// An inter frame of a sequence with `enable_df_sub_pu` then also
+    /// filters prediction sub-unit edges unless that raises the summed SSE
+    /// (always without the search).
     fn deblocking(&self, preset: &PresetParams) -> Result<FrameFilterParams> {
         let chroma = self.recon.plane(PlaneId::U).is_some();
         let on = FrameFilterParams {
             deblocking: [true, true, chroma, chroma],
             ..FrameFilterParams::default()
         };
+        let sub_pu = self.seq.inter.is_some_and(|i| i.enable_df_sub_pu) && !self.frame_is_intra;
         if preset.loop_filter_search == 0 {
-            return Ok(on);
+            return Ok(FrameFilterParams {
+                deblocking_sub_pu: sub_pu,
+                ..on
+            });
         }
         let bits = self
             .seq
@@ -649,11 +656,23 @@ impl Search<'_> {
         let [luma, u, v] = best.map(|(_, delta)| delta);
         let chroma = |delta: Option<i32>| luma.and(delta);
         let planes = [luma, luma, chroma(u), chroma(v)];
-        Ok(FrameFilterParams {
+        let mut params = FrameFilterParams {
             deblocking: planes.map(|delta| delta.is_some()),
             deblocking_delta_q: planes.map(|delta| delta.unwrap_or(0)),
             ..FrameFilterParams::default()
-        })
+        };
+        if sub_pu && params.deblocking != [false; 4] {
+            let on = FrameFilterParams {
+                deblocking_sub_pu: true,
+                ..params
+            };
+            let sse: u64 = self
+                .plane_sse_all(&self.filtered(&on, self.recon, &[])?)
+                .iter()
+                .sum();
+            params.deblocking_sub_pu = sse <= best.iter().map(|&(sse, _)| sse).sum();
+        }
+        Ok(params)
     }
 
     /// The CDEF damping, strength sets and per-unit indices that minimize SSE
