@@ -353,6 +353,10 @@ pub struct PresetParams {
     /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
+    /// Without `fsc`, `enable_idtx_intra` (§ 5.4.8): the winning luma mode of
+    /// an intra leaf gets one RD trial with `fsc_mode`, which then codes a
+    /// plain IDTX block without the FSC coefficient path (§ 5.20.5.5).
+    pub idtx_intra: bool,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -421,6 +425,10 @@ pub struct PresetParams {
     /// frame coded normally; `0` is off. `100` in every row (2026-10-26):
     /// p6 measured park_joy -0.19%, paris -0.12%, niklas 0.00%.
     pub tip_output: u8,
+    /// With `tip`, `enable_tip_hole_fill`: every TIP frame codes
+    /// `allow_tip_hole_fill = 1`, so the TIP motion field fills its holes
+    /// (§ 7.10.1).
+    pub tip_hole_fill: bool,
     /// Optical-flow refinement (`enable_opfl_refine = REFINE_AUTO`): inter
     /// frames with a past and a future reference code `REFINE_SWITCHABLE`,
     /// so compound blocks may code `use_optflow`; others code `REFINE_NONE`.
@@ -1047,6 +1055,7 @@ preset_table! {
         cdf_avg_across_tiles:  [false, false, false, false, false, false, false, false, false, false, false],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        tip_hole_fill:         [false, false, false, false, false, false, false, false, false, false, false],
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         opfl_refine_all:       [false, false, false, false, false, false, false, false, false, false, false],
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
@@ -1071,6 +1080,7 @@ preset_table! {
     }
     screen_content {
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
+        idtx_intra:            [false, false, false, false, false, false, false, false, false, false, false],
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
