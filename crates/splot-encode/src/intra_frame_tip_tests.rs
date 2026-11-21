@@ -695,3 +695,98 @@ fn avm_decodes_hole_fill_streams_like_splot() {
     let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "hole-fill");
     assert!(avm == expected, "AVM output differs");
 }
+
+/// Preset 6 with TIP output, deblocking of prediction sub-units, explicit
+/// TIP quantization and the TIP output search at `level`.
+fn with_tip_output_options(level: u8) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        df_sub_pu: true,
+        tip_explicit_qp: true,
+        tip_output_search: level,
+        ..*with_tip_output(1, 200)
+    }))
+}
+
+/// A panning mini-GOP stream with the TIP output options on `threads`
+/// threads in 2x1 tiles; `forced` sets what every TIP output frame codes.
+fn tip_output_options_stream(
+    threads: usize,
+    level: u8,
+    forced: Option<(TipGlobalMv, Option<InterpolationFilter>, bool)>,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
+    let mut config = config(136, 72, BitDepth::Eight, 6, 250);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    crate::intra_frame::TIP_OUTPUT_FORCED.set(forced);
+    let coder = IntraFrameCoder::with_preset(&config, with_tip_output_options(level)).unwrap();
+    let stream = super::carry::planned_stream_of(&config, coder, panning_frame, 250);
+    crate::intra_frame::TIP_OUTPUT_FORCED.set(None);
+    stream
+}
+
+/// TIP output frames that code a non-zero global MV, each TIP filter, TIP
+/// deblocking and explicit quantization decode to the encoder recon and
+/// code the same bytes on 1, 2 and 8 threads; the searched levels 1 and 2
+/// decode to the encoder recon too.
+#[test]
+fn tip_output_options_decode_to_the_encoder_recon_on_any_thread_count() {
+    for forced in [
+        (TipGlobalMv::new(2, -1), None, false),
+        (
+            TipGlobalMv::default(),
+            Some(InterpolationFilter::Eighttap),
+            true,
+        ),
+        (
+            TipGlobalMv::new(0, 2),
+            Some(InterpolationFilter::EighttapSmooth),
+            true,
+        ),
+    ] {
+        let (one, expected, cores, coder) = tip_output_options_stream(1, 0, Some(forced));
+        assert!(coder.sequence.inter.unwrap().enable_tip_explicit_qp);
+        let outputs: Vec<_> = cores
+            .iter()
+            .filter(|core| core.obu_type == splot_core::types::ObuType::RegularTip)
+            .collect();
+        assert!(!outputs.is_empty(), "{forced:?}");
+        for core in outputs {
+            let inter = core.inter.as_ref().unwrap();
+            let filter = forced.1.unwrap_or(InterpolationFilter::EighttapSharp);
+            assert_eq!(inter.tip_global_mv, Some(forced.0));
+            assert_eq!(inter.tip_interpolation_filter, Some(filter));
+            assert_eq!(inter.apply_deblocking_filter_tip, Some(forced.2));
+            assert!(core.quantization_params.is_some());
+        }
+        assert_same_samples(&decode(&one), &expected, &format!("{forced:?}"));
+        for threads in [2, 8] {
+            let stream = tip_output_options_stream(threads, 0, Some(forced)).0;
+            assert!(stream == one, "{forced:?}: {threads} threads");
+        }
+    }
+    for level in [1, 2] {
+        let (units, expected, ..) = tip_output_options_stream(1, level, None);
+        assert_same_samples(&decode(&units), &expected, &format!("level {level}"));
+    }
+}
+
+/// AVM decodes TIP output frames with a global MV, the smooth filter, TIP
+/// deblocking and explicit quantization like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_tip_output_options_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let forced = (
+        TipGlobalMv::new(0, 2),
+        Some(InterpolationFilter::EighttapSmooth),
+        true,
+    );
+    let (units, expected, ..) = tip_output_options_stream(2, 0, Some(forced));
+    let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "tip-options");
+    assert!(avm == expected, "AVM output differs");
+}
