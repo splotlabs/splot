@@ -488,15 +488,20 @@ pub fn encode_inter_frame_obu(
 /// (§ 5.18.2) over the reference map `ref_frame_idx` for `seq` and the
 /// § 7.23 reference state `refs`: the `order_hint`, `refresh_frame_flags`,
 /// `show_frame` and `tip_weight` of `params`, `PRIMARY_REF_NONE`,
-/// `use_ref_frame_mvs = 1`, a zero `tip_global_mv`, the `EIGHTTAP_SHARP`
-/// filter and the `film_grain_config()` of `params.tx.grain_seed`.
+/// `use_ref_frame_mvs = 1`, the `tip_global_mv` and `tip_filter` of
+/// `params`, `quantization_params()` at `base_q_idx` with
+/// `enable_tip_explicit_qp`, TIP deblocking with a one-tile `tile_info()`
+/// when `tip_deblocking`, and the `film_grain_config()` of
+/// `params.tx.grain_seed`.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a sequence without TIP output, the
-/// tools the header does not write, a missing `tip_weight`, a `grain_seed`
-/// in a sequence without film grain or in a frame that is not shown
-/// ([`WriteError::NonCanonicalFrameHeader`]), or bits that do not parse to a
-/// complete TIP output header with `refs`.
+/// tools the header does not write, a missing `tip_weight`, a
+/// `tip_global_mv` component outside `-15..=15`, a `tip_filter` other than
+/// sharp, regular or smooth, `tip_deblocking` without `enable_df_sub_pu` or
+/// with tiles, a `grain_seed` in a sequence without film grain or in a frame
+/// that is not shown ([`WriteError::NonCanonicalFrameHeader`]), or bits that
+/// do not parse to a complete TIP output header with `refs`.
 pub fn build_tip_output_frame_header(
     seq: &CoreSeqView,
     refs: &FrameReferenceStateView<'_>,
@@ -517,7 +522,7 @@ pub fn build_tip_output_frame_header(
         return Err(unsupported("TIP output header tools"));
     }
     let mv = params.tip_global_mv;
-    if mv.row.abs() > 15 || mv.col.abs() > 15 {
+    if mv.row.unsigned_abs() > 15 || mv.col.unsigned_abs() > 15 {
         return Err(unsupported("TipGlobalMv outside -15..=15"));
     }
     let tip_regular = match params.tip_filter {

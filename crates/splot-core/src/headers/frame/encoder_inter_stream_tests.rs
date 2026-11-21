@@ -713,6 +713,10 @@ fn tip_output_options_round_trip() {
             ..base
         },
         InterFrameParams {
+            tip_global_mv: TipGlobalMv::new(0, i32::MIN),
+            ..base
+        },
+        InterFrameParams {
             tip_filter: Some(InterpolationFilter::Bilinear),
             ..base
         },
