@@ -390,6 +390,10 @@ pub struct PresetParams {
     /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. Off
     /// in every row: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
     pub cdef_on_skip: bool,
+    /// `enable_df_sub_pu`: each inter frame's deblocking also filters
+    /// prediction sub-unit edges unless that raises the summed frame SSE
+    /// (always without the deblock search).
+    pub df_sub_pu: bool,
     /// `enable_inter_ddt`: inter ADST and FDST sides of length 8 or 16
     /// transform with the DDT kernels. Off in every row (2026-10-25): it
     /// measured BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%).
@@ -1058,6 +1062,7 @@ preset_table! {
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
         cdef_strengths:        [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
+        df_sub_pu:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     screen_content {
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],

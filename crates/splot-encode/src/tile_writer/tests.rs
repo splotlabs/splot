@@ -104,6 +104,7 @@ impl Case {
                 masked_compound: false,
                 cwp: false,
                 implicit_mask: false,
+                df_sub_pu: false,
                 interintra: false,
                 bawp: false,
             },
