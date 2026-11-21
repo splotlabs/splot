@@ -134,6 +134,8 @@ pub struct Encoder {
     tpl_delta_q: u8,
     /// The preset's temporal filter frames and strengths of key and base frames.
     temporal_filter: [(u8, u8); 2],
+    /// The [`crate::preset::PresetParams::key_qindex_boost`] of the coded size.
+    key_boost: i16,
     /// The last frame qindex, which estimates the next ones.
     last_qindex: Option<u16>,
     /// The decoder buffer of [`RateControlMode::CappedCrf`] and [`RateControlMode::Cbr`].
@@ -226,6 +228,15 @@ impl Encoder {
                 };
                 (params.tf_frames.at(context), params.tf_strength.at(context))
             }),
+            key_boost: {
+                let coded = config.coded();
+                let context = PresetContext {
+                    resolution: ResolutionClass::of(coded.width, coded.height),
+                    frame: FrameKind::Key,
+                    ..PresetContext::default()
+                };
+                i16::from(params.key_qindex_boost.at(context))
+            },
             last_qindex: None,
             buffer: DecoderBuffer::new(&config),
             resized: config.resize_denominator.map(|_| config.coded()),
@@ -395,7 +406,12 @@ impl Encoder {
                     layer: frame.layer,
                     complexity: model.complexity,
                     min_complexity: model.min_complexity,
-                    qindex_offset: model.qindex_offset,
+                    qindex_offset: model.qindex_offset
+                        - if frame.frame_type == FrameType::Key {
+                            self.key_boost
+                        } else {
+                            0
+                        },
                     bit_depth: self.config.bit_depth,
                 }
             })

@@ -142,9 +142,22 @@ const FRAMES: u64 = 30;
 /// texture from frame 17, coded at preset 9 (mini-GOPs of 2); the first frame
 /// is black when `black_first` is set.
 fn encode(rate_control: RateControlMode, black_first: bool) -> Stream {
+    encode_overriding(rate_control, black_first, &[])
+}
+
+/// [`encode`] with the preset fields `overrides`.
+fn encode_overriding(
+    rate_control: RateControlMode,
+    black_first: bool,
+    overrides: &[(&str, &str)],
+) -> Stream {
     let mut config = Config::new(SIZE.0, SIZE.1);
     config.preset = Preset::new(9).unwrap();
     config.rate_control = rate_control;
+    config.preset_overrides = overrides
+        .iter()
+        .map(|&(name, value)| (name.to_owned(), value.to_owned()))
+        .collect();
     let (recons, codings) = (Arc::default(), Arc::default());
     let coder = Recording {
         coder: IntraFrameCoder::new(&config).unwrap(),
@@ -179,6 +192,36 @@ fn encode(rate_control: RateControlMode, black_first: bool) -> Stream {
         units: packets.into_iter().map(|packet| packet.data).collect(),
         expected,
     }
+}
+
+/// `key_qindex_boost` lowers the key frames' qindex in CRF mode by its
+/// cell and leaves the other frames and constant-qp streams as they are.
+#[test]
+fn key_qindex_boost_lowers_only_key_frames_in_crf() {
+    let boost = [("key_qindex_boost", "6,0,0,0")];
+    let crf = RateControlMode::Crf { crf: 30 };
+    let (plain, boosted) = (encode(crf, false), encode_overriding(crf, false, &boost));
+    let qps = |stream: &Stream| stream.stats.iter().map(|s| s.qp).collect::<Vec<_>>();
+    let (plain_qps, boosted_qps) = (qps(&plain), qps(&boosted));
+    assert_eq!(plain_qps.len(), boosted_qps.len());
+    for (index, (&p, &b)) in plain_qps.iter().zip(&boosted_qps).enumerate() {
+        let key = plain.types[index] == FrameType::Key;
+        assert_eq!(
+            b + if key { 6 } else { 0 },
+            p,
+            "frame {index}: {plain_qps:?} {boosted_qps:?}"
+        );
+    }
+    assert_same_samples(
+        &decode(&boosted.units.concat()),
+        &boosted.expected,
+        "boosted",
+    );
+    let flat = RateControlMode::ConstantQp { qp: 120 };
+    assert_eq!(
+        encode(flat, false).units,
+        encode_overriding(flat, false, &boost).units
+    );
 }
 
 fn cases() -> [RateControlMode; 3] {
