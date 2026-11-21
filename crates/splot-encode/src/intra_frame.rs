@@ -72,6 +72,8 @@ pub(crate) struct IntraFrameCoder {
     /// [`Self::preset`].
     screen: Option<PresetParams>,
     references: EncoderReferences,
+    /// The content interpretation OBU of every key frame; empty for none.
+    content_obu: Vec<u8>,
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
@@ -283,6 +285,7 @@ impl IntraFrameCoder {
         Ok(Self {
             params,
             references,
+            content_obu: config.content.obu(config.frame_rate)?,
             sequence,
             view,
             bit_depth: config.bit_depth,
@@ -619,6 +622,11 @@ impl IntraFrameCoder {
         tools.2.6 &= self.warp_gate.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
+        let key_obus = if plan.frame_type == FrameType::Key {
+            [self.content_obu.as_slice(), &grain_obu].concat()
+        } else {
+            grain_obu
+        };
         tools.0.grain_seed = grain_seed;
         if tools.2.3.is_some() || tools.2.5 != 0 {
             let probe = plan.header(
@@ -841,7 +849,7 @@ impl IntraFrameCoder {
             &self.references,
             (qindex, &filters, tools),
             &core,
-            (&tiles, &grain_obu),
+            (&tiles, &key_obus),
         )?;
         let coded = CodedFrame {
             temporal_unit,

@@ -7,6 +7,8 @@ use std::io::{self, Read};
 
 use splot_recon::PixelFormat;
 
+use crate::content::{ChromaSamplePosition, ContentDescription};
+
 /// Longest accepted stream or frame header line, in bytes.
 const MAX_HEADER_LEN: usize = 4096;
 
@@ -69,9 +71,27 @@ pub struct Y4mHeader {
     pub format: PixelFormat,
     /// Bits per sample, `8..=16`. Samples above 8 bits are 2-byte little endian.
     pub bit_depth: u8,
+    /// `XCOLORRANGE`: `FULL` or `LIMITED`, when the header has it.
+    pub full_range: Option<bool>,
+    /// The chroma siting of `C420mpeg2` (left) and `C420paldv` (top left).
+    /// `C420jpeg` is also what writers use for an unknown siting, so it gives
+    /// none.
+    pub chroma_sample_position: Option<ChromaSamplePosition>,
 }
 
 impl Y4mHeader {
+    /// What the header declares about the samples: the sample aspect ratio,
+    /// the range and the chroma sample position.
+    #[must_use]
+    pub fn content_description(&self) -> ContentDescription {
+        ContentDescription {
+            full_range: self.full_range == Some(true),
+            chroma_sample_position: self.chroma_sample_position,
+            sample_aspect_ratio: Some(self.aspect).filter(|&(w, h)| w != 0 && h != 0),
+            ..ContentDescription::default()
+        }
+    }
+
     /// Y, U and V plane sizes as `(width, height)`; chroma is `(0, 0)` for monochrome.
     #[must_use]
     pub fn plane_sizes(&self) -> [(usize, usize); 3] {
@@ -201,6 +221,7 @@ fn parse_stream_header(line: &[u8]) -> Result<Y4mHeader, Y4mError> {
     let mut aspect = (0, 0);
     let mut interlace = 'p';
     let (mut colorspace, mut extended) = (None, None);
+    let mut full_range = None;
     for token in tags.split(' ').filter(|token| !token.is_empty()) {
         let mut chars = token.chars();
         let tag = chars.next().unwrap_or(' ');
@@ -226,6 +247,11 @@ fn parse_stream_header(line: &[u8]) -> Result<Y4mHeader, Y4mError> {
                 if let Some(subsampling) = value.strip_prefix("YSCSS=") {
                     extended = Some(subsampling);
                 }
+                match value.strip_prefix("COLORRANGE=") {
+                    Some("FULL") => full_range = Some(true),
+                    Some("LIMITED") => full_range = Some(false),
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -244,6 +270,12 @@ fn parse_stream_header(line: &[u8]) -> Result<Y4mHeader, Y4mError> {
         interlace,
         format,
         bit_depth,
+        full_range,
+        chroma_sample_position: match colorspace.to_ascii_lowercase().as_str() {
+            "420mpeg2" => Some(ChromaSamplePosition::Left),
+            "420paldv" => Some(ChromaSamplePosition::TopLeft),
+            _ => None,
+        },
     })
 }
 
@@ -302,6 +334,15 @@ mod tests {
         assert_eq!((header.width, header.height), (3, 2));
         assert_eq!((header.frame_rate, header.aspect), ((25, 1), (1, 1)));
         assert_eq!((header.format, header.bit_depth), (PixelFormat::Yuv420, 8));
+        let content = header.content_description();
+        assert!(content.full_range);
+        assert_eq!(
+            content.chroma_sample_position,
+            Some(ChromaSamplePosition::Left)
+        );
+        assert_eq!(content.sample_aspect_ratio, Some((1, 1)));
+        let plain = *read(b"YUV4MPEG2 W2 H2 F1:1 A0:0 C420jpeg\n")?.header();
+        assert_eq!(plain.content_description(), ContentDescription::default());
         let frame = reader.read_frame()?;
         assert_eq!(
             frame,

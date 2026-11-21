@@ -77,6 +77,13 @@ pub enum Error {
         buffer_ms: u32,
     },
 
+    /// The content description does not fit the input.
+    #[error("content description: {what}")]
+    InvalidContentDescription {
+        /// The rule the description breaks.
+        what: &'static str,
+    },
+
     /// A tile layout asks for more than 64 tile columns or rows.
     #[error("tile layout {tiles:?} asks for more than 64 tile columns or rows")]
     InvalidTiles {

@@ -7,6 +7,14 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 - `splot encode` without `--qp`, `--crf` or `--bitrate` codes `--crf 20`
   (8-bit base qindex 80); `--qp 80` keeps the old flat default.
+- `Config::content` describes the source: H.273 colour code points, range,
+  chroma sample position, sample aspect ratio and timing. The encoder writes
+  it as a content interpretation OBU (§ 5.15) on every key frame and never
+  converts samples. `splot encode` takes `--color-primaries`,
+  `--transfer-characteristics`, `--matrix-coefficients`, `--color-range`,
+  `--chroma-sample-position`, `--sar` and `--timing-info`, and passes the Y4M
+  `A` tag, `XCOLORRANGE` and the `C420mpeg2` / `C420paldv` siting through. A
+  Y4M input with a nonzero `A` tag now codes a few more bytes per key frame.
 
 ### Encoder 4:2:2 and 4:4:4
 

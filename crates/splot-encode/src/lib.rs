@@ -19,6 +19,7 @@
 pub mod cancel;
 mod cfl_filter;
 pub mod config;
+pub mod content;
 pub mod encoder;
 pub mod error;
 pub mod frame;
@@ -53,6 +54,7 @@ pub mod y4m;
 
 pub use cancel::CancelToken;
 pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode, TileLayout, Tune};
+pub use content::{ChromaSamplePosition, ContentDescription};
 pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};
 pub use frame::SourceFrame;
