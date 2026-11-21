@@ -116,6 +116,37 @@ impl TemporalUnit<'_> {
     }
 }
 
+/// Whether `unit`, the bytes of one whole temporal unit, is a random access
+/// point: it opens with a temporal delimiter, and a sequence header comes
+/// before its first frame, which is an `OBU_CLOSED_LOOP_KEY`,
+/// `OBU_OPEN_LOOP_KEY` or `OBU_RAS_FRAME`. A decoder can start at such a unit.
+#[must_use]
+pub fn is_random_access_point(unit: &[u8]) -> bool {
+    let mut obus = AnnexBObuCursor::new(unit, ByteOffset::new(0));
+    let mut sequence = false;
+    let mut first = true;
+    while let Ok(Some(obu)) = obus.next_obu() {
+        let kind = obu.header.obu_type;
+        if core::mem::take(&mut first) && kind != ObuType::TemporalDelimiter {
+            return false;
+        }
+        if kind == ObuType::SequenceHeader {
+            sequence = true;
+        } else if kind.is_tile_group()
+            || kind.is_sef()
+            || kind.is_tip_frame()
+            || kind == ObuType::BridgeFrame
+        {
+            return sequence
+                && matches!(
+                    kind,
+                    ObuType::ClosedLoopKey | ObuType::OpenLoopKey | ObuType::RasFrame
+                );
+        }
+    }
+    false
+}
+
 /// An error that aborts streaming (as opposed to a malformed-but-reportable
 /// bitstream, which is delivered in-band as unit bytes the consumer parses).
 #[derive(Debug, thiserror::Error)]

@@ -634,19 +634,10 @@ impl Decoder {
         }
     }
 
-    /// Whether the decoder can start at `data`, one whole temporal unit: after
-    /// [`Self::new`] or [`Self::flush`], the first unit sent must be one.
-    ///
-    /// Such a unit opens with a temporal delimiter and holds a sequence header
-    /// and an `OBU_CLOSED_LOOP_KEY`, `OBU_OPEN_LOOP_KEY` or `OBU_RAS_FRAME`.
-    #[must_use]
-    pub fn can_start_at(data: &[u8]) -> bool {
-        crate::pipeline::starts_decode(data)
-    }
-
     /// Drops every unit and picture the decoder holds and starts a new
     /// session on the same threads and sample storage, for a seek or after an
-    /// error. The next unit sent must be one [`Self::can_start_at`] accepts.
+    /// error. The next unit sent must be a random access point
+    /// ([`splot_core::stream_reader::is_random_access_point`]).
     ///
     /// Waits for the frames in decode, which are not interrupted. Pictures
     /// taken earlier stay valid. [`DecodeLimitName::MaxInputBytes`] counts

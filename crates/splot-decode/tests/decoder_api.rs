@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
+use splot_core::stream_reader::{StreamUnit, TemporalUnitReader, is_random_access_point};
 use splot_decode::{
     DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig, Decoder,
     DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureSamples, PlaneId,
@@ -383,7 +383,6 @@ fn flush_starts_a_new_session_mid_stream_and_after_an_error() {
         );
 
         decoder.flush();
-        assert!(!Decoder::can_start_at(&units[1]));
         let _ = decoder.send_data(&units[1], DataProps::default()).unwrap();
         assert!(decoder.wait_picture().is_err());
         decoder.flush();
@@ -395,18 +394,18 @@ fn flush_starts_a_new_session_mid_stream_and_after_an_error() {
 }
 
 #[test]
-fn a_decoder_starts_at_the_units_can_start_at_accepts() {
+fn a_decoder_starts_at_exactly_the_random_access_points() {
     for fixture in FIXTURES {
         let units = units(fixture);
-        assert!(Decoder::can_start_at(&units[0]));
-        for unit in units.iter().filter(|unit| Decoder::can_start_at(unit)) {
+        assert!(is_random_access_point(&units[0]));
+        for unit in &units {
             let mut decoder = decoder(1, 1);
             let _ = decoder.send_data(unit, DataProps::default()).unwrap();
-            decoder.wait_picture().unwrap();
+            assert_eq!(decoder.wait_picture().is_ok(), is_random_access_point(unit));
         }
     }
-    assert!(!Decoder::can_start_at(&[]));
-    assert!(!Decoder::can_start_at(&[0xFF; 8]));
+    assert!(!is_random_access_point(&[]));
+    assert!(!is_random_access_point(&[0xFF; 8]));
 }
 
 #[test]

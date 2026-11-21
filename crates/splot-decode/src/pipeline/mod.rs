@@ -68,7 +68,6 @@ pub(crate) use runtime_support::{
 pub(crate) use stream_schedule::ivf_inter_envelope;
 #[cfg(test)]
 pub(crate) use stream_schedule::require_minimal_obu_order;
-pub(crate) use stream_schedule::starts_decode;
 use stream_schedule::*;
 
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";

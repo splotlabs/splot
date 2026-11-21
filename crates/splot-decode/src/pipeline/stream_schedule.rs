@@ -389,12 +389,6 @@ pub(crate) fn require_minimal_obu_order<'a>(
     Ok([obus[0], obus[indices.sequence], obus[indices.frame]])
 }
 
-/// The start rule behind [`crate::Decoder::can_start_at`].
-pub(crate) fn starts_decode(unit: &[u8]) -> bool {
-    let mut obus = Vec::new();
-    runtime_obus(unit.into(), &mut obus).is_ok() && require_leading_frame_unit(&obus).is_ok()
-}
-
 pub(super) fn require_leading_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
 ) -> Result<([ObuEnvelope<'a>; 3], usize)> {

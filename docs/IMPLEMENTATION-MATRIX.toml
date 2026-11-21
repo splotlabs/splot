@@ -14076,7 +14076,7 @@ module = "crates/splot-decode/src/decoder.rs"
 change_id = "decode-streaming-api"
 owner = "decoder"
 risk = "medium"
-notes = "Decoder takes one temporal unit per send_data call and returns pictures in display order from get_picture, with drain at end of stream. Each picture carries the DataProps (pts, duration, user data) of the unit that coded or showed it. DecoderSettings::skip_film_grain leaves the film grain of § 7.21.7 out of the pictures; a picture reports has_film_grain and apply_film_grain adds the grain later. wait_picture waits for the pictures of the units the decoder holds and returns none once it is idle; flush drops the session and starts a new one on the same threads and storage, also after an error; Decoder::can_start_at tells whether a temporal unit can open a session. A picture reports frame_type. The decode loop reads temporal units forward through UnitSource; the batch decode_* entry points use the same loop through a forward-only reader. The decode loop runs on the decoder's own worker pool."
+notes = "Decoder takes one temporal unit per send_data call and returns pictures in display order from get_picture, with drain at end of stream. Each picture carries the DataProps (pts, duration, user data) of the unit that coded or showed it. DecoderSettings::skip_film_grain leaves the film grain of § 7.21.7 out of the pictures; a picture reports has_film_grain and apply_film_grain adds the grain later. wait_picture waits for the pictures of the units the decoder holds and returns none once it is idle; flush drops the session and starts a new one on the same threads and storage, also after an error. A picture reports frame_type. The decode loop reads temporal units forward through UnitSource; the batch decode_* entry points use the same loop through a forward-only reader. The decode loop runs on the decoder's own worker pool."
 
 [feature.status]
 mapped = "done"
@@ -21136,7 +21136,7 @@ module = "crates/splot-core/src/stream_reader.rs"
 change_id = "streaming-validator-input"
 owner = "core"
 risk = "low"
-notes = "TemporalUnitReader<R: Read> provides forward-only bounded container reads: Annex B returns one framed OBU and IVF one frame payload, each with its absolute offset. next_temporal_unit groups Annex B OBUs from one temporal delimiter up to the next and yields an IVF frame as one unit; each unit carries a UnitPosition, and seek on a Read + Seek source resumes at one, so a list of positions is a seek index. It reuses existing framing parsers and handles fragmented reads. The configurable per-unit cap defaults to 256 MiB; over-cap input returns ReaderError::UnitTooLarge. splot-core remains independent of splot-decode."
+notes = "TemporalUnitReader<R: Read> provides forward-only bounded container reads: Annex B returns one framed OBU and IVF one frame payload, each with its absolute offset. next_temporal_unit groups Annex B OBUs from one temporal delimiter up to the next and yields an IVF frame as one unit; each unit carries a UnitPosition, and seek on a Read + Seek source resumes at one, so a list of positions is a seek index. is_random_access_point tells whether a temporal unit opens with a temporal delimiter and has a sequence header before a closed-loop key, open-loop key or RAS first frame. It reuses existing framing parsers and handles fragmented reads. The configurable per-unit cap defaults to 256 MiB; over-cap input returns ReaderError::UnitTooLarge. splot-core remains independent of splot-decode."
 
 [feature.status]
 mapped = "done"
