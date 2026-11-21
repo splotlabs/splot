@@ -95,6 +95,8 @@ pub(crate) struct IntraFrameCoder {
     slot_intra: [Option<Arc<IntraCells>>; 8],
     /// Stops the frames of a cancelled encoder.
     pub(crate) cancel: crate::cancel::CancelToken,
+    /// Counts the searched superblocks of the encoder's frames.
+    pub(crate) progress: crate::progress::Progress,
 }
 
 /// One flag per 8x8 luma cell of a frame, in raster order: whether an
@@ -310,6 +312,7 @@ impl IntraFrameCoder {
             warp_gate: crate::warp::WarpGate::default(),
             slot_intra: Default::default(),
             cancel: crate::cancel::CancelToken::default(),
+            progress: crate::progress::Progress::default(),
         })
     }
 }
@@ -684,7 +687,8 @@ impl IntraFrameCoder {
         let (padded, motion, bv_search) = (&padded, motion.as_ref(), bv_search.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
-        if !sb_quant.is_empty() && sb_quant.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
+        let superblocks = sb_cols * mi_rows.div_ceil(sb / 4);
+        if !sb_quant.is_empty() && sb_quant.len() != superblocks {
             return Err(Error::Unsupported {
                 what: "superblock offsets that do not cover the superblock grid",
             });
@@ -759,6 +763,7 @@ impl IntraFrameCoder {
                     })?
                     .extend(leaves);
             }
+            self.progress.superblock(superblocks);
             Ok((SuperblockDecision { tree }, target))
         };
         let new_coder = || {
