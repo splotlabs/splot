@@ -334,6 +334,9 @@ pub struct PresetParams {
     /// beats the best angular SATD; off disables `enable_dip`. Off in every
     /// row: the `use_dip` flag cost offsets its wins (2026-10-25).
     pub dip: bool,
+    /// DIP predictions by SATD that get an RD trial: `1` gives the best one
+    /// a trial when it beats the best angular SATD; more drop that gate.
+    pub dip_trials: u8,
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
@@ -927,6 +930,7 @@ preset_table! {
         cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
         dip:                   [false, false, false, false, false, false, false, false, false, false, false],
+        dip_trials:            [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     transform {
         full_trials:           [    6,     6,     6,     4,     0,     0,     0,     0,     0,     0,     0],
@@ -1202,6 +1206,7 @@ mod tests {
             assert!(fast.screen_detect <= slow.screen_detect);
             assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.dip <= slow.dip);
+            assert!(fast.dip_trials <= slow.dip_trials);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.gdf_candidates <= slow.gdf_candidates);
             assert!(fast.cdef_strengths <= slow.cdef_strengths);

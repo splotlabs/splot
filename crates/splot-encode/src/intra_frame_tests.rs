@@ -441,6 +441,56 @@ fn type_model_ranks_the_exact_winner_first_on_constructed_blocks() {
     }
 }
 
+/// RD trials of the four best DIP predictions, without the angular SATD
+/// gate, change the stream against one gated trial, and decode to the
+/// encoder recon at both bit depths (a key frame and the inter frames that
+/// reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let mut differs = false;
+    for (width, height, bit_depth) in [(72, 40, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |trials: u8, threads: usize| -> (Vec<u8>, Vec<u8>) {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                dip: true,
+                dip_trials: trials,
+                ..*Preset::new(6).unwrap().params()
+            }));
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let coded: Vec<_> = (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    coder
+                        .encode_frame(&synthetic_frame(&config, 150 + index as u32), &plan, 60)
+                        .unwrap()
+                })
+                .collect();
+            (
+                coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
+            )
+        };
+        let (units, expected) = stream(4, 1);
+        let name = format!("{bit_depth:?}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        differs |= stream(1, 1).0 != units;
+        for threads in [2, 8] {
+            assert!(stream(4, threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+    assert!(
+        differs,
+        "four DIP trials coded the streams of one gated trial"
+    );
+}
+
 /// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
 /// frames only.
 #[test]
