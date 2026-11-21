@@ -439,8 +439,9 @@ pub struct PresetParams {
     /// them in raster order with the exact CDFs. Superblock qindex targets
     /// stay on the `delta_q_res` steps of `base_q_idx`, where each row starts.
     /// Off searches in raster order from the exact running CDFs. On at
-    /// p7-p10 only (2026-10-31, vs main d2bedf697, niklas f10): p8 +0.72% BD
-    /// for 2x wall time at 8 threads; p6 +0.51% with no 1-thread saving.
+    /// p6-p10 (2026-11-21, vs main 3eb69b1ed, CRF, 30 frames): p6 niklas
+    /// +0.24% BD, paris -0.04% at 0.998-1.006x instructions, for 2.05x wall
+    /// time at 8 threads on niklas (single-frame waves searched serially).
     pub wavefront: bool,
 }
 
@@ -1019,7 +1020,7 @@ preset_table! {
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1]]]),
     }
     threading {
-        wavefront:             [false, false, false, false, false, false, false,  true,  true,  true,  true],
+        wavefront:             [false, false, false, false, false, false,  true,  true,  true,  true,  true],
     }
 }
 
