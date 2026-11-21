@@ -129,7 +129,7 @@ impl EncoderInterTile {
         let (ref0, ref1) = compound.ref_frames;
         let input = CompoundBlendInput {
             use_optflow: compound.use_optflow,
-            joint_amvd: false,
+            joint_amvd: compound.y_mode == CompoundYMode::JointNew && compound.use_amvd,
             switchable_refinemv_on: refinemv && switchable,
             n4w,
             n4h,
