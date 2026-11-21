@@ -450,30 +450,33 @@ fn screen_streams_code_intrabc_leaves() {
     let preset = preset_with(|p| p.intrabc = true);
     let intrabc = |choice: &LeafChoice| choice.intrabc.is_some();
     let stream = |case| intrabc_stream(case, preset);
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Ten),
-        (PixelFormat::Yuv444, BitDepth::Eight),
-    ] {
-        let mut config = config(256, 128, bit_depth, 9, 90);
-        config.chroma = chroma;
-        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-        let key = crate::gop::plan(0, config.keyint);
-        let trees = search_frame(&coder, &key, &tiled_text(&config, 0), bit_depth);
-        let count: usize = trees.iter().map(|tree| leaves(tree, intrabc)).sum();
-        assert!(count > 0, "{chroma:?} {bit_depth:?}");
-    }
-    for chroma in CHROMAS {
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Ten),
+            (PixelFormat::Yuv444, BitDepth::Eight),
+        ],
+        |(chroma, bit_depth)| {
+            let mut config = config(256, 128, bit_depth, 9, 90);
+            config.chroma = chroma;
+            let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+            let key = crate::gop::plan(0, config.keyint);
+            let trees = search_frame(&coder, &key, &tiled_text(&config, 0), bit_depth);
+            let count: usize = trees.iter().map(|tree| leaves(tree, intrabc)).sum();
+            assert!(count > 0, "{chroma:?} {bit_depth:?}");
+        },
+    );
+    each_case(CHROMAS, |chroma| {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let (units, recon) = stream((2, chroma, bit_depth));
             let name = format!("{chroma:?} {bit_depth:?}");
             assert_same_samples(&decode(&units), &recon, &name);
         }
-    }
+    });
     let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
     let (one, _) = stream(case(1));
-    for threads in [2, 8] {
+    each_case([2, 8], |threads| {
         assert!(stream(case(threads)).0 == one, "{threads} threads");
-    }
+    });
 }
 
 /// Integer-MV streams decode to the encoder recon on any thread count.
