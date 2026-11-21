@@ -171,6 +171,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         inter_ist: true,
         tip: true,
         tip_output: true,
+        tip_explicit_qp: true,
         tip_hole_fill: true,
         opfl_refine: true,
         refinemv: true,
@@ -226,6 +227,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.seq_frame_motion_modes_present_flag && inter.enable_six_param_warp_delta);
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
     assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
+    assert!(inter.enable_tip_explicit_qp);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);

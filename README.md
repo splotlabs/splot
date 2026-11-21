@@ -90,6 +90,7 @@ splot decode movie.ivf -o movie.yuv --output-format raw    # raw planes
 splot decode movie.ivf --output-format hash                # frame hashes
 splot decode movie.ivf --output-format null --threads 8    # speed test
 splot decode movie.ivf -o first.y4m --limit 10             # first 10 frames
+splot decode movie.ivf -o clean.y4m --skip-film-grain      # no film grain
 ```
 
 The decoder reads IVF files and raw Annex B streams. A raw stream has no frame

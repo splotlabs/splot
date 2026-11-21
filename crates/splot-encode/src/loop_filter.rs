@@ -44,7 +44,7 @@ use crate::tile_writer::{
 };
 
 /// `(pri, sec)` CDEF strengths in the order the search tries them.
-const CDEF_LADDER: [(u8, u8); 16] = [
+pub(crate) const CDEF_LADDER: [(u8, u8); 16] = [
     (0, 0),
     (2, 0),
     (4, 1),
@@ -528,11 +528,20 @@ impl Search<'_> {
         };
         let deblocked = deblocked.as_ref().unwrap_or(self.recon);
         if filter.enable_cdef {
-            let mut best = self.cdef(preset, deblocked, false)?;
-            if preset.cdef_on_skip {
-                let on_skip = self.cdef(preset, deblocked, true)?;
-                if on_skip.0 < best.0 {
-                    best = on_skip;
+            let derived = cdef_damping(self.qindex, self.recon.bit_depth());
+            let dampings = (3..=6).filter(|&d| preset.cdef_damping_search && d != derived);
+            let mut best = self.cdef(preset, deblocked, false, derived)?;
+            for damping in core::iter::once(derived).chain(dampings) {
+                for on_skip in [false, true]
+                    .into_iter()
+                    .filter(|&on| !on || preset.cdef_on_skip)
+                {
+                    if (damping, on_skip) != (derived, false) {
+                        let trial = self.cdef(preset, deblocked, on_skip, damping)?;
+                        if trial.0 < best.0 {
+                            best = trial;
+                        }
+                    }
                 }
             }
             let (_, cdef, indices) = best;
@@ -691,18 +700,21 @@ impl Search<'_> {
         Ok(params)
     }
 
-    /// The CDEF damping, strength sets and per-unit indices that minimize SSE
-    /// plus the approximate index rate on the deblocked frame, with CDEF on
-    /// skipped transform blocks when `on_skip`, and their RD cost.
+    /// The CDEF strength sets and per-unit indices at `damping` that minimize
+    /// SSE plus the approximate index rate on the deblocked frame, with CDEF
+    /// on skipped transform blocks when `on_skip`, and their RD cost.
     fn cdef(
         &self,
         preset: &PresetParams,
         deblocked: &DecodedFrame<u16>,
         on_skip: bool,
+        damping: u8,
     ) -> Result<(u128, FrameFilterParams, Vec<Option<usize>>)> {
-        let candidates = &CDEF_LADDER[..[8, 12, 16][usize::from(preset.loop_filter_search).min(2)]];
-        let qmax = u32::from(crate::rate_control::max_qindex(self.recon.bit_depth()));
-        let damping = 3 + (3 * self.qindex / qmax).min(3) as u8;
+        let count = match preset.cdef_pairs {
+            0 => [8, 12, 16][usize::from(preset.loop_filter_search).min(2)],
+            pairs => usize::from(pairs),
+        };
+        let candidates = &cdef_pairs(count);
         let (rows, cols) = self.cdef_grid();
         let units = rows * cols;
         let chroma = if deblocked.plane(PlaneId::U).is_some() {
@@ -969,6 +981,23 @@ fn deblock_ladder(bits: u32) -> impl Iterator<Item = i32> {
     core::iter::once(0)
         .chain((1..=half).flat_map(|k| [k, -k]))
         .filter(move |delta| (-half..half).contains(delta))
+}
+
+/// `CdefDamping` from the frame qindex: `3` at qindex `0` up to `6` at the
+/// largest qindex of `bit_depth`.
+pub(crate) fn cdef_damping(qindex: u32, bit_depth: splot_recon::BitDepth) -> u8 {
+    let qmax = u32::from(crate::rate_control::max_qindex(bit_depth));
+    3 + (3 * qindex / qmax).min(3) as u8
+}
+
+/// The first `count` `(pri, sec)` pairs of the 64 that § 5.18.7.10 codes
+/// (`pri` `0..=15`, `sec` `0`, `1`, `2` or `4`): [`CDEF_LADDER`], then the
+/// others by `pri` and `sec`.
+fn cdef_pairs(count: usize) -> Vec<(u8, u8)> {
+    let rest = (0..16u8)
+        .flat_map(|pri| [0, 1, 2, 4].map(|sec| (pri, sec)))
+        .filter(|pair| !CDEF_LADDER.contains(pair));
+    CDEF_LADDER.into_iter().chain(rest).take(count).collect()
 }
 
 fn cdef_sets(sets: &[CdefStrengthSet]) -> Result<CdefStrengthSets> {
