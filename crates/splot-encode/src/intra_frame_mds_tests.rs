@@ -471,3 +471,29 @@ fn newmv_pruned_streams_decode_on_any_thread_count() {
     assert_ne!(off, one, "the pruning changes no byte");
     assert_eq!((off.len(), fnv(&off)), P10_GOLDEN);
 }
+
+/// Preset 10 with the cross sub-pel pattern `on`.
+fn subpel_cross(on: bool) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        subpel_cross: on,
+        ..*Preset::new(10).unwrap().params()
+    }))
+}
+
+/// The cross sub-pel pattern decodes to the encoder recon under every loop
+/// filter and codes the same bytes on 1, 2 and 8 threads; off, it codes the
+/// stream of main before it.
+#[test]
+fn subpel_cross_streams_decode_on_any_thread_count() {
+    let (one, expected, _, _) = staged_stream(subpel_cross(true), 160, 1);
+    assert_same_samples(&decode(&one), &expected, "cross sub-pel pattern");
+    for threads in [2, 8] {
+        assert!(
+            staged_stream(subpel_cross(true), 160, threads).0 == one,
+            "{threads} threads"
+        );
+    }
+    let off = staged_stream(subpel_cross(false), 160, 1).0;
+    assert_ne!(off, one, "the cross pattern changes no byte");
+    assert_eq!((off.len(), fnv(&off)), P10_GOLDEN);
+}

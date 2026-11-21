@@ -51,6 +51,10 @@ const NEIGHBOURS: [(i32, i32); 8] = [
     (1, 1),
 ];
 
+/// The four axis neighbours of a sub-pixel step, `(row, col)`: up, left,
+/// right, down.
+const CROSS: [(i32, i32); 4] = [(-1, 0), (0, -1), (0, 1), (1, 0)];
+
 /// One pyramid level: a plane padded by `pad` replicated samples per side.
 struct Level {
     samples: Vec<u16>,
@@ -135,6 +139,8 @@ pub(crate) struct MotionSearch {
     /// The preset's sub-pel depth, capped at the frame's vector precision:
     /// a finer position would not be codable.
     subpel_depth: u8,
+    /// [`PresetParams::subpel_cross`].
+    subpel_cross: bool,
     /// The frame's `NEWMV` difference step in `1/8` samples.
     mv_step: u32,
     /// `sqrt(lambda)` in Q8, the SAD-domain multiplier of a bit.
@@ -206,6 +212,7 @@ impl MotionSearch {
             source,
             range: i32::from(preset.motion_range.at(context)),
             subpel_depth: preset.subpel_depth.min(3 - mv_step.ilog2().min(3) as u8),
+            subpel_cross: preset.subpel_cross,
             mv_step,
             sad_lambda_q8: lambda.sse_per_bit_q16().isqrt(),
             open_loop,
@@ -360,7 +367,27 @@ impl MotionSearch {
         let steps = [FULL / 2, FULL / 4, FULL / 8];
         for &step in &steps[..usize::from(self.subpel_depth).min(steps.len())] {
             let center = mv;
+            let mut axis = [u64::MAX; 4];
             for (dr, dc) in NEIGHBOURS {
+                let cross = CROSS.iter().position(|&at| at == (dr, dc));
+                if self.subpel_cross && cross.is_none() {
+                    continue;
+                }
+                let candidate = MotionVector {
+                    row: center.row + dr * step,
+                    col: center.col + dc * step,
+                };
+                let cost = self.subpel_cost(syntax, ref_frame, block, candidate, pred)?;
+                if let Some(cross) = cross {
+                    axis[cross] = cost;
+                }
+                if cost < best_cost {
+                    (best_cost, mv) = (cost, candidate);
+                }
+            }
+            if self.subpel_cross {
+                let dr = if axis[3] < axis[0] { 1 } else { -1 };
+                let dc = if axis[2] < axis[1] { 1 } else { -1 };
                 let candidate = MotionVector {
                     row: center.row + dr * step,
                     col: center.col + dc * step,

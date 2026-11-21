@@ -143,6 +143,10 @@ pub struct PresetParams {
     pub newmv_ref_margin: Levels<u8>,
     /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
     pub subpel_depth: u8,
+    /// Sub-pel refinement tries the four axis neighbours of each step, then
+    /// the diagonal between the better vertical and the better horizontal
+    /// one; off tries all eight neighbours.
+    pub subpel_cross: bool,
     /// The largest frame `base_q_idx` that codes eighth-pel vectors when
     /// `subpel_depth` is `3`; other inter frames code quarter-pel vectors and
     /// refine to quarter samples. `0` never codes eighth-pel.
@@ -964,6 +968,7 @@ preset_table! {
         compound_skip_sad:     [   16,    16,    16,    16,    16,    24,    24,    24,    24,    24,    24],
         newmv_ref_margin:      frames([[255; 11], [255; 11], [255; 11], [255; 11]]),
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     1],
+        subpel_cross:          [false, false, false, false, false, false, false, false, false, false, false],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     1,     1],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
@@ -1154,6 +1159,7 @@ mod tests {
                 slow.compound_skip_sad == 0 || fast.compound_skip_sad >= slow.compound_skip_sad
             );
             assert!(fast.subpel_depth <= slow.subpel_depth);
+            assert!(fast.subpel_cross >= slow.subpel_cross);
             assert!(fast.eighth_pel_max_qindex <= slow.eighth_pel_max_qindex);
             assert!(fast.loop_filter_search <= slow.loop_filter_search);
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
