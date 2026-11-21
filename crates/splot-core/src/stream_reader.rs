@@ -199,6 +199,8 @@ pub struct TemporalUnitReader<R: Read> {
     unit_offset: u64,
     /// `buf` holds the temporal delimiter that opens the next Annex B unit.
     carried: bool,
+    /// The IVF warning that ended [`Self::next_temporal_unit`].
+    warning: Option<IvfWarning>,
 }
 
 impl<R: Read> TemporalUnitReader<R> {
@@ -224,6 +226,7 @@ impl<R: Read> TemporalUnitReader<R> {
             unit: Vec::new(),
             unit_offset: 0,
             carried: false,
+            warning: None,
         }
     }
 
@@ -267,8 +270,9 @@ impl<R: Read> TemporalUnitReader<R> {
     ///
     /// An IVF frame record is one unit. Annex B OBUs are collected from one
     /// temporal delimiter up to the next, so peak memory is one temporal unit.
-    /// A trailing IVF container warning ends the stream here; [`Self::next_unit`]
-    /// reports it. Use either call on one reader, not both.
+    /// A trailing IVF container warning ends the stream here and stays in
+    /// [`Self::ivf_warning`]. Use either this or [`Self::next_unit`] on one
+    /// reader, not both.
     ///
     /// # Errors
     /// Returns what [`Self::next_unit`] returns, and
@@ -276,14 +280,18 @@ impl<R: Read> TemporalUnitReader<R> {
     /// the per-unit cap together.
     pub fn next_temporal_unit(&mut self) -> Result<Option<TemporalUnit<'_>>, ReaderError> {
         if self.detect_format()? == BitstreamFormat::Ivf {
-            let Some(StreamUnit::IvfFrame {
-                index,
-                pts,
-                payload_offset,
-                ..
-            }) = self.next_unit()?
-            else {
-                return Ok(None);
+            let (index, pts, payload_offset) = match self.next_unit()? {
+                Some(StreamUnit::IvfFrame {
+                    index,
+                    pts,
+                    payload_offset,
+                    ..
+                }) => (index, pts, payload_offset),
+                Some(StreamUnit::IvfWarning(warning)) => {
+                    self.warning = Some(warning);
+                    return Ok(None);
+                }
+                _ => return Ok(None),
             };
             return Ok(Some(TemporalUnit {
                 index,
@@ -334,6 +342,13 @@ impl<R: Read> TemporalUnitReader<R> {
             offset,
             bytes: &self.unit,
         }))
+    }
+
+    /// The IVF container warning that ended [`Self::next_temporal_unit`]: the
+    /// file stops inside a frame record header.
+    #[must_use]
+    pub const fn ivf_warning(&self) -> Option<&IvfWarning> {
+        self.warning.as_ref()
     }
 
     /// Resolves the container format on first use by probing up to 4 bytes.
@@ -587,6 +602,7 @@ impl<R: Read + Seek> TemporalUnitReader<R> {
         self.pending_pos = self.pending_len;
         self.frame_index = position.index;
         self.carried = false;
+        self.warning = None;
         self.done = false;
         Ok(())
     }
@@ -840,6 +856,15 @@ mod tests {
             }) if offset == ByteOffset::new(data.len() as u64)
         ));
         assert!(reader.next_unit().unwrap().is_none());
+
+        let mut grouped = TemporalUnitReader::new(&data[..]);
+        assert!(grouped.next_temporal_unit().unwrap().is_some());
+        assert!(grouped.ivf_warning().is_none());
+        assert!(grouped.next_temporal_unit().unwrap().is_none());
+        assert!(matches!(
+            grouped.ivf_warning(),
+            Some(IvfWarning::TrailingPartialFrameHeader { frame_index: 1, .. })
+        ));
     }
 
     #[test]
