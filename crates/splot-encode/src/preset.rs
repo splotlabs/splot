@@ -354,6 +354,10 @@ pub struct PresetParams {
     /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
+    /// Without `fsc`, `enable_idtx_intra` (§ 5.4.8): the winning luma mode of
+    /// an intra leaf gets one RD trial with `fsc_mode`, which then codes a
+    /// plain IDTX block without the FSC coefficient path (§ 5.20.5.5).
+    pub idtx_intra: bool,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -395,6 +399,10 @@ pub struct PresetParams {
     /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. Off
     /// in every row: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
     pub cdef_on_skip: bool,
+    /// `enable_df_sub_pu`: each inter frame's deblocking also filters
+    /// prediction sub-unit edges unless that raises the summed frame SSE
+    /// (always without the deblock search).
+    pub df_sub_pu: bool,
     /// `enable_inter_ddt`: inter ADST and FDST sides of length 8 or 16
     /// transform with the DDT kernels. Off in every row (2026-10-25): it
     /// measured BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%).
@@ -418,6 +426,10 @@ pub struct PresetParams {
     /// frame coded normally; `0` is off. `100` in every row (2026-10-26):
     /// p6 measured park_joy -0.19%, paris -0.12%, niklas 0.00%.
     pub tip_output: u8,
+    /// With `tip`, `enable_tip_hole_fill`: every TIP frame codes
+    /// `allow_tip_hole_fill = 1`, so the TIP motion field fills its holes
+    /// (§ 7.10.1).
+    pub tip_hole_fill: bool,
     /// Optical-flow refinement (`enable_opfl_refine = REFINE_AUTO`): inter
     /// frames with a past and a future reference code `REFINE_SWITCHABLE`,
     /// so compound blocks may code `use_optflow`; others code `REFINE_NONE`.
@@ -425,6 +437,10 @@ pub struct PresetParams {
     /// niklas -0.22%. On in every row: off at p9 lost paris f10 +2.75% for
     /// 0.98x CPU.
     pub opfl: bool,
+    /// With `opfl`, inter frames code `opfl_refine_type = REFINE_ALL`
+    /// instead of `REFINE_SWITCHABLE`: every compound block that allows it
+    /// refines with optical flow and codes no `use_optflow` (§ 5.18.3.2).
+    pub opfl_refine_all: bool,
     /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
     /// with a past and a future reference may code `use_refinemv`. Off in
     /// every row (2026-10-30): alone it measured niklas +0.23% at p6, largely
@@ -464,11 +480,16 @@ pub struct PresetParams {
     pub implicit_mask: bool,
     /// Inter-intra (`seq_enabled_motion_modes[INTERINTRA]`): the cheapest
     /// single-reference `NEWMV` of a leaf adds its best smooth-mask
-    /// `interintra_mode` by luma SATD to the RD trials. Off in every row
+    /// `interintra_mode` by luma SATD, and with `interintra_search` its best
+    /// wedge inter-intra, to the RD trials. Off in every row
     /// (2026-10-30): at p6 it measured park_joy +0.39% Y (-0.05% YUV) and
     /// paris +0.13% Y for 3% more CPU, largely the `inter_intra` flag every
     /// eligible block codes.
     pub interintra: bool,
+    /// With `interintra`, the leaf also tries its best wedge inter-intra
+    /// (`wedge_interintra`, § 5.20.7.15) in the RD trials, `0..=1`. `0` in
+    /// every row (not measured at p0).
+    pub interintra_search: u8,
     /// Block adaptive weighted prediction (`enable_bawp`, every inter frame
     /// codes `allow_bawp = 1`): the cheapest single-reference `NEWMV` of a
     /// leaf adds its best BAWP scale by luma SATD to the RD trials. On at
@@ -762,6 +783,7 @@ impl PresetParams {
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
+        check("interintra_search", self.interintra_search, 0, 1, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check(
@@ -1040,7 +1062,9 @@ preset_table! {
         cdf_avg_across_tiles:  [false, false, false, false, false, false, false, false, false, false, false],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        tip_hole_fill:         [false, false, false, false, false, false, false, false, false, false, false],
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        opfl_refine_all:       [false, false, false, false, false, false, false, false, false, false, false],
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -1048,6 +1072,7 @@ preset_table! {
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
+        interintra_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
     }
     filters {
@@ -1059,9 +1084,11 @@ preset_table! {
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
         cdef_strengths:        [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
+        df_sub_pu:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     screen_content {
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
+        idtx_intra:            [false, false, false, false, false, false, false, false, false, false, false],
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
@@ -1294,6 +1321,7 @@ mod tests {
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
+            assert!(fast.interintra_search <= slow.interintra_search);
             assert!(fast.bawp <= slow.bawp);
             assert!(fast.wavefront >= slow.wavefront);
             assert!(
@@ -1480,6 +1508,7 @@ mod tests {
             (&[("compound_refs", "8")], "compound_refs"),
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
+            (&[("interintra_search", "2")], "interintra_search"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),

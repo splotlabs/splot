@@ -64,6 +64,7 @@ mod tests {
             coded_lossless,
             num_planes,
             df_par_bits_minus_2,
+            false,
             mfh,
         )
         .unwrap();
@@ -166,7 +167,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         let err =
-            write_deblocking_filter_params(&mut writer, &params, true, 3, 0, None).unwrap_err();
+            write_deblocking_filter_params(&mut writer, &params, true, 3, 0, false, None).unwrap_err();
         assert_eq!(
             err,
             WriteError::NonCanonicalFrameHeader {
@@ -177,19 +178,53 @@ mod tests {
     }
 
     #[test]
+    fn deblocking_allow_df_sub_pu_round_trips_on_an_open_gate() {
+        for allow in [false, true] {
+            let mut bits = Bits::default();
+            bits.bit(u8::from(allow)); // allow_df_sub_pu
+            bits.bit(1); // apply[0]
+            bits.bit(0); // apply[1]
+            bits.bit(0); // apply[2]
+            bits.bit(0); // apply[3]
+            bits.bit(0); // df_delta_q_present[0]
+            let data = bits.into_bytes();
+            let mut rd = reader(&data);
+            let params = parse_deblocking_filter_params(&mut rd, false, 3, 0, true, None).unwrap();
+            assert_eq!(params.allow_df_sub_pu, allow);
+            let mut writer = BitWriter::new();
+            write_deblocking_filter_params(&mut writer, &params, false, 3, 0, true, None).unwrap();
+            assert_eq!(writer.bit_len(), rd.consumed_bits());
+            let bytes = writer.into_bytes();
+            let reparsed =
+                parse_deblocking_filter_params(&mut reader(&bytes), false, 3, 0, true, None);
+            assert_eq!(reparsed.unwrap(), params);
+        }
+    }
+
+    #[test]
     fn deblocking_allow_df_sub_pu_rejected_before_write() {
         let mut params = DeblockingFilterParams::new([false; 4], [false; 4], [0; 4]);
         params.allow_df_sub_pu = true;
-        let mut writer = BitWriter::new();
-        let err =
-            write_deblocking_filter_params(&mut writer, &params, false, 3, 0, None).unwrap_err();
-        assert_eq!(
-            err,
-            WriteError::NonCanonicalFrameHeader {
-                what: "allow_df_sub_pu"
-            }
-        );
-        assert_eq!(writer.bit_len(), 0);
+        for (coded_lossless, gate) in [(false, false), (true, true)] {
+            let mut writer = BitWriter::new();
+            let err = write_deblocking_filter_params(
+                &mut writer,
+                &params,
+                coded_lossless,
+                3,
+                0,
+                gate,
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                WriteError::NonCanonicalFrameHeader {
+                    what: "allow_df_sub_pu"
+                }
+            );
+            assert_eq!(writer.bit_len(), 0);
+        }
     }
 
     #[test]
@@ -202,7 +237,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         let err =
-            write_deblocking_filter_params(&mut writer, &params, false, 1, 31, None).unwrap_err();
+            write_deblocking_filter_params(&mut writer, &params, false, 1, 31, false, None).unwrap_err();
         assert_eq!(
             err,
             WriteError::BitWidthTooLarge {
@@ -234,7 +269,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         let err =
-            write_deblocking_filter_params(&mut writer, &params, false, 3, 0, Some(&mfh)).unwrap_err();
+            write_deblocking_filter_params(&mut writer, &params, false, 3, 0, false, Some(&mfh)).unwrap_err();
         assert_eq!(
             err,
             WriteError::NonCanonicalFrameHeader {
@@ -255,7 +290,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         let err =
-            write_deblocking_filter_params(&mut writer, &params, false, 1, 0, None).unwrap_err();
+            write_deblocking_filter_params(&mut writer, &params, false, 1, 0, false, None).unwrap_err();
         assert_eq!(
             err,
             WriteError::NonCanonicalFrameHeader {
@@ -275,7 +310,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         let err =
-            write_deblocking_filter_params(&mut writer, &params, false, 1, 0, None).unwrap_err();
+            write_deblocking_filter_params(&mut writer, &params, false, 1, 0, false, None).unwrap_err();
         assert_eq!(
             err,
             WriteError::NonCanonicalFrameHeader { what: "df_delta_q" }
@@ -293,7 +328,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         let err =
-            write_deblocking_filter_params(&mut writer, &params, false, 1, 0, None).unwrap_err();
+            write_deblocking_filter_params(&mut writer, &params, false, 1, 0, false, None).unwrap_err();
         assert_eq!(
             err,
             WriteError::NonCanonicalFrameHeader { what: "df_delta_q" }
@@ -311,7 +346,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         let err =
-            write_deblocking_filter_params(&mut writer, &params, false, 1, 0, None).unwrap_err();
+            write_deblocking_filter_params(&mut writer, &params, false, 1, 0, false, None).unwrap_err();
         assert_eq!(
             err,
             WriteError::NonCanonicalFrameHeader { what: "df_delta_q" }

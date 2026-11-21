@@ -215,13 +215,15 @@ fn searched_compound_types_decode_on_any_thread_count() {
     );
 }
 
-/// A noisy mini-GOP stream with the inter-intra search codes inter-intra
-/// leaves through the filtered frames that later frames reference, decodes
-/// to the encoder recon, and codes the same bytes on 1, 2 and 8 threads.
+/// A noisy mini-GOP stream with the inter-intra search codes smooth and
+/// wedge inter-intra leaves through the filtered frames that later frames
+/// reference, decodes to the encoder recon, and codes the same bytes on 1, 2
+/// and 8 threads.
 #[test]
 fn interintra_streams_decode_on_any_thread_count() {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         interintra: true,
+        interintra_search: 1,
         tcq_type_trellis: false,
         ..*Preset::new(6).unwrap().params()
     }));
@@ -236,10 +238,12 @@ fn interintra_streams_decode_on_any_thread_count() {
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
     crate::tile_writer::CODED_TYPES.set([0; 7]);
+    crate::tile_writer::CODED_WEDGE_INTERINTRA.set(0);
     let (one, expected, cores, coder) = stream(1);
     assert!(coder.sequence.inter.unwrap().seq_enabled_motion_modes[1]);
     let interintra = crate::tile_writer::CODED_TYPES.get()[4];
-    assert!(interintra > 0, "no inter-intra leaf");
+    let wedges = crate::tile_writer::CODED_WEDGE_INTERINTRA.get();
+    assert!(wedges > 0 && interintra > wedges, "{interintra} {wedges}");
     assert!(cores.iter().any(|core| {
         core.deblocking_filter_params
             .as_ref()
@@ -255,6 +259,7 @@ fn interintra_streams_decode_on_any_thread_count() {
 fn interintra_preset() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         interintra: true,
+        interintra_search: 1,
         tcq_type_trellis: false,
         ..*Preset::new(6).unwrap().params()
     }))
@@ -313,11 +318,11 @@ fn avm_decodes_interintra_like_splot() {
     };
     config.threads = splot_parallel::ThreadCount::from(1);
     let coder = IntraFrameCoder::with_preset(&config, interintra_preset()).unwrap();
-    crate::tile_writer::CODED_TYPES.set([0; 7]);
+    crate::tile_writer::CODED_WEDGE_INTERINTRA.set(0);
     let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
     assert!(
-        crate::tile_writer::CODED_TYPES.get()[4] > 0,
-        "no inter-intra leaf"
+        crate::tile_writer::CODED_WEDGE_INTERINTRA.get() > 0,
+        "no wedge inter-intra leaf"
     );
     let avm = avm_decode(
         &avmdec,
