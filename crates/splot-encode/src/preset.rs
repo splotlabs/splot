@@ -406,6 +406,9 @@ pub struct PresetParams {
     /// The first frame picks the sequence's `cfl_ds_filter_index` by the
     /// down-sampled luma that best predicts its chroma; off codes `0`.
     pub cfl_filter: bool,
+    /// The explicit CFL candidate may code alpha 0 (`CFL_SIGN_ZERO`) in one
+    /// chroma plane when that plane's SATD is lowest there (§ 5.20.7.32).
+    pub cfl_zero_alpha: bool,
     /// The DIP prediction with the lowest SATD gets one RD trial when it
     /// beats the best angular SATD; off disables `enable_dip`. Off in every
     /// row: the `use_dip` flag cost offsets its wins (2026-10-25).
@@ -1054,6 +1057,7 @@ preset_table! {
                                [   13,    12,    12,    10,     9,     8,     2,     2,     2,     2,     1]]),
         mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
         cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        cfl_zero_alpha:        [false, false, false, false, false, false, false, false, false, false, false],
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
         dip:                   [false, false, false, false, false, false, false, false, false, false, false],
     }
@@ -1374,6 +1378,7 @@ mod tests {
             assert!(fast.integer_mv <= slow.integer_mv);
             assert!(fast.screen_detect <= slow.screen_detect);
             assert!(fast.cfl_filter <= slow.cfl_filter);
+            assert!(fast.cfl_zero_alpha <= slow.cfl_zero_alpha);
             assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.gdf_candidates <= slow.gdf_candidates);

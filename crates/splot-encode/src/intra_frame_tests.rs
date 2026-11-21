@@ -490,6 +490,57 @@ fn cctx_rd_over_every_rotation_decodes_to_the_encoder_recon_on_any_thread_count(
     }
 }
 
+/// Explicit CFL alphas with alpha 0 in one plane change the stream, decode
+/// to the encoder recon at both bit depths (a key frame and the inter frames
+/// that reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn cfl_zero_alpha_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (mut differs, mut total) = (false, 0);
+    for (width, height, bit_depth) in [(128, 64, BitDepth::Eight), (48, 32, BitDepth::Ten)] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |zero: bool, threads: usize| -> (Vec<u8>, Vec<u8>) {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                cfl_zero_alpha: zero,
+                ..*Preset::new(6).unwrap().params()
+            }));
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let coded: Vec<_> = (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    coder
+                        .encode_frame(&synthetic_frame(&config, 90 + index as u32), &plan, 60)
+                        .unwrap()
+                })
+                .collect();
+            (
+                coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
+            )
+        };
+        crate::tile_writer::CFL_ZERO_CODED.set(0);
+        let (units, expected) = stream(true, 1);
+        let coded = crate::tile_writer::CFL_ZERO_CODED.get();
+        let name = format!("{bit_depth:?}");
+        total += coded;
+        assert_same_samples(&decode(&units), &expected, &name);
+        differs |= stream(false, 1).0 != units;
+        for threads in [2, 8] {
+            assert!(
+                stream(true, threads).0 == units,
+                "{name}: {threads} threads"
+            );
+        }
+    }
+    assert!(total > 0 && differs, "no leaf coded alpha 0");
+}
+
 /// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
 /// frames only.
 #[test]
