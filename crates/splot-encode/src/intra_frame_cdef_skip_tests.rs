@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! CDEF on skipped transform blocks (§ 5.18.7.10) in key and inter frames.
+//! CDEF on skipped transform blocks (§ 5.18.7.10) and deblocking of
+//! prediction sub-units (§ 5.18.5.2 `allow_df_sub_pu`) in key and inter frames.
 
 use super::*;
 use crate::preset::PresetParams;
@@ -15,11 +16,11 @@ fn with_cdef_on_skip(preset: &PresetParams, on: bool) -> &'static PresetParams {
 }
 
 /// A key frame and three inter frames of a two-tile pan on `threads`
-/// threads: the units, the encoder recon and `cdef_on_skip_txfm_frame_enable`
-/// of each frame.
-fn cdef_skip_stream(
+/// threads: the units, the encoder recon and `flag` of each frame header.
+fn filter_stream(
     threads: usize,
     preset: &'static PresetParams,
+    flag: fn(&FrameHeaderCore) -> bool,
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>) {
     let mut config = config(200, 136, BitDepth::Eight, 9, 200);
     config.tiles = TileLayout {
@@ -35,16 +36,19 @@ fn cdef_skip_stream(
             .code_frame(&panning_frame(&config, index), &plan, 200, &[])
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
-        flags.push(
-            core.cdef_params
-                .as_ref()
-                .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(true)),
-        );
+        flags.push(flag(core));
         coder.commit(&mut coded).unwrap();
         recon.extend(recon_bytes(&coded, config.bit_depth));
         units.push(coded.temporal_unit);
     }
     (units, recon, flags)
+}
+
+/// `cdef_on_skip_txfm_frame_enable` of `core`.
+fn on_skip(core: &FrameHeaderCore) -> bool {
+    core.cdef_params
+        .as_ref()
+        .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(true))
 }
 
 /// Some frame codes CDEF on skipped blocks; the stream decodes to the encoder
@@ -53,13 +57,16 @@ fn cdef_skip_stream(
 fn cdef_on_skip_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     let base = Preset::new(9).unwrap().params();
     let on = with_cdef_on_skip(base, true);
-    let (one, recon, flags) = cdef_skip_stream(1, on);
+    let (one, recon, flags) = filter_stream(1, on, on_skip);
     assert!(flags.contains(&true), "{flags:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "cdef on skip");
     for threads in [2, 8] {
-        assert!(cdef_skip_stream(threads, on).0 == one, "{threads} threads");
+        assert!(
+            filter_stream(threads, on, on_skip).0 == one,
+            "{threads} threads"
+        );
     }
-    let (_, _, off_flags) = cdef_skip_stream(1, with_cdef_on_skip(base, false));
+    let (_, _, off_flags) = filter_stream(1, with_cdef_on_skip(base, false), on_skip);
     assert!(!off_flags.contains(&true), "{off_flags:?}");
 }
 
@@ -71,8 +78,54 @@ fn avm_decodes_cdef_on_skip_frames_like_splot() {
         return;
     };
     let on = with_cdef_on_skip(Preset::new(9).unwrap().params(), true);
-    let (units, recon, flags) = cdef_skip_stream(2, on);
+    let (units, recon, flags) = filter_stream(2, on, on_skip);
     assert!(flags.contains(&true), "{flags:?}");
     let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Eight, "cdef-skip");
+    assert!(avm == recon, "AVM output differs");
+}
+
+/// Preset 6 with `df_sub_pu`.
+fn with_df_sub_pu() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        df_sub_pu: true,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// `allow_df_sub_pu` of `core`.
+fn sub_pu(core: &FrameHeaderCore) -> bool {
+    core.deblocking_filter_params
+        .as_ref()
+        .is_some_and(|params| params.allow_df_sub_pu)
+}
+
+/// With `df_sub_pu` some inter frame deblocks prediction sub-units; the
+/// stream decodes to the encoder recon and 1, 2 and 8 threads write the same
+/// bytes. Off, the sequence does not enable it.
+#[test]
+fn df_sub_pu_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (one, recon, flags) = filter_stream(1, with_df_sub_pu(), sub_pu);
+    assert!(flags.contains(&true), "{flags:?}");
+    assert_same_samples(&decode(&one.concat()), &recon, "df sub-pu");
+    for threads in [2, 8] {
+        assert!(
+            filter_stream(threads, with_df_sub_pu(), sub_pu).0 == one,
+            "{threads} threads"
+        );
+    }
+    let (_, _, off) = filter_stream(1, Preset::new(6).unwrap().params(), sub_pu);
+    assert!(!off.contains(&true), "{off:?}");
+}
+
+/// AVM decodes frames that deblock prediction sub-units to the splot output.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_df_sub_pu_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, recon, flags) = filter_stream(2, with_df_sub_pu(), sub_pu);
+    assert!(flags.contains(&true), "{flags:?}");
+    let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Eight, "df-sub-pu");
     assert!(avm == recon, "AVM output differs");
 }

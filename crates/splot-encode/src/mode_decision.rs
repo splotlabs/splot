@@ -104,9 +104,6 @@ thread_local! {
 const PRICED_COMPOUND_SHARE: usize = 2;
 /// One luma sample in `1/8` units.
 const FULL_PEL: i32 = 8;
-/// References whose pairs compound candidates take: the § 7.7 map ranks the
-/// closest references first.
-const COMPOUND_REFS: usize = 3;
 /// Luma planes, chroma planes, and all planes of a leaf trial.
 const LUMA: Range<usize> = 0..1;
 const CHROMA: Range<usize> = 1..3;
@@ -870,12 +867,18 @@ impl TrialCoder<'_, '_> {
     /// syntax, DRL indices included (priced for the [`PRICED_COMPOUND_SHARE`]
     /// times as many lowest-SATD ones; a candidate with the references and
     /// vectors of an earlier one is dropped, which measured better than
-    /// keeping the cheapest), over the reference pairs of the
-    /// first [`COMPOUND_REFS`] references. Each pair tries `NEAR_NEARMV` over
-    /// the DRL indices, and a pair of distinct references also
-    /// `GLOBAL_GLOBALMV` and the `NEWMV` modes, whose lists take the
-    /// single-reference search results `searched` (one per reference, `None`
-    /// where the reference searched no `NEWMV`).
+    /// keeping the cheapest), over the reference pairs of the first
+    /// `preset.compound_refs` references (the § 7.7 map ranks the closest
+    /// first). Each pair tries `NEAR_NEARMV` over the DRL indices, and a pair
+    /// of distinct references also `GLOBAL_GLOBALMV` and the `NEWMV` modes,
+    /// `JOINT_NEWMV` with each of the first `preset.jmvd_scales`
+    /// `jmvd_scale_mode` values, whose lists take the single-reference search
+    /// results `searched` (one per reference, `None` where the reference
+    /// searched no `NEWMV`). With `preset.same_ref_modes` a same-reference
+    /// pair also tries `NEAR_NEWMV` over the list-0 DRL indices and
+    /// `NEW_NEWMV` with [`Self::same_ref_partner`] (§ 5.20.7.6
+    /// `compound_mode_same_refs`); its `GLOBAL_GLOBALMV` predicts the samples
+    /// of `GLOBALMV` at a higher rate, so it is not tried.
     fn compound_candidates(
         &mut self,
         leaf: &LeafBlock,
@@ -891,7 +894,7 @@ impl TrialCoder<'_, '_> {
         }
         let mut ranked: Vec<(u64, [MotionVector; 2], CompoundModes)> = Vec::new();
         for refs in self.syntax.compound_pairs() {
-            if refs.1 >= COMPOUND_REFS {
+            if refs.1 >= usize::from(self.preset.compound_refs) {
                 continue;
             }
             let modes = |mode, drl, mvs| CompoundModes {
@@ -915,19 +918,30 @@ impl TrialCoder<'_, '_> {
             #[cfg(test)]
             self.check_near_near(leaf, &derived)?;
             let mut trials = Vec::new();
+            let found = (searched.get(refs.0), searched.get(refs.1));
             if refs.0 != refs.1 {
                 trials.push(modes(CompoundMode::GlobalGlobal, [0; 2], zero));
-                if let (Some(&Some(first)), Some(&Some(second))) =
-                    (searched.get(refs.0), searched.get(refs.1))
-                {
+                if let (Some(&Some(first)), Some(&Some(second))) = found {
                     for mode in [
                         CompoundMode::NewNew,
                         CompoundMode::NearNew,
                         CompoundMode::NewNear,
-                        CompoundMode::JointNew,
                     ] {
                         trials.push(modes(mode, [0; 2], [first, second]));
                     }
+                    for jmvd_scale_mode in 0..self.preset.jmvd_scales {
+                        trials.push(CompoundModes {
+                            jmvd_scale_mode,
+                            ..modes(CompoundMode::JointNew, [0; 2], [first, second])
+                        });
+                    }
+                }
+            } else if let (true, Some(&Some(first))) = (self.preset.same_ref_modes, found.0) {
+                for drl in 0..self.syntax.drl_count() {
+                    trials.push(modes(CompoundMode::NearNew, [drl, 0], [first; 2]));
+                }
+                if let Some(partner) = self.same_ref_partner(leaf, motion, refs.0, first)? {
+                    trials.push(modes(CompoundMode::NewNew, [0; 2], [first, partner]));
                 }
             }
             derived.extend(trials.into_iter().map(|trial| (trial, None)));

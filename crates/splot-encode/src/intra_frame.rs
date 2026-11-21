@@ -59,13 +59,6 @@ use crate::wavefront;
 const TCQ_LAMBDA_PERCENT: u64 = 60;
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
-/// `avg_cdf_type` of a stream that carries CDFs: `true` averages the saved
-/// CDFs across tiles, `false` blends the primary reference's CDFs with a
-/// second reference's.
-const AVG_CDF_ACROSS_TILES: bool = false;
-/// `constrain_drl_reorder` of a stream that reorders the DRL: `true`
-/// reorders under `DRL_REORDER_CONSTRAINT`, `false` always.
-const DRL_REORDER_CONSTRAINT: bool = true;
 
 /// Codes key frames and inter frames.
 pub(crate) struct IntraFrameCoder {
@@ -257,10 +250,11 @@ impl IntraFrameCoder {
                 sdp: preset.sdp,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
-                avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),
+                avg_cdf: preset.cdf_carry.then_some(preset.cdf_avg_across_tiles),
                 ref_frame_mvs: preset.mv_prediction,
                 refmvbank: preset.mv_prediction,
-                drl_reorder: preset.mv_prediction.then_some(DRL_REORDER_CONSTRAINT),
+                drl_reorder: preset.mv_prediction.then_some(!preset.drl_reorder_always),
+                mv_traj: preset.mv_prediction && preset.mv_traj,
                 max_drl_bits_minus_1: u32::from(preset.drl_bits.saturating_sub(1)),
                 mvd_tools: preset.mvd_tools,
                 warp: preset.warp > 0,
@@ -268,6 +262,7 @@ impl IntraFrameCoder {
                 masked_compound: preset.compound_types >= 1,
                 cwp: preset.compound_types >= 2,
                 implicit_mask: preset.implicit_mask,
+                df_sub_pu: preset.df_sub_pu,
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
