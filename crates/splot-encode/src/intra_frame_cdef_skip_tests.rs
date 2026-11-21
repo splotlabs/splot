@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! CDEF on skipped transform blocks (§ 5.18.7.10) and deblocking of
-//! prediction sub-units (§ 5.18.5.2 `allow_df_sub_pu`) in key and inter frames.
+//! CDEF on skipped transform blocks and the full CDEF strength and damping
+//! search (§ 5.18.7.10), and deblocking of prediction sub-units (§ 5.18.5.2
+//! `allow_df_sub_pu`) in key and inter frames.
 
 use super::*;
 use crate::preset::PresetParams;
@@ -127,5 +128,67 @@ fn avm_decodes_df_sub_pu_frames_like_splot() {
     let (units, recon, flags) = filter_stream(2, with_df_sub_pu(), sub_pu);
     assert!(flags.contains(&true), "{flags:?}");
     let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Eight, "df-sub-pu");
+    assert!(avm == recon, "AVM output differs");
+}
+
+/// Preset 9 with the full CDEF search: all 64 strength pairs and every damping.
+fn with_full_cdef() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        cdef_pairs: 64,
+        cdef_damping_search: true,
+        ..*Preset::new(9).unwrap().params()
+    }))
+}
+
+/// Whether `core` codes CDEF with a strength pair outside the 16-pair ladder
+/// or with a damping other than the one its qindex derives.
+fn new_cdef_choice(core: &FrameHeaderCore) -> bool {
+    let Some(cdef) = core
+        .cdef_params
+        .as_ref()
+        .filter(|cdef| cdef.cdef_frame_enable)
+    else {
+        return false;
+    };
+    let qindex = core.quantization_params.map_or(0, |q| q.base_q_idx);
+    let derived = crate::loop_filter::cdef_damping(qindex, BitDepth::Eight);
+    let ladder = |pair| crate::loop_filter::CDEF_LADDER.contains(&pair);
+    cdef.cdef_damping != Some(derived)
+        || cdef.strengths.as_slice().iter().any(|set| {
+            !ladder((set.y_pri_strength, set.y_sec_strength))
+                || !ladder((set.uv_pri_strength, set.uv_sec_strength))
+        })
+}
+
+/// With `cdef_pairs` 64 and `cdef_damping_search` some frame codes a pair
+/// outside the 16-pair ladder or a non-derived damping; the stream decodes to
+/// the encoder recon and 1, 2 and 8 threads write the same bytes. Off, no
+/// frame does.
+#[test]
+fn full_cdef_search_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (one, recon, flags) = filter_stream(1, with_full_cdef(), new_cdef_choice);
+    let chosen = flags.iter().filter(|&&flag| flag).count();
+    assert!(chosen > 0, "{flags:?}");
+    assert_same_samples(&decode(&one.concat()), &recon, "full cdef");
+    for threads in [2, 8] {
+        assert!(
+            filter_stream(threads, with_full_cdef(), new_cdef_choice).0 == one,
+            "{threads} threads"
+        );
+    }
+    let (_, _, off) = filter_stream(1, Preset::new(9).unwrap().params(), new_cdef_choice);
+    assert!(!off.contains(&true), "{off:?}");
+}
+
+/// AVM decodes frames of the full CDEF search to the splot output.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_full_cdef_search_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, recon, flags) = filter_stream(2, with_full_cdef(), new_cdef_choice);
+    assert!(flags.contains(&true), "{flags:?}");
+    let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Eight, "full-cdef");
     assert!(avm == recon, "AVM output differs");
 }
