@@ -103,3 +103,72 @@ fn avm_decodes_refined_streams_like_splot() {
         assert!(avm == expected, "{chroma:?}: AVM output differs");
     }
 }
+
+/// Preset 6 with optical flow on every allowed compound block.
+fn with_refine_all() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        opfl_refine_all: true,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// With `opfl_refine_all` inter frames code `REFINE_ALL`, and panning
+/// mini-GOP streams decode to the encoder recon in 4:2:0 10-bit, 4:2:2 8-bit
+/// and 4:4:4 10-bit; a tiled stream codes the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn refine_all_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Ten),
+        (PixelFormat::Yuv422, BitDepth::Eight),
+        (PixelFormat::Yuv444, BitDepth::Ten),
+    ] {
+        let mut config = config(72, 40, bit_depth, 6, 200);
+        config.chroma = chroma;
+        let coder = IntraFrameCoder::with_preset(&config, with_refine_all()).unwrap();
+        let (units, expected, cores, _) =
+            super::carry::planned_stream_of(&config, coder, panning_frame, 200);
+        let all = cores
+            .iter()
+            .filter_map(|core| core.inter.as_ref())
+            .filter(|inter| inter.opfl_refine_type == Some(2))
+            .count();
+        assert!(all > 0, "{chroma:?}");
+        assert_same_samples(&decode(&units), &expected, &format!("{chroma:?}"));
+    }
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Eight, 6, 200);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 0,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, with_refine_all()).unwrap();
+        super::carry::planned_stream_of(&config, coder, panning_frame, 200)
+    };
+    let (one, expected, ..) = stream(1);
+    assert_same_samples(&decode(&one), &expected, "tiled");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == one, "{threads} threads");
+    }
+}
+
+/// AVM decodes `REFINE_ALL` panning streams like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_refine_all_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let config = config(72, 40, BitDepth::Ten, 6, 200);
+    let coder = IntraFrameCoder::with_preset(&config, with_refine_all()).unwrap();
+    let (units, expected, ..) = super::carry::planned_stream_of(&config, coder, panning_frame, 200);
+    let avm = avm_decode(
+        &avmdec,
+        &[units],
+        (config.width, config.height),
+        config.bit_depth,
+        "refine-all",
+    );
+    assert!(avm == expected, "AVM output differs");
+}

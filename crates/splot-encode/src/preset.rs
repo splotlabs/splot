@@ -397,6 +397,10 @@ pub struct PresetParams {
     /// niklas -0.22%. On in every row: off at p9 lost paris f10 +2.75% for
     /// 0.98x CPU.
     pub opfl: bool,
+    /// With `opfl`, inter frames code `opfl_refine_type = REFINE_ALL`
+    /// instead of `REFINE_SWITCHABLE`: every compound block that allows it
+    /// refines with optical flow and codes no `use_optflow` (§ 5.18.3.2).
+    pub opfl_refine_all: bool,
     /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
     /// with a past and a future reference may code `use_refinemv`. Off in
     /// every row (2026-10-30): alone it measured niklas +0.23% at p6, largely
@@ -998,6 +1002,7 @@ preset_table! {
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        opfl_refine_all:       [false, false, false, false, false, false, false, false, false, false, false],
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
