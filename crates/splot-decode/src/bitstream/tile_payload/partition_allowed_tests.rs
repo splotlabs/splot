@@ -322,3 +322,90 @@ fn bounded_caller_fact_space_never_panics() {
         }
     }
 }
+
+fn edge_block(
+    b_size: usize,
+    r: usize,
+    c: usize,
+    mi: usize,
+    has_chroma: bool,
+    frame_is_intra: bool,
+    mixed_region: bool,
+) -> PartitionAllowedInput {
+    PartitionAllowedInput::new(
+        r,
+        c,
+        mi,
+        mi,
+        b_size,
+        PartitionTreeType::Shared,
+        true,
+        true,
+        features(),
+        frame_is_intra,
+        mixed_region,
+        8,
+        has_chroma,
+        true,
+        3,
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn chroma_carrying_16x4_at_the_right_edge_falls_back_to_none() {
+    for frame_is_intra in [true, false] {
+        for mixed_region in [false, true] {
+            let input = edge_block(BLOCK_16X4, 89, 88, 90, true, frame_is_intra, mixed_region);
+            assert_eq!(
+                partition_implied_at_boundary(input).unwrap(),
+                Some(PartitionType::Vert)
+            );
+            assert!(!is_partition_allowed(input, PartitionType::Vert).unwrap());
+            assert!(!is_partition_allowed(input, PartitionType::None).unwrap());
+            let allowed = init_allowed_partitions(input).unwrap();
+            assert_eq!(
+                allowed.bits(),
+                AllowedPartitions::from_bits(1 << PartitionType::None.index()).bits()
+            );
+            let (facts, implied) = partition_decision_facts(input).unwrap();
+            assert_eq!(implied, Some(PartitionType::Vert));
+            assert_eq!(facts.unread_partition(), Some(PartitionType::None));
+            assert_eq!(
+                PartitionDecisionMemo::default().facts(input).unwrap(),
+                facts
+            );
+        }
+    }
+    let top_half = edge_block(BLOCK_16X4, 88, 88, 90, false, true, false);
+    let (facts, _) = partition_decision_facts(top_half).unwrap();
+    assert_eq!(facts.unread_partition(), Some(PartitionType::Vert));
+    let inside = edge_block(BLOCK_16X4, 89, 88, 92, true, true, false);
+    assert_eq!(partition_implied_at_boundary(inside).unwrap(), None);
+}
+
+#[test]
+fn chroma_carrying_4x16_at_the_bottom_edge_falls_back_to_none() {
+    for frame_is_intra in [true, false] {
+        for mixed_region in [false, true] {
+            let input = edge_block(BLOCK_4X16, 88, 89, 90, true, frame_is_intra, mixed_region);
+            assert_eq!(
+                partition_implied_at_boundary(input).unwrap(),
+                Some(PartitionType::Horz)
+            );
+            assert!(!is_partition_allowed(input, PartitionType::Horz).unwrap());
+            assert!(!is_partition_allowed(input, PartitionType::None).unwrap());
+            let (facts, implied) = partition_decision_facts(input).unwrap();
+            assert_eq!(implied, Some(PartitionType::Horz));
+            assert_eq!(facts.unread_partition(), Some(PartitionType::None));
+            assert_eq!(
+                PartitionDecisionMemo::default().facts(input).unwrap(),
+                facts
+            );
+        }
+    }
+    let left_half = edge_block(BLOCK_4X16, 88, 88, 90, false, true, false);
+    let (facts, _) = partition_decision_facts(left_half).unwrap();
+    assert_eq!(facts.unread_partition(), Some(PartitionType::Horz));
+}

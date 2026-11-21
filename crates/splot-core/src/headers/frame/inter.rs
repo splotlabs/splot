@@ -1083,6 +1083,52 @@ mod tests {
     }
 
     #[test]
+    fn frame_max_drl_bits_round_trips_the_reference_quniform_code_for_all_defaults() {
+        for seq_minus_1 in 0u32..=4 {
+            for frame_minus_1 in 0u32..=4 {
+                let mut bits = Bits::default();
+                bits.bit(1); // signal_primary_ref_frame
+                bits.bit(0); // disable_cross_frame_cdf_init
+                bits.f(2, 3); // primary_ref_frame
+                bits.f(0, 8); // refresh_frame_flags
+                bits.bit(1); // frame_explicit_ref_frame_map
+                bits.f(1, 3); // num_total_refs
+                bits.f(0, 3); // ref_frame_idx[0]
+                bits.bit(0); // use_ref_frame_mvs
+                bits.bit(0); // allow_intrabc
+                if frame_minus_1 == seq_minus_1 {
+                    bits.bit(0);
+                } else {
+                    bits.bit(1);
+                    bits.f(frame_minus_1 - u32::from(frame_minus_1 > seq_minus_1), 2);
+                }
+                bits.bit(1); // use_qtr_precision_mv
+                bits.bit(1); // is_filter_switchable sentinel
+                bits.bit(0); // disable_cdf_update
+                let expected_consumed = bits.bit_len() as u64;
+                let data = bits.into_bytes();
+                let mut reader = BitReader::new(&data, ByteOffset::new(0));
+                let mut seq = inter_seq();
+                seq.allow_frame_max_drl_bits = true;
+                seq.seq_max_drl_bits_minus_1 = seq_minus_1;
+                let mut control = InterControl::default();
+                parse_inter_control_into(
+                    &mut reader,
+                    &seq,
+                    &inter_ctx(),
+                    &FrameReferenceStateView::unknown(),
+                    false,
+                    &mut control,
+                )
+                .unwrap();
+                assert_eq!(control.max_drl_bits_minus_1, Some(frame_minus_1));
+                assert_eq!(reader.consumed_bits(), expected_consumed);
+                assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+            }
+        }
+    }
+
+    #[test]
     fn mv_precision_av2_codes_match_table_6_19() {
         for (precision, code) in [
             (MvPrecision::OnePel, 3),

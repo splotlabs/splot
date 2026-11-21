@@ -867,4 +867,73 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn frame_filter_header_never_panics_on_pseudo_random_bits() {
+        let mut state: u64 = 0x1234_5678_9abc_def1;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut parsed = 0u32;
+        for _ in 0..2_000 {
+            let plane = (next() % 3) as usize;
+            let num_classes = (1 + next() % 16) as u8;
+            let num_ref_filters = (next() % 64) as usize;
+            let view = CoreSeqRestorationView {
+                enable_restoration: true,
+                lr_pc_wiener_disabled: next() & 1 == 1,
+                lr_wiener_nonsep_disabled: false,
+                lr_uv_pc_wiener_disabled: true,
+                lr_uv_wiener_nonsep_disabled: false,
+            };
+            let len = 4 + (next() % 60) as usize;
+            let data: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+            let mut r = reader(&data);
+            let result = parse_frame_wiener_ns_filter(
+                &mut r,
+                plane,
+                num_classes,
+                num_ref_filters,
+                &[],
+                view,
+            );
+            parsed += u32::from(result.is_ok());
+        }
+        assert!(parsed > 0);
+    }
+
+    #[test]
+    fn no_reachable_group_count_combination_has_a_zero_sized_prediction_group() {
+        for plane in 0..3usize {
+            for num_classes in 1..=16usize {
+                let classes = if plane > 0 { 1 } else { num_classes };
+                for pc_wiener_disabled in [false, true] {
+                    for num_ref_filters in 0..64usize {
+                        let capped = capped_reference_filter_count(
+                            plane,
+                            classes,
+                            num_ref_filters,
+                            pc_wiener_disabled,
+                        );
+                        let counts = [
+                            classes,
+                            capped,
+                            sampled_pc_wiener_filter_count(
+                                plane,
+                                classes,
+                                capped,
+                                pc_wiener_disabled,
+                            ),
+                        ];
+                        assert!(
+                            counts[most_probable_group(0, counts)] > 0,
+                            "{plane} {num_classes} {num_ref_filters} {pc_wiener_disabled} {counts:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

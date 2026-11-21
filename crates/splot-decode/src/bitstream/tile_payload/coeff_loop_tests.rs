@@ -203,3 +203,51 @@ fn coefficient_error_classifier_keeps_defensive_eof_syntax_specific() {
         }
     );
 }
+
+fn encode_eob_pt_seven(size: EobPtSize, extra: u32, tail_bits: Option<(u32, u32)>) -> Vec<u8> {
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    tile.with_row_mut(TileCdfSelector::EobPt { size, eob_ctx: 0 }, |row| {
+        encoder.write_symbol_u16(row, Symbol::new(7))
+    })
+    .unwrap()
+    .unwrap();
+    encoder.write_literal(extra, 2).unwrap();
+    if let Some((value, width)) = tail_bits {
+        tile.with_row_mut(TileCdfSelector::EobExtra, |row| {
+            encoder.write_symbol_u16(row, Symbol::new(1))
+        })
+        .unwrap()
+        .unwrap();
+        encoder.write_literal(value, width).unwrap();
+    }
+    encoder.finish().unwrap().into_bytes()
+}
+
+fn read_eob(size: EobPtSize, payload: &[u8]) -> Result<usize, CoeffLoopContextError> {
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(payload, ByteOffset::new(0), CdfUpdateMode::Enabled);
+    read_nonzero_coeff_eob(
+        &mut tile,
+        &mut symbols,
+        NonZeroCoeffEobSymbolInput { size, eob_ctx: 0 },
+    )
+}
+
+#[test]
+fn eob_pt_extra_three_is_rejected_for_pt512_and_accepted_for_pt1024() {
+    let payload = encode_eob_pt_seven(EobPtSize::Pt512, 3, None);
+    assert!(matches!(
+        read_eob(EobPtSize::Pt512, &payload),
+        Err(CoeffLoopContextError::InvalidPt512EobExtra { eob_pt_extra: 3 })
+    ));
+
+    let payload = encode_eob_pt_seven(EobPtSize::Pt512, 2, Some((127, 7)));
+    assert_eq!(
+        read_eob(EobPtSize::Pt512, &payload).unwrap(),
+        257 + 128 + 127
+    );
+
+    let payload = encode_eob_pt_seven(EobPtSize::Pt1024, 3, Some((0, 8)));
+    assert_eq!(read_eob(EobPtSize::Pt1024, &payload).unwrap(), 513 + 256);
+}
