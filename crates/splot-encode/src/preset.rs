@@ -227,16 +227,16 @@ pub struct PresetParams {
     /// row: `0` at p9 cost niklas f10 +9.8% BD-rate for 0.85x instructions.
     pub compound_candidates: u8,
     /// References whose pairs the compound search takes, closest first by
-    /// the § 7.7 ranking, `1..=7` (`REFS_PER_FRAME`, § 3). `7` (every pair)
-    /// at p0; `3` elsewhere, as before.
+    /// the § 7.7 ranking, `1..=7` (`REFS_PER_FRAME`, § 3). `3` in every row:
+    /// `7` lost at p0 (2026-11-21, paris f10: Y +0.13%, 6:1:1 +0.16%).
     pub compound_refs: u8,
     /// `jmvd_scale_mode` values a `JOINT_NEWMV` candidate tries, `1..=5`
-    /// (`JOINT_NEWMV_SCALE_FACTOR_CNT`, § 3). `5` at p0; `1` (scale 0 only)
-    /// elsewhere.
+    /// (`JOINT_NEWMV_SCALE_FACTOR_CNT`, § 3). `1` (scale 0 only) in every
+    /// row: `5` lost at p0 (2026-11-21, paris f10: Y +0.12%).
     pub jmvd_scales: u8,
     /// Same-reference compound pairs also try `NEAR_NEWMV` and `NEW_NEWMV`
-    /// (§ 5.20.7.6 `compound_mode_same_refs`), not only `NEAR_NEARMV`. On at
-    /// p0.
+    /// (§ 5.20.7.6 `compound_mode_same_refs`), not only `NEAR_NEARMV`. Off
+    /// in every row: on lost at p0 (2026-11-21, paris f10: Y +0.13%).
     pub same_ref_modes: bool,
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
@@ -1009,9 +1009,9 @@ preset_table! {
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     1],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     1,     1],
-        compound_refs:         [    7,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
-        jmvd_scales:           [    5,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
-        same_ref_modes:        [ true, false, false, false, false, false, false, false, false, false, false],
+        compound_refs:         [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
+        jmvd_scales:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        same_ref_modes:        [false, false, false, false, false, false, false, false, false, false, false],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
