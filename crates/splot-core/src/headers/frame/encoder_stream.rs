@@ -154,6 +154,9 @@ pub struct EncoderToolFlags {
     /// `enable_global_motion` (§ 5.4.6): each inter frame codes
     /// `use_global_motion`.
     pub global_motion: bool,
+    /// `enable_short_refresh_frame_flags` (§ 5.4.6): inter frames code
+    /// `has_refresh_frame_flags` and `frame_to_refresh`.
+    pub short_refresh: bool,
     /// `enable_masked_compound` (§ 5.4.6): compound blocks may code a wedge
     /// or difference-weighted mask (§ 5.20.7.16).
     pub masked_compound: bool,
@@ -564,7 +567,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         w.write_flag(flag)?; // adaptive_mvd, mvd_sign_derive, flex_mvres
     }
     w.write_flag(tools.global_motion)?; // enable_global_motion
-    w.write_flag(false) // enable_short_refresh_frame_flags
+    w.write_flag(tools.short_refresh) // enable_short_refresh_frame_flags
 }
 
 /// § 5.4.8 with zero quantizer offsets.

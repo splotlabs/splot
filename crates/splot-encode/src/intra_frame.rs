@@ -278,6 +278,7 @@ impl IntraFrameCoder {
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
+                short_refresh: preset.short_refresh,
                 tcq: preset.tcq.values().contains(&true),
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
