@@ -376,7 +376,7 @@ fn recycle<T: ReconSample>(frame: SharedFrame<T>, pool: &Arc<PlanePool>) {
 pub struct Decoder {
     shared: Arc<Shared>,
     limits: DecodeLimits,
-    /// Joined after [`Decoder::drop`] has waited for the driver's outcome.
+    /// Joined by [`Decoder::drop`], which waits for the driver to stop.
     driver: Option<std::thread::JoinHandle<()>>,
 }
 
