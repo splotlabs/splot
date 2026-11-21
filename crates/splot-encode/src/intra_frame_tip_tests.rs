@@ -703,9 +703,12 @@ fn avm_decodes_hole_fill_streams_like_splot() {
 fn tip_bawp_stream(
     qp: u16,
     threads: usize,
-) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 3]) {
+    mvd_tools: [bool; 3],
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 4]) {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         tip_newmv: true,
+        tip_amvd: true,
+        mvd_tools,
         bawp: true,
         bawp_search: 2,
         ..*Preset::new(6).unwrap().params()
@@ -717,7 +720,7 @@ fn tip_bawp_stream(
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-    crate::tile_writer::CODED_SINGLE.set([0; 3]);
+    crate::tile_writer::CODED_SINGLE.set([0; 4]);
     crate::mode_decision::TIP_NEWMV_ON_NEAR.set(0);
     let noisy = |config: &Config, index: u32| {
         super::grain_streams::with_noise(config, &zooming_frame(config, index), 3 + index)
@@ -738,8 +741,8 @@ fn tip_bawp_stream(
 /// to the encoder recon and codes the same bytes on 1, 2 and 8 threads.
 #[test]
 fn tip_newmv_and_bawp_variants_decode_on_any_thread_count() {
-    let (one, expected, cores, coded) = tip_bawp_stream(180, 1);
-    assert!(coded.iter().all(|&count| count > 0), "{coded:?}");
+    let (one, expected, cores, coded) = tip_bawp_stream(180, 1, [false; 3]);
+    assert!(coded[..3].iter().all(|&count| count > 0), "{coded:?}");
     let on_near = crate::mode_decision::TIP_NEWMV_ON_NEAR.get();
     assert!(on_near > 0, "no TIP NEWMV search ended on a NEARMV vector");
     assert!(cores.iter().any(|core| {
@@ -749,7 +752,26 @@ fn tip_newmv_and_bawp_variants_decode_on_any_thread_count() {
     }));
     assert_same_samples(&decode(&one), &expected, "TIP NEWMV and BAWP");
     for threads in [2, 8] {
-        assert!(tip_bawp_stream(180, threads).0 == one, "{threads} threads");
+        assert!(
+            tip_bawp_stream(180, threads, [false; 3]).0 == one,
+            "{threads} threads"
+        );
+    }
+}
+
+/// With adaptive MVD the TIP `NEWMV` search codes `use_amvd` TIP leaves in
+/// frames that later frames reference; the stream decodes to the encoder
+/// recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn tip_amvd_decodes_on_any_thread_count() {
+    let (one, expected, _, coded) = tip_bawp_stream(180, 1, [true; 3]);
+    assert!(coded[3] > 0, "{coded:?}");
+    assert_same_samples(&decode(&one), &expected, "TIP AMVD");
+    for threads in [2, 8] {
+        assert!(
+            tip_bawp_stream(180, threads, [true; 3]).0 == one,
+            "{threads} threads"
+        );
     }
 }
 
@@ -760,13 +782,15 @@ fn avm_decodes_tip_newmv_and_bawp_variants_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let (units, ..) = tip_bawp_stream(180, 1);
-    let avm = avm_decode(
-        &avmdec,
-        std::slice::from_ref(&units),
-        (136, 72),
-        BitDepth::Ten,
-        "tip-bawp",
-    );
-    assert!(avm == decode(&units), "AVM output differs");
+    for mvd_tools in [[false; 3], [true; 3]] {
+        let (units, ..) = tip_bawp_stream(180, 1, mvd_tools);
+        let avm = avm_decode(
+            &avmdec,
+            std::slice::from_ref(&units),
+            (136, 72),
+            BitDepth::Ten,
+            "tip-bawp",
+        );
+        assert!(avm == decode(&units), "{mvd_tools:?}: AVM output differs");
+    }
 }
