@@ -87,7 +87,7 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
         warp_param_bank: &mut WarpParamBank::new(),
         core: &core,
         temporal: None,
-        order_hints: OrderHintMvContext::new(1, &order_hints),
+        order_hints: OrderHintMvContext::new(1, &order_hints, 0),
         drl_reorder: DrlReorder::Disabled,
         max_drl_bits_minus_1: 0,
         frame_precision: MV_PRECISION_QUARTER_PEL,

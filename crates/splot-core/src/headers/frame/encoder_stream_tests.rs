@@ -168,6 +168,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         inter_ist: true,
         tip: true,
         tip_output: true,
+        tip_hole_fill: true,
         opfl_refine: true,
         refinemv: true,
         tip_refinemv: false,
@@ -187,6 +188,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         masked_compound: true,
         cwp: true,
         implicit_mask: true,
+        df_sub_pu: true,
         interintra: true,
         bawp: true,
     };
@@ -211,7 +213,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
     assert!(inter.enable_refmvbank && inter.drl_reorder == DrlReorder::Constraint);
     assert_eq!(inter.seq_max_drl_bits_minus_1, 3);
-    assert!(inter.enable_tip && inter.enable_tip_output && !inter.enable_tip_hole_fill);
+    assert!(inter.enable_tip && inter.enable_tip_output && inter.enable_tip_hole_fill);
     assert!(inter.enable_adaptive_mvd && !inter.enable_mvd_sign_derive && inter.enable_flex_mvres);
     assert_eq!(
         inter.seq_enabled_motion_modes,
@@ -219,7 +221,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     );
     assert!(inter.seq_frame_motion_modes_present_flag && inter.enable_six_param_warp_delta);
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
-    assert!(inter.enable_bawp && inter.enable_mv_traj && !inter.enable_df_sub_pu);
+    assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);
@@ -295,6 +297,7 @@ fn filter_params_reach_the_parsed_header() {
                 ])
                 .unwrap(),
                 cdef_on_skip: lr_size % 256 == 0,
+                deblocking_sub_pu: false,
                 lr_luma_unit_size: Some(lr_size),
                 lr_luma_wiener_ns: None,
                 lr_chroma_unit_size: None,
