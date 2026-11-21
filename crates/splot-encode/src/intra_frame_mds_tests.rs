@@ -284,6 +284,8 @@ fn reference_intra() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         ref_intra_margin: 1,
         pd_window: Levels::all(u8::MAX),
+        tx_type_depth: 1,
+        tx_type_model_keep: 0,
         ..*Preset::new(6).unwrap().params()
     }))
 }
