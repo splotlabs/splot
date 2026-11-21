@@ -294,8 +294,12 @@ pub struct PresetParams {
     /// preset.
     pub ist_sets: u8,
     /// A chroma pair in a leaf's final trial tries the CCTX rotation that
-    /// leaves V the least energy; off disables `enable_cctx`. Off in every
-    /// row: its `cctx_type` flags lose luma and chroma BD-rate.
+    /// leaves V the least energy; off disables `enable_cctx`. On at p0-p8
+    /// (2026-11-21, CRF against off, luma / U / V / 6:1:1 BD-rate): p6 paris
+    /// f30 -0.27 / -2.92 / -1.79 / -0.71% at 1.005x instructions, niklas f30
+    /// -0.07 / -1.89 / -2.13 / -0.39%, rush_hour_444 f60 +0.07 / -1.84 /
+    /// -1.83 / -0.27%, park_joy f10 +0.10 / -0.82 / -2.91 / -0.19%; p3 paris
+    /// +0.18 / -0.83 / -4.26 / -0.42%, p8 -0.04 / -1.04 / -1.22 / -0.28%.
     pub cctx: bool,
     /// The chroma candidates of a CFL leaf include the three MHCCP
     /// directions; off disables `enable_mhccp`. Off in every row: its
@@ -941,7 +945,7 @@ preset_table! {
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false]]),
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        cctx:                  [false, false, false, false, false, false, false, false, false, false, false],
+        cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }

@@ -26,6 +26,7 @@ fn with_wiener_ns(
 fn full_split() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         partition_early_exit: crate::preset::Levels::all(false),
+        cctx: false,
         ..*Preset::new(6).unwrap().params()
     }))
 }
