@@ -339,6 +339,13 @@ pub struct PresetParams {
     pub wiener_ns: u8,
     /// The most CDEF strength sets a frame codes, `1..=8`.
     pub cdef_strengths: u8,
+    /// CDEF `(pri, sec)` strength pairs the search tries, `0..=64`: `0`
+    /// takes 8, 12 or 16 by `loop_filter_search`; more than 16 adds the other
+    /// pairs of § 5.18.7.10. Each pair costs one CDEF run of the frame.
+    pub cdef_pairs: u8,
+    /// The CDEF search also tries every `CdefDamping` `3..=6`, not only the
+    /// one derived from the qindex, and keeps the lowest RD cost.
+    pub cdef_damping_search: bool,
     /// Wiener-NS bank fits per frame of each chroma plane; `0` codes chroma
     /// restoration off.
     pub wiener_ns_chroma: u8,
@@ -819,6 +826,7 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
         check("interintra_search", self.interintra_search, 0, 1, "")?;
@@ -1132,6 +1140,8 @@ preset_table! {
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
         cdef_strengths:        [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
+        cdef_pairs:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        cdef_damping_search:   [false, false, false, false, false, false, false, false, false, false, false],
         cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
         df_sub_pu:             [false, false, false, false, false, false, false, false, false, false, false],
     }
@@ -1556,6 +1566,7 @@ mod tests {
             (&[("ssim_aq", "201")], "ssim_aq"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),
             (&[("compound_refs", "8")], "compound_refs"),
             (&[("jmvd_scales", "0")], "jmvd_scales"),
