@@ -191,7 +191,18 @@ the **[developer guide](./docs/README.md)**.
 
 ## License.
 
-[PolyForm Noncommercial 1.0.0](./LICENSE.md). Commercial use of any component
-needs a separate written license from Bartosz Tomczyk (bartekplus@gmail.com).
-Third-party material is listed in
-[THIRD-PARTY-NOTICES](./docs/references/THIRD-PARTY-NOTICES.md).
+[PolyForm Noncommercial 1.0.0](./LICENSE.md). Uses outside that license, which
+includes typical commercial deployments, need a separate written license from
+Bartosz Tomczyk (bartekplus@gmail.com). SplotLabs and splot are project names
+he uses, not a separate company. Third-party material is listed in
+[THIRD-PARTY-NOTICES](./docs/references/THIRD-PARTY-NOTICES.md) and keeps its
+own terms.
+
+## Contributing.
+
+Read the [contribution policy](https://github.com/splotlabs/.github/blob/main/CONTRIBUTING.md)
+first. Contributions are accepted under a non-exclusive
+[Contributor License Agreement](https://github.com/splotlabs/.github/blob/main/CLA.md)
+with Bartosz Tomczyk. You keep your copyright. He receives the right to
+license your contribution under alternative commercial terms and future public
+licenses.
