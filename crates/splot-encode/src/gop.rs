@@ -576,6 +576,7 @@ impl GopFrame {
             refresh_frame_flags: self.refresh_frame_flags,
             show_frame: self.show_frame,
             tip_weight: Some(weight),
+            tip_hole_fill: true,
             tx: KeyFrameTxParams {
                 grain_seed,
                 ..KeyFrameTxParams::default()
@@ -638,6 +639,7 @@ impl GopFrame {
             switchable_interp_filter,
             primary_slot: self.primary_slot,
             tip_weight,
+            tip_hole_fill: true,
             force_integer_mv,
             opfl_refine_type,
             warp,

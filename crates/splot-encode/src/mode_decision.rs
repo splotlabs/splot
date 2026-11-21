@@ -1343,7 +1343,7 @@ impl TrialCoder<'_, '_> {
             }
             choice = self.best(leaf, candidates, LUMA, start)?;
         }
-        if self.preset.fsc && self.syntax.fsc_allowed(leaf) {
+        if (self.preset.fsc || self.preset.idtx_intra) && self.syntax.fsc_allowed(leaf) {
             let fsc = LeafChoice::largest(IntraModes {
                 fsc: true,
                 ..choice.modes

@@ -628,3 +628,70 @@ fn avm_decodes_grain_tip_output_like_splot() {
     );
     assert!(avm == decode(&units), "AVM output differs");
 }
+
+/// Preset 6 with TIP, TIP output and hole fill.
+fn with_hole_fill() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        tip_hole_fill: true,
+        ..*with_tip_output(1, 200)
+    }))
+}
+
+/// A panning mini-GOP stream with `tip_hole_fill` on `threads` threads in
+/// 2x1 tiles.
+fn hole_fill_stream(threads: usize) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
+    let mut config = config(136, 72, BitDepth::Eight, 6, 250);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, with_hole_fill()).unwrap();
+    super::carry::planned_stream_of(&config, coder, panning_frame, 250)
+}
+
+/// With `tip_hole_fill` the sequence enables hole fill, TIP frames (as a
+/// reference and as output) code `allow_tip_hole_fill = 1`, the stream
+/// decodes to the encoder recon, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn hole_fill_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (one, expected, cores, coder) = hole_fill_stream(1);
+    assert!(coder.sequence.inter.unwrap().enable_tip_hole_fill);
+    let filled: Vec<_> = cores
+        .iter()
+        .filter_map(|core| core.inter.as_ref())
+        .filter(|inter| {
+            inter
+                .tip_frame_mode
+                .is_some_and(|m| m != TipFrameMode::Disabled)
+        })
+        .map(|inter| (inter.tip_frame_mode, inter.allow_tip_hole_fill))
+        .collect();
+    assert!(!filled.is_empty());
+    assert!(
+        filled.iter().all(|&(_, fill)| fill == Some(true)),
+        "{filled:?}"
+    );
+    assert!(
+        filled
+            .iter()
+            .any(|&(mode, _)| mode == Some(TipFrameMode::AsOutput)),
+        "{filled:?}"
+    );
+    assert_same_samples(&decode(&one), &expected, "hole fill");
+    for threads in [2, 8] {
+        assert!(hole_fill_stream(threads).0 == one, "{threads} threads");
+    }
+}
+
+/// AVM decodes hole-filled TIP streams like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_hole_fill_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, expected, ..) = hole_fill_stream(2);
+    let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "hole-fill");
+    assert!(avm == expected, "AVM output differs");
+}
