@@ -19,8 +19,8 @@ use super::{
 };
 
 const INTER_SDP_MAX_BLOCK_SIZE: usize = 64;
-pub(super) const INTRA_REGION: u8 = 0;
-pub(super) const MIXED_REGION: u8 = 1;
+pub(crate) const INTRA_REGION: u8 = 0;
+pub(crate) const MIXED_REGION: u8 = 1;
 /// § 6.19.2.1 Table 6.21 `bru_mode` values.
 pub(crate) const BRU_INACTIVE: u8 = 0;
 pub(crate) const BRU_ACTIVE: u8 = 2;
@@ -1114,7 +1114,7 @@ fn read_region_type(
 
 #[allow(clippy::inline_always, reason = "measured: once per partition node")]
 #[inline(always)]
-pub(super) fn should_read_extended_sdp_region_type(
+pub(crate) fn should_read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
     call: TilePartitionCall,
     partition: PartitionType,
@@ -1149,7 +1149,9 @@ fn is_bsize_allowed_for_extended_sdp(
         ))
 }
 
-fn intra_region_context(b_size: BlockSize) -> Result<usize, TilePartitionTraversalError> {
+pub(crate) fn intra_region_context(
+    b_size: BlockSize,
+) -> Result<usize, TilePartitionTraversalError> {
     let samples = checked_mul(
         "region_type_area",
         b_size.width_samples()?,
@@ -1165,7 +1167,7 @@ fn intra_region_context(b_size: BlockSize) -> Result<usize, TilePartitionTravers
 
 /// The collocated chroma block of an extended-SDP luma tree: its own chroma
 /// reference, intra region, `CflAllowedInSdp`, and the parent of `call`.
-const fn extended_sdp_chroma_call(call: TilePartitionCall) -> TilePartitionCall {
+pub(crate) const fn extended_sdp_chroma_call(call: TilePartitionCall) -> TilePartitionCall {
     TilePartitionCall {
         tree_type: PartitionTreeType::ChromaPart,
         flags: call.flags & (CALL_HAS_PARENT | CALL_PARENT_64X64)
