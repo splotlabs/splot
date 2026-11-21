@@ -455,8 +455,8 @@ fn newmv_pruned(margin: u8) -> &'static PresetParams {
 }
 
 /// The length and FNV-1a hash of the p10 stream of [`staged_stream`] at qp
-/// 160, recorded from main 381da1f9d before `NEWMV` reference pruning.
-const P10_GOLDEN: (usize, u64) = (13147, 0xa130_f2ca_67af_f6f8);
+/// 160, recorded from main ac27288bb before `NEWMV` reference pruning.
+const P10_GOLDEN: (usize, u64) = (13796, 0xb977_9e15_e32d_ccae);
 
 /// `NEWMV` reference pruning skips searches in frames that later frames
 /// reference, under deblocking, CDEF, LR, CCSO and GDF; the stream decodes to
