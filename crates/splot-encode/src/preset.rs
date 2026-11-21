@@ -487,17 +487,33 @@ pub struct PresetParams {
     pub implicit_mask: bool,
     /// Inter-intra (`seq_enabled_motion_modes[INTERINTRA]`): the cheapest
     /// single-reference `NEWMV` of a leaf adds its best smooth-mask
-    /// `interintra_mode` by luma SATD to the RD trials. Off in every row
+    /// `interintra_mode` by luma SATD, and with `interintra_search` its best
+    /// wedge inter-intra, to the RD trials. Off in every row
     /// (2026-10-30): at p6 it measured park_joy +0.39% Y (-0.05% YUV) and
     /// paris +0.13% Y for 3% more CPU, largely the `inter_intra` flag every
     /// eligible block codes.
     pub interintra: bool,
+    /// With `interintra`, the leaf also tries its best wedge inter-intra
+    /// (`wedge_interintra`, § 5.20.7.15) in the RD trials, `0..=1`. `0` in
+    /// every row (not measured at p0).
+    pub interintra_search: u8,
     /// Block adaptive weighted prediction (`enable_bawp`, every inter frame
     /// codes `allow_bawp = 1`): the cheapest single-reference `NEWMV` of a
     /// leaf adds its best BAWP scale by luma SATD to the RD trials. On at
     /// p0-p6 (2026-10-30, p6 vs main): park_joy -0.28%, paris -0.11%, niklas
     /// -0.26% for about 3% more CPU; p7-p10 are not measured.
     pub bawp: bool,
+    /// BAWP variants past the luma-ranked scale of the cheapest `NEWMV`,
+    /// `0..=2`: `1` adds that scale without chroma weighting
+    /// (`use_bawp_chroma = 0`), `2` also tries BAWP on every single-reference
+    /// `NEARMV` candidate (§ 5.20.7.6). `0` in every row: `1` lost at p0
+    /// (2026-11-21, paris f10: Y +0.03%, 6:1:1 +0.10%).
+    pub bawp_search: u8,
+    /// TIP blocks also try `NEWMV` (`tip_pred_mode = 1`, § 5.20.7.6): a
+    /// pattern search scored by the decoder's TIP prediction. Off in every
+    /// row until a p0 table; p0 paris f10 measured Y -0.22%, 6:1:1 -0.19%
+    /// at 1.024x instructions (2026-11-21).
+    pub tip_newmv: bool,
     /// Staged mode decision: the inter candidates of a leaf that each class
     /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
     /// luma prediction SATD plus mode rate first. `255` keeps every one.
@@ -785,6 +801,8 @@ impl PresetParams {
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
         check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
+        check("interintra_search", self.interintra_search, 0, 1, "")?;
+        check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
@@ -1076,7 +1094,10 @@ preset_table! {
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
+        interintra_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        bawp_search:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        tip_newmv:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -1323,7 +1344,10 @@ mod tests {
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
+            assert!(fast.interintra_search <= slow.interintra_search);
             assert!(fast.bawp <= slow.bawp);
+            assert!(fast.bawp_search <= slow.bawp_search);
+            assert!(fast.tip_newmv <= slow.tip_newmv);
             assert!(fast.wavefront >= slow.wavefront);
             assert!(
                 fast.mds0_budgets
@@ -1509,6 +1533,8 @@ mod tests {
             (&[("compound_refs", "8")], "compound_refs"),
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
+            (&[("interintra_search", "2")], "interintra_search"),
+            (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
             (&[("cdf_update_tile", "2")], "cdf_update_tile"),
             (&[("tip_output", "201")], "tip_output"),
