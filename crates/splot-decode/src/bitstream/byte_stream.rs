@@ -215,6 +215,13 @@ pub(crate) trait UnitSource: Send {
 
     /// The IVF file header, once the first unit is read.
     fn ivf_header(&self) -> Option<IvfHeader>;
+
+    /// Waits while no unit is ready. Returns `true` when the caller wants the
+    /// pictures of the frames still decoding before the next unit comes, and
+    /// `false` once [`Self::next_unit`] can answer.
+    fn await_input(&mut self) -> bool {
+        false
+    }
 }
 
 /// Reads IVF or Annex B input forward only, one temporal unit at a time.
@@ -222,11 +229,6 @@ pub(crate) struct ReaderUnits<R: Read> {
     units: TemporalUnitReader<Take<R>>,
     limits: DecodeLimits,
     cap: u64,
-    /// The Annex B unit being collected, and the offset it starts at.
-    annex_b: Vec<u8>,
-    annex_b_offset: u64,
-    /// The temporal delimiter read ahead, which opens the next Annex B unit.
-    carry: Vec<u8>,
     fourcc_checked: bool,
     yielded: bool,
 }
@@ -238,9 +240,6 @@ impl<R: Read> ReaderUnits<R> {
             units: TemporalUnitReader::with_max_unit_bytes(reader.take(cap), usize::MAX),
             limits,
             cap,
-            annex_b: Vec::new(),
-            annex_b_offset: 0,
-            carry: Vec::new(),
             fourcc_checked: false,
             yielded: false,
         }
@@ -286,103 +285,52 @@ impl<R: Read> ReaderUnits<R> {
         }
         Ok(())
     }
-
-    fn yield_unit(
-        &mut self,
-        buffers: &mut Vec<Arc<Vec<u8>>>,
-        bytes: &[u8],
-        base: u64,
-        ivf_frame: Option<DecodeIvfFrameContext>,
-    ) -> Result<Option<SourceUnit>> {
-        self.ensure_input()?;
-        self.yielded = true;
-        Ok(Some(SourceUnit {
-            bytes: UnitBytes::new(fill_buffer(buffers, bytes), base),
-            ivf_frame,
-            props: crate::DataProps::default(),
-        }))
-    }
-
-    /// Yields the collected Annex B unit, or ends the input when none is open.
-    fn finish(&mut self, buffers: &mut Vec<Arc<Vec<u8>>>) -> Result<Option<SourceUnit>> {
-        self.ensure_input()?;
-        if !self.annex_b.is_empty() {
-            let unit = core::mem::take(&mut self.annex_b);
-            let result = self.yield_unit(buffers, &unit, self.annex_b_offset, None);
-            self.annex_b = unit;
-            self.annex_b.clear();
-            return result;
-        }
-        if !self.yielded && self.units.ivf_header().is_none() {
-            return Err(crate::pipeline::unsupported(
-                "empty_annex_b_input",
-                None,
-                "decode runtime requires at least one Annex B OBU",
-            ));
-        }
-        Ok(None)
-    }
 }
 
 impl<R: Read + Send> UnitSource for ReaderUnits<R> {
     fn next_unit(&mut self, buffers: &mut Vec<Arc<Vec<u8>>>) -> Result<Option<SourceUnit>> {
         loop {
-            let unit = match self.units.next_unit() {
+            let unit = match self.units.next_temporal_unit() {
                 Ok(unit) => unit,
                 Err(error) => return Err(self.reader_error(error)),
             };
-            match unit {
-                Some(StreamUnit::IvfFrame {
-                    index,
+            let Some(unit) = unit else {
+                self.ensure_fourcc()?;
+                self.ensure_input()?;
+                if !self.yielded && self.units.ivf_header().is_none() {
+                    return Err(crate::pipeline::unsupported(
+                        "empty_annex_b_input",
+                        None,
+                        "decode runtime requires at least one Annex B OBU",
+                    ));
+                }
+                return Ok(None);
+            };
+            let mut props = crate::DataProps::default();
+            let mut ivf_frame = None;
+            if let Some(pts) = unit.pts {
+                self.limits
+                    .ensure(DecodeLimitName::MaxIvfFrameRecords, unit.index as u64 + 1)?;
+                if unit.bytes.is_empty() {
+                    continue;
+                }
+                props = props.with_pts(pts.cast_signed());
+                ivf_frame = Some(DecodeIvfFrameContext::new(
+                    unit.index,
+                    unit.offset,
+                    unit.bytes.len() as u32,
                     pts,
-                    payload_offset,
-                    payload,
-                }) => {
-                    self.limits
-                        .ensure(DecodeLimitName::MaxIvfFrameRecords, index as u64 + 1)?;
-                    if payload.is_empty() {
-                        continue;
-                    }
-                    let frame = DecodeIvfFrameContext::new(
-                        index,
-                        payload_offset,
-                        payload.len() as u32,
-                        pts,
-                    );
-                    let unit = SourceUnit {
-                        bytes: UnitBytes::new(fill_buffer(buffers, payload), payload_offset.get()),
-                        ivf_frame: Some(frame),
-                        props: crate::DataProps::default().with_pts(pts.cast_signed()),
-                    };
-                    self.ensure_fourcc()?;
-                    self.ensure_input()?;
-                    self.yielded = true;
-                    return Ok(Some(unit));
-                }
-                Some(StreamUnit::AnnexBObu { offset, bytes }) => {
-                    let delimiter = AnnexBObuCursor::new(bytes, offset)
-                        .next_obu()
-                        .ok()
-                        .flatten()
-                        .is_some_and(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
-                    if delimiter && !self.annex_b.is_empty() {
-                        self.carry.clear();
-                        self.carry.extend_from_slice(bytes);
-                        let result = self.finish(buffers);
-                        self.annex_b.extend_from_slice(&self.carry);
-                        self.annex_b_offset = offset.get();
-                        return result;
-                    }
-                    if self.annex_b.is_empty() {
-                        self.annex_b_offset = offset.get();
-                    }
-                    self.annex_b.extend_from_slice(bytes);
-                }
-                Some(StreamUnit::IvfWarning(_)) | None => {
-                    self.ensure_fourcc()?;
-                    return self.finish(buffers);
-                }
+                ));
             }
+            let unit = SourceUnit {
+                bytes: UnitBytes::new(fill_buffer(buffers, unit.bytes), unit.offset.get()),
+                ivf_frame,
+                props,
+            };
+            self.ensure_fourcc()?;
+            self.ensure_input()?;
+            self.yielded = true;
+            return Ok(Some(unit));
         }
     }
 

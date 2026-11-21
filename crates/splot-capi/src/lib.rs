@@ -33,24 +33,26 @@ use core::ptr;
 
 use splot_core::headers::content_interpretation::DerivedColorInfo;
 use splot_decode::{
-    BitDepth, DataProps, Decoder, DecoderSettings, FrameDelay, Picture, PictureSamples,
+    BitDepth, DataProps, Decoder, DecoderSettings, FrameDelay, FrameType, Picture, PictureSamples,
     PixelFormat, PlaneId, PlaneRef, SendStatus, ThreadCount,
 };
 
 /// The call succeeded.
 pub const SPLOT_OK: c_int = 0;
 /// [`splot_send_data`]: the decoder is full; take pictures, then send the
-/// same data again. [`splot_get_picture`]: send more data first.
+/// same data again. [`splot_get_picture`] and [`splot_wait_picture`]: send
+/// more data first.
 pub const SPLOT_EAGAIN: c_int = -1;
 /// [`splot_get_picture`]: the decoder is drained; no picture follows.
 pub const SPLOT_EOF: c_int = -2;
 /// An argument was null or out of range.
 pub const SPLOT_EINVAL: c_int = -3;
 /// The bitstream failed to decode, or a resource limit stopped it. The
-/// decoder takes no more data; close it. [`splot_apply_grain`]: the synthesis
+/// decoder takes no more data; flush or close it. [`splot_apply_grain`]: the synthesis
 /// failed; no decoder is affected.
 pub const SPLOT_EDECODE: c_int = -4;
-/// The decoder takes no more data: it is draining, or it failed earlier.
+/// The decoder takes no more data until [`splot_flush`]: it is draining, or
+/// it failed earlier.
 pub const SPLOT_ESTATE: c_int = -5;
 
 /// An open decoder.
@@ -102,6 +104,22 @@ pub enum SplotPixelLayout {
     I444 = 3,
 }
 
+/// The values of [`SplotPicture::frame_type`].
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SplotFrameType {
+    /// A zeroed picture, or a frame whose type the decoder did not derive.
+    None = 0,
+    /// A closed-loop or open-loop key frame.
+    Key = 1,
+    /// An inter frame.
+    Inter = 2,
+    /// An intra-only frame.
+    IntraOnly = 3,
+    /// A switch frame.
+    Switch = 4,
+}
+
 /// Color description of a picture, from AV2 § 5.15 content interpretation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -148,6 +166,8 @@ pub struct SplotPicture {
     /// 1 when the stream signals film grain for this picture, whether or not
     /// `skip_film_grain` left it out; else 0.
     pub has_film_grain: u8,
+    /// A [`SplotFrameType`] value: the type of the frame this picture shows.
+    pub frame_type: u8,
     /// Reserved.
     pub reserved: [usize; 3],
     /// The decoder's handle on the samples; do not touch.
@@ -267,6 +287,22 @@ pub unsafe extern "C" fn splot_drain(decoder: *mut SplotDecoder) {
     }
 }
 
+/// Drops every unit and picture the decoder holds and starts a new session
+/// on the same threads, for a seek or after [`SPLOT_EDECODE`]. Decoding
+/// starts again at a temporal unit with a sequence header and a closed-loop
+/// key, open-loop key or RAS frame.
+/// Pictures already taken stay valid until released.
+///
+/// # Safety
+/// `decoder` is null or came from [`splot_open`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn splot_flush(decoder: *mut SplotDecoder) {
+    if let Some(SplotDecoder { decoder, drained }) = unsafe { decoder.as_mut() } {
+        decoder.flush();
+        *drained = false;
+    }
+}
+
 /// Takes the next picture in display order into `*out`.
 ///
 /// Returns [`SPLOT_OK`], [`SPLOT_EAGAIN`] when more data is needed,
@@ -283,13 +319,36 @@ pub unsafe extern "C" fn splot_get_picture(
     decoder: *mut SplotDecoder,
     out: *mut SplotPicture,
 ) -> c_int {
+    unsafe { take_picture(decoder, out, Decoder::get_picture) }
+}
+
+/// [`splot_get_picture`], but waits until the data sent so far is decoded:
+/// [`SPLOT_EAGAIN`] then means that data gives no further picture yet.
+///
+/// # Safety
+/// As [`splot_get_picture`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn splot_wait_picture(
+    decoder: *mut SplotDecoder,
+    out: *mut SplotPicture,
+) -> c_int {
+    unsafe { take_picture(decoder, out, Decoder::wait_picture) }
+}
+
+/// # Safety
+/// As [`splot_get_picture`].
+unsafe fn take_picture(
+    decoder: *mut SplotDecoder,
+    out: *mut SplotPicture,
+    take: fn(&mut Decoder) -> splot_decode::Result<Option<Picture>>,
+) -> c_int {
     let (Some(SplotDecoder { decoder, drained }), Some(out)) =
         (unsafe { decoder.as_mut() }, unsafe { out.as_mut() })
     else {
         return SPLOT_EINVAL;
     };
     *out = empty_picture();
-    match decoder.get_picture() {
+    match take(decoder) {
         Ok(Some(picture)) => {
             *out = c_picture(picture);
             SPLOT_OK
@@ -394,6 +453,7 @@ const fn empty_picture() -> SplotPicture {
             user_data: 0,
         },
         has_film_grain: 0,
+        frame_type: SplotFrameType::None as u8,
         reserved: [0; 3],
         internal: ptr::null_mut(),
     }
@@ -445,6 +505,13 @@ fn c_picture(picture: Picture) -> SplotPicture {
         user_data: props.user_data,
     };
     out.has_film_grain = u8::from(picture.has_film_grain());
+    out.frame_type = match picture.frame_type() {
+        Some(FrameType::Key) => SplotFrameType::Key,
+        Some(FrameType::Inter) => SplotFrameType::Inter,
+        Some(FrameType::IntraOnly) => SplotFrameType::IntraOnly,
+        Some(FrameType::Switch) => SplotFrameType::Switch,
+        _ => SplotFrameType::None,
+    } as u8;
     out.internal = Box::into_raw(Box::new(picture)).cast();
     out
 }
