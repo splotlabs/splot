@@ -446,10 +446,12 @@ fn assert_every_loop_filter(cores: &[FrameHeaderCore]) {
     assert_eq!(filters, [true; 5], "deblock, CDEF, LR, CCSO, GDF");
 }
 
-/// Preset 10 with `NEWMV` reference pruning at `margin` in every frame.
+/// Preset 10 with `NEWMV` reference pruning at `margin` in every frame and
+/// the light leaf decision off.
 fn newmv_pruned(margin: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         newmv_ref_margin: Levels::all(margin),
+        light_leaf: Levels::all(u8::MAX),
         ..*Preset::new(10).unwrap().params()
     }))
 }
