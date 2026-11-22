@@ -82,6 +82,8 @@ pub struct EncoderReferences {
     buffer: RuntimeReferenceBuffer,
     frames: Vec<Option<SettledFrame>>,
     state: InterReferenceState<u16>,
+    /// An open-loop key frame was stored and no regular frame after it yet.
+    leading: bool,
 }
 
 /// One coded frame: its filtered reconstruction, saved CDFs, motion field,
@@ -116,6 +118,7 @@ impl EncoderReferences {
             buffer,
             frames: Vec::new(),
             state,
+            leading: false,
         })
     }
 
@@ -178,6 +181,14 @@ impl EncoderReferences {
         ));
         self.buffer.update(index, &update, is_key_or_switch(core));
         self.buffer.note_frame(core.obu_type, true, &update);
+        self.leading = core.obu_type == ObuType::OpenLoopKey
+            || (self.leading && !core.obu_type.is_regular_frame());
+        self.settle()
+    }
+
+    /// Drops the frames no slot holds and derives the reference state of the
+    /// next frame.
+    fn settle(&mut self) -> Result<()> {
         for (index, frame) in self.frames.iter_mut().enumerate() {
             if !self.buffer.retains(index) {
                 *frame = None;
@@ -187,22 +198,42 @@ impl EncoderReferences {
         Ok(())
     }
 
-    /// Records a show-existing frame of `slot` in its own temporal unit
+    /// Ends the leading frames of an open-loop key frame before the first
+    /// regular frame is coded: the slots the key frame did not refresh become
+    /// invalid (§ 5.18.1), as the decoder makes them at that frame's header.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] when the reference state does not settle.
+    pub fn end_leading_frames(&mut self) -> Result<()> {
+        if !core::mem::take(&mut self.leading) {
+            return Ok(());
+        }
+        self.buffer
+            .prepare_for_frame(ObuType::RegularTileGroup, true);
+        self.settle()
+    }
+
+    /// Records a show-existing frame of `slot` with OBU type `obu_type`
+    /// (`OBU_REGULAR_SEF` or `OBU_LEADING_SEF`) in its own temporal unit
     /// (§ 7.21): with `derive_sef_order_hint = 1` when `derive`, else with an
     /// explicit `sef_order_hint`, whose output leaves the frame's own output
-    /// untouched (§ 7.21.4).
+    /// untouched (§ 7.21.4). A regular one after an open-loop key frame ends
+    /// its leading frames (§ 5.18.1).
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] when `derive` and `slot` holds no hidden
     /// frame that is still waiting for output.
-    pub fn show_existing(&mut self, slot: u32, derive: bool) -> Result<()> {
-        self.buffer.prepare_for_frame(ObuType::RegularSef, true);
+    pub fn show_existing(&mut self, slot: u32, derive: bool, obu_type: ObuType) -> Result<()> {
+        self.buffer.prepare_for_frame(obu_type, true);
         if derive {
             self.buffer
                 .mark_sef_derive_output(slot, false)
                 .map_err(rule("show-existing frame"))?;
         }
         self.buffer.note_show_existing();
+        if obu_type.is_regular_frame() && core::mem::take(&mut self.leading) {
+            self.settle()?;
+        }
         Ok(())
     }
 
