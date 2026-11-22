@@ -11,7 +11,8 @@ use splot_recon::{
 
 use super::super::{EncoderKernels, Quantizer, ScalarKernels, SimdKernels};
 use super::{
-    EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, matrix_index, pair_sum_scalar, pair_sum_simd,
+    EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, forward_walsh_hadamard_4x4, matrix_index,
+    pair_sum_scalar, pair_sum_simd,
 };
 
 /// The 25 AV2 `TX_SIZES_ALL` shapes as `(log2W, log2H)`.
@@ -278,5 +279,30 @@ fn coefficient_energy_gain_is_64_over_dq_denom_squared() {
             let gain = energy(&coeffs) / energy(&residual) * dq * dq / 64.0;
             assert!((gain - 1.0).abs() < 0.01, "{log2_w}x{log2_h}: {gain}");
         }
+    }
+}
+
+proptest! {
+    /// The lossless forward transform inverts the decoder's § 7.15.2.2 inverse
+    /// exactly for every 10-bit residual.
+    #[test]
+    fn lossless_walsh_hadamard_round_trips_exactly(
+        residual in proptest::array::uniform16(-1023i32..=1023),
+    ) {
+        let levels = forward_walsh_hadamard_4x4(&residual);
+        let dequant: Vec<i32> = levels.iter().map(|&level| level * 8).collect();
+        let params = InverseTransform2d {
+            log2_width: 2,
+            log2_height: 2,
+            lossless: true,
+            row_type: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
+            col_type: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
+            row_shift: 0,
+            col_shift: 0,
+            bit_depth: BitDepth::Ten,
+        };
+        let mut out = vec![0; 16];
+        inverse_transform_2d(&params, &dequant, &mut out).unwrap();
+        prop_assert_eq!(out, residual.to_vec());
     }
 }

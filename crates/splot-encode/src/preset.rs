@@ -906,6 +906,52 @@ pub enum PresetError {
 }
 
 impl PresetParams {
+    /// Whether a lossless encode refuses the override `name=value`: a
+    /// non-zero `segmentation`, `quant_matrices` or plane quantizer delta,
+    /// which has no lossless meaning.
+    pub(crate) fn lossless_refuses(name: &str, value: &str) -> bool {
+        matches!(
+            name,
+            "segmentation" | "quant_matrices" | "y_dc_delta_q" | "u_delta_q" | "v_delta_q"
+        ) && value != "0"
+    }
+
+    /// Switches off every search that a lossless frame forbids (§ 5.18.2
+    /// `CodedLossless`: TCQ, parity hiding, delta-q, the loop filters) or that
+    /// changes the coded samples (RDOQ, the temporal filter, TIP output), and
+    /// the tools whose lossless forms are a later search (FSC, IDTX, IST,
+    /// CCTX, DDT, transform types and partitions, palette, IntraBC, SDP).
+    pub(crate) fn set_lossless(&mut self) {
+        self.rdoq = false;
+        self.rdoq_every_type = false;
+        self.parity_hiding = false;
+        self.tcq = Levels::all(false);
+        self.tcq_search_trellis = false;
+        self.tcq_type_trellis = false;
+        self.tx_type_depth = 0;
+        self.tx_partition_search = Levels::all(false);
+        self.inter_tx_split = 0;
+        self.tpl_delta_q = 0;
+        self.ssim_aq = 0;
+        self.segmentation = 0;
+        self.quant_matrices = 0;
+        self.tf_frames = Levels::all(0);
+        self.tf_strength = Levels::all(0);
+        self.tip_output = 0;
+        self.ist_sets = 0;
+        self.intra_ist_rd = false;
+        self.inter_ist = false;
+        self.inter_ist_rd = false;
+        self.inter_ddt = false;
+        self.cctx = false;
+        self.fsc = false;
+        self.idtx_intra = false;
+        self.palette = false;
+        self.intrabc = false;
+        self.sdp = false;
+        (self.y_dc_delta_q, self.u_delta_q, self.v_delta_q) = (0, 0, 0);
+    }
+
     /// `[y_dc_delta_q, u_delta_q, v_delta_q]`, the plane quantizer deltas of every frame.
     pub(crate) const fn plane_delta_q(&self) -> [i8; 3] {
         [self.y_dc_delta_q, self.u_delta_q, self.v_delta_q]

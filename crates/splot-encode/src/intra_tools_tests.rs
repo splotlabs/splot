@@ -712,7 +712,8 @@ fn local_intrabc_preset(local: bool, sb_log2: u8) -> &'static PresetParams {
 /// In the first 64 rows of a 256-wide key frame no global-area vector is
 /// valid (§ 6.19.7.12), so its IntraBC leaves there copy from the local
 /// area: some with `intrabc_local`, none without, with 64x64 and 128x128
-/// superblocks.
+/// superblocks. With the local area the search does not replay memoized
+/// trees with IntraBC leaves; it searches their nodes again.
 #[test]
 fn local_intrabc_codes_copies_in_the_first_superblock_row() {
     let intrabc = |choice: &LeafChoice| choice.intrabc.is_some();
@@ -728,7 +729,12 @@ fn local_intrabc_codes_copies_in_the_first_superblock_row() {
     };
     for sb_log2 in [6, 7] {
         assert_eq!(first_row(false, sb_log2), 0, "global only, sb {sb_log2}");
+        crate::mode_decision::SKIPPED_REPLAYS.set(0);
         assert!(first_row(true, sb_log2) > 0, "local, sb {sb_log2}");
+        assert!(
+            crate::mode_decision::SKIPPED_REPLAYS.get() > 0,
+            "sb {sb_log2}"
+        );
     }
 }
 

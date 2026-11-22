@@ -59,6 +59,11 @@ pub(crate) trait PartitionSearch {
     fn leaf_coded(&self) -> bool {
         true
     }
+    /// Whether a memoized `tree` codes the same choices wherever it is coded
+    /// again; otherwise a later visit searches its node again.
+    fn replays(&self, _tree: &PartitionTree) -> bool {
+        true
+    }
     /// The rate of the partition symbols that select `partition` at `node`.
     fn partition_rate(
         &mut self,
@@ -318,7 +323,7 @@ fn search<S: PartitionSearch>(
         .get(&key)
         .and_then(|seen| seen.iter().find(|(seen, _)| *seen == node))
     {
-        Some((_, Seen::Tree(tree))) => {
+        Some((_, Seen::Tree(tree))) if coder.replays(tree) => {
             let tree = tree.clone();
             let cost = recode(coder, node, &tree)?;
             return Ok(Some((tree, cost)));
@@ -326,8 +331,10 @@ fn search<S: PartitionSearch>(
         Some((_, Seen::Bound(bound, _))) if budget.is_some_and(|budget| budget <= *bound) => {
             return Ok(None);
         }
-        Some((_, Seen::Bound(_, known))) => leaf = *known,
-        None => {}
+        Some((_, Seen::Bound(_, known))) => {
+            leaf = known.filter(|choice| coder.replays(&PartitionTree::Leaf(*choice)));
+        }
+        Some((_, Seen::Tree(_))) | None => {}
     }
     if let Some((luma_root, chroma_root)) = coder.sdp_roots(node) {
         let lumas = search(
