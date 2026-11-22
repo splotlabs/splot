@@ -167,21 +167,14 @@ proptest! {
         prop_assert_eq!(checked.read_trusted_row(&mut sliced_row[..=n]), None);
         for _ in 0..12 {
             let expected = checked.read_symbol_u16(&mut checked_row[..=n]).unwrap();
-            let got = match (n, update) {
-                (2, true) => trusted_read::<3, true>(&mut trusted, &mut trusted_row),
-                (2, false) => trusted_read::<3, false>(&mut trusted, &mut trusted_row),
-                (3, true) => trusted_read::<4, true>(&mut trusted, &mut trusted_row),
-                (3, false) => trusted_read::<4, false>(&mut trusted, &mut trusted_row),
-                (4, true) => trusted_read::<5, true>(&mut trusted, &mut trusted_row),
-                (4, false) => trusted_read::<5, false>(&mut trusted, &mut trusted_row),
-                (5, true) => trusted_read::<6, true>(&mut trusted, &mut trusted_row),
-                (5, false) => trusted_read::<6, false>(&mut trusted, &mut trusted_row),
-                (6, true) => trusted_read::<7, true>(&mut trusted, &mut trusted_row),
-                (6, false) => trusted_read::<7, false>(&mut trusted, &mut trusted_row),
-                (7, true) => trusted_read::<8, true>(&mut trusted, &mut trusted_row),
-                (7, false) => trusted_read::<8, false>(&mut trusted, &mut trusted_row),
-                (_, true) => trusted_read::<9, true>(&mut trusted, &mut trusted_row),
-                (_, false) => trusted_read::<9, false>(&mut trusted, &mut trusted_row),
+            let got = match n {
+                2 => trusted_read::<3>(&mut trusted, &mut trusted_row),
+                3 => trusted_read::<4>(&mut trusted, &mut trusted_row),
+                4 => trusted_read::<5>(&mut trusted, &mut trusted_row),
+                5 => trusted_read::<6>(&mut trusted, &mut trusted_row),
+                6 => trusted_read::<7>(&mut trusted, &mut trusted_row),
+                7 => trusted_read::<8>(&mut trusted, &mut trusted_row),
+                _ => trusted_read::<9>(&mut trusted, &mut trusted_row),
             };
             prop_assert_eq!(u32::from(expected.get()), got);
             prop_assert_eq!(checked_row, trusted_row);
@@ -241,7 +234,7 @@ proptest! {
     ) {
         let mut decoder = SymbolDecoder::new(&data).unwrap();
         for _ in 0..8 {
-            prop_assert!(decoder.read_trusted::<6, true>(&mut row) < 5);
+            prop_assert!(decoder.read_trusted(&mut row) < 5);
         }
     }
 
@@ -330,23 +323,14 @@ proptest! {
 }
 
 /// The first `L` entries of `row` as a fixed-length row for `read_trusted`.
-fn trusted_read<const L: usize, const UPDATE: bool>(
+fn trusted_read<const L: usize>(
     decoder: &mut SymbolDecoder<'_>,
     row: &mut [u16; MAX_SYMBOLS + 1],
 ) -> u32 {
-    let Some(prefix) = row.first_chunk_mut::<L>() else {
-        return u32::MAX;
-    };
-    let mut configured = decoder.clone();
-    let mut configured_row = *prefix;
-    let symbol = decoder.read_trusted::<L, UPDATE>(prefix);
-    assert_eq!(
-        configured.read_trusted_configured(&mut configured_row),
-        symbol
-    );
-    assert_eq!(configured_row, *prefix);
-    assert_eq!(configured.checkpoint(), decoder.checkpoint());
-    symbol
+    match row.first_chunk_mut::<L>() {
+        Some(prefix) => decoder.read_trusted(prefix),
+        None => u32::MAX,
+    }
 }
 
 /// One read of an `N`-ary row through the word path and one through the lane

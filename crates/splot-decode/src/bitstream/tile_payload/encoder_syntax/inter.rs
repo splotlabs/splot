@@ -926,7 +926,8 @@ impl IntraTileSyntax {
             .map(|()| [mv, MotionVector::default()]),
         }
         .map_err(rule("inter prediction"))?;
-        let units = inter_residual_units(&leaf.frontier, chroma).map_err(rule("inter residual"))?;
+        let units = inter_residual_units(&leaf.frontier, chroma, self.tools.lossless)
+            .map_err(rule("inter residual"))?;
         let (sub_x, sub_y) = chroma.subsampling();
         let mut blocks: Vec<TransformBlock> = units
             .into_iter()

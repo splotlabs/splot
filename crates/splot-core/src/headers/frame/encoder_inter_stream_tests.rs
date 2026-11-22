@@ -586,11 +586,17 @@ fn film_grain_headers_code_the_seed_and_the_model() {
     assert_eq!((fg.update_flags, &fg.models[0].model), (1, &model));
 }
 
-/// The HDR metadata OBUs parse back as prefix short OBUs with `LAYER_GLOBAL`
-/// and `GLOBAL_PERSISTENCE`; a cut OBU does not parse.
+/// Metadata OBUs parse back as prefix short OBUs with `LAYER_GLOBAL` and
+/// `GLOBAL_PERSISTENCE` and carry their payload bytes; a cut fixed-size OBU,
+/// a T.35 OBU without its extension byte and a user data OBU without its
+/// full UUID do not parse (ICC has no fixed part, so no cut of it fails),
+/// and a payload that its type does not select is refused.
 #[test]
-fn hdr_metadata_obus_parse_back() {
-    use crate::headers::metadata::parse_metadata_short;
+fn metadata_obus_parse_back() {
+    use crate::headers::metadata::{
+        MetadataHdrCll, MetadataHdrMdcv, MetadataIccProfile, MetadataItutT35,
+        MetadataUserDataUnregistered, parse_metadata_short,
+    };
     let display = MetadataHdrMdcv {
         primary_chromaticity_x: [8500, 6550, 35400],
         primary_chromaticity_y: [39850, 2300, 14600],
@@ -603,31 +609,97 @@ fn hdr_metadata_obus_parse_back() {
         max_cll: u16::MAX,
         max_fall: 0,
     };
-    for (obu, payload) in [
+    let t35 = MetadataItutT35 {
+        itu_t_t35_country_code: 0xFF,
+        itu_t_t35_country_code_extension_byte: Some(0x42),
+        payload_len: 3,
+    };
+    let user = MetadataUserDataUnregistered {
+        uuid_iso_iec_11578: *b"0123456789abcdef",
+        payload_len: 2,
+    };
+    let icc = MetadataIccProfile { payload_len: 5 };
+    let parse = |bytes: &[u8]| {
+        parse_metadata_short(&mut BitReader::new(bytes, ByteOffset::new(0)), bytes.len())
+    };
+    for (metadata_type, payload, passthrough, unit) in [
         (
-            encode_hdr_mdcv_obu(display).unwrap(),
+            MetadataType::HdrMdcv,
             MetadataPayload::HdrMdcv(display),
+            &[][..],
+            24,
+        ),
+        (MetadataType::HdrCll, MetadataPayload::HdrCll(light), &[], 4),
+        (
+            MetadataType::ItutT35,
+            MetadataPayload::ItutT35(t35),
+            &[1, 2, 3],
+            5,
         ),
         (
-            encode_hdr_cll_obu(light).unwrap(),
-            MetadataPayload::HdrCll(light),
+            MetadataType::UserDataUnregistered,
+            MetadataPayload::UserDataUnregistered(user),
+            &[7, 8],
+            18,
+        ),
+        (
+            MetadataType::IccProfile,
+            MetadataPayload::IccProfile(icc),
+            &[9; 5],
+            5,
         ),
     ] {
+        let obu = encode_metadata_obu(metadata_type, payload.clone(), passthrough).unwrap();
         let parsed = parse_annex_b_obus_partial(&obu);
         assert!(parsed.error.is_none());
         let [envelope] = &parsed.obus[..] else {
             unreachable!("one OBU");
         };
         assert_eq!(envelope.header.obu_type, ObuType::MetadataShort);
-        let parse = |bytes: &[u8]| {
-            parse_metadata_short(&mut BitReader::new(bytes, ByteOffset::new(0)), bytes.len())
-        };
         let short = parse(envelope.payload).unwrap();
         assert!(!short.metadata_is_suffix && !short.muh_cancel_flag);
         assert_eq!((short.muh_layer_idc, short.muh_persistence_idc), (1, 0));
-        assert_eq!(short.unit.unwrap().payload, payload);
-        assert!(parse(&envelope.payload[..envelope.payload.len() - 2]).is_err());
+        let parsed_unit = short.unit.unwrap();
+        assert_eq!(
+            (parsed_unit.payload, parsed_unit.payload_size),
+            (payload, unit)
+        );
+        let end = envelope.payload.len() - 1;
+        assert!(envelope.payload[..end].ends_with(passthrough));
+        if passthrough.is_empty() {
+            assert!(parse(&envelope.payload[..envelope.payload.len() - 2]).is_err());
+        }
     }
+    for (metadata_type, payload, passthrough, kept) in [
+        (
+            MetadataType::ItutT35,
+            MetadataPayload::ItutT35(t35),
+            &[1, 2, 3][..],
+            1,
+        ),
+        (
+            MetadataType::UserDataUnregistered,
+            MetadataPayload::UserDataUnregistered(user),
+            &[7, 8],
+            8,
+        ),
+    ] {
+        let obu = encode_metadata_obu(metadata_type, payload, passthrough).unwrap();
+        let envelope = &parse_annex_b_obus_partial(&obu).obus[0];
+        let cut = [&envelope.payload[..2 + kept], &[0x80]].concat();
+        assert!(parse(&cut).is_err(), "{metadata_type:?}");
+    }
+    assert!(
+        encode_metadata_obu(MetadataType::HdrCll, MetadataPayload::HdrMdcv(display), &[]).is_err()
+    );
+    assert!(
+        encode_metadata_obu(
+            MetadataType::IccProfile,
+            MetadataPayload::IccProfile(icc),
+            &[1]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -1261,6 +1333,67 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
     };
     assert_eq!(key(ignored), key(fixed));
     assert_cut_header_fails(&seq, &on, &slots.view());
+}
+
+/// An inter frame codes `allow_intrabc` alone (§ 5.18.3.4: `allow_global_intrabc
+/// = 0` and `allow_local_intrabc = 1` are implied), plus `change_bvp_drl = 0`
+/// where the sequence allows a frame DRL change. IntraBC without the local
+/// area is refused; a cut header does not parse complete.
+#[test]
+fn inter_frames_code_allow_intrabc_with_the_implied_local_area() {
+    for drl in [false, true] {
+        let mut seq = sequence(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+        seq.inter.as_mut().unwrap().allow_frame_max_bvp_drl_bits = drl;
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let slots = Slots::after_key(64, 64, 0);
+        let params = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 1,
+            refresh_frame_flags: 2,
+            show_frame: true,
+            filters: FrameFilterParams::default(),
+            tx: KeyFrameTxParams::default(),
+            tiles: FrameTiles::default(),
+            reference_select: false,
+            skip_mode_present: false,
+            primary_slot: Some(0),
+            use_ref_frame_mvs: false,
+            high_precision_mv: false,
+            switchable_interp_filter: false,
+            tip_weight: None,
+            tip_hole_fill: false,
+            opfl_refine_type: 0,
+            force_integer_mv: false,
+            warp: false,
+            global_motion: [None; 7],
+            global_motion_predict: false,
+            explicit_refs: None,
+            implicit_output: false,
+            tip_global_mv: TipGlobalMv::default(),
+            tip_filter: None,
+            tip_deblocking: false,
+            leading: false,
+        };
+        let with = |allow_intrabc, allow_local_intrabc| {
+            let tx = KeyFrameTxParams {
+                allow_intrabc,
+                allow_local_intrabc,
+                ..KeyFrameTxParams::default()
+            };
+            build_inter_frame_header(&view, &slots.view(), &InterFrameParams { tx, ..params })
+        };
+        let off = with(false, false).unwrap();
+        let on = with(true, true).unwrap();
+        let allowed =
+            |header: &EncodedFrameHeader| header.core.inter.as_ref().unwrap().allow_intrabc;
+        assert_eq!((allowed(&off), allowed(&on)), (Some(false), Some(true)));
+        assert_eq!(
+            on.bits.num_frame_header_bits(),
+            off.bits.num_frame_header_bits() + u64::from(drl)
+        );
+        assert!(with(true, false).is_err());
+        assert_cut_header_fails(&seq, &on, &slots.view());
+    }
 }
 
 /// The inter header `header` cut by its last byte does not parse to a

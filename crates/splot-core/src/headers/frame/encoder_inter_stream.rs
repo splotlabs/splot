@@ -28,14 +28,12 @@ use crate::headers::frame::inter_shared_tail::lr_reference_filters;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, KeyFrameTxParams, TipFrameMode,
-    TxMode, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, IntrabcParams, KeyFrameTxParams,
+    TipFrameMode, TxMode, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
-use crate::headers::metadata::{
-    MetadataHdrCll, MetadataHdrMdcv, MetadataPayload, MetadataShortObu, MetadataType, MetadataUnit,
-};
+use crate::headers::metadata::{MetadataPayload, MetadataShortObu, MetadataType, MetadataUnit};
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::hls::MultiFrameHeader;
@@ -44,7 +42,7 @@ use crate::types::ObuType;
 use crate::write::write_quantization_params;
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, global_motion::write_global_param, write_annexb_obu,
-    write_tile_group_payload, write_tile_group_structure,
+    write_intrabc_params, write_tile_group_payload, write_tile_group_structure,
 };
 
 /// `PRIMARY_REF_NONE` (§ 3).
@@ -383,7 +381,20 @@ fn inter_frame_header_bits(
             w.write_flag(params.force_integer_mv)?;
         }
     }
-    w.write_flag(false)?; // allow_intrabc
+    let tx = params.tx;
+    if tx.allow_intrabc && !tx.allow_local_intrabc {
+        return Err(unsupported(
+            "intra block copy without the local area in an inter frame",
+        ));
+    }
+    let intrabc = IntrabcParams {
+        allow_intrabc: tx.allow_intrabc,
+        allow_global_intrabc: None,
+        allow_local_intrabc: None,
+        change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
+        max_bvp_drl_bits_minus_1: None,
+    };
+    write_intrabc_params(&mut w, &intrabc, false, seq.allow_frame_max_bvp_drl_bits)?;
     if !params.force_integer_mv {
         w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv
     }
@@ -410,11 +421,7 @@ fn inter_frame_header_bits(
     {
         w.write_flag(mode == INTERINTRA || warp)?; // frame_enabled_motion_modes[mode]
     }
-    w.write_flag(params.tx.disable_cdf_update)?;
-    let tx = params.tx;
-    if tx.allow_intrabc {
-        return Err(unsupported("intra block copy in an inter frame"));
-    }
+    w.write_flag(tx.disable_cdf_update)?;
     check_tx_params(params.base_q_idx, tx)?;
     write_quant_and_filters(
         &mut w,
@@ -1170,6 +1177,7 @@ pub fn encode_film_grain_obu(
     annexb_obu(
         ObuType::FilmGrain,
         &crate::obu::ParsedObu::FilmGrain(Box::new(obu)),
+        &[],
     )
 }
 
@@ -1183,6 +1191,7 @@ pub fn encode_content_interpretation_obu(
     annexb_obu(
         ObuType::ContentInterpretation,
         &crate::obu::ParsedObu::ContentInterpretation(*content),
+        &[],
     )
 }
 
@@ -1207,39 +1216,26 @@ pub fn encode_multi_frame_header_obu() -> Result<Vec<u8>, EncoderHeaderError> {
             mfh_allow_seg_info_change: None,
             segment_info: None,
         })),
+        &[],
     )
 }
 
-/// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) with the
-/// `metadata_hdr_cll()` (§ 5.17.5) of `light_level`.
+/// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) of `metadata_type`
+/// for every layer of its extended layer (`LAYER_GLOBAL`) and the whole
+/// sequence (`GLOBAL_PERSISTENCE`, § 6.16.3). `passthrough` holds the bytes
+/// of a T.35, ICC profile or user data payload (§ 5.17.4, § 5.17.9,
+/// § 5.17.13); the unit is the payload rounded up to whole bytes.
 ///
 /// # Errors
-/// Returns [`EncoderHeaderError`] if the OBU does not serialize.
-pub fn encode_hdr_cll_obu(light_level: MetadataHdrCll) -> Result<Vec<u8>, EncoderHeaderError> {
-    hdr_metadata_obu(
-        MetadataType::HdrCll,
-        4,
-        MetadataPayload::HdrCll(light_level),
-    )
-}
-
-/// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) with the
-/// `metadata_hdr_mdcv()` (§ 5.17.6) of `display`.
-///
-/// # Errors
-/// Returns [`EncoderHeaderError`] if the OBU does not serialize.
-pub fn encode_hdr_mdcv_obu(display: MetadataHdrMdcv) -> Result<Vec<u8>, EncoderHeaderError> {
-    hdr_metadata_obu(MetadataType::HdrMdcv, 24, MetadataPayload::HdrMdcv(display))
-}
-
-/// A prefix `OBU_METADATA_SHORT` of `payload_size` bytes for every layer of
-/// its extended layer (`LAYER_GLOBAL`: Table 6.17 lists both types as not
-/// layer-specific) and the whole sequence (`GLOBAL_PERSISTENCE`, § 6.16.3).
-fn hdr_metadata_obu(
+/// Returns [`EncoderHeaderError`] if `metadata_type` does not select
+/// `payload`, `passthrough` does not match it, or the OBU does not serialize.
+pub fn encode_metadata_obu(
     metadata_type: MetadataType,
-    payload_size: usize,
     payload: MetadataPayload,
+    passthrough: &[u8],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
+    let mut sized = BitWriter::new();
+    crate::write::write_metadata_payload(&mut sized, &payload, passthrough)?;
     let obu = MetadataShortObu {
         metadata_is_suffix: false,
         muh_layer_idc: 1,
@@ -1249,23 +1245,26 @@ fn hdr_metadata_obu(
         metadata_type_leb128_bytes: 1,
         unit: Some(MetadataUnit {
             metadata_type,
-            payload_size,
+            payload_size: sized.into_bytes().len(),
             payload,
         }),
     };
     annexb_obu(
         ObuType::MetadataShort,
         &crate::obu::ParsedObu::MetadataShort(Box::new(obu)),
+        passthrough,
     )
 }
 
-/// `obu` as an Annex B OBU of `obu_type` on layer 0.
+/// `obu` with the payload bytes `passthrough` as an Annex B OBU of
+/// `obu_type` on layer 0.
 fn annexb_obu(
     obu_type: ObuType,
     obu: &crate::obu::ParsedObu,
+    passthrough: &[u8],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let mut payload = BitWriter::new();
-    crate::write::write_obu_payload(&mut payload, obu, obu_type.is_extensible_obu(), &[])?;
+    crate::write::write_obu_payload(&mut payload, obu, obu_type.is_extensible_obu(), passthrough)?;
     let mut w = BitWriter::new();
     write_annexb_obu(&mut w, &obu_header(obu_type), &payload.into_bytes())?;
     Ok(w.into_bytes())

@@ -8,7 +8,7 @@
 //! Feature tracking: `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`.
 
 use splot_core::coefficient::LF_SIG_COEF_CONTEXTS_2D;
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder};
+use splot_core::symbol::SymbolDecoder;
 use splot_recon::{TransformClass, coefficient_scan_position};
 
 use super::super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
@@ -327,12 +327,7 @@ pub(crate) fn decode_ordinary_transform_block(
     input.parity_hiding &= !input.lossless;
     input.use_tcq &= !input.lossless;
     preflight(&input, quant.len())?;
-    let run = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
-        dispatch::<true>(&input)
-    } else {
-        dispatch::<false>(&input)
-    };
-    Ok(run(state, cdfs, symbols, &input, quant)?)
+    Ok(dispatch(&input)(state, cdfs, symbols, &input, quant)?)
 }
 
 fn preflight(
@@ -379,7 +374,7 @@ struct BlockSummary {
 
 #[allow(clippy::inline_always, reason = "measured: one body per tool set")]
 #[inline(always)]
-fn dispatch<const UPD: bool>(input: &CoeffTransformBlockInput<'_>) -> RunFn {
+fn dispatch(input: &CoeffTransformBlockInput<'_>) -> RunFn {
     use TransformClass::{Horizontal, TwoD, Vertical};
     match (
         input.tx_class,
@@ -387,16 +382,16 @@ fn dispatch<const UPD: bool>(input: &CoeffTransformBlockInput<'_>) -> RunFn {
         input.use_tcq,
         input.parity_hiding,
     ) {
-        (TwoD, true, true, _) => run::<0, true, true, false, UPD>,
-        (TwoD, true, false, true) => run::<0, true, false, true, UPD>,
-        (TwoD, true, false, false) => run::<0, true, false, false, UPD>,
-        (Horizontal, true, _, true) => run::<1, true, false, true, UPD>,
-        (Horizontal, true, _, false) => run::<1, true, false, false, UPD>,
-        (Vertical, true, _, true) => run::<2, true, false, true, UPD>,
-        (Vertical, true, _, false) => run::<2, true, false, false, UPD>,
-        (TwoD, false, ..) => run::<0, false, false, false, UPD>,
-        (Horizontal, false, ..) => run::<1, false, false, false, UPD>,
-        (Vertical, false, ..) => run::<2, false, false, false, UPD>,
+        (TwoD, true, true, _) => run::<0, true, true, false>,
+        (TwoD, true, false, true) => run::<0, true, false, true>,
+        (TwoD, true, false, false) => run::<0, true, false, false>,
+        (Horizontal, true, _, true) => run::<1, true, false, true>,
+        (Horizontal, true, _, false) => run::<1, true, false, false>,
+        (Vertical, true, _, true) => run::<2, true, false, true>,
+        (Vertical, true, _, false) => run::<2, true, false, false>,
+        (TwoD, false, ..) => run::<0, false, false, false>,
+        (Horizontal, false, ..) => run::<1, false, false, false>,
+        (Vertical, false, ..) => run::<2, false, false, false>,
     }
 }
 
@@ -411,7 +406,7 @@ type RunFn = fn(
 /// One specialised block body per class, plane type and tool set, kept out
 /// of line so its loops own the registers.
 #[inline(never)]
-fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, const UPD: bool>(
+fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -458,8 +453,8 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
         .map_err(|error| CoeffBaseSymbolReadError::from(BlockSymbolTraceReadError::from(error)))
         .map_err(CoeffBaseDerivedLevelPassError::from)?;
     let eob_ctx = coeff_base_eob_ctx(eob_index, width_log2, usize::from(tx.height));
-    let eob_level = read_eob_base::<LUMA, UPD>(symbols, &mut rows, eob_ctx, eob_index < lf_end) + 1;
-    let mut pass = LevelPass::<UPD> {
+    let eob_level = read_eob_base::<LUMA>(symbols, &mut rows, eob_ctx, eob_index < lf_end) + 1;
+    let mut pass = LevelPass {
         symbols: symbols.clone(),
         levels: &mut *levels,
         width_log2,
@@ -496,19 +491,17 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
 /// Reads the `coeff_base_eob` symbol of context `ctx` (§ 8.3.2).
 #[allow(clippy::inline_always, reason = "measured: per-block symbol read")]
 #[inline(always)]
-fn read_eob_base<const LUMA: bool, const UPD: bool>(
+fn read_eob_base<const LUMA: bool>(
     symbols: &mut SymbolDecoder<'_>,
     rows: &mut CoeffLevelRows<'_>,
     ctx: usize,
     lf: bool,
 ) -> u32 {
     match (LUMA, lf) {
-        (true, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob(), ctx)),
-        (true, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob(), ctx)),
-        (false, true) => {
-            symbols.read_trusted::<6, UPD>(row_at(rows.cdf.coeff_base_lf_eob_uv(), ctx))
-        }
-        (false, false) => symbols.read_trusted::<4, UPD>(row_at(rows.cdf.coeff_base_eob_uv(), ctx)),
+        (true, true) => symbols.read_trusted(row_at(rows.base_lf_eob(), ctx)),
+        (true, false) => symbols.read_trusted(row_at(rows.base_eob(), ctx)),
+        (false, true) => symbols.read_trusted(row_at(rows.cdf.coeff_base_lf_eob_uv(), ctx)),
+        (false, false) => symbols.read_trusted(row_at(rows.cdf.coeff_base_eob_uv(), ctx)),
     }
 }
 
@@ -532,7 +525,7 @@ const fn ctx_class_of(entry: u32) -> usize {
 /// The base and range pass state: an owned decoder whose reads skip every
 /// per-symbol check (the coefficient rows are decoder-owned), the level
 /// grid and the TCQ, parity and nonzero-list state.
-struct LevelPass<'a, 'r, const UPD: bool> {
+struct LevelPass<'a, 'r> {
     symbols: SymbolDecoder<'a>,
     levels: &'r mut CoeffLevelWords,
     width_log2: u32,
@@ -553,7 +546,7 @@ struct LevelPass<'a, 'r, const UPD: bool> {
 /// One entry per scan index of the largest (32 by 32) block.
 const NONZERO_LIST: usize = 1024;
 
-impl<const UPD: bool> LevelPass<'_, '_, UPD> {
+impl LevelPass<'_, '_> {
     /// The sum of the grid words at `offsets` from `grid`.
     #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
@@ -628,13 +621,13 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         level
             + if !LUMA {
                 let row = row_at(rows.cdf.coeff_br_uv(), ctx);
-                self.symbols.read_trusted::<5, UPD>(row)
+                self.symbols.read_trusted(row)
             } else if LF {
                 let row = row_at(rows.cdf.coeff_br_lf(), ctx);
-                self.symbols.read_trusted::<5, UPD>(row)
+                self.symbols.read_trusted(row)
             } else {
                 let row = row_at(rows.cdf.coeff_br(), ctx);
-                self.symbols.read_trusted::<5, UPD>(row)
+                self.symbols.read_trusted(row)
             }
     }
 
@@ -670,7 +663,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
             let row = row_at(rows.cdf.coeff_base_lf_uv(), ctx);
-            return self.symbols.read_trusted::<7, UPD>(row);
+            return self.symbols.read_trusted(row);
         }
         let ctx = if CLASS == 0 {
             if DC {
@@ -693,7 +686,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         };
         let q0 = self.tcq_q0 & 1;
         let row = &mut row_at(rows.base_lf(), ctx)[q0];
-        self.symbols.read_trusted::<7, UPD>(row)
+        self.symbols.read_trusted(row)
     }
 
     /// Reads one high-frequency base symbol.
@@ -711,7 +704,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
             let row = row_at(rows.cdf.coeff_base_uv(), ctx);
-            return self.symbols.read_trusted::<5, UPD>(row);
+            return self.symbols.read_trusted(row);
         }
         let q0 = self.tcq_q0 & 1;
         let row = if CLASS == 0 {
@@ -720,7 +713,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         } else {
             &mut row_at(rows.base(), half_capped(mag, 4) + 15)[q0]
         };
-        self.symbols.read_trusted::<5, UPD>(row)
+        self.symbols.read_trusted(row)
     }
 
     /// Records a decoded level and advances the TCQ and parity state.
@@ -812,7 +805,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let level = if PH && (self.ph >> 1) >= PHTHRESH {
             let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
             let row = row_at(rows.cdf.coeff_base_ph(), half_capped(mag, 4));
-            self.symbols.read_trusted::<5, UPD>(row)
+            self.symbols.read_trusted(row)
         } else {
             let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
             self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)

@@ -3,6 +3,7 @@
 
 //! Cross-frame CDF carry (§ 5.18.2 `set_primary_ref_frame_and_ctx`, § 7.23).
 
+use super::grain_streams::with_noise;
 use super::*;
 use crate::Packet;
 use crate::gop::{GopPlanner, GopStep};
@@ -457,13 +458,17 @@ fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, 
     let mut config = config(72, 40, BitDepth::Eight, 6, 150);
     config.preset_overrides = vec![("implicit_output".to_owned(), "true".to_owned())];
     config.threads = splot_parallel::ThreadCount::from(threads);
-    let (packets, expected) = encoder_packets(&config, frames);
+    let (packets, expected) = encoder_packets(&config, frames, panning_frame);
     (config, packets, expected)
 }
 
-/// The packets of `frames` panning frames coded through the [`Encoder`] with
-/// `config`, and the encoder recon in display order.
-fn encoder_packets(config: &Config, frames: u32) -> (Vec<Packet>, Vec<u8>) {
+/// The packets of `frames` source frames `frame(config, index)` coded through
+/// the [`Encoder`] with `config`, and the encoder recon in display order.
+fn encoder_packets(
+    config: &Config,
+    frames: u32,
+    frame: fn(&Config, u32) -> SourceFrame,
+) -> (Vec<Packet>, Vec<u8>) {
     let recons = Arc::default();
     let coder = Recording {
         coder: IntraFrameCoder::new(config).unwrap(),
@@ -474,7 +479,7 @@ fn encoder_packets(config: &Config, frames: u32) -> (Vec<Packet>, Vec<u8>) {
     let mut packets = Vec::new();
     for index in (0..frames).map(Some).chain([None]) {
         match index {
-            Some(index) => encoder.send_frame(panning_frame(config, index)).unwrap(),
+            Some(index) => encoder.send_frame(frame(config, index)).unwrap(),
             None => encoder.flush().unwrap(),
         }
         while let Some(packet) = encoder.receive_packet().unwrap() {
@@ -568,15 +573,17 @@ const OPEN_LOOP_CASES: [(PixelFormat, BitDepth, bool, bool); 4] = [
 ];
 
 /// 26 panning frames at preset 6 (mini-GOPs of 8) with a key frame every 12
-/// frames and `open_loop_key = 1` in `mode`: the config, the packets and the
-/// encoder recon in display order.
+/// frames and `open_loop_key = 1` in `mode`, with noise and film grain when
+/// `grain`: the config, the packets and the encoder recon in display order.
 fn open_loop_stream(
     (chroma, bit_depth, implicit, short_refresh): (PixelFormat, BitDepth, bool, bool),
     mode: RateControlMode,
     threads: usize,
+    grain: bool,
 ) -> (Config, Vec<Packet>, Vec<u8>) {
     let mut config = config(72, 40, bit_depth, 6, 150);
     config.chroma = chroma;
+    config.film_grain = grain;
     config.rate_control = mode;
     config.keyint = core::num::NonZeroU32::new(12).unwrap();
     config.preset_overrides = vec![
@@ -585,7 +592,12 @@ fn open_loop_stream(
         ("short_refresh".to_owned(), short_refresh.to_string()),
     ];
     config.threads = splot_parallel::ThreadCount::from(threads);
-    let (packets, expected) = encoder_packets(&config, 26);
+    let frame: fn(&Config, u32) -> SourceFrame = if grain {
+        |config, index| with_noise(config, &panning_frame(config, index), index)
+    } else {
+        panning_frame
+    };
+    let (packets, expected) = encoder_packets(&config, 26, frame);
     let mut pts: Vec<u64> = packets.iter().map(|packet| packet.pts).collect();
     pts.sort_unstable();
     assert_eq!(
@@ -619,7 +631,7 @@ fn open_loop_key_streams_decode_alike_on_any_thread_count() {
     use splot_core::types::ObuType;
     each_case(OPEN_LOOP_CASES, |case| {
         let qp = RateControlMode::ConstantQp { qp: 150 };
-        let (_, packets, expected) = open_loop_stream(case, qp, 1);
+        let (_, packets, expected) = open_loop_stream(case, qp, 1, false);
         let types = obu_types(&packets);
         let count = |kind| types.iter().filter(|&&obu| obu == kind).count();
         assert_eq!(count(ObuType::OpenLoopKey), 2, "{case:?}");
@@ -632,7 +644,7 @@ fn open_loop_key_streams_decode_alike_on_any_thread_count() {
             .collect();
         assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
         for threads in [2, 8] {
-            let other: Vec<u8> = open_loop_stream(case, qp, threads)
+            let other: Vec<u8> = open_loop_stream(case, qp, threads, false)
                 .1
                 .iter()
                 .flat_map(|packet| packet.data.clone())
@@ -661,7 +673,7 @@ fn rate_controlled_open_loop_key_streams_decode_to_the_encoder_recon() {
         .flat_map(|mode| [false, true].map(|implicit| (mode, implicit)));
     each_case(cases, |(mode, implicit)| {
         let case = (PixelFormat::Yuv420, BitDepth::Eight, implicit, true);
-        let (_, packets, expected) = open_loop_stream(case, mode, 1);
+        let (_, packets, expected) = open_loop_stream(case, mode, 1, false);
         let units: Vec<u8> = packets
             .iter()
             .flat_map(|packet| packet.data.clone())
@@ -695,7 +707,7 @@ fn avm_decodes_open_loop_key_streams_from_the_start_and_from_the_key() {
     };
     for case in OPEN_LOOP_CASES {
         let qp = RateControlMode::ConstantQp { qp: 150 };
-        let (config, packets, expected) = open_loop_stream(case, qp, 1);
+        let (config, packets, expected) = open_loop_stream(case, qp, 1, false);
         let size = (config.width, config.height);
         let units: Vec<Vec<u8>> = packets.iter().map(|packet| packet.data.clone()).collect();
         let name = format!("olk{}{}{}", case.1 as u8, case.2, case.3);
@@ -712,6 +724,111 @@ fn avm_decodes_open_loop_key_streams_from_the_start_and_from_the_key() {
         let avm = avm_decode(&avmdec, &units[start..], size, config.bit_depth, &name);
         assert!(
             avm == expected[12 * frame_bytes..],
+            "{case:?}: random access differs"
+        );
+    }
+}
+
+/// The raw `splot decode` output of `packets`, with film grain unless `skip`.
+fn decode_packets(packets: &[Packet], skip: bool) -> Vec<u8> {
+    let units: Vec<u8> = packets
+        .iter()
+        .flat_map(|packet| packet.data.clone())
+        .collect();
+    let threads = splot_parallel::ThreadCount::from(1);
+    let ctx = splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::new(threads));
+    let options = splot_decode::DecodeOptions::default().with_skip_film_grain(skip);
+    let mut out = Vec::new();
+    ctx.unwrap()
+        .decode_raw_bytes(&units, options, &mut out)
+        .unwrap();
+    out
+}
+
+/// With film grain and `open_loop_key = 1` every key frame sends a grain
+/// model, and every output frame after the closed-loop key frame and after
+/// each of the two hidden open-loop key frames carries grain with its own
+/// seed (§ 7.21.7). Without grain synthesis the stream decodes to the encoder
+/// recon, and the bytes are the same on 1, 2 and 8 threads.
+#[test]
+fn open_loop_key_streams_carry_film_grain() {
+    use splot_core::types::ObuType;
+    each_case([OPEN_LOOP_CASES[0], OPEN_LOOP_CASES[1]], |case| {
+        let qp = RateControlMode::ConstantQp { qp: 150 };
+        let (_, packets, expected) = open_loop_stream(case, qp, 1, true);
+        let types = obu_types(&packets);
+        let count = |kind| types.iter().filter(|&&obu| obu == kind).count();
+        assert_eq!(count(ObuType::OpenLoopKey), 2, "{case:?}");
+        assert_eq!(count(ObuType::FilmGrain), 3, "{case:?}");
+        assert_same_samples(
+            &decode_packets(&packets, true),
+            &expected,
+            &format!("{case:?}"),
+        );
+        let grained = decode_packets(&packets, false);
+        assert_eq!(grained.len(), expected.len(), "{case:?}");
+        let frame_bytes = expected.len() / 26;
+        let mut noise: Vec<Vec<i16>> = Vec::new();
+        for (index, (frame, recon)) in grained
+            .chunks(frame_bytes)
+            .zip(expected.chunks(frame_bytes))
+            .enumerate()
+        {
+            let diff: Vec<i16> = frame
+                .iter()
+                .zip(recon)
+                .map(|(&a, &b)| i16::from(a) - i16::from(b))
+                .collect();
+            assert!(
+                diff.iter().any(|&d| d != 0),
+                "{case:?}: frame {index} has no grain"
+            );
+            assert!(
+                !noise.contains(&diff),
+                "{case:?}: frame {index} repeats a seed"
+            );
+            noise.push(diff);
+        }
+        for threads in [2, 8] {
+            let other = open_loop_stream(case, qp, threads, true).1;
+            assert!(
+                other
+                    .iter()
+                    .map(|packet| &packet.data)
+                    .eq(packets.iter().map(|packet| &packet.data)),
+                "{case:?}: {threads} threads"
+            );
+        }
+    });
+}
+
+/// AVM synthesizes the same grain as splot on the open-loop key streams with
+/// film grain, from the start and from the first open-loop key frame.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_open_loop_key_grain_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for case in [OPEN_LOOP_CASES[0], OPEN_LOOP_CASES[1]] {
+        let qp = RateControlMode::ConstantQp { qp: 150 };
+        let (config, packets, _) = open_loop_stream(case, qp, 1, true);
+        let grained = decode_packets(&packets, false);
+        let size = (config.width, config.height);
+        let units: Vec<Vec<u8>> = packets.iter().map(|packet| packet.data.clone()).collect();
+        let name = format!("olk-grain{}", case.1 as u8);
+        let avm = avm_decode(&avmdec, &units, size, config.bit_depth, &name);
+        assert!(avm == grained, "{case:?}: AVM output differs");
+        let start = packets
+            .iter()
+            .position(|packet| {
+                obu_types(core::slice::from_ref(packet))
+                    .contains(&splot_core::types::ObuType::OpenLoopKey)
+            })
+            .unwrap();
+        let avm = avm_decode(&avmdec, &units[start..], size, config.bit_depth, &name);
+        assert!(
+            avm == grained[12 * (grained.len() / 26)..],
             "{case:?}: random access differs"
         );
     }

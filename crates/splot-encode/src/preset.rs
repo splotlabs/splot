@@ -635,6 +635,7 @@ pub struct PresetParams {
     /// With `opfl`, inter frames code `opfl_refine_type = REFINE_ALL`
     /// instead of `REFINE_SWITCHABLE`: every compound block that allows it
     /// refines with optical flow and codes no `use_optflow` (§ 5.18.3.2).
+    /// The compound shortlist ranks those blocks by the refined prediction.
     pub opfl_refine_all: bool,
     /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
     /// with a past and a future reference may code `use_refinemv`. On at p0

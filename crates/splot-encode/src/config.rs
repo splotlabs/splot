@@ -9,7 +9,7 @@ use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow};
 use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
-use crate::content::ContentDescription;
+use crate::content::{ContentDescription, KeyFrameMetadata};
 use crate::error::{Error, Result};
 use crate::preset::{Preset, PresetParams};
 use crate::rate_control::{Crf, check_bitrate, check_cbr, max_qindex};
@@ -152,6 +152,9 @@ pub struct Config {
     /// sample position, sample aspect ratio, timing and HDR metadata. Nothing
     /// by default.
     pub content: ContentDescription,
+    /// ICC profile, T.35 and user data payloads written in front of every
+    /// key frame. None by default.
+    pub key_frame_metadata: KeyFrameMetadata,
     /// Rate-control mode.
     pub rate_control: RateControlMode,
     /// Speed preset.
@@ -242,6 +245,7 @@ impl Config {
             chroma: PixelFormat::Yuv420,
             frame_rate: (30, 1),
             content: ContentDescription::default(),
+            key_frame_metadata: KeyFrameMetadata::default(),
             rate_control: RateControlMode::ConstantQp {
                 qp: Self::DEFAULT_QP,
             },
@@ -268,6 +272,7 @@ impl Config {
     /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
     /// [`Error::InvalidCrop`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
+    /// [`Error::InvalidMetadata`],
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
     /// [`Error::PaddingWithoutCbr`] or [`Error::Preset`].
@@ -318,6 +323,7 @@ impl Config {
             });
         }
         self.content.validate(self.chroma)?;
+        self.key_frame_metadata.validate()?;
         let tiles_refused = match &self.tiles {
             TileLayout::Uniform {
                 cols_log2,

@@ -2,18 +2,19 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! What the source declares about its samples, coded in front of every key
-//! frame as a content interpretation OBU (§ 5.15) and HDR metadata OBUs
-//! (§ 5.17.5, § 5.17.6).
+//! frame as a content interpretation OBU (§ 5.15) and metadata OBUs
+//! (§ 5.17).
 
 use splot_core::headers::content_interpretation::{
     AspectRatioInfo, ChromaSamplePosition as CodedChromaSamplePosition, ColorDescription,
     ColorPrimariesTriple, ContentInterpretation, DerivedColorInfo,
 };
-use splot_core::headers::frame::{
-    encode_content_interpretation_obu, encode_hdr_cll_obu, encode_hdr_mdcv_obu,
-};
+use splot_core::headers::frame::{encode_content_interpretation_obu, encode_metadata_obu};
 pub use splot_core::headers::metadata::MetadataHdrCll as ContentLightLevel;
-use splot_core::headers::metadata::MetadataHdrMdcv;
+use splot_core::headers::metadata::{
+    MetadataHdrMdcv, MetadataIccProfile, MetadataItutT35, MetadataPayload, MetadataType,
+    MetadataUserDataUnregistered,
+};
 use splot_core::headers::sequence::TimingInfo;
 use splot_recon::PixelFormat;
 
@@ -169,19 +170,112 @@ impl ContentDescription {
         obus.extend_from_slice(mfh);
         if let Some(display) = self.mastering_display {
             let [(gx, gy), (bx, by), (rx, ry)] = display.primaries;
-            let obu = encode_hdr_mdcv_obu(MetadataHdrMdcv {
+            let display = MetadataHdrMdcv {
                 primary_chromaticity_x: [gx, bx, rx],
                 primary_chromaticity_y: [gy, by, ry],
                 white_point_chromaticity_x: display.white_point.0,
                 white_point_chromaticity_y: display.white_point.1,
                 luminance_max: display.luminance_max,
                 luminance_min: display.luminance_min,
-            });
+            };
+            let payload = MetadataPayload::HdrMdcv(display);
+            let obu = encode_metadata_obu(MetadataType::HdrMdcv, payload, &[]);
             obus.extend(obu.map_err(crate::intra_frame::coding("mastering display"))?);
         }
         if let Some(light_level) = self.content_light_level {
-            let obu = encode_hdr_cll_obu(light_level);
+            let payload = MetadataPayload::HdrCll(light_level);
+            let obu = encode_metadata_obu(MetadataType::HdrCll, payload, &[]);
             obus.extend(obu.map_err(crate::intra_frame::coding("content light level"))?);
+        }
+        Ok(obus)
+    }
+}
+
+/// Metadata payloads that the encoder copies unchanged into a prefix metadata
+/// OBU in front of every key frame, after the HDR metadata (§ 5.17, § 7.3.3).
+/// None by default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct KeyFrameMetadata {
+    /// The ICC profile bytes of `metadata_icc_profile()` (§ 5.17.9).
+    pub icc_profile: Option<Vec<u8>>,
+    /// The bytes of `metadata_itut_t35()` (§ 5.17.4): the country code, an
+    /// extension byte when the code is 0xFF, then the payload.
+    pub itut_t35: Option<Vec<u8>>,
+    /// The bytes of `metadata_user_data_unregistered()` (§ 5.17.13): a
+    /// 16-byte UUID, then the payload.
+    pub user_data_unregistered: Option<Vec<u8>>,
+}
+
+impl KeyFrameMetadata {
+    /// Checks that each payload has the fields its syntax starts with: the
+    /// 128-byte header of an ICC profile (ISO 15076-1, § 6.16.9), a T.35
+    /// country code (with its extension byte) and terminal provider code
+    /// (§ 6.16.4), and a user data UUID.
+    pub(crate) fn validate(&self) -> Result<()> {
+        let invalid = |what| Err(Error::InvalidMetadata { what });
+        if self.icc_profile.as_ref().is_some_and(|icc| icc.len() < 128) {
+            return invalid("an ICC profile starts with its 128-byte header (§ 6.16.9)");
+        }
+        match self.itut_t35.as_deref() {
+            Some([]) => return invalid("T.35 data starts with a country code"),
+            Some([0xFF]) => return invalid("T.35 country code 0xFF has an extension byte"),
+            Some([_] | [0xFF, _]) => {
+                return invalid("T.35 data has a terminal provider code after the country code");
+            }
+            _ => {}
+        }
+        if self
+            .user_data_unregistered
+            .as_ref()
+            .is_some_and(|data| data.len() < 16)
+        {
+            return invalid("user data starts with a 16-byte UUID");
+        }
+        Ok(())
+    }
+
+    /// The Annex B metadata OBUs: ICC profile, T.35, then user data.
+    pub(crate) fn obus(&self) -> Result<Vec<u8>> {
+        let mut obus = Vec::new();
+        let mut push = |metadata_type, payload, passthrough: &[u8], what| -> Result<()> {
+            let obu = encode_metadata_obu(metadata_type, payload, passthrough);
+            obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
+            Ok(())
+        };
+        if let Some(icc) = &self.icc_profile {
+            let payload_len = icc.len();
+            let payload = MetadataPayload::IccProfile(MetadataIccProfile { payload_len });
+            push(MetadataType::IccProfile, payload, icc, "ICC profile")?;
+        }
+        if let Some(&[country_code, ref rest @ ..]) = self.itut_t35.as_deref() {
+            let (extension, payload) = match rest {
+                [extension, payload @ ..] if country_code == 0xFF => (Some(*extension), payload),
+                _ => (None, rest),
+            };
+            let payload_t35 = MetadataPayload::ItutT35(MetadataItutT35 {
+                itu_t_t35_country_code: country_code,
+                itu_t_t35_country_code_extension_byte: extension,
+                payload_len: payload.len(),
+            });
+            push(MetadataType::ItutT35, payload_t35, payload, "T.35")?;
+        }
+        if let Some((uuid, payload)) = self
+            .user_data_unregistered
+            .as_deref()
+            .and_then(|data| data.split_first_chunk::<16>())
+        {
+            let payload_user =
+                MetadataPayload::UserDataUnregistered(MetadataUserDataUnregistered {
+                    uuid_iso_iec_11578: *uuid,
+                    payload_len: payload.len(),
+                });
+            push(
+                MetadataType::UserDataUnregistered,
+                payload_user,
+                payload,
+                "user data",
+            )?;
         }
         Ok(obus)
     }

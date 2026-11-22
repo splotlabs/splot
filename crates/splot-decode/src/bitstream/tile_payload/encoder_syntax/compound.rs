@@ -335,9 +335,10 @@ impl IntraTileSyntax {
         Ok(motion)
     }
 
-    /// Whether the compound block `modes` at `leaf` reads `use_optflow`, and
-    /// whether it reads `use_refinemv` with the `use_optflow` of `modes`
-    /// (§ 5.20.7.6, § 5.20.7.17).
+    /// Whether the compound block `modes` at `leaf` reads `use_optflow`,
+    /// whether it reads `use_refinemv` with the `use_optflow` of `modes`, and
+    /// whether the decoder refines it with optical flow (§ 5.20.7.6,
+    /// § 5.20.7.17).
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
@@ -345,7 +346,7 @@ impl IntraTileSyntax {
         &mut self,
         leaf: &LeafBlock,
         modes: CompoundModes,
-    ) -> Result<(bool, bool)> {
+    ) -> Result<(bool, bool, bool)> {
         let plain = CompoundModes {
             optflow: false,
             refinemv: false,
@@ -364,6 +365,7 @@ impl IntraTileSyntax {
         Ok((
             refinement.reads_optflow,
             refinement.refinemv_selector.is_some(),
+            refinement.use_optflow,
         ))
     }
 

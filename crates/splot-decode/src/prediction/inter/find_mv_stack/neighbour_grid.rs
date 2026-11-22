@@ -1495,7 +1495,7 @@ impl NeighbourMvGrid {
 
     /// `motion.base_c` of [`Self::get`]`(r, c)` without building the cell.
     #[inline]
-    pub(super) fn base_c_at(&self, r: i32, c: i32) -> Option<u32> {
+    pub(crate) fn base_c_at(&self, r: i32, c: i32) -> Option<u32> {
         self.leaf_at(r, c)
             .filter(|leaf| leaf.resolved)
             .map(|leaf| leaf.base_c)

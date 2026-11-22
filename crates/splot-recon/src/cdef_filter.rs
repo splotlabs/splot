@@ -1390,55 +1390,83 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: Reco
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
+    let (w, h) = (w.min(8), h.min(8));
+    let mut block = [0u16; 64];
+    if w == 0 || !cdef_filter_block_padded::<HAS_UNAVAILABLE>(pad, h, filter, &mut block) {
+        return false;
+    }
+    let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
+    let size = (w, h, unfiltered);
+    baseline_simd!(simd => cdef_publish_block(simd, &block, size, out, out_stride)).is_some()
+}
+
+/// § 7.18.3 over one padded block into the first `h` rows of the 8x8
+/// `block`, every row 8 lanes wide whatever the block's width.
+fn cdef_filter_block_padded<const HAS_UNAVAILABLE: bool>(
+    pad: &[u16; CDEF_PADDED_AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    block: &mut [u16; 64],
+) -> bool {
     const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
-    let args = (
-        pad,
-        h.min(8),
-        filter,
-        &CDEF_TAP_STARTS,
-        &mut *out,
-        out_stride,
-    );
-    match w.min(8) {
-        8 => baseline_simd!(simd => cdef_filter_block_rows::<
-            _,
-            _,
-            8,
-            HAS_UNAVAILABLE,
-            CDEF_PADDED_SIDE,
-            2,
-            8,
-            SPAN,
-            CDEF_PADDED_AREA,
-        >(simd, args)),
-        4 => baseline_simd!(simd => cdef_filter_block_rows::<
-            _,
-            _,
-            4,
-            HAS_UNAVAILABLE,
-            CDEF_PADDED_SIDE,
-            2,
-            8,
-            SPAN,
-            CDEF_PADDED_AREA,
-        >(simd, args)),
-        0 => None,
-        w => {
-            let mut block = [T::default(); 64];
-            let h = h.min(8);
-            if !cdef_filter_block_padded_to_valid_stride::<HAS_UNAVAILABLE, T>(
-                pad, 8, h, filter, &mut block, 8,
-            ) {
-                return false;
+    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
+    baseline_simd!(simd => cdef_filter_block_rows::<
+        _,
+        _,
+        8,
+        HAS_UNAVAILABLE,
+        CDEF_PADDED_SIDE,
+        2,
+        8,
+        SPAN,
+        CDEF_PADDED_AREA,
+    >(simd, args))
+    .is_some()
+}
+
+/// Writes the first `w` lanes of the first `h` rows of `block` to `out`, rows
+/// `out_stride` apart. `u8` storage takes filtered lanes with saturation;
+/// an `unfiltered` block keeps its centre samples, and one above 255 in its
+/// lane group (4 lanes for a 4-wide block, else 8) fails the write.
+fn cdef_publish_block<S: SimdToken, T: ReconSample>(
+    simd: S,
+    block: &[u16; 64],
+    (w, h, unfiltered): (usize, usize, bool),
+    out: &mut [T],
+    out_stride: usize,
+) -> Option<()> {
+    for (row, lanes) in block.as_chunks::<8>().0.iter().enumerate().take(h) {
+        let start = row.checked_mul(out_stride)?;
+        if let Some(out) = T::u8_slice_mut(&mut *out) {
+            let mut lanes = u16x8::load_array(simd, *lanes);
+            if unfiltered {
+                let group = u16x8::splat(simd, if w == 4 { 4 } else { 8 });
+                let lane = u16x8::load_array(simd, [0, 1, 2, 3, 4, 5, 6, 7]);
+                lanes = lane.simd_lt(group).select(lanes, u16x8::splat(simd, 0));
+                if simd.any_true_mask16x8(lanes.simd_gt(u16x8::splat(simd, 255))) {
+                    return None;
+                }
             }
-            (0..h).try_for_each(|row| {
-                let dst = out.get_mut(row.checked_mul(out_stride)?..)?.get_mut(..w)?;
-                dst.copy_from_slice(block.get(8 * row..8 * row + w)?); // splot-copy-ok: keep the block's columns inside the plane
-                Some(())
-            })
+            let bytes = simd.saturating_narrow_u16x8(lanes, lanes);
+            cdef_publish_row(bytes.as_slice().first_chunk()?, w, out.get_mut(start..)?)?;
+        } else {
+            cdef_publish_row(lanes, w, T::u16_slice_mut(&mut *out)?.get_mut(start..)?)?;
         }
     }
-    .is_some()
+    Some(())
+}
+
+/// Writes the first `w` of the 8 `lanes` of one row to the start of `out`,
+/// the whole lane group at once for the 8- and 4-wide blocks.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_publish_row<E: Copy>(lanes: &[E; 8], w: usize, out: &mut [E]) -> Option<()> {
+    match w {
+        8 => *out.first_chunk_mut::<8>()? = *lanes,
+        4 => *out.first_chunk_mut::<4>()? = *lanes.first_chunk()?,
+        _ => out.get_mut(..w)?.copy_from_slice(lanes.get(..w)?), // splot-copy-ok: keep the block's columns inside the plane
+    }
+    Some(())
 }
 
 /// Lanes per padded row of the interleaved chroma-pair scratch consumed by

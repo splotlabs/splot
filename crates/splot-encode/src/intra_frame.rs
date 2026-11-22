@@ -74,7 +74,7 @@ pub(crate) struct IntraFrameCoder {
     /// [`Self::preset`].
     screen: Option<PresetParams>,
     references: EncoderReferences,
-    /// The content interpretation and HDR metadata OBUs of every key frame;
+    /// The content interpretation and metadata OBUs of every key frame;
     /// empty for none.
     content_obus: Vec<u8>,
     /// [`crate::Config::multi_frame_header`].
@@ -390,7 +390,11 @@ impl IntraFrameCoder {
         Ok(Self {
             params,
             references,
-            content_obus: config.content.obus(config.frame_rate, &mfh_obu)?,
+            content_obus: [
+                config.content.obus(config.frame_rate, &mfh_obu)?,
+                config.key_frame_metadata.obus()?,
+            ]
+            .concat(),
             multi_frame_header: config.multi_frame_header,
             sequence,
             view,
@@ -857,10 +861,12 @@ impl IntraFrameCoder {
             open_loop.clone(),
         )
         .map_err(coding("motion search"))?;
-        let bv_search = (core.allow_intrabc == Some(true)).then(|| {
-            let (luma, stride, width, height) = padded.luma();
-            BvSearch::new(luma, stride, (width, height))
-        });
+        let inter_intrabc = core.inter.as_ref().and_then(|inter| inter.allow_intrabc);
+        let bv_search =
+            (core.allow_intrabc == Some(true) || inter_intrabc == Some(true)).then(|| {
+                let (luma, stride, width, height) = padded.luma();
+                BvSearch::new(luma, stride, (width, height))
+            });
         let (padded, motion, bv_search) = (&padded, motion.as_ref(), bv_search.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);

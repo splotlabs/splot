@@ -1899,7 +1899,7 @@ pub(crate) struct ResidualScratch {
     dequant: [i32; MAX_ADJUSTED_COEFFS],
     dequant_pair: [i32; MAX_ADJUSTED_COEFFS],
     residual: [i32; MAX_ORIGINAL_SAMPLES],
-    transform: [i32; MAX_ADJUSTED_COEFFS],
+    transform: splot_recon::InverseTransformAddScratch,
 }
 
 thread_local! {
@@ -1914,7 +1914,7 @@ pub(crate) fn with_residual_scratch<R>(f: impl FnOnce(&mut ResidualScratch) -> R
                 dequant: [0; MAX_ADJUSTED_COEFFS],
                 dequant_pair: [0; MAX_ADJUSTED_COEFFS],
                 residual: [0; MAX_ORIGINAL_SAMPLES],
-                transform: [0; MAX_ADJUSTED_COEFFS],
+                transform: [[0; MAX_ADJUSTED_COEFFS]; 2],
             })
         });
         let result = f(&mut scratch);
