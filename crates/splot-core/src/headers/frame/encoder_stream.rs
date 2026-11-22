@@ -1409,7 +1409,8 @@ fn write_frame_tile_params(
 }
 
 /// Serializes one Annex B temporal unit: a temporal delimiter, then `seq` when
-/// `with_sequence_header`, then the `OBU_CLOSED_LOOP_KEY` frame OBUs that carry
+/// `with_sequence_header`, then the key frame OBUs of `core` (closed- or
+/// open-loop) that carry
 /// the `tiles` of the frame in tile order in `tile_groups` tile groups (see
 /// [`tile_group_ranges`](crate::headers::frame::tile_group_ranges)).
 ///
@@ -1427,6 +1428,9 @@ pub fn encode_key_frame_temporal_unit(
     key_obus: &[u8],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let view = CoreSeqView::from_sequence(seq).ok_or(EncoderHeaderError::Incomplete)?;
+    if !matches!(core.obu_type, ObuType::ClosedLoopKey | ObuType::OpenLoopKey) {
+        return Err(EncoderHeaderError::Incomplete);
+    }
     let mut unit = encode_temporal_delimiter_obu()?;
     let mut w = BitWriter::new();
     if with_sequence_header {
@@ -1447,7 +1451,7 @@ pub fn encode_key_frame_temporal_unit(
     unit.extend_from_slice(key_obus);
     let groups = crate::headers::frame::encoder_inter_stream::write_tile_groups(
         core,
-        ObuType::ClosedLoopKey,
+        core.obu_type,
         (tiles, tile_groups),
         |structure, tiles| {
             let mut payload = BitWriter::new();
