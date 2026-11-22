@@ -243,6 +243,8 @@ pub(super) struct IntraTools {
     pub(super) scalar_trial: bool,
     /// The § 7.14.4 quantizer-matrix levels of `using_qmatrix`.
     pub(super) qm: Option<QmFrameLevels>,
+    /// `CodedLossless` (§ 5.18.6.1): every block is `Lossless`.
+    pub(super) lossless: bool,
 }
 
 impl IntraTools {
@@ -262,6 +264,7 @@ impl IntraTools {
             return Err(EncoderSyntaxError::Unsupported("incomplete header"));
         };
         let lossless = core.lossless_info.as_ref();
+        let coded_lossless = lossless.is_some_and(|info| info.coded_lossless);
         let refused = [
             (
                 frame_allows_intrabc(core)
@@ -273,28 +276,30 @@ impl IntraTools {
                 "intra block copy other than global-only in an intra frame",
             ),
             (
-                qindex == 0
-                    || lossless
-                        .is_some_and(|info| info.coded_lossless || info.has_lossless_segment),
-                "lossless",
+                (qindex == 0 || lossless.is_some_and(|info| info.has_lossless_segment))
+                    && !coded_lossless,
+                "a lossless segment in a lossy frame",
             ),
-            (tx_mode == TxMode::Only4x4, "TX_MODE_ONLY_4X4"),
+            (
+                (tx_mode == TxMode::Only4x4) != coded_lossless,
+                "TX_MODE_ONLY_4X4 in a lossy frame",
+            ),
         ];
         if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on) {
             return Err(EncoderSyntaxError::Unsupported(what));
         }
         Ok(Self {
-            chroma: general_intra_chroma_tools(seq, core),
+            chroma: general_intra_chroma_tools(seq, core).with_lossless(coded_lossless),
             cfl_ds_filter_index: sequence_cfl_ds_filter_index(seq),
             enable_ibp: intra.enable_ibp,
             enable_intra_edge_filter: intra.enable_intra_edge_filter,
             enable_mrls: intra.enable_mrls,
-            enable_intra_ist: tq.enable_intra_ist,
+            enable_intra_ist: tq.enable_intra_ist && !coded_lossless,
             enable_inter_ddt: tq.enable_inter_ddt,
-            enable_inter_ist: tq.enable_inter_ist,
+            enable_inter_ist: tq.enable_inter_ist && !coded_lossless,
             enable_fsc: tq.enable_fsc,
             fsc_mode: tq.enable_idtx_intra,
-            enable_cctx: tq.enable_cctx,
+            enable_cctx: tq.enable_cctx && !coded_lossless,
             enable_chroma_dctonly: tq.enable_chroma_dctonly,
             bit_depth: sequence_bit_depth(seq),
             qindex,
@@ -305,6 +310,7 @@ impl IntraTools {
             tcq: lossless.is_some_and(|info| info.allow_tcq),
             scalar_trial: false,
             qm: crate::pipeline::frame_engine::intra::build_frame_qm_levels(core),
+            lossless: coded_lossless,
         })
     }
 }
@@ -524,6 +530,9 @@ impl IntraTileSyntax {
     ) -> Result<()> {
         let (mode_idx, _) = self.y_mode_index(leaf, modes)?;
         let ctx = self.y_mode_ctx(leaf)?;
+        if self.tools.lossless {
+            self.put(symbols, TileCdfSelector::UseDpcmY, 0)?;
+        }
         if mode_idx < FIRST_MODE_COUNT {
             let last = usize::from(MODE_INDEX_COUNT - 1);
             self.put(symbols, TileCdfSelector::YModeSet, 0)?;
@@ -585,6 +594,9 @@ impl IntraTileSyntax {
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
         let is_cfl = !matches!(modes.uv_mode, ChromaMode::Intra(_));
+        if self.tools.lossless {
+            self.put(symbols, TileCdfSelector::UseDpcmUv, 0)?;
+        }
         if self.cfl_allowed(leaf) {
             let chroma_ref = leaf.frontier.chroma_ref_geometry();
             let ctx = self
@@ -655,16 +667,27 @@ impl IntraTileSyntax {
         }
         let mut plan = if leaf.is_chroma_part() {
             let chroma = chroma.ok_or(EncoderSyntaxError::Unsupported("chroma-part plan"))?;
-            GeneralIntraResidualPlan::chroma(block_ctx, chroma, false)
+            GeneralIntraResidualPlan::chroma(block_ctx, chroma, self.tools.lossless)
         } else {
             let luma = rect_luma_plan(&block_modes, &block_ctx, self.tools.tcq, self.sb_size4)
                 .map_err(rule("luma plan"))?;
-            GeneralIntraResidualPlan::rect(block_ctx, luma, chroma, modes.fsc, None, false)
+            GeneralIntraResidualPlan::rect(
+                block_ctx,
+                luma,
+                chroma,
+                modes.fsc,
+                None,
+                self.tools.lossless,
+            )
         }
         .map_err(rule("residual plan"))?;
         if let Some(tx_size) = self.partitioned_tx_size(leaf, partition)? {
             plan.partition_luma(tx_size, partition)
                 .map_err(rule("transform partition"))?;
+        }
+        if self.tools.lossless {
+            plan.split_lossless_units()
+                .map_err(rule("lossless units"))?;
         }
         let uv_mode = block_modes.coeff_uv_mode();
         let angle_delta_uv = inherited_chroma_angle_delta(uv_mode, modes.y_mode, modes.angle_delta);
@@ -687,7 +710,7 @@ impl IntraTileSyntax {
             .map(|(index, (plane, x, y, tx_size, fills_block))| {
                 let tx_type = if plane == 0 && modes.fsc {
                     TxType::Idtx
-                } else if plane == 0 {
+                } else if plane == 0 || self.tools.lossless {
                     TxType::DctDct
                 } else {
                     TxType::from_value(
@@ -868,12 +891,16 @@ impl IntraTileSyntax {
             .map_or(0, |last| last + 1);
         let quant = self.decoder_quant(&coded, levels)?;
         self.reconstruct_with(index, &quant, eob, &coded)?;
-        if let Some(leaf) = &self.recon.leaf
-            && tx.plane == 0
-        {
-            leaf.plan
-                .publish_unit(leaf.plan_index(index)?, &mut self.recon.block_decoded)
-                .map_err(rule("BlockDecoded update"))?;
+        if let Some(leaf) = &self.recon.leaf {
+            let (plan_index, decoded) = (leaf.plan_index(index)?, &mut self.recon.block_decoded);
+            if self.tools.lossless {
+                leaf.plan.publish_lossless_unit(plan_index, decoded)
+            } else if tx.plane == 0 {
+                leaf.plan.publish_unit(plan_index, decoded)
+            } else {
+                Ok(())
+            }
+            .map_err(rule("BlockDecoded update"))?;
         }
         Ok(())
     }
@@ -1020,7 +1047,7 @@ impl IntraTileSyntax {
                 scratch,
                 workspace,
                 block_decoded,
-                self.tools.qindex,
+                (self.tools.qindex, self.tools.lossless),
                 leaf.intra_edge,
                 leaf.luma_context,
             )

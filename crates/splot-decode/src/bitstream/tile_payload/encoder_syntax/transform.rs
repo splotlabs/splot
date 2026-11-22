@@ -336,6 +336,9 @@ impl IntraTileSyntax {
         leaf: &LeafBlock,
         partition: TxPartition,
     ) -> Result<Option<usize>> {
+        if self.tools.lossless {
+            return Ok(None);
+        }
         match self.tx_partition_steps(leaf, partition)? {
             None => Err(EncoderSyntaxError::Unsupported(
                 "transform partition of this block",
@@ -373,6 +376,19 @@ impl IntraTileSyntax {
         leaf: &LeafBlock,
         partition: TxPartition,
     ) -> Result<Option<Steps>> {
+        if self.tools.lossless {
+            // § 5.20.6.1: an inter leaf above BLOCK_4X4 (index 0) codes lossless_tx_size 0.
+            let mut steps = NO_STEPS;
+            let size = leaf.frontier.b_size;
+            if self.leaf_is_inter() && size.index() > 0 && !leaf.is_chroma_part() {
+                let selector = TileCdfSelector::LosslessTxSize {
+                    size_group: super::super::general_intra_block::lossless_tx_size_group(size),
+                    is_inter: 1,
+                };
+                steps[0] = Some((selector, 0));
+            }
+            return Ok((partition == TxPartition::None).then_some(steps));
+        }
         let Some((context, (allow_horz, allow_vert))) = self.partition_context(leaf)? else {
             return Ok((partition == TxPartition::None).then_some(NO_STEPS));
         };
@@ -459,6 +475,16 @@ impl IntraTileSyntax {
         }
         let reduced = self.tools.reduced_tx_set;
         let is_inter = self.leaf_is_inter();
+        if self.tools.lossless {
+            // § 5.20.8.2: a lossless inter 4x4 codes lossless_inter_tx_type, 0 for DCT_DCT.
+            let mut out = only_type(TxType::DctDct);
+            if is_inter {
+                out = TxTypeOptions::filled((TxType::DctDct, NO_STEPS));
+                let step = (TileCdfSelector::LosslessInterTxType, 0);
+                push_new_type(&mut out, TxType::DctDct, inline_steps(&[step])?)?;
+            }
+            return Ok(out);
+        }
         let tx_set = transform_set_from_flags(reduced, false, 0, tx.tx_size, is_inter)
             .map_err(rule("transform set"))?;
         if dct_forced(is_inter, 0, eob, false, reduced, tx_set) {

@@ -968,6 +968,9 @@ impl IntraTileSyntax {
                 });
             blocks.splice(..1, luma);
         }
+        if self.tools.lossless {
+            blocks = lossless_units(&blocks, (mi_cols * 4, mi_rows * 4), (sub_x, sub_y))?;
+        }
         state.planned = Some(PlannedInter {
             leaf: *leaf,
             motion,
@@ -996,6 +999,9 @@ impl IntraTileSyntax {
         before: &[TransformBlock],
         chroma: &TransformBlock,
     ) -> Result<TxType> {
+        if self.tools.lossless {
+            return Ok(TxType::DctDct);
+        }
         let collocated = chroma_inter_tx_type(
             &leaf.frontier,
             self.chroma,
@@ -1046,7 +1052,7 @@ impl IntraTileSyntax {
                     (tx.plane, tx.x, tx.y, tx.tx_size),
                     &levels,
                     eob,
-                    (tx_type as usize, use_tcq),
+                    (tx_type as usize, use_tcq, self.tools.lossless),
                     tx.ist.syntax(true).filter(|_| eob > 0),
                 )
                 .map_err(rule("inter residual"))?;
@@ -1717,4 +1723,39 @@ impl IntraTileSyntax {
 
 const INTRA_FRAME: EncoderSyntaxError =
     EncoderSyntaxError::Unsupported("inter syntax in an intra frame");
+/// The 4x4 units of `blocks` that start in the `(width, height)` luma frame
+/// of `subsampling`, in the raster order of the decoder's lossless parse
+/// (§ 5.20.6.1 `TX_4X4`; § 5.20.7.29 `DCT_DCT` for every inter 4x4 unit).
+fn lossless_units(
+    blocks: &[TransformBlock],
+    (width, height): (usize, usize),
+    (sub_x, sub_y): (bool, bool),
+) -> Result<Vec<TransformBlock>> {
+    let mut units = Vec::new();
+    for block in blocks {
+        let (log2_w, log2_h) = super::tx_log2(block.tx_size)?;
+        let (w, h) = (1usize << log2_w, 1usize << log2_h);
+        let (sx, sy) = if block.plane > 0 {
+            (sub_x, sub_y)
+        } else {
+            (false, false)
+        };
+        for y in (block.y..block.y + h).step_by(4) {
+            for x in (block.x..block.x + w).step_by(4) {
+                if x < width >> u8::from(sx) && y < height >> u8::from(sy) {
+                    units.push(TransformBlock {
+                        x,
+                        y,
+                        tx_size: 0,
+                        fills_block: block.fills_block && block.tx_size == 0,
+                        tx_type: TxType::DctDct,
+                        ..*block
+                    });
+                }
+            }
+        }
+    }
+    Ok(units)
+}
+
 const NO_INTER_LEAF: EncoderSyntaxError = EncoderSyntaxError::Unsupported("no planned inter leaf");
