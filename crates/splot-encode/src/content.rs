@@ -232,7 +232,7 @@ impl KeyFrameMetadata {
     pub(crate) fn validate(&self) -> Result<()> {
         let invalid = |what| Err(Error::InvalidMetadata { what });
         if self.icc_profile.as_ref().is_some_and(|icc| icc.len() < 128) {
-            return invalid("an ICC profile starts with its 128-byte header");
+            return invalid("an ICC profile starts with its 128-byte header (§ 6.16.9)");
         }
         match self.itut_t35.as_deref() {
             Some([]) => return invalid("T.35 data starts with a country code"),

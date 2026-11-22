@@ -2247,6 +2247,7 @@ mod find_mv_stack;
 mod frame_products;
 mod frame_walk;
 pub(crate) mod mc;
+mod mode_symbols;
 mod motion_field;
 pub(crate) mod mv_scaling;
 pub(crate) mod read_mv;
