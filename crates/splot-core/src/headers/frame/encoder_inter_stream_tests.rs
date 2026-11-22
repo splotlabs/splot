@@ -585,8 +585,10 @@ fn film_grain_headers_code_the_seed_and_the_model() {
 }
 
 /// Metadata OBUs parse back as prefix short OBUs with `LAYER_GLOBAL` and
-/// `GLOBAL_PERSISTENCE` and carry their payload bytes; a cut fixed-size OBU
-/// does not parse, and a payload that its type does not select is refused.
+/// `GLOBAL_PERSISTENCE` and carry their payload bytes; a cut fixed-size OBU,
+/// a T.35 OBU without its extension byte and a user data OBU without its
+/// full UUID do not parse, and a payload that its type does not select is
+/// refused.
 #[test]
 fn metadata_obus_parse_back() {
     use crate::headers::metadata::{
@@ -615,6 +617,9 @@ fn metadata_obus_parse_back() {
         payload_len: 2,
     };
     let icc = MetadataIccProfile { payload_len: 5 };
+    let parse = |bytes: &[u8]| {
+        parse_metadata_short(&mut BitReader::new(bytes, ByteOffset::new(0)), bytes.len())
+    };
     for (metadata_type, payload, passthrough, unit) in [
         (
             MetadataType::HdrMdcv,
@@ -649,9 +654,6 @@ fn metadata_obus_parse_back() {
             unreachable!("one OBU");
         };
         assert_eq!(envelope.header.obu_type, ObuType::MetadataShort);
-        let parse = |bytes: &[u8]| {
-            parse_metadata_short(&mut BitReader::new(bytes, ByteOffset::new(0)), bytes.len())
-        };
         let short = parse(envelope.payload).unwrap();
         assert!(!short.metadata_is_suffix && !short.muh_cancel_flag);
         assert_eq!((short.muh_layer_idc, short.muh_persistence_idc), (1, 0));
@@ -662,8 +664,30 @@ fn metadata_obus_parse_back() {
         );
         let end = envelope.payload.len() - 1;
         assert!(envelope.payload[..end].ends_with(passthrough));
-        let cut = parse(&envelope.payload[..envelope.payload.len() - 2]);
-        assert!(cut.is_err() || !passthrough.is_empty());
+        if passthrough.is_empty() {
+            assert!(parse(&envelope.payload[..envelope.payload.len() - 2]).is_err());
+        }
+    }
+    // A cut keeps the 2-byte OBU header, the first `kept` payload bytes and
+    // the trailing byte. ICC has no fixed part, so no cut of it fails.
+    for (metadata_type, payload, passthrough, kept) in [
+        (
+            MetadataType::ItutT35,
+            MetadataPayload::ItutT35(t35),
+            &[1, 2, 3][..],
+            1,
+        ),
+        (
+            MetadataType::UserDataUnregistered,
+            MetadataPayload::UserDataUnregistered(user),
+            &[7, 8],
+            8,
+        ),
+    ] {
+        let obu = encode_metadata_obu(metadata_type, payload, passthrough).unwrap();
+        let envelope = &parse_annex_b_obus_partial(&obu).obus[0];
+        let cut = [&envelope.payload[..2 + kept], &[0x80]].concat();
+        assert!(parse(&cut).is_err(), "{metadata_type:?}");
     }
     assert!(
         encode_metadata_obu(MetadataType::HdrCll, MetadataPayload::HdrMdcv(display), &[]).is_err()
