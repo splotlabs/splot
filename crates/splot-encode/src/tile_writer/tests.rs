@@ -311,6 +311,7 @@ impl RandomLevels {
             tx_partition: partition,
             inter: None,
             intrabc: None,
+            dpcm: splot_decode::encoder_syntax::Dpcm::OFF,
         })
     }
 }

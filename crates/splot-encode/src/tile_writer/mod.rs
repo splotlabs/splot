@@ -342,6 +342,10 @@ thread_local! {
     pub(crate) static DIP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// SDP trees of the final passes on this thread.
     pub(crate) static SDP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Intra leaves of the final passes on this thread with DPCM luma and
+    /// with DPCM chroma.
+    pub(crate) static DPCM_CODED: core::cell::Cell<[usize; 2]> =
+        const { core::cell::Cell::new([0; 2]) };
     /// The DIP predictions that only the wider DIP search offers (a rank
     /// below the best SATD, or a best that loses to the angular SATD), by
     /// leaf position and size.
@@ -572,6 +576,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let LeafChoice {
             modes,
             tx_partition,
+            dpcm,
             ..
         } = choice;
         #[cfg(test)]
@@ -592,9 +597,17 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         {
             DIP_CODED.set(DIP_CODED.get() + 1);
         }
+        #[cfg(test)]
+        if self.filters.is_some() {
+            let [y, uv] = DPCM_CODED.get();
+            DPCM_CODED.set([y + usize::from(dpcm.y), uv + usize::from(dpcm.uv)]);
+        }
         if let Some(palette) = &modes.palette {
             self.syntax
                 .set_palette_map(coder.palette_map(leaf, palette)?);
+        }
+        if self.syntax.dpcm_allowed() {
+            self.syntax.set_leaf_dpcm(dpcm);
         }
         let mut blocks = self
             .syntax
