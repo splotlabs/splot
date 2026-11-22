@@ -157,6 +157,9 @@ pub struct EncoderToolFlags {
     /// `explicit_ref_frame_map` (§ 5.4.6): inter frames code
     /// `frame_explicit_ref_frame_map`.
     pub explicit_ref_frame_map: bool,
+    /// `seq_tile_info_present_flag` (§ 5.4.2): the sequence codes this
+    /// uniform layout, which frames reuse (§ 5.18.7.2).
+    pub seq_tiles: Option<SeqTiles>,
     /// `enable_short_refresh_frame_flags` (§ 5.4.6): inter frames code
     /// `has_refresh_frame_flags` and `frame_to_refresh`.
     pub short_refresh: bool,
@@ -314,6 +317,18 @@ impl Default for KeyFrameTxParams {
     }
 }
 
+/// The uniform tile layout of a sequence with `seq_tile_info_present_flag`
+/// (§ 5.4.2).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SeqTiles {
+    /// `TileColsLog2` before the cap at `maxLog2TileCols`.
+    pub cols_log2: u8,
+    /// `TileRowsLog2` before the cap at `maxLog2TileRows`.
+    pub rows_log2: u8,
+    /// `allow_tile_info_change`: frames code `reuse_tile_info`.
+    pub allow_tile_info_change: bool,
+}
+
 /// The uniform tile layout of the encoder frame headers (§ 5.18.7.3).
 ///
 /// `Default` is one tile with `TileSizeBytes = 4`.
@@ -328,6 +343,9 @@ pub struct UniformTiles {
     /// `context_update_tile_id = TileCols * TileRows / 2` (§ 5.18.7.2), the
     /// middle tile, instead of `0` in a frame that codes it.
     pub middle_cdf_update_tile: bool,
+    /// `reuse_tile_info` of a frame that codes it (`allow_tile_info_change`
+    /// and an eligible sequence layout, § 5.18.7.2).
+    pub reuse_tile_info: bool,
 }
 
 impl Default for UniformTiles {
@@ -337,6 +355,7 @@ impl Default for UniformTiles {
             rows_log2: 0,
             size_bytes: 4,
             middle_cdf_update_tile: false,
+            reuse_tile_info: true,
         }
     }
 }
@@ -501,7 +520,13 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(false)?; // cdef_on_skip_txfm_disabled
     w.write_bits(DF_PAR_BITS_MINUS_2 + u32::from(tools.df_par_bits_extra), 2)?;
 
-    w.write_flag(false)?; // seq_tile_info_present_flag
+    w.write_flag(tools.seq_tiles.is_some())?; // seq_tile_info_present_flag
+    if let Some(tiles) = tools.seq_tiles {
+        w.write_flag(tiles.allow_tile_info_change)?;
+        let sb = params.sb_size;
+        let log2 = (tiles.cols_log2, tiles.rows_log2);
+        write_uniform_tile_params(&mut w, (params.width, params.height), [sb, sb], log2)?;
+    }
     w.write_flag(tools.film_grain)?; // film_grain_params_present
     w.align_to_byte();
     Ok(w.into_bytes())
@@ -971,49 +996,34 @@ fn write_filter_params(
 }
 
 /// § 5.18.7.2 `tile_info()` with § 5.18.7.3 uniform spacing at level 31, where
-/// `minLog2TileCols` and `minLog2Tiles` are `0`: `tiles` capped at `maxLog2TileCols`
-/// and `maxLog2TileRows`, then `context_update_tile_id` and `tiles.size_bytes`
-/// when the frame has more than one tile.
+/// `minLog2TileCols` and `minLog2Tiles` are `0`: `reuse_tile_info` when the
+/// sequence layout is eligible and may change; a frame that reuses the
+/// sequence layout codes it in place of `tiles`, any other frame codes `tiles`
+/// capped at `maxLog2TileCols` and `maxLog2TileRows`; then
+/// `context_update_tile_id` and `tiles.size_bytes` when the frame has more
+/// than one tile.
 pub(super) fn write_uniform_tile_info(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     tiles: UniformTiles,
     frame_is_intra: bool,
 ) -> Result<[TileSpacing; 2], WriteError> {
-    let sb_log2 = crate::tile::mi_width_log2(seq.tile.frame_sb_size(frame_is_intra));
-    let mis = |frame: u32| 2 * frame.div_ceil(8);
-    let axis = |w: &mut BitWriter,
-                log2: u8,
-                mis: u32,
-                max_tiles: u32|
-     -> Result<TileSpacing, WriteError> {
-        let max = crate::tile::tile_log2(1, mis.div_ceil(1 << sb_log2).min(max_tiles));
-        let log2 = log2.min(max);
-        for _ in 0..log2 {
-            w.write_flag(true)?; // increment_tile_*_log2
+    let size = (seq.max_frame_width, seq.max_frame_height);
+    let sb_sizes = [seq.tile.seq_sb_size, seq.tile.frame_sb_size(frame_is_intra)];
+    let log2 = (tiles.cols_log2, tiles.rows_log2);
+    let [cols, rows] = match reused_tile_layout(seq, sb_sizes[1]) {
+        Some(layout) => {
+            if seq.tile.allow_tile_info_change {
+                w.write_flag(tiles.reuse_tile_info)?;
+            }
+            if seq.tile.allow_tile_info_change && !tiles.reuse_tile_info {
+                write_uniform_tile_params(w, size, sb_sizes, log2)?
+            } else {
+                layout
+            }
         }
-        if log2 < max {
-            w.write_flag(false)?;
-        }
-        Ok(crate::tile::uniform_spacing(
-            log2,
-            mis,
-            seq.tile.seq_sb_size,
-        ))
+        None => write_uniform_tile_params(w, size, sb_sizes, log2)?,
     };
-    w.write_flag(true)?; // uniform_tile_spacing_flag
-    let cols = axis(
-        w,
-        tiles.cols_log2,
-        mis(seq.max_frame_width),
-        crate::tile::MAX_TILE_COLS,
-    )?;
-    let rows = axis(
-        w,
-        tiles.rows_log2,
-        mis(seq.max_frame_height),
-        crate::tile::MAX_TILE_ROWS,
-    )?;
     if cols.count > 1 || rows.count > 1 {
         if !seq.tile.enable_avg_cdf || seq.tile.avg_cdf_type == 0 {
             let bits =
@@ -1033,6 +1043,61 @@ pub(super) fn write_uniform_tile_info(
         }
         w.write_bits(u32::from(tiles.size_bytes) - 1, 2)?;
     }
+    Ok([cols, rows])
+}
+
+/// The § 5.18.7.4 `reuse_tile_params()` layout of the uniform sequence tiles
+/// when a frame of superblock size `sb_size` is eligible to reuse them
+/// (§ 5.18.7.2), else `None`.
+fn reused_tile_layout(seq: &CoreSeqView, sb_size: SuperblockSize) -> Option<[TileSpacing; 2]> {
+    let params = seq
+        .tile
+        .seq_tile_params
+        .filter(|_| seq.tile.seq_tile_info_present_flag)?;
+    let sb_log2 = crate::tile::mi_width_log2(sb_size);
+    let mis = |frame: u32| 2 * frame.div_ceil(8);
+    let sbs = |frame: u32| mis(frame).div_ceil(1 << sb_log2);
+    let eligible = params.uniform_spacing
+        && super::tiling::uniform_eligible(params.tile_rows_log2, sbs(seq.max_frame_height))
+        && super::tiling::uniform_eligible(params.tile_cols_log2, sbs(seq.max_frame_width));
+    eligible.then(|| {
+        [
+            (params.tile_cols_log2, seq.max_frame_width),
+            (params.tile_rows_log2, seq.max_frame_height),
+        ]
+        .map(|(log2, frame)| crate::tile::uniform_spacing(log2, mis(frame), seq.tile.seq_sb_size))
+    })
+}
+
+/// The § 5.18.7.3 `tile_params()` bits of a uniform layout of `log2` tiles
+/// (capped at `maxLog2TileCols` and `maxLog2TileRows`) over `width` x `height`
+/// with `uniformSbSize` and `sbSize`; returns the column and row spacing.
+fn write_uniform_tile_params(
+    w: &mut BitWriter,
+    (width, height): (u32, u32),
+    [uniform_sb_size, sb_size]: [SuperblockSize; 2],
+    (cols_log2, rows_log2): (u8, u8),
+) -> Result<[TileSpacing; 2], WriteError> {
+    let sb_log2 = crate::tile::mi_width_log2(sb_size);
+    let mis = |frame: u32| 2 * frame.div_ceil(8);
+    let axis = |w: &mut BitWriter,
+                log2: u8,
+                mis: u32,
+                max_tiles: u32|
+     -> Result<TileSpacing, WriteError> {
+        let max = crate::tile::tile_log2(1, mis.div_ceil(1 << sb_log2).min(max_tiles));
+        let log2 = log2.min(max);
+        for _ in 0..log2 {
+            w.write_flag(true)?; // increment_tile_*_log2
+        }
+        if log2 < max {
+            w.write_flag(false)?;
+        }
+        Ok(crate::tile::uniform_spacing(log2, mis, uniform_sb_size))
+    };
+    w.write_flag(true)?; // uniform_tile_spacing_flag
+    let cols = axis(w, cols_log2, mis(width), crate::tile::MAX_TILE_COLS)?;
+    let rows = axis(w, rows_log2, mis(height), crate::tile::MAX_TILE_ROWS)?;
     Ok([cols, rows])
 }
 

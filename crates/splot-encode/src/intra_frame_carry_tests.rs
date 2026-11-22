@@ -255,6 +255,52 @@ fn chosen_primary_references_keep_the_recon_on_any_thread_count() {
     }
 }
 
+/// With `seq_tile_info` the sequence codes the 2x2 layout and every frame
+/// reuses it (1, 2) or codes `reuse_tile_info = 0` and its own (3); with 256x256
+/// superblocks the intra frames reuse it over 128x128 superblocks. The
+/// streams decode to the encoder recon with the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn sequence_tile_info_streams_decode_alike_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let large = PresetParams {
+        max_block_log2: 8,
+        sb256_min_height: 0,
+        ..base
+    };
+    for (mode, params) in [(1, base), (2, base), (3, base), (1, large)] {
+        let stream = |threads: usize| {
+            let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                seq_tile_info: mode,
+                ..params
+            }));
+            let mut config = config(136, 136, BitDepth::Eight, 6, 150);
+            config.tiles = TileLayout {
+                cols_log2: 1,
+                rows_log2: 1,
+            };
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+            planned_stream_of(&config, coder, panning_frame, 150)
+        };
+        let (units, expected, cores, coder) = stream(1);
+        let tile = coder.sequence.tile.unwrap();
+        assert!(tile.seq_tile_info_present_flag);
+        assert_eq!(tile.allow_tile_info_change, Some(mode > 1));
+        let name = format!("mode {mode} sb {}", params.max_block_log2);
+        for core in &cores {
+            let info = core.tile_info.as_ref().unwrap();
+            assert_eq!(info.reuse_tile_info, mode < 3, "{name}");
+            let tiles = if params.max_block_log2 == 8 { 1 } else { 4 };
+            assert_eq!(info.tile_cols * info.tile_rows, tiles, "{name}");
+        }
+        assert_same_samples(&decode(&units), &expected, &name);
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+}
+
 /// With `explicit_refs` the sequence codes `explicit_ref_frame_map`: at `1`
 /// inter frames keep the default map, above it they code an explicit map of
 /// at most `explicit_refs - 1` references. The mini-GOP streams decode to the

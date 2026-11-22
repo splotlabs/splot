@@ -282,6 +282,11 @@ pub struct PresetParams {
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
     /// references, the first of the default map.
     pub explicit_refs: u8,
+    /// Sequence tile info (§ 5.4.2), `0..=3`: `0` off; `1` the sequence codes
+    /// the tile layout and frames reuse it (`allow_tile_info_change = 0`); `2`
+    /// frames code `reuse_tile_info = 1`; `3` frames code `reuse_tile_info = 0`
+    /// and their own tile info.
+    pub seq_tile_info: u8,
     /// `enable_short_refresh_frame_flags`: inter frames code the one slot
     /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2).
     pub short_refresh: bool,
@@ -353,6 +358,11 @@ pub struct PresetParams {
     /// The SDP chroma tree search, `0..=1`: `0` searches only the merges of
     /// the luma tree, `1` every partition the chroma node allows (§ 5.20.3.2).
     pub sdp_chroma_search: u8,
+    /// Extended SDP (`enable_extended_sdp`, § 5.20.3.1) with `sdp`, `0..=2`:
+    /// an inter-frame node may code an `INTRA_REGION`, an intra luma tree and
+    /// one chroma block. `1` tries the region where the shared tree of the
+    /// same partition chose intra leaves only, `2` at every eligible node.
+    pub extended_sdp: u8,
     /// CCSO `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` triples the
     /// filter search tries per plane, `0..=112`: the first 8 of a fixed
     /// ladder, then every other triple of § 5.18.7.12; `0` disables CCSO in
@@ -896,6 +906,7 @@ impl PresetParams {
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("sdp_chroma_search", self.sdp_chroma_search, 0, 1, "")?;
+        check("extended_sdp", self.extended_sdp, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
@@ -914,6 +925,7 @@ impl PresetParams {
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
         check("explicit_refs", self.explicit_refs, 0, 8, "")?;
+        check("seq_tile_info", self.seq_tile_info, 0, 3, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check("tip_output_search", self.tip_output_search, 0, 2, "")?;
         check(
@@ -1119,6 +1131,7 @@ preset_table! {
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         sdp_chroma_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        extended_sdp:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     intra {
         intra_modes:           frames_sd([
@@ -1204,6 +1217,7 @@ preset_table! {
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
@@ -1392,6 +1406,7 @@ mod tests {
             assert!(at_most(&slow.leaf_reuse, &fast.leaf_reuse));
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.sdp_chroma_search <= slow.sdp_chroma_search);
+            assert!(fast.extended_sdp <= slow.extended_sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);
@@ -1687,6 +1702,7 @@ mod tests {
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("interintra_search", "2")], "interintra_search"),
             (&[("sdp_chroma_search", "2")], "sdp_chroma_search"),
+            (&[("extended_sdp", "3")], "extended_sdp"),
             (&[("warp_interintra", "3")], "warp_interintra"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),

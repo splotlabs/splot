@@ -453,10 +453,11 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 return Ok(());
             }
             (PartitionTree::Leaf(_), None) => Partition::None,
-            (PartitionTree::Split { kind, .. }, None) => *kind,
+            (PartitionTree::Split { kind, .. } | PartitionTree::Region { kind, .. }, None) => *kind,
             _ => return Err(TileWriterError::Shape("SDP tree at a shared node or none")),
         };
         self.write_partition(node, partition)?;
+        self.write_region_type(node, tree)?;
         match tree {
             PartitionTree::Leaf(choice) => {
                 let leaf = self.syntax.leaf(node)?;
@@ -472,8 +473,38 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 }
                 Ok(())
             }
+            PartitionTree::Region { kind, luma, chroma } => {
+                let (calls, chroma_node) = self.syntax.region_children(node, *kind)?;
+                if calls.len() != luma.len() {
+                    return Err(TileWriterError::Shape("child count"));
+                }
+                for (call, child) in calls.into_iter().zip(luma) {
+                    self.write_node(call, child, coder)?;
+                }
+                let leaf = self.syntax.leaf(chroma_node)?;
+                self.write_leaf(&leaf, *chroma, coder, 0..3).map(drop)
+            }
             PartitionTree::Sdp { .. } => Err(TileWriterError::Shape("SDP tree")),
         }
+    }
+
+    /// The `region_type` of a non-`NONE` `tree` at `node` that codes one
+    /// (§ 5.20.3.1): `INTRA_REGION` for a region, else `MIXED_REGION`.
+    pub(crate) fn write_region_type(
+        &mut self,
+        node: PartitionNode,
+        tree: &PartitionTree,
+    ) -> Result<()> {
+        let (kind, intra) = match tree {
+            PartitionTree::Split { kind, .. } => (*kind, false),
+            PartitionTree::Region { kind, .. } => (*kind, true),
+            _ => return Ok(()),
+        };
+        if intra || self.syntax.codes_region_type(node, kind)? {
+            self.syntax
+                .write_region_type(node, kind, intra, self.sink)?;
+        }
+        Ok(())
     }
 
     /// The § 5.20.3.2 `read_partition` symbols that select `partition`.

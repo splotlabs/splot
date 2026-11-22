@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    GrainScaling, InterpolationFilter, TipGlobalMv, UniformTiles, build_encoder_sequence_header,
-    encode_film_grain_obu, encoder_film_grain_model,
+    GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv, UniformTiles,
+    build_encoder_sequence_header, encode_film_grain_obu, encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -191,6 +191,11 @@ fn intra_leaves(
             out.push((node.col4() * 4, node.row4() * 4, w, h));
             Ok(())
         }
+        (PartitionTree::Region { .. }, _) => {
+            let (w, h) = node.dimensions()?;
+            out.push((node.col4() * 4, node.row4() * 4, w, h));
+            Ok(())
+        }
         (PartitionTree::Leaf(_), _) => Ok(()),
     }
 }
@@ -259,6 +264,7 @@ impl IntraFrameCoder {
                 screen_content: preset.palette || preset.integer_mv,
                 dip: preset.dip,
                 sdp: preset.sdp,
+                extended_sdp: preset.sdp && preset.extended_sdp > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(preset.cdf_avg_across_tiles),
@@ -279,6 +285,11 @@ impl IntraFrameCoder {
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
                 explicit_ref_frame_map: preset.explicit_refs > 0,
+                seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
+                    cols_log2: config.tiles.cols_log2,
+                    rows_log2: config.tiles.rows_log2,
+                    allow_tile_info_change: preset.seq_tile_info > 1,
+                }),
                 short_refresh: preset.short_refresh,
                 tcq: preset.tcq.values().contains(&true),
                 film_grain: config.film_grain,
@@ -301,6 +312,7 @@ impl IntraFrameCoder {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
                 middle_cdf_update_tile: preset.cdf_update_tile == 1,
+                reuse_tile_info: preset.seq_tile_info < 3,
                 ..UniformTiles::default()
             },
             pool: (config.threads.resolve().get() > 1)

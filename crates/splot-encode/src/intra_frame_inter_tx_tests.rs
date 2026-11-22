@@ -102,16 +102,9 @@ fn inter_tx_partitions_plan_the_decoder_records() {
 
 /// The inter leaves of `trees` that code a luma transform partition.
 fn split_inter_leaves(trees: &[PartitionTree]) -> usize {
-    fn count(tree: &PartitionTree) -> usize {
-        match tree {
-            PartitionTree::Leaf(choice) => {
-                usize::from(choice.inter.is_some() && choice.tx_partition != TxPartition::None)
-            }
-            PartitionTree::Split { children, .. } => children.iter().map(count).sum(),
-            PartitionTree::Sdp { luma, chroma } => count(luma) + count(chroma),
-        }
-    }
-    trees.iter().map(count).sum()
+    let keep =
+        |choice: &LeafChoice| choice.inter.is_some() && choice.tx_partition != TxPartition::None;
+    trees.iter().map(|tree| tree.count_leaves(&keep)).sum()
 }
 
 /// With `inter_tx_split` the search of an inter frame over a pan with fresh
