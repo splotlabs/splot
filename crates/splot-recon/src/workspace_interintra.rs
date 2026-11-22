@@ -242,7 +242,11 @@ fn wedge_mask_window(
     let (row, column) = (start(y_offset, luma_height)?, start(x_offset, luma_width)?);
     let sharp = wedge_boundary_index(luma_width, luma_height) == WEDGE_BOUNDARY_SHARP;
     let (master, row): (&[u8], _) = if sharp {
-        (&SHARP_MASKS[direction], row - SHARP_MASK_FIRST_ROW)
+        let row = row.checked_sub(SHARP_MASK_FIRST_ROW);
+        (
+            &SHARP_MASKS[direction],
+            row.ok_or(overflow("sharp wedge mask row"))?,
+        )
     } else {
         (&SMOOTH_MASKS[direction], row)
     };
