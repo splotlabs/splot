@@ -671,7 +671,7 @@ impl GopFrame {
     /// `(qindex, filters, tools)`, whose `tile_groups` tile groups carry
     /// `tiles`, after a temporal delimiter when the frame opens its temporal
     /// unit; a key frame repeats the sequence header, followed by `key_obus`,
-    /// its content interpretation, HDR metadata and film grain OBUs. The
+    /// its content interpretation, metadata and film grain OBUs. The
     /// header codes the smallest `TileSizeBytes` that fits the tiles.
     pub(crate) fn temporal_unit(
         &self,
