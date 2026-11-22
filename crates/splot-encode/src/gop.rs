@@ -38,7 +38,10 @@
 //!
 //! Encoder policy: a hidden frame is shown by a show-existing frame with
 //! `derive_sef_order_hint = 1`, or with the preset's `implicit_output` codes
-//! `implicit_output_frame` in a temporal unit of its own; motion vectors are
+//! `implicit_output_frame` in a temporal unit of its own; with the preset's
+//! `sef_repeat` an input frame equal to the frame before it is a temporal
+//! unit with a show-existing frame of that frame's slot and an explicit
+//! `sef_order_hint`, between mini-GOPs; motion vectors are
 //! eighth-pel when the preset refines to eighth samples at the frame's
 //! quantizer, else quarter-pel.
 
@@ -62,6 +65,9 @@ use crate::rate_control::FrameType;
 const MAX_REF_SLOTS: usize = 16;
 /// `NumRefFrames` of a sequence with `explicit_num_ref_frames = 0`.
 const DEFAULT_REF_SLOTS: usize = 8;
+/// Half the order-hint window of the `OrderHintBits = 8` that every encoder
+/// sequence codes (§ 5.18.2 `get_disp_order_hint`).
+const HALF_ORDER_HINT_WINDOW: u64 = 128;
 
 /// The plan of one coded frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,9 +108,15 @@ pub(crate) struct GopFrame {
 pub(crate) enum GopStep {
     /// Code a frame.
     Code(GopFrame),
-    /// Output the hidden frame `display_index` from `slot`. It always starts
-    /// its temporal unit.
-    ShowExisting { slot: u32, display_index: u64 },
+    /// Output the frame in `slot` as `display_index`: a hidden frame with
+    /// `derive_sef_order_hint = 1`, or, with `order_hint`, a repeat of a
+    /// shown frame with that `sef_order_hint`. It always starts its temporal
+    /// unit.
+    ShowExisting {
+        slot: u32,
+        display_index: u64,
+        order_hint: Option<u32>,
+    },
 }
 
 impl GopStep {
@@ -155,6 +167,13 @@ pub(crate) struct GopPlanner {
     /// Hidden frames code `implicit_output_frame` in place of a show-existing
     /// frame.
     implicit_output: bool,
+    /// Input frames equal to the frame before them are shown again from its
+    /// slot in place of being coded.
+    sef_repeat: bool,
+    /// Repeated input frames not planned yet, ascending.
+    repeats: Vec<u64>,
+    /// The last repeat [`Self::repeat`] took and the coded frame it repeats.
+    last_repeat: Option<(u64, u64)>,
 }
 
 impl GopPlanner {
@@ -177,6 +196,43 @@ impl GopPlanner {
             mini_gops: 0,
             intra_only_next: false,
             implicit_output: false,
+            sef_repeat: false,
+            repeats: Vec::new(),
+            last_repeat: None,
+        }
+    }
+
+    /// The planner that shows input frames equal to the frame before them
+    /// again (see [`Self::repeat`]).
+    pub(crate) fn with_sef_repeat(self, sef_repeat: bool) -> Self {
+        Self { sef_repeat, ..self }
+    }
+
+    /// Whether the planner takes repeats.
+    pub(crate) fn sef_repeat(&self) -> bool {
+        self.sef_repeat
+    }
+
+    /// Shows input frame `display_index`, equal to the frame before it, with
+    /// a show-existing frame of the slot that holds that frame, unless it is
+    /// a key frame. A run of repeats stops so that the next coded frame stays
+    /// within half the order-hint window of the frame it repeats (§ 5.18.2
+    /// `get_disp_order_hint`); the frame after the run is coded. Repeats come
+    /// in display order.
+    pub(crate) fn repeat(&mut self, display_index: u64) {
+        let Some(previous) = display_index.checked_sub(1) else {
+            return;
+        };
+        let source = match self.last_repeat {
+            Some((repeat, source)) if repeat == previous => source,
+            _ => previous,
+        };
+        if self.sef_repeat
+            && display_index >= self.next_display
+            && display_index - source + self.mini_gop_size <= HALF_ORDER_HINT_WINDOW
+        {
+            self.repeats.push(display_index);
+            self.last_repeat = Some((display_index, source));
         }
     }
 
@@ -241,10 +297,15 @@ impl GopPlanner {
     /// `ended`.
     pub(crate) fn next_len(&self, queued: usize, ended: bool) -> Option<usize> {
         let to_key = self.next_key().saturating_sub(self.next_display);
-        let wanted = if to_key == 0 {
+        let to_repeat = self
+            .repeats
+            .iter()
+            .find(|&&repeat| repeat >= self.next_display)
+            .map_or(u64::MAX, |&repeat| repeat - self.next_display);
+        let wanted = if to_key == 0 || to_repeat == 0 {
             1
         } else {
-            to_key.min(self.mini_gop_size)
+            to_key.min(to_repeat).min(self.mini_gop_size)
         };
         let wanted = usize::try_from(wanted).unwrap_or(usize::MAX);
         (queued > 0 && (queued >= wanted || ended)).then_some(queued.min(wanted))
@@ -264,6 +325,25 @@ impl GopPlanner {
         let first = self.next_display;
         let last = first + len as u64 - 1;
         let mut anchor = first.saturating_sub(1);
+        self.repeats.retain(|&repeat| repeat >= first);
+        if first != self.next_key() && self.repeats.first() == Some(&first) {
+            self.repeats.remove(0);
+            let slot = (0..self.ref_slots)
+                .filter_map(|slot| self.slots[slot].map(|held| (held.display_index, slot as u32)))
+                .max()
+                .map(|(_, slot)| slot)
+                .ok_or(Error::Unsupported {
+                    what: "a repeat without a coded frame",
+                })?;
+            steps.push(GopStep::ShowExisting {
+                slot,
+                display_index: first,
+                order_hint: Some((first - self.key_display) as u32),
+            });
+            self.after_output = true;
+            self.next_display = first + 1;
+            return Ok(steps);
+        }
         if first == self.next_key() {
             self.cuts.retain(|&cut| cut > first);
             self.scheduled_key = first + self.keyint;
@@ -306,6 +386,7 @@ impl GopPlanner {
             steps.push(GopStep::ShowExisting {
                 slot,
                 display_index: hi,
+                order_hint: None,
             });
         }
         self.after_output = true;
@@ -520,15 +601,18 @@ pub(crate) type FrameTools = (
     UniformTiles,
 );
 
-/// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot` with
-/// the film grain of `grain_seed`.
+/// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`, with
+/// the explicit `order_hint` when given, and the film grain of `grain_seed`.
 pub(crate) fn show_existing_unit(
     view: &CoreSeqView,
     slot: u32,
+    order_hint: Option<u32>,
     grain_seed: Option<u16>,
 ) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
-    unit.extend(encode_show_existing_frame_obu(view, slot, grain_seed).map_err(header_error)?);
+    unit.extend(
+        encode_show_existing_frame_obu(view, slot, order_hint, grain_seed).map_err(header_error)?,
+    );
     Ok(unit)
 }
 

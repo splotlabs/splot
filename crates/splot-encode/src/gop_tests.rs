@@ -99,6 +99,7 @@ fn check(keyint: u32, mini_gop_size: u8, frames: u64) {
             GopStep::ShowExisting {
                 slot,
                 display_index,
+                ..
             } => {
                 assert!(after_output, "{case}: a show-existing frame opens its unit");
                 assert_eq!(slots[slot as usize], Some(display_index), "{case}");
@@ -367,4 +368,86 @@ fn mini_gops_plan_over_their_fewest_slots() {
             );
         }
     }
+}
+
+/// The steps of `frames` input frames, queued all at once, with `repeats`
+/// marked as repeats in display order.
+fn run_repeats(keyint: u32, mini_gop_size: u8, frames: u64, repeats: &[u64]) -> Vec<GopStep> {
+    let mut planner =
+        GopPlanner::new(NonZeroU32::new(keyint).unwrap(), mini_gop_size).with_sef_repeat(true);
+    repeats.iter().for_each(|&repeat| planner.repeat(repeat));
+    let mut steps = Vec::new();
+    let mut queued = frames as usize;
+    while let Some(len) = planner.next_len(queued, true) {
+        steps.extend(planner.plan(len).unwrap());
+        queued -= len;
+    }
+    steps
+}
+
+/// A repeat is a show-existing frame with the display order hint of the slot
+/// that holds the newest coded frame: right after a key frame, inside the
+/// keyint (the mini-GOP stops before it), before a scheduled key frame and
+/// at the end of the input. A repeat at a scheduled key frame is coded as
+/// the key frame. Every input frame gets one output.
+#[test]
+fn repeats_show_the_newest_coded_frame_with_an_explicit_order_hint() {
+    let steps = run_repeats(10, 4, 13, &[1, 2, 7, 9, 10, 12]);
+    let mut slots = [None; MAX_REF_SLOTS];
+    let (mut outputs, mut repeats) = (Vec::new(), Vec::new());
+    for step in &steps {
+        match *step {
+            GopStep::Code(frame) => {
+                assert_ne!(frame.display_index, 12);
+                for slot in 0..MAX_REF_SLOTS {
+                    if frame.refresh_frame_flags & 1 << slot != 0 {
+                        slots[slot] = Some(frame.display_index);
+                    }
+                }
+            }
+            GopStep::ShowExisting {
+                slot,
+                display_index,
+                order_hint: Some(hint),
+            } => {
+                let newest = slots.iter().flatten().max().copied();
+                assert_eq!(slots[slot as usize], newest, "{display_index}");
+                assert_eq!(
+                    newest,
+                    Some(display_index - 1 - u64::from(display_index == 2))
+                );
+                assert_eq!(u64::from(hint), display_index % 10, "{display_index}");
+                repeats.push(display_index);
+            }
+            GopStep::ShowExisting { .. } => {}
+        }
+        outputs.extend(step.output());
+    }
+    assert_eq!(repeats, [1, 2, 7, 9, 12]);
+    assert_eq!(outputs, (0..13).collect::<Vec<_>>());
+    let key =
+        |step: &GopStep| matches!(step, GopStep::Code(frame) if frame.frame_type == FrameType::Key);
+    assert_eq!(steps.iter().filter(|step| key(step)).count(), 2);
+}
+
+/// A run of repeats stops where the next coded frame would leave half the
+/// order-hint window of the frame it repeats; that frame is coded, and the
+/// frames after it repeat it.
+#[test]
+fn a_repeat_run_stops_inside_half_the_order_hint_window() {
+    let steps = run_repeats(300, 4, 140, &(1..140).collect::<Vec<_>>());
+    let coded: Vec<u64> = steps
+        .iter()
+        .filter_map(|step| match step {
+            GopStep::Code(frame) => Some(frame.display_index),
+            GopStep::ShowExisting { .. } => None,
+        })
+        .collect();
+    assert_eq!(coded, [0, 125]);
+    assert_eq!(steps.len(), 140);
+    let mut off = GopPlanner::new(NonZeroU32::new(300).unwrap(), 4);
+    off.repeat(1);
+    assert_eq!(off.next_len(3, true), Some(1));
+    off.plan(1).unwrap();
+    assert_eq!(off.next_len(3, true), Some(3));
 }
