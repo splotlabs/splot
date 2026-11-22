@@ -230,6 +230,17 @@ pub struct PresetParams {
     /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
     /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
     pub delta_q_res: u8,
+    /// `DeltaQYDc` of every frame (§ 5.18.6.1), `-64..=63`; non-zero codes
+    /// `equal_ac_dc_q = 0` with `y_dc_delta_q_enabled` (§ 5.4.8). `0` in
+    /// every row (not measured).
+    pub y_dc_delta_q: i8,
+    /// `DeltaQUDc = DeltaQUAc` of every frame, `-64..=63`; non-zero codes the
+    /// chroma delta enables. `0` in every row (not measured).
+    pub u_delta_q: i8,
+    /// `DeltaQVDc = DeltaQVAc` of every frame, `-64..=63`; a value other
+    /// than `u_delta_q` codes `separate_uv_delta_q` and `diff_uv_delta`.
+    /// `0` in every row (not measured).
+    pub v_delta_q: i8,
     /// Compound candidates of an inter leaf that get a full RD trial, best
     /// prediction SATD first; skip-mode candidates are tried besides them.
     /// `0` codes neither compound nor skip-mode blocks. At least `1` in every
@@ -866,6 +877,11 @@ pub enum PresetError {
 }
 
 impl PresetParams {
+    /// `[y_dc_delta_q, u_delta_q, v_delta_q]`, the plane quantizer deltas of every frame.
+    pub(crate) const fn plane_delta_q(&self) -> [i8; 3] {
+        [self.y_dc_delta_q, self.u_delta_q, self.v_delta_q]
+    }
+
     /// Checks the ranges the encoder supports, per field and across fields;
     /// every [`PRESETS`] row passes, a row with overrides may not.
     ///
@@ -1013,6 +1029,13 @@ impl FieldValue for u8 {
     const EXPECTED: &'static str = "an integer in 0..=255";
     fn parse(value: &str) -> Option<Self> {
         value.parse().ok()
+    }
+}
+
+impl FieldValue for i8 {
+    const EXPECTED: &'static str = "an integer in -64..=63 (su(7), § 5.18.6.3)";
+    fn parse(value: &str) -> Option<Self> {
+        value.parse().ok().filter(|v| (-64..=63).contains(v))
     }
 }
 
@@ -1333,6 +1356,9 @@ preset_table! {
                                [4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0],
                                [0; 11], [0; 11], [0; 11]]),
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        y_dc_delta_q:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        u_delta_q:             [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        v_delta_q:             [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     mode_decision {
         psy_rd:                [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
