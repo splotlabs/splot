@@ -2,7 +2,7 @@
 source: crates/splot-cli/tests/help_snapshots.rs
 expression: "help(\"encode\")"
 ---
-Encode a Y4M file to an AV2 IVF stream
+Encode a Y4M file to an AV2 IVF or Annex B stream
 
 Usage: splot encode [OPTIONS] --output <OUTPUT> <INPUT>
 

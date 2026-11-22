@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `splot encode` — encode a Y4M file to an AV2 IVF stream.
+//! `splot encode` — encode a Y4M file to an AV2 IVF or Annex B stream.
 
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
