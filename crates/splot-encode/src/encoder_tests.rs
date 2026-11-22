@@ -515,7 +515,7 @@ fn xorshift(mut state: u32) -> impl FnMut() -> usize {
 #[test]
 fn output_does_not_depend_on_the_call_pattern() -> Result<()> {
     let one = TileLayout::default();
-    let two = TileLayout {
+    let two = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -525,15 +525,18 @@ fn output_does_not_depend_on_the_call_pattern() -> Result<()> {
         initial_ms: 500,
     };
     for mode in [
-        (RateControlMode::Crf { crf: 30 }, 48, one),
+        (RateControlMode::Crf { crf: 30 }, 48, one.clone()),
         (RateControlMode::Vbr { bitrate_kbps: 90 }, 72, two),
         (cbr, 48, one),
     ] {
-        let per_frame = interleaved(mode, || 1, || usize::MAX)?;
+        let per_frame = interleaved(mode.clone(), || 1, || usize::MAX)?;
         assert!(!per_frame.is_empty());
-        assert!(per_frame == interleaved(mode, || 20, || 0)?, "{mode:?}");
+        assert!(
+            per_frame == interleaved(mode.clone(), || 20, || 0)?,
+            "{mode:?}"
+        );
         for seed in [1, 7, 12_345] {
-            let random = interleaved(mode, xorshift(seed), xorshift(seed + 99))?;
+            let random = interleaved(mode.clone(), xorshift(seed), xorshift(seed + 99))?;
             assert!(per_frame == random, "{mode:?} seed {seed}");
         }
     }

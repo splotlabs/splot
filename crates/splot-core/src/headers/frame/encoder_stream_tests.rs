@@ -124,7 +124,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         order_hint,
                         &FrameFilterParams::default(),
                         tx,
-                        UniformTiles::default(),
+                        FrameTiles::default(),
                     )
                     .unwrap();
                     assert_eq!(core.frame_type, Some(FrameType::Key));
@@ -271,7 +271,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         1,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     assert_eq!(core.allow_screen_content_tools, Some(true));
@@ -344,7 +344,7 @@ fn filter_params_reach_the_parsed_header() {
                 3,
                 &filters,
                 KeyFrameTxParams::default(),
-                UniformTiles::default(),
+                FrameTiles::default(),
             )
             .unwrap();
             let deblock = core.deblocking_filter_params.unwrap();
@@ -376,7 +376,7 @@ fn filter_params_reach_the_parsed_header() {
             3,
             &FrameFilterParams::default(),
             KeyFrameTxParams::default(),
-            UniformTiles::default(),
+            FrameTiles::default(),
         )
         .unwrap();
         assert!(!off.cdef_params.unwrap().cdef_frame_enable);
@@ -435,7 +435,7 @@ fn wiener_ns_bank_reaches_the_parsed_header() {
                 0,
                 &filters,
                 KeyFrameTxParams::default(),
-                UniformTiles::default(),
+                FrameTiles::default(),
             )
         };
         let core = build(120).unwrap();
@@ -471,7 +471,7 @@ fn wiener_ns_bank_reaches_the_parsed_header() {
             0,
             &filters,
             KeyFrameTxParams::default(),
-            UniformTiles::default()
+            FrameTiles::default()
         )
         .is_err()
     );
@@ -527,7 +527,7 @@ fn chroma_wiener_ns_banks_reach_the_parsed_header() {
         0,
         &filters,
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let lr = core.lr_params.as_ref().unwrap();
@@ -559,9 +559,9 @@ fn gdf_params_reach_the_parsed_header() {
         p.tools.gdf = true;
         let seq = build_encoder_sequence_header(&p).unwrap();
         let view = CoreSeqView::from_sequence(&seq).unwrap();
-        let tiles = UniformTiles {
+        let tiles = FrameTiles {
             cols_log2,
-            ..UniformTiles::default()
+            ..FrameTiles::default()
         };
         for gdf in [
             None,
@@ -622,7 +622,7 @@ fn rejects_filters_the_sequence_cannot_carry() {
                 0,
                 &filters,
                 KeyFrameTxParams::default(),
-                UniformTiles::default()
+                FrameTiles::default()
             ),
             Err(EncoderHeaderError::Write(_))
         ));
@@ -678,7 +678,7 @@ fn rejects_out_of_range_inputs() {
             0,
             &FrameFilterParams::default(),
             KeyFrameTxParams::default(),
-            UniformTiles::default()
+            FrameTiles::default()
         ),
         Err(EncoderHeaderError::InvalidTxParams { .. })
     ));
@@ -693,7 +693,7 @@ fn rejects_out_of_range_inputs() {
                 tx_mode: TxMode::Only4x4,
                 ..KeyFrameTxParams::default()
             },
-            UniformTiles::default()
+            FrameTiles::default()
         ),
         Err(EncoderHeaderError::DeltaQWithoutBaseQIdx)
     ));
@@ -704,7 +704,7 @@ fn rejects_out_of_range_inputs() {
             0,
             &FrameFilterParams::default(),
             KeyFrameTxParams::default(),
-            UniformTiles::default()
+            FrameTiles::default()
         ),
         Err(EncoderHeaderError::InvalidBaseQIdx { .. })
     ));
@@ -727,7 +727,7 @@ fn rejects_out_of_range_inputs() {
                 0,
                 &FrameFilterParams::default(),
                 tx,
-                UniformTiles::default()
+                FrameTiles::default()
             ),
             Err(EncoderHeaderError::InvalidTxParams { .. })
         ));
@@ -743,7 +743,7 @@ fn rejects_out_of_range_inputs() {
             0,
             &FrameFilterParams::default(),
             qm,
-            UniformTiles::default()
+            FrameTiles::default()
         )
         .is_err()
     );
@@ -765,7 +765,7 @@ fn temporal_unit_carries_delimiter_sequence_and_frame() {
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let tile = [0x12, 0x34, 0x56];
@@ -815,12 +815,13 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
         (2, 1, 4, 2),
         (6, 6, 4, 3),
     ] {
-        let tiles = UniformTiles {
+        let tiles = FrameTiles {
             cols_log2,
             rows_log2,
             size_bytes: 2,
             middle_cdf_update_tile: false,
             reuse_tile_info: true,
+            explicit: None,
         };
         let key = |tiles| {
             build_key_frame_header(
@@ -837,7 +838,7 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
         let info = core.tile_info.as_ref().unwrap();
         assert_eq!((info.tile_cols, info.tile_rows), (cols, rows));
         assert_eq!(info.context_update_tile_id, 0);
-        let middle = key(UniformTiles {
+        let middle = key(FrameTiles {
             middle_cdf_update_tile: true,
             ..tiles
         });
@@ -905,6 +906,94 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
     }
 }
 
+/// Explicit starts code `uniform_tile_spacing_flag = 0` and read back as the
+/// same tile edges: 64x64 superblocks, and the 128x128 superblocks of a key
+/// frame of a 256x256 sequence, which codes each start doubled. Starts outside
+/// the frame, unordered starts, a uniform log2 beside starts and a header cut
+/// before its end are refused.
+#[test]
+fn explicit_tiles_round_trip_and_bad_starts_are_refused() {
+    let starts = |values: &[u32]| TileStarts::from_iter_checked(values.iter().copied()).unwrap();
+    for (sb_size, (width, height), [cols, rows], mi_cols) in [
+        (
+            SuperblockSize::Block64x64,
+            (200, 136),
+            [starts(&[0, 1]), starts(&[0, 2])],
+            vec![0, 16, 50],
+        ),
+        (
+            SuperblockSize::Block256x256,
+            (520, 300),
+            [starts(&[0, 1, 2]), starts(&[0, 1])],
+            vec![0, 64, 128, 130],
+        ),
+    ] {
+        let seq =
+            build_encoder_sequence_header(&params(width, height, BitDepthIdc::Eight, sb_size))
+                .unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let key = |tiles| {
+            build_key_frame_header(
+                &view,
+                60,
+                0,
+                &FrameFilterParams::default(),
+                KeyFrameTxParams::default(),
+                tiles,
+            )
+        };
+        let tiles = FrameTiles {
+            explicit: Some([cols, rows]),
+            middle_cdf_update_tile: true,
+            ..FrameTiles::default()
+        };
+        assert!(tiles.check(&view).is_ok());
+        let core = key(tiles).unwrap();
+        let info = core.tile_info.as_ref().unwrap();
+        assert!(!info.tile_params.unwrap().uniform_spacing);
+        assert_eq!(info.mi_col_starts[..], mi_cols[..]);
+        assert_eq!(info.tile_rows as usize, rows.len());
+        assert_eq!(
+            info.context_update_tile_id,
+            info.tile_cols * info.tile_rows / 2
+        );
+        assert_eq!(reparse_core(&core, &view), core);
+
+        let bytes = key_frame_header_bits(
+            &view,
+            (60, tiles),
+            0,
+            &FrameFilterParams::default(),
+            KeyFrameTxParams::default(),
+        )
+        .unwrap();
+        let cut = &bytes[..bytes.len() / 2];
+        let mut reader = BitReader::new(cut, ByteOffset::new(0));
+        let prefix =
+            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)).unwrap();
+        let mut header = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
+        let unknown = FrameReferenceStateView::unknown();
+        assert!(parse_core_body(&mut reader, &mut header, &view, None, &unknown).is_err());
+
+        let bad_cols = |values: &[u32]| FrameTiles {
+            explicit: Some([starts(values), rows]),
+            ..tiles
+        };
+        for bad in [
+            bad_cols(&[0, 9]),
+            bad_cols(&[0, 1, 1]),
+            bad_cols(&[1]),
+            FrameTiles {
+                cols_log2: 1,
+                ..tiles
+            },
+        ] {
+            assert!(bad.check(&view).is_err(), "{bad:?}");
+            assert!(key(bad).is_err(), "{bad:?}");
+        }
+    }
+}
+
 /// `df_par_bits_extra` widens `df_par_bits_minus_2` (§ 5.4.10): a key frame
 /// codes the widest luma `DfDeltaQ` pair of `f(5)` and parses it back; `3`
 /// does not fit `f(2)`; a cut sequence header does not parse.
@@ -927,7 +1016,7 @@ fn wide_deblocking_offsets_parse_back() {
         0,
         &filters,
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let deblocking = core.deblocking_filter_params.unwrap();
@@ -1001,7 +1090,7 @@ fn key_frames_code_their_long_term_ids() {
                 0,
                 &FrameFilterParams::default(),
                 tx,
-                UniformTiles::default(),
+                FrameTiles::default(),
             )
         };
         for plus_1 in [0, 1, (1 << bits) - 1] {
@@ -1033,7 +1122,7 @@ fn plane_delta_q_reaches_the_parsed_headers() {
             ..KeyFrameTxParams::default()
         };
         let filters = FrameFilterParams::default();
-        build_key_frame_header(view, 90, 0, &filters, tx, UniformTiles::default())
+        build_key_frame_header(view, 90, 0, &filters, tx, FrameTiles::default())
     };
     let chromas = [
         ChromaFormatIdc::Yuv420,
@@ -1064,7 +1153,7 @@ fn plane_delta_q_reaches_the_parsed_headers() {
             assert_eq!((got, q.delta_q_v_ac), ([y, u, u, v], v), "{chroma:?} {d:?}");
             let bytes = key_frame_header_bits(
                 &view,
-                (90, UniformTiles::default()),
+                (90, FrameTiles::default()),
                 0,
                 &FrameFilterParams::default(),
                 KeyFrameTxParams {
@@ -1123,7 +1212,7 @@ fn lossless_key_frame_parses_as_coded_lossless() {
                 0,
                 &FrameFilterParams::default(),
                 tx,
-                UniformTiles::default(),
+                FrameTiles::default(),
             )
         };
         let core = reparse_core(&build(lossless).unwrap(), &view);

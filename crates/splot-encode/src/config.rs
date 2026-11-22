@@ -92,18 +92,40 @@ pub enum RateControlMode {
     },
 }
 
-/// A uniform tile layout: `1 << cols_log2` tile columns by `1 << rows_log2`
-/// tile rows (§ 5.18.7.3), capped at one tile per superblock column and row.
+/// The tile layout of the frames (§ 5.18.7.3).
 ///
 /// The encoder codes the tiles of a frame in parallel. A tile predicts and
 /// adapts its CDFs without the other tiles, so more tiles cost compression.
 /// `Default` is one tile.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TileLayout {
-    /// Log2 of the tile column count, `0..=6`.
-    pub cols_log2: u8,
-    /// Log2 of the tile row count, `0..=6`.
-    pub rows_log2: u8,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileLayout {
+    /// `1 << cols_log2` tile columns by `1 << rows_log2` tile rows of uniform
+    /// spacing, capped at one tile per superblock column and row.
+    Uniform {
+        /// Log2 of the tile column count, `0..=6`.
+        cols_log2: u8,
+        /// Log2 of the tile row count, `0..=6`.
+        rows_log2: u8,
+    },
+    /// Coded tile sizes (`uniform_tile_spacing_flag = 0`) in superblocks of the
+    /// sequence: the first columns and rows; one more column or row takes the
+    /// rest of the frame when the sizes do not reach its edge. A preset with
+    /// `seq_tile_info` above 0 refuses it.
+    Explicit {
+        /// Tile column widths.
+        widths: Vec<u32>,
+        /// Tile row heights.
+        heights: Vec<u32>,
+    },
+}
+
+impl Default for TileLayout {
+    fn default() -> Self {
+        Self::Uniform {
+            cols_log2: 0,
+            rows_log2: 0,
+        }
+    }
 }
 
 impl TileLayout {
@@ -262,8 +284,10 @@ impl Config {
                 what: what.to_owned(),
             });
         }
-        self.override_preset(self.preset.params())?;
-        self.override_preset(self.preset.screen_params())?;
+        let rows = [
+            self.override_preset(self.preset.params())?,
+            self.override_preset(self.preset.screen_params())?,
+        ];
         let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
         if !dimension_ok(self.width) || !dimension_ok(self.height) {
             return Err(Error::InvalidDimensions {
@@ -294,10 +318,27 @@ impl Config {
             });
         }
         self.content.validate(self.chroma)?;
-        if self.tiles.cols_log2 > TileLayout::MAX_LOG2
-            || self.tiles.rows_log2 > TileLayout::MAX_LOG2
-        {
-            return Err(Error::InvalidTiles { tiles: self.tiles });
+        let tiles_refused = match &self.tiles {
+            TileLayout::Uniform {
+                cols_log2,
+                rows_log2,
+            } => (*cols_log2.max(rows_log2) > TileLayout::MAX_LOG2)
+                .then_some("more than 64 tile columns or rows"),
+            TileLayout::Explicit { widths, heights } => {
+                if widths.contains(&0) || heights.contains(&0) {
+                    Some("a tile of 0 superblocks")
+                } else if rows.iter().any(|row| row.seq_tile_info > 0) {
+                    Some("seq_tile_info codes only a uniform layout")
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(reason) = tiles_refused {
+            return Err(Error::InvalidTiles {
+                tiles: self.tiles.clone(),
+                reason,
+            });
         }
         if self.cbr_padding && !matches!(self.rate_control, RateControlMode::Cbr { .. }) {
             return Err(Error::PaddingWithoutCbr);
@@ -485,8 +526,31 @@ mod tests {
             Err(Error::InvalidDimensions { .. })
         ));
         config = Config::new(64, 64);
-        config.tiles.rows_log2 = TileLayout::MAX_LOG2 + 1;
+        config.tiles = TileLayout::Uniform {
+            cols_log2: 0,
+            rows_log2: TileLayout::MAX_LOG2 + 1,
+        };
         assert!(matches!(config.validate(), Err(Error::InvalidTiles { .. })));
+        for (widths, preset_set, reason) in [
+            (vec![1, 0], None, "a tile of 0 superblocks"),
+            (
+                vec![1],
+                Some(1),
+                "seq_tile_info codes only a uniform layout",
+            ),
+        ] {
+            config = Config::new(64, 64);
+            config.tiles = TileLayout::Explicit {
+                widths,
+                heights: Vec::new(),
+            };
+            config.preset_overrides = preset_set
+                .map(|value: u8| vec![("seq_tile_info".to_owned(), value.to_string())])
+                .unwrap_or_default();
+            assert!(
+                matches!(config.validate(), Err(Error::InvalidTiles { reason: r, .. }) if r == reason)
+            );
+        }
         config = Config::new(64, 64);
         config.frame_rate = (30, 0);
         assert!(matches!(

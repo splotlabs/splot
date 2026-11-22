@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use splot_core::headers::frame::{UniformTiles, build_key_frame_header};
+use splot_core::headers::frame::{FrameTiles, build_key_frame_header};
 use splot_decode::encoder_syntax::LeafBlock;
 
 use crate::config::{RateControlMode, TileLayout};
@@ -774,8 +774,8 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let tx =
             tx_choice::key_frame_tx_params(&frame.preset, crate::preset::PresetContext::default());
         let header = FrameFilterParams::default();
-        let core = build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default())
-            .unwrap();
+        let core =
+            build_key_frame_header(&frame.view, 90, 0, &header, tx, FrameTiles::default()).unwrap();
         let mut writer =
             KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence), 0).unwrap();
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
@@ -1570,7 +1570,7 @@ fn inter_stream_of(
     let plan = plan.unwrap();
     let mut tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         qindex,
     );
     (tools.1, tools.2.2) = (true, true);
@@ -1787,7 +1787,7 @@ fn search_frame_at(
             &FrameFilterParams::default(),
             crate::gop::frame_tools(
                 (&coder.preset, crate::preset::PresetContext::default()),
-                coder.tiles,
+                &coder.tiles,
                 u32::from(qindex),
             ),
         )
@@ -1942,7 +1942,7 @@ fn tiled_stream(
 ) -> (Vec<Vec<u8>>, Vec<u8>) {
     let (width, height, bit_depth, preset, qp, (cols_log2, rows_log2)) = case;
     let mut config = config(width, height, bit_depth, preset, qp);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2,
         rows_log2,
     };
@@ -2109,6 +2109,8 @@ mod segmentation;
 mod tf;
 #[path = "intra_frame_tile_group_tests.rs"]
 mod tile_group;
+#[path = "intra_frame_tile_layout_tests.rs"]
+mod tile_layout;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
 #[path = "intra_frame_warp_tests.rs"]

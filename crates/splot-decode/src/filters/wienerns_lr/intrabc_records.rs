@@ -26,7 +26,7 @@ use crate::tile::SbRowWindow;
 use super::intrabc_ref_mv_stack::{
     SpatialIntrabcProbes, SpatialScanGeometry, capture_spatial_intrabc_probes,
 };
-use super::tx_records::{read_symbol, selectable_state_error};
+use super::tx_records::{selectable_state_error, symbol_read_error};
 use super::{frame_sb_size4, selectable_symbol_read_error};
 
 const BLOCK_64X64: usize = 12;
@@ -749,13 +749,10 @@ pub(crate) fn read_intrabc_use_and_skip(
         Some((intrabc_ctx, _)) => intrabc_ctx,
         None => state.intrabc_ctx(block.row, block.col, n4w, n4h)?,
     };
-    let use_intrabc = read_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::Intrabc { ctx: intrabc_ctx },
-        tile_offset,
-        "5.20.5.3",
-    )? != 0;
+    let use_intrabc = cdfs
+        .read_block_symbol(TileCdfSelector::Intrabc { ctx: intrabc_ctx }, symbols)
+        .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.5.3"))?
+        != 0;
     if !use_intrabc {
         return Ok(IntrabcUseSkip::default());
     }
@@ -763,13 +760,10 @@ pub(crate) fn read_intrabc_use_and_skip(
         Some((_, skip_ctx)) => skip_ctx,
         None => state.skip_ctx(block.row, block.col, n4w, n4h)?,
     };
-    let skip_flag = read_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::Skip { ctx: skip_ctx },
-        tile_offset,
-        "5.20.5.10",
-    )? != 0;
+    let skip_flag = cdfs
+        .read_block_symbol(TileCdfSelector::Skip { ctx: skip_ctx }, symbols)
+        .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.5.10"))?
+        != 0;
     Ok(IntrabcUseSkip {
         use_intrabc: true,
         skip_flag,
@@ -853,13 +847,10 @@ fn read_intrabc_info_syntax(
         .ok()
         .and_then(|bits| bits.checked_add(1))
         .ok_or_else(selectable_state_error)?;
-    let intrabc_mode = read_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::IntrabcMode,
-        tile_offset,
-        "5.20.5.4",
-    )?;
+    let intrabc_mode = cdfs
+        .read_block_symbol(TileCdfSelector::IntrabcMode, symbols)
+        .map(usize::from)
+        .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.5.4"))?;
     let mut ref_mv_idx = 0usize;
     for idx in 0..m {
         let drl_mode = symbols
@@ -878,13 +869,9 @@ fn read_intrabc_info_syntax(
         MV_PRECISION_QUARTER_PEL
     };
     if intrabc_mode == 0 && !force_integer_mv {
-        let precision = read_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::IntrabcPrecision,
-            tile_offset,
-            "5.20.5.4",
-        )?;
+        let precision = cdfs
+            .read_block_symbol(TileCdfSelector::IntrabcPrecision, symbols)
+            .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.5.4"))?;
         mv_precision = if precision != 0 {
             MV_PRECISION_QUARTER_PEL
         } else {
@@ -952,13 +939,10 @@ fn read_intrabc_morph_pred(
     }
     let block = geometry.block;
     let ctx = state.morph_pred_ctx(block.row, block.col, geometry.n4w, geometry.n4h)?;
-    Ok(read_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::MorphPred { ctx },
-        tile_offset,
-        "5.20.5.4",
-    )? != 0)
+    Ok(cdfs
+        .read_block_symbol(TileCdfSelector::MorphPred { ctx }, symbols)
+        .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.5.4"))?
+        != 0)
 }
 
 pub(crate) fn derive_intrabc_luma_prediction_geometry(

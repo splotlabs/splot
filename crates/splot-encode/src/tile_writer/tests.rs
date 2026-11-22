@@ -5,8 +5,8 @@
 
 use crate::test_support::refs_for;
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
-    UniformTiles, build_encoder_sequence_header, build_key_frame_header,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameTiles,
+    KeyFrameTxParams, build_encoder_sequence_header, build_key_frame_header,
     encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
@@ -311,6 +311,7 @@ impl RandomLevels {
             tx_partition: partition,
             inter: None,
             intrabc: None,
+            dpcm: splot_decode::encoder_syntax::Dpcm::OFF,
         })
     }
 }
@@ -701,7 +702,7 @@ fn encode_case(
         0,
         &FrameFilterParams::default(),
         case.tx,
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();
@@ -871,7 +872,7 @@ fn superblock_sized_skipped_leaf_keeps_current_qindex() {
         0,
         &FrameFilterParams::default(),
         case.tx,
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
@@ -1378,7 +1379,7 @@ fn rejects_unsupported_decisions() {
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();
@@ -1416,7 +1417,7 @@ fn headers(tools: EncoderToolFlags) -> (SequenceHeader, FrameHeaderCore) {
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     (seq, core)
@@ -1696,7 +1697,7 @@ fn cfl_chroma_of_a_128x128_leaf_reads_the_whole_luma() {
         0,
         &FrameFilterParams::default(),
         case.tx,
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();

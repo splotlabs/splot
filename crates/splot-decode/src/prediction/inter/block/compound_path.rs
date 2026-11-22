@@ -336,7 +336,7 @@ pub(super) fn read_reference_mode(
     facts: &FrameRefFacts,
 ) -> bool {
     let ctx = neighbour_ctx.comp_mode_ctx(facts.backward());
-    read_row(symbols, row_at(&mut cdfs.block_rows_mut().comp_mode, ctx)) != 0
+    read_row(symbols, row_at(cdfs.block_rows_mut().comp_mode(), ctx)) != 0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -437,13 +437,8 @@ pub(super) fn decode_compound_inter_block(
     );
     let local_warp =
         read_compound_motion_mode_syntax(cdfs, symbols, signal_local_warp, neighbour_ctx);
-    let jmvd_scale_mode = read_compound_jmvd_scale_mode_syntax(
-        cdfs,
-        symbols,
-        compound.y_mode,
-        use_amvd,
-        tile_offset,
-    )?;
+    let jmvd_scale_mode =
+        read_compound_jmvd_scale_mode_syntax(cdfs, symbols, compound.y_mode, use_amvd);
     let mut ref_mv_idx = 0;
     let mut ref_mv_idx0 = 0;
     let mut ref_mv_idx1 = 0;
@@ -760,7 +755,7 @@ fn read_compound_motion_mode_syntax(
     signal_local_warp: bool,
     neighbour_ctx: &BlockNeighbourContext,
 ) -> bool {
-    let rows = &mut cdfs.block_rows_mut().use_local_warp;
+    let rows = cdfs.block_rows_mut().use_local_warp();
     signal_local_warp && read_row(symbols, row_at(rows, neighbour_ctx.use_local_warp_ctx())) != 0
 }
 
@@ -1160,7 +1155,7 @@ fn read_compound_use_optflow_syntax(
     symbols: &mut SymbolDecoder<'_>,
     y_mode: CompoundYMode,
 ) -> bool {
-    let rows = &mut cdfs.block_rows_mut().use_optflow;
+    let rows = cdfs.block_rows_mut().use_optflow();
     read_row(symbols, row_at(rows, use_optflow_ctx(y_mode))) != 0
 }
 
@@ -1197,7 +1192,7 @@ fn read_compound_use_refinemv_syntax(
     y_mode: CompoundYMode,
     use_optflow: bool,
 ) -> bool {
-    let rows = &mut cdfs.block_rows_mut().use_refinemv;
+    let rows = cdfs.block_rows_mut().use_refinemv();
     read_row(symbols, row_at(rows, use_refinemv_ctx(y_mode, use_optflow))) != 0
 }
 
@@ -1463,18 +1458,17 @@ fn read_compound_jmvd_scale_mode_syntax(
     symbols: &mut SymbolDecoder<'_>,
     y_mode: CompoundYMode,
     use_amvd: bool,
-    tile_offset: ByteOffset,
-) -> Result<u8> {
+) -> u8 {
     if y_mode != CompoundYMode::JointNew {
-        return Ok(0);
+        return 0;
     }
-    let selector = if use_amvd {
-        TileCdfSelector::JmvdAdaptiveScaleMode
+    let rows = cdfs.block_rows_mut();
+    let scale_mode = if use_amvd {
+        read_row(symbols, rows.jmvd_adaptive_scale_mode())
     } else {
-        TileCdfSelector::JmvdScaleMode
+        read_row(symbols, rows.jmvd_scale_mode())
     };
-    cdfs.read_block_symbol(selector, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))
+    scale_mode as u8
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1538,14 +1532,14 @@ fn read_compound_blend_syntax(
     if !compound_reads_group_idx(tools, input) {
         return Ok(average_blend);
     }
-    let rows = &mut cdfs.block_rows_mut().comp_group_idx;
+    let rows = cdfs.block_rows_mut().comp_group_idx();
     if read_row(symbols, row_at(rows, input.comp_group_idx_ctx)) == 0 {
         return Ok(average_blend);
     }
     let compound_type = if wedge_bits(input.block_size_index) == 0 {
         MaskedCompoundType::DiffWeighted
     } else {
-        match read_row(symbols, &mut cdfs.block_rows_mut().compound_type) {
+        match read_row(symbols, cdfs.block_rows_mut().compound_type()) {
             0 => MaskedCompoundType::Wedge,
             _ => MaskedCompoundType::DiffWeighted,
         }
@@ -1614,7 +1608,7 @@ fn read_compound_cwp_syntax(
     }
     let mut coding_idx = 0usize;
     for idx in 0..CWP_WEIGHTING_FACTOR[0].len() - 1 {
-        let symbol = read_row(symbols, row_at(&mut cdfs.block_rows_mut().cwp_idx, idx));
+        let symbol = read_row(symbols, row_at(cdfs.block_rows_mut().cwp_idx(), idx));
         coding_idx = idx + usize::from(symbol != 0);
         if symbol == 0 {
             break;

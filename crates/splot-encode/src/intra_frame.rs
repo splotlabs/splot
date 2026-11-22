@@ -9,11 +9,12 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv, UniformTiles,
+    FrameTiles, GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv,
     build_encoder_sequence_header, encode_film_grain_obu, encode_multi_frame_header_obu,
     encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
+use splot_core::tile::{MAX_TILE_COLS, MAX_TILE_ROWS, TileStarts};
 use splot_decode::encoder_syntax::{
     CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, ParityHiding,
     Partition, PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
@@ -21,12 +22,12 @@ use splot_decode::encoder_syntax::{
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
 use splot_recon::{
-    BitDepth, DecodedFrame, DequantBlockParams, PixelFormat, PlaneId, PlaneSize, QmFrameLevels,
-    QuantizerDeltas, secondary_transform_layout,
+    BitDepth, DecodedFrame, DequantBlockParams, DpcmDirection, PixelFormat, PlaneId, PlaneSize,
+    QmFrameLevels, QuantizerDeltas, secondary_transform_layout,
 };
 
 use crate::cfl_filter::cfl_ds_filter;
-use crate::config::Config;
+use crate::config::{Config, TileLayout};
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
@@ -78,7 +79,7 @@ pub(crate) struct IntraFrameCoder {
     content_obus: Vec<u8>,
     /// [`crate::Config::multi_frame_header`].
     multi_frame_header: bool,
-    tiles: UniformTiles,
+    tiles: FrameTiles,
     /// [`crate::Config::tile_groups`].
     tile_groups: u32,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
@@ -208,6 +209,69 @@ fn intra_leaves(
     }
 }
 
+/// The frame tile layout of `config` and `preset` over the frames of the
+/// sequence of `params` and `view`:
+/// an explicit layout gets the start of each listed size, and one more
+/// column or row when the sizes end inside the frame.
+fn frame_tiles(
+    config: &Config,
+    preset: &PresetParams,
+    (params, view): (&EncoderStreamParams, &CoreSeqView),
+) -> Result<FrameTiles> {
+    let refused = |reason| Error::InvalidTiles {
+        tiles: config.tiles.clone(),
+        reason,
+    };
+    let base = FrameTiles {
+        middle_cdf_update_tile: preset.cdf_update_tile == 1,
+        reuse_tile_info: preset.seq_tile_info < 3,
+        ..FrameTiles::default()
+    };
+    let tiles = match &config.tiles {
+        &TileLayout::Uniform {
+            cols_log2,
+            rows_log2,
+        } => FrameTiles {
+            cols_log2,
+            rows_log2,
+            ..base
+        },
+        TileLayout::Explicit { widths, heights } => {
+            let sb = 4 * splot_core::tile::num_4x4_blocks_wide(params.sb_size);
+            let axis = |sizes: &[u32], frame: u32, max: u32| {
+                let sbs = frame.next_multiple_of(8).div_ceil(sb);
+                let mut starts = TileStarts::default();
+                let mut start = 0u32;
+                for &size in core::iter::once(&0).chain(sizes) {
+                    start = start.saturating_add(size);
+                    if start < sbs {
+                        if starts.len() == max as usize {
+                            return Err(refused("more than 64 tile columns or rows"));
+                        }
+                        starts
+                            .push(start)
+                            .ok_or(refused("more than 64 tile columns or rows"))?;
+                    } else if start > sbs {
+                        return Err(refused("tiles beyond the frame edge"));
+                    }
+                }
+                Ok(starts)
+            };
+            FrameTiles {
+                explicit: Some([
+                    axis(widths, params.width, MAX_TILE_COLS)?,
+                    axis(heights, params.height, MAX_TILE_ROWS)?,
+                ]),
+                ..base
+            }
+        }
+    };
+    tiles
+        .check(view)
+        .map_err(|_| refused("a layout that tile_params() does not code (§ 5.18.7.3)"))?;
+    Ok(tiles)
+}
+
 impl IntraFrameCoder {
     /// A coder of `config`. Preset overrides apply to the preset row and to
     /// its screen-content row.
@@ -298,11 +362,17 @@ impl IntraFrameCoder {
                 implicit_output: preset.implicit_output,
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
-                seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
-                    cols_log2: config.tiles.cols_log2,
-                    rows_log2: config.tiles.rows_log2,
-                    allow_tile_info_change: preset.seq_tile_info > 1,
-                }),
+                seq_tiles: match config.tiles {
+                    TileLayout::Uniform {
+                        cols_log2,
+                        rows_log2,
+                    } if preset.seq_tile_info > 0 => Some(SeqTiles {
+                        cols_log2,
+                        rows_log2,
+                        allow_tile_info_change: preset.seq_tile_info > 1,
+                    }),
+                    _ => None,
+                },
                 short_refresh: preset.short_refresh,
                 plane_delta_q: preset.plane_delta_q(),
                 tcq: preset.tcq.values().contains(&true),
@@ -311,6 +381,7 @@ impl IntraFrameCoder {
             },
         };
         let (sequence, view, references) = sequence_state(&params)?;
+        let tiles = frame_tiles(config, preset, (&params, &view))?;
         let mfh_obu = if config.multi_frame_header {
             encode_multi_frame_header_obu().map_err(coding("multi-frame header"))?
         } else {
@@ -329,13 +400,7 @@ impl IntraFrameCoder {
             screen: (preset.screen_detect && core::ptr::eq(preset, config.preset.params()))
                 .then(|| *config.preset.screen_params()),
             tile_groups: config.tile_groups.get(),
-            tiles: UniformTiles {
-                cols_log2: config.tiles.cols_log2,
-                rows_log2: config.tiles.rows_log2,
-                middle_cdf_update_tile: preset.cdf_update_tile == 1,
-                reuse_tile_info: preset.seq_tile_info < 3,
-                ..UniformTiles::default()
-            },
+            tiles,
             pool: (config.threads.resolve().get() > 1)
                 .then(|| WorkerPool::new(config.threads))
                 .transpose()
@@ -673,7 +738,7 @@ impl IntraFrameCoder {
         };
         let qindex = u32::from(qp);
         let context = self.preset_context(plan, qindex);
-        let mut tools = gop::frame_tools((&self.preset, context), self.tiles, qindex);
+        let mut tools = gop::frame_tools((&self.preset, context), &self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
         let ids = (1u32 << self.preset.long_term_id_bits) - 1;
         if plan.frame_type == FrameType::Key && ids > 0 {
@@ -1596,8 +1661,13 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let use_tcq = syntax.uses_tcq(tx);
         let ddt = syntax.uses_ddt();
         let qm = (syntax.quant_matrices(), syntax.quantizer_deltas());
-        let (params, forward) =
-            self.forward(tx, (use_tcq, ddt, qm), prediction, residual, coeffs)?;
+        let (params, forward) = self.forward(
+            (tx, syntax.dpcm(tx)),
+            (use_tcq, ddt, qm),
+            prediction,
+            residual,
+            coeffs,
+        )?;
         if let Some(secondary) = syntax.secondary_transform(tx)? {
             kernels()
                 .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
@@ -1711,8 +1781,10 @@ impl SourceResidualCoder<'_> {
     ) -> core::result::Result<Vec<[Vec<i32>; 3]>, TileWriterError> {
         let quant = (syntax.quant_matrices(), syntax.quantizer_deltas());
         let ddt = (false, syntax.uses_ddt(), quant);
-        let (u_params, u_forward) = self.forward(u, ddt, u_prediction, residual, u_coeffs)?;
-        let (v_params, v_forward) = self.forward(v, ddt, v_prediction, residual, v_coeffs)?;
+        let (u_params, u_forward) =
+            self.forward((u, syntax.dpcm(u)), ddt, u_prediction, residual, u_coeffs)?;
+        let (v_params, v_forward) =
+            self.forward((v, syntax.dpcm(v)), ddt, v_prediction, residual, v_coeffs)?;
         let [uu, vv, uv] = kernels().cctx_stats(u_coeffs, v_coeffs);
         let energy = |[c, s]: [i32; 2]| {
             let (c, s) = (i128::from(c), i128::from(s));
@@ -1901,10 +1973,11 @@ impl SourceResidualCoder<'_> {
     }
 
     /// The source residual of `tx` over `prediction` and its primary forward
-    /// transform into `coeffs`, with the block's dequantization parameters.
+    /// transform into `coeffs`, with the block's dequantization parameters;
+    /// a lossless `tx` with a `dpcm` direction codes its residual differences.
     fn forward(
         &self,
-        tx: &TransformBlock,
+        (tx, dpcm): (&TransformBlock, Option<DpcmDirection>),
         (use_tcq, use_ddt, (qm, deltas)): (bool, bool, (Option<QmFrameLevels>, QuantizerDeltas)),
         prediction: &[u16],
         residual: &mut Vec<i32>,
@@ -1935,7 +2008,7 @@ impl SourceResidualCoder<'_> {
         if self.lossless {
             let block = <&[i32; 16]>::try_from(residual.as_slice())
                 .map_err(|_| TileWriterError::Shape("a lossless block that is not 4x4"))?;
-            coeffs.copy_from_slice(&crate::kernels::forward_walsh_hadamard_4x4(block));
+            coeffs.copy_from_slice(&crate::kernels::forward_lossless_4x4(block, dpcm));
             return Ok((params, forward));
         }
         kernels()
@@ -2005,7 +2078,7 @@ impl SourceResidualCoder<'_> {
         levels: &mut Vec<i32>,
     ) -> core::result::Result<Option<u128>, TileWriterError> {
         let (params, forward) = self.forward(
-            tx,
+            (tx, syntax.dpcm(tx)),
             (
                 false,
                 syntax.uses_ddt(),
@@ -2078,7 +2151,7 @@ impl SourceResidualCoder<'_> {
         let mut scratch = core::mem::take(&mut self.scratch);
         let [residual, coeffs, work] = &mut scratch;
         let found = self.forward(
-            tx,
+            (tx, syntax.dpcm(tx)),
             (
                 syntax.uses_tcq(tx),
                 syntax.uses_ddt(),

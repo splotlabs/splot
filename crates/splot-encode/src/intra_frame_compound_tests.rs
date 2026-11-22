@@ -25,7 +25,7 @@ fn with_compound(compound_types: u8, implicit_mask: bool) -> &'static PresetPara
 fn compound_type_streams_decode_on_any_thread_count() {
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Ten, 6, 200);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 0,
         };
@@ -90,7 +90,7 @@ fn forced_compound_types_decode_on_any_thread_count() {
     }));
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 200);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 0,
         };
@@ -156,7 +156,7 @@ fn searched_stream(
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -229,7 +229,7 @@ fn interintra_streams_decode_on_any_thread_count() {
     }));
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Ten, 6, 200);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 0,
         };
@@ -274,7 +274,7 @@ fn interintra_preset() -> &'static PresetParams {
 #[test]
 fn forced_interintra_at_tile_edges_decodes() {
     let mut config = config(136, 72, BitDepth::Ten, 6, 200);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -312,7 +312,7 @@ fn avm_decodes_interintra_like_splot() {
         return;
     };
     let mut config = config(136, 72, BitDepth::Ten, 6, 200);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -348,7 +348,7 @@ fn bawp_stream(
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(width, height, BitDepth::Ten, 6, 200);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -522,7 +522,7 @@ fn compound_modes_stream(
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };

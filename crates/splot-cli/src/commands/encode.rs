@@ -95,6 +95,14 @@ pub(crate) struct EncodeArgs {
     /// on more threads and cost some compression.
     #[arg(long, value_parser = parse_tiles, default_value = "1x1")]
     tiles: TileLayout,
+    /// Tile column widths in superblocks of the sequence: the first columns of
+    /// a non-uniform layout; one more column takes the rest of the frame.
+    /// Needs `--tiles 1x1`.
+    #[arg(long, value_name = "W1,W2,..", value_delimiter = ',')]
+    tile_widths: Vec<u32>,
+    /// Tile row heights in superblocks of the sequence, as `--tile-widths`.
+    #[arg(long, value_name = "H1,H2,..", value_delimiter = ',')]
+    tile_heights: Vec<u32>,
     /// Tile groups per frame: the tiles split in raster order into N tile
     /// group OBUs; N above the tile count codes one tile per group.
     #[arg(long, value_name = "N", default_value = "1")]
@@ -180,7 +188,7 @@ fn parse_tiles(value: &str) -> Result<TileLayout, String> {
     let (cols, rows) = value
         .split_once('x')
         .ok_or_else(|| format!("`{value}` is not COLSxROWS"))?;
-    Ok(TileLayout {
+    Ok(TileLayout::Uniform {
         cols_log2: log2(cols)?,
         rows_log2: log2(rows)?,
     })
@@ -432,7 +440,16 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
         .preset_overrides
         .extend(args.preset_set.iter().cloned());
     config.threads = args.threads;
-    config.tiles = args.tiles;
+    config.tiles = if args.tile_widths.is_empty() && args.tile_heights.is_empty() {
+        args.tiles.clone()
+    } else if args.tiles == TileLayout::default() {
+        TileLayout::Explicit {
+            widths: args.tile_widths.clone(),
+            heights: args.tile_heights.clone(),
+        }
+    } else {
+        bail!("--tile-widths and --tile-heights need --tiles 1x1");
+    };
     config.tile_groups = args.tile_groups;
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;

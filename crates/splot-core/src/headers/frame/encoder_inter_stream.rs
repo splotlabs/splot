@@ -15,9 +15,9 @@ use crate::headers::film_grain::{
     FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate,
 };
 use crate::headers::frame::encoder_stream::{
-    UniformTiles, check_tx_params, encoder_mfh_view, obu_header, plane_quantization, tile_framing,
-    write_film_grain_config, write_intra_frame_tail, write_mfh_reference, write_quant_and_filters,
-    write_uniform_tile_info,
+    FrameTiles, check_tx_params, encoder_mfh_view, obu_header, plane_quantization, tile_framing,
+    write_encoder_tile_info, write_film_grain_config, write_intra_frame_tail, write_mfh_reference,
+    write_quant_and_filters,
 };
 use crate::headers::frame::get_ref_frames::get_relative_dist;
 use crate::headers::frame::global_motion::{DEFAULT_WARP_PARAMS, REFS_PER_FRAME, base_prediction};
@@ -70,7 +70,7 @@ pub struct InterFrameParams {
     /// Transform mode and `reduced_tx_set`, as for key frames.
     pub tx: KeyFrameTxParams,
     /// The uniform tile layout, as for key frames.
-    pub tiles: UniformTiles,
+    pub tiles: FrameTiles,
     /// `reference_select` (§ 5.18.8.3): blocks may code compound prediction.
     pub reference_select: bool,
     /// `skip_mode_present` (§ 5.18.8.2): blocks may code skip mode; the
@@ -767,7 +767,7 @@ pub fn build_tip_output_frame_header(
         Some(_) => return Err(unsupported("TipInterpFilter")),
     };
     if params.tip_deblocking
-        && (!seq.filter.enable_df_sub_pu || params.tiles != UniformTiles::default())
+        && (!seq.filter.enable_df_sub_pu || params.tiles != FrameTiles::default())
     {
         return Err(unsupported(
             "TIP deblocking without enable_df_sub_pu or in tiles",
@@ -829,7 +829,7 @@ pub fn build_tip_output_frame_header(
         w.write_flag(params.tip_deblocking)?; // allow_df_sub_pu
         if params.tip_deblocking {
             w.write_flag(true)?; // apply_deblocking_filter_tip
-            write_uniform_tile_info(&mut w, seq, params.tiles, false)?;
+            write_encoder_tile_info(&mut w, seq, &params.tiles, false)?;
         }
     }
     let output = params.show_frame || params.implicit_output;

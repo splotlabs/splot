@@ -33,7 +33,7 @@ fn staged_stream(
     threads: usize,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, usize) {
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -199,7 +199,7 @@ fn fnv(bytes: &[u8]) -> u64 {
 /// one thread).
 fn two_pass_stream(preset: u8, threads: usize) -> (Vec<u8>, Vec<u8>, usize, usize) {
     let mut config = config(136, 72, BitDepth::Ten, preset, 200);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -389,7 +389,7 @@ fn leaf_coded_follows_the_last_coded_leaf() {
     let tx = tx_choice::key_frame_tx_params(&frame.preset, crate::preset::PresetContext::default());
     let header = FrameFilterParams::default();
     let core =
-        build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default()).unwrap();
+        build_key_frame_header(&frame.view, 90, 0, &header, tx, FrameTiles::default()).unwrap();
     let mut writer =
         KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence), 0).unwrap();
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();

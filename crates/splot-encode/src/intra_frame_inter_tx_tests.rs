@@ -159,7 +159,7 @@ fn inter_tx_partition_streams_decode_alike_on_any_thread_count() {
     );
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 110);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 0,
         };

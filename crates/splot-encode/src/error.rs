@@ -109,11 +109,13 @@ pub enum Error {
         what: &'static str,
     },
 
-    /// A tile layout asks for more than 64 tile columns or rows.
-    #[error("tile layout {tiles:?} asks for more than 64 tile columns or rows")]
+    /// A tile layout that the frames cannot code.
+    #[error("tile layout {tiles:?}: {reason}")]
     InvalidTiles {
         /// Requested layout.
         tiles: crate::config::TileLayout,
+        /// The rule the layout breaks.
+        reason: &'static str,
     },
 
     /// The speed preset is outside `0..=10`.
