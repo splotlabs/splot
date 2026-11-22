@@ -532,9 +532,8 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
     /// Codes the blocks of `planes` of `leaf` under `choice`, then writes the
     /// leaf syntax in order: `is_inter`, `cdef_idx`, the modes, the palette
     /// color map, the luma transform partition, and the coefficients of
-    /// `planes`. Only a pass over all planes publishes the leaf. An inter leaf codes every plane. An
-    /// IntraBC leaf whose vector is not valid here (a memoized subtree recoded before its
-    /// local-area source is coded) codes [`LeafChoice::DC`]. Returns the leaf's transform blocks.
+    /// `planes`. Only a pass over all planes publishes the leaf. An inter leaf codes every plane. Returns
+    /// the leaf's transform blocks.
     pub(crate) fn write_leaf(
         &mut self,
         leaf: &LeafBlock,
@@ -555,9 +554,6 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         if let Some(modes) = choice.intrabc {
-            if !self.syntax.intrabc_bv_valid(leaf, modes.bv) {
-                return self.write_leaf(leaf, LeafChoice::DC, coder, planes);
-            }
             return self.write_intrabc_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         let LeafChoice {
