@@ -26,7 +26,7 @@ fn wavefront_stream(
         case;
     let mut config = config(width, height, bit_depth, preset_index, qp);
     config.chroma = chroma;
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2,
         rows_log2,
     };

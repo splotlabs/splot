@@ -35,7 +35,7 @@ fn tiled_filter_stream(
     cols_log2: u8,
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>) {
     let mut config = config(200, 136, BitDepth::Eight, 9, 200);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2,
         rows_log2: 0,
     };

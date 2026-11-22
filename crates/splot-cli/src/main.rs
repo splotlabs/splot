@@ -41,7 +41,7 @@ enum Command {
     Decode(commands::decode::DecodeArgs),
     /// Encode a Y4M file to an AV2 IVF or Annex B stream.
     #[command(visible_alias = "enc")]
-    Encode(commands::encode::EncodeArgs),
+    Encode(Box<commands::encode::EncodeArgs>),
     /// Describe a validator diagnostic rule id (or list them all).
     Explain(commands::explain::ExplainArgs),
 }

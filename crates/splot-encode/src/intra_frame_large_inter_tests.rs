@@ -38,7 +38,7 @@ pub(super) fn in_first_inter_frame<R>(
     let plan = crate::gop::plan(1, config.keyint);
     let tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         110,
     );
     let core = plan
@@ -185,7 +185,7 @@ fn large_inter_streams_decode_to_the_encoder_recon() {
         let mut config = config(if tiled { 264 } else { 136 }, 136, bit_depth, 6, 110);
         config.chroma = chroma;
         if tiled {
-            config.tiles = TileLayout {
+            config.tiles = TileLayout::Uniform {
                 cols_log2: 1,
                 rows_log2: 0,
             };
@@ -202,7 +202,7 @@ fn large_inter_streams_decode_to_the_encoder_recon() {
 fn large_inter_streams_match_on_any_thread_count() {
     let stream = |threads: usize| {
         let mut config = config(264, 136, BitDepth::Eight, 6, 110);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 0,
         };
@@ -276,7 +276,7 @@ fn large_leaves_are_128x128_128x64_or_64x128() {
     let plan = crate::gop::plan(1, config.keyint);
     let tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         110,
     );
     let filters = FrameFilterParams::default();

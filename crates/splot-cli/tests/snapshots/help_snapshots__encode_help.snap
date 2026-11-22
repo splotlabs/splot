@@ -48,6 +48,10 @@ Options:
           Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
       --tiles <TILES>
           Tile columns x rows, each a power of two up to 64. More tiles code faster on more threads and cost some compression [default: 1x1]
+      --tile-widths <W1,W2,..>
+          Tile column widths in superblocks of the sequence: the first columns of a non-uniform layout; one more column takes the rest of the frame. Needs `--tiles 1x1`
+      --tile-heights <H1,H2,..>
+          Tile row heights in superblocks of the sequence, as `--tile-widths`
       --tile-groups <N>
           Tile groups per frame: the tiles split in raster order into N tile group OBUs; N above the tile count codes one tile per group [default: 1]
       --limit <LIMIT>
