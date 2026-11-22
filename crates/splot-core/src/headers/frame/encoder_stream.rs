@@ -154,6 +154,9 @@ pub struct EncoderToolFlags {
     /// `enable_global_motion` (§ 5.4.6): each inter frame codes
     /// `use_global_motion`.
     pub global_motion: bool,
+    /// `explicit_ref_frame_map` (§ 5.4.6): inter frames code
+    /// `frame_explicit_ref_frame_map`.
+    pub explicit_ref_frame_map: bool,
     /// `seq_tile_info_present_flag` (§ 5.4.2): the sequence codes this
     /// uniform layout, which frames reuse (§ 5.18.7.2).
     pub seq_tiles: Option<SeqTiles>,
@@ -563,7 +566,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     if let Some(constrain) = tools.drl_reorder {
         w.write_flag(constrain)?; // constrain_drl_reorder
     }
-    w.write_flag(false)?; // explicit_ref_frame_map
+    w.write_flag(tools.explicit_ref_frame_map)?;
     w.write_flag(false)?; // explicit_num_ref_frames
     w.write_bits(0, 3)?; // long_term_frame_id_bits
     w.write_ns(tools.max_drl_bits_minus_1, 5)?; // ns(MAX_REF_MV_STACK_SIZE - 1)

@@ -277,6 +277,11 @@ pub struct PresetParams {
     /// § 5.18.2) when the reference the decoder derives is their primary
     /// reference: the same CDFs for 3 fewer header bits.
     pub primary_ref_choose: bool,
+    /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
+    /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
+    /// `n` above `1` makes inter frames code their map with at most `n - 1`
+    /// references, the first of the default map.
+    pub explicit_refs: u8,
     /// Sequence tile info (§ 5.4.2), `0..=3`: `0` off; `1` the sequence codes
     /// the tile layout and frames reuse it (`allow_tile_info_change = 0`); `2`
     /// frames code `reuse_tile_info = 1`; `3` frames code `reuse_tile_info = 0`
@@ -919,6 +924,7 @@ impl PresetParams {
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
+        check("explicit_refs", self.explicit_refs, 0, 8, "")?;
         check("seq_tile_info", self.seq_tile_info, 0, 3, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check("tip_output_search", self.tip_output_search, 0, 2, "")?;
@@ -1210,6 +1216,7 @@ preset_table! {
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
+        explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],

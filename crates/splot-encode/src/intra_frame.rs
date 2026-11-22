@@ -284,6 +284,7 @@ impl IntraFrameCoder {
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
+                explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
                     cols_log2: config.tiles.cols_log2,
                     rows_log2: config.tiles.rows_log2,

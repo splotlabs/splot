@@ -190,6 +190,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         mvd_tools: [true, false, true],
         warp: true,
         global_motion: true,
+        explicit_ref_frame_map: true,
         seq_tiles: None,
         short_refresh: true,
         masked_compound: true,
@@ -231,6 +232,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
     assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
     assert!(inter.enable_tip_explicit_qp && inter.enable_short_refresh_frame_flags);
+    assert!(inter.explicit_ref_frame_map);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);
