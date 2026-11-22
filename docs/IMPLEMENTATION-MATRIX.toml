@@ -2813,6 +2813,38 @@ fixtures = ["tests/fixtures/padding.av2"]
 diagnostics = ["padding/all-zero-payload", "padding/invalid-trailing-bits"]
 
 [[feature]]
+id = "ENC-CBR-PADDING"
+name = "Encoder CBR filler padding OBUs"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.16", "6.15"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/encoder.rs"
+change_id = "enc-cbr-padding"
+owner = "encoder"
+risk = "low"
+notes = "Config::cbr_padding (2026-11-22, off by default; CLI --cbr-padding, CBR only, else Error::PaddingWithoutCbr): at the end of a temporal unit, when the encoder's decoder-buffer model would overflow (DecoderBuffer::overflow, the frame period's arrival beyond the room the decoder emptied), the unit ends with one OBU_PADDING of the overflow rounded up to bytes, OBU framing included (encode_padding_obu: zero padding bytes and the 0x80 trailing byte; one byte more where the leb128 size grows). The buffer model adds the padding and RateController::update_padding spends it against no budget. A still clip then runs at the target, a clip that does not fill the buffer keeps its bytes, and AVM and splot skip the OBU. The VBR first pass codes none."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::padding_obus_take_the_asked_size", "crates/splot-encode/src/rate_control_padding_tests.rs::still_cbr_streams_pad_to_the_target", "crates/splot-encode/src/rate_control_padding_tests.rs::streams_that_do_not_overflow_get_no_padding", "crates/splot-encode/src/rate_control_padding_tests.rs::padding_without_cbr_is_refused", "crates/splot-cli/tests/encode_decode_roundtrip.rs::cbr_padding_clips_validate_and_decode"]
+commands = ["cargo test -p splot-core padding_obus --locked", "cargo test -p splot-encode padding --locked", "cargo test -p splot-cli --test encode_decode_roundtrip cbr_padding --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "AV2-5.17-METADATA"
 name = "Metadata OBU syntax"
 category = "normative"
