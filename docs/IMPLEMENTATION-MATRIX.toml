@@ -4904,10 +4904,10 @@ spec_sections = ["5.18.2", "5.18.3.3", "5.18.3.4", "5.18.5.1", "5.18.8.1", "5.18
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/gop.rs"
-change_id = "enc-explicit-ref-map"
+change_id = "enc-implicit-output"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::explicit_refs (2026-11-22, 0 in every row): 1 sets explicit_ref_frame_map and frames code frame_explicit_ref_frame_map = 0; n > 1 makes inter frames code num_total_refs and ref_frame_idx for the first n - 1 references of the default map (§ 5.4.6, § 5.18.2). PresetParams::short_refresh (2026-11-22, off in every row): the sequence codes enable_short_refresh_frame_flags and inter and TIP output frames code has_refresh_frame_flags and the frame_to_refresh of their one slot (§ 5.18.2). The frame keyint frames after the last key frame and every scene cut (ENC-SCENE-CUT) are closed-loop key frames; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Blocks are intra, single-reference inter (ENC-INTER-SINGLE-REF), compound or skip mode (ENC-INTER-COMPOUND). Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Encoder policy: monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP. encode stays partial: no frame size override or reference scaling, switchable interpolation filter, CDF inheritance from a reference frame, intra block copy, segmentation, delta-q, global motion or TIP frames."
+notes = "PresetParams::implicit_output (2026-11-22, off in every row): the sequence codes monotonic_output_order_flag = 0 and every hidden frame codes implicit_output_frame = 1 in a temporal unit of its own (§ 7.3.3, § 7.3.6), with its film grain, in place of a show-existing frame; packets keep coding order, so Packet::pts is not monotonic. PresetParams::explicit_refs (2026-11-22, 0 in every row): 1 sets explicit_ref_frame_map and frames code frame_explicit_ref_frame_map = 0; n > 1 makes inter frames code num_total_refs and ref_frame_idx for the first n - 1 references of the default map (§ 5.4.6, § 5.18.2). PresetParams::short_refresh (2026-11-22, off in every row): the sequence codes enable_short_refresh_frame_flags and inter and TIP output frames code has_refresh_frame_flags and the frame_to_refresh of their one slot (§ 5.18.2). The frame keyint frames after the last key frame and every scene cut (ENC-SCENE-CUT) are closed-loop key frames; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Blocks are intra, single-reference inter (ENC-INTER-SINGLE-REF), compound or skip mode (ENC-INTER-COMPOUND). Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Default encoder policy (implicit_output off): monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP. encode stays partial: no frame size override or reference scaling, switchable interpolation filter, CDF inheritance from a reference frame, intra block copy, segmentation, delta-q, global motion or TIP frames."
 
 [feature.status]
 mapped = "done"
@@ -4922,7 +4922,7 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::explicit_reference_map_streams_decode_alike_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::explicit_reference_maps_code_the_first_default_references", "crates/splot-encode/src/intra_frame_tip_tests.rs::short_refresh_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_coded_frames_like_splot", "crates/splot-encode/src/gop_tests.rs::plans_ippp_with_key_frames_every_keyint", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::implicit_output_streams_decode_in_display_order", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::hidden_frames_code_implicit_output", "crates/splot-cli/tests/encode_decode_roundtrip.rs::implicit_output_clips_decode_in_input_order", "crates/splot-encode/src/intra_frame_carry_tests.rs::explicit_reference_map_streams_decode_alike_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::explicit_reference_maps_code_the_first_default_references", "crates/splot-encode/src/intra_frame_tip_tests.rs::short_refresh_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_coded_frames_like_splot", "crates/splot-encode/src/gop_tests.rs::plans_ippp_with_key_frames_every_keyint", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-core encoder_inter_stream --locked", "cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -5545,7 +5545,7 @@ module = "crates/splot-encode/src/tx_choice.rs"
 change_id = "enc-quant-matrices"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::quant_matrices (2026-11-22, 0 = off in every row): values 1, 2 and 3 fix the level band [10, 14], [5, 9] and [0, 14]; every frame codes using_qmatrix = 1 with qm_y = qm_u = qm_v = min + base_q_idx * (max - min + 1) / (MaxQ + 1), so the matrix gets flatter as the quantizer gets coarser. The encoder_syntax facade resolves useQm and segLvl with the decoder's own rule (recon_params takes IntraTileSyntax::quant_matrices) and reconstructs under the frame levels; the deadzone quantizer, RDOQ and TCQ use q2 = Round2(q * m, 5) of each coefficient with the built-in Quantizer_Matrix weights from splot-tables. Not done: user matrices in the quantizer matrix OBU (AV2-5.4.11-USER-QM), per-segment levels (segmentation stays refused)."
+notes = "PresetParams::quant_matrices (2026-11-22, 0 = off in every row): values 1, 2 and 3 fix the level band [10, 14], [5, 9] and [0, 14]; every frame codes using_qmatrix = 1 with qm_y = qm_u = qm_v = min + base_q_idx * (max - min + 1) / (MaxQ + 1), so the matrix gets flatter as the quantizer gets coarser. The encoder_syntax facade resolves useQm and segLvl with the decoder's own rule (recon_params takes IntraTileSyntax::quant_matrices) and reconstructs under the frame levels; the deadzone quantizer, RDOQ and TCQ use q2 = Round2(q * m, 5) of each coefficient with the built-in Quantizer_Matrix weights from splot-tables. Not done: user matrices in the quantizer matrix OBU (AV2-5.4.11-USER-QM), per-segment levels (every segment of ENC-SEGMENTATION shares the frame level, pic_qm_num_minus_1 = 0)."
 
 [feature.status]
 mapped = "done"
@@ -5562,6 +5562,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_qm_tests.rs::qm_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_qm_tests.rs::facade_resolves_the_matrix_level_of_each_block", "crates/splot-encode/src/intra_frame_qm_tests.rs::qm_level_rises_with_qindex_inside_its_band", "crates/splot-encode/src/intra_frame_qm_tests.rs::avm_decodes_qm_streams_like_splot", "crates/splot-encode/src/kernels/quantize_tests.rs::weighted_simd_matches_scalar_and_the_decoder", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs"]
 commands = ["cargo test -p splot-encode qm --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_qm -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SEGMENTATION"
+name = "Encoder source-activity segmentation"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.7.1", "5.20.5.7", "5.20.5.8", "5.20.7.2", "7.12.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-segmentation"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::segmentation (2026-11-22, 0 = off in every row): value 1 codes segmentation_enabled with 4 SEG_LVL_ALT_Q segments in every frame, segmentation_update_map = 1 and no temporal update. A superblock's segment is the bin of the mean log2 luma variance of its 16x16 blocks against the frame mean (edges -1, 0, +1 octave); segments 0..=3 take ALT_Q -9, -3, +3, +9 and lambda moves of -0.75, -0.25, +0.25, +0.75 octave, with base_q_idx + ALT_Q >= 1. The block qindex is the § 7.12.2 get_qindex on top of the delta-q CurrentQIndex. The encoder_syntax facade writes segment_id against the decoder's prediction (a skipped leaf takes the prediction) and keeps the segment ids in snapshots and superblock edges. Not done: SEG_LVL_SKIP, SEG_LVL_GLOBALMV, temporal update, enable_ext_seg, per-segment quantizer-matrix levels, a searched map."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_segmentation_tests.rs::segment_maps_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tile_writer/tests.rs::superblock_segments_round_trip_over_delta_q", "crates/splot-core/src/write/frame_segmentation_tests.rs::coded_map_flags_follow_the_feature_data"]
+commands = ["cargo test -p splot-encode segment --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_segment_maps -- --ignored"]
 fixtures = []
 diagnostics = []
 

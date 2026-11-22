@@ -64,6 +64,7 @@ fn plan(display: u64, frame_type: FrameType) -> GopFrame {
         primary_slot: None,
         opens_temporal_unit: true,
         intra_only: false,
+        implicit_output: false,
     }
 }
 

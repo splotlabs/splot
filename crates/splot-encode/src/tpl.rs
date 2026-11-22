@@ -313,6 +313,21 @@ pub(crate) fn quant_of(lambda_log2: i32) -> (i16, i16) {
     (offset as i16, lambda as i16)
 }
 
+/// The lambda move in Q8 octaves of each source-activity segment
+/// ([`crate::preset::PresetParams::segmentation`]).
+pub(crate) const SEGMENT_LAMBDA_LOG2: [i32; 4] = [-192, -64, 64, 192];
+
+/// The source-activity segment of a superblock whose
+/// [`ssim_lambda_log2`] at 100 is `log2`: bins split at -1, 0 and +1 octave.
+pub(crate) const fn activity_segment(log2: i32) -> u8 {
+    match log2 {
+        ..-256 => 0,
+        -256..0 => 1,
+        0..256 => 2,
+        _ => 3,
+    }
+}
+
 /// The luma side of an SSIM variance block.
 const SSIM_BLOCK: usize = 16;
 

@@ -112,6 +112,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         disable_cross_frame_cdf_init: false,
                         choose_primary_ref_frame: false,
                         qm_level: [None, Some(0), Some(14)][index],
+                        segment_alt_q: [None, Some([-9, -3, 3, 9]), None][index],
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -142,6 +143,9 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     assert_eq!(dq.delta_q_present.then_some(dq.delta_q_res), tx.delta_q_res);
                     let qm = core.setup_qm_params.unwrap();
                     assert_eq!(qm.using_qmatrix.then_some(qm.levels[0].qm_y), tx.qm_level);
+                    let seg = core.segmentation_params.unwrap();
+                    let alt_q: [i16; 4] = core::array::from_fn(|i| seg.features[i][0].data as i16);
+                    assert_eq!(seg.segmentation_enabled.then_some(alt_q), tx.segment_alt_q);
                     assert_eq!(reparse_core(&core, &view), core);
                 }
             }
@@ -195,6 +199,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         global_motion: true,
         num_ref_frames: Some(5),
         explicit_ref_frame_map: true,
+        implicit_output: true,
         seq_tiles: None,
         short_refresh: true,
         masked_compound: true,
@@ -237,7 +242,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
     assert!(inter.enable_tip_explicit_qp && inter.enable_short_refresh_frame_flags);
     assert_eq!(inter.num_ref_frames, 5);
-    assert!(inter.explicit_ref_frame_map);
+    assert!(inter.explicit_ref_frame_map && !seq.general.monotonic_output_order_flag);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);

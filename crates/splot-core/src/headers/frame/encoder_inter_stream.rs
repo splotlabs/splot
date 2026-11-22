@@ -127,6 +127,9 @@ pub struct InterFrameParams {
     /// the smaller of this and the default count, over the first references
     /// of the default map. Needs `explicit_ref_frame_map`.
     pub explicit_refs: Option<u8>,
+    /// `implicit_output_frame` of a hidden frame (§ 5.18.2): the decoder
+    /// outputs it by order hint. Needs `monotonic_output_order_flag = 0`.
+    pub implicit_output: bool,
 }
 
 /// `our_ref`, `their_ref` with its `ns` range, and the `PrevGmParams` of each
@@ -299,9 +302,7 @@ fn inter_frame_header_bits(
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
     w.write_flag(true)?; // frame_is_inter
     w.write_flag(params.show_frame)?; // immediate_output_frame
-    if !params.show_frame && !seq.monotonic_output_order_flag {
-        w.write_flag(false)?; // implicit_output_frame
-    }
+    write_implicit_output(&mut w, seq, params)?;
     w.write_flag(false)?; // frame_size_override_flag
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
@@ -403,7 +404,7 @@ fn inter_frame_header_bits(
         seq,
         (params.base_q_idx, params.tiles, tx),
         &params.filters,
-        (false, lr_refs),
+        (false, lr_refs, primary_ref_frame.map(|_| false)),
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_flag(params.reference_select)?;
@@ -416,7 +417,8 @@ fn inter_frame_header_bits(
     }
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
     write_global_motion(&mut w, seq, params, (num_total_refs, gm))?;
-    write_film_grain_config(&mut w, seq, params.show_frame, tx.grain_seed)?;
+    let output = params.show_frame || params.implicit_output;
+    write_film_grain_config(&mut w, seq, output, tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.align_to_byte();
     Ok((w.into_bytes(), bit_len))
@@ -713,9 +715,7 @@ pub fn build_tip_output_frame_header(
     w.write_uvlc(0)?; // cur_mfh_id
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
     w.write_flag(params.show_frame)?; // immediate_output_frame
-    if !params.show_frame && !seq.monotonic_output_order_flag {
-        w.write_flag(false)?; // implicit_output_frame
-    }
+    write_implicit_output(&mut w, seq, params)?;
     w.write_flag(false)?; // frame_size_override_flag
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
@@ -761,7 +761,8 @@ pub fn build_tip_output_frame_header(
             write_uniform_tile_info(&mut w, seq, params.tiles, false)?;
         }
     }
-    write_film_grain_config(&mut w, seq, params.show_frame, params.tx.grain_seed)?;
+    let output = params.show_frame || params.implicit_output;
+    write_film_grain_config(&mut w, seq, output, params.tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.write_trailing_bits(8 - bit_len % 8)?;
     let bytes = w.into_bytes();
@@ -1061,6 +1062,24 @@ fn write_explicit_ref_map(
         for &index in map {
             w.write_bits(index, ceil_log2(seq.num_ref_frames))?; // ref_frame_idx
         }
+    }
+    Ok(())
+}
+
+/// `implicit_output_frame` of a hidden frame in a sequence without monotonic
+/// output order (§ 5.18.2).
+fn write_implicit_output(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    params: &InterFrameParams,
+) -> Result<(), EncoderHeaderError> {
+    if params.implicit_output && (params.show_frame || seq.monotonic_output_order_flag) {
+        return Err(unsupported(
+            "implicit output of a shown frame or in monotonic order",
+        ));
+    }
+    if !params.show_frame && !seq.monotonic_output_order_flag {
+        w.write_flag(params.implicit_output)?; // implicit_output_frame
     }
     Ok(())
 }
