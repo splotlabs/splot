@@ -18,9 +18,6 @@ and `.github/copilot-instructions.md` point here.
 4. Flag uncertainty explicitly. If a small, local, low-risk experiment would
    clarify the issue, run it and bring the hypothesis and result back for
    discussion. Do not present confidence as certainty.
-5. Suggest better paths when they matter. Prefer a durable improvement over a
-   tactical patch when the long-term impact is clearly better, and explain the
-   tradeoff.
 
 Work like a lazy senior developer: efficient, not careless. After understanding
 the real flow, stop at the first rung that holds: existing code, standard
@@ -99,6 +96,30 @@ fixture-named runtime modules.
 - Non-trivial changes use a stable Feature ID from
   `docs/IMPLEMENTATION-MATRIX.toml`.
 - Commit subjects and PR titles use Conventional Commits.
+
+## Autonomous Work
+
+The owner turns autonomous mode on in the task ("autonomous", "take it to
+merge") or by handing over a GitHub issue. Without it, a commit, push, PR or
+merge needs the task to name it.
+
+In autonomous mode, do the whole path without asking or reporting progress:
+branch, implement, commit, run the gate and a code review, push, open the PR
+linked to its issue, address every review comment (fix it, or reply with the
+reason it stays), and merge when CI is green. Diagnose failing checks and
+conflicts, and continue.
+
+Stop only for a decision that is the owner's:
+
+- The requirement is unclear.
+- The best solution is a larger restructure than the task implies, or several
+  sound designs exist.
+- A rule in this file says to ask or needs human sign-off.
+- The action is destructive or cannot be undone.
+
+Ask once, with the options, their pros, cons and effort, and a recommendation.
+Continue the work that does not depend on the answer. Never reach the merge
+with a hack, workaround, weakened check, skipped test or dismissed comment.
 
 ## Acceptance
 
@@ -202,8 +223,7 @@ Rules:
 - Each SIMD version has a unit test against the oracle on random and extreme
   inputs. x86_64 code must pass clippy with `--target x86_64-apple-darwin`
   (or another x86_64 target) when it cannot run on the host.
-- An arch-specific kernel uses safe `core::arch` intrinsics. A new `unsafe`
-  block needs human sign-off.
+- An arch-specific kernel uses safe `core::arch` intrinsics.
 - Do not tune by fixed caps or per-stream heuristics. Fix the root cause.
 
 ## Licensing
