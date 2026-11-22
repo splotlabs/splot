@@ -1594,7 +1594,13 @@ fn inter_stream_of(
             .search_superblock(|syntax, root| tree(syntax, root, &mut rng, &mut coverage))
             .unwrap();
         writer
-            .write_superblock(&SuperblockDecision { tree }, &mut residual)
+            .write_superblock(
+                &SuperblockDecision {
+                    tree,
+                    segment: None,
+                },
+                &mut residual,
+            )
             .unwrap();
     }
     let (tile, recon) = writer.finish().unwrap();
@@ -1825,7 +1831,13 @@ fn search_frame_at(
         assert_eq!(tree, search());
         let mut counting = ToolCount(&mut residual, counts);
         writer
-            .write_superblock(&SuperblockDecision { tree: tree.clone() }, &mut counting)
+            .write_superblock(
+                &SuperblockDecision {
+                    tree: tree.clone(),
+                    segment: None,
+                },
+                &mut counting,
+            )
             .unwrap();
         counts = counting.1;
         trees.push(tree);
@@ -2082,6 +2094,8 @@ mod mvpred;
 mod qm;
 #[path = "intra_frame_refine_tests.rs"]
 mod refine;
+#[path = "intra_frame_segmentation_tests.rs"]
+mod segmentation;
 #[path = "intra_frame_tf_tests.rs"]
 mod tf;
 #[path = "intra_frame_tip_tests.rs"]

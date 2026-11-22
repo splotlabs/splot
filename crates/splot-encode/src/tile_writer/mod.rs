@@ -202,6 +202,9 @@ impl KeyFrameTileWriter {
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
         self.syntax.begin_superblock(root);
+        if let Some(segment) = decision.segment {
+            self.syntax.set_superblock_segment(segment)?;
+        }
         if write {
             if self.syntax.sdp_roots(root).is_none() {
                 self.filters
@@ -634,6 +637,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         PREDICTIONS.set([prediction, v_prediction]);
         self.syntax.write_is_inter(leaf, false, self.sink)?;
         self.syntax.write_use_intrabc(leaf, None, self.sink)?;
+        self.syntax.write_segment_id(leaf, false, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_leaf_syntax(self.syntax, self.sink, leaf, false)?;
         }
@@ -672,6 +676,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
         self.syntax.write_is_inter(leaf, true, self.sink)?;
         self.syntax.write_skip_txfm(leaf, skip, self.sink)?;
+        self.syntax.write_segment_id(leaf, skip, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_leaf_syntax(self.syntax, self.sink, leaf, skip)?;
         }
@@ -705,6 +710,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let mut blocks = self.syntax.plan_intrabc_leaf(leaf, modes, tx_partition)?;
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
         self.syntax.write_use_intrabc(leaf, Some(skip), self.sink)?;
+        self.syntax.write_segment_id(leaf, skip, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_leaf_syntax(self.syntax, self.sink, leaf, skip)?;
         }

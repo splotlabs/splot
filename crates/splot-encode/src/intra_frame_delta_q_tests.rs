@@ -122,8 +122,8 @@ fn empty_offsets_code_no_delta_q() {
 }
 
 /// Each frame's decoder output and `[delta_q_present, deblock, CDEF, LR,
-/// CCSO, GDF]` by display index.
-type FrameTools = Arc<Mutex<BTreeMap<u64, (Vec<u8>, [bool; 6])>>>;
+/// CCSO, GDF, segmentation_enabled]` by display index.
+type FrameTools = Arc<Mutex<BTreeMap<u64, (Vec<u8>, [bool; 7])>>>;
 
 /// Forwards to the frame coder and records [`FrameTools`].
 struct ToolRecording {
@@ -147,6 +147,8 @@ impl FrameCoder for ToolRecording {
                     .as_ref()
                     .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true)),
                 core.gdf_params.is_some_and(|gdf| gdf.gdf_frame_enable),
+                core.segmentation_params
+                    .is_some_and(|seg| seg.segmentation_enabled),
             ];
             let recon = recon_bytes(frame, self.bit_depth);
             self.frames
@@ -179,17 +181,17 @@ fn tpl_stream(
     config: Config,
     strength: u8,
     threads: usize,
-) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 6]>) {
+) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 7]>) {
     tpl_stream_of(config, strength, threads, panning_frame)
 }
 
 /// [`tpl_stream`] of the frames `frame` gives.
-fn tpl_stream_of(
+pub(super) fn tpl_stream_of(
     mut config: Config,
     strength: u8,
     threads: usize,
     frame: fn(&Config, u32) -> SourceFrame,
-) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 6]>) {
+) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 7]>) {
     if config.rate_control == (RateControlMode::ConstantQp { qp: 0 }) {
         config.rate_control = RateControlMode::Crf { crf: 50 };
     }
@@ -266,7 +268,7 @@ fn tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 }
 
 /// [`panning_frame`] with flat luma on its left half.
-fn half_flat_frame(config: &Config, index: u32) -> SourceFrame {
+pub(super) fn half_flat_frame(config: &Config, index: u32) -> SourceFrame {
     let mut planes = panning_frame(config, index).planes().clone();
     let width = config.width as usize;
     for (i, sample) in planes[0].iter_mut().enumerate() {
