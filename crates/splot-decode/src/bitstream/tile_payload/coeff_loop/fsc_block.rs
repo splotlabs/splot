@@ -146,12 +146,10 @@ impl Block<'_> {
         quant: &mut [i32],
     ) -> Result<(usize, super::quant_state::NonZeroCoeffQuantState), CoeffFscBranchError> {
         let rows = cdfs.coeff_rows_mut();
-        let bob_row = row_at(row_at(&mut rows.coeff_base_bob, self.size_ctx), {
+        let bob_row = row_at(row_at(rows.coeff_base_bob(), self.size_ctx), {
             coeff_base_bob_ctx(self.bob, self.seg_eob)
         });
         let first = symbols.read_trusted::<4, UPD>(bob_row) + 1;
-        let base = row_at(&mut rows.coeff_base_idtx, self.size_ctx);
-        let br = row_at(&mut rows.coeff_br_idtx, self.size_ctx);
         let mut carried = (usize::MAX, 0);
         for (index, &entry) in self.entries.iter().enumerate() {
             let grid = entry_grid(entry);
@@ -161,12 +159,14 @@ impl Block<'_> {
             } else {
                 let ctx = (near & 0xff) as usize;
                 let word = (ctx == carried.0).then_some(carried.1);
+                let base = row_at(rows.coeff_base_idtx(), self.size_ctx);
                 let (level, word) = symbols.read_trusted_carried::<5, UPD>(row_at(base, ctx), word);
                 carried = (ctx, word);
                 level
             };
             if level > NUM_BASE_LEVELS {
                 let ctx = (((near >> 8) & 0xff) as usize).min(6);
+                let br = row_at(rows.coeff_br_idtx(), self.size_ctx);
                 level += symbols.read_trusted::<5, UPD>(row_at(br, ctx));
             }
             levels[grid + LEVEL_STRIDE + 1] = LEVEL_WORD[level as usize & 15];
@@ -174,7 +174,7 @@ impl Block<'_> {
             *nonzero_len += usize::from(level != 0);
         }
 
-        let signs = row_at(&mut rows.idtx_sign, self.size_ctx);
+        let signs = row_at(rows.idtx_sign(), self.size_ctx);
         let mut read_quant = CoeffReadQuantState::new(CoeffReadQuantConfig {
             is_hidden: false,
             allow_tcq: false,

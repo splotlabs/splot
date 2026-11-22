@@ -33,23 +33,23 @@ impl TileCdfSubset {
         let rows = &mut self.rows;
         let row = match selector {
             TileCdfSelector::DoSplit { plane_start, ctx } => rows
-                .do_split
+                .do_split()
                 .get_mut(plane_start)
                 .and_then(|rows| rows.get_mut(ctx)),
             TileCdfSelector::DoSquareSplit { plane_start, ctx } => rows
-                .do_square_split
+                .do_square_split()
                 .get_mut(plane_start)
                 .and_then(|rows| rows.get_mut(ctx)),
             TileCdfSelector::DoExtPartition { plane_start, ctx } => rows
-                .do_ext_partition
+                .do_ext_partition()
                 .get_mut(plane_start)
                 .and_then(|rows| rows.get_mut(ctx)),
             TileCdfSelector::RectType { plane_start, ctx } => rows
-                .rect_type
+                .rect_type()
                 .get_mut(plane_start)
                 .and_then(|rows| rows.get_mut(ctx)),
             TileCdfSelector::DoUneven4WayPartition { plane_start, ctx } => rows
-                .do_uneven_4way_partition
+                .do_uneven_4way_partition()
                 .get_mut(plane_start)
                 .and_then(|rows| rows.get_mut(ctx)),
             _ => None,

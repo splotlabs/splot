@@ -1343,11 +1343,11 @@ fn decode_block(
     {
         1
     } else {
-        let rows = &mut work_unit
+        let rows = work_unit
             .cdf_mut()
             .tile_cdfs_mut()
             .block_rows_mut()
-            .is_inter;
+            .is_inter();
         let ctx = neighbour_ctx
             .as_ref()
             .map_or(0, BlockNeighbourContext::is_inter_ctx);
@@ -1577,7 +1577,7 @@ fn decode_block(
     let skip = if segment_skips {
         1
     } else {
-        let rows = &mut work_unit.cdf_mut().tile_cdfs_mut().block_rows_mut().skip;
+        let rows = work_unit.cdf_mut().tile_cdfs_mut().block_rows_mut().skip();
         let ctx = inter_skip_txfm_ctx(neighbour_ctx.skip_ctx(), skip_mode == 1);
         read_row(symbols, row_at(rows, ctx)) as u8
     };
@@ -1803,7 +1803,7 @@ fn decode_block(
     let single_mode = if segment_forces_globalmv {
         SINGLE_MODE_GLOBALMV
     } else if tip_ref {
-        if read_row(symbols, &mut cdfs.block_rows_mut().tip_pred_mode) == 0 {
+        if read_row(symbols, cdfs.block_rows_mut().tip_pred_mode()) == 0 {
             SINGLE_MODE_NEARMV
         } else {
             SINGLE_MODE_NEWMV
@@ -1811,7 +1811,7 @@ fn decode_block(
     } else {
         read_row(
             symbols,
-            row_at(&mut cdfs.block_rows_mut().single_mode, new_mv_context),
+            row_at(cdfs.block_rows_mut().single_mode(), new_mv_context),
         ) as u8
     };
     let use_amvd = read_use_amvd_syntax(
@@ -2250,7 +2250,7 @@ fn read_inter_intra_syntax_enabled(
     let bsize_group = SIZE_GROUP_LOOKUP[b_size];
     if read_row(
         symbols,
-        row_at(&mut cdfs.block_rows_mut().inter_intra, bsize_group),
+        row_at(cdfs.block_rows_mut().inter_intra(), bsize_group),
     ) == 0
     {
         return Ok(None);

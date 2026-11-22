@@ -336,7 +336,7 @@ pub(super) fn read_reference_mode(
     facts: &FrameRefFacts,
 ) -> bool {
     let ctx = neighbour_ctx.comp_mode_ctx(facts.backward());
-    read_row(symbols, row_at(&mut cdfs.block_rows_mut().comp_mode, ctx)) != 0
+    read_row(symbols, row_at(cdfs.block_rows_mut().comp_mode(), ctx)) != 0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -760,7 +760,7 @@ fn read_compound_motion_mode_syntax(
     signal_local_warp: bool,
     neighbour_ctx: &BlockNeighbourContext,
 ) -> bool {
-    let rows = &mut cdfs.block_rows_mut().use_local_warp;
+    let rows = cdfs.block_rows_mut().use_local_warp();
     signal_local_warp && read_row(symbols, row_at(rows, neighbour_ctx.use_local_warp_ctx())) != 0
 }
 
@@ -1160,7 +1160,7 @@ fn read_compound_use_optflow_syntax(
     symbols: &mut SymbolDecoder<'_>,
     y_mode: CompoundYMode,
 ) -> bool {
-    let rows = &mut cdfs.block_rows_mut().use_optflow;
+    let rows = cdfs.block_rows_mut().use_optflow();
     read_row(symbols, row_at(rows, use_optflow_ctx(y_mode))) != 0
 }
 
@@ -1197,7 +1197,7 @@ fn read_compound_use_refinemv_syntax(
     y_mode: CompoundYMode,
     use_optflow: bool,
 ) -> bool {
-    let rows = &mut cdfs.block_rows_mut().use_refinemv;
+    let rows = cdfs.block_rows_mut().use_refinemv();
     read_row(symbols, row_at(rows, use_refinemv_ctx(y_mode, use_optflow))) != 0
 }
 
@@ -1538,14 +1538,14 @@ fn read_compound_blend_syntax(
     if !compound_reads_group_idx(tools, input) {
         return Ok(average_blend);
     }
-    let rows = &mut cdfs.block_rows_mut().comp_group_idx;
+    let rows = cdfs.block_rows_mut().comp_group_idx();
     if read_row(symbols, row_at(rows, input.comp_group_idx_ctx)) == 0 {
         return Ok(average_blend);
     }
     let compound_type = if wedge_bits(input.block_size_index) == 0 {
         MaskedCompoundType::DiffWeighted
     } else {
-        match read_row(symbols, &mut cdfs.block_rows_mut().compound_type) {
+        match read_row(symbols, cdfs.block_rows_mut().compound_type()) {
             0 => MaskedCompoundType::Wedge,
             _ => MaskedCompoundType::DiffWeighted,
         }
@@ -1614,7 +1614,7 @@ fn read_compound_cwp_syntax(
     }
     let mut coding_idx = 0usize;
     for idx in 0..CWP_WEIGHTING_FACTOR[0].len() - 1 {
-        let symbol = read_row(symbols, row_at(&mut cdfs.block_rows_mut().cwp_idx, idx));
+        let symbol = read_row(symbols, row_at(cdfs.block_rows_mut().cwp_idx(), idx));
         coding_idx = idx + usize::from(symbol != 0);
         if symbol == 0 {
             break;

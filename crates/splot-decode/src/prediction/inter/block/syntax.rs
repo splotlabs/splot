@@ -38,10 +38,7 @@ pub(super) fn resolve_interp_filter(
             if !needs_interp_filter {
                 return Ok(ReconInterpolationFilter::EightTap);
             }
-            let symbol = read_row(
-                symbols,
-                row_at(&mut cdfs.block_rows_mut().interp_filter, ctx),
-            );
+            let symbol = read_row(symbols, row_at(cdfs.block_rows_mut().interp_filter(), ctx));
             Ok(interp_filter_from_symbol(symbol as u8))
         }
         _ => Err(crate::error::DecodeHeaderStateError::InvalidInterpolationFilter.into()),
@@ -88,7 +85,7 @@ pub(super) fn read_drl_idx_from(
 ) -> usize {
     let m = max_drl_bits_minus_1.saturating_add(1) as usize;
     for idx in min_idx.min(m)..m {
-        let bank = row_at(&mut cdfs.block_rows_mut().drl_mode, idx.min(2));
+        let bank = row_at(cdfs.block_rows_mut().drl_mode(), idx.min(2));
         if read_row(symbols, row_at(bank, new_mv_context)) == 0 {
             return idx;
         }
@@ -145,7 +142,10 @@ pub(super) fn read_use_amvd_syntax(
     ctx: usize,
 ) -> bool {
     single_use_amvd_selector(enable_adaptive_mvd, single_mode, ctx).is_some()
-        && read_row(symbols, row_at(&mut cdfs.block_rows_mut().use_amvd[4], ctx)) != 0
+        && read_row(
+            symbols,
+            row_at(&mut cdfs.block_rows_mut().use_amvd()[4], ctx),
+        ) != 0
 }
 
 /// The `use_amvd` selector of a single-reference block coding `single_mode`
@@ -174,7 +174,7 @@ pub(super) fn read_skip_mode_syntax(
     {
         return 0;
     }
-    read_row(symbols, row_at(&mut cdfs.block_rows_mut().skip_mode, ctx)) as u8
+    read_row(symbols, row_at(cdfs.block_rows_mut().skip_mode(), ctx)) as u8
 }
 
 pub(super) fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
