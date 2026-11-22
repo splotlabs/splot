@@ -275,14 +275,10 @@ impl IntraTools {
                 "lossless",
             ),
             (
-                core.segmentation_params
+                core.setup_qm_params
                     .as_ref()
-                    .is_some_and(|seg| seg.segmentation_enabled)
-                    || core
-                        .setup_qm_params
-                        .as_ref()
-                        .is_some_and(|qm| qm.using_qmatrix),
-                "segmentation or quantizer matrices",
+                    .is_some_and(|qm| qm.using_qmatrix),
+                "quantizer matrices",
             ),
             (tx_mode == TxMode::Only4x4, "TX_MODE_ONLY_4X4"),
         ];

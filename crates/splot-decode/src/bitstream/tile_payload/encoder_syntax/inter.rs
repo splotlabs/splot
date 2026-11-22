@@ -1414,7 +1414,9 @@ impl IntraTileSyntax {
                 "a motion vector the decoder resolves differently",
             ));
         }
-        self.publish_non_intra_modes(leaf)
+        self.publish_non_intra_modes(leaf)?;
+        self.end_leaf_segment();
+        Ok(())
     }
 
     /// Calls `read` with the reference plane view and the § 7.11.3.3
