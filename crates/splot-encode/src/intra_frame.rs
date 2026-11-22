@@ -20,7 +20,7 @@ use splot_decode::encoder_syntax::{
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
 use splot_recon::{
-    BitDepth, DecodedFrame, DequantBlockParams, PixelFormat, PlaneId, PlaneSize,
+    BitDepth, DecodedFrame, DequantBlockParams, PixelFormat, PlaneId, PlaneSize, QmFrameLevels,
     secondary_transform_layout,
 };
 
@@ -617,6 +617,7 @@ impl IntraFrameCoder {
         tools.0.disable_cdf_update = self.preset.disable_cdf_update;
         tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
         tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;
+        tools.0.qm_level = crate::tx_choice::qm_level(&self.preset, qindex, self.bit_depth);
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
@@ -1496,7 +1497,9 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         syntax.set_scalar_trial(self.candidate || self.trial || self.scalar);
         let use_tcq = syntax.uses_tcq(tx);
         let ddt = syntax.uses_ddt();
-        let (params, forward) = self.forward(tx, (use_tcq, ddt), prediction, residual, coeffs)?;
+        let qm = syntax.quant_matrices();
+        let (params, forward) =
+            self.forward(tx, (use_tcq, ddt, qm), prediction, residual, coeffs)?;
         if let Some(secondary) = syntax.secondary_transform(tx)? {
             kernels()
                 .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
@@ -1608,7 +1611,7 @@ impl SourceResidualCoder<'_> {
         [residual, plain_u, dequant]: &mut [Vec<i32>; 3],
         [u_coeffs, v_coeffs]: &mut [Vec<i32>; 2],
     ) -> core::result::Result<Vec<[Vec<i32>; 3]>, TileWriterError> {
-        let ddt = (false, syntax.uses_ddt());
+        let ddt = (false, syntax.uses_ddt(), syntax.quant_matrices());
         let (u_params, u_forward) = self.forward(u, ddt, u_prediction, residual, u_coeffs)?;
         let (v_params, v_forward) = self.forward(v, ddt, v_prediction, residual, v_coeffs)?;
         let [uu, vv, uv] = kernels().cctx_stats(u_coeffs, v_coeffs);
@@ -1732,14 +1735,7 @@ impl SourceResidualCoder<'_> {
             )
             .map_err(kernel)?;
         } else {
-            let quantizer = Quantizer::new(
-                params.dc_quant,
-                params.ac_quant,
-                params.dq_denom,
-                self.bit_depth,
-                DEADZONE_ROUNDING_Q8,
-            )
-            .map_err(kernel)?;
+            let quantizer = block.quantizer(DEADZONE_ROUNDING_Q8).map_err(kernel)?;
             kernels()
                 .quantize(&quantizer, coeffs, &mut levels, dequant)
                 .map_err(kernel)?;
@@ -1771,6 +1767,13 @@ impl SourceResidualCoder<'_> {
             log2_height: forward.coeff_height().ilog2(),
             plane: tx.plane,
             tx_type: tx.tx_type,
+            qm: match &params.qm {
+                Some(qm) => Some(
+                    qm.built_in_weights(params.tx_width * params.tx_height)
+                        .ok_or(TileWriterError::Unsupported("user quantizer matrices"))?,
+                ),
+                None => None,
+            },
         };
         let lambda_q8 = self
             .lambda
@@ -1783,7 +1786,7 @@ impl SourceResidualCoder<'_> {
     fn forward(
         &self,
         tx: &TransformBlock,
-        (use_tcq, use_ddt): (bool, bool),
+        (use_tcq, use_ddt, qm): (bool, bool, Option<QmFrameLevels>),
         prediction: &[u16],
         residual: &mut Vec<i32>,
         coeffs: &mut Vec<i32>,
@@ -1799,7 +1802,7 @@ impl SourceResidualCoder<'_> {
             plane_id(tx.plane)?,
             (log2_w, log2_h),
             (tx.tx_type, use_tcq, use_ddt),
-            self.bit_depth,
+            (self.bit_depth, qm),
         )?;
         let forward = ForwardTransform2d::new(
             log2_w,
@@ -1876,22 +1879,20 @@ impl SourceResidualCoder<'_> {
         [residual, coeffs, dequant]: &mut [Vec<i32>; 3],
         levels: &mut Vec<i32>,
     ) -> core::result::Result<Option<u128>, TileWriterError> {
-        let (params, forward) =
-            self.forward(tx, (false, syntax.uses_ddt()), prediction, residual, coeffs)?;
-        let quantizer = Quantizer::new(
-            params.dc_quant,
-            params.ac_quant,
-            params.dq_denom,
-            self.bit_depth,
-            DEADZONE_ROUNDING_Q8,
-        )
-        .map_err(kernel)?;
+        let (params, forward) = self.forward(
+            tx,
+            (false, syntax.uses_ddt(), syntax.quant_matrices()),
+            prediction,
+            residual,
+            coeffs,
+        )?;
+        let (block, lambda_q8) = self.rdoq_block(tx, &params, &forward)?;
+        let quantizer = block.quantizer(DEADZONE_ROUNDING_Q8).map_err(kernel)?;
         levels.resize(coeffs.len(), 0);
         dequant.resize(coeffs.len(), 0);
         let (_, error) = kernels()
             .quantize_error(&quantizer, coeffs, levels, dequant)
             .map_err(kernel)?;
-        let (block, lambda_q8) = self.rdoq_block(tx, &params, &forward)?;
         let moved = hide(
             syntax.parity_hiding(tx),
             (&block, coeffs, lambda_q8),
@@ -1949,7 +1950,11 @@ impl SourceResidualCoder<'_> {
         let [residual, coeffs, work] = &mut scratch;
         let found = self.forward(
             tx,
-            (syntax.uses_tcq(tx), syntax.uses_ddt()),
+            (
+                syntax.uses_tcq(tx),
+                syntax.uses_ddt(),
+                syntax.quant_matrices(),
+            ),
             prediction,
             residual,
             coeffs,

@@ -290,6 +290,12 @@ pub struct PresetParams {
     /// `enable_short_refresh_frame_flags`: inter frames code the one slot
     /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2).
     pub short_refresh: bool,
+    /// Quantizer matrices (`using_qmatrix`, § 5.18.6.2), `0..=3`: `0` off; each
+    /// other value fixes the level band `[min, max]` of `tx_choice::qm_level`
+    /// (`1` `[10, 14]`, `2` `[5, 9]`, `3` `[0, 14]`), and the frame level rises
+    /// linearly with `base_q_idx` over it: a higher level is a flatter matrix,
+    /// so a coarse quantizer keeps more of its high frequencies.
+    pub quant_matrices: u8,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -928,6 +934,7 @@ impl PresetParams {
         check("seq_tile_info", self.seq_tile_info, 0, 3, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check("tip_output_search", self.tip_output_search, 0, 2, "")?;
+        check("quant_matrices", self.quant_matrices, 0, 3, "")?;
         check(
             "tip_refinemv",
             u8::from(self.tip_refinemv),
@@ -1219,6 +1226,7 @@ preset_table! {
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],
+        quant_matrices:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tip_output_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -1709,6 +1717,7 @@ mod tests {
             (&[("cdf_update_tile", "2")], "cdf_update_tile"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("tip_output_search", "3")], "tip_output_search"),
+            (&[("quant_matrices", "4")], "quant_matrices"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),
             (&[("global_motion", "3")], "global_motion"),

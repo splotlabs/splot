@@ -1006,6 +1006,7 @@ impl IntraTileSyntax {
                 )
                 .map_err(rule("inter residual"))?;
         }
+        let _qm = super::super::FrameQmScope::install(self.tools.qm);
         state
             .tile
             .add_residual(

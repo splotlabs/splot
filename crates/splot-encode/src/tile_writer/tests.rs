@@ -126,6 +126,7 @@ impl Case {
                 disable_cdf_update: false,
                 disable_cross_frame_cdf_init: false,
                 choose_primary_ref_frame: false,
+                qm_level: None,
             },
         }
     }
@@ -1479,11 +1480,10 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let frame_cases: [fn(&mut FrameHeaderCore); 4] = [
+    let frame_cases: [fn(&mut FrameHeaderCore); 3] = [
         |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
         |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
         |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,
-        |c| c.setup_qm_params.as_mut().unwrap().using_qmatrix = true,
     ];
     for set in frame_cases {
         let mut core = core.clone();

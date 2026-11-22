@@ -29,7 +29,7 @@ use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEV
 use splot_decode::encoder_syntax::{
     CoeffLevels, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE, TxType, type_scan,
 };
-use splot_recon::{BitDepth, dequant_coefficient};
+use splot_recon::{BitDepth, dequant_coefficient, qm_weighted_quantizer};
 
 use super::{EncoderKernels, KernelError, Quantizer};
 
@@ -59,6 +59,34 @@ pub(crate) struct RdoqBlock {
     pub(crate) plane: usize,
     /// The coded type: its class picks the scan and the contexts.
     pub(crate) tx_type: TxType,
+    /// The § 7.14.4 quantizer-matrix weight of each raster coefficient.
+    pub(crate) qm: Option<&'static [i32]>,
+}
+
+impl RdoqBlock {
+    /// The § 7.14.4 `q2` of raster coefficient `pos`.
+    pub(crate) fn q2(&self, pos: usize) -> u32 {
+        let q = if pos == 0 { self.dc_q2 } else { self.ac_q2 };
+        match self.qm.and_then(|weights| weights.get(pos)) {
+            Some(&m) => qm_weighted_quantizer(q, m),
+            None => q,
+        }
+    }
+
+    /// The [`Quantizer`] of this block with deadzone `rounding_q8`.
+    ///
+    /// # Errors
+    /// Returns the [`Quantizer::new`] and [`Quantizer::with_weights`] errors.
+    pub(crate) fn quantizer(&self, rounding_q8: u32) -> Result<Quantizer, KernelError> {
+        Quantizer::new(
+            self.dc_q2,
+            self.ac_q2,
+            self.dq_denom,
+            self.bit_depth,
+            rounding_q8,
+        )?
+        .with_weights(self.qm)
+    }
 }
 
 /// The context of one coefficient level, as the writer derives it.
@@ -247,15 +275,7 @@ fn rdoq_in<R: CoeffRates + ?Sized>(
             actual: coeffs.len(),
         });
     }
-    let quantizer = |rounding_q8| {
-        Quantizer::new(
-            block.dc_q2,
-            block.ac_q2,
-            block.dq_denom,
-            block.bit_depth,
-            rounding_q8,
-        )
-    };
+    let quantizer = |rounding_q8| block.quantizer(rounding_q8);
     kernels.quantize(&quantizer(128)?, coeffs, levels, dequant)?;
     let scan = walk.scan;
     let eob = scan
@@ -400,7 +420,7 @@ pub(crate) fn parity_moves<R: CoeffRates + ?Sized>(
                     walk.hr_level_avg,
                 )
             });
-        let q2 = if pos == 0 { block.dc_q2 } else { block.ac_q2 };
+        let q2 = block.q2(pos);
         let sign = if levels[pos] < 0 || (levels[pos] == 0 && coeffs[pos] < 0) {
             -1
         } else {

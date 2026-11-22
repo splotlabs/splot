@@ -164,7 +164,7 @@ const fn sign(coeff: i32) -> i32 {
 
 /// Whether `coeff` at `pos` reaches the first nonzero reconstruction, half a step.
 fn reaches_half_step(block: &RdoqBlock, pos: usize, coeff: i32) -> bool {
-    let q2 = if pos == 0 { block.dc_q2 } else { block.ac_q2 };
+    let q2 = block.q2(pos);
     u64::from(coeff.unsigned_abs()) * 8 * u64::from(block.dq_denom) >= u64::from(q2)
 }
 
@@ -172,7 +172,7 @@ fn reaches_half_step(block: &RdoqBlock, pos: usize, coeff: i32) -> bool {
 /// their distortions; [`MAX_DIST`] marks a missing even level. A level `q` of
 /// quantizer `z` reconstructs reconstruction index `2q - z` (§ 5.20.7.27).
 pub(crate) fn candidates(block: &RdoqBlock, pos: usize, coeff: i32) -> Candidates {
-    let q2 = if pos == 0 { block.dc_q2 } else { block.ac_q2 };
+    let q2 = block.q2(pos);
     let below =
         u64::from(coeff.unsigned_abs()) * 8 * u64::from(block.dq_denom) / u64::from(q2.max(1));
     let dist = |index: u32| {

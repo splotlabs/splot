@@ -50,6 +50,7 @@ fn block() -> impl Strategy<Value = RdoqBlock> {
                     log2_height,
                     plane,
                     tx_type,
+                    qm: None,
                 }
             },
         )
@@ -256,6 +257,7 @@ fn facade_rows_back_the_rate_model() {
             log2_height: log2,
             plane: 0,
             tx_type: TxType::DctDct,
+            qm: None,
         };
         let coeffs: Vec<i32> = rng
             .block(1 << log2, 1 << log2)
@@ -375,6 +377,7 @@ fn huge_lambda_codes_nothing() {
         log2_height: 2,
         plane: 0,
         tx_type: TxType::DctDct,
+        qm: None,
     };
     let coeffs = [40, -24, 16, 9, 0, 3, -2, 1, 0, 0, 0, 0, 0, 0, 0, 1];
     assert!(run(&SimdKernels, &b, &coeffs, 0).2 > 0);
@@ -395,6 +398,7 @@ fn rejects_invalid_blocks() {
         log2_height: 2,
         plane: 0,
         tx_type: TxType::DctDct,
+        qm: None,
     };
     let mut out = [0; 16];
     let mut dq = [0; 16];
@@ -516,6 +520,7 @@ fn rdoq_lowers_rd_cost_on_natural_residuals() {
                 log2_height: log2_h,
                 plane: 0,
                 tx_type: TxType::DctDct,
+                qm: None,
             };
             let step_q3 = u64::from(b.ac_q2 / b.dq_denom);
             let lambda = step_q3 * step_q3 * 5 / 8;
