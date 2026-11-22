@@ -334,6 +334,9 @@ thread_local! {
     /// a side, and those of them that code chroma.
     pub(crate) static SMALL_INTRABC: core::cell::Cell<[usize; 2]> =
         const { core::cell::Cell::new([0; 2]) };
+    /// IntraBC leaves of the final passes on this thread with a fractional
+    /// block vector.
+    pub(crate) static QUARTER_INTRABC: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Intra leaves of the final passes on this thread that code a DIP
     /// prediction that only the wider DIP search offers.
     pub(crate) static DIP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -720,6 +723,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         if self.filters.is_some() && leaf.dimensions()?.0.min(leaf.dimensions()?.1) < 8 {
             let [small, chroma] = SMALL_INTRABC.get();
             SMALL_INTRABC.set([small + 1, chroma + usize::from(leaf.has_chroma())]);
+        }
+        #[cfg(test)]
+        if self.filters.is_some() && (modes.bv.row | modes.bv.col) & 7 != 0 {
+            QUARTER_INTRABC.set(QUARTER_INTRABC.get() + 1);
         }
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
         self.syntax.write_use_intrabc(leaf, Some(skip), self.sink)?;

@@ -515,6 +515,12 @@ pub struct PresetParams {
     /// samples of a reference block vector. Off in every row, the
     /// screen-content rows too: not measured.
     pub intrabc_small: bool,
+    /// With `intrabc`, the best whole-sample copy of a leaf gets a
+    /// half-sample and then a quarter-sample refinement step, priced
+    /// against the `BILINEAR` prediction from the source, and the leaf codes
+    /// `intrabc_precision = 1` for a fractional vector. Off in every row,
+    /// the screen-content rows too: not measured.
+    pub intrabc_subpel: bool,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -1368,6 +1374,7 @@ preset_table! {
         intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_subpel:        [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {

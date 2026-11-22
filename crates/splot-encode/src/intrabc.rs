@@ -12,6 +12,10 @@ use splot_decode::encoder_syntax::{IntraTileSyntax, IntrabcModes, LeafBlock, Mot
 use crate::intra_frame::SourceResidualCoder;
 use crate::kernels::{BlockDims, kernels};
 use crate::tile_writer::{LeafChoice, Result};
+use splot_recon::{
+    BitDepth, InterpolationFilter, ReferencePlaneView, SubpelPredictParams,
+    subpel_predict_block_into,
+};
 
 /// The side of the hashed blocks.
 const SIDE: usize = 8;
@@ -22,6 +26,20 @@ const MAX_CANDIDATES: usize = 32;
 const MAX_SCAN: usize = 1024;
 /// The refinement reach around the best hashed copy, in samples.
 const REFINE: i64 = 4;
+/// The half-sample and quarter-sample steps of [`refine_quarter`], in 1/8
+/// samples.
+const SUBPEL_STEPS: [i32; 2] = [4, 2];
+/// The 8 neighbours of a vector, `[row, col]`.
+const NEIGHBOURS: [[i32; 2]; 8] = [
+    [-1, -1],
+    [-1, 0],
+    [-1, 1],
+    [0, -1],
+    [0, 1],
+    [1, -1],
+    [1, 0],
+    [1, 1],
+];
 
 /// The 8x8 block hashes of one luma plane and the positions of each hash.
 pub(crate) struct BvSearch {
@@ -156,29 +174,89 @@ fn refine(
     best
 }
 
+/// `best` or the vector with the lowest squared error of a half-sample and
+/// then a quarter-sample step to the 8 neighbours of the best that `valid`
+/// accepts. The error is that of the `w x h` luma block at `(x, y)` of
+/// `luma` (stride and padded width `stride`, `height` rows) against the
+/// § 7.13.3.18 `BILINEAR` prediction from `luma` at the vector, the filter
+/// that § 5.20.5.4 gives every IntraBC leaf.
+fn refine_quarter(
+    (luma, stride, height, bit_depth): (&[u16], usize, usize, BitDepth),
+    (x, y, w, h): (usize, usize, usize, usize),
+    valid: impl Fn([i32; 2]) -> bool,
+    mut best: ([i32; 2], u64),
+) -> ([i32; 2], u64) {
+    let (Ok(view), Ok(dims), Some(block)) = (
+        ReferencePlaneView::from_strided(luma, stride, stride, height),
+        BlockDims::new(w, h),
+        luma.get(y * stride + x..),
+    ) else {
+        return best;
+    };
+    let mut predicted = vec![0u16; w * h];
+    let mut cost = |mv: [i32; 2]| -> Option<u64> {
+        let params = SubpelPredictParams {
+            interp: InterpolationFilter::Bilinear,
+            w,
+            h,
+            start_x: (i32::try_from(x).ok()? * 8 + mv[1]) << 7,
+            start_y: (i32::try_from(y).ok()? * 8 + mv[0]) << 7,
+            step_x: 1 << 10,
+            step_y: 1 << 10,
+            first_x: 0,
+            first_y: 0,
+            last_x: i32::try_from(stride).ok()? - 1,
+            last_y: i32::try_from(height).ok()? - 1,
+            bit_depth,
+        };
+        subpel_predict_block_into(&view, &params, &mut predicted).ok()?;
+        Some(kernels().sse(block, stride, &predicted, w, dims))
+    };
+    for step in SUBPEL_STEPS {
+        let center = best.0;
+        for [dy, dx] in NEIGHBOURS {
+            let mv = [center[0] + dy * step, center[1] + dx * step];
+            if valid(mv)
+                && let Some(sse) = cost(mv)
+                && sse < best.1
+            {
+                best = (mv, sse);
+            }
+        }
+    }
+    best
+}
+
 /// The IntraBC candidate of `leaf` in a frame whose block hashes `coder`
 /// holds: the [`BvSearch::search`] copy of its luma source among the
 /// vectors the leaf may code (a leaf under 8 samples on a side only with
-/// `small`), with the
+/// `small`), refined to quarter samples with `subpel` ([`refine_quarter`]),
+/// with the
 /// `RefMvIdx` whose reference vector it equals, else the closest one;
 /// `None` without one.
 pub(crate) fn intrabc_choice(
     syntax: &mut IntraTileSyntax,
     coder: &SourceResidualCoder<'_>,
     leaf: &LeafBlock,
-    small: bool,
+    (small, subpel): (bool, bool),
 ) -> Result<Option<LeafChoice>> {
     let (Some(search), Some(vectors)) = (coder.intrabc, syntax.intrabc_vectors(leaf)) else {
         return Ok(None);
     };
     let (w, h) = leaf.dimensions()?;
-    let (luma, stride, ..) = coder.source.luma();
+    let (luma, stride, _, height) = coder.source.luma();
     let valid = |[row, col]: [i32; 2]| vectors.valid(MotionVector { row, col });
     let rect = (leaf.col4() * 4, leaf.row4() * 4, w, h);
-    let found = search.search((luma, stride), rect, valid, small);
+    let mut found = search.search((luma, stride), rect, valid, small);
+    if subpel && let Some(best) = found {
+        let plane = (luma, stride, height, coder.bit_depth);
+        found = Some(refine_quarter(plane, rect, valid, best));
+    }
     let Some(([row, col], _)) = found else {
         return Ok(None);
     };
+    #[cfg(test)]
+    let [row, col] = quarter_moved([row, col], valid);
     let bv = MotionVector { row, col };
     let refs = syntax.intrabc_ref_bvs(leaf)?;
     let distance =
@@ -187,6 +265,28 @@ pub(crate) fn intrabc_choice(
         .min_by_key(|&i| distance(&refs[i]))
         .unwrap_or(0);
     Ok(Some(LeafChoice::intrabc(IntrabcModes { bv, drl })))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Moves each IntraBC vector on this thread by a quarter sample where a
+    /// moved vector is valid.
+    pub(crate) static QUARTER_BV: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// `bv` moved by the first quarter-sample step (in 1/8 samples) that
+/// `valid` accepts, with [`QUARTER_BV`]; else `bv`.
+#[cfg(test)]
+fn quarter_moved(bv: [i32; 2], valid: impl Fn([i32; 2]) -> bool) -> [i32; 2] {
+    const STEPS: [[i32; 2]; 6] = [[2, 2], [0, 2], [2, 0], [-2, -2], [0, -2], [-2, 0]];
+    if !QUARTER_BV.get() {
+        return bv;
+    }
+    STEPS
+        .iter()
+        .map(|step| [bv[0] + step[0], bv[1] + step[1]])
+        .find(|&moved| valid(moved))
+        .unwrap_or(bv)
 }
 
 #[cfg(test)]
