@@ -5,14 +5,10 @@ use super::{
     MAX_FRAME_DISTANCE, MotionFieldLayout, TemporalMotionFieldMetadata, TemporalProjectionConfig,
     sorted_reference_hints,
 };
+use crate::reference::buffer::RefSlots;
 
 /// One projection candidate list, bounded by [`MFMV_STACK_SIZE`].
 pub(super) type ProjectionQueue = splot_core::tile::InlineVec<TemporalProjection, MFMV_STACK_SIZE>;
-
-/// One entry per reference slot, which a sequence bounds at
-/// [`splot_core::headers::sequence::MAX_REF_FRAMES`].
-type RefSlots<T> =
-    splot_core::tile::InlineVec<T, { splot_core::headers::sequence::MAX_REF_FRAMES }>;
 
 const TIP_MFMV_STACK_SIZE: usize = 3;
 pub(super) const MFMV_STACK_SIZE: usize = 4;

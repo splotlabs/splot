@@ -94,12 +94,12 @@ impl CompoundAverageOutput for u8 {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct MotionCell {
-    base_mvs: [Mv; 2],
+    base_mvs: [MotionVector; 2],
     mvs: [[i32; 2]; 2],
 }
 
 impl MotionCell {
-    pub(super) fn from_optflow(base_mvs: [Mv; 2], delta: [[i32; 2]; 2]) -> Self {
+    pub(super) fn from_optflow(base_mvs: [MotionVector; 2], delta: [[i32; 2]; 2]) -> Self {
         let mut refined = [[0i32; 2]; 2];
         for reference in 0..2 {
             let base = [base_mvs[reference].row, base_mvs[reference].col];
@@ -114,7 +114,7 @@ impl MotionCell {
         }
     }
 
-    pub(super) fn from_refinemv(base_mvs: [Mv; 2]) -> Self {
+    pub(super) fn from_refinemv(base_mvs: [MotionVector; 2]) -> Self {
         let mvs = core::array::from_fn(|reference| {
             [base_mvs[reference].row * 2, base_mvs[reference].col * 2]
         });
@@ -126,13 +126,15 @@ impl MotionCell {
 const MAX_MOTION_GRID_SUBBLOCK_SAMPLES: usize = 256;
 /// Horizontal-pass rows for an unscaled 16-sample-tall subblock: 16 + 7 taps.
 const MAX_MOTION_GRID_SUBPEL_INTERMEDIATE: usize = 16 * (16 + 7);
+type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
+type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
 
 /// A grid plane's cell program and the scratch of the cells it declines,
 /// kept by the caller so that a plane neither zeroes nor allocates them.
 struct GridProgram {
     cells: CompoundCells,
-    pred: [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-    intermediate: [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+    pred: Pred,
+    intermediate: Intermediate,
 }
 
 impl Default for GridProgram {
@@ -154,7 +156,7 @@ pub(crate) struct CompoundMotionGrid {
     /// The TIP plane pass's cells, which it lends back to the caller's scratch.
     cells: Vec<MotionCell>,
     /// The § 7.11.3 candidates of each TIP unit, whose refine-MV area clips it.
-    refinemv_candidates: Vec<[Mv; 2]>,
+    refinemv_candidates: Vec<[MotionVector; 2]>,
     /// Whether some row holds two adjacent equal full-pel cells, the
     /// precondition of every merged run.
     fullpel_runs: bool,
@@ -180,12 +182,12 @@ impl CompoundMotionGrid {
     }
 }
 
-fn stored_mvs(cell: MotionCell) -> [Mv; 2] {
+fn stored_mvs(cell: MotionCell) -> [MotionVector; 2] {
     core::array::from_fn(|reference| {
         let base = cell.base_mvs[reference];
         let row_delta = cell.mvs[reference][0] - base.row * 2;
         let col_delta = cell.mvs[reference][1] - base.col * 2;
-        Mv {
+        MotionVector {
             row: base.row + round2_signed_i32(row_delta, 1),
             col: base.col + round2_signed_i32(col_delta, 1),
         }
@@ -210,7 +212,7 @@ pub(super) fn tip_optflow_motion_cell_strided(
     bit_depth: splot_recon::BitDepth,
     distances: [i32; 2],
     sad_threshold: Option<u32>,
-    base_mvs: [Mv; 2],
+    base_mvs: [MotionVector; 2],
 ) -> Result<MotionCell> {
     if sad_threshold.is_some_and(|threshold| {
         let rows = (0..8).map(|row| {
@@ -237,7 +239,7 @@ pub(super) fn tip_optflow_motion_cell_strided(
 pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: &CompoundMcBlock<'a, T>,
-    (rect, mvs): (McBlockRect, [Mv; 2]),
+    (rect, mvs): (McBlockRect, [MotionVector; 2]),
     luma: &mut [LumaReference<'a, T>; 2],
 ) -> Result<MotionCell> {
     let (Some(distances), 8, 8) = (block.optflow_distances, rect.luma_w, rect.luma_h) else {
@@ -354,9 +356,9 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
 pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
     luma: &mut LumaReference<'a, T>,
     rect: McBlockRect,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
-    refinemv_area: Option<(Mv, usize, usize)>,
+    refinemv_area: Option<(MotionVector, usize, usize)>,
     tip_centre: Option<&mut BilinearOverlapCarry<'a, T>>,
     output: &mut [u16],
 ) -> Result<()> {
@@ -424,7 +426,7 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
 pub(super) fn fullpel_center_ends_search<T: ReconSample>(
     luma: &mut [LumaReference<'_, T>; 2],
     rect: McBlockRect,
-    candidates: [Mv; 2],
+    candidates: [MotionVector; 2],
 ) -> Result<Option<bool>> {
     let [width, height] = [rect.luma_w, rect.luma_h];
     if !super::refinemv::fullpel_candidates(candidates)
@@ -476,7 +478,7 @@ pub(super) fn fullpel_center_ends_search<T: ReconSample>(
 pub(super) fn search_windows<T: ReconSample, P: WindowSample>(
     luma: &mut [LumaReference<'_, T>; 2],
     rect: McBlockRect,
-    candidates: [Mv; 2],
+    candidates: [MotionVector; 2],
     allow_center: bool,
     windows: [&mut [P; REFINEMV_SEARCH_AREA]; 2],
 ) -> Result<(i32, i32)> {
@@ -524,8 +526,8 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
     program: &mut CompoundCells,
     mut planes: [Option<GridPlane<'_, '_, T, O>>; 2],
     (grid, interp, size): (&GridBlock<'_, '_, T>, InterpolationFilter, usize),
-    pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-    intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+    pred_scratch: &mut Pred,
+    intermediate_scratch: &mut Intermediate,
 ) -> Result<()> {
     if program.is_empty() {
         return Ok(());
@@ -579,7 +581,7 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
 fn unscaled_cell_placements<T: ReconSample>(
     prediction: &CompoundSubpelPlane<'_, T>,
     cell: MotionCell,
-    candidates: [Mv; 2],
+    candidates: [MotionVector; 2],
     [col, row, width, height]: [usize; 4],
     sub: (u32, u32),
     check_uniform: bool,
@@ -642,7 +644,7 @@ type CellUnit = ([i32; 2], [usize; 2], (u32, u32));
 fn unscaled_cell_placement(
     scaling: &PlaneScaling,
     [mv_row, mv_col]: [i32; 2],
-    candidate: Mv,
+    candidate: MotionVector,
     ([x16, y16], [width, height], (sub_x, sub_y)): CellUnit,
 ) -> CellPlacement {
     let bounds = super::refinemv::unscaled_area_bounds(
@@ -711,8 +713,8 @@ fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
     views: &[ReferencePlaneView<'_, T>; 2],
     (params, uniform, [col, row, width, height]): GridCell<'_>,
     block: &GridBlock<'_, '_, T>,
-    pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-    intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+    pred_scratch: &mut Pred,
+    intermediate_scratch: &mut Intermediate,
     output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {
@@ -808,12 +810,18 @@ mod tests {
     #[test]
     fn stored_mvs_round_refined_sixteenth_pel_values_to_eighth_pel() {
         let cell = MotionCell {
-            base_mvs: [Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }],
+            base_mvs: [
+                MotionVector { row: 5, col: -5 },
+                MotionVector { row: -5, col: 5 },
+            ],
             mvs: [[7, -7], [-7, 7]],
         };
         assert_eq!(
             stored_mvs(cell),
-            [Mv { row: 3, col: -3 }, Mv { row: -3, col: 3 }]
+            [
+                MotionVector { row: 3, col: -3 },
+                MotionVector { row: -3, col: 3 }
+            ]
         );
     }
 

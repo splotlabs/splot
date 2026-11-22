@@ -11,14 +11,14 @@ use crate::filters::wienerns_lr::intrabc_records::{
     derive_intrabc_luma_prediction_geometry,
 };
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
-use crate::prediction::inter::{InterResidual, InterResidualBlock, Mv, mc};
+use crate::prediction::inter::{InterResidual, InterResidualBlock, MotionVector, mc};
 use crate::{Result, prediction::inter::add_inter_residual_to_workspace};
 
 pub(super) struct IntrabcReconPrediction {
     luma_target: PlaneRect,
     luma_source: IntrabcLumaSource,
     chroma: Option<IntrabcChromaPrediction>,
-    morph_mv: Option<Mv>,
+    morph_mv: Option<MotionVector>,
     /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
     morph_avail: (bool, bool),
 }
@@ -62,7 +62,7 @@ impl IntrabcReconPrediction {
         } else {
             None
         };
-        let morph_mv = info.morph_pred.then_some(Mv {
+        let morph_mv = info.morph_pred.then_some(MotionVector {
             row: info.block_mv.row,
             col: info.block_mv.col,
         });

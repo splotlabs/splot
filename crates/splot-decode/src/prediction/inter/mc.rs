@@ -15,7 +15,7 @@ use splot_recon::{
     subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8, subpel_put_block,
 };
 
-use super::Mv;
+use super::MotionVector;
 use super::mv_scaling::PlaneScaling;
 use super::reference::{
     ReferenceSamples, compound_last_row, subpel_last_reference_row, subpel_last_row,
@@ -199,7 +199,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
     pub(crate) const fn single(
         reference: ReferenceSamples<'a, T>,
         rect: McBlockRect,
-        mv: Mv,
+        mv: MotionVector,
         interp: InterpolationFilter,
     ) -> Self {
         Self {
@@ -218,8 +218,8 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         reference0: ReferenceSamples<'a, T>,
         reference1: ReferenceSamples<'a, T>,
         rect: McBlockRect,
-        mv0: Mv,
-        mv1: Mv,
+        mv0: MotionVector,
+        mv1: MotionVector,
         interp: InterpolationFilter,
         blend: CompoundBlend,
     ) -> Self {
@@ -239,7 +239,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
     pub(crate) const fn single_warp(
         reference: ReferenceSamples<'a, T>,
         rect: McBlockRect,
-        mv: Mv,
+        mv: MotionVector,
         interp: InterpolationFilter,
         warp_params: [i32; 6],
     ) -> Self {
@@ -336,18 +336,18 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
 enum InterPrediction<'a, T: ReconSample> {
     Single {
         reference: ReferenceSamples<'a, T>,
-        mv: Mv,
+        mv: MotionVector,
     },
     SingleWarp {
         reference: ReferenceSamples<'a, T>,
-        mv: Mv,
+        mv: MotionVector,
         warp_params: [i32; 6],
     },
     CompoundAverage {
         reference0: ReferenceSamples<'a, T>,
         reference1: ReferenceSamples<'a, T>,
-        mv0: Mv,
-        mv1: Mv,
+        mv0: MotionVector,
+        mv1: MotionVector,
         blend: CompoundBlend,
         optflow_distances: Option<[i32; 2]>,
         warp_params: [Option<[i32; 6]>; 2],
@@ -358,8 +358,8 @@ pub(crate) struct CompoundMcBlock<'a, T: ReconSample> {
     reference0: ReferenceSamples<'a, T>,
     reference1: ReferenceSamples<'a, T>,
     rect: McBlockRect,
-    mv0: Mv,
-    mv1: Mv,
+    mv0: MotionVector,
+    mv1: MotionVector,
     interp: InterpolationFilter,
     blend: CompoundBlend,
     optflow_distances: Option<[i32; 2]>,
@@ -461,7 +461,7 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     rect: McBlockRect,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
     has_chroma: bool,
     offset: ByteOffset,
@@ -517,7 +517,7 @@ pub(super) fn unscaled_put<T: ReconSample>(
     rect: McBlockRect,
     plane: PlaneId,
     (sub_x, sub_y): (u32, u32),
-    mv: Mv,
+    mv: MotionVector,
     reference: ReferenceSamples<'_, T>,
 ) -> Option<UnscaledPut> {
     let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
@@ -614,7 +614,7 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     block: &InterBlockParams<'_, T>,
-    mv: Mv,
+    mv: MotionVector,
     warp_params: [i32; 6],
     offset: ByteOffset,
 ) -> Result<()> {
@@ -652,7 +652,7 @@ fn predict_plane<T: ReconSample>(
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
     sub_x: u32,
     sub_y: u32,
@@ -704,7 +704,7 @@ pub(crate) fn plane_prediction<T: ReconSample>(
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
     sub_x: u32,
     sub_y: u32,
@@ -1334,7 +1334,7 @@ fn compound_ref_intermediate<T: ReconSample>(
     plane: PlaneId,
     rect: McBlockRect,
     warp_params: Option<[i32; 6]>,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
     sub_x: u32,
     sub_y: u32,

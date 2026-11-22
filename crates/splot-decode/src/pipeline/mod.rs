@@ -575,8 +575,7 @@ fn decode_key_frame_with_effects(
             ccso_header: Some(core),
             ccso_grid: products.ccso_grid,
             segment_ids: products.segment_ids,
-            frame_rate_numerator: frame_rate.numerator,
-            frame_rate_denominator: frame_rate.denominator,
+            frame_rate,
             props,
         });
     }
@@ -627,8 +626,7 @@ fn decode_key_frame_with_effects(
         ccso_header,
         ccso_grid,
         segment_ids,
-        frame_rate_numerator: frame_rate.numerator,
-        frame_rate_denominator: frame_rate.denominator,
+        frame_rate,
         props,
     })
 }
@@ -926,8 +924,7 @@ fn decode_frames_in_order(
                     ccso_header: Some(core),
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
-                    frame_rate_numerator: rate.numerator,
-                    frame_rate_denominator: rate.denominator,
+                    frame_rate: rate,
                     props: stream.props(),
                 }
             } else {
@@ -967,8 +964,7 @@ fn decode_frames_in_order(
                     ccso_header,
                     ccso_grid,
                     segment_ids,
-                    frame_rate_numerator: rate.numerator,
-                    frame_rate_denominator: rate.denominator,
+                    frame_rate: rate,
                     props: stream.props(),
                 }
             }
@@ -1182,8 +1178,7 @@ fn decode_frames_in_order(
                     ccso_header: source.ccso_header.clone(),
                     ccso_grid: source.ccso_grid.clone(),
                     segment_ids: source.segment_ids.clone(),
-                    frame_rate_numerator: output_rate.numerator,
-                    frame_rate_denominator: output_rate.denominator,
+                    frame_rate: output_rate,
                     props: stream.props(),
                     frame: inflight::PipelineFrameSlot::completed_recycled(
                         source.wait_ready_frame()?,
@@ -1489,8 +1484,7 @@ fn decode_frames_in_order(
                     ccso_header: Some(Arc::clone(&inter_core)),
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
-                    frame_rate_numerator: inter_frame_rate.numerator,
-                    frame_rate_denominator: inter_frame_rate.denominator,
+                    frame_rate: inter_frame_rate,
                     props: stream.props(),
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(

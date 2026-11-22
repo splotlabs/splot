@@ -15,8 +15,8 @@ use crate::error::Result;
 use crate::headers::frame::config::{parse_intrabc_params_full, parse_screen_content_params_full};
 use crate::headers::frame::filtering::{InterpolationFilter, read_interpolation_filter};
 use crate::headers::frame::get_ref_frames::{
-    GetRefFrames, GetRefFramesInput, RESTRICTED_OH, RefIdxBuf, RefSlot, get_ref_frames,
-    get_relative_dist,
+    GetRefFrames, GetRefFramesInput, RESTRICTED_OH, RESTRICTED_ORDER_HINT, RefIdxBuf, RefSlot,
+    get_ref_frames, get_relative_dist,
 };
 use crate::headers::frame::size::{FrameSize, ceil_log2};
 use crate::headers::sequence::SuperblockSize;
@@ -401,7 +401,7 @@ fn ref_dims(reference_state: &FrameReferenceStateView<'_>, idx: u32) -> Option<(
 }
 
 fn ref_order_hint_to_spec(raw: u32) -> Option<i32> {
-    if raw == u32::MAX {
+    if raw == RESTRICTED_ORDER_HINT {
         Some(RESTRICTED_OH)
     } else {
         i32::try_from(raw).ok()
@@ -693,7 +693,7 @@ fn parse_inter_reference_region(
             reference_state
                 .ref_order_hint
                 .and_then(|hints| hints.get(slot as usize).copied())
-                .unwrap_or(u32::MAX)
+                .unwrap_or(RESTRICTED_ORDER_HINT)
         })
         .collect();
 
@@ -1630,7 +1630,7 @@ mod tests {
         assert_eq!(map.ref_frame_idx.as_slice(), &[3]);
     }
 
-    /// § 7.7: every restricted slot (`u32::MAX` in the model, `RESTRICTED_OH` in the spec)
+    /// § 7.7: every restricted slot (`RESTRICTED_ORDER_HINT` in the model, `RESTRICTED_OH` in the spec)
     /// is left out of the ranking and appended after the ranked references, so two
     /// restricted slots with equal saved state both reach the list.
     #[test]

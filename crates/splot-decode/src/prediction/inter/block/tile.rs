@@ -856,7 +856,7 @@ impl ReconRowEntry {
             mi_cols,
             current_order_hint,
             [None, None],
-            [Mv::ZERO; 2],
+            [MotionVector::ZERO; 2],
             [None, None],
         ))
     }

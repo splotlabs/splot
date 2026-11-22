@@ -14,7 +14,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, LayerConfigRecordErrorKind, Result};
-use crate::headers::sequence::ProfileIdc;
+use crate::headers::sequence::{CroppingWindow, ProfileIdc};
 use crate::types::ExtendedLayerId;
 
 /// `MAX_NUM_TLAYERS` (AV2 § 3): the bit width of `lcr_tlayer_map` (`f(n)`,
@@ -225,7 +225,7 @@ pub struct LcrRepInfo {
     /// `lcr_format_info_present_flag`.
     pub format_info: Option<LcrFormatInfo>,
     /// `lcr_cropping_win_*_offset`, present when `lcr_cropping_window_present_flag`.
-    pub cropping_window: Option<LcrCroppingWindow>,
+    pub cropping_window: Option<CroppingWindow>,
 }
 
 /// `lcr_format_info` fields of `lcr_rep_info()` (AV2 v1.0.0 § 5.8.7).
@@ -235,19 +235,6 @@ pub struct LcrFormatInfo {
     pub bit_depth_idc: u32,
     /// `lcr_chroma_format_idc[isGlobal][xId]` (`uvlc()`).
     pub chroma_format_idc: u32,
-}
-
-/// `lcr_cropping_window` fields of `lcr_rep_info()` (AV2 v1.0.0 § 5.8.7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LcrCroppingWindow {
-    /// `lcr_cropping_win_left_offset` (`uvlc()`).
-    pub left_offset: u32,
-    /// `lcr_cropping_win_right_offset` (`uvlc()`).
-    pub right_offset: u32,
-    /// `lcr_cropping_win_top_offset` (`uvlc()`).
-    pub top_offset: u32,
-    /// `lcr_cropping_win_bottom_offset` (`uvlc()`).
-    pub bottom_offset: u32,
 }
 
 /// `lcr_xlayer_color_info(isGlobal, xId)` (AV2 v1.0.0 § 5.8.9).
@@ -631,11 +618,11 @@ fn parse_lcr_rep_info(reader: &mut BitReader<'_>) -> Result<LcrRepInfo> {
         None
     };
     let cropping_window = if cropping_window_present {
-        Some(LcrCroppingWindow {
-            left_offset: reader.read_uvlc()?,
-            right_offset: reader.read_uvlc()?,
-            top_offset: reader.read_uvlc()?,
-            bottom_offset: reader.read_uvlc()?,
+        Some(CroppingWindow {
+            left: reader.read_uvlc()?,
+            right: reader.read_uvlc()?,
+            top: reader.read_uvlc()?,
+            bottom: reader.read_uvlc()?,
         })
     } else {
         None

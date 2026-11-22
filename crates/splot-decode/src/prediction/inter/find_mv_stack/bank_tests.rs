@@ -38,8 +38,8 @@ fn warp_bank_hit_keeps_the_original_translation_and_evicts_oldest() {
 #[test]
 fn ref_mv_bank_same_mvs_refresh_preserves_original_cwp_weight() {
     let mut bank = RefMvBank::new();
-    let mv0 = Mv { row: 0, col: 8 };
-    let mv1 = Mv { row: 0, col: -8 };
+    let mv0 = MotionVector { row: 0, col: 8 };
+    let mv1 = MotionVector { row: 0, col: -8 };
     bank.update(0, Some(1), mv0, Some(mv1), 10, false);
     bank.update(0, Some(1), mv0, Some(mv1), CWP_EQUAL, false);
 
@@ -71,13 +71,13 @@ fn ref_mv_bank_same_mvs_refresh_preserves_original_cwp_weight() {
 #[test]
 fn shared_ref_mv_bank_ordinary_entries_evict_intrabc_candidate() {
     let mut bank = RefMvBank::new();
-    let intrabc = Mv { row: 0, col: -256 };
+    let intrabc = MotionVector { row: 0, col: -256 };
     bank.update(INTRABC_REF_FRAME, None, intrabc, None, CWP_EQUAL, false);
     for (index, mv) in [
-        Mv { row: -72, col: 176 },
-        Mv { row: 98, col: 58 },
-        Mv { row: 0, col: 56 },
-        Mv { row: -2, col: 56 },
+        MotionVector { row: -72, col: 176 },
+        MotionVector { row: 98, col: 58 },
+        MotionVector { row: 0, col: 56 },
+        MotionVector { row: -2, col: 56 },
     ]
     .into_iter()
     .enumerate()
@@ -91,8 +91,8 @@ fn shared_ref_mv_bank_ordinary_entries_evict_intrabc_candidate() {
 #[test]
 fn shared_ref_mv_bank_intrabc_candidates_are_newest_first() {
     let mut bank = RefMvBank::new();
-    let older = Mv { row: -512, col: 0 };
-    let newer = Mv { row: 0, col: -512 };
+    let older = MotionVector { row: -512, col: 0 };
+    let newer = MotionVector { row: 0, col: -512 };
     bank.update(INTRABC_REF_FRAME, None, older, None, CWP_EQUAL, false);
     bank.update(INTRABC_REF_FRAME, None, newer, None, CWP_EQUAL, false);
     assert_eq!(bank.intrabc_candidates()[..], [newer, older]);
@@ -103,7 +103,7 @@ fn shared_ref_mv_bank_intrabc_candidates_are_newest_first() {
 
 #[test]
 fn shared_ref_mv_bank_seeds_intrabc_from_previous_superblock_row() {
-    let mv = Mv { row: -512, col: 0 };
+    let mv = MotionVector { row: -512, col: 0 };
     let mut grid = NeighbourMvGrid::new(270, 480).unwrap();
     grid.record_block(
         240,
@@ -132,7 +132,7 @@ fn shared_ref_mv_bank_seeds_intrabc_from_previous_superblock_row() {
 #[test]
 fn shared_ref_mv_bank_late_leaf_uses_only_existing_unit_budget() {
     let grid = NeighbourMvGrid::new(64, 480).unwrap();
-    let mv = Mv { row: 0, col: -512 };
+    let mv = MotionVector { row: 0, col: -512 };
     let mut ordered = RefMvBank::new();
     ordered.reset_for_leaf(&grid, 0, 288, 32, true);
     ordered.update_count_for_non_inter(0, 288, 16, 16, 32);
@@ -180,7 +180,7 @@ fn warp_bank_clears_per_superblock_row_and_reseeds_per_superblock() {
         1,
         0,
         false,
-        Mv { row: 4, col: -12 },
+        MotionVector { row: 4, col: -12 },
         false,
         SWITCHABLE_FILTERS,
         false,

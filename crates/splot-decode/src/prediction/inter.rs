@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams, RefIdxBuf,
-    SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams,
+    RESTRICTED_ORDER_HINT, RefIdxBuf, SefTrailingBits, SlotFrameFilterTaps, TipFrameMode,
+    get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
@@ -56,13 +57,16 @@ const SPEC_TIP_TEMPORAL_SCALE: &str = "7.10.1";
 pub(crate) const SINGLE_MODE_NEARMV: u8 = 0;
 pub(crate) const SINGLE_MODE_GLOBALMV: u8 = 1;
 pub(crate) const SINGLE_MODE_NEWMV: u8 = 2;
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct Mv {
-    pub(crate) row: i32,
-    pub(crate) col: i32,
+/// A motion vector in `1/8` luma samples (§ 7.12).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct MotionVector {
+    /// Vertical component.
+    pub row: i32,
+    /// Horizontal component.
+    pub col: i32,
 }
 
-impl Mv {
+impl MotionVector {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> {
@@ -900,7 +904,7 @@ impl CompoundOrderHint {
     }
 
     const fn reference(value: u32) -> Self {
-        if value == u32::MAX {
+        if value == RESTRICTED_ORDER_HINT {
             Self::Restricted
         } else {
             Self::Value(value as i64)
@@ -1108,8 +1112,8 @@ fn inter_residual_log2(
 pub(crate) struct InterBlock {
     pub(crate) ref_frame0: i8,
     pub(crate) ref_frame1: Option<i8>,
-    pub(crate) mv: Mv,
-    pub(crate) mv1: Mv,
+    pub(crate) mv: MotionVector,
+    pub(crate) mv1: MotionVector,
     pub(crate) interp: ReconInterpolationFilter,
     /// Per-list § 7.13.3.23 warp models; slot 1 is only compound LOCALWARP and a
     /// `None` slot uses translational motion compensation.
@@ -2298,7 +2302,7 @@ mod single_ref;
 pub use block::encoder_leaf::{Bawp, CompoundType};
 pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
-    EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, EncoderWarpMotion, EncoderWarpSource,
+    EncoderMotion, EncoderSingleMotion, EncoderWarpMotion, EncoderWarpSource,
     JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM, MvdCoding, chroma_inter_tx_type,
     encoder_motion_field, encoder_temporal_context,
 };
@@ -2309,7 +2313,7 @@ pub(crate) use block::{
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
     bounds_satisfied, deblock_tip_output, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
-pub(crate) use compound::CompoundYMode;
+pub use compound::CompoundMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,

@@ -25,7 +25,6 @@ use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 use super::coeff_loop::fsc_block::{CoeffFscBranchError, decode_fsc_transform_block};
-use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranchError;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchModeToTxfmBaseConfig, CoeffOrdinaryBranchTxSetBaseConfig,
@@ -42,6 +41,7 @@ use super::coeff_state::{
     CUL_LEVEL_MASK, CoeffBlockLines, TileCoeffContextState, TileCoeffStateError,
 };
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
+use splot_recon::TransformClass;
 
 pub(crate) mod cctx;
 mod luma_transform_partition;
@@ -1162,7 +1162,7 @@ fn decode_nonzero_plane_coeffs(
         arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
         quant_end.map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
     } else {
-        let tx_class = CoeffTransformClass::from_plane_tx_type(plane_tx_type);
+        let tx_class = splot_recon::tx_class(plane_tx_type);
         let extent = scan_extent(tx_class, tx, eob);
         arena.resize(start_idx + extent, 0);
         let quant_end = decode_ordinary_transform_block(
@@ -1203,7 +1203,7 @@ fn staged_transform_tool_lossless_base_config(
     lossless: bool,
     metadata: TransformToolResidualMetadata,
 ) -> CoeffOrdinaryBranchTxSetBaseConfig {
-    let luma_tx_class = CoeffTransformClass::from_plane_tx_type(metadata.luma_tx_type);
+    let luma_tx_class = splot_recon::tx_class(metadata.luma_tx_type);
     let luma_transform_block = plane == 0;
     let parity_hiding = frame_facts.allow_parity_hiding
         && !lossless
@@ -1212,7 +1212,7 @@ fn staged_transform_tool_lossless_base_config(
     let use_tcq = frame_facts.allow_tcq
         && !lossless
         && luma_transform_block
-        && luma_tx_class == CoeffTransformClass::TwoD;
+        && luma_tx_class == TransformClass::TwoD;
     CoeffOrdinaryBranchTxSetBaseConfig {
         enable_chroma_dctonly: frame_facts.enable_chroma_dctonly,
         uv_mode,

@@ -98,8 +98,10 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
             )
             .unwrap(),
         )),
-        frame_rate_numerator: 1,
-        frame_rate_denominator: 1,
+        frame_rate: crate::pipeline::PipelineFrameRate {
+            numerator: 1,
+            denominator: 1,
+        },
         props: crate::DataProps::default(),
     }
 }

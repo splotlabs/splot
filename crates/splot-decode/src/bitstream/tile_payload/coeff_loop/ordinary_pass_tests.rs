@@ -11,7 +11,6 @@ use splot_core::symbol_encoder::SymbolEncoder;
 use super::super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::super::super::coeff_state::{CoeffBlockLines, TileCoeffContextState};
 use super::super::branch::NonZeroCoeffBlockStart;
-use super::super::max_level::CoeffTransformClass;
 use super::super::transform_block::{CoeffTransformBlockInput, decode_ordinary_transform_block};
 use super::super::{TX_GEOMETRY, read_nonzero_coeff_block_start};
 use super::geometry::CoeffOrdinaryBranchTxSetBaseConfig;
@@ -71,7 +70,7 @@ fn staged_input(
         plane: 0,
         start,
         lines,
-        tx_class: CoeffTransformClass::from_plane_tx_type(base_config.luma_tx_type),
+        tx_class: splot_recon::tx_class(base_config.luma_tx_type),
         parity_hiding: base_config.parity_hiding,
         use_tcq: base_config.use_tcq,
         lossless,

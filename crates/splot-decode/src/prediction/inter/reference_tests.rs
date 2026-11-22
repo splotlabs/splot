@@ -26,7 +26,7 @@ use super::{
 };
 use crate::pipeline::frame_progress::PublishedFrame;
 use crate::pipeline::inflight::{FrameSlotWriter, RefFrameSlot};
-use crate::prediction::inter::Mv;
+use crate::prediction::inter::MotionVector;
 use crate::prediction::inter::mc::{
     InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into,
 };
@@ -182,7 +182,7 @@ fn block(
     InterBlockParams::single(
         reference,
         McBlockRect::from_luma_rect(0, luma_y, WIDTH, luma_h),
-        Mv::ZERO,
+        MotionVector::ZERO,
         InterpolationFilter::EightTap,
     )
     .with_chroma(false)

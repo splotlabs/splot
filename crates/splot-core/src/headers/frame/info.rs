@@ -41,7 +41,7 @@ use crate::types::ObuType;
 use super::global_motion::{
     DEFAULT_WARP_PARAMS, REFS_PER_FRAME, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
 };
-use super::{FrameHeaderPrefix, parse_frame_header_prefix};
+use super::{FrameHeaderPrefix, RESTRICTED_ORDER_HINT, parse_frame_header_prefix};
 
 mod seq_view;
 mod show_existing;
@@ -574,7 +574,7 @@ fn get_disp_order_hint(
         let showable = implicit.get(index).copied()? || immediate.get(index).copied()?;
         if showable {
             let hint = hints.get(index).copied()?;
-            if hint != u32::MAX {
+            if hint != RESTRICTED_ORDER_HINT {
                 max_disp = max_disp.max(hint);
             }
         }

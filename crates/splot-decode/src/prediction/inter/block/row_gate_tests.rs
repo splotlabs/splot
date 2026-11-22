@@ -15,7 +15,9 @@ use splot_recon::{IDENTITY_WARP_PARAMS, WARPED_BLOCK_SIZE};
 use super::super::super::mc::mc_planes;
 use super::super::super::mv_scaling::derive_plane_scaling;
 use super::super::super::reference::subpel_last_reference_row;
-use super::super::super::{BawpSyntax, InterBlock, Mv, PlacedInterBlock, ReconInterpolationFilter};
+use super::super::super::{
+    BawpSyntax, InterBlock, MotionVector, PlacedInterBlock, ReconInterpolationFilter,
+};
 use super::*;
 
 const FRAME_WIDTH: usize = 1920;
@@ -54,11 +56,11 @@ fn placed(luma_y: usize, luma_h: usize, mv_row: i32) -> PlacedInterBlock {
         block: InterBlock {
             ref_frame0: 0,
             ref_frame1: None,
-            mv: Mv {
+            mv: MotionVector {
                 row: mv_row,
                 col: 0,
             },
-            mv1: Mv { row: 0, col: 0 },
+            mv1: MotionVector { row: 0, col: 0 },
             interp: ReconInterpolationFilter::EightTap,
             warp_params: [None, None],
             bawp: BawpSyntax::default(),
@@ -74,7 +76,7 @@ fn placed(luma_y: usize, luma_h: usize, mv_row: i32) -> PlacedInterBlock {
 fn published_rows(
     frame: DecodedFrameInfo,
     block: &PlacedInterBlock,
-    mv: Mv,
+    mv: MotionVector,
     reach: ListReach,
 ) -> Option<u32> {
     block_published_rows(
@@ -93,7 +95,7 @@ fn prediction_luma_rows(
     frame: DecodedFrameInfo,
     reference: DecodedFrameInfo,
     block: &PlacedInterBlock,
-    mv: Mv,
+    mv: MotionVector,
 ) -> u32 {
     let rect = block.motion_compensation_rect();
     let reference_size = reference.coded_luma_size();
@@ -258,7 +260,7 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
         references,
         384 / TIP_FIELD_CELL,
         0,
-        Mv { row: 361, col: 0 },
+        MotionVector { row: 361, col: 0 },
     )
     .expect("TIP field");
     let lists = [
@@ -328,7 +330,8 @@ fn a_warped_list_bound_dominates_every_section_the_kernel_reads() {
             ..ListReach::default()
         };
 
-        let bound = published_rows(frame, &block, Mv::ZERO, reach).expect("unscaled warp bound");
+        let bound =
+            published_rows(frame, &block, MotionVector::ZERO, reach).expect("unscaled warp bound");
         let read = warp_read_luma_rows(&block, warp_params);
         assert!(
             bound >= read,
@@ -350,7 +353,7 @@ fn a_scaled_warped_list_stays_unboundable() {
             reference,
             block.motion_compensation_rect(),
             block.predict_chroma,
-            Mv::ZERO,
+            MotionVector::ZERO,
             ListReach {
                 warp: Some(IDENTITY_WARP_PARAMS),
                 ..ListReach::default()
@@ -382,11 +385,11 @@ fn a_bawp_list_bound_covers_the_template_below_its_reference_position() {
         "a forty-sample motion vector moves the template forty rows down"
     );
 
-    let subpel = published_rows(frame, &block, Mv::ZERO, ListReach::default());
+    let subpel = published_rows(frame, &block, MotionVector::ZERO, ListReach::default());
     let with_template = published_rows(
         frame,
         &block,
-        Mv::ZERO,
+        MotionVector::ZERO,
         ListReach {
             bawp: bawp_reference_luma_rows(64, 64, 0),
             ..ListReach::default()
@@ -416,7 +419,7 @@ fn a_reference_gate_waits_for_padded_reconstruction_rows() {
         .expect("storage bounds");
     let block = placed(256, 16, 0);
     assert_eq!(
-        published_rows(frame, &block, Mv::ZERO, ListReach::default()),
+        published_rows(frame, &block, MotionVector::ZERO, ListReach::default()),
         Some(272)
     );
 }

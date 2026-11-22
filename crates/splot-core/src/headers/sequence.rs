@@ -254,7 +254,8 @@ impl FrameHeight {
     }
 }
 
-/// Sequence cropping window offsets (AV2 v1.0.0 § 5.4.1 / § 6.4.1).
+/// Cropping window offsets of a sequence header (AV2 v1.0.0 § 5.4.1 / § 6.4.1)
+/// or of an `lcr_rep_info()` (`lcr_cropping_win_*_offset`, § 5.8.7).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CroppingWindow {
     /// `seq_cropping_win_left_offset`.

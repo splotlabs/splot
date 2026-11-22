@@ -13,8 +13,8 @@ use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
 const WIDTH: usize = 64;
 const HEIGHT: usize = 48;
 
-fn mv(row: i32, col: i32) -> Mv {
-    Mv { row, col }
+fn mv(row: i32, col: i32) -> MotionVector {
+    MotionVector { row, col }
 }
 
 /// A reference whose luma is a textured base plus `edits` of `(x, y, delta)`.
@@ -55,7 +55,7 @@ fn frame<T: ReconSample>(bit_depth: BitDepth, luma: Vec<u16>) -> DecodedFrame<T>
 #[derive(Clone, Copy)]
 struct Case {
     x: usize,
-    mv: Mv,
+    mv: MotionVector,
     search: bool,
     refine: bool,
     threshold: Option<u32>,
@@ -119,7 +119,7 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
 fn unit_block<T: ReconSample>(
     references: [ReferenceSamples<'_, T>; 2],
     rect: McBlockRect,
-    mvs: [Mv; 2],
+    mvs: [MotionVector; 2],
     case: Case,
 ) -> CompoundMcBlock<'_, T> {
     InterBlockParams::compound_average(

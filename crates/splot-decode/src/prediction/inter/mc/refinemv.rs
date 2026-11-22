@@ -46,7 +46,7 @@ pub(super) fn scaled_area_bounds(
     plane_y: i32,
     width: usize,
     height: usize,
-    candidate: Mv,
+    candidate: MotionVector,
     scaling: &PlaneScaling,
 ) -> ReferenceAreaBounds {
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
@@ -70,7 +70,7 @@ pub(super) fn scaled_area_bounds(
 pub(super) fn unscaled_area_bounds(
     [x16, y16]: [i32; 2],
     [width, height]: [usize; 2],
-    candidate: Mv,
+    candidate: MotionVector,
     [sub_x, sub_y]: [u32; 2],
     scaling: &PlaneScaling,
 ) -> ReferenceAreaBounds {
@@ -285,8 +285,8 @@ pub(super) enum SearchArea {
 pub(super) fn search_refinemv<T: ReconSample>(
     luma: &mut [super::optflow::LumaReference<'_, T>; 2],
     block: &CompoundMcBlock<'_, T>,
-    (rect, candidates): (McBlockRect, [Mv; 2]),
-) -> Result<[Mv; 2]> {
+    (rect, candidates): (McBlockRect, [MotionVector; 2]),
+) -> Result<[MotionVector; 2]> {
     if !search_range_allowed(candidates) {
         return Ok(candidates);
     }
@@ -310,10 +310,10 @@ pub(super) fn search_refinemv<T: ReconSample>(
 /// `samples` holds the search area they were chosen from.
 pub(super) fn search_unit<T: ReconSample>(
     luma: &mut [super::optflow::LumaReference<'_, T>; 2],
-    (rect, candidates, allow_center): (McBlockRect, [Mv; 2], bool),
+    (rect, candidates, allow_center): (McBlockRect, [MotionVector; 2], bool),
     bytes: &mut SearchBytes,
     samples: &mut SearchSamples,
-) -> Result<([Mv; 2], SearchArea)> {
+) -> Result<([MotionVector; 2], SearchArea)> {
     if !search_range_allowed(candidates) {
         return Ok((candidates, SearchArea::None));
     }
@@ -344,9 +344,9 @@ const fn search_rect(rect: McBlockRect) -> McBlockRect {
 /// byte windows.
 fn search_bytes<T: ReconSample>(
     luma: &mut [super::optflow::LumaReference<'_, T>; 2],
-    (prediction_rect, candidates, allow_center): (McBlockRect, [Mv; 2], bool),
+    (prediction_rect, candidates, allow_center): (McBlockRect, [MotionVector; 2], bool),
     windows: &mut SearchBytes,
-) -> Result<([Mv; 2], SearchArea)> {
+) -> Result<([MotionVector; 2], SearchArea)> {
     if allow_center
         && super::optflow::fullpel_center_ends_search(luma, prediction_rect, candidates)?
             == Some(true)
@@ -365,13 +365,13 @@ fn search_bytes<T: ReconSample>(
 
 /// The candidates moved by the full-sample search offset `(dx, dy)`, in
 /// opposite directions.
-fn refined_mvs(candidates: [Mv; 2], dx: i32, dy: i32) -> [Mv; 2] {
+fn refined_mvs(candidates: [MotionVector; 2], dx: i32, dy: i32) -> [MotionVector; 2] {
     [
-        Mv {
+        MotionVector {
             row: candidates[0].row + dy * 8,
             col: candidates[0].col + dx * 8,
         },
-        Mv {
+        MotionVector {
             row: candidates[1].row - dy * 8,
             col: candidates[1].col - dx * 8,
         },
@@ -390,12 +390,12 @@ pub(super) struct TipFullpelViews<'a, T: ReconSample> {
     max_sample: u16,
 }
 
-pub(super) fn fullpel_candidates(mvs: [Mv; 2]) -> bool {
+pub(super) fn fullpel_candidates(mvs: [MotionVector; 2]) -> bool {
     mvs.iter().all(|mv| (mv.row | mv.col).trailing_zeros() >= 3)
 }
 
 /// The reference sample each full-pel candidate moves `rect`'s origin to.
-fn origins(rect: McBlockRect, mvs: [Mv; 2]) -> [(i32, i32); 2] {
+fn origins(rect: McBlockRect, mvs: [MotionVector; 2]) -> [(i32, i32); 2] {
     mvs.map(|mv| {
         (
             rect.luma_x as i32 + (mv.col >> 3),
@@ -412,7 +412,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     pub(super) fn new(
         sink: &WorkspaceSink<'_, '_, T>,
         batch: &CompoundMcBlock<'a, T>,
-        (rect, mvs): (McBlockRect, [Mv; 2]),
+        (rect, mvs): (McBlockRect, [MotionVector; 2]),
         offset: ByteOffset,
     ) -> Option<Self> {
         let frame_size = sink.info().coded_luma_size();
@@ -458,7 +458,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         &self,
         sink: &WorkspaceSink<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
-        (rect, mvs): (McBlockRect, [Mv; 2]),
+        (rect, mvs): (McBlockRect, [MotionVector; 2]),
     ) -> Result<Option<MotionCell>> {
         let Some(distances) = batch.optflow_distances else {
             return Ok(None);
@@ -481,7 +481,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         sink: &WorkspaceSink<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         rect: McBlockRect,
-        mvs: [Mv; 2],
+        mvs: [MotionVector; 2],
         distances: [i32; 2],
     ) -> Result<Option<MotionCell>> {
         let mut xs = [0usize; 2];
@@ -519,7 +519,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         sink: &WorkspaceSink<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         rect: McBlockRect,
-        mvs: [Mv; 2],
+        mvs: [MotionVector; 2],
         distances: [i32; 2],
     ) -> Result<Option<MotionCell>> {
         let mut xs = [0usize; 2];
@@ -545,7 +545,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         batch: &CompoundMcBlock<'_, T>,
         xs: [usize; 2],
         rows: [[usize; 8]; 2],
-        mvs: [Mv; 2],
+        mvs: [MotionVector; 2],
         distances: [i32; 2],
     ) -> Result<Option<MotionCell>> {
         let Some(spans) = self.spans(xs, rows, 8) else {
@@ -653,7 +653,7 @@ fn byte_sad_lanes<S: Simd>(simd: S, left: [u64; 2], right: [u64; 2]) -> u32 {
 /// predicted first and the whole area only when the search goes on.
 pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     block: &CompoundMcBlock<'_, T>,
-    (rect, candidates): (McBlockRect, [Mv; 2]),
+    (rect, candidates): (McBlockRect, [MotionVector; 2]),
     search: &mut TipSearchScratch,
     luma: &mut [super::optflow::LumaReference<'a, T>; 2],
     carries: &mut [splot_recon::BilinearOverlapCarry<'a, T>; 2],
@@ -731,12 +731,12 @@ const fn unit_start(dx: i32, dy: i32) -> usize {
 fn tip_search<'a, T: ReconSample>(
     luma: &mut [super::optflow::LumaReference<'a, T>; 2],
     prediction_rect: McBlockRect,
-    candidates: [Mv; 2],
+    candidates: [MotionVector; 2],
     predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
     carries: &mut [splot_recon::BilinearOverlapCarry<'a, T>; 2],
 ) -> Result<(i32, i32)> {
     const CENTER_SIZE: usize = 8;
-    let search_mv = |candidate: Mv| Mv {
+    let search_mv = |candidate: MotionVector| MotionVector {
         row: candidate.row - SEARCH_PADDING,
         col: candidate.col - SEARCH_PADDING,
     };
@@ -842,7 +842,7 @@ fn tip_refinemv_sad(
     (sad + rows(half..SPAN)) >> shift
 }
 
-fn search_range_allowed(candidates: [Mv; 2]) -> bool {
+fn search_range_allowed(candidates: [MotionVector; 2]) -> bool {
     candidates.into_iter().all(|mv| {
         [mv.row, mv.col].into_iter().all(|component| {
             (MV_LOW + 1 + SEARCH_PADDING..=MV_UPP - 1 - 2 * 8).contains(&component)
@@ -923,7 +923,13 @@ mod tests {
             16, 16, 0, 0, 0, 0, 64, 64, 64, 64,
         );
         assert_eq!(
-            unscaled_area_bounds([16 << 4, 16 << 4], [16, 16], Mv::ZERO, [0, 0], &scaling),
+            unscaled_area_bounds(
+                [16 << 4, 16 << 4],
+                [16, 16],
+                MotionVector::ZERO,
+                [0, 0],
+                &scaling
+            ),
             ReferenceAreaBounds {
                 first_x: 13,
                 first_y: 13,

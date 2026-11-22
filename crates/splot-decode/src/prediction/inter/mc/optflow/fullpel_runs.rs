@@ -21,7 +21,7 @@ use super::*;
 pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
     prediction: &CompoundSubpelPlane<'_, T>,
     cells: &[MotionCell],
-    refine: (&[[Mv; 2]], usize, usize),
+    refine: (&[[MotionVector; 2]], usize, usize),
     row_index: usize,
     [row, subblock_w, height]: [usize; 3],
     (sub_x, sub_y): (u32, u32),
@@ -106,7 +106,7 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
 /// The area whose § 7.13.3.5 bounds clip grid cell `cell_index`, or `None`
 /// when only the plane clips the cell.
 fn cell_clip_area(
-    (candidates, step, unit_size): (&[[Mv; 2]], usize, usize),
+    (candidates, step, unit_size): (&[[MotionVector; 2]], usize, usize),
     cell: MotionCell,
     cell_index: usize,
     subblock_area: Option<(usize, usize)>,
@@ -132,7 +132,7 @@ fn cell_clip_area(
 #[derive(Clone, Copy)]
 struct ClipArea {
     size: [usize; 2],
-    centre: [Mv; 2],
+    centre: [MotionVector; 2],
     shrinks: bool,
 }
 
@@ -261,7 +261,7 @@ fn fullpel_rect_params<T: ReconSample>(
 pub(super) fn uniform_fullpel_params<T: ReconSample>(
     prediction: &CompoundSubpelPlane<'_, T>,
     cells: &[MotionCell],
-    refine: (&[[Mv; 2]], usize, usize),
+    refine: (&[[MotionVector; 2]], usize, usize),
     (sub_x, sub_y): (u32, u32),
     (bit_depth, interp, subblock_area): (
         splot_recon::BitDepth,

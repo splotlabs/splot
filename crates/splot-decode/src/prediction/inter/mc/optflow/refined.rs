@@ -10,9 +10,6 @@ use super::super::refinemv::{SEARCH_AREA, SearchArea, search_unit};
 use super::*;
 use crate::DecodeHeaderStateError;
 
-type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
-type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
-
 /// The cells of one refined block and the scratch that derives and predicts
 /// them, kept by the caller so that no block allocates or zeroes them.
 #[derive(Debug)]
@@ -55,7 +52,7 @@ impl RefinedUnits {
         &self,
         x: usize,
         y: usize,
-    ) -> splot_recon::Result<[Mv; 2]> {
+    ) -> splot_recon::Result<[MotionVector; 2]> {
         let cell = |x: usize, y: usize| {
             let column = x / self.unit_size.max(1);
             (column < self.columns)
@@ -83,7 +80,7 @@ impl RefinedUnits {
                 sum[1] += cell.mvs[reference][1] - cell.base_mvs[reference].col * 2;
             }
         }
-        Ok(core::array::from_fn(|reference| Mv {
+        Ok(core::array::from_fn(|reference| MotionVector {
             row: first.base_mvs[reference].row + round2_signed_i32(delta_sum[reference][0], 3),
             col: first.base_mvs[reference].col + round2_signed_i32(delta_sum[reference][1], 3),
         }))
@@ -706,7 +703,7 @@ fn run_program<T: ReconSample, O: CompoundAverageOutput, const SIZE: usize>(
                 continue;
             };
             let target = (
-                MotionCell::from_refinemv([Mv::ZERO; 2]),
+                MotionCell::from_refinemv([MotionVector::ZERO; 2]),
                 placements,
                 true,
                 [col, row, SIZE, SIZE],
@@ -816,7 +813,7 @@ mod tests {
     #[test]
     fn temporal_mvs_average_four_by_four_optflow_deltas_over_eight_by_eight() {
         let cell = |mvs| MotionCell {
-            base_mvs: [Mv::ZERO; 2],
+            base_mvs: [MotionVector::ZERO; 2],
             mvs,
         };
         let units = units(
@@ -830,21 +827,24 @@ mod tests {
         );
         assert_eq!(
             units.temporal_mvs_at_luma_offset(0, 0).unwrap(),
-            [Mv { row: 1, col: -1 }, Mv { row: 2, col: -2 }]
+            [
+                MotionVector { row: 1, col: -1 },
+                MotionVector { row: 2, col: -2 }
+            ]
         );
     }
 
     #[test]
     fn temporal_mvs_treat_cropped_four_by_four_units_as_zero_delta() {
         let cell = MotionCell {
-            base_mvs: [Mv::ZERO; 2],
+            base_mvs: [MotionVector::ZERO; 2],
             mvs: [[4, -4], [0, 0]],
         };
         assert_eq!(
             units(1, vec![cell; 2])
                 .temporal_mvs_at_luma_offset(0, 0)
                 .unwrap(),
-            [Mv { row: 1, col: -1 }, Mv::ZERO]
+            [MotionVector { row: 1, col: -1 }, MotionVector::ZERO]
         );
     }
 }

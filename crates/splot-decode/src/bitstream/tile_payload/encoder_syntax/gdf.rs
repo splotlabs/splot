@@ -139,9 +139,9 @@ impl GdfFlags<'_> {
         let grid = match GdfGrid::new(seq, core)? {
             Some(grid) => Some(
                 GdfBlockGrid::new(grid.block_size, grid.rows, grid.cols, self.blocks.to_vec())
-                    .map_err(|()| {
-                        EncoderSyntaxError::Unsupported("use_gdf grid of another size")
-                    })?,
+                    .ok_or(EncoderSyntaxError::Unsupported(
+                        "use_gdf grid of another size",
+                    ))?,
             ),
             None => None,
         };

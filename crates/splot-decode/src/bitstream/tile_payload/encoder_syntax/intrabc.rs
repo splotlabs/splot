@@ -82,12 +82,10 @@ impl IntraTileSyntax {
         if !self.intrabc_allowed(leaf) {
             return Err(NO_INTRABC);
         }
-        let mvs = self
-            .inter_state()?
+        self.inter_state()?
             .tile
             .intrabc_ref_mvs(&leaf.frontier)
-            .map_err(rule("IntraBC vector stack"))?;
-        Ok(mvs.into_iter().map(MotionVector::from).collect())
+            .map_err(rule("IntraBC vector stack"))
     }
 
     /// Whether IntraBC leaves code `morph_pred` (§ 5.20.5.4): an intra
@@ -177,7 +175,7 @@ impl IntraTileSyntax {
             return Err(EncoderSyntaxError::Unsupported("this IntraBC vector"));
         }
         let motion = self.inter_ref()?.tile.intrabc_motion(modes.drl);
-        let intrabc = Some((modes.bv.into(), modes.morph));
+        let intrabc = Some((modes.bv, modes.morph));
         self.plan_motion_leaf(leaf, (motion, intrabc), (partition, split))
     }
 
@@ -330,7 +328,7 @@ impl IntraTileSyntax {
 /// `pred` with each component rounded to whole samples as § 7.10.2.11
 /// `lower_mv_precision` does for `MV_PRECISION_ONE_PEL`.
 fn lower_to_whole(pred: MotionVector) -> MotionVector {
-    crate::prediction::inter::read_mv::lower_mv_precision(MV_PRECISION_ONE_PEL, pred.into()).into()
+    crate::prediction::inter::read_mv::lower_mv_precision(MV_PRECISION_ONE_PEL, pred)
 }
 
 fn literal(symbols: &mut impl SymbolSink, value: u32, bits: u32) -> Result<()> {

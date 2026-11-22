@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    FrameTiles, GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv,
+    FrameTiles, GrainScaling, InterpolationFilter, RESTRICTED_ORDER_HINT, SeqTiles, TipGlobalMv,
     build_encoder_sequence_header, encode_film_grain_obu, encode_multi_frame_header_obu,
     encoder_film_grain_model,
 };
@@ -1230,7 +1230,7 @@ pub(crate) fn reference_pairs<'a>(
     );
     order_hints
         .iter()
-        .map(move |&hint| (hint != u32::MAX).then(|| (display, key + u64::from(hint))))
+        .map(move |&hint| (hint != RESTRICTED_ORDER_HINT).then(|| (display, key + u64::from(hint))))
 }
 
 /// `f` of each item, in order: on `pool` when there is one, else in turn.

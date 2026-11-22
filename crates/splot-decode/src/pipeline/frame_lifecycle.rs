@@ -79,16 +79,15 @@ pub(crate) struct PipelineFrame {
     pub(crate) ccso_header: Option<std::sync::Arc<FrameHeaderCore>>,
     pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
-    pub(crate) frame_rate_numerator: u32,
-    pub(crate) frame_rate_denominator: u32,
+    pub(crate) frame_rate: PipelineFrameRate,
     /// The caller data of the temporal unit that coded or showed this frame.
     pub(crate) props: crate::DataProps,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PipelineFrameRate {
-    pub(super) numerator: u32,
-    pub(super) denominator: u32,
+    pub(crate) numerator: u32,
+    pub(crate) denominator: u32,
 }
 
 impl PipelineFrameRate {

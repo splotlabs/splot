@@ -91,7 +91,7 @@ fn random_differences_round_trip_through_read_mv() {
             let decoded: Vec<MotionVector> = if let [_] = mvds[..] {
                 let magnitude = read();
                 let mv = apply_inter_mvd_signs(magnitude, &mut symbols, offset, config, false, 1);
-                vec![mv.unwrap().into()]
+                vec![mv.unwrap()]
             } else {
                 let (first, second) = (read(), read());
                 let (first, second) = apply_inter_mvd_sign_pair(
@@ -104,13 +104,13 @@ fn random_differences_round_trip_through_read_mv() {
                     1,
                 )
                 .unwrap();
-                vec![first.into(), second.into()]
+                vec![first, second]
             };
             assert_eq!(&decoded, mvds, "precision {precision}");
-            classes.extend(mvds.iter().map(|&mvd| shell(mvd.into(), precision).0));
+            classes.extend(mvds.iter().map(|&mvd| shell(mvd, precision).0));
         }
         let max = shell(
-            Mv {
+            MotionVector {
                 row: MAX_COMPONENT as i32,
                 col: MAX_COMPONENT as i32,
             },
@@ -229,6 +229,6 @@ fn adaptive_and_derived_sign_differences_round_trip() {
         };
         let read =
             apply_inter_mvd_signs(magnitude, &mut symbols, offset, config, !use_amvd, 1).unwrap();
-        assert_eq!(MotionVector::from(read), mvd, "amvd {use_amvd}");
+        assert_eq!(read, mvd, "amvd {use_amvd}");
     }
 }

@@ -290,7 +290,11 @@ impl ValidatorContext {
             ));
         }
 
-        if let Some((lcr_bit_depth, lcr_chroma)) = rep.format {
+        if let Some(LcrFormatInfo {
+            bit_depth_idc: lcr_bit_depth,
+            chroma_format_idc: lcr_chroma,
+        }) = rep.format
+        {
             let header_bit_depth = u32::from(general.bit_depth_idc.get());
             if lcr_bit_depth != header_bit_depth {
                 mismatches.push((
@@ -329,15 +333,15 @@ impl ValidatorContext {
                 ),
             ));
         }
-        if let Some((lcr_left, lcr_right, lcr_top, lcr_bottom)) = rep.cropping {
+        if let Some(lcr) = rep.cropping {
             let crop = general.cropping_window;
             for (field, lcr_value, header_value, name) in [
-                (LcrRepInfoField::CropLeft, lcr_left, crop.left, "left"),
-                (LcrRepInfoField::CropRight, lcr_right, crop.right, "right"),
-                (LcrRepInfoField::CropTop, lcr_top, crop.top, "top"),
+                (LcrRepInfoField::CropLeft, lcr.left, crop.left, "left"),
+                (LcrRepInfoField::CropRight, lcr.right, crop.right, "right"),
+                (LcrRepInfoField::CropTop, lcr.top, crop.top, "top"),
                 (
                     LcrRepInfoField::CropBottom,
-                    lcr_bottom,
+                    lcr.bottom,
                     crop.bottom,
                     "bottom",
                 ),

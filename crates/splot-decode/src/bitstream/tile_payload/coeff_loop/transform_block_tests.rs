@@ -11,9 +11,9 @@ fn low_frequency_positions_are_a_scan_prefix() {
     use splot_recon::{TransformClass, coefficient_scan_slice};
     fn check<const CLASS: usize, const LUMA: bool>(class: TransformClass) {
         let tx_class = [
-            CoeffTransformClass::TwoD,
-            CoeffTransformClass::Horizontal,
-            CoeffTransformClass::Vertical,
+            TransformClass::TwoD,
+            TransformClass::Horizontal,
+            TransformClass::Vertical,
         ][CLASS];
         for width_log2 in 2..=5u32 {
             for height in [4, 8, 16, 32] {
@@ -48,9 +48,9 @@ fn geometry(width: usize, height: usize) -> &'static TxGeometry {
 #[test]
 fn grid_scans_hold_each_shape_scan_with_its_grid_index() {
     for (class, recon_class) in [
-        (CoeffTransformClass::TwoD, TransformClass::TwoD),
-        (CoeffTransformClass::Horizontal, TransformClass::Horizontal),
-        (CoeffTransformClass::Vertical, TransformClass::Vertical),
+        (TransformClass::TwoD, TransformClass::TwoD),
+        (TransformClass::Horizontal, TransformClass::Horizontal),
+        (TransformClass::Vertical, TransformClass::Vertical),
     ] {
         for width in [4, 8, 16, 32] {
             for height in [4, 8, 16, 32] {
@@ -71,9 +71,9 @@ fn grid_scans_hold_each_shape_scan_with_its_grid_index() {
 #[test]
 fn scan_extent_bounds_every_scan_prefix() {
     for (class, recon_class) in [
-        (CoeffTransformClass::TwoD, TransformClass::TwoD),
-        (CoeffTransformClass::Horizontal, TransformClass::Horizontal),
-        (CoeffTransformClass::Vertical, TransformClass::Vertical),
+        (TransformClass::TwoD, TransformClass::TwoD),
+        (TransformClass::Horizontal, TransformClass::Horizontal),
+        (TransformClass::Vertical, TransformClass::Vertical),
     ] {
         for width in [4, 8, 16, 32] {
             for height in [4, 8, 16, 32] {
@@ -87,7 +87,7 @@ fn scan_extent_bounds_every_scan_prefix() {
             }
         }
     }
-    let class = CoeffTransformClass::TwoD;
+    let class = TransformClass::TwoD;
     assert_eq!(scan_extent(class, geometry(4, 4), 0), 16);
     assert_eq!(scan_extent(class, geometry(4, 4), 17), 16);
     assert_eq!(scan_extent(class, geometry(32, 32), 1), 1);
@@ -96,7 +96,7 @@ fn scan_extent_bounds_every_scan_prefix() {
 
 #[test]
 fn grid_scan_rejects_bad_eobs() {
-    let class = CoeffTransformClass::TwoD;
+    let class = TransformClass::TwoD;
     assert!(grid_scan(class, geometry(4, 4), 0).is_err());
     assert!(grid_scan(class, geometry(4, 4), 17).is_err());
     assert_eq!(grid_scan(class, geometry(4, 4), 16).unwrap().len(), 16);
@@ -107,7 +107,7 @@ fn scan_entry_context_classes_give_the_luma_2d_base_contexts() {
     for width in [4, 8, 16, 32] {
         for height in [4, 8, 16, 32] {
             let len = width * height;
-            let scan = grid_scan(CoeffTransformClass::TwoD, geometry(width, height), len).unwrap();
+            let scan = grid_scan(TransformClass::TwoD, geometry(width, height), len).unwrap();
             for (scan_index, &entry) in scan.iter().enumerate().skip(1) {
                 let pos = entry_pos(entry);
                 let diagonal = pos / width + pos % width;

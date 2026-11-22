@@ -33,6 +33,7 @@ use crate::headers::frame::segmentation::MfhSegView;
 use crate::headers::frame::tail::{FilmGrainConfig, TxMode, parse_film_grain_config, read_tx_mode};
 use crate::headers::frame::tiling::parse_tile_info;
 
+use super::RESTRICTED_ORDER_HINT;
 use super::info::FrameType;
 
 /// The Feature ID for an honest inter shared-tail coverage stop.
@@ -286,7 +287,7 @@ fn derived_primary_is_none(
         if slot_valid
             && first_slot
             && is_inter.get(index).copied()?
-            && order_hint.get(index).copied()? != u32::MAX
+            && order_hint.get(index).copied()? != RESTRICTED_ORDER_HINT
         {
             return Some(false);
         }

@@ -15,7 +15,7 @@
 //! motion publication lands in the fused walk's order even though symbol
 //! decode has already run ahead to the end of the unit.
 
-use super::super::compound::CompoundYMode;
+use super::super::compound::CompoundMode;
 use super::super::find_mv_stack::{
     ALL_CANDIDATES, CompoundMvCandidate, CompoundMvStack, INTRABC_REF_FRAME, MvStack,
     NeighbourFlagSyntax, NeighbourMotionValues, OrderHintMvContext, RefMvBank, WarpParamBank,
@@ -151,7 +151,7 @@ fn resolve_pending_intrabc(
 ) -> Result<intrabc::IntrabcReconCommand> {
     use crate::filters::wienerns_lr::intrabc_records::resolve_pending_intrabc_info;
     use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
-        DrlReorderMode, IntrabcStackGeometry, select_intrabc_ref_mv_from_candidates,
+        IntrabcStackGeometry, select_intrabc_ref_mv_from_candidates,
     };
 
     let PendingIntrabcBlock {
@@ -189,11 +189,6 @@ fn resolve_pending_intrabc(
         .ref_mv_bank
         .as_ref()
         .map(super::super::find_mv_stack::RefMvBank::intrabc_candidates);
-    let drl_reorder = match state.drl_reorder {
-        DrlReorder::Always => DrlReorderMode::Always,
-        DrlReorder::Constraint => DrlReorderMode::Constraint,
-        DrlReorder::Disabled => DrlReorderMode::Disabled,
-    };
     let stack_geometry = IntrabcStackGeometry {
         mi_row: frontier.r,
         mi_col: frontier.c,
@@ -208,11 +203,11 @@ fn resolve_pending_intrabc(
         stack_geometry,
         &spatial,
         state.ref_mv_bank.is_some(),
-        drl_reorder,
+        state.drl_reorder,
         info.ref_selection(),
     );
     let info = resolve_pending_intrabc_info(info, pred_mv);
-    let mv = Mv {
+    let mv = MotionVector {
         row: info.block_mv.row,
         col: info.block_mv.col,
     };
@@ -248,7 +243,7 @@ fn resolve_pending_intrabc(
         n4w,
         n4h,
         NeighbourMotionValues {
-            mv: [mv, Mv::ZERO],
+            mv: [mv, MotionVector::ZERO],
             cwp_weight: mc::CWP_EQUAL,
             stored_warp: None,
             global_mv: [false, false],
@@ -312,7 +307,7 @@ pub(super) struct SingleMotionSyntax {
     pub(super) mode: u8,
     pub(super) tip_ref: bool,
     pub(super) ref_mv_idx: u8,
-    pub(super) mvd: Mv,
+    pub(super) mvd: MotionVector,
     pub(super) use_temporal_first: bool,
 }
 
@@ -321,7 +316,7 @@ pub(super) struct WarpMotionSyntax {
     pub(super) source: WarpModelSource,
     pub(super) ref_mv_idx: u8,
     pub(super) ref_warp_idx: u8,
-    pub(super) mvd: Option<Mv>,
+    pub(super) mvd: Option<MotionVector>,
     pub(super) extend_delta: (i32, i32),
     pub(super) derive_wrl: bool,
     pub(super) use_temporal_first: bool,
@@ -367,14 +362,14 @@ pub(super) struct CompoundJointMvProjection {
 /// § 5.20.7.6 compound and § 5.20.7.10 skip-mode syntax.
 #[derive(Clone, Copy)]
 pub(super) struct CompoundMotionSyntax {
-    pub(super) y_mode: CompoundYMode,
+    pub(super) y_mode: CompoundMode,
     pub(super) ref_frame1: i8,
     pub(super) skip_mode: bool,
     pub(super) use_optflow: bool,
     pub(super) local_warp: bool,
     pub(super) ref_mv_idx: u8,
     pub(super) independent_idx: Option<[u8; 2]>,
-    pub(super) mvd: [Mv; 2],
+    pub(super) mvd: [MotionVector; 2],
     pub(super) joint: Option<CompoundJointMvProjection>,
     pub(super) jmvd_scale_mode: u8,
     /// Whether the paired stack admits a temporal candidate: § 7.12.2 allows one
@@ -392,7 +387,7 @@ pub(super) struct CompoundMotionSyntax {
 
 /// § 7.12 resolution output consumed by the reconstruction command.
 pub(super) struct ResolvedInterBlock {
-    pub(super) mv: [Mv; 2],
+    pub(super) mv: [MotionVector; 2],
     pub(super) warp_params: [Option<[i32; 6]>; 2],
     pub(super) blend: mc::CompoundBlend,
 }
@@ -467,7 +462,7 @@ impl InterBlockSyntax {
 
 impl CompoundMotionSyntax {
     const fn is_global(&self) -> bool {
-        matches!(self.y_mode, CompoundYMode::GlobalGlobal)
+        matches!(self.y_mode, CompoundMode::GlobalGlobal)
     }
 }
 
@@ -562,7 +557,7 @@ fn resolve_bru(
     state: &mut MvResolutionState<'_>,
 ) -> ResolvedInterBlock {
     let resolved = ResolvedInterBlock {
-        mv: [Mv::ZERO, Mv::ZERO],
+        mv: [MotionVector::ZERO, MotionVector::ZERO],
         warp_params: [None, None],
         blend: syntax.blend,
     };
@@ -629,7 +624,7 @@ pub(super) fn resolve_single(
         )
     };
     ResolvedInterBlock {
-        mv: [mv, Mv::ZERO],
+        mv: [mv, MotionVector::ZERO],
         warp_params: [
             (!single.tip_ref && single.mode == SINGLE_MODE_GLOBALMV)
                 .then(|| {
@@ -658,7 +653,7 @@ pub(super) fn single_mv_stack(
     need: usize,
 ) -> MvStack {
     let global_mv = if tip_ref {
-        Mv::ZERO
+        MotionVector::ZERO
     } else {
         global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision)
     };
@@ -686,7 +681,7 @@ pub(super) fn single_mode_mv(
     (precision, use_amvd): (BlockPrecisionRecord, bool),
     block: &MvBlockContext,
     state: &MvResolutionState<'_>,
-) -> Mv {
+) -> MotionVector {
     let pred_mv = stack.candidate(usize::from(single.ref_mv_idx));
     match single.mode {
         SINGLE_MODE_GLOBALMV => {
@@ -779,18 +774,18 @@ pub(super) fn warp_motion(
         }
     };
     Ok(ResolvedInterBlock {
-        mv: [mv, Mv::ZERO],
+        mv: [mv, MotionVector::ZERO],
         warp_params: [Some(params), None],
         blend: syntax.blend,
     })
 }
 
-fn warp_newmv(syntax: &InterBlockSyntax, warp: &WarpMotionSyntax, stack: &MvStack) -> Mv {
+fn warp_newmv(syntax: &InterBlockSyntax, warp: &WarpMotionSyntax, stack: &MvStack) -> MotionVector {
     let pred_mv = lowered_pred_mv(
         syntax.precision,
         stack.candidate(usize::from(warp.ref_mv_idx)),
     );
-    add_mv_clamped(pred_mv, warp.mvd.unwrap_or(Mv::ZERO))
+    add_mv_clamped(pred_mv, warp.mvd.unwrap_or(MotionVector::ZERO))
 }
 
 fn warp_newmv_model(
@@ -798,7 +793,7 @@ fn warp_newmv_model(
     warp: &WarpMotionSyntax,
     block: &MvBlockContext,
     stack: &MvStack,
-    mv: Mv,
+    mv: MotionVector,
     state: &MvResolutionState<'_>,
 ) -> Result<[i32; 6]> {
     match source {
@@ -948,10 +943,10 @@ fn single_list_candidate(
     state: &MvResolutionState<'_>,
     block: &MvBlockContext,
     ref_frame: i8,
-    global_mv: Mv,
+    global_mv: MotionVector,
     idx: usize,
     use_temporal_first: bool,
-) -> Mv {
+) -> MotionVector {
     single_list_stack(state, block, ref_frame, global_mv, use_temporal_first, idx).candidate(idx)
 }
 
@@ -961,7 +956,7 @@ fn single_list_stack(
     state: &MvResolutionState<'_>,
     block: &MvBlockContext,
     ref_frame: i8,
-    global_mv: Mv,
+    global_mv: MotionVector,
     use_temporal_first: bool,
     need: usize,
 ) -> MvStack {
@@ -992,14 +987,14 @@ pub(super) fn near_near_mvs(
     block: &MvBlockContext,
     syntaxes: &[Option<InterBlockSyntax>],
     state: &MvResolutionState<'_>,
-) -> Vec<Option<[Mv; 2]>> {
+) -> Vec<Option<[MotionVector; 2]>> {
     let mut paired: Vec<(bool, CompoundMvStack)> = Vec::new();
     let mut lists: Vec<((i8, bool), MvStack)> = Vec::new();
     let mut out = Vec::with_capacity(syntaxes.len());
     for syntax in syntaxes {
         let Some(compound) = syntax.as_ref().and_then(|syntax| match &syntax.motion {
             InterMotionSyntax::Compound(compound)
-                if compound.y_mode == CompoundYMode::NearNear
+                if compound.y_mode == CompoundMode::NearNear
                     && !compound.skip_mode
                     && !compound.local_warp =>
             {
@@ -1073,8 +1068,8 @@ fn compound_mvs(
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,
     paired: &impl Fn(usize) -> CompoundMvCandidate,
-    independent: &impl Fn([usize; 2]) -> [Mv; 2],
-) -> [Mv; 2] {
+    independent: &impl Fn([usize; 2]) -> [MotionVector; 2],
+) -> [MotionVector; 2] {
     let candidates = || {
         select_near_near_candidates(
             compound.independent_idx.map(|idx| idx.map(usize::from)),
@@ -1084,23 +1079,23 @@ fn compound_mvs(
         )
     };
     match compound.y_mode {
-        CompoundYMode::GlobalGlobal => [Mv::ZERO, Mv::ZERO],
-        CompoundYMode::NearNear => candidates(),
-        CompoundYMode::NearNew | CompoundYMode::NewNear => {
+        CompoundMode::GlobalGlobal => [MotionVector::ZERO, MotionVector::ZERO],
+        CompoundMode::NearNear => candidates(),
+        CompoundMode::NearNew | CompoundMode::NewNear => {
             let mut mvs = candidates();
-            let new_ref = usize::from(compound.y_mode == CompoundYMode::NearNew);
+            let new_ref = usize::from(compound.y_mode == CompoundMode::NearNew);
             mvs[new_ref] = add_mv_clamped(
                 lowered_amvd_pred(syntax, mvs[new_ref]),
                 compound.mvd[new_ref],
             );
             mvs
         }
-        CompoundYMode::JointNew => joint_new_mvs(
+        CompoundMode::JointNew => joint_new_mvs(
             syntax,
             compound,
             paired(usize::from(compound.ref_mv_idx)).mvs,
         ),
-        CompoundYMode::NewNew => {
+        CompoundMode::NewNew => {
             let candidate = paired(usize::from(compound.ref_mv_idx)).mvs;
             [
                 add_mv_clamped(lowered_amvd_pred(syntax, candidate[0]), compound.mvd[0]),
@@ -1115,8 +1110,8 @@ fn compound_mvs(
 fn joint_new_mvs(
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,
-    candidates: [Mv; 2],
-) -> [Mv; 2] {
+    candidates: [MotionVector; 2],
+) -> [MotionVector; 2] {
     let Some(projection) = compound.joint else {
         return candidates;
     };
@@ -1138,7 +1133,7 @@ fn joint_new_mvs(
     }
 }
 
-fn lowered_amvd_pred(syntax: &InterBlockSyntax, pred_mv: Mv) -> Mv {
+fn lowered_amvd_pred(syntax: &InterBlockSyntax, pred_mv: MotionVector) -> MotionVector {
     if syntax.use_amvd {
         pred_mv
     } else {

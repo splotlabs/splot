@@ -12,7 +12,7 @@ use splot_recon::{
 
 use crate::error::Result;
 
-use super::Mv;
+use super::MotionVector;
 use super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
 use super::mc::{InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into};
 use super::mv_scaling::PlaneScaling;
@@ -72,7 +72,7 @@ pub(crate) fn reconstruct<T: ReconSample>(
         InterBlockParams::single(
             reference,
             McBlockRect::from_luma_rect(0, 0, storage_width, storage_height),
-            Mv::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTapSharp,
         )
         .with_chroma(!reference_info.pixel_format().is_monochrome()),
@@ -108,7 +108,7 @@ pub(crate) fn motion_field(
         mi_cols,
         current_order_hint,
         [Some(reference_order_hint), None],
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         [None; 2],
     ));
     Some(field)

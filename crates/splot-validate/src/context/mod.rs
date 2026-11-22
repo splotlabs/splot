@@ -23,7 +23,8 @@ use splot_core::headers::frame::{
     TileInfo, TipFrameMode, get_relative_dist, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::layer_config_record::{
-    LayerConfigurationRecord, LcrAggregateInfo, LcrRepInfo, parse_layer_config_record,
+    LayerConfigurationRecord, LcrAggregateInfo, LcrFormatInfo, LcrRepInfo,
+    parse_layer_config_record,
 };
 use splot_core::headers::metadata::{
     MetadataPayload, MetadataScanType, MetadataTimecode, MetadataUnit, parse_metadata_group,
@@ -36,8 +37,8 @@ use splot_core::headers::quantizer_matrix::{
     NUM_CUSTOM_QMS, QuantizerMatrixObu, parse_quantizer_matrix,
 };
 use splot_core::headers::sequence::{
-    MAX_NUM_MLAYERS, MAX_SEQ_NUM, MLayerDependencyMap, MLayerPresenceMap, SequenceHeader,
-    SequenceHeaderGeneral, SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo,
+    CroppingWindow, MAX_NUM_MLAYERS, MAX_SEQ_NUM, MLayerDependencyMap, MLayerPresenceMap,
+    SequenceHeader, SequenceHeaderGeneral, SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo,
     parse_sequence_header,
 };
 use splot_core::headers::tile_group::{

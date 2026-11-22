@@ -28,20 +28,23 @@ fn forward_intersection_samples_the_clipped_positive_boundary() {
         None,
         0,
         2,
-        Mv { row: 0, col: 1984 },
+        MotionVector { row: 0, col: 1984 },
         -1,
         31,
         false,
     );
 
-    state
-        .whole_band()
-        .unwrap()
-        .check_intersection(0, Some(1), 0, 2, Mv { row: 0, col: 1984 });
+    state.whole_band().unwrap().check_intersection(
+        0,
+        Some(1),
+        0,
+        2,
+        MotionVector { row: 0, col: 1984 },
+    );
 
     assert_eq!(
         state.trajectory_cell(1, 0, 0),
-        Some(Mv { row: 0, col: 2047 })
+        Some(MotionVector { row: 0, col: 2047 })
     );
     assert_eq!(recorded_trajectory(&state, 1, (0, 30), 0), Some((0, 0)));
     assert_eq!(recorded_trajectory(&state, 1, (0, 32), 0), None);
@@ -55,20 +58,23 @@ fn reverse_intersection_samples_the_clipped_positive_boundary() {
         Some(1),
         0,
         34,
-        Mv { row: 0, col: -1088 },
+        MotionVector { row: 0, col: -1088 },
         19,
         17,
         false,
     );
 
-    state
-        .whole_band()
-        .unwrap()
-        .check_intersection(0, Some(1), 0, 46, Mv { row: 0, col: -1920 });
+    state.whole_band().unwrap().check_intersection(
+        0,
+        Some(1),
+        0,
+        46,
+        MotionVector { row: 0, col: -1920 },
+    );
 
     assert_eq!(
         state.trajectory_cell(0, 0, 16),
-        Some(Mv { row: 0, col: 2047 })
+        Some(MotionVector { row: 0, col: 2047 })
     );
     assert_eq!(recorded_trajectory(&state, 0, (0, 46), 1), Some((0, 16)));
     assert_eq!(recorded_trajectory(&state, 0, (0, 48), 1), None);
@@ -82,30 +88,33 @@ fn negative_boundary_positions_differ_but_both_exceed_the_unit_bounds() {
         None,
         0,
         34,
-        Mv { row: 0, col: -1984 },
+        MotionVector { row: 0, col: -1984 },
         -1,
         31,
         false,
     );
 
-    state
-        .whole_band()
-        .unwrap()
-        .check_intersection(0, Some(1), 0, 34, Mv { row: 0, col: -1984 });
+    state.whole_band().unwrap().check_intersection(
+        0,
+        Some(1),
+        0,
+        34,
+        MotionVector { row: 0, col: -1984 },
+    );
 
     assert_eq!(
         state.trajectory_cell(1, 0, 35),
-        Some(Mv { row: 0, col: -2047 })
+        Some(MotionVector { row: 0, col: -2047 })
     );
     assert_eq!(recorded_trajectory(&state, 1, (0, 3), 0), None);
     assert_eq!(recorded_trajectory(&state, 1, (0, 4), 0), None);
     let band = state.whole_band().unwrap();
     assert_eq!(
-        band.sampled_position(0, 35, Mv { row: 0, col: -2048 }),
+        band.sampled_position(0, 35, MotionVector { row: 0, col: -2048 }),
         Some((0, 3))
     );
     assert_eq!(
-        band.sampled_position(0, 35, Mv { row: 0, col: -2047 }),
+        band.sampled_position(0, 35, MotionVector { row: 0, col: -2047 }),
         Some((0, 4))
     );
 }

@@ -146,13 +146,13 @@ pub(super) struct LcrRepInfoSnapshot {
     pub(super) max_pic_width: u32,
     /// `lcr_max_pic_height[isGlobal][xId]` (always present).
     pub(super) max_pic_height: u32,
-    /// `(lcr_bit_depth_idc, lcr_chroma_format_idc)`, present when
+    /// `lcr_bit_depth_idc` and `lcr_chroma_format_idc`, present when
     /// `lcr_format_info_present_flag == 1`.
-    pub(super) format: Option<(u32, u32)>,
+    pub(super) format: Option<LcrFormatInfo>,
     /// The four `lcr_cropping_win_*_offset` values, present when
     /// `lcr_cropping_window_present_flag == 1` (the present flag itself is the
-    /// `Option::is_some`). Order: `(left, right, top, bottom)`.
-    pub(super) cropping: Option<(u32, u32, u32, u32)>,
+    /// `Option::is_some`).
+    pub(super) cropping: Option<CroppingWindow>,
     /// Byte offset of the defining LCR OBU.
     pub(super) offset: ByteOffset,
 }
@@ -360,12 +360,8 @@ pub(super) fn rep_info_snapshot(rep_info: &LcrRepInfo, offset: ByteOffset) -> Lc
     LcrRepInfoSnapshot {
         max_pic_width: rep_info.max_pic_width,
         max_pic_height: rep_info.max_pic_height,
-        format: rep_info
-            .format_info
-            .map(|f| (f.bit_depth_idc, f.chroma_format_idc)),
-        cropping: rep_info
-            .cropping_window
-            .map(|c| (c.left_offset, c.right_offset, c.top_offset, c.bottom_offset)),
+        format: rep_info.format_info,
+        cropping: rep_info.cropping_window,
         offset,
     }
 }

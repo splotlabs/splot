@@ -20,6 +20,10 @@ pub(crate) const REFS_PER_FRAME: u32 = 7;
 /// (when `checkRes && !IsBridge`) appends any remaining restricted slots at the end.
 pub const RESTRICTED_OH: i32 = -1;
 
+/// [`RESTRICTED_OH`] as stored in the unsigned `RefOrderHint` and `OrderHints`
+/// tables of the reference-state API.
+pub const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
+
 /// `DIST_WEIGHT_BITS` (AV2 v1.0.0 § 3): the scaling applied to `tDist` in the
 /// `maxDisp > OrderHint` scoring arm (§ 7.7).
 const DIST_WEIGHT_BITS: u32 = 6;

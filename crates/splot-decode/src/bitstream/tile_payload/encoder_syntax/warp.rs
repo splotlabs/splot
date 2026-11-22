@@ -8,9 +8,8 @@
 
 use splot_recon::{PlaneId, PlaneRect};
 
-use super::inter::MotionVector;
 use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, rule};
-use crate::prediction::inter::{EncoderMotion, EncoderWarpMotion, EncoderWarpSource, Mv};
+use crate::prediction::inter::{EncoderMotion, EncoderWarpMotion, EncoderWarpSource, MotionVector};
 
 /// `MAX_WARP_REF_CANDIDATES` (§ 3): the `RefWarpIdx` values.
 pub const WARP_CANDIDATES: usize = 4;
@@ -92,17 +91,10 @@ impl IntraTileSyntax {
             return Ok(None);
         }
         let ref_frame = self.list_reference(ref_frame)?;
-        Ok(self
-            .inter_ref()?
+        self.inter_ref()?
             .tile
             .warp_options(&leaf.frontier, ref_frame)
-            .map_err(rule("warp options"))?
-            .map(|options| WarpOptions {
-                newmv: options.newmv,
-                local: options.local,
-                extend: options.extend,
-                six_param: options.six_param,
-            }))
+            .map_err(rule("warp options"))
     }
 
     /// The vector a difference of `modes` at `leaf` adds to: the DRL
@@ -113,14 +105,13 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
     pub fn warp_base(&mut self, leaf: &LeafBlock, modes: WarpModes) -> Result<MotionVector> {
         let motion = EncoderMotion::Warp(EncoderWarpMotion {
-            mvd: Some(Mv::default()),
+            mvd: Some(MotionVector::default()),
             ..self.warp_choice(leaf, modes)?
         });
         let tile = &mut self.inter_state()?.tile;
         Ok(tile
             .motion_vectors(&leaf.frontier, motion)
-            .map_err(rule("warp vector"))?[0]
-            .into())
+            .map_err(rule("warp vector"))?[0])
     }
 
     /// The difference step of `modes` in `1/8` samples: the frame step of a
@@ -194,7 +185,7 @@ impl IntraTileSyntax {
         if let Some(target) = modes.mv {
             let base = self.warp_base(leaf, modes)?;
             let step = self.warp_step(&modes);
-            let mvd = Mv {
+            let mvd = MotionVector {
                 row: target.row - base.row,
                 col: target.col - base.col,
             };
@@ -232,7 +223,7 @@ impl IntraTileSyntax {
             source,
             ref_mv_idx: modes.drl,
             ref_warp_idx: modes.warp_idx,
-            mvd: (newmv || modes.mv.is_some()).then_some(Mv::default()),
+            mvd: (newmv || modes.mv.is_some()).then_some(MotionVector::default()),
             precision: modes.precision,
             interintra: modes
                 .interintra

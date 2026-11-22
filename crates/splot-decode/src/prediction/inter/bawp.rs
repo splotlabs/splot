@@ -9,7 +9,7 @@ use splot_recon::{
 };
 
 use super::reference::ReferenceSamples;
-use super::{BawpSyntax, Mv, PlacedInterBlock};
+use super::{BawpSyntax, MotionVector, PlacedInterBlock};
 use crate::Result;
 use fearless_simd::{prelude::*, u16x16};
 
@@ -260,7 +260,7 @@ pub(crate) fn apply_bawp<T: ReconSample>(
     reference: ReferenceSamples<'_, T>,
     placed: &PlacedInterBlock,
     bawp: BawpSyntax,
-    mv: Mv,
+    mv: MotionVector,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let mut luma_alpha = 1i16 << SHIFT;
@@ -288,7 +288,7 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     target: PlaneRect,
     (avail_up, avail_left): (bool, bool),
-    mv: Mv,
+    mv: MotionVector,
 ) -> Result<()> {
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
@@ -363,7 +363,7 @@ fn apply_bawp_plane<T: ReconSample>(
     reference: ReferenceSamples<'_, T>,
     placed: &PlacedInterBlock,
     bawp: BawpSyntax,
-    mv: Mv,
+    mv: MotionVector,
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
