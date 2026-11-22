@@ -82,6 +82,12 @@ Options:
           HDR mastering display as `G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)`: chromaticities in units of 0.00002, luminance in units of 0.0001 cd/m2 (the SMPTE ST 2086 integers)
       --content-light <CLL,FALL>
           HDR content light level, MaxCLL and MaxFALL in cd/m2
+      --icc <FILE>
+          ICC profile file (ISO 15076-1, at least its 128-byte header): every key frame carries its bytes unchanged in an ICC profile metadata OBU
+      --itut-t35 <FILE>
+          ITU-T T.35 file: byte 0 is the country code, byte 1 the extension byte when the code is 0xFF, then the payload (at least one byte, the terminal provider code first). Every key frame carries it unchanged in a T.35 metadata OBU
+      --user-data-unregistered <FILE>
+          Unregistered user data file: a 16-byte UUID, then the payload. Every key frame carries it unchanged in a user data metadata OBU
       --keyint <KEYINT>
           Distance between key frames, in frames [default: 120]
       --stats

@@ -165,6 +165,20 @@ pub(crate) struct EncodeArgs {
     /// HDR content light level, MaxCLL and MaxFALL in cd/m2.
     #[arg(long, value_name = "CLL,FALL", value_parser = parse_content_light)]
     content_light: Option<ContentLightLevel>,
+    /// ICC profile file (ISO 15076-1, at least its 128-byte header): every
+    /// key frame carries its bytes unchanged in an ICC profile metadata OBU.
+    #[arg(long, value_name = "FILE")]
+    icc: Option<PathBuf>,
+    /// ITU-T T.35 file: byte 0 is the country code, byte 1 the extension
+    /// byte when the code is 0xFF, then the payload (at least one byte, the
+    /// terminal provider code first). Every key frame carries it unchanged
+    /// in a T.35 metadata OBU.
+    #[arg(long, value_name = "FILE")]
+    itut_t35: Option<PathBuf>,
+    /// Unregistered user data file: a 16-byte UUID, then the payload. Every
+    /// key frame carries it unchanged in a user data metadata OBU.
+    #[arg(long, value_name = "FILE")]
+    user_data_unregistered: Option<PathBuf>,
     /// Distance between key frames, in frames.
     #[arg(long, default_value_t = Config::DEFAULT_KEYINT)]
     keyint: NonZeroU32,
@@ -428,6 +442,15 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     content.timing_info = args.timing_info;
     content.mastering_display = args.mastering_display;
     content.content_light_level = args.content_light;
+    let read = |path: &Option<PathBuf>| {
+        path.as_ref()
+            .map(|path| std::fs::read(path).with_context(|| format!("read {}", path.display())))
+            .transpose()
+    };
+    let metadata = &mut config.key_frame_metadata;
+    metadata.icc_profile = read(&args.icc)?;
+    metadata.itut_t35 = read(&args.itut_t35)?;
+    metadata.user_data_unregistered = read(&args.user_data_unregistered)?;
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
     if args.low_delay {
