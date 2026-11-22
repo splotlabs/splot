@@ -30,7 +30,7 @@ use tables::{
     ADJACENT_PAIRS, ADST4, ADST8, ADST16, DCT_PAIRS, DCT4, DCT8, DCT8_SPLIT, DCT16, DCT16_SPLIT,
     DCT32, DCT32_EVEN, DCT32_ODD, DDTX8, DDTX16, FDDT8, FDDT16, FDST4, FDST8, FDST16, INTERLEAVE,
     INTERLEAVE_HIGH_REVERSED, INTERLEAVE_REVERSED, ODD4, ODD8, ODD16, ODD32, SPLIT_ORDER,
-    TWO_LEVEL_ORDER, dct_pairs, pack,
+    TWO_LEVEL_ORDER, pack,
 };
 
 /// The four output chunks of a two-level split `DCT32` row from its sums
@@ -100,27 +100,6 @@ impl Pass {
             _ => return None,
         })
     }
-
-    const ALL: [Self; 18] = [
-        Self::Identity4,
-        Self::Identity8,
-        Self::Identity16,
-        Self::Identity32,
-        Self::Dct4,
-        Self::Adst4,
-        Self::Fdst4,
-        Self::Dct8,
-        Self::Adst8,
-        Self::Fdst8,
-        Self::Ddtx8,
-        Self::Fddt8,
-        Self::Dct16,
-        Self::Adst16,
-        Self::Fdst16,
-        Self::Ddtx16,
-        Self::Fddt16,
-        Self::Dct32,
-    ];
 
     /// Whether this is the factored `DCT` of a column pass.
     const fn is_dct(self) -> bool {
@@ -275,13 +254,6 @@ impl<'a, const DQ: bool, const RS: bool> Input<'a, DQ, RS> {
         i32x4::load_array(t, padded).into()
     }
 
-    /// The row inputs, before the clamp, of the eight coefficients from `at`.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn at(self, t: Avx2, at: usize) -> __m256i {
-        self.finish(self.coeffs8(t, at), at == 0)
-    }
-
     /// Eight coefficients from `start`, zero past the end of the prefix.
     #[inline]
     #[target_feature(enable = "avx2")]
@@ -432,9 +404,15 @@ const IDENTITY: u8 = 0;
 const SPLIT: u8 = 1;
 const DENSE: u8 = 2;
 
+/// The words between two column pairs of the row-pass output and between two
+/// rows of the tile: those of the widest block, so that neither layout
+/// depends on the block width and every offset of a pass is in bounds.
+const PAIR: usize = 32;
+const TILE_ROW: usize = 16;
+
 /// The row pass of a 16- or 32-wide block (`H = N / 2`) over the column `pairs`
 /// with the `KIND` transform on the pair `kernel` or the identity `scale`:
-/// writes pair `q` at `scratch[q * N..][..N]` and returns the written pairs.
+/// writes pair `q` at `scratch[q * PAIR..][..N]` and returns the written pairs.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 #[allow(
@@ -456,7 +434,7 @@ fn row_pass<const N: usize, const H: usize, const KIND: u8>(
         if a >= rows.coded && b >= rows.coded {
             continue;
         }
-        let Some(out) = scratch.get_mut(q * N..q * N + N) else {
+        let Some(out) = scratch.get_mut(q * PAIR..q * PAIR + N) else {
             break;
         };
         let written = if KIND == IDENTITY {
@@ -478,8 +456,45 @@ fn row_pass<const N: usize, const H: usize, const KIND: u8>(
     mask
 }
 
-/// [`row_pass`] of a 4- or 8-wide block straight from the coefficient
-/// prefix.
+/// The `W`-sample rows (4 or 8) of a coefficient prefix: row `r` whole,
+/// the one partial row zero-padded, zero past the prefix.
+#[derive(Clone, Copy)]
+struct Rows<'a, const W: usize> {
+    full: &'a [[i32; W]],
+    tail: __m256i,
+}
+
+impl<'a, const W: usize> Rows<'a, W> {
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn new<const DQ: bool, const RS: bool>(t: Avx2, input: Input<'a, DQ, RS>) -> Self {
+        let (full, rest) = input.coeffs.as_chunks::<W>();
+        let at = full.len() * W;
+        let tail = match (rest.is_empty(), W) {
+            (true, _) => _mm256_setzero_si256(),
+            (false, 4) => _mm256_castsi128_si256(input.coeffs4(t, at)),
+            _ => input.coeffs8(t, at),
+        };
+        Self { full, tail }
+    }
+
+    /// Row `r` (in the low lane when `W == 4`).
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn row(self, t: Avx2, r: usize) -> __m256i {
+        match self.full.get(r) {
+            Some(row) if W == 4 => _mm256_castsi128_si256(load4(t, row, 0)),
+            Some(row) => load8(t, row, 0),
+            None if r == self.full.len() => self.tail,
+            None => _mm256_setzero_si256(),
+        }
+    }
+}
+
+/// [`row_pass`] of a 4- or 8-wide block (`WH = W / 2`) straight from the
+/// coefficient prefix `coeffs`, dequantized by `dq` with `DQ`, with the `RK`
+/// transform `row`: writes the column pair of every coded row pair `q` of
+/// `pairs` at `out[q * PAIR..][..8]`, a 4-wide one in both halves.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 #[allow(
@@ -487,77 +502,58 @@ fn row_pass<const N: usize, const H: usize, const KIND: u8>(
     reason = "rows a and b of a column pair, as in § 7.15.4.1"
 )]
 fn row_pass_direct<
-    const N: usize,
-    const H: usize,
-    const KIND: u8,
+    const W: usize,
+    const WH: usize,
+    const RK: u8,
     const DQ: bool,
     const RS: bool,
 >(
     t: Avx2,
-    input: Input<'_, DQ, RS>,
-    pairs: &[(u8, u8)],
-    (shift, scale): (u32, i32),
-    kernel: &[[u32; N]; H],
-    scratch: &mut [i32],
+    (coeffs, dq): (&[i32], &FlatDequant),
+    row: &Spec<W, WH>,
+    (pairs, shift): (&[(u8, u8)], u32),
+    out: &mut [i32; 16 * PAIR],
 ) -> u32 {
+    let input = Input::<DQ, RS>::new(coeffs, dq);
+    let rows = Rows::<W>::new(t, input);
     let round = Round::new(shift);
-    let coded = input.coeffs.len().div_ceil(N);
+    let coded = coeffs.len().div_ceil(W);
     let mut mask = 0;
-    for (q, &(a, b)) in pairs.iter().enumerate() {
+    for (q, &(a, b)) in pairs.iter().enumerate().take(16) {
         let (a, b) = (usize::from(a), usize::from(b));
         if a >= coded && b >= coded {
             continue;
         }
-        let Some(out) = scratch.get_mut(q * N..q * N + N) else {
-            break;
-        };
-        let written = if N == 4 {
-            let x = _mm256_set_m128i(input.coeffs4(t, 4 * b), input.coeffs4(t, 4 * a));
+        mask |= 1 << q;
+        let pair = if W == 4 {
+            let x = _mm256_permute2x128_si256::<0x20>(rows.row(t, a), rows.row(t, b));
             let x = input.finish(x, a == 0);
-            if KIND == IDENTITY {
-                let v = _mm256_mullo_epi32(clamp16(x), _mm256_set1_epi32(scale));
-                store4(t, out, 0, unpack4(round.apply(v)));
-                !is_zero(x)
+            _mm256_broadcastsi128_si256(if RK == IDENTITY {
+                let v = _mm256_mullo_epi32(clamp16(x), _mm256_set1_epi32(row.2));
+                unpack4(round.apply(v))
             } else {
-                row4(
-                    t,
-                    _mm256_packs_epi32(x, x),
-                    kernel.as_flattened(),
-                    round,
-                    out,
-                )
-            }
+                row4_pairs(t, _mm256_packs_epi32(x, x), row.1.as_flattened(), round)
+            })
         } else {
-            let (xa, xb) = (input.at(t, 8 * a), input.at(t, 8 * b));
-            if KIND == IDENTITY {
-                let scale = _mm256_set1_epi32(scale);
+            let xa = input.finish(rows.row(t, a), a == 0);
+            let xb = input.finish(rows.row(t, b), b == 0);
+            if RK == IDENTITY {
+                let scale = _mm256_set1_epi32(row.2);
                 let va = round.apply(_mm256_mullo_epi32(clamp16(xa), scale));
                 let vb = round.apply(_mm256_mullo_epi32(clamp16(xb), scale));
-                store8(t, out, 0, pair_columns(t, va, vb, &INTERLEAVE));
-                !is_zero(_mm256_or_si256(xa, xb))
+                pair_columns(t, va, vb, &INTERLEAVE)
             } else {
                 let x = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(xa, xb));
-                row8::<KIND>(t, x, kernel.as_flattened(), round, out)
+                row8_pairs::<RK>(t, x, row.1.as_flattened(), round)
             }
         };
-        mask |= u32::from(written) << q;
+        store8(t, out, q * PAIR, pair);
     }
     mask
 }
 
 /// One pair of 4-sample rows, `x` holding row `a` in its low and row `b` in
-/// its high lane, on the 4-point pair kernel `k`.
-#[inline]
-#[target_feature(enable = "avx2")]
-fn row4(t: Avx2, x: __m256i, k: &[u32], round: Round, out: &mut [i32]) -> bool {
-    if is_zero(x) {
-        return false;
-    }
-    store4(t, out, 0, row4_pairs(t, x, k, round));
-    true
-}
-
-/// The column pairs of [`row4`].
+/// its high lane, on the 4-point pair kernel `k`, as four column pairs.
 #[inline]
 #[target_feature(enable = "avx2")]
 fn row4_pairs(t: Avx2, x: __m256i, k: &[u32], round: Round) -> __m128i {
@@ -572,18 +568,8 @@ fn row4_pairs(t: Avx2, x: __m256i, k: &[u32], round: Round) -> __m128i {
 }
 
 /// One pair of 8-sample rows, `x` holding row `a` in its low and row `b` in
-/// its high lane: the split `DCT` on `DCT8_SPLIT` or the paired kernel `k`.
-#[inline]
-#[target_feature(enable = "avx2")]
-fn row8<const KIND: u8>(t: Avx2, x: __m256i, k: &[u32], round: Round, out: &mut [i32]) -> bool {
-    if is_zero(x) {
-        return false;
-    }
-    store8(t, out, 0, row8_pairs::<KIND>(t, x, k, round));
-    true
-}
-
-/// The column pairs of [`row8`].
+/// its high lane, as eight column pairs: the split `DCT` on `DCT8_SPLIT` or
+/// the paired kernel `k`.
 #[inline]
 #[target_feature(enable = "avx2")]
 fn row8_pairs<const KIND: u8>(t: Avx2, x: __m256i, k: &[u32], round: Round) -> __m256i {
@@ -879,7 +865,7 @@ fn row_pass8<const N: usize, const H: usize, const KIND: u8>(
         if is_zero(_mm256_set_m128i(xa, xb)) {
             continue;
         }
-        let Some(out) = scratch.get_mut(q * N..q * N + N) else {
+        let Some(out) = scratch.get_mut(q * PAIR..q * PAIR + N) else {
             break;
         };
         let ya = row(xa);
@@ -1000,21 +986,32 @@ fn dct16(v: &[__m256i], mask: u32, rnd: __m256i) -> [__m256i; 16] {
 const TILE: u8 = 0;
 /// Column `Clip3` outputs stored as `i32`.
 const RESIDUAL: u8 = 1;
-/// Column outputs kept in `rows` for an add in row order (`W <= 8`).
+/// Column outputs kept in registers and added in row order, for a block at
+/// most 8 wide, whose columns are one chunk.
 const DIRECT: u8 = 2;
 
-/// Where the column pass puts the shifted output rows of chunk `c`, by
-/// `OUT`: as `i16` rows of the `W`-wide `tile` (two samples per word), clamped
-/// into `residual`, or as `i32` rows in `rows`.
-struct Put<'a, const W: usize, const OUT: u8> {
-    tile: &'a mut [i32],
+/// The outputs of a column pass, of which `OUT` takes one: the tile, the
+/// residual, or the 8-bit block at the start of `dst` with its row stride.
+struct Sinks<'a> {
+    tile: &'a mut [i32; 512],
     residual: &'a mut [i32],
-    rows: [__m256i; 16],
+    dst: (&'a mut [u8], usize),
+}
+
+/// Where the column pass puts the shifted output rows of chunk `c` of a
+/// `w`-wide block, by `OUT`: as `i16` rows of `tile`, `TILE_ROW` words apart
+/// (a 4-wide block leaves the last 4 samples of its chunk unused), clamped
+/// into `residual`, or as `i32` rows in `rows`.
+struct Put<'a, const OUT: u8> {
+    tile: &'a mut [i32; 512],
+    residual: &'a mut [i32],
+    rows: [__m256i; 32],
     round: Round,
+    w: usize,
     c: usize,
 }
 
-impl<const W: usize, const OUT: u8> Put<'_, W, OUT> {
+impl<const OUT: u8> Put<'_, OUT> {
     /// Puts output rows `a` and `b` before their `Round2`.
     #[inline]
     #[target_feature(enable = "avx2")]
@@ -1022,7 +1019,15 @@ impl<const W: usize, const OUT: u8> Put<'_, W, OUT> {
         let shift = |v| _mm256_sra_epi32(v, self.round.shift);
         let (va, vb) = (shift(va), shift(vb));
         if OUT == RESIDUAL {
-            put_residual::<W>(t, (a, b, self.c), va, vb, self.residual);
+            let (low, high) = (_mm256_set1_epi32(-256), _mm256_set1_epi32(255));
+            for (row, v) in [(a, va), (b, vb)] {
+                let v = _mm256_min_epi32(_mm256_max_epi32(v, low), high);
+                if self.w == 4 {
+                    store4(t, self.residual, 4 * row, _mm256_castsi256_si128(v));
+                } else {
+                    store8(t, self.residual, row * self.w + 8 * self.c, v);
+                }
+            }
             return;
         }
         if OUT == DIRECT {
@@ -1033,32 +1038,10 @@ impl<const W: usize, const OUT: u8> Put<'_, W, OUT> {
             }
             return;
         }
-        let packed = _mm256_packs_epi32(va, vb);
-        if W >= 8 {
-            let packed = _mm256_permute4x64_epi64::<0xD8>(packed);
-            store4(
-                t,
-                self.tile,
-                (a * W + 8 * self.c) / 2,
-                _mm256_castsi256_si128(packed),
-            );
-            store4(
-                t,
-                self.tile,
-                (b * W + 8 * self.c) / 2,
-                _mm256_extracti128_si256::<1>(packed),
-            );
-        } else {
-            let low = _mm256_castsi256_si128(packed);
-            for (row, word) in [
-                (a, _mm_cvtsi128_si64(low)),
-                (b, _mm_extract_epi64::<1>(low)),
-            ] {
-                if let Some(out) = self.tile.get_mut(2 * row..2 * row + 2) {
-                    out.copy_from_slice(&[word as i32, (word >> 32) as i32]); // splot-copy-ok: one 4-sample row
-                }
-            }
-        }
+        let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(va, vb));
+        let at = |row: usize| row * TILE_ROW + 4 * self.c;
+        store4(t, self.tile, at(a), _mm256_castsi256_si128(packed));
+        store4(t, self.tile, at(b), _mm256_extracti128_si256::<1>(packed));
     }
 }
 
@@ -1079,12 +1062,12 @@ fn used_pairs(mask: u32, len: usize) -> usize {
     clippy::many_single_char_names,
     reason = "even half e, odd inputs v, kernel k and odd sum o, as in § 7.15.2.1"
 )]
-fn odd_rows<const H: usize, const P: usize, const W: usize, const OUT: u8, const U: usize>(
+fn odd_rows<const H: usize, const P: usize, const OUT: u8, const U: usize>(
     t: Avx2,
     e: &[__m256i; H],
     v: &[__m256i],
     k: &[[u32; H]; P],
-    put: &mut Put<'_, W, OUT>,
+    put: &mut Put<'_, OUT>,
 ) {
     for (n, &e) in e.iter().enumerate() {
         let o = v
@@ -1104,16 +1087,16 @@ fn odd_rows<const H: usize, const P: usize, const W: usize, const OUT: u8, const
 /// [`odd_rows`] over the first `used` odd inputs, the rest being zero.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn odd_rows_used<const H: usize, const P: usize, const W: usize, const OUT: u8>(
+fn odd_rows_used<const H: usize, const P: usize, const OUT: u8>(
     t: Avx2,
     (e, v, used): (&[__m256i; H], &[__m256i], usize),
     k: &[[u32; H]; P],
-    put: &mut Put<'_, W, OUT>,
+    put: &mut Put<'_, OUT>,
 ) {
     match used {
-        0..=2 => odd_rows::<H, P, W, OUT, 2>(t, e, v, k, put),
-        3..=4 => odd_rows::<H, P, W, OUT, 4>(t, e, v, k, put),
-        _ => odd_rows::<H, P, W, OUT, 8>(t, e, v, k, put),
+        0..=2 => odd_rows::<H, P, OUT, 2>(t, e, v, k, put),
+        3..=4 => odd_rows::<H, P, OUT, 4>(t, e, v, k, put),
+        _ => odd_rows::<H, P, OUT, 8>(t, e, v, k, put),
     }
 }
 
@@ -1121,12 +1104,12 @@ fn odd_rows_used<const H: usize, const P: usize, const W: usize, const OUT: u8>(
 /// being zero.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn dense_rows<const M: usize, const HM: usize, const W: usize, const OUT: u8, const U: usize>(
+fn dense_rows<const M: usize, const HM: usize, const OUT: u8, const U: usize>(
     t: Avx2,
     v: &[__m256i; HM],
     k: &[[u32; M]; HM],
     rnd: __m256i,
-    put: &mut Put<'_, W, OUT>,
+    put: &mut Put<'_, OUT>,
 ) {
     for m in 0..HM {
         let dot = |n: usize| {
@@ -1139,45 +1122,57 @@ fn dense_rows<const M: usize, const HM: usize, const W: usize, const OUT: u8, co
     }
 }
 
-/// The column pass of a `W`-wide, `M`-tall block (`HM = M / 2`) over the
+/// The column pass of a `w`-wide, `M`-tall block (`HM = M / 2`) over the
 /// written pairs `mask` of `pairs` with the `KIND` transform on the pair
 /// kernel `k` or the identity `scale`, through `Put` by `OUT`.
 /// Each output row is summed with its inputs in registers and put at once.
+/// A 4-wide block runs as the low half of an 8-wide chunk. `W` is the block
+/// width where the pass stores at offsets that depend on it (the residual),
+/// else 0 for the run-time width `w`.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 #[allow(
     clippy::many_single_char_names,
     reason = "kernel k, column chunk c and output rows a and b, as in § 7.15.4.1"
 )]
-fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, const OUT: u8>(
+fn col_pass<const M: usize, const HM: usize, const KIND: u8, const OUT: u8, const W: usize>(
     t: Avx2,
     (k, scale): (&[[u32; M]; HM], i32),
-    pairs: &[i32; 16 * 32],
-    (mask, shift): (u32, u32),
-    tile: &mut [i32; 512],
-    residual: &mut [i32],
-) {
-    let round = Round::new(shift);
-    let mut put = Put::<W, OUT> {
+    pairs: &[i32; 16 * PAIR],
+    (mask, shift, w): (u32, u32, usize),
+    Sinks {
         tile,
         residual,
-        rows: [_mm256_setzero_si256(); 16],
-        round,
+        dst: (dst, stride),
+    }: Sinks<'_>,
+) {
+    let w = if W == 0 { w } else { W };
+    let mut put = Put::<OUT> {
+        tile,
+        residual,
+        rows: [_mm256_setzero_si256(); 32],
+        round: Round::new(shift),
+        w,
         c: 0,
     };
-    for c in 0..(W / 8).max(1) {
+    for c in 0..(w / 8).clamp(1, PAIR / 8) {
         put.c = c;
         let mut v = [_mm256_setzero_si256(); HM];
         for (q, v) in v.iter_mut().enumerate() {
             if mask & (1 << q) != 0 {
-                *v = if W == 4 {
-                    _mm256_broadcastsi128_si256(load4(t, pairs, 4 * q))
-                } else {
-                    load8(t, pairs, q * W + 8 * c)
-                };
+                *v = load8(t, pairs, q * PAIR + 8 * c);
             }
         }
-        col_rows::<W, M, HM, KIND, OUT>(t, (k, scale), &v, mask, &mut put);
+        col_rows::<M, HM, KIND, OUT>(t, (k, scale), &v, mask, &mut put);
+    }
+    if OUT == DIRECT {
+        let rows = &put.rows;
+        let pair = |m: usize| _mm256_packs_epi32(rows[(2 * m) % 32], rows[(2 * m + 1) % 32]);
+        if w == 4 {
+            add_pairs::<4>(dst, (stride, M), pair);
+        } else {
+            add_pairs::<8>(dst, (stride, M), pair);
+        }
     }
 }
 
@@ -1186,12 +1181,12 @@ fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
 /// output row put through `put`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn col_rows<const W: usize, const M: usize, const HM: usize, const KIND: u8, const OUT: u8>(
+fn col_rows<const M: usize, const HM: usize, const KIND: u8, const OUT: u8>(
     t: Avx2,
     (k, scale): (&[[u32; M]; HM], i32),
     v: &[__m256i; HM],
     mask: u32,
-    put: &mut Put<'_, W, OUT>,
+    put: &mut Put<'_, OUT>,
 ) {
     let round = put.round;
     match (KIND, M) {
@@ -1210,7 +1205,7 @@ fn col_rows<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
             put.rows(t, (0, 3), e[0], e[3]);
             put.rows(t, (1, 2), e[1], e[2]);
         }
-        (SPLIT, 8) => odd_rows::<4, 2, W, OUT, 2>(
+        (SPLIT, 8) => odd_rows::<4, 2, OUT, 2>(
             t,
             &dct4(v, mask, round.rnd),
             v.get(2..4).unwrap_or_default(),
@@ -1238,16 +1233,16 @@ fn col_rows<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
             put,
         ),
         _ => match used_pairs(mask, HM) {
-            0..=2 => dense_rows::<M, HM, W, OUT, 2>(t, v, k, round.rnd, put),
-            3..=4 => dense_rows::<M, HM, W, OUT, 4>(t, v, k, round.rnd, put),
-            5..=8 => dense_rows::<M, HM, W, OUT, 8>(t, v, k, round.rnd, put),
-            _ => dense_rows::<M, HM, W, OUT, 16>(t, v, k, round.rnd, put),
+            0..=2 => dense_rows::<M, HM, OUT, 2>(t, v, k, round.rnd, put),
+            3..=4 => dense_rows::<M, HM, OUT, 4>(t, v, k, round.rnd, put),
+            5..=8 => dense_rows::<M, HM, OUT, 8>(t, v, k, round.rnd, put),
+            _ => dense_rows::<M, HM, OUT, 16>(t, v, k, round.rnd, put),
         },
     }
 }
 
-/// Adds the `h` rows of the `W`-wide `i16` `tile` to the 8-bit block at the
-/// start of `dst` with the § 7.14.3 `Clip1`, one row at a time.
+/// Adds the `h` rows of the `W`-wide `i16` `tile` (`W` 16 or 32) to the 8-bit
+/// block at the start of `dst` with the § 7.14.3 `Clip1`, one row at a time.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 fn add_tile<const W: usize>(t: Avx2, tile: &[i32; 512], h: usize, dst: &mut [u8], stride: usize) {
@@ -1256,33 +1251,13 @@ fn add_tile<const W: usize>(t: Avx2, tile: &[i32; 512], h: usize, dst: &mut [u8]
         let Some(row) = dst.get_mut(at..at + W) else {
             return;
         };
-        let words = r * W / 2;
-        if W == 4 {
-            let Some(row) = row.first_chunk_mut::<4>() else {
-                return;
-            };
-            let pred = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(i32::from_le_bytes(*row)));
-            let res = tile
-                .get(words..words + 2)
-                .map_or(0, |w| i64::from(w[0] as u32) | i64::from(w[1]) << 32);
-            let sum = _mm_adds_epi16(pred, _mm_cvtsi64_si128(res));
-            *row = _mm_cvtsi128_si32(_mm_packus_epi16(sum, sum)).to_le_bytes();
-        } else if W == 8 {
-            let Some(row) = row.first_chunk_mut::<8>() else {
-                return;
-            };
-            let pred = _mm_cvtepu8_epi16(_mm_cvtsi64_si128(i64::from_le_bytes(*row)));
-            let sum = _mm_adds_epi16(pred, load4(t, tile, words));
-            *row = _mm_cvtsi128_si64(_mm_packus_epi16(sum, sum)).to_le_bytes();
-        } else {
-            for (half, out) in row.as_chunks_mut::<16>().0.iter_mut().enumerate() {
-                let pred: __m128i = fearless_simd::u8x16::load_array_ref(t, out).into();
-                let sum =
-                    _mm256_adds_epi16(_mm256_cvtepu8_epi16(pred), load8(t, tile, words + 8 * half));
-                let sum = _mm256_permute4x64_epi64::<0x08>(_mm256_packus_epi16(sum, sum));
-                let sum: fearless_simd::u8x16<Avx2> = _mm256_castsi256_si128(sum).simd_into(t);
-                sum.store_array(out);
-            }
+        for (half, out) in row.as_chunks_mut::<16>().0.iter_mut().enumerate() {
+            let pred: __m128i = fearless_simd::u8x16::load_array_ref(t, out).into();
+            let res = load8(t, tile, r * TILE_ROW + 8 * half);
+            let sum = _mm256_adds_epi16(_mm256_cvtepu8_epi16(pred), res);
+            let sum = _mm256_permute4x64_epi64::<0x08>(_mm256_packus_epi16(sum, sum));
+            let sum: fearless_simd::u8x16<Avx2> = _mm256_castsi256_si128(sum).simd_into(t);
+            sum.store_array(out);
         }
     }
 }
@@ -1351,49 +1326,21 @@ fn add_pairs<const W: usize>(
     }
 }
 
-/// Stores rows `a` and `b` of the column `Clip3` outputs of the 8 (4 when
-/// `W == 4`) columns from `8 * c`.
-#[inline]
-#[target_feature(enable = "avx2")]
-fn put_residual<const W: usize>(
-    t: Avx2,
-    (a, b, c): (usize, usize, usize),
-    first: __m256i,
-    second: __m256i,
-    residual: &mut [i32],
-) {
-    let (low, high) = (_mm256_set1_epi32(-256), _mm256_set1_epi32(255));
-    let first = _mm256_min_epi32(_mm256_max_epi32(first, low), high);
-    let second = _mm256_min_epi32(_mm256_max_epi32(second, low), high);
-    if W == 4 {
-        store4(t, residual, 4 * a, _mm256_castsi256_si128(first));
-        store4(t, residual, 4 * b, _mm256_castsi256_si128(second));
-    } else {
-        store8(t, residual, a * W + 8 * c, first);
-        store8(t, residual, b * W + 8 * c, second);
-    }
-}
-
-/// The constant residual `value` of a `W`-wide, `h`-tall block, added to
-/// `dst` with `ADD` or stored in `residual`.
+/// The constant residual `value` of a `W`-wide, `h`-tall block added to `dst`.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-fn flat<const W: usize, const ADD: bool>(
-    t: Avx2,
-    value: i32,
-    h: usize,
-    (dst, stride): (&mut [u8], usize),
-    residual: &mut [i32],
-) {
+fn add_flat<const W: usize>(value: i32, h: usize, (dst, stride): (&mut [u8], usize)) {
     let v = _mm256_set1_epi32(value);
-    if ADD {
-        add_pairs::<W>(dst, (stride, h), |_| _mm256_packs_epi32(v, v));
-        return;
-    }
-    for c in 0..(W / 8).max(1) {
-        for m in (0..h).step_by(2) {
-            put_residual::<W>(t, (m, m + 1, c), v, v, residual);
-        }
+    add_pairs::<W>(dst, (stride, h), |_| _mm256_packs_epi32(v, v));
+}
+
+/// The constant residual `value` stored in every 8 samples of `residual`.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn put_flat(t: Avx2, value: i32, residual: &mut [i32]) {
+    let v: i32x8<Avx2> = _mm256_set1_epi32(value).simd_into(t);
+    for out in residual.as_chunks_mut::<8>().0 {
+        v.store_array(out);
     }
 }
 
@@ -1450,6 +1397,25 @@ fn rows(
     }
 }
 
+/// [`row_pass_direct`] by whether its input is `quantized` and rescaled.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn row_direct<const W: usize, const WH: usize, const RK: u8>(
+    t: Avx2,
+    (coeffs, dq, quantized, rescale): (&[i32], &FlatDequant, bool, bool),
+    row: &Spec<W, WH>,
+    p: (&[(u8, u8)], u32),
+    out: &mut [i32; 16 * PAIR],
+) -> u32 {
+    let input = (coeffs, dq);
+    match (quantized, rescale) {
+        (true, false) => row_pass_direct::<W, WH, RK, true, false>(t, input, row, p, out),
+        (true, true) => row_pass_direct::<W, WH, RK, true, true>(t, input, row, p, out),
+        (false, false) => row_pass_direct::<W, WH, RK, false, false>(t, input, row, p, out),
+        (false, true) => row_pass_direct::<W, WH, RK, false, true>(t, input, row, p, out),
+    }
+}
+
 /// The row pass of a 4- or 8-wide `shape` straight from `coeffs`,
 /// dequantized by `dq` when `quantized`, returning the written column pairs.
 #[inline]
@@ -1458,49 +1424,30 @@ fn rows_direct(
     t: Avx2,
     shape: &InverseTransformAdd,
     (coeffs, dq, quantized): (&[i32], &FlatDequant, bool),
-    scratch: &mut [i32],
+    out: &mut [i32; 16 * PAIR],
 ) -> u32 {
     let p = (
         pairs_of(shape.passes.1, shape.h()),
         u32::from(shape.row_shift),
     );
-    macro_rules! kinds {
-        ($dq:literal, $rs:literal) => {{
-            let input = Input::<$dq, $rs>::new(coeffs, dq);
-            let pass4 = |kind, k: &[[u32; 4]; 2], scale, out: &mut [i32]| match kind {
-                IDENTITY => {
-                    row_pass_direct::<4, 2, IDENTITY, $dq, $rs>(t, input, p.0, (p.1, scale), k, out)
-                }
-                _ => row_pass_direct::<4, 2, DENSE, $dq, $rs>(t, input, p.0, (p.1, scale), k, out),
-            };
-            let pass8 = |kind, k: &[[u32; 8]; 4], scale, out: &mut [i32]| match kind {
-                IDENTITY => {
-                    row_pass_direct::<8, 4, IDENTITY, $dq, $rs>(t, input, p.0, (p.1, scale), k, out)
-                }
-                SPLIT => {
-                    row_pass_direct::<8, 4, SPLIT, $dq, $rs>(t, input, p.0, (p.1, scale), k, out)
-                }
-                _ => row_pass_direct::<8, 4, DENSE, $dq, $rs>(t, input, p.0, (p.1, scale), k, out),
-            };
-            if let Some((kind, k, scale)) = row_spec4(shape.passes.0) {
-                pass4(kind, k, scale, scratch)
-            } else if let Some((kind, k, scale)) = row_spec8(shape.passes.0) {
-                pass8(kind, k, scale, scratch)
-            } else {
-                0
-            }
-        }};
-    }
-    match (quantized, shape.rescale) {
-        (true, false) => kinds!(true, false),
-        (true, true) => kinds!(true, true),
-        (false, false) => kinds!(false, false),
-        (false, true) => kinds!(false, true),
+    let input = (coeffs, dq, quantized, shape.rescale);
+    if let Some(row) = &row_spec4(shape.passes.0) {
+        match row.0 {
+            IDENTITY => row_direct::<4, 2, IDENTITY>(t, input, row, p, out),
+            _ => row_direct::<4, 2, DENSE>(t, input, row, p, out),
+        }
+    } else if let Some(row) = &row_spec8(shape.passes.0) {
+        match row.0 {
+            IDENTITY => row_direct::<8, 4, IDENTITY>(t, input, row, p, out),
+            SPLIT => row_direct::<8, 4, SPLIT>(t, input, row, p, out),
+            _ => row_direct::<8, 4, DENSE>(t, input, row, p, out),
+        }
+    } else {
+        0
     }
 }
 
-/// A 4- or 8-point pass of a small block: its kind, pair kernel and
-/// identity scale.
+/// A 4- or 8-point row pass: its kind, pair kernel and identity scale.
 type Spec<const N: usize, const H: usize> = (u8, &'static [[u32; N]; H], i32);
 
 /// The row pass `pass` of a 4-wide block.
@@ -1527,277 +1474,33 @@ const fn row_spec8(pass: Pass) -> Option<Spec<8, 4>> {
     })
 }
 
-/// The column pass `pass` of a 4-tall block.
-const fn col_spec4(pass: Pass) -> Option<Spec<4, 2>> {
-    Some(match pass {
-        Pass::Dct4 => (SPLIT, &DCT4, 0),
-        _ => return row_spec4(pass),
-    })
-}
-
-/// The column pass `pass` of an 8-tall block.
-const fn col_spec8(pass: Pass) -> Option<Spec<8, 4>> {
-    Some(match pass {
-        Pass::Dct8 => (SPLIT, &DCT8, 0),
-        _ => return row_spec8(pass),
-    })
-}
-
-/// The column pass `pass` of a 16-tall block.
-const fn col_spec16(pass: Pass) -> Option<Spec<16, 8>> {
-    Some(match pass {
-        Pass::Identity16 => (IDENTITY, &DCT16, 256),
-        Pass::Dct16 => (SPLIT, &DCT16, 0),
-        Pass::Adst16 => (DENSE, &ADST16, 0),
-        Pass::Fdst16 => (DENSE, &FDST16, 0),
-        Pass::Ddtx16 => (DENSE, &DDTX16, 0),
-        Pass::Fddt16 => (DENSE, &FDDT16, 0),
-        _ => return None,
-    })
-}
-
-/// The [`Spec`] of every [`Pass`] by `spec`, indexed by the pass.
-macro_rules! by_pass {
-    ($spec:ident) => {{
-        let mut out = [None; Pass::ALL.len()];
-        assert!(Pass::Dct32 as usize + 1 == out.len());
-        let mut i = 0;
-        while i < out.len() {
-            assert!(Pass::ALL[i] as usize == i);
-            out[i] = $spec(Pass::ALL[i]);
-            i += 1;
-        }
-        out
-    }};
-}
-
-static ROW_SPEC4: [Option<Spec<4, 2>>; Pass::ALL.len()] = by_pass!(row_spec4);
-static ROW_SPEC8: [Option<Spec<8, 4>>; Pass::ALL.len()] = by_pass!(row_spec8);
-static COL_SPEC4: [Option<Spec<4, 2>>; Pass::ALL.len()] = by_pass!(col_spec4);
-static COL_SPEC8: [Option<Spec<8, 4>>; Pass::ALL.len()] = by_pass!(col_spec8);
-static COL_SPEC16: [Option<Spec<16, 8>>; Pass::ALL.len()] = by_pass!(col_spec16);
-
-/// The `W`-sample rows (4 or 8) of a coefficient prefix: row `r` whole,
-/// the one partial row zero-padded, zero past the prefix.
-#[derive(Clone, Copy)]
-struct Rows<'a, const W: usize> {
-    full: &'a [[i32; W]],
-    tail: __m256i,
-}
-
-impl<'a, const W: usize> Rows<'a, W> {
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn new<const DQ: bool, const RS: bool>(t: Avx2, input: Input<'a, DQ, RS>) -> Self {
-        let (full, rest) = input.coeffs.as_chunks::<W>();
-        let at = full.len() * W;
-        let tail = match (rest.is_empty(), W) {
-            (true, _) => _mm256_setzero_si256(),
-            (false, 4) => _mm256_castsi128_si256(input.coeffs4(t, at)),
-            _ => input.coeffs8(t, at),
-        };
-        Self { full, tail }
-    }
-
-    /// Row `r` (in the low lane when `W == 4`).
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn row(self, t: Avx2, r: usize) -> __m256i {
-        match self.full.get(r) {
-            Some(row) if W == 4 => _mm256_castsi128_si256(load4(t, row, 0)),
-            Some(row) => load8(t, row, 0),
-            None if r == self.full.len() => self.tail,
-            None => _mm256_setzero_si256(),
-        }
-    }
-}
-
-/// A `W x H` block, 4 or 8 wide and 4 to 16 tall (`WH = W / 2`,
-/// `HH = H / 2`), with the `RK` row and `CK` column transforms, in
-/// registers: the row pass of each coded row pair gives the column pass's
-/// input pair at once, and the column output rows are added to `dst` in
-/// order.
-#[inline(never)]
-#[target_feature(enable = "avx2")]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "rows a and b of a column pair, as in § 7.15.4.1"
-)]
-fn small<
-    const W: usize,
-    const WH: usize,
-    const H: usize,
-    const HH: usize,
-    const RK: u8,
-    const CK: u8,
-    const DQ: bool,
-    const RS: bool,
->(
-    t: Avx2,
-    (coeffs, dq): (&[i32], &FlatDequant),
-    (row, col): (&Spec<W, WH>, &Spec<H, HH>),
-    (row_shift, col_shift): (u32, u32),
-    (dst, stride): (&mut [u8], usize),
-) {
-    let input = Input::<DQ, RS>::new(coeffs, dq);
-    let rows = Rows::<W>::new(t, input);
-    let pairs = if CK == SPLIT {
-        const { dct_pairs(H) }
-    } else {
-        ADJACENT_PAIRS
-    };
-    let round = Round::new(row_shift);
-    let coded = coeffs.len().div_ceil(W);
-    let mut mask = 0;
-    let v: [__m256i; HH] = core::array::from_fn(|q| {
-        let (a, b) = (usize::from(pairs[q].0), usize::from(pairs[q].1));
-        if a >= coded && b >= coded {
-            return _mm256_setzero_si256();
-        }
-        mask |= 1 << q;
-        if W == 4 {
-            let x = _mm256_permute2x128_si256::<0x20>(rows.row(t, a), rows.row(t, b));
-            let x = input.finish(x, a == 0);
-            _mm256_broadcastsi128_si256(if RK == IDENTITY {
-                let v = _mm256_mullo_epi32(clamp16(x), _mm256_set1_epi32(row.2));
-                unpack4(round.apply(v))
-            } else {
-                row4_pairs(t, _mm256_packs_epi32(x, x), row.1.as_flattened(), round)
-            })
-        } else {
-            let xa = input.finish(rows.row(t, a), a == 0);
-            let xb = input.finish(rows.row(t, b), b == 0);
-            if RK == IDENTITY {
-                let scale = _mm256_set1_epi32(row.2);
-                let va = round.apply(_mm256_mullo_epi32(clamp16(xa), scale));
-                let vb = round.apply(_mm256_mullo_epi32(clamp16(xb), scale));
-                pair_columns(t, va, vb, &INTERLEAVE)
-            } else {
-                let x = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(xa, xb));
-                row8_pairs::<RK>(t, x, row.1.as_flattened(), round)
-            }
-        }
-    });
-    let mut put = Put::<W, DIRECT> {
-        tile: &mut [],
-        residual: &mut [],
-        rows: [_mm256_setzero_si256(); 16],
-        round: Round::new(col_shift),
-        c: 0,
-    };
-    col_rows::<W, H, HH, CK, DIRECT>(t, (col.1, col.2), &v, mask, &mut put);
-    let rows = &put.rows;
-    add_pairs::<W>(dst, (stride, H), |m| {
-        _mm256_packs_epi32(rows[(2 * m) % 16], rows[(2 * m + 1) % 16])
-    });
-}
-
-/// [`small`] with the row kind `$rk` for the column kind `$ck` and `$dq`.
-macro_rules! small_cols {
-    ($rk:ident, $rs:literal, [$($g:literal),*], $ck:expr, $dq:expr, $a:expr) => {{
-        let (t, input, specs, shifts, out) = $a;
-        match ($ck, $dq) {
-            (IDENTITY, true) => small::<$($g,)* $rk, IDENTITY, true, $rs>(t, input, specs, shifts, out),
-            (IDENTITY, false) => small::<$($g,)* $rk, IDENTITY, false, $rs>(t, input, specs, shifts, out),
-            (SPLIT, true) => small::<$($g,)* $rk, SPLIT, true, $rs>(t, input, specs, shifts, out),
-            (SPLIT, false) => small::<$($g,)* $rk, SPLIT, false, $rs>(t, input, specs, shifts, out),
-            (_, true) => small::<$($g,)* $rk, DENSE, true, $rs>(t, input, specs, shifts, out),
-            (_, false) => small::<$($g,)* $rk, DENSE, false, $rs>(t, input, specs, shifts, out),
-        }
-    }};
-}
-
-/// Adds a `shape` 4 or 8 wide and 4 to 16 tall over `coeffs` to `dst`
-/// through [`small`];
-/// `false` for any other shape.
-#[inline]
-#[target_feature(enable = "avx2")]
-fn add_small(
-    t: Avx2,
-    shape: &InverseTransformAdd,
-    (coeffs, dq, quantized): (&[i32], &FlatDequant, bool),
-    out: (&mut [u8], usize),
-) -> bool {
-    let shifts = (u32::from(shape.row_shift), u32::from(shape.col_shift));
-    let (row, col) = shape.passes;
-    let input = (coeffs, dq);
-    macro_rules! run {
-        ($rs:literal, $g:tt, $row:expr, $col:expr, [$($rk:ident),*]) => {{
-            let (Some(row), Some(col)) = (&$row[row as usize], &$col[col as usize]) else {
-                return false;
-            };
-            let a = (t, input, (row, col), shifts, out);
-            match row.0 {
-                $($rk => small_cols!($rk, $rs, $g, col.0, quantized, a),)*
-                _ => small_cols!(DENSE, $rs, $g, col.0, quantized, a),
-            }
-            true
-        }};
-    }
-    match (shape.w_log2, shape.h_log2, shape.rescale) {
-        (2, 2, false) => run!(false, [4, 2, 4, 2], ROW_SPEC4, COL_SPEC4, [IDENTITY]),
-        (2, 3, true) => run!(true, [4, 2, 8, 4], ROW_SPEC4, COL_SPEC8, [IDENTITY]),
-        (3, 2, true) => run!(true, [8, 4, 4, 2], ROW_SPEC8, COL_SPEC4, [IDENTITY, SPLIT]),
-        (3, 3, false) => run!(false, [8, 4, 8, 4], ROW_SPEC8, COL_SPEC8, [IDENTITY, SPLIT]),
-        (2, 4, false) => run!(false, [4, 2, 16, 8], ROW_SPEC4, COL_SPEC16, [IDENTITY]),
-        (3, 4, true) => run!(
-            true,
-            [8, 4, 16, 8],
-            ROW_SPEC8,
-            COL_SPEC16,
-            [IDENTITY, SPLIT]
-        ),
-        _ => false,
-    }
-}
-
 /// The column pass of `shape` over the written `mask` pairs of `pairs`.
 #[inline]
 #[target_feature(enable = "avx2")]
 fn cols<const OUT: u8>(
     t: Avx2,
     shape: &InverseTransformAdd,
-    pairs: &[i32; 16 * 32],
+    pairs: &[i32; 16 * PAIR],
     mask: u32,
-    out: &mut [i32; 512],
-    residual: &mut [i32],
+    sinks: Sinks<'_>,
 ) {
-    let passes = (mask, u32::from(shape.col_shift));
+    let passes = (mask, u32::from(shape.col_shift), shape.w());
     macro_rules! pass {
         ($m:literal, $hm:literal, $kind:expr, $k:expr, $scale:expr) => {
-            match shape.w_log2 {
-                2 => col_pass::<4, $m, $hm, { $kind }, OUT>(
-                    t,
-                    ($k, $scale),
-                    pairs,
-                    passes,
-                    out,
-                    residual,
-                ),
-                3 => col_pass::<8, $m, $hm, { $kind }, OUT>(
-                    t,
-                    ($k, $scale),
-                    pairs,
-                    passes,
-                    out,
-                    residual,
-                ),
-                4 => col_pass::<16, $m, $hm, { $kind }, OUT>(
-                    t,
-                    ($k, $scale),
-                    pairs,
-                    passes,
-                    out,
-                    residual,
-                ),
-                _ => col_pass::<32, $m, $hm, { $kind }, OUT>(
-                    t,
-                    ($k, $scale),
-                    pairs,
-                    passes,
-                    out,
-                    residual,
-                ),
+            match (OUT, shape.w_log2) {
+                (RESIDUAL, 2) => {
+                    col_pass::<$m, $hm, { $kind }, OUT, 4>(t, ($k, $scale), pairs, passes, sinks)
+                }
+                (RESIDUAL, 3) => {
+                    col_pass::<$m, $hm, { $kind }, OUT, 8>(t, ($k, $scale), pairs, passes, sinks)
+                }
+                (RESIDUAL, 4) => {
+                    col_pass::<$m, $hm, { $kind }, OUT, 16>(t, ($k, $scale), pairs, passes, sinks)
+                }
+                (RESIDUAL, _) => {
+                    col_pass::<$m, $hm, { $kind }, OUT, 32>(t, ($k, $scale), pairs, passes, sinks)
+                }
+                _ => col_pass::<$m, $hm, { $kind }, OUT, 0>(t, ($k, $scale), pairs, passes, sinks),
             }
         };
     }
@@ -1824,41 +1527,6 @@ fn cols<const OUT: u8>(
 }
 
 fearless_simd::kernel!(
-    /// Adds `shape`, 4 or 8 wide and 4 to 16 tall, over `coeffs`
-    /// (dequantized by `dequant` as they load, or already dequantized) to
-    /// the 8-bit block at the start of `dst`; `false` with `dst` untouched
-    /// for any other shape.
-    pub(super) fn add_small_block(
-        t: Avx2,
-        shape: &InverseTransformAdd,
-        dequant: Option<FlatDequant>,
-        coeffs: &[i32],
-        dst: &mut [u8],
-        stride: usize,
-    ) -> bool {
-        if shape.w_log2 > 3 || shape.h_log2 > 4 {
-            return false;
-        }
-        if let Some(value) = shape.flat_residual(coeffs, dequant, crate::BitDepth::Eight) {
-            let out = (dst, stride);
-            if shape.w_log2 == 2 {
-                flat::<4, true>(t, value, shape.h(), out, &mut []);
-            } else {
-                flat::<8, true>(t, value, shape.h(), out, &mut []);
-            }
-            return true;
-        }
-        let none = FlatDequant {
-            dc: 0,
-            ac: 0,
-            denom_shift: 0,
-        };
-        let dq = dequant.as_ref().unwrap_or(&none);
-        add_small(t, shape, (coeffs, dq, dequant.is_some()), (dst, stride))
-    }
-);
-
-fearless_simd::kernel!(
     /// Runs `shape` over `coeffs` (dequantized by `dequant` as they load, or
     /// already dequantized) into `sink`, with the 32x32 `scratch` holding the
     /// column pairs. With `rows8`, `shape` is 16 or 32 wide without an
@@ -1878,18 +1546,14 @@ fearless_simd::kernel!(
             Sink::Add { dst, stride } => (dst, stride, None),
             Sink::Residual(residual) => (&mut [][..], 0, Some(residual)),
         };
-        let mut empty = [];
         if let Some(value) = shape.flat_residual(coeffs, dequant, crate::BitDepth::Eight) {
             let out = (dst, stride);
             match (residual, shape.w_log2) {
-                (None, 2) => flat::<4, true>(t, value, h, out, &mut empty),
-                (None, 3) => flat::<8, true>(t, value, h, out, &mut empty),
-                (None, 4) => flat::<16, true>(t, value, h, out, &mut empty),
-                (None, _) => flat::<32, true>(t, value, h, out, &mut empty),
-                (Some(residual), 2) => flat::<4, false>(t, value, h, out, residual),
-                (Some(residual), 3) => flat::<8, false>(t, value, h, out, residual),
-                (Some(residual), 4) => flat::<16, false>(t, value, h, out, residual),
-                (Some(residual), _) => flat::<32, false>(t, value, h, out, residual),
+                (None, 2) => add_flat::<4>(value, h, out),
+                (None, 3) => add_flat::<8>(value, h, out),
+                (None, 4) => add_flat::<16>(value, h, out),
+                (None, _) => add_flat::<32>(value, h, out),
+                (Some(residual), _) => put_flat(t, value, residual),
             }
             return;
         }
@@ -1932,15 +1596,28 @@ fearless_simd::kernel!(
             return;
         };
         let Some(residual) = residual else {
-            cols::<TILE>(t, shape, pairs, mask, tile, &mut empty);
-            match shape.w_log2 {
-                2 => add_tile::<4>(t, tile, h, dst, stride),
-                3 => add_tile::<8>(t, tile, h, dst, stride),
-                4 => add_tile::<16>(t, tile, h, dst, stride),
-                _ => add_tile::<32>(t, tile, h, dst, stride),
+            let mut sinks = Sinks {
+                tile,
+                residual: &mut [],
+                dst: (&mut [], 0),
+            };
+            if w <= 8 {
+                sinks.dst = (dst, stride);
+                cols::<DIRECT>(t, shape, pairs, mask, sinks);
+            } else if w == 16 {
+                cols::<TILE>(t, shape, pairs, mask, sinks);
+                add_tile::<16>(t, tile, h, dst, stride);
+            } else {
+                cols::<TILE>(t, shape, pairs, mask, sinks);
+                add_tile::<32>(t, tile, h, dst, stride);
             }
             return;
         };
-        cols::<RESIDUAL>(t, shape, pairs, mask, tile, residual);
+        let sinks = Sinks {
+            tile,
+            residual,
+            dst: (&mut [], 0),
+        };
+        cols::<RESIDUAL>(t, shape, pairs, mask, sinks);
     }
 );

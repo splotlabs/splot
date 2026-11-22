@@ -27,8 +27,8 @@ use crate::headers::frame::inter_shared_tail::lr_reference_filters;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, KeyFrameTxParams, TipFrameMode,
-    TxMode, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, IntrabcParams, KeyFrameTxParams,
+    TipFrameMode, TxMode, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
@@ -41,7 +41,7 @@ use crate::types::ObuType;
 use crate::write::write_quantization_params;
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, global_motion::write_global_param, write_annexb_obu,
-    write_tile_group_payload, write_tile_group_structure,
+    write_intrabc_params, write_tile_group_payload, write_tile_group_structure,
 };
 
 /// `PRIMARY_REF_NONE` (§ 3).
@@ -380,7 +380,20 @@ fn inter_frame_header_bits(
             w.write_flag(params.force_integer_mv)?;
         }
     }
-    w.write_flag(false)?; // allow_intrabc
+    let tx = params.tx;
+    if tx.allow_intrabc && !tx.allow_local_intrabc {
+        return Err(unsupported(
+            "intra block copy without the local area in an inter frame",
+        ));
+    }
+    let intrabc = IntrabcParams {
+        allow_intrabc: tx.allow_intrabc,
+        allow_global_intrabc: None,
+        allow_local_intrabc: None,
+        change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
+        max_bvp_drl_bits_minus_1: None,
+    };
+    write_intrabc_params(&mut w, &intrabc, false, seq.allow_frame_max_bvp_drl_bits)?;
     if !params.force_integer_mv {
         w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv
     }
@@ -407,11 +420,7 @@ fn inter_frame_header_bits(
     {
         w.write_flag(mode == INTERINTRA || warp)?; // frame_enabled_motion_modes[mode]
     }
-    w.write_flag(params.tx.disable_cdf_update)?;
-    let tx = params.tx;
-    if tx.allow_intrabc {
-        return Err(unsupported("intra block copy in an inter frame"));
-    }
+    w.write_flag(tx.disable_cdf_update)?;
     check_tx_params(params.base_q_idx, tx)?;
     write_quant_and_filters(
         &mut w,
