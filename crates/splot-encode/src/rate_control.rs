@@ -86,6 +86,12 @@ pub trait RateController {
     fn update_repeat(&mut self, bits: u64, _display_index: u64) {
         self.update_show_existing(bits);
     }
+    /// Records the size in bits of the padding OBU that ends a temporal
+    /// unit: bits spent against no budget. The default takes it as
+    /// [`Self::update_show_existing`].
+    fn update_padding(&mut self, bits: u64) {
+        self.update_show_existing(bits);
+    }
 }
 
 /// Uses the same quantizer for every frame.
@@ -621,6 +627,12 @@ impl DecoderBuffer {
     /// Adds the bits of a coded or show-existing frame.
     pub(crate) fn add(&mut self, bits: u64) {
         self.level = self.level.saturating_add(bits);
+    }
+
+    /// The bits by which the decoder buffer would overflow when the next frame
+    /// period arrives: the arrival less the room the decoder has emptied.
+    pub(crate) fn overflow(&self) -> u64 {
+        self.drain.saturating_sub(self.level)
     }
 
     /// Ends a temporal unit: an underflow empties the decoder buffer, then

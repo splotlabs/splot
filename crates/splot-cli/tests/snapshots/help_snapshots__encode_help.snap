@@ -48,6 +48,8 @@ Options:
           Fixed-ratio resize: codes every frame at 8/D of the input size per axis, D in 9..=16; off by default. The IVF, its decode and the `--stats` PSNR (against the resized source) are at the coded size
       --film-grain
           Film grain: each key frame codes a grain model fitted to the noise of its source, and every output frame applies it at decode; off by default. The encoder does not denoise, so the stats PSNR does not include the grain
+      --cbr-padding
+          CBR filler: a temporal unit that would overflow the decoder buffer ends with a padding OBU of the overflow, so the stream keeps the target bitrate. Only with `--rc cbr`; off by default
       --color-primaries <N>
           H.273 colour primaries code point (1 BT.709, 9 BT.2020), written to the stream as declared; the samples are not converted. Without the colour flags the stream declares no colour
       --transfer-characteristics <N>
