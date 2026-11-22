@@ -337,6 +337,8 @@ thread_local! {
     /// Intra leaves of the final passes on this thread that code a DIP
     /// prediction that only the wider DIP search offers.
     pub(crate) static DIP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// SDP trees of the final passes on this thread.
+    pub(crate) static SDP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// The DIP predictions that only the wider DIP search offers (a rank
     /// below the best SATD, or a best that loses to the angular SATD), by
     /// leaf position and size.
@@ -450,6 +452,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let sdp = self.syntax.sdp_roots(node);
         let partition = match (tree, sdp) {
             (PartitionTree::Sdp { luma, chroma }, Some((luma_root, chroma_root))) => {
+                #[cfg(test)]
+                if self.filters.is_some() {
+                    SDP_CODED.set(SDP_CODED.get() + 1);
+                }
                 let superblock = node.dimensions()?.0 == self.syntax.superblock_size4() * 4;
                 for (root, tree) in [(luma_root, luma), (chroma_root, chroma)] {
                     if superblock && let Some(filters) = self.filters.as_deref_mut() {

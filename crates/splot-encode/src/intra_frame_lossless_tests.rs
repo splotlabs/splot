@@ -47,13 +47,19 @@ const CASES: [(PixelFormat, BitDepth, u8, u8); 5] = [
     (PixelFormat::Yuv420, BitDepth::Eight, 10, 1),
 ];
 
-/// Intra, intra-only and inter frames, with a later key frame, decode to the
-/// source samples exactly, with the same bytes on 1, 2 and 8 threads.
+/// Intra, intra-only and inter frames, with a later key frame and SDP trees,
+/// decode to the source samples exactly, with the same bytes on 1, 2 and 8
+/// threads.
 #[test]
 fn lossless_streams_decode_to_the_source_on_any_thread_count() {
     each_case(CASES, |case| {
         let name = format!("{case:?}");
+        crate::tile_writer::SDP_CODED.set(0);
         let (units, source) = lossless_stream(case, 1, 8);
+        assert!(
+            crate::tile_writer::SDP_CODED.get() > 0,
+            "{name}: no SDP tree"
+        );
         assert_same_samples(&decode(&units.concat()), &source, &name);
         for threads in [2, 8] {
             assert_eq!(

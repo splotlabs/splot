@@ -5342,6 +5342,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-TILE-GROUPS"
+name = "Encoder tile groups: the tiles of a frame in several tile group OBUs"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.19", "5.20.1", "7.3.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-tile-groups"
+owner = "encoder"
+risk = "low"
+notes = "Config::tile_groups (2026-11-22, 1 by default; CLI --tile-groups N): the tiles of a key or inter frame split in raster order into N tile group OBUs of consecutive tiles, N clamped to the tile count; group g starts at tile g * NumTiles / N, so the group sizes differ by at most 1. With more than one group, each group codes tile_start_and_end_present_flag = 1 with its tg_start and tg_end (one group keeps the inferred whole-frame range); the first group carries the frame header, and the later groups code is_first_tile_group = 0 and frame_header_present_flag = 0 (§ 5.19). The last tile of each group codes no size field (§ 5.20.1). The recon and the tile payloads do not change; splot and AVM decode the streams alike."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::tile_group_ranges_split_the_tiles_evenly", "crates/splot-encode/src/intra_frame_tile_group_tests.rs::tile_groups_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-cli/tests/encode_decode_roundtrip.rs::tile_group_clips_validate_and_decode"]
+commands = ["cargo test -p splot-core tile_group_ranges --locked", "cargo test -p splot-encode tile_group --locked", "cargo test -p splot-cli --test encode_decode_roundtrip tile_group --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-EXT-PARTITIONS"
 name = "Encoder three-way and uneven four-way partition search"
 category = "encoder"
@@ -5641,7 +5673,7 @@ module = "crates/splot-encode/src/kernels/forward_transform.rs"
 change_id = "enc-lossless"
 owner = "encoder"
 risk = "medium"
-notes = "ConstantQp qp 0 (CLI --lossless, 2026-11-22; qp 0 was an error before) codes every frame at base_q_idx 0 with zero deltas, so CodedLossless = 1: TX_MODE_ONLY_4X4, no TCQ, parity hiding or loop filter syntax, every block 4x4 Walsh-Hadamard units whose levels invert the 7.15.2.2 lifting exactly. Blocks code use_dpcm_y/uv = 0, inter lossless_tx_size = 0 and lossless_inter_tx_type = 0. PresetParams::set_lossless switches off the searches that lossless forbids or that change samples, and for now SDP, palette, IntraBC, FSC/IDTX; segmentation, quant_matrices, film grain and resize are refused. DPCM, IDTX and large lossless transforms are a later search (B-11)."
+notes = "ConstantQp qp 0 (CLI --lossless, 2026-11-22; qp 0 was an error before) codes every frame at base_q_idx 0 with zero deltas, so CodedLossless = 1: TX_MODE_ONLY_4X4, no TCQ, parity hiding or loop filter syntax, every block 4x4 Walsh-Hadamard units whose levels invert the 7.15.2.2 lifting exactly. Blocks code use_dpcm_y/uv = 0, inter lossless_tx_size = 0 and lossless_inter_tx_type = 0. PresetParams::set_lossless switches off the searches that lossless forbids or that change samples, and for now palette, IntraBC, FSC/IDTX; SDP is on, and SDP chroma-part leaves code Walsh-Hadamard units; segmentation, quant_matrices, film grain and resize are refused. DPCM, IDTX and large lossless transforms are a later search (B-11)."
 
 [feature.status]
 mapped = "done"
