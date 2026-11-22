@@ -54,13 +54,21 @@ pub enum Error {
         denominator: u32,
     },
 
-    /// The constant quantizer is outside `1..=MaxQ` of the bit depth.
-    #[error("qp {qp} is outside 1..={max}")]
+    /// The constant quantizer is outside `0..=MaxQ` of the bit depth.
+    #[error("qp {qp} is outside 0..={max}")]
     InvalidQp {
         /// Requested `base_q_idx`.
         qp: u16,
         /// `MaxQ` of the configured bit depth (§ 6.4.1 Table 6.3).
         max: u16,
+    },
+
+    /// A lossless configuration (`qp` 0) asks for a tool that has no
+    /// lossless meaning.
+    #[error("lossless coding cannot use {what}")]
+    LosslessWith {
+        /// The refused tool or preset field.
+        what: String,
     },
 
     /// The rate factor is outside `1..=63`.

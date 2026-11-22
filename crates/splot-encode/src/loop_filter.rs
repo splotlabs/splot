@@ -415,6 +415,16 @@ pub(crate) fn finish_frame(
             what: "a frame without quantization params",
         })?
         .base_q_idx;
+    if qindex == 0 {
+        return Ok(FilteredFrame {
+            core: pass.core,
+            filters: FrameFilterParams::default(),
+            tiles: bytes,
+            cdfs,
+            recon,
+            ccso_blocks: Vec::new(),
+        });
+    }
     let search = Search {
         seq,
         header,

@@ -445,6 +445,9 @@ jobs:
       - name: Build splot
         run: cargo build --release -p splot-cli --locked
 
+      - name: Binary size budget
+        run: cargo xtask check-binary-size
+
       - name: Verify upstream AVM corpus hashes (dav2d test data)
         env:
           TEST_DATA_DIR: ${{ runner.temp }}/dav2d-test-data
