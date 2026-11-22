@@ -1720,8 +1720,7 @@ fn decode_block(
                 core,
                 &neighbour_ctx,
                 mode_ctx.warp_sample_found,
-                tile_offset,
-            )?
+            )
         } else {
             MotionMode::DeltaWarp
         };
