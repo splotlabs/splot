@@ -105,6 +105,7 @@ impl Case {
                 global_motion: false,
                 num_ref_frames: None,
                 explicit_ref_frame_map: false,
+                implicit_output: false,
                 seq_tiles: None,
                 plane_delta_q: [0; 3],
                 short_refresh: false,

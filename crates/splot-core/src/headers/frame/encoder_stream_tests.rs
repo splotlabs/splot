@@ -196,6 +196,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         global_motion: true,
         num_ref_frames: Some(5),
         explicit_ref_frame_map: true,
+        implicit_output: true,
         seq_tiles: None,
         plane_delta_q: [0; 3],
         short_refresh: true,
@@ -239,7 +240,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
     assert!(inter.enable_tip_explicit_qp && inter.enable_short_refresh_frame_flags);
     assert_eq!(inter.num_ref_frames, 5);
-    assert!(inter.explicit_ref_frame_map);
+    assert!(inter.explicit_ref_frame_map && !seq.general.monotonic_output_order_flag);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);
