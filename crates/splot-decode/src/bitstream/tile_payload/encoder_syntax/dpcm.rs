@@ -12,9 +12,7 @@ use super::super::cdf::TileCdfSelector;
 use super::super::cdf::block_context::IntraJointMode;
 use super::super::general_intra_block::{DPCM_HORIZONTAL_JOINT_MODE, DPCM_VERTICAL_JOINT_MODE};
 use super::intra::{ChromaMode, IntraModes, Mrl};
-use super::{
-    EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TransformBlock, rule,
-};
+use super::{EncoderSyntaxError, IntraMode, IntraTileSyntax, Result, TransformBlock, rule};
 
 /// DPCM in a leaf that is not lossless.
 pub(super) const DPCM_LOSSY: EncoderSyntaxError =
@@ -57,7 +55,8 @@ impl IntraTileSyntax {
         self.dpcm_leaf[if tx.plane == 0 { 0 } else { 1 }]
     }
 
-    /// The luma and chroma DPCM directions of `modes`, checked against the syntax.
+    /// The luma and chroma DPCM directions of `modes` in a lossless frame,
+    /// checked against the syntax.
     #[cold]
     #[inline(never)]
     pub(super) fn dpcm_directions(&self, modes: IntraModes) -> Result<[Option<DpcmDirection>; 2]> {
@@ -90,12 +89,11 @@ impl IntraTileSyntax {
         Ok([luma, chroma])
     }
 
-    /// `dpcm_mode_y` and `fsc_mode` of a DPCM luma (§ 5.20.5.5).
+    /// `dpcm_mode_y` of a DPCM luma (§ 5.20.5.5).
     #[cold]
     #[inline(never)]
-    pub(super) fn write_dpcm_y(
+    pub(super) fn write_dpcm_mode_y(
         &mut self,
-        leaf: &LeafBlock,
         modes: IntraModes,
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
@@ -104,8 +102,7 @@ impl IntraTileSyntax {
             symbols,
             TileCdfSelector::DpcmModeY,
             dpcm_mode(modes.y_mode)?.into(),
-        )?;
-        self.write_fsc_mode(leaf, modes, symbols)
+        )
     }
 
     /// `dpcm_mode_uv` of a DPCM chroma (§ 5.20.5.6).

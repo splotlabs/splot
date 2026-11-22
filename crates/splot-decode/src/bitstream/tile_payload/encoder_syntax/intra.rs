@@ -554,15 +554,15 @@ impl IntraTileSyntax {
     ) -> Result<()> {
         let (mode_idx, _) = self.y_mode_index(leaf, modes)?;
         let ctx = self.y_mode_ctx(leaf)?;
+        let dpcm = self.tools.lossless && modes.dpcm_y;
         if self.tools.lossless {
             self.put(symbols, TileCdfSelector::UseDpcmY, modes.dpcm_y.into())?;
-            if modes.dpcm_y {
-                return self.write_dpcm_y(leaf, modes, symbols);
-            }
         } else if modes.dpcm_y {
             return Err(DPCM_LOSSY);
         }
-        if mode_idx < FIRST_MODE_COUNT {
+        if dpcm {
+            self.write_dpcm_mode_y(modes, symbols)?;
+        } else if mode_idx < FIRST_MODE_COUNT {
             let last = usize::from(MODE_INDEX_COUNT - 1);
             self.put(symbols, TileCdfSelector::YModeSet, 0)?;
             self.put(
@@ -586,7 +586,21 @@ impl IntraTileSyntax {
             )?;
             literal(symbols, second % SECOND_MODE_COUNT, Y_SECOND_MODE_BITS)?;
         }
-        self.write_fsc_mode(leaf, modes, symbols)?;
+        if self.fsc_allowed(leaf) {
+            let ctx = if !self.inter_frame() || !leaf.frontier.is_mixed_region() {
+                self.intra_neighbours(leaf)?.fsc_mode_ctx()
+            } else {
+                INTER_FSC_MODE_CONTEXT
+            };
+            let bsize_group = fsc_bsize_group(leaf.frontier.b_size);
+            let selector = TileCdfSelector::FscMode { ctx, bsize_group };
+            self.put(symbols, selector, modes.fsc.into())?;
+        } else if modes.fsc {
+            return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
+        }
+        if dpcm {
+            return Ok(());
+        }
         self.mrl_selection(modes)?;
         if self.tools.enable_mrls && modes.y_mode.is_directional() {
             let neighbours = self.intra_neighbours(leaf)?;
@@ -601,33 +615,6 @@ impl IntraTileSyntax {
                 let secondary = modes.mrl.secondary.into();
                 self.put(symbols, TileCdfSelector::MrlSecIndex { ctx }, secondary)?;
             }
-        }
-        Ok(())
-    }
-
-    /// `fsc_mode` of `leaf` when it may code one (§ 5.20.5.5).
-    #[allow(
-        clippy::inline_always,
-        reason = "the lossy luma mode writer keeps this body inline"
-    )]
-    #[inline(always)]
-    pub(super) fn write_fsc_mode(
-        &mut self,
-        leaf: &LeafBlock,
-        modes: IntraModes,
-        symbols: &mut impl SymbolSink,
-    ) -> Result<()> {
-        if self.fsc_allowed(leaf) {
-            let ctx = if !self.inter_frame() || !leaf.frontier.is_mixed_region() {
-                self.intra_neighbours(leaf)?.fsc_mode_ctx()
-            } else {
-                INTER_FSC_MODE_CONTEXT
-            };
-            let bsize_group = fsc_bsize_group(leaf.frontier.b_size);
-            let selector = TileCdfSelector::FscMode { ctx, bsize_group };
-            self.put(symbols, selector, modes.fsc.into())?;
-        } else if modes.fsc {
-            return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
         }
         Ok(())
     }
@@ -706,11 +693,11 @@ impl IntraTileSyntax {
         self.clear_inter_plan();
         self.plan_cctx(leaf);
         self.fsc_leaf = modes.fsc;
-        self.dpcm_leaf = if modes.dpcm_y || modes.dpcm_uv {
-            self.dpcm_directions(modes)?
-        } else {
-            [None; 2]
-        };
+        if self.tools.lossless {
+            self.dpcm_leaf = self.dpcm_directions(modes)?;
+        } else if modes.dpcm_y || modes.dpcm_uv {
+            return Err(DPCM_LOSSY);
+        }
         let (block_ctx, _) = self.block_ctx(leaf);
         let joint = self.joint_mode(leaf, modes)?;
         let palette = self.plan_palette(leaf, modes)?;
