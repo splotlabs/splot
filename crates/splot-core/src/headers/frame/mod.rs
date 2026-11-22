@@ -50,7 +50,7 @@ pub use encoder_inter_stream::{
 };
 pub use encoder_stream::{
     EncoderHeaderError, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameGdf,
-    FrameWienerNs, KeyFrameTxParams, SeqTiles, UniformTiles, build_encoder_sequence_header,
+    FrameTiles, FrameWienerNs, KeyFrameTxParams, SeqTiles, build_encoder_sequence_header,
     build_key_frame_header, encode_key_frame_temporal_unit,
 };
 pub(crate) use filtering::gdf_per_block_is_coded;

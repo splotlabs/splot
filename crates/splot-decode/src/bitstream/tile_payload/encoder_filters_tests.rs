@@ -5,7 +5,7 @@
 
 use splot_core::headers::frame::{
     CcsoOffsets, CcsoPlaneParams, CdefStrengthSet, CdefStrengthSets, CoreSeqView,
-    FrameFilterParams, FrameWienerNs, KeyFrameTxParams, UniformTiles, WienerNsCoeffs,
+    FrameFilterParams, FrameTiles, FrameWienerNs, KeyFrameTxParams, WienerNsCoeffs,
     WienerNsFrameFilterBank, WienerNsFrameFilterClass, build_encoder_sequence_header,
     build_key_frame_header,
 };
@@ -123,7 +123,7 @@ fn check_cell_classes(bit_depth: BitDepthIdc, cdef_and_ccso: bool) {
         0,
         &filters,
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let info = DecodedFrameInfo::new(

@@ -140,7 +140,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         show_frame,
                         filters,
                         tx: KeyFrameTxParams::default(),
-                        tiles: UniformTiles::default(),
+                        tiles: FrameTiles::default(),
                         reference_select: compound,
                         skip_mode_present: compound,
                         primary_slot,
@@ -233,7 +233,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         show_frame: true,
         filters: FrameFilterParams::default(),
         tx: KeyFrameTxParams::default(),
-        tiles: UniformTiles::default(),
+        tiles: FrameTiles::default(),
         reference_select: false,
         skip_mode_present: false,
         primary_slot: Some(3),
@@ -339,7 +339,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             show_frame: true,
             filters: filters(SuperblockSize::Block64x64),
             tx: KeyFrameTxParams::default(),
-            tiles: UniformTiles::default(),
+            tiles: FrameTiles::default(),
             reference_select: true,
             skip_mode_present: false,
             primary_slot: Some(0),
@@ -464,7 +464,7 @@ fn multi_frame_header_obu_and_references_parse_back() {
             0,
             &FrameFilterParams::default(),
             tx,
-            UniformTiles::default(),
+            FrameTiles::default(),
         )
         .unwrap();
         assert_eq!(core.cur_mfh_id.get(), u32::from(multi_frame_header));
@@ -539,7 +539,7 @@ fn film_grain_headers_code_the_seed_and_the_model() {
         0,
         &FrameFilterParams::default(),
         tx,
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let grain = core.intra_tail.unwrap().film_grain;
@@ -560,7 +560,7 @@ fn film_grain_headers_code_the_seed_and_the_model() {
             0,
             &FrameFilterParams::default(),
             tx,
-            UniformTiles::default()
+            FrameTiles::default()
         )
         .is_err()
     );
@@ -640,7 +640,7 @@ fn rejects_out_of_range_inter_inputs() {
         show_frame: true,
         filters: FrameFilterParams::default(),
         tx: KeyFrameTxParams::default(),
-        tiles: UniformTiles::default(),
+        tiles: FrameTiles::default(),
         reference_select: false,
         skip_mode_present: false,
         primary_slot: None,
@@ -1175,7 +1175,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         show_frame: true,
         filters: FrameFilterParams::default(),
         tx: KeyFrameTxParams::default(),
-        tiles: UniformTiles::default(),
+        tiles: FrameTiles::default(),
         reference_select: false,
         skip_mode_present: false,
         primary_slot: Some(0),
@@ -1237,7 +1237,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
             0,
             &FrameFilterParams::default(),
             tx,
-            UniformTiles::default(),
+            FrameTiles::default(),
         )
         .unwrap()
     };
@@ -1317,7 +1317,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         show_frame: true,
         filters,
         tx: KeyFrameTxParams::default(),
-        tiles: UniformTiles::default(),
+        tiles: FrameTiles::default(),
         reference_select: false,
         skip_mode_present: false,
         primary_slot: Some(0),
@@ -1354,7 +1354,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         0,
         &reuse(0),
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     );
     assert!(key.is_err(), "a key frame cannot reuse CCSO");
     let obu = encode_inter_frame_obu(&reused, &[&[0xab]], 1).unwrap();
@@ -1527,11 +1527,11 @@ fn short_refresh_flags_code_one_slot_or_none() {
 #[test]
 fn sequence_tile_info_is_reused_or_coded_per_frame() {
     for (allow, reuse, saved) in [(false, true, 3), (true, true, 2), (true, false, -1)] {
-        let tiles = |cols_log2| UniformTiles {
+        let tiles = |cols_log2| FrameTiles {
             cols_log2,
             rows_log2: 0,
             reuse_tile_info: reuse,
-            ..UniformTiles::default()
+            ..FrameTiles::default()
         };
         let stream = |seq_tiles| EncoderStreamParams {
             width: 256,
@@ -1591,7 +1591,7 @@ fn sequence_tile_info_is_reused_or_coded_per_frame() {
         assert_eq!(own, if reuse { 2 } else { 1 }, "{allow} {reuse}");
         assert_eq!(key(&seq, 0).unwrap().tile_info.unwrap().tile_cols, own);
         let bad = InterFrameParams {
-            tiles: UniformTiles {
+            tiles: FrameTiles {
                 size_bytes: 5,
                 ..tiles(1)
             },

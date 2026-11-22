@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv, UniformTiles,
+    FrameTiles, GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv,
     build_encoder_sequence_header, encode_film_grain_obu, encode_multi_frame_header_obu,
     encoder_film_grain_model,
 };
@@ -79,7 +79,7 @@ pub(crate) struct IntraFrameCoder {
     content_obus: Vec<u8>,
     /// [`crate::Config::multi_frame_header`].
     multi_frame_header: bool,
-    tiles: UniformTiles,
+    tiles: FrameTiles,
     /// [`crate::Config::tile_groups`].
     tile_groups: u32,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
@@ -217,21 +217,21 @@ fn frame_tiles(
     config: &Config,
     preset: &PresetParams,
     (params, view): (&EncoderStreamParams, &CoreSeqView),
-) -> Result<UniformTiles> {
+) -> Result<FrameTiles> {
     let refused = |reason| Error::InvalidTiles {
         tiles: config.tiles.clone(),
         reason,
     };
-    let base = UniformTiles {
+    let base = FrameTiles {
         middle_cdf_update_tile: preset.cdf_update_tile == 1,
         reuse_tile_info: preset.seq_tile_info < 3,
-        ..UniformTiles::default()
+        ..FrameTiles::default()
     };
     let tiles = match &config.tiles {
         &TileLayout::Uniform {
             cols_log2,
             rows_log2,
-        } => UniformTiles {
+        } => FrameTiles {
             cols_log2,
             rows_log2,
             ..base
@@ -257,7 +257,7 @@ fn frame_tiles(
                 }
                 Ok(starts)
             };
-            UniformTiles {
+            FrameTiles {
                 explicit: Some([
                     axis(widths, params.width, MAX_TILE_COLS)?,
                     axis(heights, params.height, MAX_TILE_ROWS)?,

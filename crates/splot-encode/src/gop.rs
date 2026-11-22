@@ -49,8 +49,8 @@ use core::num::NonZeroU32;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncodedFrameHeader, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
-    InterFrameParams, InterpolationFilter, KeyFrameTxParams, REFS_PER_FRAME, TipGlobalMv,
-    UniformTiles, build_inter_frame_header, build_intra_only_frame_header, build_key_frame_header,
+    FrameTiles, InterFrameParams, InterpolationFilter, KeyFrameTxParams, REFS_PER_FRAME,
+    TipGlobalMv, build_inter_frame_header, build_intra_only_frame_header, build_key_frame_header,
     build_tip_output_frame_header, encode_inter_frame_obu, encode_key_frame_temporal_unit,
     encode_show_existing_frame_obu, encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
 };
@@ -535,7 +535,7 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
 /// `opfl_refine_type`, and the `tiles`.
 pub(crate) fn frame_tools(
     (preset, context): (&PresetParams, PresetContext),
-    tiles: &UniformTiles,
+    tiles: &FrameTiles,
     qindex: u32,
 ) -> FrameTools {
     (
@@ -598,7 +598,7 @@ pub(crate) type FrameTools = (
         bool,
         Option<u8>,
     ),
-    UniformTiles,
+    FrameTiles,
 );
 
 /// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`, with
@@ -689,7 +689,7 @@ impl GopFrame {
                 .unwrap_or(0)
         });
         let size_bytes = (1..4u8).find(|&n| longest >> (8 * n) == 0).unwrap_or(4);
-        let layout = UniformTiles {
+        let layout = FrameTiles {
             size_bytes,
             ..layout
         };
