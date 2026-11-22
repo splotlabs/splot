@@ -79,6 +79,12 @@ impl IntraTileSyntax {
         self.tools.qm
     }
 
+    /// The § 7.14.2 plane quantizer deltas of the frame, for [`super::recon_params`].
+    #[must_use]
+    pub const fn quantizer_deltas(&self) -> splot_recon::QuantizerDeltas {
+        self.tools.deltas
+    }
+
     /// Prices a search trial of a TCQ frame with plain levels: until set back,
     /// no block [`Self::uses_tcq`]. A trial coded so must not reach the bitstream.
     pub const fn set_scalar_trial(&mut self, on: bool) {

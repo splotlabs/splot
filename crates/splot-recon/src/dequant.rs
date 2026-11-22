@@ -160,7 +160,7 @@ pub fn quantizer_index(
 /// Each field is the caller-resolved sum that the spec's `get_dc_quant` /
 /// `get_ac_quant` add to the quantizer index. The luma AC delta is always 0 per
 /// § 7.14.2 and is therefore not stored.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QuantizerDeltas {
     /// Y plane DC delta: `DeltaQYDc + BaseYDcDeltaQ`.
     pub y_dc: i32,

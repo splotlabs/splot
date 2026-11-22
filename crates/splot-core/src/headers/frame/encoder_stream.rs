@@ -15,9 +15,10 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
     FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, SegmentationParams,
-    SetupQmParams, TxMode, WienerNsFrameFilterBank, encode_temporal_delimiter_obu,
-    gdf_per_block_is_coded, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, QuantizationParams,
+    SegmentationParams, SetupQmParams, TxMode, WienerNsFrameFilterBank,
+    encode_temporal_delimiter_obu, gdf_per_block_is_coded, init_core_from_prefix, parse_core_body,
+    parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
@@ -32,7 +33,7 @@ use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
     write_cdef_params, write_deblocking_filter_params, write_gdf_params,
     write_inter_segmentation_params, write_intrabc_params, write_lr_params_for_inter,
-    write_obu_payload, write_setup_qm_params, write_tile_group_obu,
+    write_obu_payload, write_quantization_params, write_setup_qm_params, write_tile_group_obu,
 };
 
 /// The [`SegmentationParams`] of [`KeyFrameTxParams::segment_alt_q`].
@@ -193,6 +194,11 @@ pub struct EncoderToolFlags {
     /// `seq_tile_info_present_flag` (§ 5.4.2): the sequence codes this
     /// uniform layout, which frames reuse (§ 5.18.7.2).
     pub seq_tiles: Option<SeqTiles>,
+    /// The plane quantizer deltas `[DeltaQYDc, DeltaQU*, DeltaQV*]` frames may
+    /// code (§ 5.4.8): a non-zero luma value codes `equal_ac_dc_q = 0` with
+    /// `y_dc_delta_q_enabled`, a non-zero chroma value codes the chroma
+    /// enables, and `u != v` codes `separate_uv_delta_q`.
+    pub plane_delta_q: [i8; 3],
     /// `enable_short_refresh_frame_flags` (§ 5.4.6): inter frames code
     /// `has_refresh_frame_flags` and `frame_to_refresh`.
     pub short_refresh: bool,
@@ -338,6 +344,10 @@ pub struct KeyFrameTxParams {
     /// `using_qmatrix = 1` with this § 5.18.6.2 level, `0..=15`, in `qm_y`,
     /// `qm_u` and `qm_v`; `None` codes `using_qmatrix = 0`.
     pub qm_level: Option<u8>,
+    /// `[DeltaQYDc, DeltaQUDc = DeltaQUAc, DeltaQVDc = DeltaQVAc]` (§ 5.18.6.1),
+    /// each in the `su(7)` range; the sequence [`EncoderToolFlags::plane_delta_q`]
+    /// must enable each non-zero value.
+    pub plane_delta_q: [i8; 3],
     /// `segmentation_enabled` (§ 5.18.7.1) with segments 0..=3 enabling
     /// `SEG_LVL_ALT_Q` at these data, an updated map and no temporal update;
     /// `None` codes `segmentation_enabled = 0`. Every segment shares the
@@ -359,6 +369,7 @@ impl Default for KeyFrameTxParams {
             choose_primary_ref_frame: false,
             long_term_id_plus_1: 0,
             qm_level: None,
+            plane_delta_q: [0; 3],
             segment_alt_q: None,
         }
     }
@@ -660,7 +671,8 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_flag(tools.short_refresh) // enable_short_refresh_frame_flags
 }
 
-/// § 5.4.8 with zero quantizer offsets.
+/// § 5.4.8 with zero `Base*DeltaQ` and the frame delta enables of
+/// [`EncoderToolFlags::plane_delta_q`].
 fn write_transform_quant_entropy_config(
     w: &mut BitWriter,
     tools: EncoderToolFlags,
@@ -689,13 +701,23 @@ fn write_transform_quant_entropy_config(
     if let Some(across_tiles) = tools.avg_cdf {
         w.write_flag(across_tiles)?; // avg_cdf_type
     }
+    let [y, u, v] = tools.plane_delta_q.map(|delta| delta != 0);
+    let uv = !monochrome && (u || v);
     if !monochrome {
-        w.write_flag(false)?; // separate_uv_delta_q
+        w.write_flag(tools.plane_delta_q[1] != tools.plane_delta_q[2])?; // separate_uv_delta_q
     }
-    w.write_flag(true)?; // equal_ac_dc_q
+    w.write_flag(!y)?; // equal_ac_dc_q
+    if y {
+        w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_y_dc_delta_q
+        w.write_flag(true)?; // y_dc_delta_q_enabled
+    }
     if !monochrome {
+        if y {
+            w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_uv_dc_delta_q
+            w.write_flag(uv)?; // uv_dc_delta_q_enabled
+        }
         w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_uv_ac_delta_q
-        w.write_flag(false)?; // uv_ac_delta_q_enabled
+        w.write_flag(uv)?; // uv_ac_delta_q_enabled
     }
     Ok(())
 }
@@ -835,6 +857,28 @@ pub(super) fn write_film_grain_config(
     Ok(())
 }
 
+/// The § 5.18.6.1 model of `base_q_idx` with the plane deltas of `tx`: chroma
+/// codes one value for DC and AC, and V differs from U only with
+/// `separate_uv_delta_q`.
+pub(super) fn plane_quantization(
+    seq: &CoreSeqView,
+    base_q_idx: u32,
+    tx: KeyFrameTxParams,
+) -> QuantizationParams {
+    let chroma = seq.quant.num_planes > 1;
+    let [y, u, v] = tx.plane_delta_q.map(i32::from);
+    let [u, v] = if chroma { [u, v] } else { [0, 0] };
+    QuantizationParams {
+        base_q_idx,
+        delta_q_y_dc: y,
+        delta_q_u_dc: u,
+        delta_q_u_ac: u,
+        delta_q_v_dc: v,
+        delta_q_v_ac: v,
+        diff_uv_delta: chroma && seq.quant.separate_uv_delta_q && u != v,
+    }
+}
+
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
 /// segmentation, the quantizer-matrix level and the delta-q and `allow_tcq` of `tx`, parity hiding when
 /// the sequence enables it and the frame has no TCQ, and the filters of `filters`; an inter
@@ -861,7 +905,12 @@ pub(super) fn write_quant_and_filters(
         });
     }
     let spacing = write_uniform_tile_info(w, seq, tiles, frame_is_intra)?;
-    w.write_bits(base_q_idx, q_bits)?;
+    write_quantization_params(
+        w,
+        &plane_quantization(seq, base_q_idx, tx),
+        &seq.quant,
+        false,
+    )?;
     write_inter_segmentation_params(
         w,
         &segmentation_params(tx.segment_alt_q),

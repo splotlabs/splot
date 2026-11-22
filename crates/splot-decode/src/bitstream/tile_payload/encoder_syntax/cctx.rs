@@ -87,7 +87,7 @@ impl IntraTileSyntax {
         let v_block = block(v, levels[1], None)?;
         let (log2_w, log2_h) = tx_log2(u.tx_size)?;
         let (mut u_out, mut v_out) = (Vec::new(), Vec::new());
-        let _qm = super::super::FrameQmScope::install(self.tools.qm);
+        let _quant = self.tools.quant_scopes();
         reconstruct_general_intra_chroma_cctx_pair_into(
             CoeffBlock::new(&u_block, levels[0]).map_err(rule("CCTX block"))?,
             predictions[0],
