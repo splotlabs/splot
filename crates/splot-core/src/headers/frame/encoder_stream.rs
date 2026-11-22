@@ -21,7 +21,8 @@ use crate::headers::frame::{
     parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
-    BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
+    BitDepthIdc, ChromaFormatIdc, CroppingWindow, SequenceHeader, SuperblockSize,
+    parse_sequence_header,
 };
 use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
 use crate::obu::{ObuHeader, ParsedObu};
@@ -228,6 +229,10 @@ pub struct EncoderToolFlags {
     /// single-reference blocks may code block adaptive weighted prediction
     /// (§ 5.20.7.6, § 7.13.3.25).
     pub bawp: bool,
+    /// `seq_cropping_window_present_flag` with these offsets in luma samples
+    /// of the maximum frame (§ 5.4.1); the decoder outputs the
+    /// `CropWidth x CropHeight` window (§ 5.18.4.4, § 7.21.2).
+    pub crop: Option<CroppingWindow>,
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -434,6 +439,16 @@ pub enum EncoderHeaderError {
         /// The rejected dimension.
         value: u32,
     },
+    /// The cropping window does not fit the frame ([`CroppingWindow::fits`]).
+    #[error("cropping window {window:?} does not fit a {width}x{height} frame")]
+    InvalidCroppingWindow {
+        /// The rejected window.
+        window: CroppingWindow,
+        /// The maximum frame width.
+        width: u32,
+        /// The maximum frame height.
+        height: u32,
+    },
     /// `base_q_idx` does not fit the § 5.18.6.1 field.
     #[error("base_q_idx {base_q_idx} is outside 0..{limit}")]
     InvalidBaseQIdx {
@@ -528,7 +543,19 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_bits(height_bits - 1, 4)?;
     w.write_bits(params.width - 1, width_bits)?;
     w.write_bits(params.height - 1, height_bits)?;
-    w.write_flag(false)?; // seq_cropping_window_present_flag
+    w.write_flag(tools.crop.is_some())?; // seq_cropping_window_present_flag
+    if let Some(window) = tools.crop {
+        if !window.fits(params.width, params.height, params.chroma) {
+            return Err(EncoderHeaderError::InvalidCroppingWindow {
+                window,
+                width: params.width,
+                height: params.height,
+            });
+        }
+        for offset in [window.left, window.right, window.top, window.bottom] {
+            w.write_uvlc(offset)?;
+        }
+    }
     w.write_flag(false)?; // seq_initial_display_delay_present_flag
     w.write_flag(false)?; // decoder_model_info_present_flag
 

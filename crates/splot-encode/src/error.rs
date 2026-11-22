@@ -3,6 +3,7 @@
 
 //! Error and result types for the splot encoder API.
 
+use splot_core::headers::sequence::CroppingWindow;
 use splot_recon::{BitDepth, PixelFormat};
 
 /// An error from the splot encoder API.
@@ -30,6 +31,18 @@ pub enum Error {
     InvalidResize {
         /// Requested denominator.
         denominator: u8,
+    },
+
+    /// The cropping window does not fit the coded frame
+    /// ([`CroppingWindow::fits`]).
+    #[error("cropping window {window:?} does not fit the {width}x{height} coded frame")]
+    InvalidCrop {
+        /// Requested window.
+        window: CroppingWindow,
+        /// Coded width.
+        width: u32,
+        /// Coded height.
+        height: u32,
     },
 
     /// A frame-rate term is zero.

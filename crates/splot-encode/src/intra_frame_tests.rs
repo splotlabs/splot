@@ -2068,6 +2068,8 @@ mod cdef_skip;
 mod compound;
 #[path = "intra_frame_content_tests.rs"]
 mod content;
+#[path = "intra_frame_crop_tests.rs"]
+mod crop;
 #[path = "intra_frame_delta_q_tests.rs"]
 mod delta_q;
 #[path = "intra_frame_ext_sdp_tests.rs"]
