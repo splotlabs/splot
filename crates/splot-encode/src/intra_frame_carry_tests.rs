@@ -53,7 +53,7 @@ pub(super) fn planned_stream_of(
                     units.extend(coded.temporal_unit);
                 }
                 GopStep::ShowExisting { slot, .. } => {
-                    units.extend(coder.show_existing_frame(slot, None).unwrap());
+                    units.extend(coder.show_existing_frame(slot, None, false).unwrap());
                 }
             }
         }
@@ -458,9 +458,16 @@ fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, 
     let mut config = config(72, 40, BitDepth::Eight, 6, 150);
     config.preset_overrides = vec![("implicit_output".to_owned(), "true".to_owned())];
     config.threads = splot_parallel::ThreadCount::from(threads);
+    let (packets, expected) = encoder_packets(&config, frames);
+    (config, packets, expected)
+}
+
+/// The packets of `frames` panning frames coded through the [`Encoder`] with
+/// `config`, and the encoder recon in display order.
+fn encoder_packets(config: &Config, frames: u32) -> (Vec<Packet>, Vec<u8>) {
     let recons = Arc::default();
     let coder = Recording {
-        coder: IntraFrameCoder::new(&config).unwrap(),
+        coder: IntraFrameCoder::new(config).unwrap(),
         bit_depth: config.bit_depth,
         recons: Arc::clone(&recons),
     };
@@ -468,7 +475,7 @@ fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, 
     let mut packets = Vec::new();
     for index in (0..frames).map(Some).chain([None]) {
         match index {
-            Some(index) => encoder.send_frame(panning_frame(&config, index)).unwrap(),
+            Some(index) => encoder.send_frame(panning_frame(config, index)).unwrap(),
             None => encoder.flush().unwrap(),
         }
         while let Some(packet) = encoder.receive_packet().unwrap() {
@@ -476,7 +483,7 @@ fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, 
         }
     }
     let expected = recons.lock().unwrap().values().flatten().copied().collect();
-    (config, packets, expected)
+    (packets, expected)
 }
 
 /// With `implicit_output` a stream of 11 frames, which ends inside its second
@@ -549,5 +556,164 @@ fn key_frames_cycle_their_long_term_ids() {
     assert_same_samples(&decode(&units), &expected, "long-term ids");
     for threads in [2, 8] {
         assert!(stream(threads).0 == units, "{threads} threads");
+    }
+}
+
+/// `(chroma, bit depth, implicit output, short refresh)` of the open-loop
+/// key streams.
+const OPEN_LOOP_CASES: [(PixelFormat, BitDepth, bool, bool); 4] = [
+    (PixelFormat::Yuv420, BitDepth::Eight, false, true),
+    (PixelFormat::Yuv444, BitDepth::Ten, false, true),
+    (PixelFormat::Yuv420, BitDepth::Eight, true, true),
+    (PixelFormat::Yuv420, BitDepth::Eight, false, false),
+];
+
+/// 26 panning frames at preset 6 (mini-GOPs of 8) with a key frame every 12
+/// frames and `open_loop_key = 1` in `mode`: the config, the packets and the
+/// encoder recon in display order.
+fn open_loop_stream(
+    (chroma, bit_depth, implicit, short_refresh): (PixelFormat, BitDepth, bool, bool),
+    mode: RateControlMode,
+    threads: usize,
+) -> (Config, Vec<Packet>, Vec<u8>) {
+    let mut config = config(72, 40, bit_depth, 6, 150);
+    config.chroma = chroma;
+    config.rate_control = mode;
+    config.keyint = core::num::NonZeroU32::new(12).unwrap();
+    config.preset_overrides = vec![
+        ("open_loop_key".to_owned(), "1".to_owned()),
+        ("implicit_output".to_owned(), implicit.to_string()),
+        ("short_refresh".to_owned(), short_refresh.to_string()),
+    ];
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let (packets, expected) = encoder_packets(&config, 26);
+    let mut pts: Vec<u64> = packets.iter().map(|packet| packet.pts).collect();
+    pts.sort_unstable();
+    assert_eq!(
+        pts,
+        (0..26).collect::<Vec<_>>(),
+        "one packet per input frame"
+    );
+    let coded: usize = packets.iter().map(|packet| packet.stats.len()).sum();
+    assert_eq!(coded, 26, "one coded frame per input frame");
+    (config, packets, expected)
+}
+
+/// The OBU types of `packets` in stream order.
+fn obu_types(packets: &[Packet]) -> Vec<splot_core::types::ObuType> {
+    let units: Vec<u8> = packets
+        .iter()
+        .flat_map(|packet| packet.data.clone())
+        .collect();
+    let parsed = splot_core::annexb::parse_annex_b_obus_partial(&units);
+    assert!(parsed.error.is_none());
+    parsed.obus.iter().map(|obu| obu.header.obu_type).collect()
+}
+
+/// With `open_loop_key = 1` the key frames at 12 and 24 are open-loop key
+/// frames (§ 7.4.4) with leading tile groups and, without implicit output,
+/// leading show-existing frames. The 4:2:0 8-bit, 4:4:4 10-bit and
+/// implicit-output streams decode to the encoder recon with the same bytes on
+/// 1, 2 and 8 threads.
+#[test]
+fn open_loop_key_streams_decode_alike_on_any_thread_count() {
+    use splot_core::types::ObuType;
+    each_case(OPEN_LOOP_CASES, |case| {
+        let qp = RateControlMode::ConstantQp { qp: 150 };
+        let (_, packets, expected) = open_loop_stream(case, qp, 1);
+        let types = obu_types(&packets);
+        let count = |kind| types.iter().filter(|&&obu| obu == kind).count();
+        assert_eq!(count(ObuType::OpenLoopKey), 2, "{case:?}");
+        assert_eq!(count(ObuType::ClosedLoopKey), 1, "{case:?}");
+        assert!(count(ObuType::LeadingTileGroup) >= 6, "{case:?}");
+        assert_eq!(count(ObuType::LeadingSef) > 0, !case.2, "{case:?}");
+        let units: Vec<u8> = packets
+            .iter()
+            .flat_map(|packet| packet.data.clone())
+            .collect();
+        assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
+        for threads in [2, 8] {
+            let other: Vec<u8> = open_loop_stream(case, qp, threads)
+                .1
+                .iter()
+                .flat_map(|packet| packet.data.clone())
+                .collect();
+            assert!(other == units, "{case:?}: {threads} threads");
+        }
+    });
+}
+
+/// CRF, VBR and CBR streams with open-loop key frames, with and without
+/// implicit output, decode to the encoder recon with one packet per input
+/// frame.
+#[test]
+fn rate_controlled_open_loop_key_streams_decode_to_the_encoder_recon() {
+    let modes = [
+        RateControlMode::Crf { crf: 32 },
+        RateControlMode::Vbr { bitrate_kbps: 200 },
+        RateControlMode::Cbr {
+            bitrate_kbps: 200,
+            buffer_ms: 1000,
+            initial_ms: 500,
+        },
+    ];
+    let cases = modes
+        .into_iter()
+        .flat_map(|mode| [false, true].map(|implicit| (mode, implicit)));
+    each_case(cases, |(mode, implicit)| {
+        let case = (PixelFormat::Yuv420, BitDepth::Eight, implicit, true);
+        let (_, packets, expected) = open_loop_stream(case, mode, 1);
+        let units: Vec<u8> = packets
+            .iter()
+            .flat_map(|packet| packet.data.clone())
+            .collect();
+        assert_same_samples(&decode(&units), &expected, &format!("{mode:?} {implicit}"));
+    });
+}
+
+/// An open-loop key frame needs `long_term_id_bits = 0`.
+#[test]
+fn open_loop_keys_refuse_long_term_ids() {
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.preset_overrides = vec![
+        ("open_loop_key".to_owned(), "1".to_owned()),
+        ("long_term_id_bits".to_owned(), "2".to_owned()),
+    ];
+    assert!(config.validate().is_err());
+    config.preset_overrides.truncate(1);
+    assert!(config.validate().is_ok());
+}
+
+/// AVM decodes the open-loop key streams like splot, and a decode that starts
+/// at the temporal unit of the first open-loop key frame (§ 7.4.4) outputs the
+/// frames from it on, equal to the sequential decode; the leading frames are
+/// discarded.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_open_loop_key_streams_from_the_start_and_from_the_key() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for case in OPEN_LOOP_CASES {
+        let qp = RateControlMode::ConstantQp { qp: 150 };
+        let (config, packets, expected) = open_loop_stream(case, qp, 1);
+        let size = (config.width, config.height);
+        let units: Vec<Vec<u8>> = packets.iter().map(|packet| packet.data.clone()).collect();
+        let name = format!("olk{}{}{}", case.1 as u8, case.2, case.3);
+        let avm = avm_decode(&avmdec, &units, size, config.bit_depth, &name);
+        assert!(avm == expected, "{case:?}: AVM output differs");
+        let start = packets
+            .iter()
+            .position(|packet| {
+                obu_types(core::slice::from_ref(packet))
+                    .contains(&splot_core::types::ObuType::OpenLoopKey)
+            })
+            .unwrap();
+        let frame_bytes = expected.len() / 26;
+        let avm = avm_decode(&avmdec, &units[start..], size, config.bit_depth, &name);
+        assert!(
+            avm == expected[12 * frame_bytes..],
+            "{case:?}: random access differs"
+        );
     }
 }

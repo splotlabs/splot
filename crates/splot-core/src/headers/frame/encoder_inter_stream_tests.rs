@@ -159,6 +159,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         global_motion_predict: false,
                         explicit_refs: None,
                         implicit_output: false,
+                        leading: false,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -252,6 +253,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         global_motion_predict: false,
         explicit_refs: None,
         implicit_output: false,
+        leading: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -358,6 +360,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             global_motion_predict: false,
             explicit_refs: None,
             implicit_output: false,
+            leading: false,
         },
     )
     .unwrap();
@@ -400,7 +403,7 @@ fn tile_group_ranges_split_the_tiles_evenly() {
 fn show_existing_frame_obu_parses_complete() {
     let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let obu = encode_show_existing_frame_obu(&view, 5, None, None, false).unwrap();
+    let obu = encode_show_existing_frame_obu(&view, 5, None, None, (false, false)).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -424,7 +427,7 @@ fn show_existing_frame_obu_parses_complete() {
     );
     assert_eq!(core.frame_to_show_map_idx, Some(5));
     assert_eq!(core.order_hint, Some(7));
-    assert!(encode_show_existing_frame_obu(&view, 8, None, None, false).is_err());
+    assert!(encode_show_existing_frame_obu(&view, 8, None, None, (false, false)).is_err());
 }
 
 /// The multi-frame header OBU parses to `mfh_id 1` of sequence header 0 with
@@ -472,7 +475,8 @@ fn multi_frame_header_obu_and_references_parse_back() {
             core.seq_header_id_in_frame_header.is_none(),
             multi_frame_header
         );
-        let sef = encode_show_existing_frame_obu(&view, 5, None, None, multi_frame_header).unwrap();
+        let sef = encode_show_existing_frame_obu(&view, 5, None, None, (multi_frame_header, false))
+            .unwrap();
         let sef = parse_annex_b_obus_partial(&sef).obus[0].payload;
         let mut reader = BitReader::new(sef, ByteOffset::new(0));
         assert_eq!(reader.read_uvlc().unwrap(), u32::from(multi_frame_header));
@@ -495,7 +499,8 @@ fn show_existing_frame_obu_codes_an_explicit_order_hint() {
         reference_state: slots.view(),
         mode: FrameHeaderParseMode::Core,
     };
-    let obu = encode_show_existing_frame_obu(&view, 5, Some(9 + 256), None, false).unwrap();
+    let obu =
+        encode_show_existing_frame_obu(&view, 5, Some(9 + 256), None, (false, false)).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     let payload = parsed.obus[0].payload;
     let core =
@@ -547,12 +552,12 @@ fn film_grain_headers_code_the_seed_and_the_model() {
         (grain.apply_grain, grain.fgm_id, grain.grain_seed),
         (true, Some(0), Some(0xa5c3))
     );
-    let sef = encode_show_existing_frame_obu(&view, 2, None, Some(0x0f0f), false).unwrap();
+    let sef = encode_show_existing_frame_obu(&view, 2, None, Some(0x0f0f), (false, false)).unwrap();
     assert!(parse_annex_b_obus_partial(&sef).error.is_none());
     params.tools.film_grain = false;
     let plain =
         CoreSeqView::from_sequence(&build_encoder_sequence_header(&params).unwrap()).unwrap();
-    assert!(encode_show_existing_frame_obu(&plain, 2, None, Some(1), false).is_err());
+    assert!(encode_show_existing_frame_obu(&plain, 2, None, Some(1), (false, false)).is_err());
     assert!(
         crate::headers::frame::build_key_frame_header(
             &plain,
@@ -731,6 +736,7 @@ fn rejects_out_of_range_inter_inputs() {
         global_motion_predict: false,
         explicit_refs: None,
         implicit_output: false,
+        leading: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -1263,6 +1269,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         global_motion_predict: false,
         explicit_refs: None,
         implicit_output: false,
+        leading: false,
         tip_global_mv: TipGlobalMv::default(),
         tip_filter: None,
         tip_deblocking: false,
@@ -1408,6 +1415,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         global_motion_predict: false,
         explicit_refs: None,
         implicit_output: false,
+        leading: false,
     };
     let build = |filters| build_inter_frame_header(&view, &slots.view(), &params(filters));
     let fresh = build(coded).unwrap();
@@ -1811,6 +1819,108 @@ fn intra_only_headers_keep_the_other_slots() {
             ..base
         }));
     }
+}
+
+/// An open-loop key frame (§ 5.18.2) is a hidden key frame that refreshes
+/// the slots it names and keeps the others; its leading frames code the
+/// leading tile-group and show-existing OBU types. A shown or leading OLK, a
+/// zero refresh and a cut header are rejected.
+#[test]
+fn open_loop_key_headers_keep_the_other_slots() {
+    let seq = sequence(200, 136, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(200, 136, 4);
+    let params = InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 6,
+        refresh_frame_flags: 0b100,
+        ..InterFrameParams::default()
+    };
+    let header = build_open_loop_key_frame_header(&view, &slots.view(), &params).unwrap();
+    let core = &header.core;
+    assert_eq!(core.obu_type, ObuType::OpenLoopKey);
+    assert_eq!(core.frame_type, Some(FrameType::Key));
+    assert_eq!(core.refresh_frame_flags, Some(0b100));
+    assert_eq!(core.display_order_hint(), Some(6));
+    assert_eq!(core.immediate_output_frame, Some(false));
+    assert_eq!(header.bits.num_frame_header_bits(), core.consumed_bits);
+    let unit = crate::headers::frame::encode_key_frame_temporal_unit(
+        &seq,
+        core,
+        true,
+        (&[&[0x5a; 3]], 1),
+        &[],
+    )
+    .unwrap();
+    let parsed = parse_annex_b_obus_partial(&unit);
+    assert!(parsed.error.is_none());
+    let types: Vec<_> = parsed.obus.iter().map(|obu| obu.header.obu_type).collect();
+    assert_eq!(
+        types,
+        [
+            ObuType::TemporalDelimiter,
+            ObuType::SequenceHeader,
+            ObuType::OpenLoopKey
+        ]
+    );
+    let mut reader = BitReader::new(parsed.obus[2].payload, ByteOffset::new(0));
+    assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::OpenLoopKey,
+        first_picture_in_tu: true,
+        active_sequence: Some(&seq),
+        mfh_record: None,
+        reference_state: slots.view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    assert_eq!(parse_frame_header_core(&mut reader, &input).unwrap(), *core);
+    let mut w = BitWriter::new();
+    for index in 0..header.bits.num_frame_header_bits() {
+        w.write_flag(header.bits.bit(index).unwrap()).unwrap();
+    }
+    let full = w.into_bytes();
+    for len in 0..core.consumed_bits.div_ceil(8) as usize {
+        let mut cut = BitReader::new(&full[..len], ByteOffset::new(0));
+        let parsed = parse_frame_header_prefix(&mut cut, ObuType::OpenLoopKey, Some(true))
+            .and_then(|prefix| {
+                let mut cut_core = init_core_from_prefix(&prefix, ObuType::OpenLoopKey, true);
+                parse_core_body(&mut cut, &mut cut_core, &view, None, &slots.view())?;
+                Ok(cut_core.status)
+            });
+        let complete = FrameHeaderParseStatus::IntraHeaderComplete;
+        assert!(parsed.map_or(true, |s| s != complete), "cut at {len}");
+    }
+    let bad = |params: InterFrameParams| {
+        build_open_loop_key_frame_header(&view, &slots.view(), &params).is_err()
+    };
+    assert!(bad(InterFrameParams {
+        show_frame: true,
+        ..params
+    }));
+    assert!(bad(InterFrameParams {
+        leading: true,
+        ..params
+    }));
+    assert!(bad(InterFrameParams {
+        refresh_frame_flags: 0,
+        ..params
+    }));
+    assert!(bad(InterFrameParams {
+        base_q_idx: 0,
+        ..params
+    }));
+    let leading = InterFrameParams {
+        leading: true,
+        refresh_frame_flags: 0b10,
+        ..params
+    };
+    let intra = build_intra_only_frame_header(&view, &slots.view(), &leading).unwrap();
+    let obu = encode_inter_frame_obu(&intra, &[&[0x5a; 3]], 1).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    assert_eq!(parsed.obus[0].header.obu_type, ObuType::LeadingTileGroup);
+    let sef = encode_show_existing_frame_obu(&view, 2, None, None, (false, true)).unwrap();
+    let parsed = parse_annex_b_obus_partial(&sef);
+    assert_eq!(parsed.obus[0].header.obu_type, ObuType::LeadingSef);
 }
 
 /// With `implicit_output` the sequence codes `monotonic_output_order_flag =

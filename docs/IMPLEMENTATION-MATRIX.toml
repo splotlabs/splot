@@ -6620,6 +6620,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-OPEN-LOOP-KEY"
+name = "Encoder open-loop key frames and leading frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.1", "5.18.2", "7.4.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-open-loop-key"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::open_loop_key (2026-11-22, 0 = off in every row, not measured): value N codes every Nth periodic key frame as OBU_OPEN_LOOP_KEY, the hidden layer-0 frame of the mini-GOP that ends at it, refreshing one slot; the frames before it in that mini-GOP code OBU_LEADING_TILE_GROUP, OBU_LEADING_SEF and OBU_LEADING_TIP, and after it only its slot stays valid. Scene cuts and key frames without a leading frame stay closed-loop. Needs long_term_id_bits = 0. Rate class Key. AVM decodes the streams from the start and from the open-loop key frame; splot decode does not discard leading frames at random access yet."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::open_loop_key_headers_keep_the_other_slots", "crates/splot-encode/src/gop_tests.rs::periodic_key_frames_open_their_mini_gops", "crates/splot-encode/src/intra_frame_carry_tests.rs::open_loop_key_streams_decode_alike_on_any_thread_count"]
+commands = ["cargo test -p splot-core open_loop_key --locked", "cargo test -p splot-encode open_loop --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-SEF-REPEAT"
 name = "Encoder repeats of an input frame as show-existing frames with an explicit order hint"
 category = "encoder"
