@@ -157,6 +157,68 @@ fn a_frame_without_a_tip_pair_codes_tip_disabled() {
     assert_same_samples(&decode(&units.concat()), &expected, "no TIP pair");
 }
 
+/// A frame between the key frame and an intra-only anchor has no inter frame
+/// as its closest past or future reference, so it codes no TIP (§ 7.9) and
+/// the stream decodes to the encoder recon.
+#[test]
+fn frames_between_intra_references_code_no_tip() {
+    let config = config(128, 128, BitDepth::Eight, 6, 110);
+    let mut coder = IntraFrameCoder::with_preset(&config, with_tip(2)).unwrap();
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, 4).with_intra_only(1);
+    let mut steps = planner.plan(1).unwrap();
+    steps.extend(planner.plan(4).unwrap());
+    let mut plans = steps.into_iter().filter_map(|step| match step {
+        crate::gop::GopStep::Code(plan) => Some(plan),
+        crate::gop::GopStep::ShowExisting { .. } => None,
+    });
+    let mut units = Vec::new();
+    let mut expected = Vec::new();
+    for (plan, index) in plans.by_ref().zip([0, 4]) {
+        assert_eq!(plan.intra_only, index == 4);
+        let coded = coder
+            .encode_frame(&panning_frame(&config, index), &plan, 110)
+            .unwrap();
+        if plan.show_frame {
+            expected.extend(recon_bytes(&coded, config.bit_depth));
+        }
+        units.push(coded.temporal_unit);
+    }
+    let middle = plans.next().unwrap();
+    let tools = crate::gop::frame_tools(
+        (&coder.preset, crate::preset::PresetContext::default()),
+        coder.tiles,
+        110,
+    );
+    let core = middle
+        .header(
+            &coder.view,
+            &coder.references,
+            110,
+            &FrameFilterParams::default(),
+            tools,
+        )
+        .unwrap();
+    assert_eq!(
+        core.inter.as_ref().unwrap().tip_frame_mode,
+        Some(TipFrameMode::AsRef)
+    );
+    assert!(!coder.references.tip_pair_available(&core));
+    let mut coded = coder
+        .code_frame(&panning_frame(&config, 2), &middle, 110, &[])
+        .unwrap();
+    let core = coded.reference.as_ref().unwrap().0.clone();
+    assert_eq!(
+        core.inter.as_ref().unwrap().tip_frame_mode,
+        Some(TipFrameMode::Disabled)
+    );
+    coder.commit(&mut coded).unwrap();
+    if middle.show_frame {
+        expected.extend(recon_bytes(&coded, config.bit_depth));
+    }
+    units.push(coded.temporal_unit);
+    assert_same_samples(&decode(&units.concat()), &expected, "intra pair");
+}
+
 /// The weight search picks a weight that leans to the past reference when
 /// the frame repeats the past reference, a weight that leans the other way
 /// when it repeats the future reference, and the stream decodes to the
