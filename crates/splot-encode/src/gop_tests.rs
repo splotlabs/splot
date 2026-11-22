@@ -375,7 +375,9 @@ fn mini_gops_plan_over_their_fewest_slots() {
 fn run_repeats(keyint: u32, mini_gop_size: u8, frames: u64, repeats: &[u64]) -> Vec<GopStep> {
     let mut planner =
         GopPlanner::new(NonZeroU32::new(keyint).unwrap(), mini_gop_size).with_sef_repeat(true);
-    repeats.iter().for_each(|&repeat| planner.repeat(repeat));
+    for &repeat in repeats {
+        planner.repeat(repeat);
+    }
     let mut steps = Vec::new();
     let mut queued = frames as usize;
     while let Some(len) = planner.next_len(queued, true) {

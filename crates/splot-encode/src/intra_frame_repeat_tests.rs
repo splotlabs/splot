@@ -22,6 +22,9 @@ const CONTENT: [u32; 16] = [0, 0, 1, 2, 3, 3, 4, 4, 4, 5, 6, 7, 8, 9, 10, 10];
 /// the scheduled key frame.
 const REPEATS: [u64; 4] = [1, 5, 7, 15];
 
+/// Makes the source frame of a content index.
+type Source = fn(&Config, u32) -> SourceFrame;
+
 /// `config` with `sef_repeat`, keyint 8 and `overrides`.
 fn repeat_config(mut config: Config, overrides: &[(&str, &str)]) -> Config {
     config.keyint = core::num::NonZeroU32::new(8).unwrap();
@@ -37,11 +40,7 @@ fn repeat_config(mut config: Config, overrides: &[(&str, &str)]) -> Config {
 /// units, one per input frame (in display order without `implicit_output`),
 /// and the encoder recon of the frame each one
 /// outputs, in display order. `frame` makes the source of a content index.
-fn repeat_stream(
-    config: &Config,
-    content: &[u32],
-    frame: fn(&Config, u32) -> SourceFrame,
-) -> (Vec<Vec<u8>>, Vec<u8>) {
+fn repeat_stream(config: &Config, content: &[u32], frame: Source) -> (Vec<Vec<u8>>, Vec<u8>) {
     let recons: Arc<Mutex<BTreeMap<u64, Vec<u8>>>> = Arc::default();
     let coder = Recording {
         coder: IntraFrameCoder::new(config).unwrap(),
@@ -255,7 +254,7 @@ fn avm_decodes_repeats_like_splot() {
     let capped: Vec<u32> = (0..135u32)
         .map(|display| display.saturating_sub(129))
         .collect();
-    let cases: [(&str, &Config, &[u32], fn(&Config, u32) -> SourceFrame); 4] = [
+    let cases: [(&str, &Config, &[u32], Source); 4] = [
         ("repeat", &base, &CONTENT, panning_frame),
         ("repeatgrain", &grain, &CONTENT, grainy_frame),
         ("repeatimplicit", &implicit, &CONTENT, panning_frame),
