@@ -493,18 +493,8 @@ impl InverseTransformAdd {
         };
         #[cfg(target_arch = "x86_64")]
         if let Some(token) = Level::baseline().as_avx2() {
-            let small = self.w_log2 <= 3 && self.h_log2 <= 4;
-            if !(small && avx2::add_small_block(token, &self, dequant, coeffs, dst, stride)) {
-                avx2::transform(
-                    token,
-                    &self,
-                    dequant,
-                    coeffs,
-                    false,
-                    avx2::Sink::Add { dst, stride },
-                    &mut scratch[0],
-                );
-            }
+            let sink = avx2::Sink::Add { dst, stride };
+            avx2::transform(token, &self, dequant, coeffs, false, sink, &mut scratch[0]);
             return true;
         }
         #[cfg(target_arch = "aarch64")]
