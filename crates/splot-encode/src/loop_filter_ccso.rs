@@ -408,7 +408,7 @@ fn reuse_choices(
             continue;
         }
         let bits = Bits::whole(1 + 2 + index_bits);
-        for flags in [None, source.on.as_deref()] {
+        for flags in core::iter::once(None).chain(source.on.as_deref().map(Some)) {
             let mut choice = evaluate(
                 input,
                 (plane, cdfs, grid.cols),
@@ -549,7 +549,7 @@ fn evaluate(
     let classes = variant.classes();
     let mut on = flags.map_or_else(|| vec![true; merged.len()], <[bool]>::to_vec);
     let mut result = None;
-    for _ in 0..2 {
+    for _ in 0..if flags.is_some() { 1 } else { 2 } {
         let mut totals = vec![(0i64, 0u32); classes];
         for unit in merged
             .iter()
