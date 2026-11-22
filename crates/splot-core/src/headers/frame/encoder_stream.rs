@@ -167,6 +167,9 @@ pub struct EncoderToolFlags {
     /// `seq_max_drl_bits_minus_1` (§ 5.4.6), `0..=4`: `NEARMV` and `NEWMV`
     /// code `RefMvIdx` below `seq_max_drl_bits_minus_1 + 2`.
     pub max_drl_bits_minus_1: u32,
+    /// `seq_max_bvp_drl_bits_minus_1` (§ 5.4.6), `0..=2`: IntraBC leaves code
+    /// `RefMvIdx` below `seq_max_bvp_drl_bits_minus_1 + 2` (§ 5.20.5.4).
+    pub max_bvp_drl_bits_minus_1: u32,
     /// `enable_adaptive_mvd`, `enable_mvd_sign_derive` and
     /// `enable_flex_mvres` (§ 5.4.6).
     pub mvd_tools: [bool; 3],
@@ -619,7 +622,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_bits(0, 3)?; // long_term_frame_id_bits
     w.write_ns(tools.max_drl_bits_minus_1, 5)?; // ns(MAX_REF_MV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_drl_bits
-    w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
+    w.write_ns(tools.max_bvp_drl_bits_minus_1, 3)?; // ns(MAX_REF_BV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_bvp_drl_bits
     w.write_bits(NUM_SAME_REF_COMPOUND, 2)?;
     w.write_flag(tools.tip)?; // enable_tip

@@ -194,6 +194,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         drl_reorder: Some(true),
         mv_traj: true,
         max_drl_bits_minus_1: 3,
+        max_bvp_drl_bits_minus_1: 2,
         mvd_tools: [true, false, true],
         warp: true,
         global_motion: true,
@@ -231,6 +232,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
     assert!(inter.enable_refmvbank && inter.drl_reorder == DrlReorder::Constraint);
     assert_eq!(inter.seq_max_drl_bits_minus_1, 3);
+    assert_eq!(inter.seq_max_bvp_drl_bits_minus_1, 2);
     assert!(inter.enable_tip && inter.enable_tip_output && inter.enable_tip_hole_fill);
     assert!(inter.enable_adaptive_mvd && !inter.enable_mvd_sign_derive && inter.enable_flex_mvres);
     assert_eq!(
@@ -649,6 +651,9 @@ fn rejects_out_of_range_inputs() {
         )),
         Err(EncoderHeaderError::InvalidDimension { value: 0 })
     ));
+    let mut bvp = params(8, 8, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    bvp.tools.max_bvp_drl_bits_minus_1 = 3;
+    assert!(build_encoder_sequence_header(&bvp).is_err());
     let seq = build_encoder_sequence_header(&params(
         8,
         8,

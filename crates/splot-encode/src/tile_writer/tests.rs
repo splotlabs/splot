@@ -100,6 +100,7 @@ impl Case {
                 drl_reorder: None,
                 mv_traj: false,
                 max_drl_bits_minus_1: 0,
+                max_bvp_drl_bits_minus_1: 0,
                 mvd_tools: [false; 3],
                 warp: false,
                 global_motion: false,
