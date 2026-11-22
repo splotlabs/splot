@@ -216,7 +216,7 @@ fn gdf_skips_frames_with_a_lossless_segment() {
         info.has_lossless_segment = true;
     }
     assert!(super::gdf::has_lossless_segment(&core));
-    let (_, recon, _, _) = coded.reference.unwrap();
+    let (_, recon, ..) = coded.reference.unwrap();
     let refs = splot_decode::encoder_syntax::EncoderReferences::new(&seq).unwrap();
     let flags = splot_decode::encoder_syntax::GdfFlags {
         blocks: &[],
@@ -310,7 +310,7 @@ fn ccso_search_classes_match_the_decoder_output() {
     let coded = coded.pop().unwrap();
     let (seq, _) = headers(&coded.temporal_unit);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let (_, recon, start, _) = coded.reference.unwrap();
+    let (_, recon, start, ..) = coded.reference.unwrap();
     let cases = [
         ccso_plane((false, 2, false), (1, 0, 3), |k| ((k * 5 + 3) % 8) as u8),
         ccso_plane((false, 5, true), (0, 1, 1), |k| (7 - k % 8) as u8),
@@ -348,6 +348,7 @@ fn ccso_search_classes_match_the_decoder_output() {
             lambda: Lambda::from_qindex(u32::from(qp), config.bit_depth).unwrap(),
             pool: None,
             reuse: None,
+            reuse_blocks: false,
         };
         let max = config.bit_depth.max_sample();
         for plane in 0..3 {

@@ -383,6 +383,8 @@ pub(crate) struct FilteredFrame {
     pub(crate) tiles: Vec<Vec<u8>>,
     pub(crate) cdfs: Vec<TileEnd>,
     pub(crate) recon: DecodedFrame<u16>,
+    /// `ccso_blk` per plane and CCSO unit, as the frame's references save it.
+    pub(crate) ccso_blocks: Vec<Vec<u8>>,
 }
 
 /// Builds the frame header with the given loop filters.
@@ -436,6 +438,7 @@ pub(crate) fn finish_frame(
             tiles: bytes,
             cdfs,
             recon,
+            ccso_blocks: Vec::new(),
         });
     }
     let core = search.header(&params)?;
@@ -486,6 +489,7 @@ pub(crate) fn finish_frame(
         tiles: bytes,
         cdfs,
         recon,
+        ccso_blocks: coded.ccso_blocks,
     })
 }
 
@@ -887,6 +891,7 @@ impl Search<'_> {
                 lambda: self.lambda,
                 pool: self.pool,
                 reuse: (preset.ccso_reuse > 0).then_some(self.refs),
+                reuse_blocks: preset.ccso_reuse > 1,
             },
             usize::from(preset.ccso_candidates),
             preset.ccso_bo_band_log2,

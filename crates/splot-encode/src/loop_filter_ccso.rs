@@ -61,6 +61,9 @@ pub(super) struct CcsoInput<'a> {
     /// The references whose saved parameters a plane may reuse, with
     /// `ccso_reuse` above `0`.
     pub(super) reuse: Option<&'a EncoderReferences>,
+    /// With `reuse`, a plane may also take `sb_reuse_ccso`: the saved
+    /// `ccso_blk` flags of a reference (`ccso_reuse` 2).
+    pub(super) reuse_blocks: bool,
 }
 
 /// The CCSO parameters of each plane and `ccso_blk` per plane and unit.
@@ -187,27 +190,44 @@ pub(super) fn search(
             .map(|ctx| input.start.ccso_blk_cdf(plane, ctx))
             .collect::<core::result::Result<_, _>>()
             .map_err(coding("ccso_blk CDF"))?;
+        let merged = |variant: Variant| {
+            if variant.stats_log2 == 6 {
+                merge(&bands, variant)
+            } else {
+                merge(&stats[variant.candidate], variant)
+            }
+        };
         let mut best: Option<PlaneChoice> = None;
         for variant in
             variants(ladder, bo_band_log2).filter(|variant| !forced() || variant.band_log2 > 3)
         {
-            let merged = if variant.stats_log2 == 6 {
-                merge(&bands, variant)
-            } else {
-                merge(&stats[variant.candidate], variant)
-            };
             let choice = evaluate(
                 input,
                 (plane, &cdfs, grid.cols),
-                &merged,
+                &merged(variant),
                 (ladder, variant),
-                None,
+                (None, None),
             )?;
             if best.as_ref().is_none_or(|best| choice.cost < best.cost) {
                 best = Some(choice);
             }
         }
-        let reuse = reuse_choices(input, (plane, &cdfs, grid), &reused)?;
+        let mut reuse = reuse_choices(input, (plane, &cdfs, grid), &reused)?;
+        for (ref_index, on) in reused.blocks(plane) {
+            for variant in variants(ladder, bo_band_log2) {
+                let mut choice = evaluate(
+                    input,
+                    (plane, &cdfs, grid.cols),
+                    &merged(variant),
+                    (ladder, variant),
+                    (None, Some(on)),
+                )?;
+                choice.cost += rd(0, Bits::whole(ref_index_bits(input)), input.lambda);
+                choice.params.sb_reuse_ccso = true;
+                choice.params.ccso_ref_idx = Some(ref_index);
+                reuse.push(choice);
+            }
+        }
         let force = forced_reuse() && !reuse.is_empty();
         if force {
             best = None;
@@ -227,14 +247,40 @@ pub(super) fn search(
 }
 
 /// The saved planes that the frame may reuse: per plane, each reference
-/// position whose saved parameters enable that plane, and the unit
+/// position whose saved parameters enable that plane, with its saved
+/// `ccso_blk` flags when `sb_reuse_ccso` may load them, and the unit
 /// statistics of the reused triples (in [`unit_row_stats`] layout, one row
 /// of tables per grid row) with their 64-band statistics.
 struct Reused {
-    /// `(plane, ccso_ref_idx, saved plane, triple index)`.
-    sources: Vec<(usize, u32, CcsoPlaneParams, usize)>,
+    /// `(plane, ccso_ref_idx, saved plane, triple index, saved flags)`.
+    sources: Vec<(usize, u32, CcsoPlaneParams, usize, Option<Vec<bool>>)>,
     triples: Vec<(u8, u8, u8)>,
     rows: Vec<(Vec<CcsoStats>, Vec<CcsoStats<BO_CLASSES>>)>,
+}
+
+impl Reused {
+    /// `(ccso_ref_idx, saved flags)` of each source of `plane` whose flags
+    /// `sb_reuse_ccso` may load.
+    fn blocks(&self, plane: usize) -> impl Iterator<Item = (u32, &[bool])> {
+        self.sources
+            .iter()
+            .filter(move |source| source.0 == plane)
+            .filter_map(|(_, index, .., on)| Some((*index, on.as_deref()?)))
+    }
+}
+
+/// The `ccso_ref_idx` bits of an inter frame (§ 5.18.7.12).
+fn ref_index_bits(input: &CcsoInput<'_>) -> u32 {
+    let num_refs = input
+        .core
+        .inter
+        .as_ref()
+        .map_or(0, |inter| inter.ref_frame_idx.len() as u32);
+    if num_refs > 1 {
+        u32::BITS - (num_refs - 1).leading_zeros()
+    } else {
+        0
+    }
 }
 
 /// The [`Reused`] sources of an inter frame with `ccso_reuse`; empty for a
@@ -272,7 +318,13 @@ fn reuse_sources(input: &CcsoInput<'_>, grid: CcsoGrid, planes: usize) -> Result
             let index = u32::try_from(index).map_err(|_| Error::Unsupported {
                 what: "a reference index above u32",
             })?;
-            reused.sources.push((plane, index, *saved, position));
+            let on = input
+                .reuse_blocks
+                .then(|| refs.ccso_saved_blocks(input.core, index, plane))
+                .flatten()
+                .filter(|blocks| blocks.len() == grid.rows * grid.cols)
+                .map(|blocks| blocks.iter().map(|&value| value != 0).collect());
+            reused.sources.push((plane, index, *saved, position, on));
         }
     }
     if !reused.sources.is_empty() {
@@ -291,18 +343,10 @@ fn reuse_choices(
     (plane, cdfs, grid): (usize, &[Vec<u16>], CcsoGrid),
     reused: &Reused,
 ) -> Result<Vec<PlaneChoice>> {
-    let num_refs = input
-        .core
-        .inter
-        .as_ref()
-        .map_or(0, |inter| inter.ref_frame_idx.len() as u32);
-    let index_bits = if num_refs > 1 {
-        u32::BITS - (num_refs - 1).leading_zeros()
-    } else {
-        0
-    };
+    let index_bits = ref_index_bits(input);
     let mut choices = Vec::new();
-    for &(source_plane, ref_index, saved, triple) in &reused.sources {
+    for (source_plane, ref_index, saved, triple, on) in &reused.sources {
+        let (source_plane, ref_index, saved, triple) = (*source_plane, *ref_index, *saved, *triple);
         if source_plane != plane {
             continue;
         }
@@ -345,16 +389,19 @@ fn reuse_choices(
             continue;
         }
         let bits = Bits::whole(1 + 2 + index_bits);
-        let mut choice = evaluate(
-            input,
-            (plane, cdfs, grid.cols),
-            &merged,
-            (&reused.triples, variant),
-            Some((&offsets, bits)),
-        )?;
-        choice.params.reuse_ccso = true;
-        choice.params.ccso_ref_idx = Some(ref_index);
-        choices.push(choice);
+        for flags in [None, on.as_deref()] {
+            let mut choice = evaluate(
+                input,
+                (plane, cdfs, grid.cols),
+                &merged,
+                (&reused.triples, variant),
+                (Some((&offsets, bits)), flags),
+            )?;
+            choice.params.reuse_ccso = true;
+            choice.params.sb_reuse_ccso = flags.is_some();
+            choice.params.ccso_ref_idx = Some(ref_index);
+            choices.push(choice);
+        }
     }
     Ok(choices)
 }
@@ -470,17 +517,18 @@ fn merge<const N: usize>(stats: &[CcsoStats<N>], variant: Variant) -> Vec<Vec<(i
 }
 
 /// The cost, parameters and unit flags of `variant` on `plane`, whose units
-/// hold the coded-class sums `merged`.
+/// hold the coded-class sums `merged`: with `fixed`, its offsets and header
+/// bits; with `flags`, the unit flags, which then cost no bits.
 fn evaluate(
     input: &CcsoInput<'_>,
     (plane, cdfs, grid_cols): (usize, &[Vec<u16>], usize),
     merged: &[Vec<(i64, u32)>],
     (ladder, variant): (&[(u8, u8, u8)], Variant),
-    fixed: Option<(&[(u8, i32)], Bits)>,
+    (fixed, flags): (Option<(&[(u8, i32)], Bits)>, Option<&[bool]>),
 ) -> Result<PlaneChoice> {
     let (ext_filter, scale, quant) = ladder[variant.candidate];
     let classes = variant.classes();
-    let mut on = vec![true; merged.len()];
+    let mut on = flags.map_or_else(|| vec![true; merged.len()], <[bool]>::to_vec);
     let mut result = None;
     for _ in 0..2 {
         let mut totals = vec![(0i64, 0u32); classes];
@@ -522,7 +570,10 @@ fn evaluate(
                     .sum()
             })
             .collect();
-        let (flags, flag_bits) = decide(input, (plane, cdfs, grid_cols), &deltas)?;
+        let (flags, flag_bits) = match flags {
+            Some(flags) => (flags.to_vec(), Bits::default()),
+            None => decide(input, (plane, cdfs, grid_cols), &deltas)?,
+        };
         let header = fixed.map_or_else(
             || header_bits(input, variant, ladder, &offsets),
             |(_, bits)| bits,
