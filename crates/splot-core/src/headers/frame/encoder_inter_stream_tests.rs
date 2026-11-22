@@ -587,8 +587,8 @@ fn film_grain_headers_code_the_seed_and_the_model() {
 /// Metadata OBUs parse back as prefix short OBUs with `LAYER_GLOBAL` and
 /// `GLOBAL_PERSISTENCE` and carry their payload bytes; a cut fixed-size OBU,
 /// a T.35 OBU without its extension byte and a user data OBU without its
-/// full UUID do not parse, and a payload that its type does not select is
-/// refused.
+/// full UUID do not parse (ICC has no fixed part, so no cut of it fails),
+/// and a payload that its type does not select is refused.
 #[test]
 fn metadata_obus_parse_back() {
     use crate::headers::metadata::{
@@ -668,8 +668,6 @@ fn metadata_obus_parse_back() {
             assert!(parse(&envelope.payload[..envelope.payload.len() - 2]).is_err());
         }
     }
-    // A cut keeps the 2-byte OBU header, the first `kept` payload bytes and
-    // the trailing byte. ICC has no fixed part, so no cut of it fails.
     for (metadata_type, payload, passthrough, kept) in [
         (
             MetadataType::ItutT35,
