@@ -507,6 +507,10 @@ fn avm_decodes_local_intrabc_frames_like_splot() {
         assert!(
             avm == recon,
             "local intrabc sb {sb_log2}: AVM output differs"
+        );
+    }
+}
+
 /// With `intrabc_drl = 2` the sequence codes `seq_max_bvp_drl_bits_minus_1 =
 /// 2`, some IntraBC leaves code `RefMvIdx` 2 or 3, and the streams decode
 /// to the encoder recon in every chroma format and both bit depths; 1, 2
