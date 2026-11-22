@@ -10,7 +10,8 @@ use crate::filters::wienerns_lr::intrabc_records::{
     intrabc_use_coded, max_bvp_drl_bits_minus_1,
 };
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
-    DrlReorderMode, IntrabcStackGeometry, select_intrabc_ref_mv_from_candidates,
+    DrlReorderMode, IntrabcStackGeometry, SpatialIntrabcProbes, SpatialScanGeometry,
+    capture_spatial_intrabc_probes, select_intrabc_ref_mv_from_candidates,
 };
 use crate::prediction::inter::find_mv_stack::NeighbourMotionValues;
 
@@ -134,11 +135,47 @@ impl EncoderInterTile {
     pub(crate) fn intrabc_coded_base_col(&self, row: usize, col: usize) -> Option<usize> {
         match &self.intrabc {
             Some(state) => state.block_base_col_at(row, col),
-            None => self
-                .grid
-                .base_c_at(i32::try_from(row).ok()?, i32::try_from(col).ok()?)
-                .map(|col| col as usize),
+            None => self.grid_coded_base_col(row, col),
         }
+    }
+
+    /// [`Self::intrabc_coded_base_col`] of an inter frame, out of line: the
+    /// local-area scans of the intra-frame path inline the other arm.
+    #[inline(never)]
+    fn grid_coded_base_col(&self, row: usize, col: usize) -> Option<usize> {
+        self.grid
+            .base_c_at(i32::try_from(row).ok()?, i32::try_from(col).ok()?)
+            .map(|col| col as usize)
+    }
+
+    /// The § 7.12.2.6 spatial IntraBC probes of `block` in an inter frame,
+    /// from the neighbour grid as the decoder's resolve pass takes them.
+    #[inline(never)]
+    fn grid_intrabc_probes(&self, block: &MvBlockContext) -> SpatialIntrabcProbes {
+        let geometry = SpatialScanGeometry {
+            mi_row: block.mi_row,
+            mi_col: block.mi_col,
+            n4w: block.bw4,
+            n4h: block.bh4,
+            mi_rows: block.mi_rows,
+            mi_cols: block.mi_cols,
+            sb_size4: block.sb_h4,
+        };
+        let base_col = |row, col| self.grid_coded_base_col(row, col);
+        capture_spatial_intrabc_probes(geometry, |row, col| base_col(row, col).is_some(), base_col)
+    }
+
+    /// The `use_intrabc` and `skip_txfm` contexts of `frontier` in an inter
+    /// frame, from the neighbour context as the decoder reads them.
+    #[inline(never)]
+    fn grid_intrabc_contexts(&self, frontier: &DecodeBlockFrontier) -> Result<IntrabcContexts> {
+        let block = self.block(frontier, (SINGLE_REF_FRAME0, None))?;
+        let neighbour = block_neighbour_ctx(&self.grid, &block);
+        Ok(IntrabcContexts {
+            use_intrabc: neighbour.intrabc_ctx(),
+            skip: neighbour.skip_ctx(),
+            morph_pred: 0,
+        })
     }
 
     /// `(allow_global_intrabc, allow_local_intrabc)` of the frame with the
@@ -200,13 +237,7 @@ impl EncoderInterTile {
             return Ok(None);
         }
         let Some(state) = &self.intrabc else {
-            let block = self.block(frontier, (SINGLE_REF_FRAME0, None))?;
-            let neighbour = block_neighbour_ctx(&self.grid, &block);
-            return Ok(Some(IntrabcContexts {
-                use_intrabc: neighbour.intrabc_ctx(),
-                skip: neighbour.skip_ctx(),
-                morph_pred: 0,
-            }));
+            return self.grid_intrabc_contexts(frontier).map(Some);
         };
         let (r, c) = (frontier.r, frontier.c);
         Ok(Some(IntrabcContexts {
@@ -232,7 +263,7 @@ impl EncoderInterTile {
         let grid = &self.grid;
         let probes = match &self.intrabc {
             Some(state) => state.capture_spatial_intrabc_probes(geometry),
-            None => grid.capture_spatial_intrabc_probes(&block),
+            None => self.grid_intrabc_probes(&block),
         };
         let spatial = probes.resolve(|row, col| grid.intrabc_mv_at(row, col));
         let bank = self.ref_mv_bank.as_ref().map(RefMvBank::intrabc_candidates);
