@@ -184,15 +184,15 @@ impl GeneralIntraChromaModeContext {
 pub(crate) struct GeneralIntraBlockModes {
     pub(crate) y_mode: IntraYMode,
     pub(crate) angle_delta_y: i8,
-    chroma: Option<GeneralIntraChromaBlockMode>,
+    pub(crate) chroma: Option<GeneralIntraChromaBlockMode>,
     pub(crate) intra_joint_mode: IntraJointMode,
     pub(crate) mrl: MrlSelection,
     pub(crate) fsc_mode: u8,
     pub(crate) use_dip: u8,
     pub(crate) dip_transpose: u8,
     pub(crate) dip_mode: u8,
-    use_dpcm_y: u8,
-    dpcm_mode_y: u8,
+    pub(crate) use_dpcm_y: u8,
+    pub(crate) dpcm_mode_y: u8,
     pub(crate) palette_y: Option<LumaPalette>,
 }
 

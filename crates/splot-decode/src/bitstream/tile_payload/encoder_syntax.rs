@@ -84,6 +84,7 @@ pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, CompoundType, CompoundTypes, InterPrediction,
     JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM,
 };
+pub use dpcm::Dpcm;
 pub use fsc::FSC_MAX_LEVEL;
 pub use inter::{
     AMVD_STEPS, Bawp, EncoderReferences, INTERINTRA_MODES, INTERP_FILTERS, InterIntra, InterMode,
@@ -716,6 +717,8 @@ pub struct IntraTileSyntax {
     fsc_leaf: bool,
     /// The § 7.14.4 DPCM directions of the planned intra leaf's luma and chroma.
     dpcm_leaf: [Option<splot_recon::DpcmDirection>; 2],
+    /// The DPCM of the next planned intra leaf of a lossless frame.
+    next_dpcm: dpcm::Dpcm,
     /// The color map of the next palette leaf, then of the planned one.
     palette_map: Vec<u8>,
     /// The color map of one transform block of the planned palette leaf.
@@ -807,6 +810,7 @@ impl IntraTileSyntax {
             cctx_leaf: false,
             fsc_leaf: false,
             dpcm_leaf: [None; 2],
+            next_dpcm: dpcm::Dpcm::OFF,
             palette_map: Vec::new(),
             palette_unit: Vec::new(),
             mode_symbols: Vec::new(),
