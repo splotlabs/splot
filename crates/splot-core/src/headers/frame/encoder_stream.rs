@@ -228,8 +228,10 @@ pub struct FrameFilterParams {
     /// The `RESTORE_WIENER_NONSEP` frame filters of U and V; `None` codes
     /// `RESTORE_NONE`. `switchable` must be `false`.
     pub lr_chroma_wiener_ns: [Option<FrameWienerNs>; 2],
-    /// `ccso_params()` of each plane (§ 5.18.7.12) without reuse; the frame
-    /// codes `ccso_frame_flag = 1` when a plane sets `ccso_planes`.
+    /// `ccso_params()` of each plane (§ 5.18.7.12); the frame codes
+    /// `ccso_frame_flag = 1` when a plane sets `ccso_planes`. An inter frame
+    /// codes `reuse_ccso`, `sb_reuse_ccso` and `ccso_ref_idx` of each plane and
+    /// skips the parameters of a `reuse_ccso` plane.
     pub ccso: [CcsoPlaneParams; 3],
     /// `gdf_params()` (§ 5.18.7.9) of a frame with `gdf_frame_enable = 1`;
     /// `None` codes `gdf_frame_enable = 0` when the sequence enables GDF.
@@ -784,6 +786,7 @@ pub(super) fn write_quant_and_filters(
         mi_col_starts: &col_starts.0,
         mi_row_starts: &row_starts.0,
     };
+    let num_refs = lr_refs.num_ref_frames;
     write_filter_params(w, seq, filters, (lr_refs, gdf), frame_is_intra)?;
     if seq.ccso.enable_ccso {
         let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
@@ -792,12 +795,54 @@ pub(super) fn write_quant_and_filters(
         for plane in planes.iter().filter(|_| on) {
             w.write_flag(plane.ccso_planes)?;
             if plane.ccso_planes {
-                if !frame_is_intra {
-                    w.write_flag(false)?; // reuse_ccso
-                    w.write_flag(false)?; // sb_reuse_ccso
+                write_ccso_reuse(w, plane, frame_is_intra, num_refs)?;
+                if !plane.reuse_ccso {
+                    let coded = CcsoPlaneParams {
+                        reuse_ccso: false,
+                        sb_reuse_ccso: false,
+                        ccso_ref_idx: None,
+                        ..*plane
+                    };
+                    write_ccso_plane_params(w, &coded)?;
                 }
-                write_ccso_plane_params(w, plane)?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// `reuse_ccso`, `sb_reuse_ccso` and `ccso_ref_idx` of an enabled plane of an
+/// inter frame over `num_refs` references (§ 5.18.7.12); an intra frame codes
+/// none and refuses them.
+fn write_ccso_reuse(
+    w: &mut BitWriter,
+    plane: &CcsoPlaneParams,
+    frame_is_intra: bool,
+    num_refs: u32,
+) -> Result<(), EncoderHeaderError> {
+    let reuses = plane.reuse_ccso || plane.sb_reuse_ccso;
+    if frame_is_intra {
+        return if reuses || plane.ccso_ref_idx.is_some() {
+            Err(WriteError::NonCanonicalFrameHeader {
+                what: "CCSO reuse in an intra frame",
+            }
+            .into())
+        } else {
+            Ok(())
+        };
+    }
+    w.write_flag(plane.reuse_ccso)?;
+    w.write_flag(plane.sb_reuse_ccso)?;
+    if reuses {
+        let index = plane.ccso_ref_idx.unwrap_or(0);
+        if index >= num_refs.max(1) {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "ccso_ref_idx outside the references",
+            }
+            .into());
+        }
+        if num_refs > 1 {
+            w.write_bits(index, crate::headers::frame::size::ceil_log2(num_refs))?;
         }
     }
     Ok(())
