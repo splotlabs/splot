@@ -103,6 +103,7 @@ impl Case {
                 mvd_tools: [false; 3],
                 warp: false,
                 global_motion: false,
+                num_ref_frames: None,
                 seq_tiles: None,
                 short_refresh: false,
                 masked_compound: false,

@@ -58,8 +58,10 @@ use crate::error::{Error, Result};
 use crate::preset::{PresetContext, PresetParams};
 use crate::rate_control::FrameType;
 
-/// `NumRefFrames` of the encoder's sequence header (`explicit_num_ref_frames = 0`).
-const REF_SLOTS: usize = 8;
+/// `NUM_REF_FRAMES` (§ 3): the most slots a sequence can code.
+const MAX_REF_SLOTS: usize = 16;
+/// `NumRefFrames` of a sequence with `explicit_num_ref_frames = 0`.
+const DEFAULT_REF_SLOTS: usize = 8;
 
 /// The plan of one coded frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +124,9 @@ struct Slot {
 pub(crate) struct GopPlanner {
     keyint: u64,
     mini_gop_size: u64,
-    slots: [Option<Slot>; REF_SLOTS],
+    slots: [Option<Slot>; MAX_REF_SLOTS],
+    /// `NumRefFrames`: the first slots the planner uses.
+    ref_slots: usize,
     next_display: u64,
     next_frame: u64,
     key_display: u64,
@@ -142,7 +146,8 @@ impl GopPlanner {
         Self {
             keyint: u64::from(keyint.get()),
             mini_gop_size: u64::from(mini_gop_size.max(1)),
-            slots: [None; REF_SLOTS],
+            slots: [None; MAX_REF_SLOTS],
+            ref_slots: DEFAULT_REF_SLOTS,
             next_display: 0,
             next_frame: 0,
             key_display: 0,
@@ -150,6 +155,14 @@ impl GopPlanner {
             cuts: Vec::new(),
             after_output: true,
             last_display: 0,
+        }
+    }
+
+    /// The planner over `NumRefFrames = slots`, `1..=16`.
+    pub(crate) fn with_ref_slots(self, slots: u8) -> Self {
+        Self {
+            ref_slots: usize::from(slots).clamp(1, MAX_REF_SLOTS),
+            ..self
         }
     }
 
@@ -273,19 +286,19 @@ impl GopPlanner {
         layer: u8,
     ) -> Result<GopStep> {
         let (slot, refresh_frame_flags) = if frame_type == FrameType::Key {
-            self.slots = [None; REF_SLOTS];
+            self.slots = [None; MAX_REF_SLOTS];
             self.key_display = display_index;
-            (Some(0), (1 << REF_SLOTS) - 1)
+            (Some(0), (1 << self.ref_slots) - 1)
         } else if show_frame && layer > 0 && display_index + 1 != self.last_display {
             (None, 0)
         } else {
             let slot = self.refresh_slot()?;
             (Some(slot), 1 << slot)
         };
-        let ref_slots = (0..REF_SLOTS)
+        let ref_slots = (0..self.ref_slots)
             .filter(|&slot| self.slots[slot].is_some())
             .fold(0, |mask, slot| mask | 1 << slot);
-        let primary_slot = (0..REF_SLOTS)
+        let primary_slot = (0..self.ref_slots)
             .filter_map(|slot| {
                 self.slots[slot]
                     .filter(|held| held.layer <= layer)
@@ -325,7 +338,10 @@ impl GopPlanner {
     /// An empty slot, else the slot of the oldest frame no show-existing
     /// frame waits for, other than the newest frame shown when coded.
     fn refresh_slot(&self) -> Result<usize> {
-        if let Some(empty) = self.slots.iter().position(Option::is_none) {
+        if let Some(empty) = self.slots[..self.ref_slots]
+            .iter()
+            .position(Option::is_none)
+        {
             return Ok(empty);
         }
         let newest_shown = self
@@ -335,7 +351,7 @@ impl GopPlanner {
             .filter(|held| held.shown)
             .map(|held| held.display_index)
             .max();
-        (0..REF_SLOTS)
+        (0..self.ref_slots)
             .filter_map(|slot| {
                 self.slots[slot]
                     .filter(|held| !held.awaiting_show && Some(held.display_index) != newest_shown)

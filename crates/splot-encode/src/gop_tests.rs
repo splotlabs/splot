@@ -28,7 +28,7 @@ fn run(keyint: u32, mini_gop_size: u8, frames: u64) -> Vec<GopStep> {
 fn check(keyint: u32, mini_gop_size: u8, frames: u64) {
     let case = format!("keyint {keyint} mini-GOP {mini_gop_size} frames {frames}");
     let steps = run(keyint, mini_gop_size, frames);
-    let mut slots: [Option<u64>; REF_SLOTS] = [None; REF_SLOTS];
+    let mut slots: [Option<u64>; DEFAULT_REF_SLOTS] = [None; DEFAULT_REF_SLOTS];
     let (mut hidden, mut refs, mut outputs) = (Vec::new(), Vec::new(), Vec::new());
     let (mut coded_count, mut key_display, mut after_output) = (0, 0, true);
     let mut shown = Vec::new();
@@ -46,11 +46,11 @@ fn check(keyint: u32, mini_gop_size: u8, frames: u64) {
                 if frame.frame_type == FrameType::Key {
                     assert!(frame.show_frame && hidden.is_empty(), "{case}");
                     assert_eq!(frame.refresh_frame_flags, 0xff, "{case}");
-                    (key_display, slots) = (display, [None; REF_SLOTS]);
+                    (key_display, slots) = (display, [None; DEFAULT_REF_SLOTS]);
                     slots[0] = Some(display);
                     refs.clear();
                 } else {
-                    let valid = (0..REF_SLOTS)
+                    let valid = (0..DEFAULT_REF_SLOTS)
                         .filter(|&slot| slots[slot].is_some())
                         .fold(0, |mask, slot| mask | 1 << slot);
                     assert_eq!(frame.ref_slots, valid, "{case}: frame {display}");
@@ -285,7 +285,7 @@ fn leaf_frames_refresh_no_slot_and_code_in_waves() {
 /// key frames have none.
 #[test]
 fn primary_reference_is_the_closest_layer_at_or_below_the_frame() {
-    let mut slots: [Option<u64>; REF_SLOTS] = [None; REF_SLOTS];
+    let mut slots: [Option<u64>; DEFAULT_REF_SLOTS] = [None; DEFAULT_REF_SLOTS];
     let mut primaries = Vec::new();
     for step in run(100, 4, 7) {
         if let GopStep::Code(frame) = step {
@@ -310,4 +310,29 @@ fn primary_reference_is_the_closest_layer_at_or_below_the_frame() {
             (5, Some(2)),
         ]
     );
+}
+
+/// With 3 slots the planner refreshes only slots 0..3 and a key frame
+/// refreshes all three; a mini-GOP of 4 needs more than 1 slot.
+#[test]
+fn planners_use_only_their_slots() {
+    let keyint = NonZeroU32::new(30).unwrap();
+    let mut planner = GopPlanner::new(keyint, 4).with_ref_slots(3);
+    for _ in 0..4 {
+        let len = planner.next_len(usize::MAX, true).unwrap();
+        for step in planner.plan(len).unwrap() {
+            if let GopStep::Code(frame) = step {
+                assert_eq!(frame.refresh_frame_flags >> 3, 0, "{frame:?}");
+                assert_eq!(frame.ref_slots >> 3, 0, "{frame:?}");
+                if frame.frame_type == FrameType::Key {
+                    assert_eq!(frame.refresh_frame_flags, 0b111);
+                }
+            }
+        }
+    }
+    let mut small = GopPlanner::new(keyint, 4).with_ref_slots(1);
+    let len = small.next_len(usize::MAX, true).unwrap();
+    small.plan(len).unwrap();
+    let len = small.next_len(usize::MAX, true).unwrap();
+    assert!(small.plan(len).is_err());
 }
