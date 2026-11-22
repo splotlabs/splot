@@ -332,8 +332,10 @@ pub struct PresetParams {
     /// and their own tile info.
     pub seq_tile_info: u8,
     /// `enable_short_refresh_frame_flags`: inter frames code the one slot
-    /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2). On at p0 (p0
-    /// batch 1, see [`Self::warp`]): the same frames in fewer header bits.
+    /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2). On in every
+    /// row: p0 with p0 batch 1 (see [`Self::warp`]); p1..p10 on 2026-11-22
+    /// (paris f6, niklas f3, rush_hour_444 f4, CRF 32: the same decoded
+    /// frames in 0 to 5 fewer bytes per stream).
     pub short_refresh: bool,
     /// Quantizer matrices (`using_qmatrix`, § 5.18.6.2), `0..=3`: `0` off; each
     /// other value fixes the level band `[min, max]` of `tx_choice::qm_level`
@@ -528,6 +530,12 @@ pub struct PresetParams {
     /// `intrabc_precision = 1` for a fractional vector. Off in every row,
     /// the screen-content rows too: not measured.
     pub intrabc_subpel: bool,
+    /// With `intrabc`, each IntraBC candidate of a key-frame leaf gets a
+    /// twin with `morph_pred = 1`, the § 7.13.3.26 brightness-adapted luma
+    /// copy, and the leaf's RD trial picks one. Needs `bawp`, whose
+    /// `enable_bawp` lets frames code `morph_pred`. Off in every row, the
+    /// screen-content rows too: not measured.
+    pub intrabc_morph: bool,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -990,6 +998,13 @@ impl PresetParams {
             }
         };
         check("max_block_log2", self.max_block_log2, 2, 8, "")?;
+        if self.intrabc_morph && !self.bawp {
+            return Err(PresetError::OutOfRange {
+                field: "intrabc_morph",
+                value: 1,
+                allowed: "0 without bawp (morph_pred needs enable_bawp)".to_owned(),
+            });
+        }
         if self.sb256_min_height < 64 {
             return Err(PresetError::OutOfRange {
                 field: "sb256_min_height",
@@ -1385,7 +1400,7 @@ preset_table! {
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        short_refresh:         [ true, false, false, false, false, false, false, false, false, false, false],
+        short_refresh:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         quant_matrices:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
@@ -1436,6 +1451,7 @@ preset_table! {
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_subpel:        [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_morph:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     lossless {
@@ -1895,6 +1911,7 @@ mod tests {
             (&[("warp", "3")], "warp"),
             (&[("global_motion", "3")], "global_motion"),
             (&[("compound_types", "4")], "compound_types"),
+            (&[("intrabc_morph", "1"), ("bawp", "0")], "intrabc_morph"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {
