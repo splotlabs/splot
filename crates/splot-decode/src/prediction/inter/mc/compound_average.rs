@@ -3,13 +3,13 @@
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    PlaneId, PlaneRect, ReconSample, UnscaledPut, subpel_compound_block,
+    CurrentFrameSurface, PlaneId, PlaneRect, ReconSample, UnscaledPut, subpel_compound_block,
     subpel_predict_block_compound_average_unscaled_strided_into,
 };
 
 use super::{
     CWP_EQUAL, CompoundAverageOutput, CompoundBlend, CompoundMcBlock, TranslationalCompoundPlane,
-    WorkspaceSink, ceil_shift, compound_average_weights_are_uniform, luma_view, mc_planes,
+    ceil_shift, compound_average_weights_are_uniform, luma_view, mc_planes,
     predict_compound_average_into, translational_compound_plane, unscaled_put,
 };
 use crate::Result;
@@ -20,7 +20,7 @@ use crate::Result;
 /// caller predicts through the general path. A declined block may have had
 /// planes written; the general path rewrites them.
 pub(super) fn predict_translational_direct<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<bool> {
@@ -56,7 +56,7 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
 /// which of luma and chroma it stored, or `None` without writing when the
 /// weights of a plane are not uniform.
 fn predict_unscaled<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     (implicit_mask, cwp_weight): (bool, i16),
     offset: ByteOffset,
@@ -125,7 +125,7 @@ fn predict_unscaled<T: ReconSample>(
 /// its translational plane, when every one has uniform weights and a
 /// contiguous target; `false` without writing them otherwise.
 fn predict_planes<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     (implicit_mask, cwp_weight): (bool, i16),
     done: [bool; 2],

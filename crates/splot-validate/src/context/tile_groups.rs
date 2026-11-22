@@ -56,7 +56,6 @@ pub(super) fn tile_group_range_checks(
         active_sequence: Some(active_sequence),
         mfh_record,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     let Ok(core) = parse_frame_header_core(&mut reader, &input) else {
         return;

@@ -37,11 +37,11 @@ use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, CdefStrengthSets,
     DeblockingFilterParams, DeltaQParams, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
-    FrameHeaderParseMode, FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail,
-    FrameReferenceStateView, FrameType, GdfParams, InterControl, InterStop, InterpolationFilter,
-    LosslessInfo, LrParams, LrPlaneParams, MvPrecision, QuantizationParams, SefTrailingBits,
-    SegmentationParams, SetupQmParams, TileInfo, TipFrameMode, WienerNsFrameFilterBank,
-    WienerNsFrameFilterClass, parse_frame_header_core, parse_frame_header_prefix,
+    FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, FrameType,
+    GdfParams, InterControl, InterStop, InterpolationFilter, LosslessInfo, LrParams, LrPlaneParams,
+    MvPrecision, QuantizationParams, SefTrailingBits, SegmentationParams, SetupQmParams, TileInfo,
+    TipFrameMode, WienerNsFrameFilterBank, WienerNsFrameFilterClass, parse_frame_header_core,
+    parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -627,7 +627,6 @@ fn parse_inspect_core_and_structure(
         active_sequence,
         mfh_record,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     let Ok(core) = parse_frame_header_core(&mut reader, &input) else {
         return (None, None);

@@ -312,7 +312,7 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         let mut score = if max_disp > input.order_hint {
             (t_dist << DIST_WEIGHT_BITS) + q as i32
         } else {
-            // TODO(spec: AV2-7.7-GET-REF-FRAMES): re-validate the tDist < 0 score against a
+            // TODO(spec: AV2-7.7-GET-REF-FRAMES): oracle-check tDist < 0 for multi-layer refs.
             let cap = DECAY_DIST_CAP;
             let lookup_idx = t_dist.clamp(0, cap) as usize;
             DIST_SCORE_LOOKUP[lookup_idx] + (t_dist - cap).max(0) + q as i32

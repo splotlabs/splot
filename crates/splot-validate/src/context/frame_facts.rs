@@ -93,7 +93,6 @@ pub(super) fn parse_frame_core(
         active_sequence: Some(active_sequence),
         mfh_record,
         reference_state: *reference_state,
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map(Some)
 }

@@ -143,14 +143,6 @@ impl DecodeContext {
         })
     }
 
-    /// [`Self::decode_discard_reader`] over in-memory bytes.
-    ///
-    /// # Errors
-    /// See [`Self::decode_discard_reader`].
-    pub fn decode_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
-        self.decode_discard_reader(bytes, options)
-    }
-
     /// Decodes the supported envelope and discards each displayed frame.
     ///
     /// Plans and reads the input like [`Self::decode_hash_report_reader`] and

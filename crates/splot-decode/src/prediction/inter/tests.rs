@@ -15,8 +15,8 @@ use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize, ReconError, ReferenceSlot, SharedFrame,
+    BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat,
+    PlaneId, PlaneRect, PlaneSize, ReconError, ReferenceSlot, SharedFrame,
 };
 
 use super::block::{
@@ -554,7 +554,7 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
     ];
     let residual = super::InterResidual { block_range: 0..3 };
     super::add_inter_residual_to_workspace(
-        &mut super::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &u_quant,
@@ -617,7 +617,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
     }];
     let residual = super::InterResidual { block_range: 0..1 };
     super::add_inter_residual_to_workspace(
-        &mut super::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &quant,

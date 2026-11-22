@@ -39,7 +39,6 @@ pub(crate) use optflow::{
     refine_tip_units,
 };
 use refinemv::TipSearchScratch;
-pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
     let sub_x = pixel_format.subsampling_x() as u32;
@@ -403,7 +402,7 @@ impl<T: Send + 'static> Drop for RecycledMcSamples<T> {
 /// Predicts `block` into `sink`; a compound block that refines its motion
 /// derives it first into a scratch of its own.
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: InterBlockParams<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
@@ -419,7 +418,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
 
 /// Predicts a block that does not refine its motion into `sink`.
 pub(crate) fn predict_inter_block<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &InterBlockParams<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
@@ -458,7 +457,7 @@ pub(crate) fn predict_inter_block<T: ReconSample>(
 }
 
 pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     rect: McBlockRect,
     mv: Mv,
@@ -547,9 +546,9 @@ pub(super) fn luma_view<T: ReconSample>(
 }
 
 fn motion_compensate_planes<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     has_chroma: bool,
-    mut predict: impl FnMut(&mut WorkspaceSink<'_, '_, T>, PlaneId, u32, u32) -> Result<()>,
+    mut predict: impl FnMut(&mut CurrentFrameSurface<'_, '_, T>, PlaneId, u32, u32) -> Result<()>,
 ) -> Result<()> {
     for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
         if plane != PlaneId::Y && !has_chroma {
@@ -564,7 +563,7 @@ fn motion_compensate_planes<T: ReconSample>(
 /// goes to [`compound_mask::predict`]. Only a warp plane that the frame edge
 /// clips goes through a temporary first.
 pub(super) fn predict_compound_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
@@ -611,7 +610,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
 }
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     block: &InterBlockParams<'_, T>,
     mv: Mv,
@@ -648,7 +647,7 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn predict_plane<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
@@ -728,7 +727,7 @@ pub(crate) fn plane_prediction<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn predict_warp_plane<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,

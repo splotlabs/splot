@@ -666,7 +666,7 @@ pub(super) fn single_mv_stack(
         state.grid,
         block,
         global_mv,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         state.bank(),
         state.warp_param_bank,
         false,
@@ -741,7 +741,7 @@ pub(super) fn warp_motion(
                     usize::from(warp.ref_warp_idx),
                 )
             } else {
-                DEFAULT_WARP_PARAMS
+                IDENTITY_WARP_PARAMS
             };
             let base_mv = warp_predicted_mv(params, block, base_precision);
             let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
@@ -830,7 +830,7 @@ fn warp_newmv_model(
             mv,
             block,
         ),
-        WarpModelSource::Candidate => Ok(DEFAULT_WARP_PARAMS),
+        WarpModelSource::Candidate => Ok(IDENTITY_WARP_PARAMS),
     }
 }
 
@@ -972,7 +972,7 @@ fn single_list_stack(
         state.grid,
         &single,
         global_mv,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         state.bank(),
         state.warp_param_bank,
         false,

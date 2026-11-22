@@ -9,6 +9,7 @@
 use super::super::resolve::{WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax};
 use super::super::warp::warp_delta_scale;
 use super::*;
+use splot_recon::CurrentFrameSurface;
 
 /// `WARP_DELTA_NUM_SYMBOLS_HIGH` (§ 3).
 const WARP_DELTA_NUM_SYMBOLS_HIGH: u8 = 8;
@@ -353,7 +354,7 @@ impl EncoderInterTile {
             parsed,
         )?;
         prediction::reconstruct_pure_inter_block(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            &mut CurrentFrameSurface::Frame(workspace),
             &placed,
             &[],
             &[],

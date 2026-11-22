@@ -483,7 +483,7 @@ pub fn warp_shear_is_valid(warp_params: [i32; 6]) -> bool {
 /// reference window. `is_compound` selects the § 7.13.3.16 `InterRound1`
 /// shift; the returned values are the unclipped `Round2(s, InterRound1)`
 /// predictors — single-reference writers finish with the § 4.8
-/// [`crate::math::clip1_predicted_samples`] clamp, compound callers blend
+/// `Clip1` clamp, compound callers blend
 /// the `Preds[refList]` intermediates first.
 ///
 /// # Errors
@@ -705,7 +705,7 @@ fn ext_warp_predict_scaled<T: ReconSample>(
 /// reference reads to `[firstX, lastX] x [firstY, lastY]`. `is_compound`
 /// selects the § 7.13.3.16 `InterRound1` shift; the 64 returned values are the
 /// unclipped `Round2(s, InterRound1)` predictors — single-reference writers
-/// finish with the § 4.8 [`crate::math::clip1_predicted_samples`] clamp,
+/// finish with the § 4.8 `Clip1` clamp,
 /// compound callers blend the `Preds[refList]` intermediates first.
 ///
 /// # Errors

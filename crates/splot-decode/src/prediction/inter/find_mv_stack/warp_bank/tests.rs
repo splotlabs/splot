@@ -2,12 +2,12 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::sequence::DrlReorder;
+use splot_recon::IDENTITY_WARP_PARAMS;
 
 use super::super::tests::{MI_DIM, N4_32, SB_H4_64, block_at, empty_grid, record_two_wide_column};
 use super::super::{
-    BlockPrecisionRecord, DEFAULT_WARP_PARAMS, MAX_WARP_REF_CANDIDATES, MotionMode, Mv,
-    MvBlockContext, MvStack, NeighbourMvGrid, SWITCHABLE_FILTERS, find_mv_stack,
-    find_mv_stack_with_temporal,
+    BlockPrecisionRecord, MAX_WARP_REF_CANDIDATES, MotionMode, Mv, MvBlockContext, MvStack,
+    NeighbourMvGrid, SWITCHABLE_FILTERS, find_mv_stack, find_mv_stack_with_temporal,
 };
 use super::WarpParamBank;
 
@@ -56,10 +56,10 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
     assert_eq!(stack.warp_candidate(3), older, "then the older bank entry");
     assert_eq!(
         stack.warp_candidate(4),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         "out-of-range indices resolve to the identity default"
     );
-    assert_warp_candidates(&grid, &block_at(8, 8), DEFAULT_WARP_PARAMS, &bank, &stack);
+    assert_warp_candidates(&grid, &block_at(8, 8), IDENTITY_WARP_PARAMS, &bank, &stack);
 
     let no_wrl = find_mv_stack(
         &grid,
@@ -73,7 +73,7 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
     );
     assert_eq!(
         no_wrl.warp_candidate(0),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         "DeriveWrl == 0 leaves the stack default-initialized"
     );
 }
@@ -120,7 +120,7 @@ fn warp_stack_appends_global_motion_after_the_parameter_bank() {
     assert_eq!(stack.warp_candidate(0), newer);
     assert_eq!(stack.warp_candidate(1), older);
     assert_eq!(stack.warp_candidate(2), global);
-    assert_eq!(stack.warp_candidate(3), DEFAULT_WARP_PARAMS);
+    assert_eq!(stack.warp_candidate(3), IDENTITY_WARP_PARAMS);
     assert_warp_candidates(&empty_grid(), &block_at(8, 8), global, &bank, &stack);
 }
 
@@ -175,13 +175,13 @@ fn corner_derivation_matches_the_hand_computed_model() {
     );
     assert_eq!(
         stack.warp_candidate(1),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         "gm/default tail after the corner model"
     );
     assert_warp_candidates(
         &grid,
         &block,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         &WarpParamBank::new(),
         &stack,
     );
@@ -230,13 +230,13 @@ fn scan_col_feeds_warp_stack() {
     );
     assert_eq!(
         stack.warp_candidate(2),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         "the tail fills identity defaults after the scan-col inserts"
     );
     assert_warp_candidates(
         &grid,
         &block_at(8, 8),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         &WarpParamBank::new(),
         &stack,
     );

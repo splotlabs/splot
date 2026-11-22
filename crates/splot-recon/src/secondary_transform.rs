@@ -642,7 +642,7 @@ const fn is_valid_side(side: usize) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::coefficient_scan_order;
+    use crate::coefficient_scan::coefficient_scan_order;
 
     fn round2_signed_reference(value: i64, shift: u32) -> i64 {
         let magnitude = value.unsigned_abs();

@@ -10,6 +10,7 @@ use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext,
     SupportedChromaMode,
 };
+use splot_recon::CurrentFrameSurface;
 
 #[path = "reconstruct_tests/directional_edge.rs"]
 mod directional_edge;
@@ -77,7 +78,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
             )
             .unwrap();
         let result = reconstruct_inter_block_residual_rect_into(
-            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
+            &mut CurrentFrameSurface::Frame(&mut workspace),
             block,
             PlaneId::Y,
             0,
@@ -188,7 +189,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
 
     for workspace in [&mut full, &mut cropped] {
         reconstruct_inter_block_residual_rect_into(
-            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(workspace),
+            &mut CurrentFrameSurface::Frame(workspace),
             block.view(&quant),
             PlaneId::Y,
             0,
@@ -227,7 +228,7 @@ fn inter_residual_all_zero_is_noop() {
         .unwrap();
     let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
     reconstruct_inter_block_residual_rect_into(
-        &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         all_zero_luma_block().view(&[]),
         PlaneId::U,
         usize::MAX,

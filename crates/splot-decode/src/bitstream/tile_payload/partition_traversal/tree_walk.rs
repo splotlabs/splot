@@ -323,7 +323,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let sb_row = self.next_sb_row;
         let sb_col = self.next_sb_col;
         if sb_col == tile_bounds.mi_col_start {
-            mi_size_state.enter_sb_row(sb_row);
+            mi_size_state.enter_sb_row();
         }
         mi_size_state
             .check_extent(sb_row, sb_col, self.sb_size4, self.sb_size4)

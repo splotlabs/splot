@@ -235,7 +235,7 @@ pub(super) fn tip_optflow_motion_cell_strided(
 /// at its candidates (out of range). Its two initial predictions and
 /// § 7.13.3.9 delta stay on the stack.
 pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
+    sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'a, T>,
     (rect, mvs): (McBlockRect, [Mv; 2]),
     luma: &mut [LumaReference<'a, T>; 2],

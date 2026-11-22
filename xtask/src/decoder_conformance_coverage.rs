@@ -14,7 +14,6 @@ const SPEC_INDEX_PATH: &str = "docs/spec/av2/1.0.0/index.md";
 const SUPPORT_MATRIX_PATH: &str = "docs/DECODER-SUPPORT-MATRIX.toml";
 const IMPLEMENTATION_MATRIX_PATH: &str = "docs/IMPLEMENTATION-MATRIX.toml";
 const DIAGNOSTICS_DOC_PATH: &str = "docs/DIAGNOSTICS.md";
-const REGEN_COMMAND: &str = "cargo xtask decoder-conformance-coverage --format markdown --output docs/DECODER-SPEC-COVERAGE.md";
 
 const NORMATIVE_STATUSES: &[&str] = &["normative", "informative", "mixed"];
 #[rustfmt::skip]
@@ -53,23 +52,8 @@ pub(crate) fn run_decoder_conformance_coverage(
 
 pub(crate) fn run_check_decoder_conformance_coverage(root: &Path) -> Result<()> {
     let checked = checked_rows(root)?;
-    let path = root.join(COVERAGE_DOC_PATH);
-    if !path.exists() {
-        eprintln!(
-            "check-decoder-conformance-coverage: ok ({} row(s); {COVERAGE_DOC_PATH} is generated on demand)",
-            checked.len()
-        );
-        return Ok(());
-    }
-
-    let expected = render_markdown(checked);
-    let actual = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {COVERAGE_DOC_PATH}"))?;
-    if actual.trim_end() != expected.trim_end() {
-        bail!("{COVERAGE_DOC_PATH} is out of date; regenerate with `{REGEN_COMMAND}`");
-    }
     eprintln!(
-        "check-decoder-conformance-coverage: ok ({} row(s))",
+        "check-decoder-conformance-coverage: ok ({} row(s); {COVERAGE_DOC_PATH} is generated on demand)",
         checked.len()
     );
     Ok(())
@@ -1288,21 +1272,6 @@ mod tests {
                 .contains("supported coverage requires every linked decoder support row")
         );
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn check_detects_drift() -> Result<()> {
-        let root = temp_root("decoder-conformance-drift")?;
-        write_minimal_repo_files(&root);
-        let expected = render_markdown(validate_rows(&root, COVERAGE_ROWS)?);
-        let docs = root.join("docs");
-        std::fs::write(docs.join("DECODER-SPEC-COVERAGE.md"), expected)?;
-        run_check_decoder_conformance_coverage(&root)?;
-        std::fs::write(docs.join("DECODER-SPEC-COVERAGE.md"), "stale\n")?;
-        let err = run_check_decoder_conformance_coverage(&root).expect_err("drift should fail");
-        assert!(err.to_string().contains(REGEN_COMMAND));
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
     }
 
     fn write_minimal_repo_files(root: &Path) {

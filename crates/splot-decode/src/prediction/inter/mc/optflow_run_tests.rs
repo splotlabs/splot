@@ -75,7 +75,7 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
     );
     let mut units = RefinedUnits::with_cells(cells.to_vec(), columns, unit_size, merge);
     predict_refined_block(
-        &mut WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &block,
         &mut units,
         ByteOffset::new(0),
@@ -380,7 +380,7 @@ fn tip_grid_and_cells<T: ReconSample>(
         width,
         height,
     );
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     let grid = || {
         let mut units = TipUnits::default();
@@ -593,7 +593,7 @@ fn edge_units_match_a_larger_storage<T: ReconSample + CompoundAverageOutput + Se
             .expect("compound block");
             let mut workspace =
                 super::super::tests::workspace_for::<T>(bit_depth, format, size.0, size.1);
-            let mut sink = WorkspaceSink::Frame(&mut workspace);
+            let mut sink = CurrentFrameSurface::Frame(&mut workspace);
             let (mut units, mut mvs) = (TipUnits::default(), candidates.clone());
             let (grid, offset) = ((columns, unit), ByteOffset::new(0));
             refine_tip_units(&sink, &block, &mvs, &mut units, grid, offset).expect("units");

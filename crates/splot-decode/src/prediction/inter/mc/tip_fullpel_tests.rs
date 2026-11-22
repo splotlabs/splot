@@ -75,7 +75,7 @@ fn check<T: ReconSample>(references: &[DecodedFrame<T>; 2], case: Case) {
 fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, case: Case) {
     let bit_depth = references[0].info().bit_depth();
     let mut workspace = workspace_for::<T>(bit_depth, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     let rect = McBlockRect::from_luma_rect(case.x, y, 8, 8);
     let mvs = [case.mv; 2];
@@ -314,7 +314,7 @@ fn tip_fullpel_cells_read_only_the_published_prefix() {
     check_at(references, 8, case(mv(0, 0), true, true));
     check_at(references, 8, case(mv(0, 0), false, true));
     let mut workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let first = McBlockRect::from_luma_rect(16, 8, 8, 8);
     let past = McBlockRect::from_luma_rect(16, 16, 8, 8);
     let still = [mv(0, 0); 2];
@@ -365,7 +365,7 @@ fn luma_reference_refetches_views_past_the_published_prefix() {
 fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitDepth) {
     let references = [reference::<T>(bit_depth, &[]), ramp::<T>(bit_depth, 3)];
     let mut workspace = workspace_for::<T>(bit_depth, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     for reference in &references {
         let reference = ReferenceSamples::settled(reference);

@@ -4,7 +4,7 @@
 use super::*;
 use crate::DecodeHeaderStateError;
 use splot_core::headers::sequence::ChromaFormatIdc;
-use splot_recon::{CurrentFrameWorkspace, DecodedFrame, ReconError};
+use splot_recon::{CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrame, ReconError};
 
 use super::super::mv_scaling::PlaneScaling;
 use super::super::reference::ReferenceSamples;
@@ -698,7 +698,7 @@ fn batch_candidates(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict_block<T: ReconSample>(
     scratch: &mut TipReconstructScratch,
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     mut records: Option<&mut Vec<TemporalMotionBlock>>,
     predict: bool,
     placed: &PlacedInterBlock,
@@ -1211,7 +1211,7 @@ impl<T: ReconSample> TipOutputStages<T> {
             })
         });
         let mut surface = splot_recon::CurrentFrameRect::from_bands(self.info, rect, [y, u, v])?;
-        let mut sink = mc::WorkspaceSink::Rect(&mut surface);
+        let mut sink = CurrentFrameSurface::Rect(&mut surface);
         self.predict_band(&mut band, rect, &mut sink, sequence, core, reference)?;
         self.fold(index, &mut band.records)?;
         Ok(
@@ -1242,7 +1242,7 @@ impl<T: ReconSample> TipOutputStages<T> {
         &self,
         band: &mut TipOutputBand,
         rect: splot_recon::PlaneRect,
-        sink: &mut mc::WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,
@@ -1375,8 +1375,8 @@ mod tests {
     };
     use splot_parallel::ThreadCount;
     use splot_recon::{
-        BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OutputIndex,
-        PixelFormat, PlaneRect, PlaneSize,
+        BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameInfo,
+        InterpolationFilter, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
     };
 
     const TIP_FAMILIES_FIXTURE: &[u8] = include_bytes!(
@@ -1535,7 +1535,7 @@ mod tests {
             .ok_or("compound TIP block")?;
         let mut units = mc::TipUnits::default();
         let mut workspace = tip_workspace()?;
-        let sink = mc::WorkspaceSink::Frame(&mut workspace);
+        let sink = CurrentFrameSurface::Frame(&mut workspace);
         let offset = splot_core::span::ByteOffset::new(0);
         mc::refine_tip_units(&sink, &block, &[zero], &mut units, (1, 8), offset)?;
         assert_eq!(units.stored_mvs(0), Some(zero));

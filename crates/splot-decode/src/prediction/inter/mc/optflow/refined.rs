@@ -120,7 +120,7 @@ impl RefinedUnits {
 /// references (§ 5.20.7.6 `opfl_allowed_for_refs`, § 5.20.7.17
 /// `is_refinemv_allowed_reference`), so a scaled one is a state error.
 pub(crate) fn refine_block_units<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
+    sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     units: &mut RefinedUnits,
     offset: ByteOffset,
@@ -307,7 +307,7 @@ fn grown(buffer: &mut Vec<u16>, len: usize) -> &mut [u16] {
 /// so any other block is a state error. A sub-8x8 chroma block (§ 7.13.3.1
 /// `sub8x8Inter`) predicts its chroma from list 0 alone, as AVM does.
 pub(crate) fn predict_refined_block<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     units: &mut RefinedUnits,
     offset: ByteOffset,

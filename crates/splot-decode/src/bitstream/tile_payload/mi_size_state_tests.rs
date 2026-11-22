@@ -20,7 +20,7 @@ fn block(index: usize) -> BlockSize {
 fn new_state(mi_rows: usize, mi_cols: usize) -> TileMiSizeState {
     let mut state =
         TileMiSizeState::new_for_tile(0..mi_rows, 0..mi_cols, block(BLOCK_64X64)).unwrap();
-    state.enter_sb_row(0);
+    state.enter_sb_row();
     state
 }
 
@@ -146,7 +146,7 @@ fn updates_chroma_footprint_without_touching_luma() {
 fn accepts_edge_block_footprint_inside_padded_superblock_extent() {
     let mut state = new_state(18, 18);
 
-    state.enter_sb_row(16);
+    state.enter_sb_row();
     state
         .update_luma_block(16, 16, block(BLOCK_64X64), None, None)
         .unwrap();
@@ -326,7 +326,7 @@ fn an_inter_leaf_reads_as_dc_and_a_new_row_clears_the_left_line() {
     record(&mut state, (16, 0), 16, None);
     let below_inter = state.intra_neighbours(32, 0, 16, 16);
     assert_eq!(below_inter.joint_modes(), [IntraJointMode::DC; 2]);
-    state.enter_sb_row(16);
+    state.enter_sb_row();
     assert_eq!(
         state.intra_neighbours(16, 16, 16, 16).joint_modes()[0],
         IntraJointMode::DC
@@ -431,6 +431,6 @@ fn uv_bits_ride_on_the_chroma_entries() {
         state.left_at(1, 4) & !(UV_CFL | UV_SMOOTH),
         PARTITION_CONTEXT_LEFT[6]
     );
-    state.enter_sb_row(0);
+    state.enter_sb_row();
     assert_eq!(state.uv_edges(4, 4).cfl_ctx(), 0);
 }

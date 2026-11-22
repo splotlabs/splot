@@ -29,8 +29,8 @@ pub use film_grain::{
     FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate, parse_film_grain,
 };
 pub use frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-    FrameHeaderPrefix, FrameReferenceStateView, FrameSize, FrameType, parse_frame_header_core,
+    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus, FrameHeaderPrefix,
+    FrameReferenceStateView, FrameSize, FrameType, parse_frame_header_core,
     parse_frame_header_prefix,
 };
 pub use layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};

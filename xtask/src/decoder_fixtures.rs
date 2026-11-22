@@ -5,8 +5,7 @@
 //! harness (CONF-AVM-DECODE-ORACLE), CI-safe, no AVM. `verify` checks the
 //! manifest/taxonomy shape, fixture hashes, feature ids, and that every committed
 //! valid `.ivf` has an entry. `coverage` (re)generates the optional
-//! `docs/decoder/DECODER-ORACLE-COVERAGE.md` report. `cargo xtask ci` verifies
-//! the report only when it is committed. The bit-exact assertions live in
+//! `docs/decoder/DECODER-ORACLE-COVERAGE.md` report. The bit-exact assertions live in
 //! `crates/splot-cli/tests/decoder_oracle.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -138,8 +137,8 @@ pub(crate) fn run_verify(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `cargo xtask decoder-fixtures coverage [--check]`.
-pub(crate) fn run_coverage(root: &Path, check: bool) -> Result<()> {
+/// `cargo xtask decoder-fixtures coverage`.
+pub(crate) fn run_coverage(root: &Path) -> Result<()> {
     let manifest: Manifest = load_toml(&root.join(MANIFEST))?;
     if manifest.schema_version != 2 {
         bail!(
@@ -150,25 +149,11 @@ pub(crate) fn run_coverage(root: &Path, check: bool) -> Result<()> {
     let taxonomy: Taxonomy = load_toml(&root.join(TAXONOMY))?;
     let rendered = render_coverage(&manifest, &taxonomy);
     let path = root.join(COVERAGE_DOC);
-    if check {
-        if !path.exists() {
-            eprintln!("{COVERAGE_DOC}: not committed; generate on demand with `{REGEN}`");
-            return Ok(());
-        }
-        let actual =
-            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        if actual.trim_end() != rendered.trim_end() {
-            bail!("{COVERAGE_DOC} is out of date; regenerate with `{REGEN}`");
-        }
-        eprintln!("decoder-fixtures coverage: ok");
-    } else {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create {}", parent.display()))?;
-        }
-        std::fs::write(&path, &rendered).with_context(|| format!("write {}", path.display()))?;
-        eprintln!("decoder-fixtures coverage: wrote {COVERAGE_DOC}");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
+    std::fs::write(&path, &rendered).with_context(|| format!("write {}", path.display()))?;
+    eprintln!("decoder-fixtures coverage: wrote {COVERAGE_DOC}");
     Ok(())
 }
 

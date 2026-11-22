@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::sequence::DrlReorder;
-pub(crate) use splot_recon::IDENTITY_WARP_PARAMS as DEFAULT_WARP_PARAMS;
+use splot_recon::IDENTITY_WARP_PARAMS;
 use splot_recon::math::round2_signed;
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
@@ -672,7 +672,7 @@ impl MvStack {
         self.warp
             .as_ref()
             .and_then(|warp| warp.slots.get(idx).copied())
-            .unwrap_or(DEFAULT_WARP_PARAMS)
+            .unwrap_or(IDENTITY_WARP_PARAMS)
     }
 }
 
@@ -681,7 +681,7 @@ impl MvStack {
 pub(crate) fn warp_predicted_mv(params: [i32; 6], block: &MvBlockContext, precision: u8) -> Mv {
     if params
         .iter()
-        .zip(DEFAULT_WARP_PARAMS)
+        .zip(IDENTITY_WARP_PARAMS)
         .fold(0, |diff, (&a, b)| diff | (a ^ b))
         == 0
     {
@@ -1301,7 +1301,7 @@ pub(crate) fn find_mv_stack(
         grid,
         block,
         global_mv,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         bank,
         warp_bank,
         derive_wrl,
@@ -1449,7 +1449,7 @@ pub(crate) fn find_mv_stack_upto(
         warp_bank.fill(block.ref_frame0, warp);
         warp.insert(global_warp_params);
         for _ in 0..2 {
-            warp.insert(DEFAULT_WARP_PARAMS);
+            warp.insert(IDENTITY_WARP_PARAMS);
         }
     }
 

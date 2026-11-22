@@ -117,27 +117,6 @@ impl TileGroupLayout {
     }
 }
 
-/// Why [`parse_tile_group_structure`] could not be invoked / consumed because the
-/// `use_bru` / `bru_inactive` state is not derivable from the modeled (intra) path.
-///
-/// On the intra path both `use_bru` and `bru_inactive` are the § 5.18.2 defaults `0`
-/// (mirror :4127-4129): they are only reassigned inside the
-/// `if ( enable_bru && FrameType == INTER_FRAME && !is_tip_frame() && !IsBridge )` gate
-/// (mirror :4653-4669), which an intra frame never enters. So the `bru_inactive`
-/// early-return `trailing_bits()` arm (mirror :8453-8463) and the `use_bru`
-/// `bru_tile_active` loop (mirror :8495-8517) are both **dead** on the intra path, and
-/// the structure is fully decidable. This stop reason exists for callers that
-/// cannot establish the intra precondition (e.g. an inter / TIP / bridge frame, or a
-/// frame whose header did not parse to completion).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum BruUndecidable {
-    /// The frame is not known to be intra-complete, so `use_bru` / `bru_inactive`
-    /// cannot be derived; the BRU arms (mirror :8453-8463 / :8495-8517) own the
-    /// remaining inter-path coverage (frame-header-inter-reference-paths).
-    NotIntraComplete,
-}
-
 /// A parse of the `tile_group_obu()` § 5.19 structure *after* the optional
 /// `frame_header()` (AV2 v1.0.0 § 5.19, mirror :8465-8527), on the intra path where
 /// `use_bru` / `bru_inactive` are the derived constants `0`.
@@ -247,8 +226,7 @@ impl TileGroupStructureOutcome {
 /// `bru_inactive` early-return `trailing_bits()` arm (mirror :8453-8463) and the
 /// `use_bru` `bru_tile_active` loop (mirror :8495-8517) are dead on the intra path, so
 /// neither is read here. A caller that cannot establish the intra precondition must not
-/// call this and should record [`BruUndecidable::NotIntraComplete`] instead (the inter
-/// BRU arms are owned by `frame-header-inter-reference-paths`).
+/// call this (the inter BRU arms are owned by `frame-header-inter-reference-paths`).
 ///
 /// # Errors
 /// Never returns an error for a payload-bounds (EOF) condition — a truncation inside the

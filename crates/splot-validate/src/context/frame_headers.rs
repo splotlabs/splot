@@ -251,7 +251,7 @@ impl ValidatorContext {
                 return None;
             }
             let Some(record) = self.hls.multi_frame_header(cur) else {
-                // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): declare external multi-frame
+                // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): let options declare external MFHs.
                 if matches!(options.external_hls, ExternalHlsMode::Disabled) {
                     report.push(frame_header_unavailable_mfh(cur, obu));
                 }

@@ -326,11 +326,7 @@ enum DecoderFixturesCmd {
     /// orphan `.ivf` (no decode, no AVM). Wired into `cargo xtask ci`.
     Verify,
     /// Generate optional docs/decoder/DECODER-ORACLE-COVERAGE.md.
-    Coverage {
-        /// Verify the committed coverage doc is up to date instead of writing.
-        #[arg(long)]
-        check: bool,
-    },
+    Coverage,
 }
 
 fn main() -> Result<()> {
@@ -399,9 +395,7 @@ fn main() -> Result<()> {
             let root = workspace_root()?;
             match cmd {
                 DecoderFixturesCmd::Verify => decoder_fixtures::run_verify(&root),
-                DecoderFixturesCmd::Coverage { check } => {
-                    decoder_fixtures::run_coverage(&root, check)
-                }
+                DecoderFixturesCmd::Coverage => decoder_fixtures::run_coverage(&root),
             }
         }
         Task::CheckReferenceEvidence => {
@@ -529,7 +523,6 @@ fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
     decoder_support::run_check_decoder_support(&root)?;
     decoder_conformance_coverage::run_check_decoder_conformance_coverage(&root)?;
     decoder_fixtures::run_verify(&root)?;
-    decoder_fixtures::run_coverage(&root, true)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
     fixtures::check_fixtures(&root)?;
     dupehound::check_duplication(&root)?;

@@ -278,7 +278,7 @@ fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
         &grid,
         &block,
         current_global_mv,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,

@@ -12,16 +12,16 @@ use std::cell::Cell;
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    BitDepth, PlaneId, PlaneRect, ReconError, ReconSample, blend_diff_weighted_u8,
-    blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
+    BitDepth, CurrentFrameSurface, PlaneId, PlaneRect, ReconError, ReconSample,
+    blend_diff_weighted_u8, blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
     subpel_predict_block_compound_intermediate_into, wedge_mask_into,
 };
 
 use super::super::mv_scaling::PlaneScaling;
 use super::compound_average::predict_unscaled_or_two_call;
 use super::{
-    CompoundBlend, CompoundMcBlock, RecycledMcSamples, WorkspaceSink,
-    compound_average_weights_are_uniform, mc_planes, predict_plane, translational_compound_plane,
+    CompoundBlend, CompoundMcBlock, RecycledMcSamples, compound_average_weights_are_uniform,
+    mc_planes, predict_plane, translational_compound_plane,
 };
 use crate::Result;
 
@@ -67,7 +67,7 @@ pub(super) struct PlaneLayout {
 /// Predicts a compound block without warp or motion grid and returns
 /// `true`; returns `false` without writing for a warp block.
 pub(super) fn predict<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<bool> {
@@ -78,7 +78,7 @@ pub(super) fn predict<T: ReconSample>(
 }
 
 fn predict_planes<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
     scratch: &mut Scratch,
@@ -259,7 +259,7 @@ const fn unsupported<T: ReconSample>(bit_depth: BitDepth) -> ReconError {
 /// Runs `predict` on the target of `rect`, or on a staged block that is
 /// then written, when the frame edge clips the target.
 fn write_plane<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     plane: PlaneId,
     rect: PlaneRect,
     predict: impl FnOnce(&mut [T], usize) -> splot_recon::Result<()>,

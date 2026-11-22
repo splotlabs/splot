@@ -410,7 +410,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// published down to the last row that unit's fast path reads; every
     /// later read is bounded by the published rows.
     pub(super) fn new(
-        sink: &WorkspaceSink<'_, '_, T>,
+        sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'a, T>,
         (rect, mvs): (McBlockRect, [Mv; 2]),
         offset: ByteOffset,
@@ -456,7 +456,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// references decide it, or `None` to build the initial predictions.
     pub(super) fn motion_cell(
         &self,
-        sink: &WorkspaceSink<'_, '_, T>,
+        sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         (rect, mvs): (McBlockRect, [Mv; 2]),
     ) -> Result<Option<MotionCell>> {
@@ -478,7 +478,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// copy clamps them to the plane alone, as in [`Self::unsearched_cell`].
     fn searched_cell(
         &self,
-        sink: &WorkspaceSink<'_, '_, T>,
+        sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         rect: McBlockRect,
         mvs: [Mv; 2],
@@ -516,7 +516,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// Units whose columns would clamp take the full path.
     fn unsearched_cell(
         &self,
-        sink: &WorkspaceSink<'_, '_, T>,
+        sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         rect: McBlockRect,
         mvs: [Mv; 2],
@@ -541,7 +541,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// refinement, else the § 7.13.3.9 delta derived from the same samples.
     fn optflow_cell(
         &self,
-        sink: &WorkspaceSink<'_, '_, T>,
+        sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         xs: [usize; 2],
         rows: [[usize; 8]; 2],

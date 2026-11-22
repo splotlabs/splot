@@ -48,7 +48,7 @@ mod show_existing;
 mod status;
 
 pub use seq_view::{CoreSeqInterView, CoreSeqView, MfhFrameView};
-pub use status::{FrameHeaderParseMode, FrameHeaderParseStatus, FrameType, SefTrailingBits};
+pub use status::{FrameHeaderParseStatus, FrameType, SefTrailingBits};
 
 use seq_view::all_frames_mask;
 use show_existing::parse_show_existing_frame;
@@ -303,7 +303,7 @@ pub struct FrameHeaderParseInput<'a> {
     /// `FirstPictureInTU` decoder state, used to derive `startCVS`.
     pub first_picture_in_tu: bool,
     /// The active sequence header this frame resolves to (`load_sequence_header()`),
-    /// or `None` when it is unavailable. Core mode needs a fully parsed sequence
+    /// or `None` when it is unavailable. The core parse needs a fully parsed sequence
     /// header (with its inter and screen-content configs) to read beyond the
     /// activation fields; otherwise the result is [`FrameHeaderParseStatus::ActivationFieldsOnly`].
     pub active_sequence: Option<&'a SequenceHeader>,
@@ -316,8 +316,6 @@ pub struct FrameHeaderParseInput<'a> {
     pub mfh_record: Option<&'a MultiFrameHeaderRecord>,
     /// Reference-frame buffer state (see [`FrameReferenceStateView`]).
     pub reference_state: FrameReferenceStateView<'a>,
-    /// Which parser path to take.
-    pub mode: FrameHeaderParseMode,
 }
 
 /// A state-aware core parse of `frame_header_info()` (AV2 v1.0.0 § 5.18.2).
@@ -608,9 +606,7 @@ pub fn parse_frame_header_core(
         parse_frame_header_prefix(reader, input.obu_type, Some(input.first_picture_in_tu))?;
     let mut core = init_core_from_prefix(&prefix, input.obu_type, input.first_picture_in_tu);
 
-    if input.mode == FrameHeaderParseMode::Core
-        && let Some(seq) = input.active_sequence.and_then(CoreSeqView::from_sequence)
-    {
+    if let Some(seq) = input.active_sequence.and_then(CoreSeqView::from_sequence) {
         let mfh_view = if core.cur_mfh_id.is_zero() {
             None
         } else {

@@ -7,12 +7,11 @@ use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use super::DecodeTileWorkUnit;
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition_allowed::PartitionFeatureFlags;
-pub(crate) use super::partition_traversal::GeneralIntraPartitionTreeOutput as GeneralIntraMultiblockOutput;
 use super::partition_traversal::{
-    DecodedLeafPublication, GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError,
-    LeafDecoder, TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
-    TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
-    TilePartitionTraversalError, TileTraversalStorage,
+    DecodedLeafPublication, GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput,
+    GeneralIntraTreeWalkError, LeafDecoder, TilePartitionFrameFacts,
+    TilePartitionLoopRestorationFrameState, TilePartitionLoopRestorationPlaneTool,
+    TilePartitionLoopRestorationState, TilePartitionTraversalError, TileTraversalStorage,
 };
 use crate::DecodeLimits;
 
@@ -119,7 +118,7 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         self.tree.window_violated()
     }
 
-    pub(crate) fn into_output(self) -> GeneralIntraMultiblockOutput<'payload> {
+    pub(crate) fn into_output(self) -> GeneralIntraPartitionTreeOutput<'payload> {
         self.tree.into_output()
     }
 }
