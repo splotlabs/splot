@@ -332,8 +332,10 @@ pub struct PresetParams {
     /// and their own tile info.
     pub seq_tile_info: u8,
     /// `enable_short_refresh_frame_flags`: inter frames code the one slot
-    /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2). On at p0 (p0
-    /// batch 1, see [`Self::warp`]): the same frames in fewer header bits.
+    /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2). On in every
+    /// row: p0 with p0 batch 1 (see [`Self::warp`]); p1..p10 on 2026-11-22
+    /// (paris f6, niklas f3, rush_hour_444 f4, CRF 32: the same decoded
+    /// frames in 0 to 5 fewer bytes per stream).
     pub short_refresh: bool,
     /// Quantizer matrices (`using_qmatrix`, § 5.18.6.2), `0..=3`: `0` off; each
     /// other value fixes the level band `[min, max]` of `tx_choice::qm_level`
@@ -1375,7 +1377,7 @@ preset_table! {
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        short_refresh:         [ true, false, false, false, false, false, false, false, false, false, false],
+        short_refresh:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         quant_matrices:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],

@@ -88,6 +88,7 @@ fn open_budgets_code_the_unstaged_stream() {
         none_breakout: Levels::all(0),
         tcq_type_trellis: false,
         cctx: false,
+        short_refresh: false,
         ..*Preset::new(5).unwrap().params()
     }));
     assert_eq!(p5.mds0_budgets, Levels::all([u8::MAX; 3]));
@@ -175,6 +176,7 @@ fn full_trials_255_code_the_old_full_trial_stream() {
         tx_type_depth: 1,
         tx_type_model_keep: 0,
         cctx: false,
+        short_refresh: false,
         ..*Preset::new(6).unwrap().params()
     }));
     MDS1_PRUNED.set(0);
@@ -452,6 +454,7 @@ fn newmv_pruned(margin: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         newmv_ref_margin: Levels::all(margin),
         light_leaf: Levels::all(u8::MAX),
+        short_refresh: false,
         ..*Preset::new(10).unwrap().params()
     }))
 }
@@ -487,6 +490,7 @@ fn newmv_pruned_streams_decode_on_any_thread_count() {
 fn light_leaf(margin: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         light_leaf: Levels::all(margin),
+        short_refresh: false,
         ..*Preset::new(10).unwrap().params()
     }))
 }
