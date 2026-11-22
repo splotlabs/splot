@@ -563,6 +563,7 @@ impl<'payload> TileParser<'payload> {
             let next = walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published);
             if let Some(superblock) =
                 ReconSuperblock::new(origin, first..block_context.entries.len())
+                    .map(|sb| sb.with_allow_extra_ibc_range(walk.allow_extra_ibc_range()))
             {
                 row.superblocks.push(superblock);
             }
@@ -820,11 +821,22 @@ impl ReconRowEntry {
 pub(super) struct ReconSuperblock {
     pub(super) origin: [usize; 2],
     pub(super) entries: Range<usize>,
+    /// § 5.20.3.1 `AllowExtraIBCRange` of the superblock.
+    pub(super) allow_extra_ibc_range: bool,
 }
 
 impl ReconSuperblock {
     fn new(origin: [usize; 2], entries: Range<usize>) -> Option<Self> {
-        (!entries.is_empty()).then_some(Self { origin, entries })
+        (!entries.is_empty()).then_some(Self {
+            origin,
+            entries,
+            allow_extra_ibc_range: false,
+        })
+    }
+
+    const fn with_allow_extra_ibc_range(mut self, allow: bool) -> Self {
+        self.allow_extra_ibc_range = allow;
+        self
     }
 }
 
