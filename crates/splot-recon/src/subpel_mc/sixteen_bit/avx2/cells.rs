@@ -11,7 +11,7 @@ use super::super::super::cell::{Cell as ProgramCell, Plane, Written, fullpel_u16
 use super::super::super::rows;
 use super::super::super::{CellPlacement, ReferencePlaneView};
 use super::{
-    Word, average, generic, interleave, load8, madds, pair, pairs_of, round, sums_of, token,
+    average, generic, interleave, load8, madds, pair, pairs_of, round, store_words, sums_of, token,
     weights,
 };
 use core::arch::x86_64::*;
@@ -314,7 +314,7 @@ fn store_cell<const W: usize>(
         } else {
             None
         };
-        u16::store(t, row, next, values);
+        store_words(t, row, next, values);
     }
     true
 }
