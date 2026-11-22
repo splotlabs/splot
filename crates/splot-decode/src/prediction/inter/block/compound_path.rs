@@ -1439,7 +1439,7 @@ fn read_compound_use_amvd_syntax(
         return Ok(false);
     };
     let use_amvd = cdfs
-        .read_block_symbol(selector, symbols)
+        .read_block_symbol_dyn(selector, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(use_amvd != 0)
 }
@@ -1473,7 +1473,7 @@ fn read_compound_jmvd_scale_mode_syntax(
     } else {
         TileCdfSelector::JmvdScaleMode
     };
-    cdfs.read_block_symbol(selector, symbols)
+    cdfs.read_block_symbol_dyn(selector, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))
 }
 

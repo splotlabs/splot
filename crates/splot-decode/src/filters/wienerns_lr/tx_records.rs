@@ -705,7 +705,7 @@ pub(super) fn read_symbol(
     tile_offset: ByteOffset,
     spec_section: &'static str,
 ) -> Result<usize> {
-    cdfs.read_block_symbol(selector, symbols)
+    cdfs.read_block_symbol_dyn(selector, symbols)
         .map(usize::from)
         .map_err(|error| match error {
             BlockSymbolTraceReadError::Cdf(_) => selectable_state_error(),

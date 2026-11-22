@@ -126,7 +126,7 @@ pub(crate) fn read_compound_reference_pair(
     tile_offset: ByteOffset,
 ) -> Result<(i8, i8)> {
     compound_reference_pair(input, |selector| {
-        cdfs.read_block_symbol(selector, symbols)
+        cdfs.read_block_symbol_dyn(selector, symbols)
             .map_err(|error| compound_symbol_read_error(error, tile_offset))
     })
 }
@@ -212,7 +212,7 @@ pub(crate) fn read_compound_mode_syntax(
     tile_offset: ByteOffset,
 ) -> Result<CompoundBlockSyntax> {
     let y_mode = compound_y_mode(pair, (new_mv_context, is_joint_ctx), |selector| {
-        cdfs.read_block_symbol(selector, symbols)
+        cdfs.read_block_symbol_dyn(selector, symbols)
             .map_err(|error| compound_symbol_read_error(error, tile_offset))
     })?;
     Ok(CompoundBlockSyntax {

@@ -34,6 +34,17 @@ impl TileCdfSubset {
         }
     }
 
+    /// [`Self::read_block_symbol`] for a selector the caller computes: one
+    /// shared copy of the row dispatch instead of one in every caller.
+    #[inline(never)]
+    pub(crate) fn read_block_symbol_dyn(
+        &mut self,
+        selector: TileCdfSelector,
+        symbols: &mut SymbolDecoder<'_>,
+    ) -> Result<u8, BlockSymbolTraceReadError> {
+        self.read_block_symbol(selector, symbols)
+    }
+
     /// [`Self::read_block_symbol_trace`] with the inter mode-info rows read
     /// through [`read_row`], so a constant selector reads a fixed-arity row.
     #[allow(
