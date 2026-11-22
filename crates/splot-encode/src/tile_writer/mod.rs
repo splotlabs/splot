@@ -554,6 +554,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         if let Some(modes) = choice.intrabc {
+            // A memoized subtree recoded before its local-area source is coded codes DC_PRED.
+            if !self.syntax.intrabc_bv_valid(leaf, modes.bv) {
+                return self.write_leaf(leaf, LeafChoice::DC, coder, planes);
+            }
             return self.write_intrabc_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         let LeafChoice {

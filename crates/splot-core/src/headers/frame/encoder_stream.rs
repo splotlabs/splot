@@ -312,9 +312,11 @@ pub struct KeyFrameTxParams {
     pub allow_tcq: bool,
     /// `delta_q_res` of a frame that codes `delta_q_present` (§ 5.18.7.8), `0..=3`.
     pub delta_q_res: Option<u8>,
-    /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1` and
-    /// `allow_local_intrabc = 0` (§ 5.18.3.4); an inter frame refuses it.
+    /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1`
+    /// (§ 5.18.3.4); an inter frame refuses it.
     pub allow_intrabc: bool,
+    /// With `allow_intrabc`, `allow_local_intrabc` (else 0).
+    pub allow_local_intrabc: bool,
     /// `grain_seed` of an output frame of a sequence with
     /// `film_grain_params_present`, which codes `apply_grain = 1` with
     /// `fgm_id = 0` (§ 5.18.10.1); `None` codes `apply_grain = 0`.
@@ -347,6 +349,7 @@ impl Default for KeyFrameTxParams {
             allow_tcq: false,
             delta_q_res: None,
             allow_intrabc: false,
+            allow_local_intrabc: false,
             grain_seed: None,
             disable_cdf_update: false,
             disable_cross_frame_cdf_init: false,
@@ -758,7 +761,7 @@ fn key_frame_header_bits(
     let intrabc = IntrabcParams {
         allow_intrabc: tx.allow_intrabc,
         allow_global_intrabc: tx.allow_intrabc.then_some(true),
-        allow_local_intrabc: tx.allow_intrabc.then_some(false),
+        allow_local_intrabc: tx.allow_intrabc.then_some(tx.allow_local_intrabc),
         change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
         max_bvp_drl_bits_minus_1: None,
     };

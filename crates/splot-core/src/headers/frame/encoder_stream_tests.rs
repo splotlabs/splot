@@ -107,6 +107,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         allow_tcq: false,
                         delta_q_res: [None, Some(0), Some(3)][index],
                         allow_intrabc: index == 1,
+                        allow_local_intrabc: index == 1 && sb == SuperblockSize::Block64x64,
                         grain_seed: None,
                         disable_cdf_update: index == 2,
                         disable_cross_frame_cdf_init: false,
@@ -138,7 +139,8 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     let intrabc = core.intrabc.unwrap();
                     let global = tx.allow_intrabc.then_some(true);
                     assert_eq!(intrabc.allow_global_intrabc, global);
-                    assert_eq!(intrabc.allow_local_intrabc, global.map(|_| false));
+                    let local = global.map(|_| tx.allow_local_intrabc);
+                    assert_eq!(intrabc.allow_local_intrabc, local);
                     let dq = core.delta_q_params.unwrap();
                     assert_eq!(dq.delta_q_present.then_some(dq.delta_q_res), tx.delta_q_res);
                     let qm = core.setup_qm_params.unwrap();
