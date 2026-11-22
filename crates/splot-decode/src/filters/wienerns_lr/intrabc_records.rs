@@ -34,7 +34,7 @@ const MI_SIZE: usize = 4;
 const INTRABC_CONTEXT_MAX: usize = 2;
 const SKIP_CONTEXT_MAX: usize = 2;
 const MORPH_PRED_CONTEXT_MAX: usize = 2;
-fn intrabc_invalid_block_vector_error(tile_offset: ByteOffset) -> DecodeError {
+pub(super) fn intrabc_invalid_block_vector_error(tile_offset: ByteOffset) -> DecodeError {
     crate::pipeline::malformed_tile_payload(
         tile_offset,
         "6.19.7.12",
@@ -1080,7 +1080,7 @@ fn intrabc_luma_prediction_domain(
     })
 }
 
-fn tile_interval_for_block(
+pub(super) fn tile_interval_for_block(
     starts: &[u32],
     block_start: usize,
     block_len: usize,

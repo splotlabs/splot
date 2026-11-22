@@ -7,7 +7,7 @@ use super::lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitActivity, WienerNsL
 use super::lr_syntax::read_loop_restoration_for_call;
 use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state};
 use super::{
-    BLOCK_8X32, BLOCK_64X64, BlockSize, CALL_CFL_ALLOWED_IN_SDP, CALL_HAS_PARENT,
+    BLOCK_8X32, BLOCK_64X64, BLOCK_128X128, BlockSize, CALL_CFL_ALLOWED_IN_SDP, CALL_HAS_PARENT,
     CALL_PARENT_64X64, ChildCallSink, ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart,
     DecodeLimitName, DecodeLimits, DecodeTileWorkUnit, GeneralIntraLeafMode, PartitionAllowedInput,
     PartitionContextInput, PartitionDecisionMemo, PartitionTreeType, PartitionType,
@@ -78,6 +78,7 @@ pub(crate) fn decode_block_frontier(
         intra_region: call.intra_region(),
         cfl_allowed_in_sdp: call.cfl_allowed_in_sdp(),
         bru_active: true,
+        allow_extra_ibc_range: false,
     }
 }
 
@@ -137,6 +138,8 @@ struct TreeWalker<'payload> {
     chroma_ref: ChromaRefGeometry,
     /// The current superblock's § 5.20.2.1 `bru_mode`.
     bru_mode: u8,
+    /// § 5.20.3.1 `AllowExtraIBCRange`.
+    allow_extra_ibc_range: bool,
 }
 
 /// The leaf callbacks and parser states one superblock walk lends its leaves.
@@ -245,6 +248,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 partition_memo: PartitionDecisionMemo::default(),
                 chroma_ref: ChromaRefGeometry::new(0, 0, frame.sb_size),
                 bru_mode: BRU_ACTIVE,
+                allow_extra_ibc_range: false,
             },
             sb_size4,
             next_sb_row,
@@ -434,7 +438,8 @@ where
     let sub_size = call.b_size;
     let part = decode_block_part(call, &walker.intra_facts)?;
     let frontier = decode_block_frontier(call, chroma_ref, frame, sub_size, chroma_offset, part)
-        .with_bru_active(ACTIVE);
+        .with_bru_active(ACTIVE)
+        .with_allow_extra_ibc_range(walker.allow_extra_ibc_range);
     let decoded_leaf = DecodedLeafPublication::new(call, sub_size, walker.sb_mask);
     let (leaf_mode, command) = (hooks.on_leaf)(
         hooks.work_unit,
@@ -550,6 +555,12 @@ impl TreeWalker<'_> {
                 facts.read_partition_decision_input(partition_context, square_context);
             super::partition::read_partition_symbols(decision_input, cdfs, &mut self.symbols)?
         };
+        if frame.sb_size.index() != BLOCK_128X128 {
+            self.allow_extra_ibc_range = false;
+        } else if node.b_size.index() == BLOCK_128X128 {
+            self.allow_extra_ibc_range =
+                matches!(partition, PartitionType::Horz | PartitionType::Split);
+        }
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
         Ok((partition, node.with_cfl_allowed_in_sdp(cfl_allowed_in_sdp)))
     }

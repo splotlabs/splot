@@ -495,3 +495,45 @@ fn tip_without_an_inter_closest_reference_is_rejected_at_every_width() {
         }
     }
 }
+
+/// An IntraBC leaf with `morph_pred` 1 whose block vector moved by (-1, -1)
+/// leaves the tile breaks § 6.19.5.4 (`is_offset_mv_valid(-1, -1)` through
+/// § 6.19.7.12 `is_mv_valid`): it is rejected at every worker count and
+/// frame delay, while valid morph streams still decode alike.
+#[test]
+fn intrabc_morph_offset_vector_outside_the_tile_is_rejected_at_every_width() {
+    let bad = include_bytes!(
+        "../../../tests/conformance/vectors/invalid/syn-intrabc-morph-offset-dv-512x128.ivf"
+    );
+    let morph: [(&str, &[u8]); 2] = [
+        (
+            "mono-morph",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-mono-intrabc-morph-128x128-q100.ivf"
+            ),
+        ),
+        (
+            "morph-edge",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-lossless-segments-morph-edge-210x150-q180.ivf"
+            ),
+        ),
+    ];
+    for threads in [1, 2, 8] {
+        for delay in [FrameDelay::from(1usize), FrameDelay::Auto] {
+            let error = collect_raw(&context(threads, delay), bad, &DecodeOptions::default())
+                .expect_err("a morph block vector whose offset leaves the tile must be rejected");
+            assert!(
+                matches!(error, DecodeError::MalformedSource { .. })
+                    && error.to_string().contains("is_offset_mv_valid"),
+                "{threads} workers: {error}"
+            );
+            for (name, bytes) in morph {
+                let expected = collect_raw(&depth_one(), bytes, &DecodeOptions::default()).unwrap();
+                let actual =
+                    collect_raw(&context(threads, delay), bytes, &DecodeOptions::default());
+                assert!(actual.unwrap() == expected, "{name} at {threads} workers");
+            }
+        }
+    }
+}

@@ -207,6 +207,14 @@ fn resolve_pending_intrabc(
         info.ref_selection(),
     );
     let info = resolve_pending_intrabc_info(info, pred_mv);
+    crate::filters::wienerns_lr::intrabc_mv_valid::check_intrabc_block_vector(
+        state.core,
+        &frontier,
+        (n4w, n4h),
+        sb_h4,
+        info,
+        state.tile_offset,
+    )?;
     let mv = Mv {
         row: info.block_mv.row,
         col: info.block_mv.col,
