@@ -4832,6 +4832,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-KEY-FRAME-METADATA"
+name = "Encoder ICC profile, ITU-T T.35 and unregistered user data metadata"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.17.2", "5.17.4", "5.17.9", "5.17.13", "6.16.3", "6.16.4", "6.16.9", "6.16.12", "7.3.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/content.rs"
+change_id = "encoder-key-frame-metadata"
+owner = "encoder"
+risk = "low"
+notes = "Config::key_frame_metadata takes the bytes of an ICC profile, of metadata_itut_t35() and of metadata_user_data_unregistered(). The encoder copies each unchanged into a prefix metadata short OBU with LAYER_GLOBAL and GLOBAL_PERSISTENCE after the HDR metadata of every key frame. It refuses an ICC profile shorter than its 128-byte header, T.35 data without a country code, extension byte or payload byte, and user data shorter than its UUID. splot encode takes --icc, --itut-t35 and --user-data-unregistered files."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_content_tests.rs::key_frames_carry_the_metadata_payloads", "crates/splot-encode/src/intra_frame_content_tests.rs::avm_decodes_a_stream_with_metadata_payloads_like_splot", "crates/splot-encode/src/intra_frame_content_tests.rs::rejects_a_metadata_payload_its_syntax_cannot_carry", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::metadata_obus_parse_back", "crates/splot-cli/tests/encode_decode_roundtrip.rs::metadata_files_write_metadata_obus"]
+commands = ["cargo test -p splot-encode metadata_payload", "cargo test -p splot-cli --test encode_decode_roundtrip metadata_files"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MINIMAL-INTRA-IVF"
 name = "Encoder minimal-intra IVF temporal-unit assembler"
 category = "encoder"

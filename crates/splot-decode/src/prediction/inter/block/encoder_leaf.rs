@@ -1221,7 +1221,7 @@ impl EncoderInterTile {
 pub(crate) fn encoder_temporal_context(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<u16>,
+    reference: &ReferenceMetadata,
     bit_depth: BitDepth,
 ) -> Result<Option<Arc<TemporalMvContext>>> {
     if !frame_uses_temporal_mvs(core) {
@@ -1261,7 +1261,7 @@ pub(crate) fn encoder_temporal_context(
 pub(crate) fn encoder_motion_field<'a>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<u16>,
+    reference: &ReferenceMetadata,
     bit_depth: BitDepth,
     records: impl IntoIterator<Item = &'a [TemporalMotionBlock]>,
 ) -> Result<MotionFieldHandle> {

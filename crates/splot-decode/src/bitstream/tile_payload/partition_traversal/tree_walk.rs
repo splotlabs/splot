@@ -141,11 +141,67 @@ struct TreeWalker<'payload> {
     allow_extra_ibc_range: bool,
 }
 
+/// The § 5.20.5 leaf syntax of a walk. `ACTIVE` is whether the leaf's
+/// superblock has the § 5.20.2.1 `bru_mode` `BRU_ACTIVE`, which is constant
+/// over the superblock's walk.
+pub(crate) trait LeafDecoder<'payload> {
+    type Command;
+    type Error;
+
+    fn decode_leaf<const ACTIVE: bool>(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'payload>,
+        frontier: &DecodeBlockFrontier,
+        neighbours: LeafNeighbours<'_>,
+    ) -> Result<(GeneralIntraLeafMode, Self::Command), Self::Error>;
+}
+
+/// A closure as the leaf syntax of both BRU states.
+#[cfg(test)]
+impl<'payload, E, C, F> LeafDecoder<'payload> for F
+where
+    F: FnMut(
+        &mut DecodeTileWorkUnit,
+        &mut SymbolDecoder<'payload>,
+        &DecodeBlockFrontier,
+        LeafNeighbours<'_>,
+    ) -> Result<(GeneralIntraLeafMode, C), E>,
+{
+    type Command = C;
+    type Error = E;
+
+    fn decode_leaf<const ACTIVE: bool>(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'payload>,
+        frontier: &DecodeBlockFrontier,
+        neighbours: LeafNeighbours<'_>,
+    ) -> Result<(GeneralIntraLeafMode, C), E> {
+        self(work_unit, symbols, frontier, neighbours)
+    }
+}
+
+/// Pins a closure to the leaf signature, which a [`LeafDecoder`] bound alone
+/// does not infer.
+#[cfg(test)]
+pub(crate) fn leaf_fn<'payload, E, C, F>(leaf: F) -> F
+where
+    F: FnMut(
+        &mut DecodeTileWorkUnit,
+        &mut SymbolDecoder<'payload>,
+        &DecodeBlockFrontier,
+        LeafNeighbours<'_>,
+    ) -> Result<(GeneralIntraLeafMode, C), E>,
+{
+    leaf
+}
+
 /// The leaf callbacks and parser states one superblock walk lends its leaves.
-struct LeafHooks<'h, F, P> {
+struct LeafHooks<'h, L, P> {
     work_unit: &'h mut DecodeTileWorkUnit,
     mi_size_state: &'h mut TileMiSizeState,
-    on_leaf: &'h mut F,
+    on_leaf: &'h mut L,
     on_published: &'h mut P,
 }
 
@@ -259,21 +315,16 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         })
     }
 
-    pub(crate) fn decode_next_superblock_with_publication<E, C, F, P>(
+    pub(crate) fn decode_next_superblock_with_publication<L, P>(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
         mi_size_state: &mut TileMiSizeState,
-        on_leaf: &mut F,
+        on_leaf: &mut L,
         on_published: &mut P,
-    ) -> Result<Option<[usize; 2]>, GeneralIntraTreeWalkError<E>>
+    ) -> Result<Option<[usize; 2]>, GeneralIntraTreeWalkError<L::Error>>
     where
-        F: FnMut(
-            &mut DecodeTileWorkUnit,
-            &mut SymbolDecoder<'payload>,
-            &DecodeBlockFrontier,
-            LeafNeighbours<'_>,
-        ) -> Result<(GeneralIntraLeafMode, C), E>,
-        P: FnMut(DecodedLeafPublication, C),
+        L: LeafDecoder<'payload>,
+        P: FnMut(DecodedLeafPublication, L::Command),
     {
         let tile_bounds = self.walker.tile_bounds;
         if self.next_sb_row >= tile_bounds.mi_row_end.min(self.frame.mi_rows) {
@@ -302,9 +353,9 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             && sb_width <= self.frame.mi_cols.saturating_sub(sb_col);
         let root = TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, ROOT_HAS_CHROMA);
         if self.walker.bru_mode == BRU_ACTIVE {
-            walk_call::<_, _, _, _, true>(&self.frame, &mut self.walker, &mut hooks, root)
+            walk_call::<_, _, true>(&self.frame, &mut self.walker, &mut hooks, root)
         } else {
-            walk_call::<_, _, _, _, false>(&self.frame, &mut self.walker, &mut hooks, root)
+            walk_call::<_, _, false>(&self.frame, &mut self.walker, &mut hooks, root)
         }
         .map_err(|error| *error)?;
         self.next_sb_col = self.next_sb_col.saturating_add(self.sb_size4);
@@ -348,20 +399,15 @@ impl<E> From<TilePartitionTraversalError> for WalkError<E> {
 /// children in syntax order or its leaf block. `ACTIVE` is whether the
 /// superblock's § 5.20.2.1 `bru_mode` is `BRU_ACTIVE`, a constant so that an
 /// active superblock folds the § 5.20.3.1 / § 5.20.3.2 BRU gates.
-fn walk_call<'payload, E, C, F, P, const ACTIVE: bool>(
+fn walk_call<'payload, L, P, const ACTIVE: bool>(
     frame: &TilePartitionFrameFacts,
     walker: &mut TreeWalker<'payload>,
-    hooks: &mut LeafHooks<'_, F, P>,
+    hooks: &mut LeafHooks<'_, L, P>,
     call: TilePartitionCall,
-) -> Result<(), WalkError<E>>
+) -> Result<(), WalkError<L::Error>>
 where
-    F: FnMut(
-        &mut DecodeTileWorkUnit,
-        &mut SymbolDecoder<'payload>,
-        &DecodeBlockFrontier,
-        LeafNeighbours<'_>,
-    ) -> Result<(GeneralIntraLeafMode, C), E>,
-    P: FnMut(DecodedLeafPublication, C),
+    L: LeafDecoder<'payload>,
+    P: FnMut(DecodedLeafPublication, L::Command),
 {
     walker.step_count += 1;
     if walker.step_count > walker.step_max {
@@ -379,9 +425,9 @@ where
     } else {
         if is_intra_sdp_shared_root(frame, call) {
             let luma = call.with_tree_type(PartitionTreeType::LumaPart);
-            walk_detached::<_, _, _, _, ACTIVE>(frame, walker, hooks, luma, chroma_ref)?;
+            walk_detached::<_, _, ACTIVE>(frame, walker, hooks, luma, chroma_ref)?;
             let chroma = call.with_tree_type(PartitionTreeType::ChromaPart);
-            return walk_detached::<_, _, _, _, ACTIVE>(frame, walker, hooks, chroma, chroma_ref);
+            return walk_detached::<_, _, ACTIVE>(frame, walker, hooks, chroma, chroma_ref);
         }
         let (partition, mut call) = if call.b_size == frame.sb_size {
             read_loop_restoration_for_call(
@@ -421,7 +467,7 @@ where
             let extended_chroma = visit_partition_children(
                 &mut |child, inherited| {
                     walker.chroma_ref = inherited;
-                    walk_call::<_, _, _, _, ACTIVE>(frame, walker, hooks, child)
+                    walk_call::<_, _, ACTIVE>(frame, walker, hooks, child)
                 },
                 call,
                 chroma_ref,
@@ -432,7 +478,7 @@ where
                 using_extended_sdp,
             )?;
             return match extended_chroma {
-                Some(chroma) => walk_detached::<_, _, _, _, ACTIVE>(
+                Some(chroma) => walk_detached::<_, _, ACTIVE>(
                     frame,
                     walker,
                     hooks,
@@ -450,16 +496,18 @@ where
     let frontier = decode_block_frontier(call, chroma_ref, frame, sub_size, chroma_offset, part)
         .with_bru_active(ACTIVE);
     let decoded_leaf = DecodedLeafPublication::new(call, sub_size, walker.sb_mask);
-    let (leaf_mode, command) = (hooks.on_leaf)(
-        hooks.work_unit,
-        &mut walker.symbols,
-        &frontier,
-        LeafNeighbours {
-            edges: hooks.mi_size_state,
-            collocated: &walker.intra_facts,
-        },
-    )
-    .map_err(|error| Box::new(GeneralIntraTreeWalkError::Leaf(error)))?;
+    let (leaf_mode, command) = hooks
+        .on_leaf
+        .decode_leaf::<ACTIVE>(
+            hooks.work_unit,
+            &mut walker.symbols,
+            &frontier,
+            LeafNeighbours {
+                edges: hooks.mi_size_state,
+                collocated: &walker.intra_facts,
+            },
+        )
+        .map_err(|error| Box::new(GeneralIntraTreeWalkError::Leaf(error)))?;
     publish_intra_leaf_state(
         frame,
         &call,
@@ -475,24 +523,19 @@ where
 }
 
 #[inline(never)]
-fn walk_detached<'payload, E, C, F, P, const ACTIVE: bool>(
+fn walk_detached<'payload, L, P, const ACTIVE: bool>(
     frame: &TilePartitionFrameFacts,
     walker: &mut TreeWalker<'payload>,
-    hooks: &mut LeafHooks<'_, F, P>,
+    hooks: &mut LeafHooks<'_, L, P>,
     call: TilePartitionCall,
     chroma_ref: ChromaRefGeometry,
-) -> Result<(), WalkError<E>>
+) -> Result<(), WalkError<L::Error>>
 where
-    F: FnMut(
-        &mut DecodeTileWorkUnit,
-        &mut SymbolDecoder<'payload>,
-        &DecodeBlockFrontier,
-        LeafNeighbours<'_>,
-    ) -> Result<(GeneralIntraLeafMode, C), E>,
-    P: FnMut(DecodedLeafPublication, C),
+    L: LeafDecoder<'payload>,
+    P: FnMut(DecodedLeafPublication, L::Command),
 {
     walker.chroma_ref = chroma_ref;
-    walk_call::<_, _, _, _, ACTIVE>(frame, walker, hooks, call)
+    walk_call::<_, _, ACTIVE>(frame, walker, hooks, call)
 }
 
 /// Hands `sink` the children of `call` in syntax order and returns the
@@ -783,7 +826,7 @@ mod row_cursor_tests {
                     .decode_next_superblock_with_publication(
                         &mut work,
                         &mut states,
-                        &mut |_, _, _, _| Ok::<_, !>((leaf_mode(), ())),
+                        &mut leaf_fn(|_, _, _, _| Ok::<_, !>((leaf_mode(), ()))),
                         &mut |_, ()| {},
                     )
                     .unwrap();
@@ -821,14 +864,14 @@ mod row_cursor_tests {
             let result = cursor.decode_next_superblock_with_publication(
                 &mut work,
                 &mut states,
-                &mut |_, _, _, _| {
+                &mut leaf_fn(|_, _, _, _| {
                     calls += 1;
                     if calls == 2 {
                         Err("malformed second leaf")
                     } else {
                         Ok((leaf_mode(), calls))
                     }
-                },
+                }),
                 &mut |_, command| published.push(command),
             );
             if !matches!(result, Ok(Some(_))) {
@@ -861,7 +904,7 @@ mod row_cursor_tests {
             .decode_next_superblock_with_publication(
                 &mut work,
                 &mut states,
-                &mut |_, _, frontier, _| {
+                &mut leaf_fn(|_, _, frontier, _| {
                     parts.push(frontier.part());
                     let leaf = if frontier.is_chroma_part() {
                         GeneralIntraLeafMode::chroma(0)
@@ -875,7 +918,7 @@ mod row_cursor_tests {
                         )
                     };
                     Ok::<_, !>((leaf, ()))
-                },
+                }),
                 &mut |_, ()| published += 1,
             )
             .unwrap();
@@ -912,7 +955,7 @@ mod row_cursor_tests {
             .decode_next_superblock_with_publication(
                 &mut work,
                 &mut states,
-                &mut |_, _, frontier, _| {
+                &mut leaf_fn(|_, _, frontier, _| {
                     parts.push(frontier.part());
                     let leaf = if frontier.is_chroma_part() {
                         GeneralIntraLeafMode::chroma(0)
@@ -920,7 +963,7 @@ mod row_cursor_tests {
                         GeneralIntraLeafMode::no_luma_mode().mark_intrabc()
                     };
                     Ok::<_, !>((leaf, ()))
-                },
+                }),
                 &mut |_, ()| {},
             )
             .unwrap();
@@ -956,11 +999,11 @@ mod row_cursor_tests {
         let result = cursor.decode_next_superblock_with_publication(
             &mut work,
             &mut states,
-            &mut |_, _, frontier, _| {
+            &mut leaf_fn(|_, _, frontier, _| {
                 leaf_calls += 1;
                 assert!(frontier.is_luma_part());
                 Err::<(GeneralIntraLeafMode, ()), _>("luma decode failed")
-            },
+            }),
             &mut |_, ()| published += 1,
         );
 
