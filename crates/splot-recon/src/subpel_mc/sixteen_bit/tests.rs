@@ -3,7 +3,7 @@
 
 //! The word-lane kernels against the portable kernels.
 
-use super::super::block::{Block, Sink, TAPS, Taps, is_cell, stage_len};
+use super::super::block::{Block, Sink, TAPS, Taps, is_cell, reach, stage_len};
 use super::super::{NUM_FILTER_TYPES, portable};
 
 const STRIDE: usize = 160;
@@ -256,6 +256,58 @@ fn neon_wide_puts_match_portable_at_narrow_strides() {
                             check_predict(&block, max, &label);
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Blocks whose storage ends with their window, which leaves a vertical
+/// pass of an odd count of tap pairs no rows below it to weigh by zero.
+#[test]
+fn blocks_at_the_end_of_their_storage_match_portable() {
+    let shapes = [(4, 4), (4, 8), (8, 4), (8, 8), (16, 4), (32, 8)];
+    for &max in maxes() {
+        let planes = planes(max);
+        for (case, &(w, h)) in shapes.iter().enumerate() {
+            for filter in 0..NUM_FILTER_TYPES {
+                for (h_phase, v_phase) in [(0, 5), (9, 0), (9, 5), (15, 1)] {
+                    let (horizontal, vertical) = (taps(filter, h_phase), taps(filter, v_phase));
+                    let rows = h + vertical.map_or(0, |taps| taps.span() - 1);
+                    let origin = 3 + case;
+                    let block = |plane: usize| Block {
+                        source: &planes[plane][..origin + (rows - 1) * STRIDE + reach(w)],
+                        stride: STRIDE,
+                        origin,
+                        w,
+                        h,
+                        horizontal,
+                        vertical,
+                    };
+                    let label = format!("{max} {w}x{h} filter {filter} phases {h_phase},{v_phase}");
+                    let (first, second) = (block(0), block(1));
+                    check_predict(&first, max, &label);
+                    if w * h > 64 {
+                        continue;
+                    }
+                    let stride = w + 5;
+                    let run = |neon: bool| {
+                        let mut stage = vec![0x5a5a_u16 as i16; stage_len(rows, w, vertical)];
+                        let mut output = vec![0xa5a5_u16; stride * h];
+                        let blocks = [&first, &second];
+                        if !neon || !super::compound(blocks, (11, max), &mut output, stride) {
+                            portable::compound_u16(
+                                blocks,
+                                11,
+                                max,
+                                &mut stage,
+                                &mut output,
+                                stride,
+                            );
+                        }
+                        output
+                    };
+                    assert_eq!(run(true), run(false), "compound {label}");
                 }
             }
         }

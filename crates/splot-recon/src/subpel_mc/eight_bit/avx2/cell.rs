@@ -29,19 +29,16 @@ const NARROW_ROWS: [u8; 32] = {
 };
 
 /// `Some` of `$f::<$w, G, H, V, $put, $c>` for the kernel key `5 * H + V`
-/// of a reference of a `$w`-square cell, `H` its [`even_pairs`], `None` for
-/// any other key.
+/// of a reference of a `$w`-square cell, each pass of an even count of tap
+/// pairs, `None` for any other key.
 macro_rules! by_key {
     ($key:expr, 8, $put:literal, $c:expr, $f:ident $args:tt) => {
         by_key!(@ $key, 8, $put, $c, $f $args, [
-            0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4,
-            20 4 0, 21 4 1, 22 4 2, 23 4 3, 24 4 4
+            0 0 0, 2 0 2, 4 0 4, 10 2 0, 12 2 2, 14 2 4, 20 4 0, 22 4 2, 24 4 4
         ])
     };
     ($key:expr, 4, $put:literal, $c:expr, $f:ident $args:tt) => {
-        by_key!(@ $key, 4, $put, $c, $f $args, [
-            0 0 0, 1 0 1, 2 0 2, 10 2 0, 11 2 1, 12 2 2
-        ])
+        by_key!(@ $key, 4, $put, $c, $f $args, [0 0 0, 2 0 2, 10 2 0, 12 2 2])
     };
     (@ $key:expr, $w:literal, $put:literal, $c:expr, $f:ident $args:tt,
         [$($k:literal $h:literal $v:literal),*]) => {
@@ -163,14 +160,11 @@ fn row_offsets(t: Avx2, top: i32, [first, last]: [i32; 2], stride: u32) -> [u32;
     out
 }
 
-/// The kernel key `5 * H + V` of a reference's tap-pair counts, zero for
-/// a skipped pass, `H` its [`even_pairs`].
-fn key(horizontal: Option<&Taps>, vertical: Option<&Taps>) -> usize {
-    5 * even_pairs(horizontal) + vertical.map_or(0, |taps| taps.count)
-}
-
-/// The groups of one reference of a `W`-square cell of `G` groups, `None`
-/// for a key no kernel takes.
+/// The groups of one reference of a `W`-square cell of `G` groups, each
+/// pass run with an even count of tap pairs, an odd count with one more
+/// pair of zero taps: `None` for a key no kernel takes, or when the two
+/// rows such a vertical pair weighs below a window read in place are not in
+/// `source`.
 #[inline]
 #[target_feature(enable = "avx2")]
 fn groups<const W: usize, const G: usize, const PUT: bool>(
@@ -180,7 +174,12 @@ fn groups<const W: usize, const G: usize, const PUT: bool>(
     horizontal: Option<&Taps>,
     vertical: Option<&Taps>,
 ) -> Option<[__m256i; G]> {
-    let key = key(horizontal, vertical);
+    let pairs = vertical.map_or(0, |taps| taps.count);
+    let last = reads.base as usize + (W + 2 * pairs) * reads.stride as usize;
+    if !clamped && !pairs.is_multiple_of(2) && last + 16 > source.len() {
+        return None;
+    }
+    let key = 5 * even_pairs(horizontal) + pairs.next_multiple_of(2);
     let taps = [horizontal.unwrap_or(&SKIPPED), vertical.unwrap_or(&SKIPPED)];
     match (W, PUT) {
         (8, false) => by_key!(key, 8, false, clamped, predict(t, source, reads, taps)),

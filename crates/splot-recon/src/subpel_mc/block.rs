@@ -326,7 +326,23 @@ impl<'a, T> Block<'a, T> {
     pub(super) fn start(&self, row: usize) -> usize {
         self.origin + row * self.stride
     }
+
+    /// The tap pairs of a vertical pass over this block with an even count
+    /// of them: those of its filter, an odd count with one more pair, whose
+    /// taps are zero. That pair weighs the two rows below the window, so
+    /// `None` when the storage does not hold them.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn even_rows(&self) -> Option<usize> {
+        let pairs = self.vertical.map_or(0, |taps| taps.count);
+        let held = || self.start(self.h + 2 * pairs) + reach(self.w) <= self.source.len();
+        (pairs.is_multiple_of(2) || held()).then(|| pairs.next_multiple_of(2))
+    }
 }
+
+/// Rows of storage a block holds below the window of a vertical pass of an
+/// odd count of tap pairs: the AVX2 kernels run such a pass with one more
+/// pair, of zero taps ([`Block::even_rows`]).
+const PAD_ROWS: usize = if cfg!(target_arch = "x86_64") { 2 } else { 0 };
 
 /// Window columns every kernel may read past the window origin of a row.
 pub(super) const fn reach(w: usize) -> usize {
@@ -473,7 +489,8 @@ impl Window {
 
     /// The source index of the window origin in a plane of `geometry` when
     /// the window lies inside `[firstX, firstY, lastX, lastY]` clamped to the
-    /// plane and its last row has [`reach`] samples of storage.
+    /// plane and its last row, [`PAD_ROWS`] below it for a vertical pass of an
+    /// odd count of tap pairs, has [`reach`] samples of storage.
     #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn origin(
@@ -489,7 +506,11 @@ impl Window {
             return None;
         }
         let origin = self.row as usize * stride + self.column as usize;
-        let end = origin + self.rows.checked_sub(1)? * stride + reach(self.w);
+        let odd = self
+            .vertical
+            .is_some_and(|taps| !taps.count.is_multiple_of(2));
+        let rows = self.rows + if odd { PAD_ROWS } else { 0 };
+        let end = origin + rows.checked_sub(1)? * stride + reach(self.w);
         (end <= len).then_some(origin)
     }
 
@@ -662,7 +683,7 @@ fn emulated<T: Sample, R>(
     slot: usize,
     f: impl FnOnce(&Block<'_, T>) -> R,
 ) -> Option<R> {
-    let len = window.rows * reach(window.w);
+    let len = (window.rows + PAD_ROWS) * reach(window.w);
     T::with_storage(slot, len, |storage| {
         Some(f(&window.emulate(view, bounds, storage)?))
     })

@@ -31,11 +31,12 @@ fn token() -> Option<Avx2> {
     fearless_simd::Level::baseline().as_avx2()
 }
 
-/// Whether the byte-lane kernels cover the shape of `block`, which
-/// [`super::fits`]: strips of 16 columns, or 8 or 4 columns in pairs of
-/// rows.
+/// Whether the byte-lane kernels cover `block`, which [`super::fits`]:
+/// strips of 16 columns, or 8 or 4 columns in pairs of rows, and the rows
+/// of a vertical pass of [`Block::even_rows`] in its storage.
 fn fits<T>(block: &Block<'_, T>) -> bool {
-    block.w >= 16 || (block.h.is_multiple_of(2) && (block.w == 4 || block.w >= 8))
+    (block.w >= 16 || (block.h.is_multiple_of(2) && (block.w == 4 || block.w >= 8)))
+        && block.even_rows().is_some()
 }
 
 /// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits:
@@ -218,18 +219,15 @@ pub(in crate::subpel_mc) fn even_pairs(taps: Option<&Taps>) -> usize {
 }
 
 /// Calls `$call!(H, V)` for the shape key `5 * H + V` of a kernel whose
-/// passes have `H` ([`even_pairs`]) and `V` tap pairs; `$narrow` keys have
-/// `H` at most 2.
+/// passes have `H` ([`even_pairs`]) and `V` ([`Block::even_rows`]) tap
+/// pairs; `$narrow` keys have `H` at most 2.
 macro_rules! shapes {
     ($key:expr, $narrow:literal, $call:ident) => {
         if $narrow {
-            shapes!(@ $key, $call, [
-                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4
-            ])
+            shapes!(@ $key, $call, [0 0 0, 2 0 2, 4 0 4, 10 2 0, 12 2 2, 14 2 4])
         } else {
             shapes!(@ $key, $call, [
-                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4,
-                20 4 0, 21 4 1, 22 4 2, 23 4 3, 24 4 4
+                0 0 0, 2 0 2, 4 0 4, 10 2 0, 12 2 2, 14 2 4, 20 4 0, 22 4 2, 24 4 4
             ])
         }
     };
@@ -361,7 +359,10 @@ fearless_simd::kernel!(
 #[inline]
 #[target_feature(enable = "avx2")]
 fn strips<O: LaneOut>(t: Avx2, block: &Block<'_, u8>, out: &mut O) {
-    let key = 5 * even_pairs(block.horizontal) + pairs(block.vertical);
+    let Some(rows) = block.even_rows() else {
+        return;
+    };
+    let key = 5 * even_pairs(block.horizontal) + rows;
     macro_rules! narrow {
         ($h:literal, $v:literal) => {
             pair_block::<$h, $v, 4, O>(t, block, out)

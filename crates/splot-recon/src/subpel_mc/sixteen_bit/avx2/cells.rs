@@ -18,7 +18,8 @@ use core::arch::x86_64::*;
 use fearless_simd::Avx2;
 
 /// The COMPOUND_AVERAGE, clipped to `clip.1`, of a 4x4 or 8x8 cell pair
-/// in registers.
+/// in registers, or in the portable kernels for a pair the register cells
+/// decline.
 pub(in crate::subpel_mc::sixteen_bit) fn compound_cell(
     blocks: [&Block<'_, u16>; 2],
     clip: (i32, u16),
@@ -26,8 +27,8 @@ pub(in crate::subpel_mc::sixteen_bit) fn compound_cell(
     stride: usize,
 ) {
     match token() {
-        Some(t) => cell_pair(t, blocks, clip, output, stride),
-        None => generic::compound_cell(blocks, clip, output, stride),
+        Some(t) if cell_pair(t, blocks, clip, &mut *output, stride) => {}
+        _ => generic::compound_cell(blocks, clip, output, stride),
     }
 }
 
@@ -112,16 +113,16 @@ fearless_simd::kernel!(
         clip: (i32, u16),
         output: &mut [u16],
         stride: usize,
-    ) {
+    ) -> bool {
         let [a, b] = blocks.map(|block| {
             let reads = Reads::in_place(block.origin, block.stride);
             (reads, false, block.horizontal, block.vertical)
         });
         let sources = [blocks[0].source, blocks[1].source];
         if blocks[0].w == 4 {
-            store_cell::<4>(t, sources, [&a, &b], clip, output, stride);
+            store_cell::<4>(t, sources, [&a, &b], clip, output, stride)
         } else {
-            store_cell::<8>(t, sources, [&a, &b], clip, output, stride);
+            store_cell::<8>(t, sources, [&a, &b], clip, output, stride)
         }
     }
 );
@@ -320,8 +321,8 @@ fn store_cell<const W: usize>(
 }
 
 /// Calls `cell::<$w, H, V, C>` for the listed tap-pair counts of both
-/// passes, `H` the [`even_pairs`] of the horizontal one, and both read
-/// forms, the in-place cell of `$common` pairs inline.
+/// passes, each the [`even_pairs`] of its filter, and both read forms, the
+/// in-place cell of `$common` pairs inline.
 macro_rules! by_pairs {
     ($h:expr, $v:expr, $c:expr, $w:literal, $common:literal, $args:tt, [$($hh:literal $vv:literal),*]) => {
         #[allow(unreachable_patterns, reason = "the inline key is listed again")]
@@ -341,13 +342,15 @@ macro_rules! by_pairs {
 #[target_feature(enable = "avx2")]
 fn cell_of<const W: usize>(t: Avx2, source: &[u16], placed: &Placed) -> Option<[__m256i; 8]> {
     let &(ref reads, clamped, horizontal, vertical) = placed;
-    let h = horizontal.map_or(0, even_pairs);
-    let v = vertical.map_or(0, |taps| taps.count);
+    let (h, v) = (
+        horizontal.map_or(0, even_pairs),
+        vertical.map_or(0, even_pairs),
+    );
     if W == 4 {
-        by_pairs!(h, v, clamped, 4, 2, (t, source, reads, (horizontal, vertical)), [0 0, 0 1, 0 2, 2 0, 2 1, 2 2])
+        by_pairs!(h, v, clamped, 4, 2, (t, source, reads, (horizontal, vertical)), [0 0, 0 2, 2 0, 2 2])
     } else {
         by_pairs!(h, v, clamped, 8, 4, (t, source, reads, (horizontal, vertical)),
-            [0 0, 0 1, 0 2, 0 3, 0 4, 2 0, 2 1, 2 2, 2 3, 2 4, 4 0, 4 1, 4 2, 4 3, 4 4])
+            [0 0, 0 2, 0 4, 2 0, 2 2, 2 4, 4 0, 4 2, 4 4])
     }
 }
 

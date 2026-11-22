@@ -29,39 +29,31 @@ fn token() -> Option<Avx2> {
 
 /// Predicts a filtered 16-bit `block` into `sink`, as [`super::predict`]
 /// admits: in word lanes when a row holds the 16 samples a horizontal pass
-/// loads, else in the portable kernels.
+/// loads and the storage the rows of a vertical pass of
+/// [`Block::even_rows`], else in the portable kernels.
 pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
     match token() {
-        Some(t) if block.stride >= 16 => predict_lanes(t, block, sink),
+        Some(t) if block.stride >= 16 && block.even_rows().is_some() => {
+            predict_lanes(t, block, sink);
+        }
         _ => generic::predict(block, sink),
     }
 }
 
-/// The tap pairs of the horizontal pass of a kernel: those of `taps`, an
-/// odd count with one more pair, whose taps are zero. A row is loaded whole
-/// whatever its taps, so the pair reads nothing more, and the kernels of
-/// one and of three pairs need not exist.
+/// The tap pairs a kernel runs a pass of `taps` with: its own, an odd
+/// count with one more pair, whose taps are zero, so the kernels of one and
+/// of three pairs need not exist. A row is loaded whole whatever its taps,
+/// so the pair of a horizontal pass reads nothing more; that of a vertical
+/// pass weighs two rows below the window ([`Block::even_rows`]).
 pub(super) fn even_pairs(taps: &Taps) -> usize {
     taps.count.next_multiple_of(2)
 }
 
 /// Calls `$f::<W, P, _>` for 4-column pairs or 8-column strips and the
-/// pair count of a vertical pass, or with `even` the [`even_pairs`] of a
-/// horizontal one.
+/// even pair count of a pass: the [`even_pairs`] of a horizontal one, the
+/// [`Block::even_rows`] of a vertical one.
 macro_rules! specialize {
     ($four:expr, $pairs:expr, $f:ident($($arg:expr),*)) => {
-        match ($four, $pairs) {
-            (true, 1) => $f::<4, 1, _>($($arg),*),
-            (true, 2) => $f::<4, 2, _>($($arg),*),
-            (true, 3) => $f::<4, 3, _>($($arg),*),
-            (true, _) => $f::<4, 4, _>($($arg),*),
-            (false, 1) => $f::<8, 1, _>($($arg),*),
-            (false, 2) => $f::<8, 2, _>($($arg),*),
-            (false, 3) => $f::<8, 3, _>($($arg),*),
-            (false, _) => $f::<8, 4, _>($($arg),*),
-        }
-    };
-    (even $four:expr, $pairs:expr, $f:ident($($arg:expr),*)) => {
         match ($four, $pairs) {
             (true, 2) => $f::<4, 2, _>($($arg),*),
             (true, _) => $f::<4, 4, _>($($arg),*),
@@ -72,11 +64,10 @@ macro_rules! specialize {
 }
 
 /// Calls `$f::<W, H, V, _>` for the group width, the [`even_pairs`] of the
-/// horizontal pass and the pair count of the vertical one.
+/// horizontal pass and the [`Block::even_rows`] of the vertical one.
 macro_rules! specialize_pairs {
     ($four:expr, $h:expr, $v:expr, $f:ident $args:tt) => {
-        specialize_pairs!(@ $four, $h, $v, $f $args,
-            [2 1, 2 2, 2 3, 2 4, 4 1, 4 2, 4 3, 4 4])
+        specialize_pairs!(@ $four, $h, $v, $f $args, [2 2, 2 4, 4 2, 4 4])
     };
     (@ $four:expr, $h:expr, $v:expr, $f:ident $args:tt, [$($hh:literal $vv:literal),*]) => {
         match ($four, $h.min(4), $v.min(4)) {
@@ -151,15 +142,18 @@ fn shapes<O: WordOut>(t: Avx2, block: &Block<'_, u16>, out: &mut O, max: u16) {
         }
         return;
     }
+    let Some(rows) = block.even_rows() else {
+        return;
+    };
     match (block.horizontal, block.vertical) {
         (Some(taps), None) => {
-            specialize!(even four, even_pairs(taps), horizontal(t, block, taps, out, max));
+            specialize!(four, even_pairs(taps), horizontal(t, block, taps, out, max));
         }
-        (None, Some(taps)) => specialize!(four, taps.count, vertical(t, block, taps, out, max)),
+        (None, Some(taps)) => specialize!(four, rows, vertical(t, block, taps, out, max)),
         (Some(h_taps), Some(v_taps)) => specialize_pairs!(
             four,
             even_pairs(h_taps),
-            v_taps.count,
+            rows,
             two_pass(t, block, (h_taps, v_taps), out, max)
         ),
         (None, None) => copy(t, block, out, max),

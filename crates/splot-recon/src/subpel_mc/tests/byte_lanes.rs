@@ -1212,6 +1212,67 @@ fn check_byte_lanes() {
     }
 }
 
+/// Blocks whose storage ends with their window, which leaves a vertical
+/// pass of an odd count of tap pairs no rows below it to weigh by zero,
+/// against the portable kernels.
+#[test]
+fn byte_lanes_at_the_end_of_their_storage_match_the_portable_kernels() {
+    let (stride, rows) = (72usize, 44usize);
+    let texture: Vec<u8> = (0..stride * rows)
+        .map(|i| ((i * 7919 + i / stride * 104_729) % 256) as u8)
+        .collect();
+    let shapes = [(4, 4), (4, 8), (8, 4), (8, 8), (12, 4), (16, 4), (32, 8)];
+    for filter in 0..NUM_FILTER_TYPES {
+        let taps = |phase: usize| block::TAPS[filter][phase].as_ref();
+        for [x_phase, y_phase] in [[0, 5], [9, 0], [9, 5], [15, 1]] {
+            for (case, (w, h)) in shapes.into_iter().enumerate() {
+                let (horizontal, vertical) = (taps(x_phase), taps(y_phase));
+                let span = vertical.map_or(1, block::Taps::span);
+                let origin = 3 + case;
+                let end = origin + (h + span - 2) * stride + block::reach(w);
+                let block = block::Block {
+                    source: &texture[..end],
+                    stride,
+                    origin,
+                    w,
+                    h,
+                    horizontal,
+                    vertical,
+                };
+                let label = format!("{filter} {w}x{h} phases {x_phase},{y_phase}");
+                let mut stage = vec![0i16; block::stage_len(h + span - 1, w, vertical)];
+                let out_stride = w + 5;
+                let mut put = [vec![7u8; out_stride * h], vec![7u8; out_stride * h]];
+                eight_bit::put(&block, &mut put[0], out_stride);
+                let sink = &mut block::Sink::Put {
+                    output: &mut put[1],
+                    stride: out_stride,
+                };
+                portable::predict(&block, sink, &mut stage);
+                assert_eq!(put[0], put[1], "put {label}");
+                let mut first = [vec![0i16; w * h], vec![0i16; w * h]];
+                for (lanes, output) in (0..2).zip(&mut first) {
+                    let sink = &mut block::Sink::PrepNarrow { output, stride: w };
+                    if lanes == 0 || !eight_bit::predict(&block, sink) {
+                        portable::predict(&block, sink, &mut stage);
+                    }
+                }
+                assert_eq!(first[0], first[1], "prep {label}");
+                let mut fused = [vec![3u8; out_stride * h], vec![3u8; out_stride * h]];
+                let sink = &mut block::Sink::AverageNarrow {
+                    pred0: &first[0],
+                    forward: 11,
+                    output: &mut fused[0],
+                    stride: out_stride,
+                };
+                portable::predict(&block, sink, &mut stage);
+                eight_bit::compound([&block, &block], 11, &mut fused[1], out_stride);
+                assert_eq!(fused[0], fused[1], "compound {label}");
+            }
+        }
+    }
+}
+
 /// The 16-bit placement entry stores the § 7.13.3.18 oracle's
 /// COMPOUND_AVERAGE for every cell it takes, for 10-bit mixed and
 /// extreme-contrast samples at sub-pel and full-sample windows inside,
