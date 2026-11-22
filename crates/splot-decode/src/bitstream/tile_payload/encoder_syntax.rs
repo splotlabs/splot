@@ -18,8 +18,8 @@ use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
-    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, coefficient_scan_slice,
-    tx_class,
+    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QmFrameLevels,
+    coefficient_scan_slice, tx_class,
 };
 
 use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
@@ -613,14 +613,15 @@ pub fn dct_recon_params(
         plane,
         (log2_width, log2_height),
         (TxType::DctDct, false, false),
-        bit_depth,
+        (bit_depth, None),
     )
 }
 
 /// The decoder's dequantization and inverse-transform parameters of a
 /// `(log2 width, log2 height)` block of type `tx_type`, whose levels are TCQ
 /// levels when `use_tcq` ([`IntraTileSyntax::uses_tcq`]) and whose kernels are
-/// DDT kernels when `use_ddt` ([`IntraTileSyntax::uses_ddt`]).
+/// DDT kernels when `use_ddt` ([`IntraTileSyntax::uses_ddt`]), in a frame
+/// with the quantizer matrices `qm` ([`IntraTileSyntax::quant_matrices`]).
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Rule`] for an invalid shape.
@@ -629,14 +630,14 @@ pub fn recon_params(
     plane: PlaneId,
     (log2_width, log2_height): (u32, u32),
     (tx_type, use_tcq, use_ddt): (TxType, bool, bool),
-    bit_depth: BitDepth,
+    (bit_depth, qm): (BitDepth, Option<QmFrameLevels>),
 ) -> Result<(DequantBlockParams, InverseTransform2dOuter)> {
     block_recon_params(
         qindex,
         plane,
         (log2_width, log2_height),
         (tx_type as usize, use_tcq, use_ddt),
-        bit_depth,
+        (bit_depth, qm),
     )
     .map_err(rule("recon parameters"))
 }
