@@ -27,7 +27,7 @@ const fn bv(rows: i32, cols: i32) -> [i32; 2] {
 }
 
 fn global(block: &IntrabcMvBlock, mv: [i32; 2]) -> bool {
-    is_mv_valid(block, None, mv)
+    is_mv_valid::<fn(usize, usize) -> bool>(block, None, mv)
 }
 
 /// The tile-edge test of `block` (tile in 4x4 units) for `mv`.

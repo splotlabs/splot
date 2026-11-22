@@ -70,16 +70,16 @@ impl IbcBuffers {
 
 /// The leaf-order state that `check_valid_local_ibc` reads.
 #[derive(Clone, Copy)]
-pub(crate) struct LocalAreaState<'a> {
+pub(crate) struct LocalAreaState<'a, C> {
     /// `enable_sdp && FrameIsIntra`.
     pub(crate) sdp_intra: bool,
     pub(crate) buffers: &'a IbcBuffers,
     /// `IBCCoded[row][col]` in 4x4 units.
-    pub(crate) coded: &'a dyn Fn(usize, usize) -> bool,
+    pub(crate) coded: C,
 }
 
 /// What `check_valid_local_ibc` reads; `None` refuses every local source.
-pub(crate) type LocalArea<'a> = Option<LocalAreaState<'a>>;
+pub(crate) type LocalArea<'a, C> = Option<LocalAreaState<'a, C>>;
 
 /// One § 5.20.3.1 `decode_partition` call that returns at once because it
 /// lies outside the frame, in the walk order of a unit's entries.
@@ -225,19 +225,29 @@ impl IbcLocalReplay {
             self.next += 1;
             self.chunks_owed = false;
         }
-        while self.next < stop {
-            self.out_of_frame_through(self.next, calls)?;
-            let [r, c, w4, h4] = block(self.next)?;
+        for next in self.next..stop {
+            self.out_of_frame_through(next, calls)?;
+            let [r, c, w4, h4] = block(next)?;
             self.code([r, c], [w4, h4])?;
             self.update_chunks([r, c], [w4, h4], ChunkOrder::Grouped);
-            self.next += 1;
         }
+        self.next = self.next.max(stop);
         self.out_of_frame_through(stop, calls)
     }
 
     /// Replays the out-of-frame calls that the walk made before it stored
     /// entry `entry`.
+    #[inline]
     fn out_of_frame_through(&mut self, entry: usize, calls: &mut &[OutOfFrameCall]) -> Option<()> {
+        if calls.first().is_some_and(|call| call.entry <= entry) {
+            return self.replay_out_of_frame(entry, calls);
+        }
+        Some(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn replay_out_of_frame(&mut self, entry: usize, calls: &mut &[OutOfFrameCall]) -> Option<()> {
         while let Some((call, rest)) = calls.split_first()
             && call.entry <= entry
         {
@@ -265,10 +275,16 @@ impl IbcLocalReplay {
 
     /// The `update_ibc_buffers` calls of the block's 64x64 chunks after the
     /// first, which [`Self::code`] made.
+    #[inline]
     fn update_chunks(&mut self, origin: [usize; 2], size4: [usize; 2], order: ChunkOrder) {
-        if size4[0] <= 16 && size4[1] <= 16 {
-            return;
+        if size4[0] > 16 || size4[1] > 16 {
+            self.update_large_chunks(origin, size4, order);
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn update_large_chunks(&mut self, origin: [usize; 2], size4: [usize; 2], order: ChunkOrder) {
         for [r, c] in chunk_origins(origin, size4, order) {
             self.buffers.update(r, c);
         }
@@ -336,9 +352,9 @@ pub(crate) struct IntrabcMvBlock {
 
 /// § 6.19.5.4 `is_offset_mv_valid(dx, dy)` of the block vector `mv`
 /// (`[row, col]` in 1/8 samples).
-pub(crate) fn is_offset_mv_valid(
+pub(crate) fn is_offset_mv_valid<C: Fn(usize, usize) -> bool + Copy>(
     block: &IntrabcMvBlock,
-    local: LocalArea<'_>,
+    local: LocalArea<'_, C>,
     mv: [i32; 2],
     (dx, dy): (i32, i32),
 ) -> bool {
@@ -350,7 +366,11 @@ pub(crate) fn is_offset_mv_valid(
 }
 
 /// § 6.19.7.12 `is_mv_valid(mv)` for a block that codes `use_intrabc`.
-pub(crate) fn is_mv_valid(block: &IntrabcMvBlock, local: LocalArea<'_>, mv: [i32; 2]) -> bool {
+pub(crate) fn is_mv_valid<C: Fn(usize, usize) -> bool + Copy>(
+    block: &IntrabcMvBlock,
+    local: LocalArea<'_, C>,
+    mv: [i32; 2],
+) -> bool {
     is_mv_valid_wide(block, local, mv.map(i64::from))
 }
 
@@ -398,7 +418,11 @@ pub(crate) fn source_within_tile(
         && right <= tile[3] as i64
 }
 
-fn is_mv_valid_wide(block: &IntrabcMvBlock, local: LocalArea<'_>, mv: [i64; 2]) -> bool {
+fn is_mv_valid_wide<C: Fn(usize, usize) -> bool + Copy>(
+    block: &IntrabcMvBlock,
+    local: LocalArea<'_, C>,
+    mv: [i64; 2],
+) -> bool {
     let bottom_border = i64::from(mv[0] & 7 != 0);
     let right_border = i64::from(mv[1] & 7 != 0);
     let delta_row = mv[0] >> 3;
@@ -462,7 +486,12 @@ fn is_mv_valid_wide(block: &IntrabcMvBlock, local: LocalArea<'_>, mv: [i64; 2]) 
 }
 
 /// § 6.19.7.12 `check_valid_local_ibc(x, y)`; `act` is `(actRow, actCol)`.
-fn check_valid_local_ibc(state: &LocalAreaState<'_>, act: (i64, i64), x: i64, y: i64) -> bool {
+fn check_valid_local_ibc<C: Fn(usize, usize) -> bool>(
+    state: &LocalAreaState<'_, C>,
+    act: (i64, i64),
+    x: i64,
+    y: i64,
+) -> bool {
     if x >= act.1 * MI_SIZE && y >= act.0 * MI_SIZE {
         return false;
     }
@@ -531,11 +560,10 @@ pub(crate) fn check_intrabc_block_vector(
     if block.allow_local_intrabc && local.is_none() {
         return Err(selectable_state_error());
     }
-    let coded = |row, col| local.is_some_and(|replay| replay.coded(row, col));
     let local = local.map(|replay| LocalAreaState {
         sdp_intra: replay.sdp_intra,
         buffers: &replay.buffers,
-        coded: &coded,
+        coded: |row, col| replay.coded(row, col),
     });
     let mv = [info.block_mv.row, info.block_mv.col];
     if !is_mv_valid(&block, local, mv) {
