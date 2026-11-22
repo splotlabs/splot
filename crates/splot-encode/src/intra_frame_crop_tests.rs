@@ -26,7 +26,7 @@ fn cropped(config: &Config, recon: &[u8], window: CroppingWindow) -> Vec<u8> {
     let sizes = config.plane_sizes().unwrap();
     let frame: usize = sizes
         .iter()
-        .map(|size| (size.width() * size.height()) as usize * bytes)
+        .map(|size| size.width() * size.height() * bytes)
         .sum();
     let (w, h) = (
         config.width - window.left - window.right,
@@ -43,14 +43,14 @@ fn cropped(config: &Config, recon: &[u8], window: CroppingWindow) -> Vec<u8> {
                     u32::from(config.chroma.subsampling_y()),
                 ),
             };
-            let stride = size.width() as usize * bytes;
+            let stride = size.width() * bytes;
             let (left, top) = ((window.left >> sx) as usize, (window.top >> sy) as usize);
             let (cols, rows) = (((w + sx) >> sx) as usize, ((h + sy) >> sy) as usize);
             for row in top..top + rows {
                 let start = plane_start + row * stride + left * bytes;
                 out.extend_from_slice(&samples[start..start + cols * bytes]);
             }
-            plane_start += stride * size.height() as usize;
+            plane_start += stride * size.height();
         }
     }
     out
