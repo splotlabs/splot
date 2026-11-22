@@ -154,6 +154,9 @@ pub struct EncoderToolFlags {
     /// `enable_global_motion` (§ 5.4.6): each inter frame codes
     /// `use_global_motion`.
     pub global_motion: bool,
+    /// `monotonic_output_order_flag = 0` (§ 5.4.1): hidden frames code
+    /// `implicit_output_frame`.
+    pub implicit_output: bool,
     /// `explicit_num_ref_frames` with `NumRefFrames`, `1..=16` (§ 5.4.6);
     /// `None` keeps the default 8 slots.
     pub num_ref_frames: Option<u8>,
@@ -458,7 +461,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(false)?; // still_picture
     w.write_bits(0, 2)?; // max_tlayer_id
     w.write_bits(0, 3)?; // max_mlayer_id
-    w.write_flag(true)?; // monotonic_output_order_flag
+    w.write_flag(!tools.implicit_output)?; // monotonic_output_order_flag
     w.write_bits(width_bits - 1, 4)?;
     w.write_bits(height_bits - 1, 4)?;
     w.write_bits(params.width - 1, width_bits)?;

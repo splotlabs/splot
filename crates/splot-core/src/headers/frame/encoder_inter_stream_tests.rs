@@ -158,6 +158,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         global_motion: [None; 7],
                         global_motion_predict: false,
                         explicit_refs: None,
+                        implicit_output: false,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -250,6 +251,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         global_motion: [None; 7],
         global_motion_predict: false,
         explicit_refs: None,
+        implicit_output: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -355,6 +357,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             global_motion: [None; 7],
             global_motion_predict: false,
             explicit_refs: None,
+            implicit_output: false,
         },
     )
     .unwrap();
@@ -517,6 +520,7 @@ fn rejects_out_of_range_inter_inputs() {
         global_motion: [None; 7],
         global_motion_predict: false,
         explicit_refs: None,
+        implicit_output: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -1048,6 +1052,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         global_motion: [None; 7],
         global_motion_predict: false,
         explicit_refs: None,
+        implicit_output: false,
         tip_global_mv: TipGlobalMv::default(),
         tip_filter: None,
         tip_deblocking: false,
@@ -1192,6 +1197,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         tip_deblocking: false,
         global_motion_predict: false,
         explicit_refs: None,
+        implicit_output: false,
     };
     let build = |filters| build_inter_frame_header(&view, &slots.view(), &params(filters));
     let fresh = build(coded).unwrap();
@@ -1524,4 +1530,61 @@ fn explicit_reference_maps_code_the_first_default_references() {
         build_tip_output_frame_header(&explicit, &slots.view(), &params(None), &map(&default))
             .unwrap();
     assert_eq!(tip.core.inter.unwrap().explicit_ref_frame_map, Some(false));
+}
+
+/// With `implicit_output` the sequence codes `monotonic_output_order_flag =
+/// 0`; a hidden inter frame codes `implicit_output_frame` (§ 5.18.2) and, as an
+/// output frame, its film grain (§ 5.18.10.1). An implicit shown frame or an
+/// implicit frame in monotonic order is rejected; a cut header does not
+/// parse.
+#[test]
+fn hidden_frames_code_implicit_output() {
+    let stream = |implicit_output| EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            implicit_output,
+            film_grain: true,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seqs =
+        [false, true].map(|implicit| build_encoder_sequence_header(&stream(implicit)).unwrap());
+    assert!(seqs[0].general.monotonic_output_order_flag);
+    assert!(!seqs[1].general.monotonic_output_order_flag);
+    let [monotonic, free] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+    let slots = Slots::after_key(64, 64, 0);
+    let params = |show_frame, implicit_output, grain_seed| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 4,
+        refresh_frame_flags: 2,
+        show_frame,
+        primary_slot: Some(0),
+        implicit_output,
+        tx: KeyFrameTxParams {
+            grain_seed,
+            ..KeyFrameTxParams::default()
+        },
+        ..InterFrameParams::default()
+    };
+    for (implicit, seed) in [(false, None), (true, None), (true, Some(0x1234))] {
+        let header =
+            build_inter_frame_header(&free, &slots.view(), &params(false, implicit, seed)).unwrap();
+        assert_eq!(header.core.implicit_output_frame, Some(implicit));
+        assert_eq!(
+            header.core.consumed_bits,
+            header.bits.num_frame_header_bits()
+        );
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
+    assert!(
+        build_inter_frame_header(&free, &slots.view(), &params(false, false, Some(7))).is_err()
+    );
+    assert!(build_inter_frame_header(&free, &slots.view(), &params(true, true, None)).is_err());
+    assert!(
+        build_inter_frame_header(&monotonic, &slots.view(), &params(false, true, None)).is_err()
+    );
 }
