@@ -15,9 +15,9 @@ use crate::headers::film_grain::{
     FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate,
 };
 use crate::headers::frame::encoder_stream::{
-    MAX_REDUCED_TX_SET, UniformTiles, obu_header, plane_quantization, tile_framing,
-    write_film_grain_config, write_intra_frame_tail, write_quant_and_filters,
-    write_uniform_tile_info,
+    MAX_REDUCED_TX_SET, UniformTiles, encoder_mfh_view, obu_header, plane_quantization,
+    tile_framing, write_film_grain_config, write_intra_frame_tail, write_mfh_reference,
+    write_quant_and_filters, write_uniform_tile_info,
 };
 use crate::headers::frame::get_ref_frames::get_relative_dist;
 use crate::headers::frame::global_motion::{DEFAULT_WARP_PARAMS, REFS_PER_FRAME, base_prediction};
@@ -37,6 +37,7 @@ use crate::headers::metadata::{
 };
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
+use crate::hls::MultiFrameHeader;
 use crate::span::ByteOffset;
 use crate::types::ObuType;
 use crate::write::write_quantization_params;
@@ -274,7 +275,8 @@ fn parse_inter_frame_header(
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
-    parse_core_body(&mut reader, &mut core, seq, None, refs)?;
+    let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
+    parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
     core.consumed_bits = reader.consumed_bits();
     let has_reference = core
         .inter
@@ -302,8 +304,7 @@ fn inter_frame_header_bits(
         return Err(EncoderHeaderError::SinglePictureView);
     }
     let mut w = BitWriter::new();
-    w.write_uvlc(0)?; // cur_mfh_id
-    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    write_mfh_reference(&mut w, params.tx.multi_frame_header)?;
     w.write_flag(true)?; // frame_is_inter
     w.write_flag(params.show_frame)?; // immediate_output_frame
     write_implicit_output(&mut w, seq, params)?;
@@ -578,8 +579,7 @@ pub fn build_intra_only_frame_header(
         return Err(EncoderHeaderError::SinglePictureView);
     }
     let mut w = BitWriter::new();
-    w.write_uvlc(0)?; // cur_mfh_id
-    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    write_mfh_reference(&mut w, params.tx.multi_frame_header)?;
     w.write_flag(false)?; // frame_is_inter
     w.write_flag(params.show_frame)?; // immediate_output_frame
     write_implicit_output(&mut w, seq, params)?;
@@ -594,7 +594,8 @@ pub fn build_intra_only_frame_header(
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
-    parse_core_body(&mut reader, &mut core, seq, None, refs)?;
+    let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
+    parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
     let bit_len = reader.consumed_bits();
     core.consumed_bits = bit_len;
     if core.status != FrameHeaderParseStatus::IntraHeaderComplete
@@ -715,8 +716,7 @@ pub fn build_tip_output_frame_header(
         .tip_weight
         .ok_or(unsupported("tip_global_wtd_index"))?;
     let mut w = BitWriter::new();
-    w.write_uvlc(0)?; // cur_mfh_id
-    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    write_mfh_reference(&mut w, params.tx.multi_frame_header)?;
     w.write_flag(params.show_frame)?; // immediate_output_frame
     write_implicit_output(&mut w, seq, params)?;
     w.write_flag(false)?; // frame_size_override_flag
@@ -779,7 +779,8 @@ pub fn build_tip_output_frame_header(
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTip, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTip, true);
-    parse_core_body(&mut reader, &mut core, seq, None, refs)?;
+    let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
+    parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
     core.consumed_bits = reader.consumed_bits();
     let as_output = core
         .inter
@@ -832,12 +833,13 @@ pub fn encode_tip_output_frame_obu(
 /// Returns [`EncoderHeaderError`] for a slot outside the sequence's reference
 /// slots, a sequence without a known `film_grain_params_present`, a seed
 /// without film grain, or bits that do not parse to a complete show-existing
-/// frame.
+/// frame. With `multi_frame_header` the frame codes `cur_mfh_id = 1`.
 pub fn encode_show_existing_frame_obu(
     seq: &CoreSeqView,
     frame_to_show_map_idx: u32,
     order_hint: Option<u32>,
     grain_seed: Option<u16>,
+    multi_frame_header: bool,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     if frame_to_show_map_idx >= seq.num_ref_frames {
         return Err(unsupported("frame_to_show_map_idx"));
@@ -845,8 +847,7 @@ pub fn encode_show_existing_frame_obu(
     seq.film_grain_params_present
         .ok_or(EncoderHeaderError::Incomplete)?;
     let mut w = BitWriter::new();
-    w.write_uvlc(0)?; // cur_mfh_id
-    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    write_mfh_reference(&mut w, multi_frame_header)?;
     w.write_bits(frame_to_show_map_idx, ceil_log2(seq.num_ref_frames))?;
     w.write_flag(order_hint.is_none())?; // derive_sef_order_hint
     if let Some(order_hint) = order_hint {
@@ -865,7 +866,7 @@ pub fn encode_show_existing_frame_obu(
         &mut reader,
         &mut core,
         seq,
-        None,
+        encoder_mfh_view(seq, multi_frame_header).as_ref(),
         &FrameReferenceStateView::unknown(),
     )?;
     if core.status != FrameHeaderParseStatus::ShowExistingFrameComplete
@@ -1027,6 +1028,30 @@ pub fn encode_content_interpretation_obu(
     annexb_obu(
         ObuType::ContentInterpretation,
         &crate::obu::ParsedObu::ContentInterpretation(*content),
+    )
+}
+
+/// Serializes the `OBU_MULTI_FRAME_HEADER` (§ 5.7) that frames with
+/// [`KeyFrameTxParams::multi_frame_header`] refer to: `mfh_id_minus_1 = 0`
+/// for sequence header 0, with no frame size, deblocking update or
+/// segmentation information.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] if the OBU does not serialize.
+pub fn encode_multi_frame_header_obu() -> Result<Vec<u8>, EncoderHeaderError> {
+    annexb_obu(
+        ObuType::MultiFrameHeader,
+        &crate::obu::ParsedObu::MultiFrameHeader(Box::new(MultiFrameHeader {
+            mfh_seq_header_id: 0,
+            mfh_id_minus_1: 0,
+            mfh_frame_size: None,
+            mfh_deblocking_filter_update: false,
+            mfh_apply_deblocking_filter: [false; 4],
+            mfh_seg_info_present_flag: false,
+            mfh_ext_seg_flag: None,
+            mfh_allow_seg_info_change: None,
+            segment_info: None,
+        })),
     )
 }
 

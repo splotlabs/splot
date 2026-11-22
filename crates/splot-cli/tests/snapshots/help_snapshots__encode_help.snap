@@ -38,6 +38,8 @@ Options:
           The metric the encoder tunes for: `psnr` (default), `ssim` (superblock lambda and qindex follow the luma variance) or `vq` (trials keep the AC energy of the source); before `--preset-set` [default: psnr] [possible values: psnr, ssim, vq]
       --fast-decode
           Fast decode: 64x64 superblocks, no Wiener-NS or GDF, and at most two CDEF strength sets, before `--preset-set`; off by default
+      --multi-frame-header
+          Multi-frame header: each key frame codes a multi-frame header OBU, and every frame header refers to it instead of the sequence header; off by default
       --threads <THREADS>
           Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
       --tiles <TILES>

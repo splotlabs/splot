@@ -76,6 +76,11 @@ pub(crate) struct EncodeArgs {
     /// CDEF strength sets, before `--preset-set`; off by default.
     #[arg(long)]
     fast_decode: bool,
+    /// Multi-frame header: each key frame codes a multi-frame header OBU, and
+    /// every frame header refers to it instead of the sequence header; off by
+    /// default.
+    #[arg(long)]
+    multi_frame_header: bool,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -407,6 +412,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
         TuneArg::Vq => Tune::Vq,
     };
     config.fast_decode = args.fast_decode;
+    config.multi_frame_header = args.multi_frame_header;
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");
     }

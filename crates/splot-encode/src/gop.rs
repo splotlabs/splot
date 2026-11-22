@@ -602,16 +602,18 @@ pub(crate) type FrameTools = (
 );
 
 /// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`, with
-/// the explicit `order_hint` when given, and the film grain of `grain_seed`.
+/// the explicit `order_hint` when given, and the film grain of `grain_seed`;
+/// with `multi_frame_header` it codes `cur_mfh_id = 1`.
 pub(crate) fn show_existing_unit(
     view: &CoreSeqView,
     slot: u32,
     order_hint: Option<u32>,
-    grain_seed: Option<u16>,
+    (grain_seed, multi_frame_header): (Option<u16>, bool),
 ) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
     unit.extend(
-        encode_show_existing_frame_obu(view, slot, order_hint, grain_seed).map_err(header_error)?,
+        encode_show_existing_frame_obu(view, slot, order_hint, grain_seed, multi_frame_header)
+            .map_err(header_error)?,
     );
     Ok(unit)
 }
@@ -739,6 +741,7 @@ impl GopFrame {
         refs: &EncoderReferences,
         ref_frame_idx: &[u32],
         (weight, grain_seed, plane_delta_q): (u8, Option<u16>, [i8; 3]),
+        multi_frame_header: bool,
         (qindex, mv, filter, deblocking): TipOutputChoice,
     ) -> Result<(FrameHeaderCore, Vec<u8>)> {
         let params = InterFrameParams {
@@ -754,6 +757,7 @@ impl GopFrame {
             tx: KeyFrameTxParams {
                 grain_seed,
                 plane_delta_q,
+                multi_frame_header,
                 ..KeyFrameTxParams::default()
             },
             ..InterFrameParams::default()

@@ -2090,6 +2090,8 @@ mod intra_tools;
 mod large_inter;
 #[path = "intra_frame_mds_tests.rs"]
 mod mds;
+#[path = "intra_frame_mfh_tests.rs"]
+mod mfh;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
 #[path = "intra_frame_qm_tests.rs"]

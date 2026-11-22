@@ -192,6 +192,26 @@ fn capped_runs_and_rate_controlled_repeats_decode_to_the_shown_frames() {
     }
 }
 
+/// Repeats with and without `implicit_output` refer to the multi-frame
+/// header of each key frame unit (§ 5.18.2) and decode to the frames they
+/// show.
+#[test]
+fn repeats_refer_to_the_multi_frame_header() {
+    for overrides in [&[][..], &[("implicit_output", "true")]] {
+        let mut config = repeat_config(config(72, 40, BitDepth::Eight, 6, 150), overrides);
+        config.multi_frame_header = true;
+        let case = format!("{overrides:?}");
+        let (units, expected) = repeat_stream(&config, &CONTENT, panning_frame);
+        let ids = super::mfh::mfh_ids(&units.concat());
+        assert_eq!(super::mfh::assert_mfh_references(&ids, &case), 2, "{case}");
+        assert!(
+            ids.iter().any(|&(kind, _)| kind == ObuType::RegularSef),
+            "{case}"
+        );
+        assert_same_samples(&decode(&units.concat()), &expected, &case);
+    }
+}
+
 /// A noisy panning frame, so the film grain model has points.
 fn grainy_frame(config: &Config, index: u32) -> SourceFrame {
     grain_streams::with_noise(config, &panning_frame(config, index), index)
