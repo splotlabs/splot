@@ -528,7 +528,11 @@ fn visit_partition_children<S: ChildCallSink>(
 impl TreeWalker<'_> {
     /// [`Self::read_partition_step`] for the superblock root, which also sets
     /// the § 5.20.3.1 `AllowExtraIBCRange` of the superblock.
-    #[inline(never)]
+    #[allow(
+        clippy::inline_always,
+        reason = "once per superblock: no call on any stream"
+    )]
+    #[inline(always)]
     fn read_root_partition_step<const ACTIVE: bool>(
         &mut self,
         frame: &TilePartitionFrameFacts,
