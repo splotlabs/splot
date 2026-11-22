@@ -495,6 +495,12 @@ pub struct PresetParams {
     /// `use_dpcm_uv` (§ 5.20.5.5, § 5.20.5.6) in `V_PRED` and `H_PRED`. Off
     /// in every row; only a lossless frame codes DPCM.
     pub lossless_dpcm: bool,
+    /// A lossless inter leaf: 1 codes each 4x4 luma unit with the cheaper
+    /// of `DCT_DCT` and IDTX (`lossless_inter_tx_type`, § 5.20.8.2); 2 also
+    /// tries the leaf with `lossless_tx_size = 1` (one IDTX per 32x32,
+    /// § 5.20.6.1). 0 in every row. On, the lossless switch-off keeps
+    /// `tx_type_depth` 1 for that type choice, so `reduced_tx_set` is 0.
+    pub lossless_inter_tx: u8,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -944,7 +950,10 @@ impl PresetParams {
         self.tcq = Levels::all(false);
         self.tcq_search_trellis = false;
         self.tcq_type_trellis = false;
-        self.tx_type_depth = 0;
+        self.tx_type_depth = u8::from(self.lossless_inter_tx > 0);
+        if self.lossless_inter_tx > 0 {
+            self.tx_type_model_keep = 0;
+        }
         self.tx_partition_search = Levels::all(false);
         self.inter_tx_split = 0;
         self.tpl_delta_q = 0;
@@ -1031,6 +1040,7 @@ impl PresetParams {
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
         check("intrabc_drl", self.intrabc_drl, 0, 2, "")?;
+        check("lossless_inter_tx", self.lossless_inter_tx, 0, 2, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
         check("ssim_aq", self.ssim_aq, 0, 200, "")?;
         check("segmentation", self.segmentation, 0, 1, "")?;
@@ -1440,6 +1450,7 @@ preset_table! {
     }
     lossless {
         lossless_dpcm:         [false, false, false, false, false, false, false, false, false, false, false],
+        lossless_inter_tx:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],

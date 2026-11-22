@@ -105,8 +105,60 @@ fn lossless_dpcm_streams_decode_to_the_source_on_any_thread_count() {
     });
 }
 
-/// AVM decodes the lossless streams, with and without DPCM, to the source
-/// samples.
+const INTER_TX: [&[(&str, &str)]; 2] = [
+    &[("lossless_inter_tx", "1")],
+    &[("lossless_inter_tx", "2"), ("lossless_dpcm", "1")],
+];
+
+/// With `lossless_inter_tx`, inter leaves code IDTX 4x4 luma units (1) and
+/// `lossless_tx_size = 1` leaves (2, next to DPCM), whose chroma takes IDTX
+/// by each § 5.20.7.29 rule; the streams decode to the source samples with
+/// the same bytes on 1, 2 and 8 threads.
+#[test]
+fn lossless_inter_tx_streams_decode_to_the_source_on_any_thread_count() {
+    each_case(CASES, |case| {
+        for overrides in INTER_TX {
+            let name = format!("{case:?} {overrides:?}");
+            crate::tile_writer::LOSSLESS_IDTX_CODED.set([0; 5]);
+            crate::tile_writer::SDP_CODED.set(0);
+            let (units, source) = lossless_stream(case, 1, 8, overrides);
+            let coded = crate::tile_writer::LOSSLESS_IDTX_CODED.get();
+            if case.3 == 0 {
+                assert!(coded[0] > 0, "{name}: no IDTX 4x4 unit {coded:?}");
+                if overrides.len() > 1 {
+                    assert!(coded[1] > 0 && coded[2] > 0, "{name}: {coded:?}");
+                } else {
+                    assert!(coded[3] > 0, "{name}: no collocated chroma {coded:?}");
+                }
+            }
+            assert!(crate::tile_writer::SDP_CODED.get() > 0, "{name}: no SDP tree");
+            assert_same_samples(&decode(&units.concat()), &source, &name);
+            for threads in [2, 8] {
+                let other = lossless_stream(case, threads, 8, overrides).0;
+                assert_eq!(other, units, "{name} {threads}");
+            }
+        }
+    });
+}
+
+/// The three § 5.20.7.29 chroma rules of lossless inter leaves code IDTX
+/// chroma that the decoder reconstructs: of a `lossless_tx_size = 1` leaf,
+/// of the collocated luma unit, and in 4:2:0 of the leaf's first luma unit
+/// when the chroma reference is another leaf (4xN and Nx4 leaves at p0).
+#[test]
+fn lossless_inter_chroma_follows_each_luma_rule() {
+    let case = (PixelFormat::Yuv420, BitDepth::Eight, 0, 0);
+    for (overrides, slot) in [(INTER_TX[0], 4), (INTER_TX[1], 2)] {
+        crate::tile_writer::LOSSLESS_IDTX_CODED.set([0; 5]);
+        let (units, source) = lossless_stream(case, 1, 4, overrides);
+        let coded = crate::tile_writer::LOSSLESS_IDTX_CODED.get();
+        assert!(coded[3] > 0 && coded[slot] > 0, "{overrides:?}: {coded:?}");
+        assert_same_samples(&decode(&units.concat()), &source, &format!("{overrides:?}"));
+    }
+}
+
+/// AVM decodes the lossless streams, with and without DPCM and
+/// `lossless_inter_tx`, to the source samples.
 #[test]
 #[ignore = "needs SPLOT_AVM_DECODER"]
 fn avm_decodes_lossless_streams_to_the_source() {
@@ -114,7 +166,7 @@ fn avm_decodes_lossless_streams_to_the_source() {
         return;
     };
     for case in CASES {
-        for overrides in [&[][..], DPCM] {
+        for overrides in [&[][..], DPCM, INTER_TX[0], INTER_TX[1]] {
             let (units, source) = lossless_stream(case, 1, 8, overrides);
             let avm = avm_decode(&avmdec, &units, (96, 72), case.1, "lossless");
             assert_same_samples(&avm, &source, &format!("{case:?} {overrides:?}"));

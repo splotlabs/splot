@@ -1974,7 +1974,8 @@ impl SourceResidualCoder<'_> {
 
     /// The source residual of `tx` over `prediction` and its primary forward
     /// transform into `coeffs`, with the block's dequantization parameters;
-    /// a lossless `tx` with a `dpcm` direction codes its residual differences.
+    /// a lossless `tx` with a `dpcm` direction codes its residual differences,
+    /// a lossless IDTX `tx` the residual itself (§ 7.15.4).
     fn forward(
         &self,
         (tx, dpcm): (&TransformBlock, Option<DpcmDirection>),
@@ -2005,6 +2006,10 @@ impl SourceResidualCoder<'_> {
         )
         .map_err(kernel)?;
         coeffs.resize(forward.coeff_width() * forward.coeff_height(), 0);
+        if self.lossless && tx.tx_type == TxType::Idtx {
+            coeffs.copy_from_slice(residual);
+            return Ok((params, forward));
+        }
         if self.lossless {
             let block = <&[i32; 16]>::try_from(residual.as_slice())
                 .map_err(|_| TileWriterError::Shape("a lossless block that is not 4x4"))?;

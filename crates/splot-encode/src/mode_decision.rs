@@ -916,6 +916,26 @@ impl TrialCoder<'_, '_> {
         self.best(leaf, candidates, ALL, start)
     }
 
+    /// The cheaper of the inter `choice` and `choice` with
+    /// `lossless_tx_size = 1` when `leaf` of a lossless frame may code it.
+    #[cold]
+    #[inline(never)]
+    fn lossless_tx_size(
+        &mut self,
+        leaf: &LeafBlock,
+        choice: LeafChoice,
+        start: &SyntaxSnapshot,
+    ) -> Result<LeafChoice> {
+        if choice.inter.is_none() || !self.syntax.lossless_tx_size_allowed(leaf) {
+            return Ok(choice);
+        }
+        let large = LeafChoice {
+            lossless_tx_size: true,
+            ..choice
+        };
+        self.best(leaf, vec![choice, large], ALL, start)
+    }
+
     /// The `preset.compound_candidates` compound predictions of `leaf` with
     /// the lowest luma SATD (of the decoder's prediction with
     /// `preset.implicit_mask`, whose `COMPOUND_AVERAGE` blends with the
@@ -1870,6 +1890,11 @@ impl TrialCoder<'_, '_> {
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
         let choice = self.refine_filter(&leaf, scored, &start)?;
         let choice = self.uneven_split(&leaf, choice, &start)?;
+        let choice = if self.preset.lossless_inter_tx == 2 {
+            self.lossless_tx_size(&leaf, choice, &start)?
+        } else {
+            choice
+        };
         Ok((self.code_leaf(node, choice)?, choice))
     }
 }
