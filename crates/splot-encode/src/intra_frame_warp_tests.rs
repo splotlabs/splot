@@ -189,7 +189,7 @@ pub(super) fn zooming_stream(
                     units.extend(coded.temporal_unit);
                 }
                 crate::gop::GopStep::ShowExisting { slot, .. } => {
-                    units.extend(coder.show_existing_frame(slot).unwrap());
+                    units.extend(coder.show_existing_frame(slot, None).unwrap());
                 }
             }
         }
