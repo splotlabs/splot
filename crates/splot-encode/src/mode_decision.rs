@@ -70,6 +70,10 @@ thread_local! {
     /// this thread.
     pub(crate) static FORCE_INTERINTRA: core::cell::Cell<bool> =
         const { core::cell::Cell::new(false) };
+    /// Makes the IntraBC candidate of a leaf its only candidate on this
+    /// thread.
+    pub(crate) static FORCE_INTRABC: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
     /// Makes the `GLOBAL_GLOBALMV` candidate of a leaf's first reference
     /// pair its only compound candidate on this thread.
     pub(crate) static FORCE_GLOBAL_GLOBAL: core::cell::Cell<bool> =
@@ -1784,7 +1788,12 @@ impl TrialCoder<'_, '_> {
             self.syntax,
             self.coder,
             &leaf,
+            self.preset.intrabc_small,
         )?);
+        #[cfg(test)]
+        if FORCE_INTRABC.get() && candidates.iter().any(|choice| choice.intrabc.is_some()) {
+            candidates.retain(|choice| choice.intrabc.is_some());
+        }
         if inter {
             let inter = self.inter_candidates(&leaf)?;
             #[cfg(test)]

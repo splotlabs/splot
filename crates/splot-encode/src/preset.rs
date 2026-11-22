@@ -496,6 +496,11 @@ pub struct PresetParams {
     /// the copy may come from the local area (§ 6.19.7.12). Off in every
     /// row, the screen-content rows too: not measured.
     pub intrabc_local: bool,
+    /// With `intrabc`, leaves under 8 samples on a side, chroma-offset
+    /// leaves among them, get an RD trial of the best copy at or within 4
+    /// samples of a reference block vector. Off in every row, the
+    /// screen-content rows too: not measured.
+    pub intrabc_small: bool,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -1344,6 +1349,7 @@ preset_table! {
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
