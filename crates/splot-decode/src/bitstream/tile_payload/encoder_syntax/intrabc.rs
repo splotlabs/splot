@@ -604,7 +604,7 @@ mod tests {
     /// A fractional vector needs `force_integer_mv = 0` and quarter samples.
     #[test]
     fn fractional_vectors_need_quarter_samples() {
-        let vectors = |quarter| IntrabcVectors(frame((16, 96), (16, 8)), None, quarter);
+        let vectors = |quarter| IntrabcVectors(frame((16, 96), (16, 8)), None, quarter, true);
         let col = |col| MotionVector { row: 0, col };
         assert!(vectors(true).valid(col(-272 * 8 - 6)));
         assert!(!vectors(false).valid(col(-272 * 8 - 6)));
@@ -726,11 +726,13 @@ mod tests {
     /// too: a copy from the frame's top row cannot code it.
     #[test]
     fn morph_needs_the_template_source() {
-        let vectors = IntrabcVectors(frame((0, 80), (8, 8)), None, true);
+        let vectors = IntrabcVectors(frame((0, 80), (8, 8)), None, true, true);
         let bv = |row, col| MotionVector { row, col };
         assert!(vectors.valid(bv(0, -64 * 8 * 5)));
+        let local_only = IntrabcVectors(frame((0, 80), (8, 8)), None, true, false);
+        assert!(!local_only.valid(bv(0, -64 * 8 * 5)));
         assert!(!vectors.morph_valid(bv(0, -64 * 8 * 5)));
-        let lower = IntrabcVectors(frame((16, 96), (16, 8)), None, true);
+        let lower = IntrabcVectors(frame((16, 96), (16, 8)), None, true, true);
         assert!(lower.morph_valid(bv(0, -272 * 8 - 8)));
     }
 

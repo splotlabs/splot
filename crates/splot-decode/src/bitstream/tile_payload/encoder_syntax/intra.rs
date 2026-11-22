@@ -280,9 +280,9 @@ impl IntraTools {
             (
                 frame_allows_intrabc(core)
                     && core.frame_is_intra == Some(true)
-                    && !core
+                    && core
                         .intrabc
-                        .is_some_and(|params| params.allow_global_intrabc == Some(true)),
+                        .is_none_or(|params| params.allow_global_intrabc != Some(true)),
                 "intra block copy without the global area in an intra frame",
             ),
             (
