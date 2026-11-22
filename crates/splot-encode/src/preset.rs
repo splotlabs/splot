@@ -651,7 +651,7 @@ pub struct PresetParams {
     pub global_motion_predict: bool,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
-    /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows that search
+    /// `cwp_idx` weights (`enable_cwp`). `1` on p1-p8, the rows that search
     /// masked compound (2026-10-30, p6 vs main): park_joy -5.70%, paris -0.82%,
     /// niklas -1.04% for 11% more CPU. `2` at p0 (p0 batch 1, see
     /// [`Self::warp`]); alone p0 measured paris -0.01%, rush_hour -0.07%,
