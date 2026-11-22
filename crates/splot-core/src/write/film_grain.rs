@@ -44,19 +44,11 @@
 //!   model is rejected.
 
 use crate::headers::film_grain::{
-    FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, MAX_FILM_GRAIN,
+    CHROMA_FORMAT_400, FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, MAX_FILM_GRAIN,
+    chroma_subsampling,
 };
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
-
-/// `CHROMA_FORMAT_420` (AV2 v1.0.0 § 6.4.2).
-const CHROMA_FORMAT_420: u32 = 0;
-/// `CHROMA_FORMAT_400` (monochrome).
-const CHROMA_FORMAT_400: u32 = 1;
-/// `CHROMA_FORMAT_444`.
-const CHROMA_FORMAT_444: u32 = 2;
-/// `CHROMA_FORMAT_422`.
-const CHROMA_FORMAT_422: u32 = 3;
 
 /// `fgm_update_flags` is `f(8)`.
 const UPDATE_FLAGS_BITS: u32 = 8;
@@ -349,18 +341,6 @@ fn write_mult_offset(
         }
     }
     Ok(())
-}
-
-/// Returns `(subX, subY)` for an `fgm_chroma_idc` (AV2 v1.0.0 § 5.14), matching the
-/// parser's `chroma_subsampling` table (out-of-range falls back to `(false, false)`).
-const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
-    #[allow(clippy::match_same_arms)]
-    match chroma_idc {
-        CHROMA_FORMAT_420 | CHROMA_FORMAT_400 => (true, true),
-        CHROMA_FORMAT_422 => (true, false),
-        CHROMA_FORMAT_444 => (false, false),
-        _ => (false, false),
-    }
 }
 
 /// Returns the smallest width `w` in `min_width..=max_width` such that `value` fits an

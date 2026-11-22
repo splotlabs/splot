@@ -195,7 +195,7 @@ impl InterDeblockLeaf {
             self.qindex,
             self.lossless,
         );
-        let (sub_x, sub_y) = chroma_subsampling(chroma_format);
+        let (sub_x, sub_y) = chroma_format.subsampling();
         let chroma_subsampling = (u32::from(sub_x), u32::from(sub_y));
         let chroma_ref = self.chroma_ref;
         let luma_prediction = crate::filters::deblock::DeblockPredictionUnit::new(

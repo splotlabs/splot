@@ -248,7 +248,7 @@ impl EncoderInterTile {
             self.tile_start.0,
             self.tile_start.1,
         );
-        let subsampling = chroma_subsampling(self.chroma);
+        let subsampling = self.chroma.subsampling();
         let prediction = super::super::intrabc::IntrabcReconPrediction::derive(
             &self.core,
             frontier,

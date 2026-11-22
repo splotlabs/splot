@@ -2419,13 +2419,3 @@ fn tile_neighbour_availability_is_tile_bounded() {
     assert_eq!(tile_neighbour_availability(8, 17, 8, 16), (false, true));
     assert_eq!(tile_neighbour_availability(9, 17, 8, 16), (true, true));
 }
-
-#[test]
-fn floor_log2_matches_msb_index() {
-    use super::cross_frame::floor_log2;
-    assert_eq!(floor_log2(0), 0);
-    assert_eq!(floor_log2(1), 0);
-    assert_eq!(floor_log2(2), 1);
-    assert_eq!(floor_log2(64 * 64), 12);
-    assert_eq!(floor_log2(4095), 11);
-}

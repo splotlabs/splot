@@ -33,7 +33,7 @@ pub(crate) fn check_comment_density(root: &Path) -> Result<()> {
     let budget_path = root.join(BUDGET_PATH);
     let budget: Budget = crate::util::load_toml(&budget_path)?;
 
-    let files = rust_source_files(root)?;
+    let files = rust_source_files(root, GATED_SOURCE_PATHSPECS)?;
     let mut counts = CommentCounts::default();
     for path in files {
         let displayed = display_path(root, &path);
@@ -53,20 +53,20 @@ pub(crate) fn check_comment_density(root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let output = run_git(
-        root,
-        &[
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--",
-            "crates",
-            "xtask",
-            "fuzz/fuzz_targets",
-        ],
-    )?;
+/// The trees whose Rust sources the comment gates scan.
+pub(crate) const GATED_SOURCE_PATHSPECS: &[&str] = &["crates", "xtask", "fuzz/fuzz_targets"];
+
+/// Existing tracked or unignored `.rs` files matching `pathspecs`, sorted.
+pub(crate) fn rust_source_files(root: &Path, pathspecs: &[&str]) -> Result<Vec<PathBuf>> {
+    let mut args = vec![
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+    ];
+    args.extend_from_slice(pathspecs);
+    let output = run_git(root, &args)?;
     let mut files = output
         .lines()
         .filter(|line| {

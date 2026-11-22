@@ -1388,7 +1388,7 @@ fn chroma_tx_type_from(
         frontier.c,
         y / MI_SIZE,
         x / MI_SIZE,
-        chroma_subsampling(chroma),
+        chroma.subsampling(),
         false,
     ))
 }

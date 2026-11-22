@@ -7,7 +7,7 @@
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
-    use crate::headers::film_grain::parse_film_grain;
+    use crate::headers::film_grain::{CHROMA_FORMAT_420, CHROMA_FORMAT_444, parse_film_grain};
     use crate::span::ByteOffset;
 
     use crate::test_bits::Bits;

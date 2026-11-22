@@ -129,6 +129,18 @@ impl ChromaFormatIdc {
     pub const fn is_monochrome(self) -> bool {
         matches!(self, Self::Monochrome)
     }
+
+    /// Returns `(SubsamplingX, SubsamplingY)` (§ 6.4.1): monochrome streams derive the
+    /// 4:2:0 values.
+    #[inline]
+    #[must_use]
+    pub const fn subsampling(self) -> (bool, bool) {
+        match self {
+            Self::Yuv420 | Self::Monochrome => (true, true),
+            Self::Yuv422 => (true, false),
+            Self::Yuv444 => (false, false),
+        }
+    }
 }
 
 /// `bit_depth_idc` values from AV2 Table 6.3.

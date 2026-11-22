@@ -1005,9 +1005,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
             quant_deltas,
             {
-                let (x, y) = crate::bitstream::tile_payload::chroma_subsampling(
-                    self.recon.sequence.general.chroma_format_idc,
-                );
+                let (x, y) = self.recon.sequence.general.chroma_format_idc.subsampling();
                 (usize::from(x), usize::from(y))
             },
         );

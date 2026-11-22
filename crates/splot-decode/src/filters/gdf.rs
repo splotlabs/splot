@@ -3,7 +3,7 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, get_relative_dist};
 use splot_core::tables::loop_restoration::{GDF_ALPHA, GDF_BIAS, GDF_WEIGHT};
 #[cfg(test)]
 use splot_core::tables::loop_restoration::{GDF_INTER_ERROR, GDF_INTRA_ERROR};
@@ -1368,10 +1368,6 @@ const fn gdf_inter_ref_dst_idx_from_max_dist(max_dist: usize) -> usize {
     } else {
         5
     }
-}
-
-fn get_relative_dist(a: i32, b: i32) -> i32 {
-    (a - b).clamp(-127, 127)
 }
 
 #[cold]

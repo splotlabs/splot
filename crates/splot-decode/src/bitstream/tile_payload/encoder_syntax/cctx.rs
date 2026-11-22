@@ -10,7 +10,6 @@ use super::super::general_intra_residual::cctx::{
     CCTX_MTX, reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use super::super::general_intra_residual::{CoeffBlock, LumaCoeffBlock, is_cctx_geometry_allowed};
-use super::super::tile_frontier::chroma_subsampling;
 use super::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, coefficient_scan, rule,
     tx_log2,
@@ -110,7 +109,7 @@ impl IntraTileSyntax {
     /// `is_cctx_allowed` geometry), for the leaf just planned.
     pub(super) fn plan_cctx(&mut self, leaf: &LeafBlock) {
         let (block_ctx, _) = self.block_ctx(leaf);
-        let (sub_x, sub_y) = chroma_subsampling(self.chroma);
+        let (sub_x, sub_y) = self.chroma.subsampling();
         let plane = block_ctx.plane_block(PlaneId::U);
         self.cctx_leaf = leaf.has_chroma()
             && is_cctx_geometry_allowed(sub_x && sub_y, plane.width4() * 4, plane.height4() * 4);

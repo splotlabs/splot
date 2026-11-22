@@ -8,6 +8,8 @@
 //! quantizers, dimensions, order hints, and layer eligibility. The inter parser supplies
 //! known state and stops when a required ranking input is unavailable.
 
+use super::size::floor_log2;
+
 /// `NUM_REF_FRAMES` (AV2 v1.0.0 § 3): the number of reference-frame buffer slots.
 pub(crate) const NUM_REF_FRAMES: usize = 16;
 
@@ -316,7 +318,7 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
             DIST_SCORE_LOOKUP[lookup_idx] + (t_dist - cap).max(0) + q as i32
         };
         let area = u64::from(slot.width).saturating_mul(u64::from(slot.height));
-        let ref_ratio = floor_log2_u32_from_u64(area) as i32;
+        let ref_ratio = floor_log2(area) as i32;
         score -= ref_ratio << 5;
 
         if new_score_or_dist(&ranked[..ranked_len], d, score, slot.mlayer_id) {
@@ -433,13 +435,6 @@ fn get_unmapped_ref(ranked: &[Ranked], q_thresh: u32) -> Option<usize> {
         });
     }
     None
-}
-
-/// `FloorLog2( value )` over a `u64` area product (§ 7.7 `refRatio`). `FloorLog2(0)` is `0` by
-/// the spec convention (the same convention [`super::size::ceil_log2`] uses for its degenerate
-/// inputs).
-fn floor_log2_u32_from_u64(value: u64) -> u32 {
-    if value < 2 { 0 } else { value.ilog2() }
 }
 
 #[cfg(test)]
@@ -720,15 +715,5 @@ mod tests {
         assert_eq!(get_relative_dist(RESTRICTED_OH, RESTRICTED_OH), 0);
         assert_eq!(get_relative_dist(RESTRICTED_OH, 5), 127);
         assert_eq!(get_relative_dist(5, RESTRICTED_OH), -127);
-    }
-
-    /// FloorLog2 over the area product matches the spec convention (FloorLog2(0) == 0).
-    #[test]
-    fn floor_log2_u64_matches_spec() {
-        assert_eq!(floor_log2_u32_from_u64(0), 0);
-        assert_eq!(floor_log2_u32_from_u64(1), 0);
-        assert_eq!(floor_log2_u32_from_u64(2), 1);
-        assert_eq!(floor_log2_u32_from_u64(4096), 12);
-        assert_eq!(floor_log2_u32_from_u64(4095), 11);
     }
 }

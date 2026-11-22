@@ -104,7 +104,7 @@ impl Check for MsdoSyntax {
                         );
                     }
                 }
-                if crate::annex_a::is_reserved_profile(msdo.multistream_profile_idc.get()) {
+                if msdo.multistream_profile_idc.is_reserved() {
                     report.push(
                         Diagnostic::error(
                             "annex-a/profile-reserved",

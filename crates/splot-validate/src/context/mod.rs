@@ -58,8 +58,7 @@ use splot_core::types::{
 
 use crate::annex_a::{
     InteroperabilityPoint, MIN_FRAME_DIMENSION, config_idc_allows_profile, interoperability_point,
-    is_defined_config_idc, is_reserved_level, is_reserved_profile, level_limits,
-    profile_allows_chroma,
+    is_defined_config_idc, is_reserved_level, level_limits,
 };
 use crate::celu::{CeluRole, CodedExtendedLayerTracker, FrameFacts, Leadingness};
 use crate::diagnostic::{Diagnostic, ValidationReport};

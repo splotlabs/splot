@@ -134,7 +134,7 @@ pub(crate) fn read_inter_residual(
     let block_start = blocks.len();
     let arena_start = arena.len();
     let result = (|| -> Result<()> {
-        let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
+        let (subsampling_x, subsampling_y) = sequence.general.chroma_format_idc.subsampling();
         let width_chunks = (n4w >> 4).max(1);
         let height_chunks = (n4h >> 4).max(1);
         let multi_chunk = width_chunks > 1 || height_chunks > 1;
@@ -581,7 +581,7 @@ pub(crate) fn inter_residual_units(
         .b_size
         .num_4x4_high()
         .map_err(|_| residual_geometry_error())?;
-    let subsampling = chroma_subsampling(chroma);
+    let subsampling = chroma.subsampling();
     let (width_chunks, height_chunks) = ((n4w >> 4).max(1), (n4h >> 4).max(1));
     let mi_size_chunk = if width_chunks > 1 || height_chunks > 1 {
         BlockSize::new(BLOCK_64X64).map_err(|_| residual_geometry_error())?

@@ -1025,27 +1025,9 @@ pub(crate) fn workspace_root() -> Result<PathBuf> {
 
 fn check_license_headers(root: &Path) -> Result<()> {
     let mut offenders = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .with_context(|| format!("failed to read directory {}", dir.display()))?;
-        for entry in entries {
-            let entry =
-                entry.with_context(|| format!("failed to read an entry in {}", dir.display()))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to stat {}", path.display()))?;
-            if file_type.is_dir() {
-                if !is_skipped_dir(&path) {
-                    stack.push(path);
-                }
-            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
-                && !has_spdx_header(&path)?
-            {
-                offenders.push(path);
-            }
+    for path in feature_status::collect_files(root, &["rs"])? {
+        if !has_spdx_header(&path)? {
+            offenders.push(path);
         }
     }
 
@@ -1061,13 +1043,6 @@ fn check_license_headers(root: &Path) -> Result<()> {
             offenders.len()
         )
     }
-}
-
-fn is_skipped_dir(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("target" | ".git")
-    )
 }
 
 fn has_spdx_header(path: &Path) -> Result<bool> {

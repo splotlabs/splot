@@ -18,14 +18,6 @@
 //! presence requirements are documented there. Feature IDs: `AV2-A-PROFILES`,
 //! `AV2-A-LEVELS-TIERS`.
 
-use splot_core::headers::sequence::ChromaFormatIdc;
-
-/// First reserved `seq_profile_idc` value (Annex A.2 Table A.1, mirror line 85:
-/// "Reserved 5-30"). Values `5..=30` do not conform to any profile of this version.
-pub(crate) const FIRST_RESERVED_PROFILE_IDC: u8 = 5;
-/// Last reserved `seq_profile_idc` value (Annex A.2 Table A.1, mirror line 85:
-/// "Reserved 5-30").
-pub(crate) const LAST_RESERVED_PROFILE_IDC: u8 = 30;
 /// The Configurable profile `seq_profile_idc` (Annex A.2 Table A.1, mirror line 87:
 /// "Configurable 31"). Its chroma/bit-depth constraints are unconstrained by the
 /// profile (Table A.1 dashes), so the profile-mismatch checks skip it.
@@ -217,13 +209,6 @@ pub(crate) fn level_limits(level_idx: u8) -> Option<LevelLimits> {
     LEVEL_LIMITS.get(level_idx as usize).copied()
 }
 
-/// Returns `true` when `profile_idc` is a reserved profile (Annex A.2 Table A.1,
-/// mirror line 85: "Reserved 5-30").
-#[must_use]
-pub(crate) fn is_reserved_profile(profile_idc: u8) -> bool {
-    (FIRST_RESERVED_PROFILE_IDC..=LAST_RESERVED_PROFILE_IDC).contains(&profile_idc)
-}
-
 /// The interoperability point a profile signals (Annex A.2 Table A.1 column
 /// "Interoperability point", mirror lines 61-91).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,38 +302,6 @@ pub(crate) fn is_defined_max_interop(interop: u8) -> bool {
     matches!(interop, 0..=2 | 15)
 }
 
-/// Returns `true` when `chroma_format_idc` is permitted under `profile_idc`
-/// (Annex A.2 Table A.1 column "chroma_format_idc", mirror lines 61-90):
-///
-/// - profiles 0, 1, 2: `CHROMA_FORMAT_400`, `CHROMA_FORMAT_420` (lines 64-71);
-/// - profile 3: adds `CHROMA_FORMAT_422` (lines 73-75);
-/// - profile 4: adds `CHROMA_FORMAT_444` (lines 81-83);
-/// - profile 31 (Configurable): all four formats are listed (lines 87-90).
-///
-/// Reserved profiles (`5..=30`, line 85, no chroma column) and any value above 31
-/// return `false`: there is no defined allowed set, so any format mismatches. The
-/// caller skips this check for reserved and Configurable profiles (the
-/// reserved-profile error and the Table A.1 dashes for profile 31 cover those).
-#[must_use]
-pub(crate) fn profile_allows_chroma(profile_idc: u8, chroma: ChromaFormatIdc) -> bool {
-    match profile_idc {
-        0..=2 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
-        ),
-        3 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv422
-        ),
-        4 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv444
-        ),
-        CONFIGURABLE_PROFILE_IDC => true,
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -426,36 +379,6 @@ mod tests {
         assert!(!is_defined_max_interop(3));
         assert!(!is_defined_max_interop(14));
         assert!(is_defined_max_interop(15));
-    }
-
-    #[test]
-    fn reserved_profile_range_is_5_through_30() {
-        assert!(!is_reserved_profile(4));
-        assert!(is_reserved_profile(5));
-        assert!(is_reserved_profile(30));
-        assert!(!is_reserved_profile(CONFIGURABLE_PROFILE_IDC));
-    }
-
-    #[test]
-    fn profile_chroma_allowed_sets_match_table_a1() {
-        for profile in [0u8, 1, 2] {
-            assert!(profile_allows_chroma(profile, ChromaFormatIdc::Monochrome));
-            assert!(profile_allows_chroma(profile, ChromaFormatIdc::Yuv420));
-            assert!(!profile_allows_chroma(profile, ChromaFormatIdc::Yuv422));
-            assert!(!profile_allows_chroma(profile, ChromaFormatIdc::Yuv444));
-        }
-        assert!(profile_allows_chroma(3, ChromaFormatIdc::Yuv422));
-        assert!(!profile_allows_chroma(3, ChromaFormatIdc::Yuv444));
-        assert!(profile_allows_chroma(4, ChromaFormatIdc::Yuv444));
-        assert!(!profile_allows_chroma(4, ChromaFormatIdc::Yuv422));
-        for chroma in [
-            ChromaFormatIdc::Monochrome,
-            ChromaFormatIdc::Yuv420,
-            ChromaFormatIdc::Yuv422,
-            ChromaFormatIdc::Yuv444,
-        ] {
-            assert!(profile_allows_chroma(CONFIGURABLE_PROFILE_IDC, chroma));
-        }
     }
 
     #[test]
