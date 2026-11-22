@@ -119,7 +119,7 @@ pub enum LrSymbol {
     Flex {
         /// The tool the symbol selects when it is `1`.
         tool: usize,
-        /// The plane.
+        /// The index of the `RESTORE_SWITCHABLE` plane.
         plane: usize,
     },
 }

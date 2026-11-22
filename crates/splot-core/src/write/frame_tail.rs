@@ -16,8 +16,7 @@
 //!   `allow_warpmv_mode` / `use_global_motion`), `reduced_tx_set` `f(2)`, and
 //!   `film_grain_config()`.
 //!
-//! Like the other frame-header config writers, this module is additive: it depends on the
-//! model/parser read-only and serializes a parsed structure back to bits via [`BitWriter`].
+//! Serializes a parsed structure back to bits via [`BitWriter`].
 //! Each writer threads the same gating inputs the parser receives (`coded_lossless`, the
 //! [`FrameTailInput`] sequence/output state) and validates the whole structure before any bit
 //! is written (reject-before-write): every reject path leaves `writer.bit_len() == 0`. The

@@ -449,7 +449,6 @@ impl TileIntraFactsState {
         self.grid.window_violated()
     }
 
-    /// The grid.
     pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<IntraFacts> {
         &mut self.grid
     }

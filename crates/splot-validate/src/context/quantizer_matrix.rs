@@ -145,7 +145,7 @@ impl QuantizerMatrixState {
 /// - **§ 7.3.8.9 availability.** "When using_qmatrix is equal to 1 in a frame header, the
 ///   quantization matrix levels referenced by qm_y, qm_u, and qm_v shall be available to
 ///   the decoding process, by inclusion of a quantization matrix OBU in the bitstream or by
-///   provision through external means." A referenced custom slot with NO available record
+///   provision through external means." A referenced custom slot with no available record
 ///   (`qm_state.available[level] == None`) is unavailable.
 ///
 /// **External-means suppression (zero-false-positive discipline).**
@@ -171,12 +171,12 @@ impl QuantizerMatrixState {
 ///
 /// The § 6.17.6.2 layer-dependency constraints
 /// (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[level]] == 1 and the TLayerDependencyMap
-/// analogue) now land here for every referenced custom level with a recorded layer identity
+/// analogue) land here for every referenced custom level with a recorded layer identity
 /// (QmMLayerId >= 0): frame-header/qm-mlayer-dependency-missing /
 /// frame-header/qm-tlayer-dependency-missing, mirroring the film-grain dependency checks.
 ///
 /// Returns the referenced custom levels that were linearly available in-band under
-/// external-disabled (so the linear `frame-header/qm-level-unavailable` did NOT fire) — the
+/// external-disabled (so the linear `frame-header/qm-level-unavailable` did not fire) — the
 /// caller buffers each as a § 7.3.8.1 random-access-point replay reference, keeping the
 /// replay predicate disjoint from this linear check. Empty when no replay reference applies
 /// (no using_qmatrix, external-HLS provided, or every referenced level unavailable/poisoned).
@@ -315,7 +315,7 @@ impl ValidatorContext {
     ///   is decidable from obu_type + `FirstPictureInTU` alone, with the unconditional
     ///   `needsReset = 1` arm (every unprotected level cleared). Always confirmed.
     /// - RAS: always resets *once the parse reaches the reset call site*. The spec's
-    ///   `reset_qm()` call (mirror :4283) sits AFTER `restricted_prediction_switch`
+    ///   `reset_qm()` call (mirror :4283) sits after `restricted_prediction_switch`
     ///   (mirror :4209), `num_key_ref_frames` (mirror :4244-4257), and the output flags — so
     ///   the validator must not assume the reset on the `obu_type` alone. A RAS core that
     ///   resolves to `Some` necessarily read through those fields and entered the inter path
@@ -324,7 +324,7 @@ impl ValidatorContext {
     ///   sequence, or a malformed prefix) leaves the reset UNCONFIRMED.
     /// - SWITCH: resets only when the parsed `restricted_prediction_switch == 1`; the bit is
     ///   read on the SWITCH / RAS arm of the core parse and recorded on the core. A `Some`
-    ///   core with the bit `0` *confirms NO reset* (nothing to do); a `None` core leaves the
+    ///   core with the bit `0` *confirms no reset* (nothing to do); a `None` core leaves the
     ///   reset UNCONFIRMED (the gate bit was never read, so the spec might or might not have
     ///   cleared the levels).
     ///

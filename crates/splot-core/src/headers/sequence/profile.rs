@@ -11,7 +11,7 @@
 ///
 /// The raw 5-bit value returned by [`Self::get`] is the canonical identity: equality,
 /// ordering, hashing, and the [`Self::is_reserved`] / [`Self::is_configurable`] classifiers
-/// are all defined in terms of it, NOT the enum variant. [`Self::from_bits`] (the only
+/// are all defined in terms of it, not the enum variant. [`Self::from_bits`] (the only
 /// constructor the parsers use) masks its argument to 5 bits and places `5..=30` in
 /// `Reserved`, so every value the codebase produces is canonical (`Reserved` holds only
 /// `5..=30`). Defining the traits on `get()` means even a hand-constructed `Reserved(31)`
@@ -73,7 +73,7 @@ impl ProfileIdc {
 
     /// Returns `true` for a reserved profile (`seq_profile_idc` in `5..=30`, Table A.1
     /// line 85), which conforms to no profile of this version. Defined on the raw value so a
-    /// hand-constructed `Reserved(31)` is correctly NOT reserved (it is the value 31).
+    /// hand-constructed `Reserved(31)` is correctly not reserved (it is the value 31).
     #[must_use]
     pub const fn is_reserved(self) -> bool {
         matches!(self.get(), 5..=30)

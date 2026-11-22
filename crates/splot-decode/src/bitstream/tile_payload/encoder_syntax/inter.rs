@@ -1738,7 +1738,6 @@ impl IntraTileSyntax {
         Ok(motion)
     }
 
-    /// Whether the frame is an inter frame.
     pub(super) fn inter_frame(&self) -> bool {
         self.inter
             .as_ref()

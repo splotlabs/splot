@@ -179,7 +179,7 @@ pub(crate) struct ValidatorContext {
     /// The temporal unit in which [`ValidatorContext::repair_post_rap_ci_pairings`]
     /// last ran for each extended layer, so the § 7.3.8.11 RAP re-pair is idempotent
     /// within one temporal unit: a malformed temporal unit carrying two CLK/OLK random
-    /// access points for the SAME extended layer would otherwise run the re-pair twice
+    /// access points for the same extended layer would otherwise run the re-pair twice
     /// against the same post-epoch CI snapshot and duplicate every repaired diagnostic.
     /// The second CLK/OLK's `observe_ci_rap` keeps the epoch at this temporal unit and
     /// drops nothing new, so the guard short-circuits the redundant re-pair.
@@ -326,7 +326,7 @@ pub(crate) struct ValidatorContext {
     /// (mirror lines 1646-1648: the constraints hold "when both an OBU_MSDO and an activated
     /// global LCR ... are present in the same coded multistream video sequence"). The live
     /// `msdo_substream_max` is last-wins (correct for the § 6.6 ceiling check — the live MSDO
-    /// is the active operation), but the agreement must hold for EVERY MSDO present in the
+    /// is the active operation), but the agreement must hold for every MSDO present in the
     /// CMVS: a per-MSDO last-wins overwrite would let an earlier non-conforming MSDO escape
     /// when a later conforming one replaced it before the deferred resolution. § 7.3.8.2's identity rule bounds this — a non-RAP MSDO must be identical
     /// to its predecessor, so distinct MSDOs only appear at RAPs — but distinct MSDOs CAN
@@ -440,9 +440,9 @@ pub(crate) struct ValidatorContext {
     /// Per extended layer, the § 7.3.6 "content interpretation present in any CELU shall also
     /// be present in the first CELU of the sequence" PRESENCE state (mirror lines 560-562,
     /// `07-decoding-process.md#s-7-3-6`). For each extended layer it records the embedded
-    /// layers whose CI was observed in the FIRST coded extended layer unit of the current
+    /// layers whose CI was observed in the first coded extended layer unit of the current
     /// coded video sequence (the CELU in the CVS's first temporal unit, § 7.3.6) and dedups
-    /// the diagnostic per embedded layer. A CI in a LATER CELU of the same CVS for an embedded
+    /// the diagnostic per embedded layer. A CI in a later CELU of the same CVS for an embedded
     /// layer the first CELU lacked fires `celu/content-interpretation-not-in-first-celu`. Reset
     /// per coded video sequence in [`Self::start_cvs_for_xlayer`]. The contents-identity half
     /// of the same sentence is owned by `content-interpretation/repeated-ci-not-identical`
@@ -461,7 +461,7 @@ pub(crate) struct ValidatorContext {
     /// [`ReferenceStateTracker`]). Updated at each completed frame's coded-frame
     /// boundary from the parsed `refresh_frame_flags` / `OrderHint` / dimensions
     /// (`ReferenceStateView::pending_ref_update` derives the grounded update kind), with
-    /// honest all-slot poisoning whenever the refresh mask is unparsed and a grounded
+    /// all-slot poisoning whenever the refresh mask is unparsed and a grounded
     /// CLK reset at a new coded video sequence. The state is threaded into the
     /// frame-header parse input ([`FrameReferenceStateView`]) and gates the
     /// show-existing-frame slot-validity diagnostic (§ 6.17.2). Validator-derived: the
@@ -469,7 +469,7 @@ pub(crate) struct ValidatorContext {
     /// consults external HLS.
     reference_state: ReferenceStateTracker,
     /// The just-completed frame's pending § 7.23 update, deferred until the frame's
-    /// coded-frame UNIT closes. § 7.23 runs at `decode_frame_wrapup` AFTER the frame is
+    /// coded-frame unit closes. § 7.23 runs at `decode_frame_wrapup` after the frame is
     /// decoded, so the update must land before any *later* frame's reference checks read
     /// the buffer but after the current frame's own reference checks. The pending update
     /// (and its OBU header) is committed when the segmenter reports the next frame

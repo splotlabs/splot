@@ -18,8 +18,7 @@
 //!   `cdef_damping`, `cdef_strengths`, `cdef_on_skip_txfm_frame_enable`, and the per-strength
 //!   luma/chroma sets.
 //!
-//! Like the other frame-header config writers, this module is additive: it depends on the
-//! model/parser read-only and serializes a parsed structure back to bits via [`BitWriter`].
+//! Serializes a parsed structure back to bits via [`BitWriter`].
 //! Each writer threads the same gating inputs the parser receives (the [`CoreSeqFilterView`]
 //! sequence flags, `coded_lossless`, `num_planes`, the [`MfhDeblockingView`] /
 //! [`GdfGeometry`]) and validates the whole structure before any bit is written

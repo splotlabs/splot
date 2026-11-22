@@ -121,7 +121,7 @@ impl IntraDirectionalAngle {
 
     /// Creates a supported one-sided directional angle from an AV2 pAngle.
     ///
-    /// Admits ANY pAngle in the §7.13.2.8 one-sided ranges that has a §9.2
+    /// Admits any pAngle in the §7.13.2.8 one-sided ranges that has a §9.2
     /// derivative entry: zone-1 (`0 < pAngle < 90`, reads `AboveRow` with
     /// `dx = Dr_Intra_Derivative[pAngle]`) and zone-3 (`180 < pAngle < 270`,
     /// reads `LeftCol` with `dy = Dr_Intra_Derivative[270 - pAngle]`). This is a
@@ -269,7 +269,7 @@ impl IntraMiddleDirectionalAngle {
 
     /// Creates a supported middle directional angle from an AV2 pAngle.
     ///
-    /// Admits ANY pAngle in the §7.13.2.8 zone-2 middle band (`90 < pAngle <
+    /// Admits any pAngle in the §7.13.2.8 zone-2 middle band (`90 < pAngle <
     /// 180`); the §9.2 derivatives are `dx = Dr_Intra_Derivative[180 - pAngle]`
     /// and `dy = Dr_Intra_Derivative[pAngle - 90]` (AVM `av2_get_dx` / `av2_get_dy`
     /// for `90 < angle < 180`), so every in-band pAngle has a valid pair (both
@@ -612,7 +612,7 @@ pub fn predict_intra_middle_directional_angle_rect_idif_mrl_into<T: ReconSample>
 /// For pAngle 45 (`dx = Dr_Intra_Derivative[45] = 64`) every projection has
 /// `shift == 0`, so the IDIF 4-tap reduces to the copy `Edge[base]`
 /// (bit-identical to the bilinear branch); D203 (`dy = Dr_Intra_Derivative[67] =
-/// 24`) has genuinely nonzero shifts, exercising the 4-tap filter — but both
+/// 24`) has nonzero shifts, exercising the 4-tap filter — but both
 /// read far into the real reconstructed one-sided extension (above-right /
 /// below-left) that the middle-angle path never touches. This primitive covers
 /// only the no-MRL one-sided angles over already-prepared edges; `mrlIndex == 0`

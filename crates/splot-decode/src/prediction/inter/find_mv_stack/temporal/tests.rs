@@ -1379,8 +1379,8 @@ fn divide_tip_average(value: i32, count: usize) -> i32 {
     splot_recon::math::round2_signed(i64::from(value) * weight, 16) as i32
 }
 
-/// The whole-field § 7.10.4 passes that the per-unit preparation replaced:
-/// scale every cell, fill holes, then average through a row scratch.
+/// The whole-field § 7.10.4 reference: scale every cell, fill holes, then average
+/// through a row scratch.
 fn reference_prepare_tip_field(
     field: &mut ProjectedTemporalMotionField,
     references: TipReferencePair,

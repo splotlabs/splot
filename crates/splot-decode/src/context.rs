@@ -14,16 +14,6 @@ use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_st
 use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
 
-/// A decode input, read forward once.
-trait ReadSend: Read + Send {}
-
-impl<R: Read + Send + ?Sized> ReadSend for R {}
-
-/// A decode output sink.
-trait WriteSend: std::io::Write + Send {}
-
-impl<W: std::io::Write + Send + ?Sized> WriteSend for W {}
-
 /// A decode context.
 ///
 /// Owns the decode threads, plans bounded stream metadata from raw Annex
@@ -98,7 +88,7 @@ impl DecodeContext {
     /// Runs `decode` over the temporal units of `reader` on the calling
     /// thread, which drives the row workers.
     fn run<T: Send>(
-        reader: &mut dyn ReadSend,
+        reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
         decode: impl FnOnce(&mut dyn UnitSource) -> Result<T> + Send,
     ) -> Result<T> {
@@ -140,7 +130,7 @@ impl DecodeContext {
 
     fn decode_hash_report(
         &self,
-        reader: &mut dyn ReadSend,
+        reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
     ) -> Result<DecodeHashReport> {
         Self::run(reader, options, |source| {
@@ -179,7 +169,11 @@ impl DecodeContext {
         self.decode_discard(&mut reader, &options)
     }
 
-    fn decode_discard(&self, reader: &mut dyn ReadSend, options: &DecodeOptions) -> Result<()> {
+    fn decode_discard(
+        &self,
+        reader: &mut (dyn Read + Send),
+        options: &DecodeOptions,
+    ) -> Result<()> {
         Self::run(reader, options, |source| {
             crate::output::raw::discard_raw_stream_from_plan(source, options, &self.session)
         })
@@ -220,9 +214,9 @@ impl DecodeContext {
 
     fn decode_raw(
         &self,
-        reader: &mut dyn ReadSend,
+        reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
-        writer: &mut dyn WriteSend,
+        writer: &mut (dyn std::io::Write + Send),
     ) -> Result<()> {
         Self::run(reader, options, |source| {
             crate::output::raw::write_raw_stream_from_plan(source, options, &self.session, writer)
@@ -264,9 +258,9 @@ impl DecodeContext {
 
     fn decode_y4m(
         &self,
-        reader: &mut dyn ReadSend,
+        reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
-        writer: &mut dyn WriteSend,
+        writer: &mut (dyn std::io::Write + Send),
     ) -> Result<()> {
         Self::run(reader, options, |source| {
             crate::output::y4m::write_y4m_stream_to_writer(source, options, &self.session, writer)

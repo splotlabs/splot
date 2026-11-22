@@ -437,7 +437,6 @@ fn rate_controlled_intra_only_streams_decode_to_the_encoder_recon() {
     }
 }
 
-/// AVM decodes intra-only streams like splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_intra_only_streams_like_splot() {

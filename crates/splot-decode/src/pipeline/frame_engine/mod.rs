@@ -7,7 +7,7 @@
 //! and reconstruction and leaves the filter phase owed as a
 //! [`finish::WalkedFrame`], which the driver hands to the row scheduler
 //! (see [`crate::pipeline::inflight`]). [`FrameSetup`] carries
-//! the frame-level branch between key (intra) and inter frames — the genuinely
+//! the frame-level branch between key (intra) and inter frames — the
 //! frame-level divergence (references, CDF load, order-hint history, warp /
 //! temporal-MV banks, skip-mode, segmentation, CfL enable). Below the setup, the
 //! partition walk, per-block engine ([`crate::prediction::inter::block`]), coeff /

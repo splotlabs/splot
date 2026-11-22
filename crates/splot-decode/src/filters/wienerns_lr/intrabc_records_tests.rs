@@ -891,14 +891,14 @@ fn intrabc_geometry_rejects_out_of_frame_target() {
     assert_state_error(&error);
 }
 
-/// A bottom-edge IntrABC block whose NOMINAL target footprint overhangs the frame
-/// bottom edge (the §6.19.7.12 `intrabc_target_bounds` frontier) is now ADMITTED
-/// with an EFFECTIVE in-frame target clamped to the visible region, modelling AVM
+/// A bottom-edge IntrABC block whose nominal target footprint overhangs the frame
+/// bottom edge (the §6.19.7.12 `intrabc_target_bounds` frontier) is admitted
+/// with an effective in-frame target clamped to the visible region, modelling AVM
 /// §5.20.3.2 `block_coded`. The frame is 10x10 (4x4 MI, 16x16 luma storage); a
 /// `BLOCK_16X64`-shaped block (`n4h == 4`, 16 luma rows nominal) at MI(row=2,col=0)
-/// has its nominal y[8,24) target clamped to the in-frame y[8,16) — an EFFECTIVE
-/// 16x8 target — and an integer DV(row=-64) gives a CONGRUENT in-frame 16x8 source
-/// at y[0,8). The block is NOT rejected `intrabc_target_bounds`; the clamp only
+/// has its nominal y[8,24) target clamped to the in-frame y[8,16) — an effective
+/// 16x8 target — and an integer DV(row=-64) gives a congruent in-frame 16x8 source
+/// at y[0,8). The block is not rejected `intrabc_target_bounds`; the clamp only
 /// shrinks (source/target stay the same congruent shape).
 #[test]
 fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
@@ -924,7 +924,7 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
     assert_eq!(prediction.target.size(), prediction.source.size());
 }
 
-/// A genuinely off-frame IntrABC block whose TOP-LEFT MI row is at/after the frame
+/// An off-frame IntrABC block whose TOP-LEFT MI row is at/after the frame
 /// MI-row count (no visible samples at all, not an overhang) is still rejected
 /// `intrabc_target_bounds` — the clamp admits overhangs, never an off-frame top-left.
 #[test]

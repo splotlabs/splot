@@ -180,7 +180,7 @@ pub struct GlobalMotionParams {
     pub stop: Option<GlobalMotionStop>,
     /// The per-reference warp models, indexed `0..REFS_PER_FRAME`. Populated only when the
     /// per-reference loop is reached (which requires the cross-frame `OrderHints` state);
-    /// at the honest stop every entry is the identity initialiser (mirror :7780-7788).
+    /// at the stop every entry is the identity initialiser (mirror :7780-7788).
     pub references: [GlobalMotionRef; REFS_PER_FRAME],
 }
 
@@ -227,7 +227,7 @@ pub struct GlobalMotionInput<'a> {
     /// `ref_frame_idx[ 0..NumTotalRefs ]` (the inter control region's reference map): the
     /// base-warp arm reads `ref_frame_idx[ our_ref ]` (mirror :7828).
     pub ref_frame_idx: &'a [u32],
-    /// Cross-frame state needed once `use_global_motion == 1`. `None` preserves an honest
+    /// Cross-frame state needed once `use_global_motion == 1`. `None` preserves a
     /// coverage stop for inspectors that do not model the § 7.23 reference buffer.
     pub reference_state: Option<GlobalMotionReferenceState<'a>>,
 }

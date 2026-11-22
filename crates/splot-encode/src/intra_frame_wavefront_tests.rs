@@ -115,7 +115,6 @@ fn wavefront_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     });
 }
 
-/// AVM decodes wavefront streams like splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_wavefront_streams_like_splot() {

@@ -240,16 +240,6 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         self.walker.sb_mask
     }
 
-    #[cfg(test)]
-    pub(crate) fn new(
-        work_unit: &DecodeTileWorkUnit,
-        frame: TilePartitionFrameFacts,
-        limits: DecodeLimits,
-        storage: TileTraversalStorage,
-    ) -> Result<Self, TilePartitionTraversalError> {
-        Self::new_with_bytes(work_unit, work_unit.tile_bytes(), frame, limits, storage)
-    }
-
     pub(crate) fn new_with_bytes(
         work_unit: &DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -817,9 +807,14 @@ mod row_cursor_tests {
             let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
             let mut states = parser_states(frame);
             let mut superblocks = Vec::new();
-            let mut cursor =
-                GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT, storage)
-                    .unwrap();
+            let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
+                &work,
+                &payload,
+                frame,
+                DecodeLimits::DEFAULT,
+                storage,
+            )
+            .unwrap();
             assert!(cursor.walker.intra_facts.grid_mut().cell(0, 0).is_none());
             loop {
                 let superblock = cursor
@@ -850,8 +845,9 @@ mod row_cursor_tests {
         let frame = frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work,
+            &payload,
             frame,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default(),
@@ -890,8 +886,9 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work,
+            &payload,
             frame,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default(),
@@ -942,8 +939,9 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work,
+            &payload,
             frame,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default(),
@@ -986,8 +984,9 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work,
+            &payload,
             frame,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default(),

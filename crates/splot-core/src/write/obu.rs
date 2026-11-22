@@ -9,8 +9,7 @@
 //! (`AV2-5.2.2-OBU-HEADER`, with trailing bits in
 //! [`crate::write::BitWriter::write_trailing_bits`] for `AV2-5.2.3-TRAILING-BITS`).
 //!
-//! This module is additive: it depends on the model/parser read-only and serializes
-//! a parsed [`ObuHeader`] back to bytes via [`BitWriter`]. The universal contract is
+//! Serializes a parsed [`ObuHeader`] back to bytes via [`BitWriter`]. The universal contract is
 //! semantic `read(write(x)) == x` for every header the parser can produce;
 //! byte-exactness additionally holds for canonical encodings (a no-extension header
 //! with parser-inferable layer ids, and a minimal-length Annex B size prefix).

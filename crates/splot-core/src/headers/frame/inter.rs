@@ -60,7 +60,7 @@ const PRIMARY_REF_CHOOSE: u8 = 8;
 const REFINE_NONE: u32 = 0;
 
 /// `REFINE_SWITCHABLE` (AV2 v1.0.0 Table 6.5, § 6.17.2 mirror :947): the `opfl_refine_type`
-/// value at which `frame_opfl_refine_type()` does NOT read `opfl_refine_all` (§ 5.18.3.2
+/// value at which `frame_opfl_refine_type()` does not read `opfl_refine_all` (§ 5.18.3.2
 /// mirror :5601, `if ( opfl_refine_type != REFINE_SWITCHABLE )`). `opfl_refine_type` is read
 /// as `f(1)`, so its value space is {0, 1}: a value of 2 here would make the inequality
 /// always true and consume an extra `opfl_refine_all` bit, mis-positioning every following
@@ -162,7 +162,7 @@ impl TipGlobalMv {
 
 /// Why the inter control-region parse stopped (a **coverage** stop, never a truncation).
 ///
-/// The variants split into the two honest classes the module documents: a derivation
+/// The variants split into the two classes the module documents: a derivation
 /// that needs unmodeled syntax, and a derivation that needs reference-state facts the
 /// model has not proven for the consumed slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -537,7 +537,7 @@ pub(crate) fn parse_inter_control_into(
 
 /// Reads / derives `refresh_frame_flags` for the non-intra arms (AV2 § 5.18.2 mirror
 /// :4429-4537). Returns `Ok(None)` only for the RAS arm whose derivation needs
-/// reference state the model has not grounded (an honest stop the caller surfaces).
+/// reference state the model has not grounded (a stop the caller surfaces).
 fn read_inter_refresh_frame_flags(
     reader: &mut BitReader<'_>,
     seq: &InterSeqView,
@@ -589,7 +589,7 @@ fn read_inter_refresh_frame_flags(
 }
 
 /// Parses the `!FrameIsIntra` reference-control region (AV2 § 5.18.2 mirror :4577-5181),
-/// setting `control` and the terminal [`InterStop`]. Stops honestly before any read whose
+/// setting `control` and the terminal [`InterStop`]. Stops before any read whose
 /// width / presence depends on a derivation this phase cannot perform.
 #[allow(clippy::too_many_lines)]
 fn parse_inter_reference_region(
@@ -1423,8 +1423,8 @@ mod tests {
         assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
     }
 
-    /// AV2 § 7.7 — the implicit reference map (`!explicitRefFrameMap`) is now MODELED when the
-    /// reference state proves exactly ONE valid slot: `get_ref_frames()` derives
+    /// AV2 § 7.7 — the implicit reference map (`!explicitRefFrameMap`) is modeled when the
+    /// reference state proves exactly one valid slot: `get_ref_frames()` derives
     /// `NumTotalRefs == 1`, `ref_frame_idx == [theSlot]` (no bits), and the control region
     /// parses through to the shared tail. (The fixture-bytes end-to-end proof lives in
     /// info.rs::frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture.)
@@ -1465,7 +1465,7 @@ mod tests {
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
     }
 
-    /// AV2 § 7.7 — the implicit map with NO valid slot derives `NumTotalRefs == 0` and reaches
+    /// AV2 § 7.7 — the implicit map with no valid slot derives `NumTotalRefs == 0` and reaches
     /// the shared tail (`ref_frame_idx` empty); the gate admits the zero-reference case too.
     #[test]
     fn inter_implicit_map_no_valid_slot_reaches_shared_tail_with_zero_refs() {
@@ -1496,7 +1496,7 @@ mod tests {
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
     }
 
-    /// AV2 § 7.7 — the implicit map with TWO valid slots STAYS an honest UnmodeledDerivation
+    /// AV2 § 7.7 — the implicit map with two valid slots stays an UnmodeledDerivation
     /// stop (the § 7.7 ranking needs the unmodeled RefBaseQIdx / RefCounter / layer scoring).
     #[test]
     fn inter_implicit_map_two_valid_slots_stops_unmodeled() {
@@ -1525,8 +1525,8 @@ mod tests {
         }
     }
 
-    /// AV2 § 7.7 — with `RefBaseQIdx` modeled, the implicit map over TWO valid slots is
-    /// derived EXACTLY (the multi-reference brick `DECODE-INTER-MULTIREF-RUNTIME`). This
+    /// AV2 § 7.7 — with `RefBaseQIdx` modeled, the implicit map over two valid slots is
+    /// derived exactly (the multi-reference brick `DECODE-INTER-MULTIREF-RUNTIME`). This
     /// is the parser-side proof that `from_slots_with_base_q_idx` lifts the at-most-one
     /// gate: with order_hint 10, slot 0 (oh 8, q 40) and slot 1 (oh 5, q 40), both past
     /// references at equal dims, § 7.7 ranks slot 0 (score -248) before slot 1 (-220), so
@@ -1572,10 +1572,10 @@ mod tests {
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
     }
 
-    /// AV2 § 7.7 — INCOMPLETE ranking inputs over TWO valid slots STAY an honest
+    /// AV2 § 7.7 — incomplete ranking inputs over two valid slots stay an
     /// `UnmodeledDerivation` stop even though `RefBaseQIdx` is present: a `RefOrderHint`
-    /// slice SHORTER than the active reference-slot count cannot cover both valid slots, so
-    /// `derive_implicit_ref_map` must NOT silently default the missing slot's order hint to
+    /// slice shorter than the active reference-slot count cannot cover both valid slots, so
+    /// `derive_implicit_ref_map` must not silently default the missing slot's order hint to
     /// zero and derive `ref_frame_idx` from fabricated state. This is the parser-side proof
     /// of the `DECODE-INTER-MULTIREF-RUNTIME` completeness gate.
     #[test]
@@ -2204,19 +2204,19 @@ mod tests {
         )
     }
 
-    /// AV2 § 7.7 + § 5.18.2 — drive the REAL `syn-key-inter-64x64` fixture's inter frame
+    /// AV2 § 7.7 + § 5.18.2 — drive the real `syn-key-inter-64x64` fixture's inter frame
     /// through `parse_frame_header_core` with the post-key reference state, and prove the
-    /// implicit reference map (`get_ref_frames()`) now advances the parser PAST
+    /// implicit reference map (`get_ref_frames()`) advances the parser past
     /// `InterStop::UnmodeledDerivation` to the shared tail.
     ///
     /// The fixture is a `OBU_CLOSED_LOOP_KEY` key (`refresh_frame_flags == 255`,
     /// `base_q_idx == 70`, 64x64) + an `OBU_REGULAR_TILE_GROUP` inter frame
     /// (`order_hint_lsb == 1`, `explicitRefFrameMap == 0`, `primary_ref_frame ==
     /// PRIMARY_REF_CHOOSE`). After the key frame, the § 7.23 `first` rule (mirror :14132,
-    /// `(KEY) ? first : 1`) leaves ONLY slot 0 `RefValid`, with `RefOrderHint[0] == 0` and
+    /// `(KEY) ? first : 1`) leaves only slot 0 `RefValid`, with `RefOrderHint[0] == 0` and
     /// `RefFrameWidth/Height[0] == 64` — exactly the at-most-one-valid-reference case the
     /// modeled `get_ref_frames()` resolves. The bit-level proof is that the parser consumes
-    /// the SAME inter-header field sequence the explicit map would (frame size / BRU /
+    /// the same inter-header field sequence the explicit map would (frame size / BRU /
     /// MV-precision / interpolation filter / motion modes / disable_cdf_update) and reaches
     /// `InterStop::ReachedSharedTail` — possible only if the implicit map yielded
     /// `NumTotalRefs == 1`, `ref_frame_idx == [0]` and the parse continued from the right bit.
@@ -2273,8 +2273,8 @@ mod tests {
         assert!(!core.status.is_truncated_in_modeled_region());
     }
 
-    /// AV2 § 7.7 — the implicit map STAYS an honest `UnmodeledDerivation` stop when the
-    /// modeled reference state proves TWO valid slots (the § 7.7 ranking then needs the
+    /// AV2 § 7.7 — the implicit map STAYS an `UnmodeledDerivation` stop when the
+    /// modeled reference state proves two valid slots (the § 7.7 ranking then needs the
     /// unmodeled `RefBaseQIdx` / `RefCounter` / layer scoring inputs). Same fixture inter
     /// bytes, but a reference state with two valid slots: the gate refuses to guess.
     #[test]
@@ -2288,7 +2288,7 @@ mod tests {
         );
         let (seq_header, inter_obu) = fixture_sequence_and_inter_obu(data);
 
-        // Two valid slots: the § 7.7 ranking now depends on the unmodeled scoring inputs.
+        // Two valid slots: the § 7.7 ranking depends on the unmodeled scoring inputs.
         let mut ref_valid = [false; NUM_REF_FRAMES];
         let ref_oh = [0u32; NUM_REF_FRAMES];
         let mut ref_w = [0u32; NUM_REF_FRAMES];
@@ -2321,9 +2321,9 @@ mod tests {
         );
     }
 
-    /// AV2 § 5.18.2 — drive the REAL `syn-2frame-inter-64x64` fixture's inter frame through
+    /// AV2 § 5.18.2 — drive the real `syn-2frame-inter-64x64` fixture's inter frame through
     /// `parse_frame_header_core` with the post-key reference state, and prove the inter
-    /// frame header now parses END-TO-END through its § 5.18.2 shared tail and inter-specific
+    /// frame header parses end to end through its § 5.18.2 shared tail and inter-specific
     /// arms, reaching the terminal `FrameHeaderParseStatus::InterHeaderComplete`.
     ///
     /// The fixture (`--enable-global-motion=1 --qp=80 --sb-size=64`) is a `OBU_CLOSED_LOOP_KEY`
@@ -2334,7 +2334,7 @@ mod tests {
     /// sequence config (the hand-decoded 56-bit inter payload: 27-bit control region + 21-bit
     /// shared tail + 8-bit § 5.19 tile-group tail) and confirmed against the bit-exact
     /// avmdec/dav2d decode the fixture records. The bit-level proof is that the parse consumes
-    /// EXACTLY the shared-tail field sequence and reaches `InterHeaderComplete` — possible only
+    /// exactly the shared-tail field sequence and reaches `InterHeaderComplete` — possible only
     /// if every field width / presence (tile_info / quant / segmentation / deblocking's inter
     /// allow_df_sub_pu arm / the inter coding-mode arms / global_motion / film_grain) was read
     /// at the right bit.

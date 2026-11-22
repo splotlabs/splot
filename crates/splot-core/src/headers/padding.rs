@@ -38,7 +38,7 @@ pub struct PaddingObu {
 /// `payload` is the OBU payload (`obuPayloadSize` bytes) and `payload_offset` is its
 /// absolute start offset. The parser consumes the entire payload — the leading
 /// `obu_padding_byte` values and the `trailing_bits()` that begin at the last non-zero
-/// byte — so the caller must NOT additionally run the generic OBU trailing-bits logic
+/// byte — so the caller must not additionally run the generic OBU trailing-bits logic
 /// for `OBU_PADDING` (that would double-consume the trailing bits).
 ///
 /// # Errors

@@ -11,9 +11,7 @@
 //!   (no layout bits) or the explicit § 5.18.7.3 `tile_params()` bits, then the trailing
 //!   `context_update_tile_id` / `tile_size_bytes_minus_1` fields.
 //!
-//! Like the other config writers, this module is additive: it depends on the
-//! model/parser read-only and serializes a parsed [`TileInfo`] back to bits via
-//! [`BitWriter`]. The universal contract is semantic `read(write(x)) == x` for every
+//! Serializes a parsed [`TileInfo`] back to bits via [`BitWriter`]. The universal contract is semantic `read(write(x)) == x` for every
 //! model the parser can produce: `parse_tile_info(write_tile_info(info)) == info`.
 //!
 //! **Re-derive, never store raw bits.** The reuse eligibility and the per-axis grid are

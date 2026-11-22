@@ -383,7 +383,7 @@ impl<T: ReconSample> FrameProgress<T> {
     /// Publishes the terminal watermark of a filter phase that ended.
     ///
     /// `filtered` publishes [`FROZEN`] after the slot settled with the frame,
-    /// which every row threshold satisfies with rows that are genuinely final;
+    /// which every row threshold satisfies with rows that are final;
     /// a phase that failed publishes [`WatermarkCell::FAILED`] instead, so a
     /// consumer waiting on a row it will never get is released and fails
     /// closed on the settled slot.

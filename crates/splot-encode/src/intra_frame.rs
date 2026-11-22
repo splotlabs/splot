@@ -118,7 +118,7 @@ pub(crate) struct IntraCells {
     cols: usize,
     /// Cell rows.
     rows: usize,
-    /// The flags.
+    /// Whether an intra leaf covers each cell.
     flags: Vec<bool>,
     /// Frames since the chain of primary references last searched intra in
     /// every leaf: `0` for a frame that skipped no intra search.

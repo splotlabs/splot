@@ -649,7 +649,7 @@ fn spatial_scan_aligns_odd_mi_col_sb_border() {
 }
 
 /// Mission-stream frame-0 MI(48,56) geometry: mib_size 32, MiRow 48, `48 % 32 == 16 != 0`
-/// -> NOT an SB border, so the within-SB 4x4-resolution above-row scan applies.
+/// -> not an SB border, so the within-SB 4x4-resolution above-row scan applies.
 /// BLOCK_32X64 (bw4 = 8, bh4 = 16), the new frontier-class block.
 fn frontier_mi_48_56_scan_geometry() -> SpatialScanGeometry {
     SpatialScanGeometry {

@@ -24,7 +24,7 @@ pub(super) struct FrameReferenceAvailability<'a> {
 
 /// The frame's linearly-available § 7.3.8.1 random-access-point HLS references, surfaced by
 /// [`frame_header_core_checks`] so the caller (in `&mut self` context) can buffer them in the
-/// [`RapReplayTracker`]. Each is recorded ONLY when its linear availability check found the
+/// [`RapReplayTracker`]. Each is recorded only when its linear availability check found the
 /// object present in-band under external-disabled, keeping the replay predicate disjoint from
 /// the linear `frame-header/film-grain-model-unavailable` / `frame-header/qm-level-unavailable`
 /// checks.

@@ -179,7 +179,6 @@ fn the_facade_codes_region_type_where_the_decoder_reads_it() {
     assert!(!syntax.codes_region_type(luma[0], Partition::Split).unwrap());
 }
 
-/// AVM decodes extended SDP streams like splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_extended_sdp_streams_like_splot() {

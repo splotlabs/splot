@@ -56,7 +56,7 @@ impl<'a> DecodeStreamInput<'a> {
     }
 }
 
-/// The fixed base-layer selection supported by the first stream planner.
+/// The decoded layer selection; the planner selects only the base layer.
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLayerSelection {
@@ -72,7 +72,7 @@ impl Default for DecodeLayerSelection {
 }
 
 impl DecodeLayerSelection {
-    /// The only selected layer in planner v1: temporal 0, embedded 0, extended 0.
+    /// The base layer: temporal 0, embedded 0, extended 0.
     pub const BASE: Self = Self {
         temporal_layer_id: TemporalLayerId::from_bits(0),
         embedded_layer_id: EmbeddedLayerId::from_bits(0),

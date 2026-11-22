@@ -3,6 +3,7 @@
 
 //! Deterministic changed-file selection for the heavy AV2 conformance audit.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -342,7 +343,7 @@ fn select_candidates(
         if changed_paths.is_none() && !all {
             match ledger_files
                 .as_ref()
-                .and_then(|entries| entries.get(&file.path))
+                .and_then(|entries| entries.get(file.path.as_str()))
             {
                 None => {
                     reasons.insert("ledger-missing".to_owned());
@@ -469,12 +470,12 @@ fn deleted_candidate(
     }
 }
 
-fn ledger_files_by_path(ledger: Option<&AuditLedger>) -> Option<BTreeMap<String, AuditLedgerFile>> {
+fn ledger_files_by_path(ledger: Option<&AuditLedger>) -> Option<BTreeMap<&str, &AuditLedgerFile>> {
     ledger.map(|ledger| {
         ledger
             .files
             .iter()
-            .map(|file| (file.path.clone(), file.clone()))
+            .map(|file| (file.path.as_str(), file))
             .collect()
     })
 }
@@ -494,15 +495,15 @@ fn force_wide_review_triggers(
     ledger: Option<&AuditLedger>,
     files: &[TrackedAuditFile],
 ) -> Vec<ForceWideReviewTrigger> {
-    let changed: BTreeSet<String> = if let Some(changed_paths) = changed_paths {
-        changed_paths.clone()
+    let changed: Cow<'_, BTreeSet<String>> = if let Some(changed_paths) = changed_paths {
+        Cow::Borrowed(changed_paths)
     } else if let Some(ledger) = ledger {
         let ledger_files = ledger_files_by_path(Some(ledger)).unwrap_or_default();
         let mut changed = BTreeSet::new();
         let mut current_paths = BTreeSet::new();
         for file in files {
             current_paths.insert(file.path.clone());
-            let Some(entry) = ledger_files.get(&file.path) else {
+            let Some(entry) = ledger_files.get(file.path.as_str()) else {
                 changed.insert(file.path.clone());
                 continue;
             };
@@ -518,9 +519,9 @@ fn force_wide_review_triggers(
                 changed.insert(entry.path.clone());
             }
         }
-        changed
+        Cow::Owned(changed)
     } else {
-        BTreeSet::new()
+        Cow::Owned(BTreeSet::new())
     };
 
     changed

@@ -509,7 +509,7 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
 
 fn decode_y4m_to_file(
     context: &DecodeContext,
-    input: Box<dyn DecodeInput>,
+    input: BufReader<File>,
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
@@ -520,7 +520,7 @@ fn decode_y4m_to_file(
 
 fn decode_raw_to_file(
     context: &DecodeContext,
-    input: Box<dyn DecodeInput>,
+    input: BufReader<File>,
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
@@ -836,14 +836,10 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
     DecodeOutputError::io(operation, source).into()
 }
 
-trait DecodeInput: io::Read + Send {}
-
-impl<T: io::Read + Send> DecodeInput for T {}
-
 /// Streams the input file, a pipe or FIFO included: decode reads it forward
 /// once.
-fn open_decode_input(path: &Path) -> io::Result<Box<dyn DecodeInput>> {
-    Ok(Box::new(BufReader::new(File::open(path)?)))
+fn open_decode_input(path: &Path) -> io::Result<BufReader<File>> {
+    Ok(BufReader::new(File::open(path)?))
 }
 
 fn decode_report_from_error(error: &DecodeError, input: &Path) -> Result<DecodeDiagnosticReport> {

@@ -396,15 +396,9 @@ pub fn parse_lr_params_for_inter(
                     let n = ceil_log2(num_ref_frames);
                     temporal_ref_index = reader.read_bits(n)? as usize;
                 }
-                if !temporal_pred_flag
-                    && DECODE_NUM_FILTER_CLASSES[DECODE_NUM_FILTER_CLASSES.len() - 1] > 1
-                {
+                if !temporal_pred_flag {
                     let idx = reader.read_bits_u8(3)?;
-                    let classes = DECODE_NUM_FILTER_CLASSES
-                        .get(usize::from(idx))
-                        .copied()
-                        .unwrap_or(1);
-                    num_filter_classes = Some(classes);
+                    num_filter_classes = Some(DECODE_NUM_FILTER_CLASSES[usize::from(idx)]);
                 }
             } else if frame_filters_on && num_ref_frames > 0 {
                 temporal_pred_flag = reader.read_flag()?;
