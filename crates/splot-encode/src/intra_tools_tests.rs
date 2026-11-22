@@ -403,10 +403,19 @@ pub(super) fn tiled_text(config: &Config, index: u32) -> SourceFrame {
 /// Two key frames of [`tiled_text`] at 256x128 coded with `preset` on
 /// `threads` threads: the units and the encoder recon.
 fn intrabc_stream(
-    (threads, chroma, bit_depth): (usize, PixelFormat, BitDepth),
+    case: (usize, PixelFormat, BitDepth),
     preset: &'static PresetParams,
 ) -> (Vec<u8>, Vec<u8>) {
-    let mut config = config(256, 128, bit_depth, 9, 90);
+    source_stream(case, preset, (256, tiled_text))
+}
+
+/// [`intrabc_stream`] of `source` frames `width` samples wide.
+fn source_stream(
+    (threads, chroma, bit_depth): (usize, PixelFormat, BitDepth),
+    preset: &'static PresetParams,
+    (width, source): (u32, fn(&Config, u32) -> SourceFrame),
+) -> (Vec<u8>, Vec<u8>) {
+    let mut config = config(width, 128, bit_depth, 9, 90);
     config.chroma = chroma;
     config.keyint = core::num::NonZeroU32::MIN;
     config.threads = splot_parallel::ThreadCount::from(threads);
@@ -415,7 +424,7 @@ fn intrabc_stream(
     for index in 0..2 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let coded = coder
-            .encode_frame(&tiled_text(&config, index), &plan, 120)
+            .encode_frame(&source(&config, index), &plan, 120)
             .unwrap();
         recon.extend(recon_bytes(&coded, bit_depth));
         units.push(coded.temporal_unit);
@@ -515,6 +524,180 @@ fn avm_decodes_intrabc_frames_like_splot() {
         let (units, recon) = intrabc_stream((2, chroma, bit_depth), preset);
         let avm = avm_decode(&avmdec, &[units], (256, 128), bit_depth, "intrabc");
         assert!(avm == recon, "intrabc {bit_depth:?}: AVM output differs");
+    }
+}
+
+/// Two key frames of [`half_sample_copy`] with IntraBC, `intrabc_subpel`
+/// as `subpel` says, and IntraBC the only candidate where it has one: the
+/// units, the encoder recon and the count of final-pass leaves with a
+/// fractional vector.
+fn subpel_stream(subpel: bool, case: (usize, PixelFormat, BitDepth)) -> (Vec<u8>, Vec<u8>, usize) {
+    let preset = if subpel {
+        preset_with(|p| (p.intrabc, p.intrabc_subpel) = (true, true))
+    } else {
+        preset_with(|p| p.intrabc = true)
+    };
+    crate::mode_decision::FORCE_INTRABC.set(true);
+    crate::tile_writer::QUARTER_INTRABC.set(0);
+    let (units, recon) = source_stream(case, preset, (640, half_sample_copy));
+    crate::mode_decision::FORCE_INTRABC.set(false);
+    (units, recon, crate::tile_writer::QUARTER_INTRABC.get())
+}
+
+/// A 640x128 frame of noise with two 32x32 blocks at (64, 64) and
+/// (448, 64): both start with the same 8x8 luma ramp, the first goes on
+/// with fine vertical stripes and the second with the half-sample average
+/// of the first block's samples, so its best copy is fractional.
+fn half_sample_copy(config: &Config, index: u32) -> SourceFrame {
+    let max = f64::from(config.bit_depth.max_sample());
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
+        let (w, h) = (size.width(), size.height());
+        if plane > 0 {
+            return vec![(max / 2.0) as u16 + 5 * plane as u16; w * h];
+        }
+        let noise = |x: usize, y: usize| {
+            let v = (x * 7919 + y * 104_729 + index as usize * 31).wrapping_mul(2_654_435_761);
+            max * (0.2 + 0.6 * f64::from((v >> 7) as u32 % 1000) / 1000.0)
+        };
+        let block = |xl: usize, yl: usize| {
+            if xl < 8 && yl < 8 {
+                max * (0.4 + xl as f64 / 32.0 + yl as f64 / 64.0)
+            } else {
+                max * (0.5 + 0.35 * (xl as f64 * 1.25).sin())
+            }
+        };
+        let mut samples: Vec<f64> = (0..w * h).map(|i| noise(i % w, i / w)).collect();
+        for yl in 0..32 {
+            for xl in 0..32 {
+                samples[(64 + yl) * w + 64 + xl] = block(xl, yl);
+            }
+        }
+        for yl in 0..32 {
+            for xl in 0..32 {
+                let a = |x: usize| samples[(64 + yl) * w + 64 + x].round();
+                samples[(64 + yl) * w + 448 + xl] = if xl < 8 && yl < 8 {
+                    a(xl)
+                } else {
+                    ((a(xl) + a(xl + 1)) / 2.0).ceil()
+                };
+            }
+        }
+        samples.into_iter().map(|v| v.round() as u16).collect()
+    });
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// With `intrabc_subpel`, the quarter-sample refinement finds the
+/// half-sample copy of [`half_sample_copy`] (IntraBC the only candidate
+/// where it has one) in both bit depths, and none without the field. The
+/// streams decode to the encoder recon in every chroma format and both bit
+/// depths, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn subpel_intrabc_codes_fractional_vectors() {
+    let coded = subpel_stream;
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let case = (1, PixelFormat::Yuv420, bit_depth);
+        assert_eq!(coded(false, case).2, 0, "{bit_depth:?}");
+        let (units, recon, quarter) = coded(true, case);
+        assert!(quarter > 0, "{bit_depth:?}");
+        assert_same_samples(&decode(&units), &recon, "forced IntraBC");
+    }
+    each_case(CHROMAS, |chroma| {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let (units, recon, _) = coded(true, (2, chroma, bit_depth));
+            let name = format!("{chroma:?} {bit_depth:?}");
+            assert_same_samples(&decode(&units), &recon, &name);
+        }
+    });
+    let (one, ..) = coded(true, (1, PixelFormat::Yuv420, BitDepth::Ten));
+    each_case([2, 8], |threads| {
+        let (bytes, ..) = coded(true, (threads, PixelFormat::Yuv420, BitDepth::Ten));
+        assert!(bytes == one, "{threads} threads");
+    });
+}
+
+/// AVM decodes the [`subpel_stream`] key frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_subpel_intrabc_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv422, BitDepth::Ten),
+    ] {
+        let (units, recon, quarter) = subpel_stream(true, (1, chroma, bit_depth));
+        assert!(quarter > 0, "{chroma:?} {bit_depth:?}");
+        let name = format!("subpel-intrabc-{chroma:?}");
+        let avm = avm_decode(&avmdec, &[units], (640, 128), bit_depth, &name);
+        assert!(avm == recon, "{chroma:?} {bit_depth:?}: AVM output differs");
+    }
+}
+
+/// [`intrabc_stream`] with IntraBC the only candidate where it has one and
+/// each vector moved by a quarter sample where it can: the units, the
+/// encoder recon and the count of final-pass leaves with a fractional
+/// vector.
+fn quarter_intrabc_stream(
+    case: (usize, PixelFormat, BitDepth),
+    preset: &'static PresetParams,
+) -> (Vec<u8>, Vec<u8>, usize) {
+    crate::mode_decision::FORCE_INTRABC.set(true);
+    crate::intrabc::QUARTER_BV.set(true);
+    crate::tile_writer::QUARTER_INTRABC.set(0);
+    let (units, recon) = intrabc_stream(case, preset);
+    crate::intrabc::QUARTER_BV.set(false);
+    crate::mode_decision::FORCE_INTRABC.set(false);
+    (units, recon, crate::tile_writer::QUARTER_INTRABC.get())
+}
+
+/// The global and the local-area presets with their quarter-sample cases.
+fn quarter_intrabc_cases() -> [(&'static PresetParams, PixelFormat, BitDepth); 2] {
+    [
+        (
+            preset_with(|p| p.intrabc = true),
+            PixelFormat::Yuv420,
+            BitDepth::Eight,
+        ),
+        (
+            small_intrabc_preset(true),
+            PixelFormat::Yuv444,
+            BitDepth::Ten,
+        ),
+    ]
+}
+
+/// Key frames with quarter-sample IntraBC vectors (§ 5.20.5.4
+/// `intrabc_precision = 1`, the § 7.13.3 BILINEAR filter) decode to the
+/// encoder recon, for the global and the local area.
+#[test]
+fn quarter_sample_intrabc_frames_decode_to_the_encoder_recon() {
+    for (preset, chroma, bit_depth) in quarter_intrabc_cases() {
+        let (units, recon, quarter) = quarter_intrabc_stream((1, chroma, bit_depth), preset);
+        let name = format!("{chroma:?} {bit_depth:?}");
+        assert!(quarter > 0, "{name}");
+        assert_same_samples(&decode(&units), &recon, &name);
+    }
+}
+
+/// AVM decodes key frames with quarter-sample IntraBC vectors to the
+/// encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_quarter_sample_intrabc_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (preset, chroma, bit_depth) in quarter_intrabc_cases() {
+        let (units, recon, _) = quarter_intrabc_stream((1, chroma, bit_depth), preset);
+        let name = format!("quarter-intrabc-{chroma:?}");
+        let avm = avm_decode(&avmdec, &[units], (256, 128), bit_depth, &name);
+        assert!(avm == recon, "{chroma:?} {bit_depth:?}: AVM output differs");
     }
 }
 

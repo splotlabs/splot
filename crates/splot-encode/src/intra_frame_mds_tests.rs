@@ -75,8 +75,9 @@ fn staged_streams_decode_on_any_thread_count() {
 
 /// The length and FNV-1a hash of the p5 stream of [`staged_stream`] at qp
 /// 200, recorded from main e20662669 before the staged mode decision and
-/// again for the long-side-first partition order alone.
-const P5_GOLDEN: (usize, u64) = (2888, 0x0fff_5a1c_edab_b855);
+/// again for the long-side-first partition order alone and for the snapshot
+/// of the chroma reference block samples.
+const P5_GOLDEN: (usize, u64) = (2732, 0x4a31_cb8f_bbb1_318a);
 
 /// The p5 row, whose MDS0 budgets are open and whose inter-frame intra
 /// shortlist is `intra_modes`, codes the stream of the unstaged search
