@@ -403,7 +403,7 @@ fn inter_frame_header_bits(
         seq,
         (params.base_q_idx, params.tiles, tx),
         &params.filters,
-        (false, lr_refs),
+        (false, lr_refs, primary_ref_frame.map(|_| false)),
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_flag(params.reference_select)?;

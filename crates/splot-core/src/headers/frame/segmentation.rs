@@ -596,6 +596,42 @@ mod tests {
     }
 
     #[test]
+    fn written_coded_map_flags_round_trip_and_truncate_to_eof() {
+        let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+        for (segment, data) in features.iter_mut().zip([-9, -3, 3, 9]) {
+            segment[0] = SegmentFeature {
+                enabled: true,
+                data,
+            };
+        }
+        let params = SegmentationParams {
+            segmentation_enabled: true,
+            reuse_seg_info: false,
+            features,
+            segmentation_update_map: true,
+            segmentation_temporal_update: false,
+            seg_id_pre_skip: false,
+            last_active_seg_id: 3,
+        };
+        let seg = no_seq_info_view(8);
+        let mut writer = crate::write::BitWriter::new();
+        crate::write::write_inter_segmentation_params(&mut writer, &params, (&seg, None), Some(false))
+            .unwrap();
+        let bits = writer.bit_len();
+        let data = writer.into_bytes();
+        let parse = |bytes: &[u8]| {
+            let mut reader = BitReader::new(bytes, ByteOffset::new(0));
+            parse_inter_segmentation_params(&mut reader, &seg, None, Some(false), false)
+                .map(|params| (params, reader.consumed_bits()))
+        };
+        assert_eq!(parse(&data).unwrap(), (Some(params), bits));
+        assert!(matches!(
+            parse(&data[..data.len() - 1]),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
     fn inter_enabled_segmentation_stops_when_primary_state_is_unknown() {
         let mut bits = Bits::default();
         bits.bit(1);
