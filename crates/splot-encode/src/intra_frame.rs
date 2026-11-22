@@ -371,9 +371,10 @@ impl FrameCoder for IntraFrameCoder {
                 .update_tip_output(&core)
                 .map_err(coding("TIP output update"));
         }
-        let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
-            what: "a frame committed twice",
-        })?;
+        let (core, recon, initial, cdfs, ccso_blocks) =
+            frame.reference.take().ok_or(Error::Unsupported {
+                what: "a frame committed twice",
+            })?;
         let refreshed = core.refresh_frame_flags.unwrap_or(u32::MAX);
         for (slot, intra) in self.slot_intra.iter_mut().enumerate() {
             if refreshed >> slot & 1 == 1 {
@@ -386,7 +387,7 @@ impl FrameCoder for IntraFrameCoder {
                 .is_some_and(|tail| tail.film_grain.apply_grain);
         }
         self.references
-            .update(&core, recon, &initial, &cdfs)
+            .update(&core, recon, &initial, &cdfs, &ccso_blocks)
             .map_err(coding("reference update"))
     }
 
@@ -851,6 +852,7 @@ impl IntraFrameCoder {
             tiles,
             cdfs,
             recon,
+            ccso_blocks,
         } = finish_frame(
             &self.sequence,
             &header,
@@ -876,7 +878,7 @@ impl IntraFrameCoder {
             temporal_unit,
             recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
-            reference: Some((core, recon, initial, cdfs)),
+            reference: Some((core, recon, initial, cdfs, ccso_blocks)),
             tip_output: None,
             intra_cells,
             warp: (plan.frame_type == crate::rate_control::FrameType::Inter).then_some(

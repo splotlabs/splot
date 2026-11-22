@@ -36,13 +36,14 @@ use super::{
     EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
     TxPartition, TxType, rule,
 };
+use crate::filters::ccso::CcsoUnitGrid;
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
 pub use crate::prediction::inter::Bawp;
 use crate::prediction::inter::read_mv::AMVD_INDEX_TO_MVD;
 
 use crate::prediction::inter::{
-    EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
+    CcsoGridHandle, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
     EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterIntraPrediction,
     InterReferenceState, MotionFieldHandle, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
     SINGLE_MODE_NEWMV, TIP_REF_FRAME, TemporalMvContext, chroma_inter_tx_type,
@@ -83,13 +84,15 @@ pub struct EncoderReferences {
     state: InterReferenceState<u16>,
 }
 
-/// One coded frame: its filtered reconstruction, saved CDFs, motion field and
-/// header, whose `ccso_params()` a later frame may reuse (§ 7.23).
+/// One coded frame: its filtered reconstruction, saved CDFs, motion field,
+/// header and `CcsoBlks`, whose `ccso_params()` and `ccso_blk` flags a later
+/// frame may reuse (§ 7.23).
 type SettledFrame = (
     SharedFrame<u16>,
     Arc<FrameCdfSubset>,
     Option<MotionFieldHandle>,
     Arc<FrameHeaderCore>,
+    Option<Arc<CcsoUnitGrid>>,
 );
 
 impl EncoderReferences {
@@ -117,10 +120,13 @@ impl EncoderReferences {
     }
 
     /// Stores the coded frame `core` with its filtered reconstruction `frame`,
-    /// and the saved CDFs and motion field of its final `tiles`, in tile
-    /// order, in the slots its `refresh_frame_flags` name (§ 7.23). `initial`
+    /// the saved CDFs and motion field of its final `tiles`, in tile order,
+    /// and its `ccso_blk` flags `ccso_blocks` (as [`apply_loop_filters`] takes
+    /// them), in the slots its `refresh_frame_flags` name (§ 7.23). `initial`
     /// is the [`Self::frame_start`] of `core`. A frame that refreshes no slot,
     /// or a sequence without `enable_ref_frame_mvs`, stores no motion field.
+    ///
+    /// [`apply_loop_filters`]: super::apply_loop_filters
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a header without the § 7.23 inputs or
@@ -131,8 +137,10 @@ impl EncoderReferences {
         frame: DecodedFrame<u16>,
         initial: &FrameStart,
         tiles: &[TileEnd],
+        ccso_blocks: &[Vec<u8>],
     ) -> Result<()> {
         let cdfs = Arc::new(saved_cdfs(&self.sequence, core, initial, tiles)?);
+        let ccso = super::filters::ccso_unit_grid(&self.sequence, core, ccso_blocks)?;
         let stores_motion = core.refresh_frame_flags.is_some_and(|flags| flags != 0)
             && self
                 .sequence
@@ -166,6 +174,7 @@ impl EncoderReferences {
             cdfs,
             motion,
             Arc::new(core.clone()),
+            ccso.map(Arc::new),
         ));
         self.buffer.update(index, &update, is_key_or_switch(core));
         self.buffer.note_frame(core.obu_type, true, &update);
@@ -273,6 +282,36 @@ impl EncoderReferences {
             .as_ref()
     }
 
+    /// The saved `ccso_blk` flags of `plane`, one per CCSO unit in raster
+    /// order, that `sb_reuse_ccso` with `ccso_ref_idx = ref_index` loads into
+    /// the frame `core` (§ 5.18.7.12); `None` when the reference has none or
+    /// breaks a § 6.17.7.8 requirement of block reuse: another frame size, or
+    /// a `CcsoLumaSizeLog2` other than `CCSO_LUMA_SIZE_LOG2` (8) in either
+    /// frame.
+    pub fn ccso_saved_blocks(
+        &self,
+        core: &FrameHeaderCore,
+        ref_index: u32,
+        plane: usize,
+    ) -> Option<&[u8]> {
+        let slot = *core.inter.as_ref()?.ref_frame_idx.get(ref_index as usize)? as usize;
+        let size = core.frame_size?;
+        let grid = super::CcsoGrid::new(&self.sequence, core).ok()?;
+        let saved = self
+            .state
+            .ref_ccso_unit_grids
+            .get(slot)?
+            .as_ref()?
+            .product()?
+            .as_deref()?;
+        let fits = grid.luma_size_log2 == 8
+            && saved.shift() + 2 == grid.luma_size_log2
+            && (saved.grid_rows(), saved.grid_cols()) == (grid.rows, grid.cols)
+            && self.state.ref_frame_width.get(slot) == Some(&size.width)
+            && self.state.ref_frame_height.get(slot) == Some(&size.height);
+        fits.then(|| saved.plane_blocks(plane)).flatten()
+    }
+
     /// `core` with the parameters of each `reuse_ccso` plane loaded from its
     /// reference (§ 5.18.7.12 `load_ccso_params`), as the decoder loads them.
     ///
@@ -367,14 +406,20 @@ fn settled_state(
         .zip(state.ref_motion_fields.iter_mut())
         .enumerate()
     {
-        if let Some((_, saved, field, _)) = settled(slot) {
+        if let Some((_, saved, field, ..)) = settled(slot) {
             *cdfs = Some(FrameCdfHandle::settled(Arc::clone(saved)));
             motion.clone_from(field);
         }
     }
-    for (slot, ccso) in state.ref_ccso_headers.iter_mut().enumerate() {
-        if let Some((.., header)) = settled(slot) {
+    for (slot, (ccso, blocks)) in state
+        .ref_ccso_headers
+        .iter_mut()
+        .zip(state.ref_ccso_unit_grids.iter_mut())
+        .enumerate()
+    {
+        if let Some((.., header, grid)) = settled(slot) {
             *ccso = Some(Arc::clone(header));
+            *blocks = Some(CcsoGridHandle::settled(grid.clone()));
         }
     }
     Ok(state)
