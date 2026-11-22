@@ -578,14 +578,13 @@ pub fn build_intra_only_frame_header(
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
     w.write_flag(false)?; // frame_is_inter
     w.write_flag(params.show_frame)?; // immediate_output_frame
-    if !params.show_frame && !seq.monotonic_output_order_flag {
-        w.write_flag(false)?; // implicit_output_frame
-    }
+    write_implicit_output(&mut w, seq, params)?;
     w.write_flag(false)?; // frame_size_override_flag
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
     write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
-    let tail = (params.base_q_idx, params.tiles, params.show_frame);
+    let output = params.show_frame || params.implicit_output;
+    let tail = (params.base_q_idx, params.tiles, output);
     write_intra_frame_tail(&mut w, seq, tail, &params.filters, params.tx)?;
     let bytes = w.into_bytes();
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
