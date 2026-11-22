@@ -44,6 +44,16 @@ pub struct Packet {
     pub stats: Vec<FrameStats>,
 }
 
+/// The header, filtered reconstruction, initial CDFs, final tile CDFs and
+/// `ccso_blk` flags of a coded frame.
+pub(crate) type CodedReference = (
+    FrameHeaderCore,
+    DecodedFrame<u16>,
+    FrameStart,
+    Vec<TileEnd>,
+    Vec<Vec<u8>>,
+);
+
 /// The output of a [`FrameCoder`] for one frame.
 pub(crate) struct CodedFrame {
     /// The frame's OBUs, after a temporal delimiter when the plan opens a
@@ -53,15 +63,8 @@ pub(crate) struct CodedFrame {
     pub(crate) recon: [Vec<u16>; 3],
     /// The frame type the coder used, which can differ from the planned one.
     pub(crate) frame_type: FrameType,
-    /// The header, filtered reconstruction, initial CDFs and final tile CDFs
-    /// that [`FrameCoder::commit`] stores.
-    pub(crate) reference: Option<(
-        FrameHeaderCore,
-        DecodedFrame<u16>,
-        FrameStart,
-        Vec<TileEnd>,
-        Vec<Vec<u8>>,
-    )>,
+    /// What [`FrameCoder::commit`] stores.
+    pub(crate) reference: Option<CodedReference>,
     /// The header of a `TIP_FRAME_AS_OUTPUT` frame, which
     /// [`FrameCoder::commit`] records in place of `reference`.
     pub(crate) tip_output: Option<FrameHeaderCore>,

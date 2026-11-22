@@ -252,10 +252,20 @@ pub(super) fn search(
 /// statistics of the reused triples (in [`unit_row_stats`] layout, one row
 /// of tables per grid row) with their 64-band statistics.
 struct Reused {
-    /// `(plane, ccso_ref_idx, saved plane, triple index, saved flags)`.
-    sources: Vec<(usize, u32, CcsoPlaneParams, usize, Option<Vec<bool>>)>,
+    sources: Vec<ReuseSource>,
     triples: Vec<(u8, u8, u8)>,
     rows: Vec<(Vec<CcsoStats>, Vec<CcsoStats<BO_CLASSES>>)>,
+}
+
+/// One saved plane of a reference that a plane may reuse.
+struct ReuseSource {
+    plane: usize,
+    ref_index: u32,
+    saved: CcsoPlaneParams,
+    /// The index of its triple in [`Reused::triples`].
+    triple: usize,
+    /// Its `ccso_blk` flags, when `sb_reuse_ccso` may load them.
+    on: Option<Vec<bool>>,
 }
 
 impl Reused {
@@ -264,10 +274,13 @@ impl Reused {
     fn blocks(&self, plane: usize) -> impl Iterator<Item = (u32, &[bool])> {
         self.sources
             .iter()
-            .filter(move |source| source.0 == plane)
-            .filter_map(|(_, index, .., on)| Some((*index, on.as_deref()?)))
+            .filter(move |source| source.plane == plane)
+            .filter_map(|source| Some((source.ref_index, source.on.as_deref()?)))
     }
 }
+
+/// The fixed offsets and header bits of a reused plane.
+type FixedParams<'a> = Option<(&'a [(u8, i32)], Bits)>;
 
 /// The `ccso_ref_idx` bits of an inter frame (§ 5.18.7.12).
 fn ref_index_bits(input: &CcsoInput<'_>) -> u32 {
@@ -324,7 +337,13 @@ fn reuse_sources(input: &CcsoInput<'_>, grid: CcsoGrid, planes: usize) -> Result
                 .flatten()
                 .filter(|blocks| blocks.len() == grid.rows * grid.cols)
                 .map(|blocks| blocks.iter().map(|&value| value != 0).collect());
-            reused.sources.push((plane, index, *saved, position, on));
+            reused.sources.push(ReuseSource {
+                plane,
+                ref_index: index,
+                saved: *saved,
+                triple: position,
+                on,
+            });
         }
     }
     if !reused.sources.is_empty() {
@@ -345,9 +364,9 @@ fn reuse_choices(
 ) -> Result<Vec<PlaneChoice>> {
     let index_bits = ref_index_bits(input);
     let mut choices = Vec::new();
-    for (source_plane, ref_index, saved, triple, on) in &reused.sources {
-        let (source_plane, ref_index, saved, triple) = (*source_plane, *ref_index, *saved, *triple);
-        if source_plane != plane {
+    for source in &reused.sources {
+        let (ref_index, saved, triple) = (source.ref_index, source.saved, source.triple);
+        if source.plane != plane {
             continue;
         }
         let band_log2 = saved.ccso_max_band_log2.unwrap_or(0);
@@ -389,7 +408,7 @@ fn reuse_choices(
             continue;
         }
         let bits = Bits::whole(1 + 2 + index_bits);
-        for flags in [None, on.as_deref()] {
+        for flags in [None, source.on.as_deref()] {
             let mut choice = evaluate(
                 input,
                 (plane, cdfs, grid.cols),
@@ -524,7 +543,7 @@ fn evaluate(
     (plane, cdfs, grid_cols): (usize, &[Vec<u16>], usize),
     merged: &[Vec<(i64, u32)>],
     (ladder, variant): (&[(u8, u8, u8)], Variant),
-    (fixed, flags): (Option<(&[(u8, i32)], Bits)>, Option<&[bool]>),
+    (fixed, flags): (FixedParams<'_>, Option<&[bool]>),
 ) -> Result<PlaneChoice> {
     let (ext_filter, scale, quant) = ladder[variant.candidate];
     let classes = variant.classes();
