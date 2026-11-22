@@ -35,10 +35,18 @@ pub(super) fn with_noise(config: &Config, frame: &SourceFrame, seed: u32) -> Sou
     SourceFrame::new(config, frame.pts(), planes).unwrap()
 }
 
-/// Key, inter, key and inter frames on `threads` threads with grain `on`:
-/// the units, the decoded output that § 7.21.7 adds to the encoder recon,
-/// and the recon itself.
-fn grain_stream(mut config: Config, threads: usize, on: bool) -> (Vec<Vec<u8>>, Vec<u8>, Vec<u8>) {
+/// The units, the decoded output with grain and the recon of a stream.
+type GrainStream = (Vec<Vec<u8>>, Vec<u8>, Vec<u8>);
+
+/// Key, inter, key and inter source frames `frame(config, seed)` on
+/// `threads` threads with grain `on`: the units, the decoded output that
+/// § 7.21.7 adds to the encoder recon, and the recon itself.
+fn grain_stream(
+    mut config: Config,
+    threads: usize,
+    on: bool,
+    frame: fn(&Config, u32) -> SourceFrame,
+) -> GrainStream {
     config.keyint = core::num::NonZeroU32::new(2).unwrap();
     config.film_grain = on;
     config.threads = splot_parallel::ThreadCount::from(threads);
@@ -47,7 +55,7 @@ fn grain_stream(mut config: Config, threads: usize, on: bool) -> (Vec<Vec<u8>>, 
     let (mut units, mut grained, mut recon) = (Vec::new(), Vec::new(), Vec::new());
     let mut model = None;
     for index in 0..4u32 {
-        let source = grainy_frame(&config, 11 + index);
+        let source = frame(&config, 11 + index);
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         if plan.frame_type == FrameType::Key {
             let [y, cb, cr] = grain::estimate(&source, config.chroma).unwrap();
@@ -91,20 +99,87 @@ fn grain_streams_decode_to_the_recon_plus_grain() {
             let mut config = config(72, 40, bit_depth, 6, 120);
             config.chroma = chroma;
             let name = format!("{chroma:?} {bit_depth:?}");
-            let (units, grained, recon) = grain_stream(config.clone(), 1, true);
+            let (units, grained, recon) = grain_stream(config.clone(), 1, true, grainy_frame);
             assert_ne!(grained, recon, "{name}: no grain");
             assert_same_samples(&decode(&units.concat()), &grained, &name);
-            let (plain, plain_grained, plain_recon) = grain_stream(config.clone(), 1, false);
+            let (plain, plain_grained, plain_recon) =
+                grain_stream(config.clone(), 1, false, grainy_frame);
             assert_eq!(plain_recon, recon, "{name}: grain changed the recon");
             assert_same_samples(&decode(&plain.concat()), &plain_grained, &name);
             each_case([2, 8], |threads| {
                 assert!(
-                    grain_stream(config.clone(), threads, true).0 == units,
+                    grain_stream(config.clone(), threads, true, grainy_frame).0 == units,
                     "{name}: {threads}"
                 );
             });
         },
     );
+}
+
+/// A flat 8-bit frame with the noise of [`grainy_frame`] of `seed`, whose
+/// chroma plane `3 - NOISY` is a clean block gradient over every intensity
+/// bin, which gives that plane no scaling points.
+fn one_chroma_frame<const NOISY: usize>(config: &Config, seed: u32) -> SourceFrame {
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        vec![
+            128;
+            sizes
+                .get(plane)
+                .map_or(0, |size| size.width() * size.height())
+        ]
+    });
+    let flat = SourceFrame::new(config, u64::from(seed), planes).unwrap();
+    let mut planes = with_noise(config, &flat, seed).planes().clone();
+    let width = sizes[1].width();
+    for (i, sample) in planes[3 - NOISY].iter_mut().enumerate() {
+        *sample = ((i / width / 8 * (width / 8) + i % width / 8) % 48 * 5) as u16;
+    }
+    SourceFrame::new(config, u64::from(seed), planes).unwrap()
+}
+
+/// The 4:2:0 [`one_chroma_frame`] streams with grain, for a noisy Cb and a
+/// noisy Cr, with the index of the noisy plane.
+fn one_chroma_streams() -> Vec<(usize, GrainStream)> {
+    each_case([1, 2], |noisy| {
+        let frame = if noisy == 1 {
+            one_chroma_frame::<1>
+        } else {
+            one_chroma_frame::<2>
+        };
+        let config = config(128, 96, BitDepth::Eight, 6, 120);
+        (noisy, grain_stream(config, 1, true, frame))
+    })
+}
+
+/// A 4:2:0 chroma plane without scaling points of its own, next to a noisy
+/// one, codes a single point of scaling 0 (§ 6.17.10.2 needs both counts
+/// non-zero): `splot decode` outputs it equal to the recon, while luma and
+/// the noisy plane carry grain.
+#[test]
+fn a_420_chroma_plane_without_points_gets_no_grain() {
+    for (noisy, (units, grained, recon)) in one_chroma_streams() {
+        let decoded = decode(&units.concat());
+        assert_same_samples(&decoded, &grained, &format!("{noisy}"));
+        let (luma, chroma) = (128 * 96, 64 * 48);
+        let plane = |frame: &[u8], plane: usize| -> Vec<u8> {
+            let start = if plane == 0 {
+                0
+            } else {
+                luma + (plane - 1) * chroma
+            };
+            frame[start..start + if plane == 0 { luma } else { chroma }].to_vec()
+        };
+        let frames = decoded
+            .chunks(luma + 2 * chroma)
+            .zip(recon.chunks(luma + 2 * chroma));
+        for (index, (frame, clean)) in frames.enumerate() {
+            let name = format!("{noisy}: frame {index}");
+            assert_ne!(plane(frame, 0), plane(clean, 0), "{name}");
+            assert_ne!(plane(frame, noisy), plane(clean, noisy), "{name}");
+            assert_eq!(plane(frame, 3 - noisy), plane(clean, 3 - noisy), "{name}");
+        }
+    }
 }
 
 /// The visible samples of `pictures` as the decoder's raw output.
@@ -149,7 +224,7 @@ fn skipped_grain_decodes_to_the_recon_and_applies_later() {
         let mut config = config(176, 96, bit_depth, 10, 120);
         config.chroma = chroma;
         let name = format!("{chroma:?} {bit_depth:?}");
-        let (units, grained, recon) = grain_stream(config, 1, true);
+        let (units, grained, recon) = grain_stream(config, 1, true, grainy_frame);
         let mut decoder =
             Decoder::new(DecoderSettings::default().with_skip_film_grain(true)).unwrap();
         let mut clean = Vec::new();
@@ -248,7 +323,8 @@ fn every_output_frame_gets_its_own_grain() {
     }
 }
 
-/// AVM synthesizes the same grain as splot.
+/// AVM synthesizes the same grain as splot, also with a padded 4:2:0 chroma
+/// plane.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_grain_streams_like_splot() {
@@ -256,9 +332,14 @@ fn avm_decodes_grain_streams_like_splot() {
         return;
     };
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let (units, grained, _) = grain_stream(config(72, 40, bit_depth, 6, 120), 1, true);
+        let (units, grained, _) =
+            grain_stream(config(72, 40, bit_depth, 6, 120), 1, true, grainy_frame);
         let avm = avm_decode(&avmdec, &units, (72, 40), bit_depth, "grain");
         assert!(avm == grained, "{bit_depth:?}: AVM output differs");
+    }
+    for (noisy, (units, grained, _)) in one_chroma_streams() {
+        let avm = avm_decode(&avmdec, &units, (128, 96), BitDepth::Eight, "grain-one");
+        assert!(avm == grained, "{noisy}: AVM output differs");
     }
     let units = mini_gop_units(true, true);
     let avm = avm_decode(&avmdec, &units, (72, 40), BitDepth::Eight, "grain-sef");

@@ -200,14 +200,7 @@ impl ResidualPlanePlan {
                     let color_idx = work_unit
                         .cdf_mut()
                         .tile_cdfs_mut()
-                        .read_block_symbol_trace(
-                            TileCdfSelector::PaletteYColorIndex {
-                                palette_size: palette.size(),
-                                ctx: color_ctx,
-                            },
-                            symbols,
-                        )
-                        .map(splot_core::symbol::Symbol::get)
+                        .read_palette_y_color(palette.size(), color_ctx, symbols)
                         .map_err(|source| GeneralIntraResidualError::PaletteSymbolRead { source })?
                         as usize;
                     *color_order.get(color_idx).ok_or_else(|| {

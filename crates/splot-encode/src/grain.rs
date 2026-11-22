@@ -28,7 +28,9 @@ const NOISE_UNIT: f64 = 4096.0;
 
 /// The `[Y, Cb, Cr]` scaling functions of the noise in `frame` of `chroma`;
 /// a plane whose noise stays under [`MIN_SIGMA`] in every bin gets no points.
-/// 4:2:0 keeps both chroma planes when either is noisy (§ 6.17.10.2).
+/// 4:2:0 keeps both chroma planes when either is noisy (§ 6.17.10.2); a
+/// chroma plane without points then gets one point of scaling 0, which adds
+/// no noise (§ 7.21.7.4, § 7.21.7.5).
 pub(crate) fn estimate(frame: &SourceFrame, chroma: PixelFormat) -> Result<[GrainScaling; 3]> {
     let shift = u32::from(frame.bit_depth().bits()) - 8;
     let gaussian = gaussian_sigma();
@@ -55,6 +57,12 @@ pub(crate) fn estimate(frame: &SourceFrame, chroma: PixelFormat) -> Result<[Grai
     if chroma == PixelFormat::Yuv420 {
         let pair = noisy[1] || noisy[2];
         (noisy[1], noisy[2]) = (pair, pair);
+        for points in points[1..]
+            .iter_mut()
+            .filter(|points| pair && points.is_empty())
+        {
+            points.push((128, 0));
+        }
     }
     let mut scalings: [GrainScaling; 3] = Default::default();
     for ((scaling, points), noisy) in scalings.iter_mut().zip(points).zip(noisy) {
@@ -196,6 +204,48 @@ mod tests {
             let [y, cb, cr] = estimate(&frame, chroma).unwrap_or_default();
             assert!(y.is_empty() && !cb.is_empty(), "{chroma:?}");
             assert_eq!(!cr.is_empty(), cr_points, "{chroma:?}");
+        }
+    }
+
+    /// `noisy_frame` of `chroma` with noise in the chroma plane `noisy` and a
+    /// block gradient over every bin, with no points, in the other one.
+    fn one_chroma_frame(chroma: PixelFormat, noisy: usize) -> SourceFrame {
+        let mut sigmas = [0.0; 3];
+        sigmas[noisy] = 5.0;
+        let mut config = Config::new(128, 96);
+        config.chroma = chroma;
+        let mut planes = noisy_frame(BitDepth::Eight, chroma, sigmas)
+            .planes()
+            .clone();
+        let width = config.plane_sizes().unwrap_or_default()[1].width();
+        for (i, sample) in planes[3 - noisy].iter_mut().enumerate() {
+            *sample = ((i / width / BLOCK * (width / BLOCK) + i % width / BLOCK) % 48 * 5) as u16;
+        }
+        SourceFrame::new(&config, 0, planes).unwrap_or_else(|_| unreachable!("valid planes"))
+    }
+
+    /// In 4:2:0 a chroma plane without points of its own gets the single point
+    /// `(128, 0)` when the other one is noisy, for Cb and for Cr; the noisy
+    /// plane keeps its points. 4:2:2 and 4:4:4 keep the empty plane empty.
+    #[test]
+    fn chroma_420_pads_the_plane_without_points() {
+        for chroma in [
+            PixelFormat::Yuv420,
+            PixelFormat::Yuv422,
+            PixelFormat::Yuv444,
+        ] {
+            for noisy in [1, 2] {
+                let scalings =
+                    estimate(&one_chroma_frame(chroma, noisy), chroma).unwrap_or_default();
+                let name = format!("{chroma:?} {noisy}");
+                assert_eq!(scalings[noisy].points().len(), 2, "{name}");
+                let padded: &[(u8, u8)] = if chroma == PixelFormat::Yuv420 {
+                    &[(128, 0)]
+                } else {
+                    &[]
+                };
+                assert_eq!(scalings[3 - noisy].points(), padded, "{name}");
+            }
         }
     }
 }

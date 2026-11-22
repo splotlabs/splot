@@ -981,15 +981,12 @@ impl<'a> SymbolDecoder<'a> {
     ///
     /// # Errors
     /// Returns the same errors as [`Self::read_symbol`].
-    #[inline]
     pub fn read_symbol_u16(&mut self, cdf: &mut [u16]) -> Result<Symbol> {
         self.read_symbol_row(cdf)
     }
 
     /// Dispatches on the row length so each arity's search loop and
     /// adaptation are unrolled with constant bounds.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
     fn read_symbol_row<T: CdfStorage>(&mut self, cdf: &mut [T]) -> Result<Symbol> {
         match cdf.len() {
             3 => self.read_symbol_arity::<T, 2>(cdf),
@@ -1007,27 +1004,13 @@ impl<'a> SymbolDecoder<'a> {
     /// `next_cur` is 0 (`f = 0` and `Prob_Inc` 0), so a search that passes
     /// every other boundary ends there. Both validation modes return
     /// `n = N`; restating it keeps `n` constant in the adaptation step.
-    /// The validation branch stays out of the hot body: a conditional call
-    /// there spills every loop register even when the mode is trusted.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
     fn read_symbol_arity<T: CdfStorage, const N: usize>(
         &mut self,
         cdf: &mut [T],
     ) -> Result<Symbol> {
         if self.config.cdf_validation == CdfValidationMode::Validated {
             validate_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))?;
-            return self.read_symbol_arity_hot::<T, N>(cdf);
         }
-        self.read_symbol_arity_hot::<T, N>(cdf)
-    }
-
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    fn read_symbol_arity_hot<T: CdfStorage, const N: usize>(
-        &mut self,
-        cdf: &mut [T],
-    ) -> Result<Symbol> {
         trusted_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))?;
         let state = cdf[N - 1].to_u32() as u16;
         let rate = trusted_rate::<N>(state);
@@ -1047,27 +1030,14 @@ impl<'a> SymbolDecoder<'a> {
         Ok(Symbol::new(symbol as u8))
     }
 
-    /// The configured CDF update mode, the `UPDATE` of [`Self::read_trusted`].
-    #[must_use]
-    pub const fn cdf_update_mode(&self) -> CdfUpdateMode {
-        self.config.cdf_update
-    }
-
     /// Decodes one symbol of an `L`-entry row the caller owns and keeps
     /// within the § 8.2.6 invariants (spec defaults adapted only by reads),
-    /// with `UPDATE` equal to [`Self::cdf_update_mode`] being enabled. It
-    /// skips every per-read check in either validation mode; a row outside
-    /// the invariants decodes panic-free to an arbitrary symbol.
+    /// in the configured update mode. It skips every per-read check in
+    /// either validation mode; a row outside the invariants decodes
+    /// panic-free to an arbitrary symbol.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
-    pub fn read_trusted<const L: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16; L]) -> u32 {
-        self.read_trusted_len(cdf, UPDATE).unwrap_or(0)
-    }
-
-    /// [`Self::read_trusted`] in the decoder's configured update mode.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    pub fn read_trusted_configured<const L: usize>(&mut self, cdf: &mut [u16; L]) -> u32 {
+    pub fn read_trusted<const L: usize>(&mut self, cdf: &mut [u16; L]) -> u32 {
         self.read_trusted_len(cdf, self.config.cdf_update == CdfUpdateMode::Enabled)
             .unwrap_or(0)
     }
@@ -1079,16 +1049,17 @@ impl<'a> SymbolDecoder<'a> {
     /// it from a register instead of waiting for its own store.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
-    pub fn read_trusted_carried<const L: usize, const UPDATE: bool>(
+    pub fn read_trusted_carried<const L: usize>(
         &mut self,
         cdf: &mut [u16; L],
         carried: Option<u64>,
     ) -> (u32, u64) {
+        let update = self.config.cdf_update == CdfUpdateMode::Enabled;
         match L {
-            4 => self.read_carried::<3>(cdf, carried, UPDATE),
-            5 => self.read_carried::<4>(cdf, carried, UPDATE),
-            6 => self.read_carried::<5>(cdf, carried, UPDATE),
-            _ => (self.read_trusted_len(cdf, UPDATE).unwrap_or(0), 0),
+            4 => self.read_carried::<3>(cdf, carried, update),
+            5 => self.read_carried::<4>(cdf, carried, update),
+            6 => self.read_carried::<5>(cdf, carried, update),
+            _ => (self.read_trusted_len(cdf, update).unwrap_or(0), 0),
         }
     }
 
