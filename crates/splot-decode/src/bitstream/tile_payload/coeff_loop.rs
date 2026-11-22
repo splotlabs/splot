@@ -193,13 +193,13 @@ pub(crate) fn read_nonzero_coeff_eob(
     let rows = cdfs.block_rows_mut();
     let ctx = input.eob_ctx;
     let eob_pt_symbol = match input.size {
-        EobPtSize::Pt16 => read_row(symbols, row_at(&mut rows.eob_pt_16, ctx)),
-        EobPtSize::Pt32 => read_row(symbols, row_at(&mut rows.eob_pt_32, ctx)),
-        EobPtSize::Pt64 => read_row(symbols, row_at(&mut rows.eob_pt_64, ctx)),
-        EobPtSize::Pt128 => read_row(symbols, row_at(&mut rows.eob_pt_128, ctx)),
-        EobPtSize::Pt256 => read_row(symbols, row_at(&mut rows.eob_pt_256, ctx)),
-        EobPtSize::Pt512 => read_row(symbols, row_at(&mut rows.eob_pt_512, ctx)),
-        EobPtSize::Pt1024 => read_row(symbols, row_at(&mut rows.eob_pt_1024, ctx)),
+        EobPtSize::Pt16 => read_row(symbols, row_at(rows.eob_pt_16(), ctx)),
+        EobPtSize::Pt32 => read_row(symbols, row_at(rows.eob_pt_32(), ctx)),
+        EobPtSize::Pt64 => read_row(symbols, row_at(rows.eob_pt_64(), ctx)),
+        EobPtSize::Pt128 => read_row(symbols, row_at(rows.eob_pt_128(), ctx)),
+        EobPtSize::Pt256 => read_row(symbols, row_at(rows.eob_pt_256(), ctx)),
+        EobPtSize::Pt512 => read_row(symbols, row_at(rows.eob_pt_512(), ctx)),
+        EobPtSize::Pt1024 => read_row(symbols, row_at(rows.eob_pt_1024(), ctx)),
     } as u8;
     let eob_pt_extra_width = eob_pt_extra_width(input.size, eob_pt_symbol);
     let eob_pt_extra = read_eob_literal(symbols, eob_pt_extra_width, "eob_pt_extra")?;
@@ -209,7 +209,7 @@ pub(crate) fn read_nonzero_coeff_eob(
     if eob_pt < 3 {
         return Ok(eob_pt);
     }
-    let eob_extra = read_row(symbols, &mut cdfs.block_rows_mut().eob_extra) != 0;
+    let eob_extra = read_row(symbols, cdfs.block_rows_mut().eob_extra()) != 0;
     let width = eob_extra_bits_width(eob_pt)?;
     let eob_extra_bits = read_eob_literal(symbols, width as u32, "eob_extra_bit")? as usize;
     Ok(EOB_GROUP_START[eob_pt] + (usize::from(eob_extra) << width) + eob_extra_bits)

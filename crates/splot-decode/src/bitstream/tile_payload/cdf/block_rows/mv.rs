@@ -20,10 +20,10 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::block_read::{read_row, row_at};
 #[cfg(any(debug_assertions, fuzzing, test))]
-use super::super::cdf_rows_valid;
+use super::super::cdf_store_valid;
 use super::super::util::checked_context;
 use super::super::{
-    CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows,
+    CDF_ROW_LEN, TileCdfArray, TileCdfError, avg_cdf_store, blend_cdf_store, scale_cdf_store,
 };
 
 const MV_CONTEXTS: usize = 2;
@@ -31,51 +31,6 @@ const SHELL_OFFSET_LOW_CLASS_BANKS: usize = 2;
 const COL_MV_GREATER_BANKS: usize = 2;
 const COL_MV_INDEX_BANKS: usize = 4;
 const SHELL_OFFSET_OTHER_CLASS_BANKS: usize = 16;
-
-type JointShellSetCdfRows = [[u16; CDF_ROW_LEN]; MV_CONTEXTS];
-type JointShell0Class0CdfRows = [[u16; 6]; MV_CONTEXTS];
-type JointShell0Class1CdfRows = [[u16; 7]; MV_CONTEXTS];
-type JointShell1ClassCdfRows = [[u16; 7]; MV_CONTEXTS];
-type JointShell3ClassCdfRows = [[u16; 8]; MV_CONTEXTS];
-type JointShell4Class0CdfRows = [[u16; 8]; MV_CONTEXTS];
-type JointShell4Class1CdfRows = [[u16; 9]; MV_CONTEXTS];
-type JointShell5ClassCdfRows = [[u16; 9]; MV_CONTEXTS];
-type JointShell6ClassCdfRows = [[u16; 9]; MV_CONTEXTS];
-type JointShellLastTwoCdfRows = [[u16; CDF_ROW_LEN]; MV_CONTEXTS];
-type ShellOffsetLowClassCdfRows = [[[u16; CDF_ROW_LEN]; SHELL_OFFSET_LOW_CLASS_BANKS]; MV_CONTEXTS];
-type ShellOffsetClass2CdfRows = [[u16; CDF_ROW_LEN]; MV_CONTEXTS];
-type ShellOffsetOtherClassCdfRows =
-    [[[u16; CDF_ROW_LEN]; SHELL_OFFSET_OTHER_CLASS_BANKS]; MV_CONTEXTS];
-type ColMvGreaterCdfRows = [[[u16; CDF_ROW_LEN]; COL_MV_GREATER_BANKS]; MV_CONTEXTS];
-type ColMvIndexCdfRows = [[[u16; CDF_ROW_LEN]; COL_MV_INDEX_BANKS]; MV_CONTEXTS];
-type AmvdJointCdfRows = [[u16; 5]; 1];
-type AmvdIndexCdfRows = [[u16; 9]; 2];
-
-macro_rules! visit_mv_cdf_rows {
-    ($visit:ident) => {
-        $visit!(joint_shell_set);
-        $visit!(joint_shell0_class0);
-        $visit!(joint_shell0_class1);
-        $visit!(joint_shell1_class0);
-        $visit!(joint_shell1_class1);
-        $visit!(joint_shell3_class0);
-        $visit!(joint_shell3_class1);
-        $visit!(joint_shell4_class0);
-        $visit!(joint_shell4_class1);
-        $visit!(joint_shell5_class0);
-        $visit!(joint_shell5_class1);
-        $visit!(joint_shell6_class0);
-        $visit!(joint_shell6_class1);
-        $visit!(joint_shell_last_two);
-        $visit!(shell_offset_low_class.flatten());
-        $visit!(shell_offset_class2);
-        $visit!(shell_offset_other_class.flatten());
-        $visit!(col_mv_greater.flatten());
-        $visit!(col_mv_index.flatten());
-        $visit!(amvd_joint);
-        $visit!(amvd_index);
-    };
-}
 
 /// A § 5.20.7.20 `read_mv` CDF row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,58 +96,35 @@ pub enum MvCdfSelector {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct MvCdfRows {
-    joint_shell_set: JointShellSetCdfRows,
-    joint_shell0_class0: JointShell0Class0CdfRows,
-    joint_shell0_class1: JointShell0Class1CdfRows,
-    joint_shell1_class0: JointShell1ClassCdfRows,
-    joint_shell1_class1: JointShell1ClassCdfRows,
-    joint_shell3_class0: JointShell3ClassCdfRows,
-    joint_shell3_class1: JointShell3ClassCdfRows,
-    joint_shell4_class0: JointShell4Class0CdfRows,
-    joint_shell4_class1: JointShell4Class1CdfRows,
-    joint_shell5_class0: JointShell5ClassCdfRows,
-    joint_shell5_class1: JointShell5ClassCdfRows,
-    joint_shell6_class0: JointShell6ClassCdfRows,
-    joint_shell6_class1: JointShell6ClassCdfRows,
-    joint_shell_last_two: JointShellLastTwoCdfRows,
-    shell_offset_low_class: ShellOffsetLowClassCdfRows,
-    shell_offset_class2: ShellOffsetClass2CdfRows,
-    shell_offset_other_class: ShellOffsetOtherClassCdfRows,
-    col_mv_greater: ColMvGreaterCdfRows,
-    col_mv_index: ColMvIndexCdfRows,
-    amvd_joint: AmvdJointCdfRows,
-    amvd_index: AmvdIndexCdfRows,
+cdf_rows! {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) struct MvCdfRows[MvCdfElement]() {
+        joint_shell_set[MV_CONTEXTS]: CDF_ROW_LEN = [DEFAULT_JOINT_SHELL_SET_CDF; MV_CONTEXTS],
+        joint_shell0_class0[MV_CONTEXTS]: 6 = [DEFAULT_JOINT_SHELL0_CLASS0_CDF; MV_CONTEXTS],
+        joint_shell0_class1[MV_CONTEXTS]: 7 = [DEFAULT_JOINT_SHELL0_CLASS1_CDF; MV_CONTEXTS],
+        joint_shell1_class0[MV_CONTEXTS]: 7 = [DEFAULT_JOINT_SHELL1_CLASS0_CDF; MV_CONTEXTS],
+        joint_shell1_class1[MV_CONTEXTS]: 7 = [DEFAULT_JOINT_SHELL1_CLASS1_CDF; MV_CONTEXTS],
+        joint_shell3_class0[MV_CONTEXTS]: 8 = [DEFAULT_JOINT_SHELL3_CLASS0_CDF; MV_CONTEXTS],
+        joint_shell3_class1[MV_CONTEXTS]: 8 = [DEFAULT_JOINT_SHELL3_CLASS1_CDF; MV_CONTEXTS],
+        joint_shell4_class0[MV_CONTEXTS]: 8 = [DEFAULT_JOINT_SHELL4_CLASS0_CDF; MV_CONTEXTS],
+        joint_shell4_class1[MV_CONTEXTS]: 9 = [DEFAULT_JOINT_SHELL4_CLASS1_CDF; MV_CONTEXTS],
+        joint_shell5_class0[MV_CONTEXTS]: 9 = [DEFAULT_JOINT_SHELL5_CLASS0_CDF; MV_CONTEXTS],
+        joint_shell5_class1[MV_CONTEXTS]: 9 = [DEFAULT_JOINT_SHELL5_CLASS1_CDF; MV_CONTEXTS],
+        joint_shell6_class0[MV_CONTEXTS]: 9 = [DEFAULT_JOINT_SHELL6_CLASS0_CDF; MV_CONTEXTS],
+        joint_shell6_class1[MV_CONTEXTS]: 9 = [DEFAULT_JOINT_SHELL6_CLASS1_CDF; MV_CONTEXTS],
+        joint_shell_last_two[MV_CONTEXTS]: CDF_ROW_LEN = [DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF; MV_CONTEXTS],
+        shell_offset_low_class[MV_CONTEXTS][SHELL_OFFSET_LOW_CLASS_BANKS]: CDF_ROW_LEN = [DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF; MV_CONTEXTS],
+        shell_offset_class2[MV_CONTEXTS]: CDF_ROW_LEN = [DEFAULT_SHELL_OFFSET_CLASS2_CDF; MV_CONTEXTS],
+        shell_offset_other_class[MV_CONTEXTS][SHELL_OFFSET_OTHER_CLASS_BANKS]: CDF_ROW_LEN = [DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF; MV_CONTEXTS],
+        col_mv_greater[MV_CONTEXTS][COL_MV_GREATER_BANKS]: CDF_ROW_LEN = [DEFAULT_COL_MV_GREATER_CDF; MV_CONTEXTS],
+        col_mv_index[MV_CONTEXTS][COL_MV_INDEX_BANKS]: CDF_ROW_LEN = [DEFAULT_COL_MV_INDEX_CDF; MV_CONTEXTS],
+        amvd_joint[1]: 5 = [DEFAULT_MV_JOINT_ADAPTIVE_CDF],
+        amvd_index[2]: 9 = DEFAULT_AMVD_INDICES_CDF,
+        ..
+    }
 }
 
 impl MvCdfRows {
-    pub(crate) const fn from_defaults() -> Self {
-        Self {
-            joint_shell_set: [DEFAULT_JOINT_SHELL_SET_CDF; MV_CONTEXTS],
-            joint_shell0_class0: [DEFAULT_JOINT_SHELL0_CLASS0_CDF; MV_CONTEXTS],
-            joint_shell0_class1: [DEFAULT_JOINT_SHELL0_CLASS1_CDF; MV_CONTEXTS],
-            joint_shell1_class0: [DEFAULT_JOINT_SHELL1_CLASS0_CDF; MV_CONTEXTS],
-            joint_shell1_class1: [DEFAULT_JOINT_SHELL1_CLASS1_CDF; MV_CONTEXTS],
-            joint_shell3_class0: [DEFAULT_JOINT_SHELL3_CLASS0_CDF; MV_CONTEXTS],
-            joint_shell3_class1: [DEFAULT_JOINT_SHELL3_CLASS1_CDF; MV_CONTEXTS],
-            joint_shell4_class0: [DEFAULT_JOINT_SHELL4_CLASS0_CDF; MV_CONTEXTS],
-            joint_shell4_class1: [DEFAULT_JOINT_SHELL4_CLASS1_CDF; MV_CONTEXTS],
-            joint_shell5_class0: [DEFAULT_JOINT_SHELL5_CLASS0_CDF; MV_CONTEXTS],
-            joint_shell5_class1: [DEFAULT_JOINT_SHELL5_CLASS1_CDF; MV_CONTEXTS],
-            joint_shell6_class0: [DEFAULT_JOINT_SHELL6_CLASS0_CDF; MV_CONTEXTS],
-            joint_shell6_class1: [DEFAULT_JOINT_SHELL6_CLASS1_CDF; MV_CONTEXTS],
-            joint_shell_last_two: [DEFAULT_JOINT_SHELL_LAST_TWO_CLASSES_CDF; MV_CONTEXTS],
-            shell_offset_low_class: [DEFAULT_SHELL_OFFSET_LOW_CLASS_CDF; MV_CONTEXTS],
-            shell_offset_class2: [DEFAULT_SHELL_OFFSET_CLASS2_CDF; MV_CONTEXTS],
-            shell_offset_other_class: [DEFAULT_SHELL_OFFSET_OTHER_CLASS_CDF; MV_CONTEXTS],
-            col_mv_greater: [DEFAULT_COL_MV_GREATER_CDF; MV_CONTEXTS],
-            col_mv_index: [DEFAULT_COL_MV_INDEX_CDF; MV_CONTEXTS],
-            amvd_joint: [DEFAULT_MV_JOINT_ADAPTIVE_CDF],
-            amvd_index: DEFAULT_AMVD_INDICES_CDF,
-        }
-    }
-
     #[allow(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
@@ -201,7 +133,7 @@ impl MvCdfRows {
     pub(crate) fn row_mut(&mut self, selector: MvCdfSelector) -> Result<&mut [u16], TileCdfError> {
         match selector {
             MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row_mut(
-                &mut self.joint_shell_set,
+                self.joint_shell_set(),
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::JointShell6Class,
@@ -212,7 +144,7 @@ impl MvCdfRows {
                 mv_ctx,
             } => self.joint_shell_class_row_mut(precision, shell_set, mv_ctx),
             MvCdfSelector::JointShellLastTwo { mv_ctx } => checked_cdf_row_mut(
-                &mut self.joint_shell_last_two,
+                self.joint_shell_last_two(),
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::JointShell6Class,
@@ -221,7 +153,7 @@ impl MvCdfRows {
                 mv_ctx,
                 shell_class,
             } => checked_cdf_bank_row_mut(
-                &mut self.shell_offset_low_class,
+                self.shell_offset_low_class(),
                 mv_ctx,
                 "mv_ctx",
                 shell_class,
@@ -229,13 +161,13 @@ impl MvCdfRows {
                 TileCdfArray::ShellOffsetLowClass,
             ),
             MvCdfSelector::ShellOffsetClass2 { mv_ctx } => checked_cdf_row_mut(
-                &mut self.shell_offset_class2,
+                self.shell_offset_class2(),
                 mv_ctx,
                 "mv_ctx",
                 TileCdfArray::ShellOffsetLowClass,
             ),
             MvCdfSelector::ShellOffsetOtherClass { mv_ctx, i } => checked_cdf_bank_row_mut(
-                &mut self.shell_offset_other_class,
+                self.shell_offset_other_class(),
                 mv_ctx,
                 "mv_ctx",
                 i,
@@ -243,7 +175,7 @@ impl MvCdfRows {
                 TileCdfArray::ShellOffsetOtherClass,
             ),
             MvCdfSelector::ColMvGreater { mv_ctx, i } => checked_cdf_bank_row_mut(
-                &mut self.col_mv_greater,
+                self.col_mv_greater(),
                 mv_ctx,
                 "mv_ctx",
                 i,
@@ -251,16 +183,16 @@ impl MvCdfRows {
                 TileCdfArray::ColMvGreater,
             ),
             MvCdfSelector::ColMvIndex { mv_ctx, ctx } => checked_cdf_bank_row_mut(
-                &mut self.col_mv_index,
+                self.col_mv_index(),
                 mv_ctx,
                 "mv_ctx",
                 ctx,
                 "ctx",
                 TileCdfArray::ColMvIndex,
             ),
-            MvCdfSelector::AmvdJoint => Ok(self.amvd_joint[0].as_mut_slice()),
+            MvCdfSelector::AmvdJoint => Ok(self.amvd_joint()[0].as_mut_slice()),
             MvCdfSelector::AmvdIndex { comp } => {
-                checked_cdf_row_mut(&mut self.amvd_index, comp, "comp", TileCdfArray::AmvdIndex)
+                checked_cdf_row_mut(self.amvd_index(), comp, "comp", TileCdfArray::AmvdIndex)
             }
         }
     }
@@ -279,109 +211,77 @@ impl MvCdfRows {
     ) -> Option<u8> {
         let symbol = match selector {
             MvCdfSelector::JointShellSet { mv_ctx } => {
-                read_row(symbols, row_at(&mut self.joint_shell_set, mv_ctx))
+                read_row(symbols, row_at(self.joint_shell_set(), mv_ctx))
             }
             MvCdfSelector::JointShellClass {
                 precision,
                 shell_set,
                 mv_ctx,
             } => match (precision, shell_set) {
-                (0, 0) => read_row(symbols, row_at(&mut self.joint_shell0_class0, mv_ctx)),
-                (0, _) => read_row(symbols, row_at(&mut self.joint_shell0_class1, mv_ctx)),
-                (1, 0) => read_row(symbols, row_at(&mut self.joint_shell1_class0, mv_ctx)),
-                (1, _) => read_row(symbols, row_at(&mut self.joint_shell1_class1, mv_ctx)),
-                (3, 0) => read_row(symbols, row_at(&mut self.joint_shell3_class0, mv_ctx)),
-                (3, _) => read_row(symbols, row_at(&mut self.joint_shell3_class1, mv_ctx)),
-                (4, 0) => read_row(symbols, row_at(&mut self.joint_shell4_class0, mv_ctx)),
-                (4, _) => read_row(symbols, row_at(&mut self.joint_shell4_class1, mv_ctx)),
-                (5, 0) => read_row(symbols, row_at(&mut self.joint_shell5_class0, mv_ctx)),
-                (5, _) => read_row(symbols, row_at(&mut self.joint_shell5_class1, mv_ctx)),
-                (6, 0) => read_row(symbols, row_at(&mut self.joint_shell6_class0, mv_ctx)),
-                (6, _) => read_row(symbols, row_at(&mut self.joint_shell6_class1, mv_ctx)),
+                (0, 0) => read_row(symbols, row_at(self.joint_shell0_class0(), mv_ctx)),
+                (0, _) => read_row(symbols, row_at(self.joint_shell0_class1(), mv_ctx)),
+                (1, 0) => read_row(symbols, row_at(self.joint_shell1_class0(), mv_ctx)),
+                (1, _) => read_row(symbols, row_at(self.joint_shell1_class1(), mv_ctx)),
+                (3, 0) => read_row(symbols, row_at(self.joint_shell3_class0(), mv_ctx)),
+                (3, _) => read_row(symbols, row_at(self.joint_shell3_class1(), mv_ctx)),
+                (4, 0) => read_row(symbols, row_at(self.joint_shell4_class0(), mv_ctx)),
+                (4, _) => read_row(symbols, row_at(self.joint_shell4_class1(), mv_ctx)),
+                (5, 0) => read_row(symbols, row_at(self.joint_shell5_class0(), mv_ctx)),
+                (5, _) => read_row(symbols, row_at(self.joint_shell5_class1(), mv_ctx)),
+                (6, 0) => read_row(symbols, row_at(self.joint_shell6_class0(), mv_ctx)),
+                (6, _) => read_row(symbols, row_at(self.joint_shell6_class1(), mv_ctx)),
                 _ => return None,
             },
             MvCdfSelector::JointShellLastTwo { mv_ctx } => {
-                read_row(symbols, row_at(&mut self.joint_shell_last_two, mv_ctx))
+                read_row(symbols, row_at(self.joint_shell_last_two(), mv_ctx))
             }
             MvCdfSelector::ShellOffsetLowClass {
                 mv_ctx,
                 shell_class,
             } => read_row(
                 symbols,
-                row_at(
-                    row_at(&mut self.shell_offset_low_class, mv_ctx),
-                    shell_class,
-                ),
+                row_at(row_at(self.shell_offset_low_class(), mv_ctx), shell_class),
             ),
             MvCdfSelector::ShellOffsetClass2 { mv_ctx } => {
-                read_row(symbols, row_at(&mut self.shell_offset_class2, mv_ctx))
+                read_row(symbols, row_at(self.shell_offset_class2(), mv_ctx))
             }
             MvCdfSelector::ShellOffsetOtherClass { mv_ctx, i } => read_row(
                 symbols,
-                row_at(row_at(&mut self.shell_offset_other_class, mv_ctx), i),
+                row_at(row_at(self.shell_offset_other_class(), mv_ctx), i),
             ),
             MvCdfSelector::ColMvGreater { mv_ctx, i } => {
-                read_row(symbols, row_at(row_at(&mut self.col_mv_greater, mv_ctx), i))
+                read_row(symbols, row_at(row_at(self.col_mv_greater(), mv_ctx), i))
             }
             MvCdfSelector::ColMvIndex { mv_ctx, ctx } => {
-                read_row(symbols, row_at(row_at(&mut self.col_mv_index, mv_ctx), ctx))
+                read_row(symbols, row_at(row_at(self.col_mv_index(), mv_ctx), ctx))
             }
-            MvCdfSelector::AmvdJoint => read_row(symbols, &mut self.amvd_joint[0]),
-            MvCdfSelector::AmvdIndex { comp } => {
-                read_row(symbols, row_at(&mut self.amvd_index, comp))
-            }
+            MvCdfSelector::AmvdJoint => read_row(symbols, &mut self.amvd_joint()[0]),
+            MvCdfSelector::AmvdIndex { comp } => read_row(symbols, row_at(self.amvd_index(), comp)),
         };
         Some(symbol as u8)
     }
 
     pub(crate) fn average_from_tile(&mut self, tile: &Self, tile_num: u32, num_log2: u8) {
-        macro_rules! avg_rows {
-            ($field:ident $(. $flatten:ident())*) => {
-                avg_cdf_rows(
-                    flat_cdf_rows_mut!(self.$field $(, $flatten)*),
-                    flat_cdf_rows!(tile.$field $(, $flatten)*),
-                    tile_num,
-                    num_log2,
-                );
-            };
-        }
-
-        visit_mv_cdf_rows!(avg_rows);
+        avg_cdf_store(
+            &mut self.store,
+            &tile.store,
+            &Self::BOUNDS,
+            tile_num,
+            num_log2,
+        );
     }
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {
-        macro_rules! blend_rows {
-            ($field:ident $(. $flatten:ident())*) => {
-                blend_cdf_rows(
-                    flat_cdf_rows_mut!(self.$field $(, $flatten)*),
-                    flat_cdf_rows!(saved.$field $(, $flatten)*),
-                );
-            };
-        }
-
-        visit_mv_cdf_rows!(blend_rows);
+        blend_cdf_store(&mut self.store, &saved.store, &Self::BOUNDS);
     }
 
     #[cfg(any(debug_assertions, fuzzing, test))]
     pub(crate) fn rows_valid(&self) -> bool {
-        let mut valid = true;
-        macro_rules! rows_valid {
-            ($field:ident $(. $flatten:ident())*) => {
-                valid &= cdf_rows_valid(flat_cdf_rows!(self.$field $(, $flatten)*));
-            };
-        }
-        visit_mv_cdf_rows!(rows_valid);
-        valid
+        cdf_store_valid(&self.store, &Self::BOUNDS)
     }
 
     pub(crate) fn scale_counts(&mut self) {
-        macro_rules! scale_rows {
-            ($field:ident $(. $flatten:ident())*) => {
-                scale_cdf_rows(flat_cdf_rows_mut!(self.$field $(, $flatten)*));
-            };
-        }
-
-        visit_mv_cdf_rows!(scale_rows);
+        scale_cdf_store(&mut self.store, &Self::BOUNDS);
     }
 
     fn joint_shell_class_row_mut(
@@ -392,18 +292,18 @@ impl MvCdfRows {
     ) -> Result<&mut [u16], TileCdfError> {
         checked_shell_class_axes(precision, shell_set, mv_ctx)?;
         match (precision, shell_set) {
-            (0, 0) => Ok(self.joint_shell0_class0[mv_ctx].as_mut_slice()),
-            (0, 1) => Ok(self.joint_shell0_class1[mv_ctx].as_mut_slice()),
-            (1, 0) => Ok(self.joint_shell1_class0[mv_ctx].as_mut_slice()),
-            (1, 1) => Ok(self.joint_shell1_class1[mv_ctx].as_mut_slice()),
-            (3, 0) => Ok(self.joint_shell3_class0[mv_ctx].as_mut_slice()),
-            (3, 1) => Ok(self.joint_shell3_class1[mv_ctx].as_mut_slice()),
-            (4, 0) => Ok(self.joint_shell4_class0[mv_ctx].as_mut_slice()),
-            (4, 1) => Ok(self.joint_shell4_class1[mv_ctx].as_mut_slice()),
-            (5, 0) => Ok(self.joint_shell5_class0[mv_ctx].as_mut_slice()),
-            (5, 1) => Ok(self.joint_shell5_class1[mv_ctx].as_mut_slice()),
-            (6, 0) => Ok(self.joint_shell6_class0[mv_ctx].as_mut_slice()),
-            (6, 1) => Ok(self.joint_shell6_class1[mv_ctx].as_mut_slice()),
+            (0, 0) => Ok(self.joint_shell0_class0()[mv_ctx].as_mut_slice()),
+            (0, 1) => Ok(self.joint_shell0_class1()[mv_ctx].as_mut_slice()),
+            (1, 0) => Ok(self.joint_shell1_class0()[mv_ctx].as_mut_slice()),
+            (1, 1) => Ok(self.joint_shell1_class1()[mv_ctx].as_mut_slice()),
+            (3, 0) => Ok(self.joint_shell3_class0()[mv_ctx].as_mut_slice()),
+            (3, 1) => Ok(self.joint_shell3_class1()[mv_ctx].as_mut_slice()),
+            (4, 0) => Ok(self.joint_shell4_class0()[mv_ctx].as_mut_slice()),
+            (4, 1) => Ok(self.joint_shell4_class1()[mv_ctx].as_mut_slice()),
+            (5, 0) => Ok(self.joint_shell5_class0()[mv_ctx].as_mut_slice()),
+            (5, 1) => Ok(self.joint_shell5_class1()[mv_ctx].as_mut_slice()),
+            (6, 0) => Ok(self.joint_shell6_class0()[mv_ctx].as_mut_slice()),
+            (6, 1) => Ok(self.joint_shell6_class1()[mv_ctx].as_mut_slice()),
             _ => Err(precision_error(precision)),
         }
     }

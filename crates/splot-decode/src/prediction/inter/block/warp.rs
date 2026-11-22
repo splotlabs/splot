@@ -18,10 +18,10 @@ pub(crate) fn read_warp_inter_mode_syntax(
     ctx: usize,
 ) -> Option<WarpInterMode> {
     let rows = cdfs.block_rows_mut();
-    if read_row(symbols, row_at(&mut rows.is_warp, ctx)) == 0 {
+    if read_row(symbols, row_at(rows.is_warp(), ctx)) == 0 {
         return None;
     }
-    if force_integer_mv || read_row(symbols, &mut rows.warp_mv) != 0 {
+    if force_integer_mv || read_row(symbols, rows.warp_mv()) != 0 {
         return Some(WarpInterMode::Warpmv);
     }
     Some(WarpInterMode::WarpNewmv)
