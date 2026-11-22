@@ -487,7 +487,7 @@ impl UniformTiles {
     pub fn check(&self, seq: &CoreSeqView) -> Result<(), WriteError> {
         for frame_is_intra in [true, false] {
             let sb_size = seq.tile.frame_sb_size(frame_is_intra);
-            write_frame_tile_params(&mut BitWriter::new(), seq, *self, sb_size)?;
+            write_frame_tile_params(&mut BitWriter::new(), seq, self, sb_size)?;
         }
         Ok(())
     }
@@ -1046,7 +1046,7 @@ pub(super) fn write_quant_and_filters(
             limit: 1 << q_bits,
         });
     }
-    let (spacing, sb_shift) = write_encoder_tile_info(w, seq, tiles, frame_is_intra)?;
+    let (spacing, sb_shift) = write_encoder_tile_info(w, seq, &tiles, frame_is_intra)?;
     write_quantization_params(
         w,
         &plane_quantization(seq, base_q_idx, tx),
@@ -1293,7 +1293,7 @@ fn write_filter_params(
 pub(super) fn write_encoder_tile_info(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    tiles: UniformTiles,
+    tiles: &UniformTiles,
     frame_is_intra: bool,
 ) -> Result<([TileSpacing; 2], u32), WriteError> {
     let sb_size = seq.tile.frame_sb_size(frame_is_intra);
@@ -1361,7 +1361,7 @@ fn reused_tile_layout(seq: &CoreSeqView, sb_size: SuperblockSize) -> Option<[Til
 fn write_frame_tile_params(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    tiles: UniformTiles,
+    tiles: &UniformTiles,
     sb_size: SuperblockSize,
 ) -> Result<([TileSpacing; 2], u32), WriteError> {
     let input = TileParamsInput {
