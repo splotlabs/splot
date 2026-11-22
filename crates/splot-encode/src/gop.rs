@@ -272,7 +272,8 @@ impl GopPlanner {
         }
         if last > anchor {
             self.mini_gops += 1;
-            self.intra_only_next = self.intra_only > 0 && self.mini_gops % self.intra_only == 0;
+            self.intra_only_next =
+                self.intra_only > 0 && self.mini_gops.is_multiple_of(self.intra_only);
             self.last_display = last;
             self.place(anchor, last, 0, &mut steps)?;
         }
