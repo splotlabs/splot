@@ -57,6 +57,16 @@ pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_row<const N: usize>(
     tile_num: u32,
     num_log2: u8,
 ) {
+    avg_cdf_rows(
+        core::slice::from_mut(cdf),
+        core::slice::from_ref(tile_cdf),
+        tile_num,
+        num_log2,
+    );
+}
+
+#[inline(always)]
+fn avg_one<const N: usize>(cdf: &mut [u16; N], tile_cdf: &[u16; N], tile_num: u32, num_log2: u8) {
     if tile_num == 0 {
         for value in &mut cdf[..N - 2] {
             *value = CDF_PROB_SCALE as u16;
@@ -81,6 +91,11 @@ pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_row<const N: usize>(
     cdf: &mut [u16; N],
     saved_cdf: &[u16; N],
 ) {
+    blend_cdf_rows(core::slice::from_mut(cdf), core::slice::from_ref(saved_cdf));
+}
+
+#[inline(always)]
+fn blend_one<const N: usize>(cdf: &mut [u16; N], saved_cdf: &[u16; N]) {
     for i in 0..N - 2 {
         let saved = u32::from(saved_cdf[i]);
         let current = u32::from(cdf[i]);
@@ -93,9 +108,13 @@ pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_row<const N: usize>(
 }
 
 pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_count<const N: usize>(cdf: &mut [u16; N]) {
-    set_count(cdf, ((cdf[N - 2] >> CDF_COUNT_SHIFT) * 3) >> 2);
+    scale_cdf_rows(core::slice::from_mut(cdf));
 }
 
+// The three row loops below stay out of line: the CDF structs call them once
+// per field, and an inlined copy per field cost about 190 KB of code.
+
+#[inline(never)]
 pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_rows<const N: usize>(
     frame: &mut [[u16; N]],
     tile: &[[u16; N]],
@@ -103,24 +122,26 @@ pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_rows<const N: usize>(
     num_log2: u8,
 ) {
     for (frame_row, tile_row) in frame.iter_mut().zip(tile) {
-        avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
+        avg_one(frame_row, tile_row, tile_num, num_log2);
     }
 }
 
+#[inline(never)]
 pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_rows<const N: usize>(
     rows: &mut [[u16; N]],
     saved: &[[u16; N]],
 ) {
     for (row, saved_row) in rows.iter_mut().zip(saved) {
-        blend_cdf_row(row, saved_row);
+        blend_one(row, saved_row);
     }
 }
 
+#[inline(never)]
 pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_rows<const N: usize>(
     rows: &mut [[u16; N]],
 ) {
     for row in rows {
-        scale_cdf_count(row);
+        set_count(row, ((row[N - 2] >> CDF_COUNT_SHIFT) * 3) >> 2);
     }
 }
 
