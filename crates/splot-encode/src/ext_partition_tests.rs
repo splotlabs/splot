@@ -160,3 +160,62 @@ fn avm_decodes_ext_partitions_like_splot() {
     let avm = avm_decode(&avmdec, &units, (136, 72), BitDepth::Eight, "ext");
     assert!(avm == expected, "AVM output differs");
 }
+
+/// A trial of an inter leaf of a 3-way or 4-way split, restored, gives back every
+/// sample of its chroma blocks, which can lie outside the 8x8 origin of its
+/// luma rectangle (the chroma reference block of the split).
+#[test]
+fn restored_trials_of_ext_partition_leaves_keep_their_chroma_samples() {
+    use crate::rd::partition::PartitionSearch;
+    let config = config(136, 136, BitDepth::Eight, 0, 110);
+    let preset = &crate::preset::PRESETS[0];
+    let lambda = Lambda::from_qindex(110, config.bit_depth).unwrap();
+    let wide =
+        super::large_inter::in_first_inter_frame(&config, preset, |syntax, root, residual| {
+            let mut wide = 0;
+            let global = super::large_inter::single(InterMode::Global, MotionVector::default());
+            for (size, partition) in [
+                (16, Partition::Vert3),
+                (16, Partition::Horz3),
+                (32, Partition::Vert4A),
+                (32, Partition::Horz4B),
+            ] {
+                let node = super::mvpred::top_left(syntax, root, size);
+                let start = syntax.snapshot(node)?;
+                for child in syntax.children(node, partition)? {
+                    let leaf = syntax.leaf(child)?;
+                    let saved = syntax.snapshot(child)?;
+                    let chroma: Vec<_> = syntax
+                        .plan_inter_leaf(&leaf, global)?
+                        .into_iter()
+                        .filter(|tx| tx.plane > 0)
+                        .collect();
+                    syntax.restore(&saved)?;
+                    let x = leaf.col4() * 4;
+                    wide += chroma.iter().filter(|tx| tx.x * 2 < x & !7).count();
+                    let before = chroma
+                        .iter()
+                        .map(|tx| syntax.reconstruction(tx))
+                        .collect::<core::result::Result<Vec<_>, _>>()?;
+                    let mut trial = TrialCoder::new(syntax, residual, preset, lambda, None);
+                    trial.code_leaf(child, LeafChoice::inter(global))?;
+                    trial.restore(&saved)?;
+                    let after = chroma
+                        .iter()
+                        .map(|tx| syntax.reconstruction(tx))
+                        .collect::<core::result::Result<Vec<_>, _>>()?;
+                    assert_eq!(
+                        before,
+                        after,
+                        "{partition:?} leaf at {:?}",
+                        (leaf.row4(), leaf.col4())
+                    );
+                    let mut trial = TrialCoder::new(syntax, residual, preset, lambda, None);
+                    trial.code_leaf(child, LeafChoice::inter(global))?;
+                }
+                syntax.restore(&start)?;
+            }
+            Ok(wide)
+        });
+    assert!(wide > 0, "no chroma block left the 8x8 origin of its leaf");
+}

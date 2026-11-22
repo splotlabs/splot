@@ -211,6 +211,93 @@ fn multi_frame_header_clips_validate_and_decode() {
     round_trip(8, YUV420, &["--qp", "90", "--multi-frame-header"]);
 }
 
+/// `--output-format annexb` writes the IVF frame payloads back to back with
+/// no container header; the raw stream validates with `--strict` and decodes
+/// to the frames of the IVF stream.
+/// AVM reads the raw Annex B file (it detects the format; no option) and
+/// decodes it to the frames of the IVF file.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_annexb_output_like_the_ivf_output() {
+    let avmdec = std::env::var_os("SPLOT_AVM_DECODER").expect("set SPLOT_AVM_DECODER");
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let streams = [temp_output("ivf"), temp_output("obu")];
+    let raws = [temp_output("yuv"), temp_output("yuv")];
+    for (stream, format) in streams.iter().zip(["ivf", "annexb"]) {
+        let (input, stream) = (input.to_str().unwrap(), stream.to_str().unwrap());
+        let args = [
+            "encode",
+            input,
+            "-o",
+            stream,
+            "--qp",
+            "90",
+            "--output-format",
+            format,
+        ];
+        let encode = splot(&args);
+        assert!(encode.status.success(), "{encode:?}");
+    }
+    for (stream, raw) in streams.iter().zip(&raws) {
+        let status = std::process::Command::new(&avmdec)
+            .arg("--rawvideo")
+            .arg("-o")
+            .arg(raw)
+            .arg(stream)
+            .status()
+            .unwrap();
+        assert!(status.success(), "avmdec {}", stream.display());
+    }
+    let frames = std::fs::read(&raws[0]).unwrap();
+    assert_eq!(frames.len(), FRAMES * (72 * 24 + 2 * 36 * 12));
+    assert_eq!(std::fs::read(&raws[1]).unwrap(), frames);
+    for path in [&input].into_iter().chain(&streams).chain(&raws) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn annexb_output_is_the_ivf_payloads_without_the_container() {
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let (ivf, obu, raw_ivf, raw_obu) = (
+        temp_output("ivf"),
+        temp_output("obu"),
+        temp_output("yuv"),
+        temp_output("yuv"),
+    );
+    let paths = [&input, &ivf, &obu, &raw_ivf, &raw_obu].map(|path| path.to_str().unwrap());
+    let [input_s, ivf_s, obu_s, raw_ivf_s, raw_obu_s] = paths;
+    let encode = splot(&["encode", input_s, "-o", ivf_s, "--qp", "90"]);
+    assert!(encode.status.success(), "{encode:?}");
+    let annexb = ["--qp", "90", "--output-format", "annexb"];
+    let encode = splot(&[&["encode", input_s, "-o", obu_s][..], &annexb].concat());
+    assert!(encode.status.success(), "{encode:?}");
+    let (ivf_bytes, obu_bytes) = (std::fs::read(&ivf).unwrap(), std::fs::read(&obu).unwrap());
+    let mut payloads = Vec::new();
+    let mut at = 32;
+    while at < ivf_bytes.len() {
+        let size = u32::from_le_bytes(ivf_bytes[at..at + 4].try_into().unwrap()) as usize;
+        payloads.extend_from_slice(&ivf_bytes[at + 12..at + 12 + size]);
+        at += 12 + size;
+    }
+    assert_eq!(obu_bytes, payloads);
+    let validate = splot(&["validate", "--strict", obu_s]);
+    assert!(validate.status.success(), "{validate:?}");
+    for (stream, raw) in [(ivf_s, raw_ivf_s), (obu_s, raw_obu_s)] {
+        let decode = splot(&["decode", stream, "--output", raw, "--output-format", "raw"]);
+        assert!(decode.status.success(), "{decode:?}");
+    }
+    assert_eq!(
+        std::fs::read(&raw_obu).unwrap(),
+        std::fs::read(&raw_ivf).unwrap()
+    );
+    for path in [input, ivf, obu, raw_ivf, raw_obu] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn low_delay_clips_code_every_frame_in_input_order() {
     round_trip(8, YUV420, &["--qp", "90", "--low-delay"]);
@@ -468,6 +555,33 @@ fn two_tile_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
             "2",
         ],
     );
+}
+
+/// `--tile-groups 2` codes each frame of a 2-tile clip in two tile group
+/// OBUs that validate with `--strict`; `--tile-groups 0` is a usage error.
+#[test]
+fn tile_group_clips_validate_and_decode() {
+    round_trip(
+        8,
+        YUV420,
+        &[
+            "--qp",
+            "90",
+            "--preset",
+            "10",
+            "--tiles",
+            "2x1",
+            "--tile-groups",
+            "2",
+        ],
+    );
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let (input_s, ivf_s) = (input.to_str().unwrap(), ivf.to_str().unwrap());
+    let bad = splot(&["encode", input_s, "-o", ivf_s, "--tile-groups", "0"]);
+    assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    let _ = std::fs::remove_file(input);
 }
 
 /// The content flags and the Y4M `A` tag reach the stream: every key frame

@@ -1831,7 +1831,7 @@ impl TrialCoder<'_, '_> {
             self.syntax,
             self.coder,
             &leaf,
-            self.preset.intrabc_small,
+            (self.preset.intrabc_small, self.preset.intrabc_subpel),
         )?);
         #[cfg(test)]
         if FORCE_INTRABC.get() && candidates.iter().any(|choice| choice.intrabc.is_some()) {
