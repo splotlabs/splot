@@ -71,6 +71,7 @@ mod palette;
 mod parity;
 mod region;
 mod rollback;
+mod segment;
 mod tcq;
 mod transform;
 mod warp;
@@ -707,6 +708,7 @@ pub struct IntraTileSyntax {
     sdp: SdpPartitionState,
     tile: (Range<usize>, Range<usize>),
     delta_q: delta_q::DeltaQ,
+    segments: Option<segment::Segments>,
     /// The planned leaf may code CCTX.
     cctx_leaf: bool,
     /// The planned intra leaf codes `fsc_mode`.
@@ -774,6 +776,7 @@ impl IntraTileSyntax {
             (base_q_idx, tools.bit_depth),
         )?;
         let delta_q = delta_q::DeltaQ::new(core, base_q_idx, tools.bit_depth);
+        let segments = segment::Segments::new(seq, core, (rows.clone(), cols.clone()), base_q_idx)?;
         let mut coeff = TileCoeffContextState::default();
         coeff
             .reset_for_tile_chroma(rows.clone(), cols.clone(), chroma)
@@ -797,6 +800,7 @@ impl IntraTileSyntax {
             sdp: SdpPartitionState::default(),
             tile: (rows, cols),
             delta_q,
+            segments,
             cctx_leaf: false,
             fsc_leaf: false,
             palette_map: Vec::new(),

@@ -289,12 +289,6 @@ impl IntraTools {
                         .is_some_and(|info| info.coded_lossless || info.has_lossless_segment),
                 "lossless",
             ),
-            (
-                core.segmentation_params
-                    .as_ref()
-                    .is_some_and(|seg| seg.segmentation_enabled),
-                "segmentation",
-            ),
             (tx_mode == TxMode::Only4x4, "TX_MODE_ONLY_4X4"),
         ];
         if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on) {

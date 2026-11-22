@@ -427,6 +427,7 @@ fn warp_search_keeps_the_cheapest_models_under_the_bar() {
             .write_superblock(
                 &SuperblockDecision {
                     tree: PartitionTree::Leaf(LeafChoice::DC),
+                    segment: None,
                 },
                 &mut residual,
             )

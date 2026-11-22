@@ -512,6 +512,19 @@ impl TileSegmentIdState {
         self.grid.cell(r, c)
     }
 
+    /// [`MiGrid::visit_cells`] of the segment ids, entered first so that a
+    /// tile that has recorded no block yet visits the same cells, for the
+    /// encoder facade.
+    pub(crate) fn visit_cells(
+        &mut self,
+        rows: core::ops::Range<usize>,
+        cols: &core::ops::Range<usize>,
+        visit: impl FnMut(&mut [u8]),
+    ) {
+        self.grid.enter_row(rows.start);
+        self.grid.visit_cells(rows, cols, visit);
+    }
+
     pub(crate) fn record_block(
         &mut self,
         r: usize,

@@ -131,6 +131,7 @@ impl Case {
                 choose_primary_ref_frame: false,
                 qm_level: None,
                 plane_delta_q: [0; 3],
+                segment_alt_q: None,
             },
         }
     }
@@ -716,14 +717,16 @@ fn encode_case(
     };
     let max_q = splot_recon::max_quantizer_index(case.bit_depth());
     let mut edges = [6, 7, 8, -600, 600, -600].into_iter();
+    let mut current = writer.syntax().qindex();
     while writer.next_superblock_root().is_some() {
         if let Some(res) = case.tx.delta_q_res {
-            let before = writer.syntax().qindex();
+            let before = current;
             let target = match edges.next() {
                 Some(jump) => before.saturating_add_signed(jump << res),
                 None => [1, max_q, rng.below(u64::from(max_q) + 8) as u32][rng.below(3) as usize],
             };
             let qindex = writer.set_superblock_qindex(target).unwrap();
+            current = qindex;
             let step = 1 << res;
             let target = target.clamp(1, max_q) as i32;
             let nearest = (-600..=600)
@@ -736,14 +739,27 @@ fn encode_case(
                 "{before} {target}"
             );
         }
+        let segment = case.tx.segment_alt_q.map(|alt_q| {
+            let segment = rng.below(4) as u8;
+            let qindex = writer.syntax_mut().set_superblock_segment(segment).unwrap();
+            let data = i32::from(alt_q[usize::from(segment)]);
+            assert_eq!(
+                qindex as i32,
+                (current as i32 + data).clamp(0, max_q as i32)
+            );
+            segment
+        });
         let tree = writer
             .search_superblock(|syntax, root| {
                 Ok(random_tree(syntax, root, &mut rng, &mut modes, &mut coder))
             })
             .unwrap();
         writer
-            .write_superblock(&SuperblockDecision { tree }, &mut coder)
+            .write_superblock(&SuperblockDecision { tree, segment }, &mut coder)
             .unwrap();
+    }
+    if case.tx.segment_alt_q.is_some() {
+        assert!(writer.syntax().coded_segment_ids() > 0);
     }
     let (tile, recon) = writer.finish().unwrap();
     let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile], &[]).unwrap();
@@ -800,6 +816,28 @@ fn superblock_qindex_deltas_round_trip() {
             let mut case = Case::new(200, 136, bit_depth, sb_size);
             case.tx.delta_q_res = Some(res);
             assert_round_trip(case, 0xde17a + seed as u64);
+        }
+    }
+}
+
+/// Random superblock segments of a 4-segment `SEG_LVL_ALT_Q` map, alone and
+/// over random superblock qindex deltas, at 4:2:0 and 4:4:4 and 8 and 10
+/// bits, the 4:4:4 cases with quantizer matrices: each block takes § 7.12.2
+/// `get_qindex`, `CurrentQIndex` plus its segment's data, the facade codes
+/// `segment_id` symbols, and the decoder output equals the facade
+/// reconstruction.
+#[test]
+fn superblock_segments_round_trip_over_delta_q() {
+    for (seed, delta_q_res) in [None, Some(1)].into_iter().enumerate() {
+        for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+            for chroma in [ChromaFormatIdc::Yuv420, ChromaFormatIdc::Yuv444] {
+                let mut case = Case::new(200, 136, bit_depth, SuperblockSize::Block64x64);
+                case.chroma = chroma;
+                case.tx.delta_q_res = delta_q_res;
+                case.tx.segment_alt_q = Some([-49, -3, 4, 40]);
+                case.tx.qm_level = (chroma == ChromaFormatIdc::Yuv444).then_some(12);
+                assert_round_trip(case, 0x5e9 + seed as u64);
+            }
         }
     }
 }
@@ -1304,7 +1342,13 @@ fn rejects_sdp_tree_mismatches() {
             map: Vec::new(),
         };
         assert!(matches!(
-            writer.write_superblock(&SuperblockDecision { tree }, &mut coder),
+            writer.write_superblock(
+                &SuperblockDecision {
+                    tree,
+                    segment: None
+                },
+                &mut coder
+            ),
             Err(TileWriterError::Shape(_))
         ));
     }
@@ -1335,7 +1379,10 @@ fn rejects_unsupported_decisions() {
     let tree = PartitionTree::Leaf(LeafChoice::DC);
     assert!(matches!(
         writer.write_superblock(
-            &SuperblockDecision { tree },
+            &SuperblockDecision {
+                tree,
+                segment: None
+            },
             &mut RandomLevels {
                 rng: Rng(1),
                 max_level: 1,
@@ -1666,7 +1713,13 @@ fn cfl_chroma_of_a_128x128_leaf_reads_the_whole_luma() {
     };
     let tree = PartitionTree::Leaf(LeafChoice::largest(modes));
     writer
-        .write_superblock(&SuperblockDecision { tree }, &mut coder)
+        .write_superblock(
+            &SuperblockDecision {
+                tree,
+                segment: None,
+            },
+            &mut coder,
+        )
         .unwrap();
     let (tile, recon) = writer.finish().unwrap();
     let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile], &[]).unwrap();
