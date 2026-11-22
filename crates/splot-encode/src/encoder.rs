@@ -33,9 +33,9 @@ use crate::tpl;
 #[non_exhaustive]
 pub struct Packet {
     /// One AV2 Annex B temporal unit: the hidden frames coded since the last
-    /// packet and one output, a shown frame or a show-existing frame.
+    /// packet and one output: a shown, implicit-output or show-existing frame.
     pub data: Vec<u8>,
-    /// Presentation timestamp of the output frame.
+    /// Presentation timestamp of the output frame; not monotonic with implicit output.
     pub pts: u64,
     /// Frame type of the output frame.
     pub frame_type: FrameType,
@@ -237,7 +237,8 @@ impl Encoder {
             }
             _ => params.mini_gop_size,
         };
-        let planner = GopPlanner::new(config.keyint, mini_gop_size);
+        let planner = GopPlanner::new(config.keyint, mini_gop_size)
+            .with_implicit_output(params.implicit_output);
         Ok(Self {
             rate_control,
             stats_sink: None,

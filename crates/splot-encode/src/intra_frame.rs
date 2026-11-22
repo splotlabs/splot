@@ -284,6 +284,7 @@ impl IntraFrameCoder {
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
+                implicit_output: preset.implicit_output,
                 explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
                     cols_log2: config.tiles.cols_log2,
@@ -580,7 +581,8 @@ impl IntraFrameCoder {
         } else {
             (self.grain_active, Vec::new())
         };
-        let seed = (grain_on && plan.show_frame).then(|| gop::coded_grain_seed(plan.frame_index));
+        let output = plan.show_frame || plan.implicit_output;
+        let seed = (grain_on && output).then(|| gop::coded_grain_seed(plan.frame_index));
         Ok((seed, obu))
     }
 

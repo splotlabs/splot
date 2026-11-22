@@ -36,9 +36,9 @@
 //! frame's own: the closest layer, then an inter frame over the key frame,
 //! then the closest in display order, then the lower slot.
 //!
-//! Encoder policy, fixed for now: the sequence sets
-//! `monotonic_output_order_flag`, so a hidden frame is shown by a
-//! show-existing frame with `derive_sef_order_hint = 1`; motion vectors are
+//! Encoder policy: a hidden frame is shown by a show-existing frame with
+//! `derive_sef_order_hint = 1`, or with the preset's `implicit_output` codes
+//! `implicit_output_frame` in a temporal unit of its own; motion vectors are
 //! eighth-pel when the preset refines to eighth samples at the frame's
 //! quantizer, else quarter-pel.
 
@@ -86,6 +86,9 @@ pub(crate) struct GopFrame {
     pub(crate) primary_slot: Option<u32>,
     /// The frame starts its temporal unit, after the temporal delimiter.
     pub(crate) opens_temporal_unit: bool,
+    /// `implicit_output_frame`: a hidden frame the decoder outputs by order
+    /// hint, in a temporal unit of its own (§ 7.3.3, § 7.3.6).
+    pub(crate) implicit_output: bool,
 }
 
 /// One step of the coding order.
@@ -103,7 +106,9 @@ impl GopStep {
     /// the temporal unit.
     pub(crate) fn output(&self) -> Option<u64> {
         match *self {
-            Self::Code(frame) => frame.show_frame.then_some(frame.display_index),
+            Self::Code(frame) => {
+                (frame.show_frame || frame.implicit_output).then_some(frame.display_index)
+            }
             Self::ShowExisting { display_index, .. } => Some(display_index),
         }
     }
@@ -133,6 +138,9 @@ pub(crate) struct GopPlanner {
     after_output: bool,
     /// Display index of the last frame of the mini-GOP being planned.
     last_display: u64,
+    /// Hidden frames code `implicit_output_frame` in place of a show-existing
+    /// frame.
+    implicit_output: bool,
 }
 
 impl GopPlanner {
@@ -150,6 +158,15 @@ impl GopPlanner {
             cuts: Vec::new(),
             after_output: true,
             last_display: 0,
+            implicit_output: false,
+        }
+    }
+
+    /// The planner whose hidden frames code `implicit_output_frame`.
+    pub(crate) fn with_implicit_output(self, implicit_output: bool) -> Self {
+        Self {
+            implicit_output,
+            ..self
         }
     }
 
@@ -247,10 +264,12 @@ impl GopPlanner {
                 what: "a show-existing frame of an evicted frame",
             })?;
         held.awaiting_show = false;
-        steps.push(GopStep::ShowExisting {
-            slot,
-            display_index: hi,
-        });
+        if !self.implicit_output {
+            steps.push(GopStep::ShowExisting {
+                slot,
+                display_index: hi,
+            });
+        }
         self.after_output = true;
         Ok(())
     }
@@ -316,9 +335,10 @@ impl GopPlanner {
             ref_slots,
             primary_slot,
             opens_temporal_unit: self.after_output,
+            implicit_output: self.implicit_output && !show_frame,
         };
         self.next_frame += 1;
-        self.after_output = show_frame;
+        self.after_output = show_frame || self.implicit_output;
         Ok(GopStep::Code(frame))
     }
 
@@ -669,6 +689,7 @@ impl GopFrame {
             global_motion,
             global_motion_predict,
             explicit_refs,
+            implicit_output: self.implicit_output,
         }
     }
 }
