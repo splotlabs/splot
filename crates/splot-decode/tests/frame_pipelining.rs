@@ -465,3 +465,33 @@ fn deep_pipeline_shrinks_to_the_reference_store_limit() {
         assert_eq!(source.name(), DecodeLimitName::MaxReferenceStoreBytes);
     }
 }
+
+/// A TIP frame whose ClosestPast and ClosestFuture are the key frame and an
+/// intra-only frame breaks § 7.10.1 (no inter frame on either side, § 7.9
+/// `is_ref_motion_field_eligible_by_frame_type`): it is rejected at every
+/// worker count and frame delay, while valid TIP streams still decode alike.
+#[test]
+fn tip_without_an_inter_closest_reference_is_rejected_at_every_width() {
+    let bad =
+        include_bytes!("../../../tests/conformance/vectors/invalid/syn-tip-intra-pair-72x40.ivf");
+    for threads in [1, 2, 8] {
+        for delay in [FrameDelay::from(1usize), FrameDelay::Auto] {
+            let error = collect_raw(&context(threads, delay), bad, &DecodeOptions::default())
+                .expect_err("a TIP frame between two intra frames must be rejected");
+            assert!(
+                matches!(error, DecodeError::MalformedSource { .. })
+                    && error.to_string().contains("no inter frame as ClosestPast"),
+                "{threads} workers: {error}"
+            );
+            for (name, bytes) in [
+                ("tip-families", TIP_FAMILIES),
+                ("tip-window", TIP_OUTPUT_WINDOW),
+            ] {
+                let expected = collect_raw(&depth_one(), bytes, &DecodeOptions::default()).unwrap();
+                let actual =
+                    collect_raw(&context(threads, delay), bytes, &DecodeOptions::default());
+                assert!(actual.unwrap() == expected, "{name} at {threads} workers");
+            }
+        }
+    }
+}

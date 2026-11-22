@@ -27,6 +27,10 @@ the real flow, stop at the first rung that holds: existing code, standard
 library, native platform feature, installed dependency, one-line fix, or the
 minimum new code that works.
 
+The rungs choose how to build the right design; they do not justify a hack,
+workaround or patch in place of it. Aim for the best solution, even when it is
+a larger restructure, and state the effort of each option as information.
+
 Lazy rules:
 
 - No abstractions that were not explicitly requested.

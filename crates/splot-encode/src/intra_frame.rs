@@ -275,6 +275,7 @@ impl IntraFrameCoder {
                 drl_reorder: preset.mv_prediction.then_some(!preset.drl_reorder_always),
                 mv_traj: preset.mv_prediction && preset.mv_traj,
                 max_drl_bits_minus_1: u32::from(preset.drl_bits.saturating_sub(1)),
+                max_bvp_drl_bits_minus_1: u32::from(preset.intrabc_drl),
                 mvd_tools: preset.mvd_tools,
                 warp: preset.warp > 0,
                 global_motion: preset.global_motion > 0,
@@ -668,7 +669,8 @@ impl IntraFrameCoder {
         {
             tools.2.7 = self.global_motion;
         }
-        if plan.frame_type == FrameType::Inter && !self.global_models.is_empty() {
+        if plan.frame_type == FrameType::Inter && !plan.intra_only && !self.global_models.is_empty()
+        {
             let probe = plan.header(
                 &self.view,
                 &self.references,

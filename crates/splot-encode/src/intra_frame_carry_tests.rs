@@ -7,7 +7,7 @@ use super::*;
 use crate::Packet;
 use crate::gop::{GopPlanner, GopStep};
 use crate::preset::PresetParams;
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, FrameType as CoreFrameType};
 
 /// `PRIMARY_REF_NONE` (§ 3).
 const PRIMARY_REF_NONE: u8 = 7;
@@ -31,7 +31,8 @@ pub(super) fn planned_stream_of(
     qp: u16,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
     let mini_gop = coder.preset.mini_gop_size.min(4);
-    let mut planner = GopPlanner::new(config.keyint, mini_gop);
+    let mut planner =
+        GopPlanner::new(config.keyint, mini_gop).with_intra_only(coder.preset.intra_only);
     let (mut units, mut recons, mut cores) = (Vec::new(), BTreeMap::new(), Vec::new());
     let mut queued = 9;
     while let Some(len) = planner.next_len(queued, true) {
@@ -364,6 +365,91 @@ fn explicit_slot_count_streams_decode_alike_on_any_thread_count() {
     let mut config = config(72, 40, BitDepth::Eight, 6, 150);
     config.preset_overrides = vec![("num_ref_frames".to_owned(), "2".to_owned())];
     assert!(config.validate().is_err());
+}
+
+/// With `intra_only = 1` the first frame of each mini-GOP is an intra-only
+/// frame (§ 5.18.2) that refreshes one slot, and a frame coded after it
+/// still references a frame from before it. The 4:2:0 and 4:4:4 streams
+/// decode to the encoder recon with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn intra_only_streams_decode_alike_on_any_thread_count() {
+    for chroma in [PixelFormat::Yuv420, PixelFormat::Yuv444] {
+        let (units, expected, cores) = intra_only_stream(chroma, 1);
+        let intra: Vec<_> = cores
+            .iter()
+            .enumerate()
+            .filter(|(_, core)| core.frame_type == Some(CoreFrameType::IntraOnly))
+            .collect();
+        assert!(
+            intra.len() >= 2,
+            "{chroma:?}: {} intra-only frames",
+            intra.len()
+        );
+        for (index, core) in intra {
+            assert_eq!(core.refresh_frame_flags.map(u32::count_ones), Some(1));
+            assert!(core.inter.is_none());
+            let hint = core.display_order_hint().unwrap();
+            let older = cores[index + 1..]
+                .iter()
+                .filter_map(|later| later.inter.as_ref())
+                .any(|inter| inter.order_hints.iter().any(|&h| h < hint));
+            assert!(older, "{chroma:?}: no reference across the frame at {hint}");
+        }
+        assert_same_samples(&decode(&units), &expected, &format!("{chroma:?}"));
+        for threads in [2, 8] {
+            let other = intra_only_stream(chroma, threads).0;
+            assert!(other == units, "{chroma:?}: {threads} threads");
+        }
+    }
+}
+
+/// A panning mini-GOP stream in `chroma` with `intra_only = 1` on `threads`
+/// threads: its units, the encoder recon and the frame headers.
+fn intra_only_stream(
+    chroma: PixelFormat,
+    threads: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>) {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        intra_only: 1,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.chroma = chroma;
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (units, expected, cores, _) = planned_stream_of(&config, coder, panning_frame, 150);
+    (units, expected, cores)
+}
+
+/// CRF and VBR streams with intra-only frames decode to the encoder recon.
+#[test]
+fn rate_controlled_intra_only_streams_decode_to_the_encoder_recon() {
+    for mode in [
+        RateControlMode::Crf { crf: 32 },
+        RateControlMode::Vbr { bitrate_kbps: 200 },
+    ] {
+        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        config.rate_control = mode;
+        config.preset_overrides = vec![("intra_only".to_owned(), "1".to_owned())];
+        let (units, expected) =
+            encode_frames(&config, (0..20).map(|index| panning_frame(&config, index)));
+        assert_same_samples(&decode(&units.concat()), &expected, &format!("{mode:?}"));
+    }
+}
+
+/// AVM decodes intra-only streams like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_intra_only_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for chroma in [PixelFormat::Yuv420, PixelFormat::Yuv444] {
+        let (units, expected, _) = intra_only_stream(chroma, 1);
+        let name = format!("intraonly{chroma:?}");
+        let avm = avm_decode(&avmdec, &[units], (72, 40), BitDepth::Eight, &name);
+        assert!(avm == expected, "{chroma:?}: AVM output differs");
+    }
 }
 
 /// The packets of `frames` panning frames coded through the [`Encoder`] with

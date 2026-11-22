@@ -309,6 +309,11 @@ pub struct PresetParams {
     /// without `explicit_num_ref_frames`; `n` codes `n` slots, which the GOP
     /// planner uses.
     pub num_ref_frames: u8,
+    /// `n > 0` codes the first frame of every `n`th mini-GOP as an
+    /// `INTRA_ONLY_FRAME` (§ 5.18.2) that refreshes one slot; the later
+    /// frames may still reference the frames before it. `0` in every row
+    /// (not measured).
+    pub intra_only: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -496,6 +501,10 @@ pub struct PresetParams {
     /// the copy may come from the local area (§ 6.19.7.12). Off in every
     /// row, the screen-content rows too: not measured.
     pub intrabc_local: bool,
+    /// `seq_max_bvp_drl_bits_minus_1`, `0..=2`: IntraBC leaves choose the
+    /// nearest of `intrabc_drl + 2` reference block vectors. 0 in every row,
+    /// the screen-content rows too: not measured.
+    pub intrabc_drl: u8,
     /// With `intrabc`, leaves under 8 samples on a side, chroma-offset
     /// leaves among them, get an RD trial of the best copy at or within 4
     /// samples of a reference block vector. Off in every row, the
@@ -949,6 +958,7 @@ impl PresetParams {
             " (mini_gop_size..)",
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
+        check("intrabc_drl", self.intrabc_drl, 0, 2, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
         check("ssim_aq", self.ssim_aq, 0, 200, "")?;
         check("segmentation", self.segmentation, 0, 1, "")?;
@@ -1299,6 +1309,7 @@ preset_table! {
         long_term_id_bits:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_output:       [false, false, false, false, false, false, false, false, false, false, false],
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],
@@ -1349,6 +1360,7 @@ preset_table! {
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }

@@ -168,6 +168,9 @@ pub struct EncoderToolFlags {
     /// `seq_max_drl_bits_minus_1` (§ 5.4.6), `0..=4`: `NEARMV` and `NEWMV`
     /// code `RefMvIdx` below `seq_max_drl_bits_minus_1 + 2`.
     pub max_drl_bits_minus_1: u32,
+    /// `seq_max_bvp_drl_bits_minus_1` (§ 5.4.6), `0..=2`: IntraBC leaves code
+    /// `RefMvIdx` below `seq_max_bvp_drl_bits_minus_1 + 2` (§ 5.20.5.4).
+    pub max_bvp_drl_bits_minus_1: u32,
     /// `enable_adaptive_mvd`, `enable_mvd_sign_derive` and
     /// `enable_flex_mvres` (§ 5.4.6).
     pub mvd_tools: [bool; 3],
@@ -645,7 +648,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_bits(u32::from(tools.long_term_frame_id_bits), 3)?;
     w.write_ns(tools.max_drl_bits_minus_1, 5)?; // ns(MAX_REF_MV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_drl_bits
-    w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
+    w.write_ns(tools.max_bvp_drl_bits_minus_1, 3)?; // ns(MAX_REF_BV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_bvp_drl_bits
     w.write_bits(NUM_SAME_REF_COMPOUND, 2)?;
     w.write_flag(tools.tip)?; // enable_tip
@@ -772,12 +775,6 @@ fn key_frame_header_bits(
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
     }
-    if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
-        return Err(EncoderHeaderError::InvalidTxParams {
-            tx_mode: tx.tx_mode,
-            reduced_tx_set: tx.reduced_tx_set,
-        });
-    }
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     let mut w = BitWriter::new();
     w.write_uvlc(0)?; // cur_mfh_id
@@ -792,6 +789,26 @@ fn key_frame_header_bits(
     w.write_flag(true)?; // immediate_output_frame
     w.write_flag(false)?; // frame_size_override_flag
     w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
+    write_intra_frame_tail(&mut w, seq, (base_q_idx, tiles, true), filters, tx)?;
+    Ok(w.into_bytes())
+}
+
+/// § 5.18.2 of an intra frame from `screen_content_params()` to
+/// `film_grain_config()`: the `base_q_idx`, `tiles`, `filters` and `tx` of a
+/// frame with `immediate_output_frame` `show`, then the byte alignment.
+pub(super) fn write_intra_frame_tail(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    (base_q_idx, tiles, show): (u32, UniformTiles, bool),
+    filters: &FrameFilterParams,
+    tx: KeyFrameTxParams,
+) -> Result<(), EncoderHeaderError> {
+    if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
+        return Err(EncoderHeaderError::InvalidTxParams {
+            tx_mode: tx.tx_mode,
+            reduced_tx_set: tx.reduced_tx_set,
+        });
+    }
     if seq.seq_force_screen_content_tools == 2 {
         w.write_flag(true)?; // allow_screen_content_tools
         if seq.seq_force_integer_mv == 2 {
@@ -805,10 +822,10 @@ fn key_frame_header_bits(
         change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
         max_bvp_drl_bits_minus_1: None,
     };
-    write_intrabc_params(&mut w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
+    write_intrabc_params(w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
     w.write_flag(tx.disable_cdf_update)?;
     write_quant_and_filters(
-        &mut w,
+        w,
         seq,
         (base_q_idx, tiles, tx),
         filters,
@@ -816,9 +833,9 @@ fn key_frame_header_bits(
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
-    write_film_grain_config(&mut w, seq, true, tx.grain_seed)?;
+    write_film_grain_config(w, seq, show, tx.grain_seed)?;
     w.align_to_byte();
-    Ok(w.into_bytes())
+    Ok(())
 }
 
 /// § 5.18.10.1 `film_grain_config()` of a frame with `immediate_output_frame`
