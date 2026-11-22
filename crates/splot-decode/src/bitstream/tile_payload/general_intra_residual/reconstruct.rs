@@ -12,13 +12,13 @@ use splot_recon::{
     inverse_transform_2d_outer_with_scratch, tx_class,
 };
 
-use super::super::coeff_loop::max_level::CoeffTransformClass;
 use super::{
     ADST_ADST, CoeffBlock, D67_PRED, D157_PRED, DCT_DCT, GeneralIntraResidualError, H_PRED,
     IST_4X4_HEIGHT, IST_8X8_HEIGHT, IST_8X8_HEIGHT_RED, LumaTransformTypeContext, SMOOTH_H_PRED,
     block_qm_level, current_quantizers, intra_secondary_transform_kernel,
     intra_secondary_transform_mode, invalid_reconstruction_state_error, resolve_block_qm,
 };
+use splot_recon::TransformClass;
 
 pub(super) struct ReconstructBlockSetup {
     pub(super) adjusted: usize,
@@ -401,8 +401,7 @@ fn fused_transform(
 
 /// The § 7.14.4 `dq_denom` of a block of `pels` samples.
 fn dq_denom(pels: usize, use_tcq: bool, plane_tx_type: usize) -> u32 {
-    let tcq_two_d = use_tcq
-        && CoeffTransformClass::from_plane_tx_type(plane_tx_type) == CoeffTransformClass::TwoD;
+    let tcq_two_d = use_tcq && splot_recon::tx_class(plane_tx_type) == TransformClass::TwoD;
     1 << (u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(tcq_two_d))
 }
 

@@ -257,7 +257,7 @@ fn dispatcher_copies_non420_reference_planes() {
             InterBlockParams::single(
                 ReferenceSamples::settled(&reference),
                 McBlockRect::from_luma_rect(0, 0, 8, 8),
-                Mv::ZERO,
+                MotionVector::ZERO,
                 InterpolationFilter::EightTap,
             ),
             ByteOffset::new(0),
@@ -284,15 +284,15 @@ fn compound_and_warp_copy_non420_chroma_at_native_resolution() {
                 ReferenceSamples::settled(&reference),
                 ReferenceSamples::settled(&reference),
                 McBlockRect::from_luma_rect(0, 0, 8, 8),
-                Mv::ZERO,
-                Mv::ZERO,
+                MotionVector::ZERO,
+                MotionVector::ZERO,
                 InterpolationFilter::EightTap,
                 CompoundBlend::default(),
             ),
             InterBlockParams::single_warp(
                 ReferenceSamples::settled(&reference),
                 McBlockRect::from_luma_rect(0, 0, 8, 8),
-                Mv::ZERO,
+                MotionVector::ZERO,
                 InterpolationFilter::EightTap,
                 IDENTITY_WARP_PARAMS,
             ),
@@ -327,7 +327,7 @@ fn dispatcher_zero_mv_copies_single_reference_planes() {
         InterBlockParams::single(
             ReferenceSamples::settled(&reference),
             McBlockRect::from_luma_rect(0, 0, 8, 8),
-            Mv { row: 0, col: 0 },
+            MotionVector { row: 0, col: 0 },
             InterpolationFilter::EightTap,
         ),
         ByteOffset::new(0),
@@ -359,7 +359,7 @@ fn dispatcher_zero_mv_copies_odd_reference_chroma_extents() {
         InterBlockParams::single(
             ReferenceSamples::settled(&reference),
             McBlockRect::from_luma_rect(0, 0, 9, 11),
-            Mv::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
         ),
         ByteOffset::new(0),
@@ -385,7 +385,7 @@ fn dispatcher_clips_single_prediction_at_frame_edge() {
         InterBlockParams::single(
             ReferenceSamples::settled(&reference),
             McBlockRect::from_luma_rect(4, 4, 8, 8),
-            Mv::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
         ),
         ByteOffset::new(0),
@@ -493,8 +493,8 @@ fn dispatcher_blends_compound_average_with_odd_chroma_extents() {
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
             McBlockRect::from_luma_rect(0, 0, 9, 11),
-            Mv::ZERO,
-            Mv::ZERO,
+            MotionVector::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
             CompoundBlend::default(),
         ),
@@ -521,12 +521,12 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
         for (block_rect, mv, interp) in [
             (
                 McBlockRect::from_luma_rect(0, 0, width, height),
-                Mv::ZERO,
+                MotionVector::ZERO,
                 InterpolationFilter::EightTap,
             ),
             (
                 McBlockRect::from_luma_rect(0, 1, width, height - 1),
-                Mv { row: 5, col: -3 },
+                MotionVector { row: 5, col: -3 },
                 InterpolationFilter::EightTapSharp,
             ),
         ] {
@@ -581,8 +581,8 @@ fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
             McBlockRect::from_luma_rect(0, 0, 8, 8),
-            Mv::ZERO,
-            Mv::ZERO,
+            MotionVector::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
             CompoundBlend::default(),
         )
@@ -603,7 +603,7 @@ fn dispatcher_sub8x8_chroma_drops_warp() {
     let mut warped = workspace(16, 16);
     let mut translational = workspace(16, 16);
     let rect = McBlockRect::from_luma_rect(0, 0, 8, 8);
-    let mv = Mv::ZERO;
+    let mv = MotionVector::ZERO;
 
     motion_compensate_inter_block_into(
         &mut CurrentFrameSurface::Frame(&mut warped),
@@ -671,8 +671,8 @@ fn dispatcher_rebuilds_optflow_compound_planes_from_refined_grid() {
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
             McBlockRect::from_luma_rect(0, 0, 8, 8),
-            Mv::ZERO,
-            Mv::ZERO,
+            MotionVector::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
             CompoundBlend::default(),
         )
@@ -703,8 +703,8 @@ fn optflow_reuses_the_luma_motion_grid_for_every_chroma_format() {
                 ReferenceSamples::settled(&reference0),
                 ReferenceSamples::settled(&reference1),
                 McBlockRect::from_luma_rect(0, 0, 8, 8),
-                Mv::ZERO,
-                Mv::ZERO,
+                MotionVector::ZERO,
+                MotionVector::ZERO,
                 InterpolationFilter::EightTapSharp,
                 CompoundBlend::default(),
             )
@@ -743,8 +743,8 @@ fn optflow_derivation_is_independent_of_the_final_interpolation_filter() {
                 ReferenceSamples::settled(&reference0),
                 ReferenceSamples::settled(&reference1),
                 McBlockRect::from_luma_rect(8, 8, 8, 8),
-                Mv { row: 3, col: 5 },
-                Mv { row: -5, col: -3 },
+                MotionVector { row: 3, col: 5 },
+                MotionVector { row: -5, col: -3 },
                 interp,
                 CompoundBlend::default(),
             )
@@ -771,8 +771,8 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
             McBlockRect::from_luma_rect(0, 0, 8, 8),
-            Mv::ZERO,
-            Mv::ZERO,
+            MotionVector::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
             CompoundBlend::default(),
         )
@@ -782,7 +782,7 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
     assert_eq!(
         grid.temporal_mvs_at_luma_offset(0, 0)
             .expect("stored motion vectors"),
-        [Mv::ZERO; 2]
+        [MotionVector::ZERO; 2]
     );
 }
 
@@ -819,8 +819,8 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
             McBlockRect::from_luma_rect(8, 8, 16, 16),
-            Mv::ZERO,
-            Mv::ZERO,
+            MotionVector::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTapSharp,
             CompoundBlend::default(),
         )
@@ -830,7 +830,10 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
     assert_eq!(
         grid.temporal_mvs_at_luma_offset(0, 0)
             .expect("stored refine-MVs"),
-        [Mv { row: 0, col: 8 }, Mv { row: 0, col: -8 }]
+        [
+            MotionVector { row: 0, col: 8 },
+            MotionVector { row: 0, col: -8 }
+        ]
     );
 }
 
@@ -848,8 +851,8 @@ fn dispatcher_switchable_refinemv_excludes_low_sad_center() {
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
             McBlockRect::from_luma_rect(8, 8, 16, 16),
-            Mv::ZERO,
-            Mv::ZERO,
+            MotionVector::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTapSharp,
             CompoundBlend::default(),
         )
@@ -860,7 +863,10 @@ fn dispatcher_switchable_refinemv_excludes_low_sad_center() {
     assert_eq!(
         grid.temporal_mvs_at_luma_offset(0, 0)
             .expect("stored switchable refine-MVs"),
-        [Mv { row: -16, col: -16 }, Mv { row: 16, col: 16 }]
+        [
+            MotionVector { row: -16, col: -16 },
+            MotionVector { row: 16, col: 16 }
+        ]
     );
 }
 
@@ -886,8 +892,8 @@ fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
             ReferenceSamples::settled(&reference0),
             ReferenceSamples::settled(&reference1),
             McBlockRect::from_luma_rect(8, 8, 16, 16),
-            Mv::ZERO,
-            Mv::ZERO,
+            MotionVector::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTapSharp,
             CompoundBlend::default(),
         )
@@ -898,7 +904,7 @@ fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
     assert_eq!(
         grid.temporal_mvs_at_luma_offset(0, 0)
             .expect("stored refine-MVs"),
-        [Mv::ZERO, Mv::ZERO]
+        [MotionVector::ZERO, MotionVector::ZERO]
     );
 }
 
@@ -971,8 +977,8 @@ fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
             ReferenceSamples::settled(&reference),
             ReferenceSamples::settled(&reference),
             McBlockRect::from_luma_rect(0, 0, 32, 4),
-            Mv { row: 0, col: 32 },
-            Mv { row: 0, col: -128 },
+            MotionVector { row: 0, col: 32 },
+            MotionVector { row: 0, col: -128 },
             InterpolationFilter::EightTap,
             CompoundBlend::average_with_implicit_mask(true),
         ),
@@ -996,8 +1002,8 @@ fn u8_translational_compound_direct_fallback_matches_the_general_path() {
         ReferenceSamples::settled(&reference0),
         ReferenceSamples::settled(&reference1),
         McBlockRect::from_luma_rect(0, 0, 8, 8),
-        Mv::ZERO,
-        Mv::ZERO,
+        MotionVector::ZERO,
+        MotionVector::ZERO,
         InterpolationFilter::EightTap,
         CompoundBlend::default(),
     )
@@ -1134,7 +1140,7 @@ fn warp_skips_prediction_units_beyond_the_current_frame() {
         InterBlockParams::single_warp(
             ReferenceSamples::settled(&reference),
             McBlockRect::from_luma_rect(8, 0, 16, 8),
-            Mv::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
             IDENTITY_WARP_PARAMS,
         )
@@ -1175,7 +1181,7 @@ fn edge_clipped_sheared_warp_writes_its_visible_sections() {
         InterBlockParams::single_warp(
             ReferenceSamples::settled(&reference),
             McBlockRect::from_luma_rect(24, 8, 32, 32),
-            Mv::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
             warp_params,
         )
@@ -1222,7 +1228,7 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
         InterBlockParams::single_warp(
             ReferenceSamples::settled(&reference),
             McBlockRect::from_luma_rect(12, 0, 8, 4),
-            Mv::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTap,
             IDENTITY_WARP_PARAMS,
         )
@@ -1350,8 +1356,8 @@ fn dispatch_compound_samples(
             reference0,
             reference1,
             McBlockRect::from_luma_rect(0, 0, 8, 8),
-            Mv { row: 0, col: 0 },
-            Mv { row: 0, col: 0 },
+            MotionVector { row: 0, col: 0 },
+            MotionVector { row: 0, col: 0 },
             InterpolationFilter::EightTap,
             blend,
         ),
@@ -1556,8 +1562,8 @@ fn prediction_reads_padded_reference_samples_and_masks_at_storage_edges() {
                 samples,
                 samples,
                 rect,
-                Mv { row: 96, col: 96 },
-                Mv::ZERO,
+                MotionVector { row: 96, col: 96 },
+                MotionVector::ZERO,
                 InterpolationFilter::EightTap,
                 CompoundBlend::average_with_implicit_mask(true),
             )
@@ -1565,7 +1571,7 @@ fn prediction_reads_padded_reference_samples_and_masks_at_storage_edges() {
             InterBlockParams::single(
                 samples,
                 rect,
-                Mv { row: 96, col: 96 },
+                MotionVector { row: 96, col: 96 },
                 InterpolationFilter::EightTap,
             )
         }

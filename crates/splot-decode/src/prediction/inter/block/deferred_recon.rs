@@ -656,7 +656,8 @@ mod tests {
     use super::{InterReconCommand, InterReconScratch};
     use crate::bitstream::tile_payload::LumaCoeffBlock;
     use crate::prediction::inter::{
-        BawpSyntax, InterBlock, InterResidual, InterResidualBlock, Mv, PlacedInterBlock, mc,
+        BawpSyntax, InterBlock, InterResidual, InterResidualBlock, MotionVector, PlacedInterBlock,
+        mc,
     };
 
     fn assert_send<T: Send>() {}
@@ -703,8 +704,8 @@ mod tests {
                 block: InterBlock {
                     ref_frame0: 0,
                     ref_frame1: None,
-                    mv: Mv::ZERO,
-                    mv1: Mv::ZERO,
+                    mv: MotionVector::ZERO,
+                    mv1: MotionVector::ZERO,
                     interp: InterpolationFilter::EightTap,
                     warp_params: [None, None],
                     bawp: BawpSyntax::default(),

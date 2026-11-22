@@ -26,8 +26,8 @@ use super::base_level_pass::{CoeffBaseDerivedLevelPassError, tx_class_index};
 use super::base_symbol::CoeffBaseSymbolReadError;
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{
-    COEFF_BASE_RANGE, CoeffMaxLevelConfig, CoeffTransformClass, LF_NUM_BASE_LEVELS,
-    NUM_BASE_LEVELS, derive_coeff_max_level, visible_max_level,
+    COEFF_BASE_RANGE, CoeffMaxLevelConfig, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS,
+    derive_coeff_max_level, visible_max_level,
 };
 use super::ordinary_pass::{CoeffOrdinaryBranchError, CoeffOrdinaryPassError};
 use super::quant_pass::CoeffQuantPassError;
@@ -251,7 +251,7 @@ static GRID_EXTENTS: [[u16; GRID_SCAN_LEN]; 3] = {
     reason = "measured: out of line it costs 30 instructions per block"
 )]
 #[inline(always)]
-pub(crate) fn scan_extent(class: CoeffTransformClass, tx: &TxGeometry, eob: usize) -> usize {
+pub(crate) fn scan_extent(class: TransformClass, tx: &TxGeometry, eob: usize) -> usize {
     let len = usize::from(tx.width) * usize::from(tx.height);
     if eob == 0 || eob > len {
         return len;
@@ -263,7 +263,7 @@ pub(crate) fn scan_extent(class: CoeffTransformClass, tx: &TxGeometry, eob: usiz
 
 /// The transform's coefficient scan through its EOB.
 pub(super) fn grid_scan(
-    class: CoeffTransformClass,
+    class: TransformClass,
     tx: &TxGeometry,
     eob: usize,
 ) -> Result<&'static [u32], CoeffOrdinaryPassError> {
@@ -306,7 +306,7 @@ pub(crate) const fn lf_scan_end<const CLASS: usize, const LUMA: bool>(
 pub(crate) struct CoeffTransformBlockInput<'l> {
     pub(crate) start: NonZeroCoeffBlockStart,
     pub(crate) plane: usize,
-    pub(crate) tx_class: CoeffTransformClass,
+    pub(crate) tx_class: TransformClass,
     pub(crate) parity_hiding: bool,
     pub(crate) use_tcq: bool,
     pub(crate) lines: &'l CoeffBlockLines,
@@ -343,7 +343,7 @@ fn preflight(
         return Err(CoeffBaseDerivedLevelPassError::InconsistentParityAndTcq.into());
     }
     if (input.plane > 0 && (input.parity_hiding || input.use_tcq))
-        || (input.use_tcq && input.tx_class != CoeffTransformClass::TwoD)
+        || (input.use_tcq && input.tx_class != TransformClass::TwoD)
     {
         return Err(CoeffBaseDerivedLevelPassError::UnsupportedToolClass.into());
     }
@@ -380,7 +380,7 @@ struct BlockSummary {
 #[allow(clippy::inline_always, reason = "measured: one body per tool set")]
 #[inline(always)]
 fn dispatch<const UPD: bool>(input: &CoeffTransformBlockInput<'_>) -> RunFn {
-    use CoeffTransformClass::{Horizontal, TwoD, Vertical};
+    use TransformClass::{Horizontal, TwoD, Vertical};
     match (
         input.tx_class,
         input.plane == 0,
@@ -421,9 +421,9 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     let tx = input.start.tx();
     let width_log2 = u32::from(tx.width_log2);
     let tx_class = [
-        CoeffTransformClass::TwoD,
-        CoeffTransformClass::Horizontal,
-        CoeffTransformClass::Vertical,
+        TransformClass::TwoD,
+        TransformClass::Horizontal,
+        TransformClass::Vertical,
     ][CLASS];
     let eob = input.start.eob_read();
     let scan = grid_scan(tx_class, tx, eob)?;
@@ -844,9 +844,9 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     nonzero: &[u32],
 ) -> Result<BlockSummary, CoeffOrdinaryPassError> {
     let tx_class = [
-        CoeffTransformClass::TwoD,
-        CoeffTransformClass::Horizontal,
-        CoeffTransformClass::Vertical,
+        TransformClass::TwoD,
+        TransformClass::Horizontal,
+        TransformClass::Vertical,
     ][CLASS];
     let plane = if LUMA { 0 } else { block.dc.plane.max(1) };
     let scan = block.scan;

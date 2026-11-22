@@ -33,6 +33,10 @@ impl IntraEdgeAvailability {
         Self { above, left }
     }
 
+    pub(crate) const fn read_edge_available(self, above: bool) -> bool {
+        if above { self.above } else { self.left }
+    }
+
     pub(crate) const fn available_sample_limits(self) -> (Option<usize>, Option<usize>) {
         (
             if self.left { None } else { Some(0) },

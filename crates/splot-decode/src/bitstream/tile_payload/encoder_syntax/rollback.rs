@@ -293,7 +293,7 @@ struct WholeState {
     )>,
     intrabc: Option<(
         crate::filters::wienerns_lr::intrabc_records::TileIntrabcPreludeState,
-        Vec<Option<crate::prediction::inter::Mv>>,
+        Vec<Option<crate::prediction::inter::MotionVector>>,
     )>,
 }
 

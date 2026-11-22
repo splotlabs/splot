@@ -16,7 +16,8 @@ use core::num::NonZeroU32;
 use core::ops::Range;
 
 use super::{
-    CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at,
+    CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, MotionVector, SWITCHABLE_FILTERS, TIP_REF_FRAME,
+    warp_sub_mv_at,
 };
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
     SpatialIntrabcProbes, SpatialScanGeometry, capture_spatial_intrabc_probes,
@@ -167,10 +168,10 @@ pub(super) const ABSENT_NEIGHBOUR_FLAGS: NeighbourFlags = NeighbourFlags(u64::fr
 /// [`LeafRecord`], and derives the per-cell sub-MVs when a cell is read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NeighbourMotion {
-    pub(super) mv: Mv,
-    pub(super) mv1: Mv,
-    pub(super) sub_mv: Mv,
-    pub(super) sub_mv1: Mv,
+    pub(super) mv: MotionVector,
+    pub(super) mv1: MotionVector,
+    pub(super) sub_mv: MotionVector,
+    pub(super) sub_mv1: MotionVector,
     model: NeighbourMotionModel,
     pub(super) cwp_weight: i16,
     pub(super) base_r: u32,
@@ -207,8 +208,8 @@ enum NeighbourMotionModel {
 #[derive(Clone, Copy)]
 struct LeafRecord {
     flags: NeighbourFlags,
-    mv: Mv,
-    mv1: Mv,
+    mv: MotionVector,
+    mv1: MotionVector,
     base_r: u32,
     base_c: u32,
     /// Index of the leaf's first warp model in the grid's model table.
@@ -305,7 +306,7 @@ impl ProbedLeaf<'_> {
     /// The list's § 7.12.2.2 sub-MV at the probed position.
     #[allow(clippy::inline_always, reason = "measured: every stack probe")]
     #[inline(always)]
-    pub(super) fn sub_mv(&self, list: usize) -> Mv {
+    pub(super) fn sub_mv(&self, list: usize) -> MotionVector {
         if self.leaf.model_bits & (LeafRecord::SPLAT0 << list) == 0 {
             return if list == 0 {
                 self.leaf.mv
@@ -317,7 +318,7 @@ impl ProbedLeaf<'_> {
     }
 
     #[inline(never)]
-    fn splat_sub_mv(&self, list: usize) -> Mv {
+    fn splat_sub_mv(&self, list: usize) -> MotionVector {
         let mv = if list == 0 {
             self.leaf.mv
         } else {
@@ -335,7 +336,7 @@ impl ProbedLeaf<'_> {
     }
 
     #[inline]
-    pub(super) fn sub_mvs(&self) -> [Mv; 2] {
+    pub(super) fn sub_mvs(&self) -> [MotionVector; 2] {
         [self.sub_mv(0), self.sub_mv(1)]
     }
 
@@ -430,7 +431,7 @@ pub(crate) const NO_LEAF: u32 = u32::MAX;
 /// Motion-plane inputs for one leaf, all of them AV2 § 7.12 resolution output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NeighbourMotionValues {
-    pub(crate) mv: [Mv; 2],
+    pub(crate) mv: [MotionVector; 2],
     pub(crate) cwp_weight: i16,
     /// Model the neighbour-facing derivations read (AVM `wm_params[0]`).
     pub(crate) stored_warp: Option<[i32; 6]>,
@@ -443,7 +444,7 @@ pub(crate) struct NeighbourMotionValues {
 /// § 7.12 motion record of a leaf that carries no motion of its own, which
 /// the resolve pass publishes in the leaf's turn.
 pub(crate) const ZERO_NEIGHBOUR_MOTION_VALUES: NeighbourMotionValues = NeighbourMotionValues {
-    mv: [Mv::ZERO; 2],
+    mv: [MotionVector::ZERO; 2],
     cwp_weight: CWP_EQUAL,
     stored_warp: None,
     global_mv: [false, false],
@@ -521,7 +522,7 @@ impl Drop for NeighbourMvGrid {
 pub(crate) type PublishedLeaf = (
     (usize, usize, usize, usize),
     Option<(i8, Option<i8>)>,
-    [Mv; 2],
+    [MotionVector; 2],
     [Option<[i32; 6]>; 2],
     [bool; 2],
 );
@@ -738,8 +739,8 @@ impl NeighbourMvGrid {
         };
         self.planes.leaves.push(LeafRecord {
             flags,
-            mv: Mv::ZERO,
-            mv1: Mv::ZERO,
+            mv: MotionVector::ZERO,
+            mv1: MotionVector::ZERO,
             base_r: r as u32,
             base_c: c as u32,
             models: 0,
@@ -883,7 +884,7 @@ impl NeighbourMvGrid {
         ref_frame0: i8,
         ref_frame1: Option<i8>,
         newmv: bool,
-        mv: Mv,
+        mv: MotionVector,
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
@@ -919,7 +920,7 @@ impl NeighbourMvGrid {
         n4h: usize,
         ref_frame0: i8,
         newmv: bool,
-        mv: Mv,
+        mv: MotionVector,
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
@@ -959,7 +960,7 @@ impl NeighbourMvGrid {
         ref_frame0: i8,
         ref_frame1: Option<i8>,
         newmv: bool,
-        mv: Mv,
+        mv: MotionVector,
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
@@ -995,7 +996,7 @@ impl NeighbourMvGrid {
             n4w,
             n4h,
             NeighbourMotionValues {
-                mv: [mv, Mv::ZERO],
+                mv: [mv, MotionVector::ZERO],
                 cwp_weight: CWP_EQUAL,
                 stored_warp: warp,
                 global_mv: [warp_params.is_some() && warp.is_none(), false],
@@ -1013,7 +1014,7 @@ impl NeighbourMvGrid {
         n4w: usize,
         n4h: usize,
         newmv: bool,
-        mv: Mv,
+        mv: MotionVector,
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
@@ -1052,8 +1053,8 @@ impl NeighbourMvGrid {
         ref_frame1: i8,
         list0_is_newmv: bool,
         list1_is_newmv: bool,
-        mv0: Mv,
-        mv1: Mv,
+        mv0: MotionVector,
+        mv1: MotionVector,
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
@@ -1465,7 +1466,7 @@ impl NeighbourMvGrid {
         global: NeighbourMotionModel,
         r: i32,
         c: i32,
-    ) -> (NeighbourMotionModel, Mv, Mv) {
+    ) -> (NeighbourMotionModel, MotionVector, MotionVector) {
         let mut models = self.planes.models.get(leaf.models as usize..);
         let mut take = |bit: u8| {
             let (first, rest) = models
@@ -1500,7 +1501,7 @@ impl NeighbourMvGrid {
             .map(|leaf| leaf.base_c)
     }
 
-    pub(crate) fn intrabc_mv_at(&self, r: usize, c: usize) -> Option<Mv> {
+    pub(crate) fn intrabc_mv_at(&self, r: usize, c: usize) -> Option<MotionVector> {
         let cell = self.get(i32::try_from(r).ok()?, i32::try_from(c).ok()?)?;
         (cell.flags.ref_frame0() == INTRABC_REF_FRAME && cell.flags.ref_frame1().is_none())
             .then_some(cell.motion.mv)

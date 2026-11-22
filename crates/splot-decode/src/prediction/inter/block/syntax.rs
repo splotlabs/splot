@@ -14,7 +14,7 @@ use super::super::mode_symbols::{InterModeSymbols, TileModeSymbols};
 use super::super::read_mv::{
     MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_TWO_PEL, lower_mv_precision,
 };
-use super::super::{Mv, SINGLE_MODE_NEWMV};
+use super::super::{MotionVector, SINGLE_MODE_NEWMV};
 use super::warp::inter_mv_read_config;
 use super::{
     DecodeBlockFrontier, INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE,
@@ -263,7 +263,10 @@ pub(crate) fn block_mv_precision_with(
     Ok(BlockPrecisionRecord::explicit(mv_precision))
 }
 
-pub(super) fn lowered_pred_mv(precision: BlockPrecisionRecord, pred_mv: Mv) -> Mv {
+pub(super) fn lowered_pred_mv(
+    precision: BlockPrecisionRecord,
+    pred_mv: MotionVector,
+) -> MotionVector {
     if precision.mv_precision < MV_PRECISION_HALF_PEL {
         lower_mv_precision(precision.mv_precision, pred_mv)
     } else {

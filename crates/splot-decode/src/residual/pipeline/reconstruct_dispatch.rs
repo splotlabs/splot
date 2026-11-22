@@ -271,10 +271,7 @@ impl ResidualPlanePlan {
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
                 let luma = self.tile_edges(frame);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: luma.has_above(),
-                    left: luma.has_left(),
-                };
+                let edges = EdgeAvail::new(luma.has_above(), luma.has_left());
                 let edge_filters = crate::prediction::intra_edge::unit_middle_edge_filters(
                     intra_edge,
                     workspace,
@@ -300,7 +297,7 @@ impl ResidualPlanePlan {
                     use_tcq,
                     Some(luma_context),
                     None,
-                    EdgeAvail { above: edges.above, left: edges.left },
+                    edges,
                     edge_filters,
                 )
             }
@@ -385,10 +382,7 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let edges = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 let edge_filter = crate::prediction::intra_edge::unit_edge_filter(
                     intra_edge,
                     workspace,
@@ -428,12 +422,11 @@ impl ResidualPlanePlan {
                             edge_filter: secondary_filter,
                             num4_far: neighbours.num_below_left(),
                         },
-                        EdgeAvail::new(edges.above, edges.left),
+                        edges,
                         use_tcq,
                         Some(luma_context),
                     )
                 } else {
-                    let availability = EdgeAvail::new(edges.above, edges.left);
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_neighbour_block_into(
                         workspace,
                         coeffs,
@@ -449,7 +442,7 @@ impl ResidualPlanePlan {
                         use_tcq,
                         Some(luma_context),
                         None,
-                        availability,
+                        edges,
                         edge_filter,
                     )
                 }
@@ -534,10 +527,7 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let edges = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 let edge_filter = crate::prediction::intra_edge::unit_edge_filter(
                     intra_edge,
                     workspace,
@@ -577,12 +567,11 @@ impl ResidualPlanePlan {
                             edge_filter: secondary_filter,
                             num4_far: neighbours.num_above_right(),
                         },
-                        EdgeAvail::new(edges.above, edges.left),
+                        edges,
                         use_tcq,
                         Some(luma_context),
                     )
                 } else {
-                    let availability = EdgeAvail::new(edges.above, edges.left);
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_left_neighbour_block_into(
                         workspace,
                         coeffs,
@@ -600,7 +589,7 @@ impl ResidualPlanePlan {
                         use_tcq,
                         Some(luma_context),
                         None,
-                        availability,
+                        edges,
                         edge_filter,
                     )
                 }
@@ -643,10 +632,7 @@ impl ResidualPlanePlan {
                 let neighbours = self.plane_neighbours(frame, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let edges = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 let edge_filter = crate::prediction::intra_edge::unit_edge_filter_for_plane(
                     intra_edge.chroma(),
                     workspace,
@@ -706,10 +692,7 @@ impl ResidualPlanePlan {
                 let neighbours = self.tile_edges(frame);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let edges = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 let edge_filters = crate::prediction::intra_edge::unit_middle_edge_filters(
                     intra_edge.chroma(),
                     workspace,
@@ -735,7 +718,7 @@ impl ResidualPlanePlan {
                     false,
                     None,
                     dpcm,
-                    EdgeAvail { above: edges.above, left: edges.left },
+                    edges,
                     edge_filters,
                 )
             }

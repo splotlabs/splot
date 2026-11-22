@@ -51,7 +51,8 @@ use super::super::mc::{McBlockRect, mc_planes};
 use super::super::mv_scaling::derive_plane_scaling;
 use super::super::reference::{compound_last_row, subpel_last_row, warp_last_row};
 use super::super::{
-    InterReferenceState, Mv, PixelReferenceGate, PlacedInterBlock, named_pixel_reference_slots,
+    InterReferenceState, MotionVector, PixelReferenceGate, PlacedInterBlock,
+    named_pixel_reference_slots,
 };
 use super::deferred_recon::InterReconCommand;
 use super::tile::ReconRow;
@@ -246,7 +247,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         let mut batch_mvs = None;
         for band in (0..placed.luma_h()).step_by(unit) {
             let luma_y = placed.luma_y().saturating_add(band);
-            let mut furthest = [Mv::ZERO; 2];
+            let mut furthest = [MotionVector::ZERO; 2];
             let Some(candidate) = self
                 .temporal
                 .tip_candidate_row(luma_y / TIP_FIELD_CELL, base)
@@ -305,7 +306,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         &self,
         bounds: &mut RowReferenceBounds,
         ref_frame: i8,
-        mv: Mv,
+        mv: MotionVector,
         rect: McBlockRect,
         predict_chroma: bool,
         reach: ListReach,
@@ -368,7 +369,7 @@ fn block_published_rows(
     reference: DecodedFrameInfo,
     rect: McBlockRect,
     predict_chroma: bool,
-    mv: Mv,
+    mv: MotionVector,
     reach: ListReach,
 ) -> Option<u32> {
     let reference_size = reference.coded_luma_size();

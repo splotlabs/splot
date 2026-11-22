@@ -3,13 +3,13 @@
 
 use super::{
     CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, FixedStack, MAX_PR_NUM,
-    MAX_REF_MV_STACK_SIZE, Mv, MvBlockContext, MvStackEntry, clamp_mv,
+    MAX_REF_MV_STACK_SIZE, MotionVector, MvBlockContext, MvStackEntry, clamp_mv,
     insert_compound_mv_stack_entry,
 };
 
 pub(super) fn extra_search(
     block: &MvBlockContext,
-    global_mv: Mv,
+    global_mv: MotionVector,
     entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
 ) {
@@ -54,7 +54,7 @@ pub(super) fn extra_search(
 
 pub(super) fn compound_extra_search(
     block: &MvBlockContext,
-    global_mvs: [Mv; 2],
+    global_mvs: [MotionVector; 2],
     entries: &mut FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
 ) {
@@ -102,11 +102,11 @@ fn insert_compound_mixture_candidate(
         prune_count,
         CompoundMvCandidate {
             mvs: [
-                Mv {
+                MotionVector {
                     row: y_entry.candidate.mvs[0].row,
                     col: x_entry.candidate.mvs[0].col,
                 },
-                Mv {
+                MotionVector {
                     row: y_entry.candidate.mvs[1].row,
                     col: x_entry.candidate.mvs[1].col,
                 },
@@ -126,7 +126,7 @@ fn insert_mixture_candidate(
     let (Some(y_entry), Some(x_entry)) = (entries.get(y_cand), entries.get(x_cand)) else {
         return;
     };
-    let candidate = Mv {
+    let candidate = MotionVector {
         row: y_entry.mv.row,
         col: x_entry.mv.col,
     };

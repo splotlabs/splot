@@ -23,10 +23,10 @@ fn stable_string_identifiers_match_output_contract() {
         DecodeOutputVariant::RawIntermediateOutput.as_str(),
         "raw_intermediate_output"
     );
-    assert_eq!(DecodeHashPixelFormat::Monochrome.as_str(), "monochrome");
-    assert_eq!(DecodeHashPixelFormat::Yuv420.as_str(), "yuv420");
-    assert_eq!(DecodeHashPixelFormat::Yuv422.as_str(), "yuv422");
-    assert_eq!(DecodeHashPixelFormat::Yuv444.as_str(), "yuv444");
+    assert_eq!(PixelFormat::Monochrome.as_str(), "monochrome");
+    assert_eq!(PixelFormat::Yuv420.as_str(), "yuv420");
+    assert_eq!(PixelFormat::Yuv422.as_str(), "yuv422");
+    assert_eq!(PixelFormat::Yuv444.as_str(), "yuv444");
     assert_eq!(DECODE_HASH_REPORT_HASH_ALGORITHM_ID, "splot-dfh-sha256-v1");
     assert_eq!(DECODE_HASH_REPORT_BYTE_STREAM_ID, "av2-output-samples-v1");
     assert_eq!(DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN, 64);

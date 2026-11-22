@@ -3,7 +3,7 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
-use splot_core::headers::frame::{FrameHeaderCore, get_relative_dist};
+use splot_core::headers::frame::{FrameHeaderCore, RESTRICTED_ORDER_HINT, get_relative_dist};
 use splot_core::tables::loop_restoration::{GDF_ALPHA, GDF_BIAS, GDF_WEIGHT};
 #[cfg(test)]
 use splot_core::tables::loop_restoration::{GDF_INTER_ERROR, GDF_INTRA_ERROR};
@@ -52,7 +52,6 @@ const GDF_COORDS: [(isize, isize); 18] = [
 
 pub(crate) const GDF_READ_RADIUS: usize = 7;
 const GDF_INTRA_REF_DST: usize = 0;
-const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
 
 fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Option<usize> {
     let local_y = y.checked_sub(tile_start)?;
@@ -161,8 +160,8 @@ impl GdfBlockGrid {
         rows: usize,
         cols: usize,
         values: Vec<u8>,
-    ) -> core::result::Result<Self, ()> {
-        let expected = rows.checked_mul(cols).ok_or(())?;
+    ) -> Option<Self> {
+        let expected = rows.checked_mul(cols)?;
         if block_size == 0
             || !block_size.is_multiple_of(MI_SIZE)
             || rows == 0
@@ -170,9 +169,9 @@ impl GdfBlockGrid {
             || values.len() != expected
             || values.iter().any(|&value| value > 1)
         {
-            return Err(());
+            return None;
         }
-        Ok(Self {
+        Some(Self {
             block_size,
             rows,
             cols,
@@ -1446,10 +1445,10 @@ mod tests {
 
     #[test]
     fn per_block_grid_rejects_invalid_shape_and_values() {
-        assert!(GdfBlockGrid::new(0, 1, 1, vec![1]).is_err());
-        assert!(GdfBlockGrid::new(62, 1, 1, vec![1]).is_err());
-        assert!(GdfBlockGrid::new(64, 2, 2, vec![1, 0, 1]).is_err());
-        assert!(GdfBlockGrid::new(64, 1, 1, vec![2]).is_err());
+        assert!(GdfBlockGrid::new(0, 1, 1, vec![1]).is_none());
+        assert!(GdfBlockGrid::new(62, 1, 1, vec![1]).is_none());
+        assert!(GdfBlockGrid::new(64, 2, 2, vec![1, 0, 1]).is_none());
+        assert!(GdfBlockGrid::new(64, 1, 1, vec![2]).is_none());
     }
 
     #[test]

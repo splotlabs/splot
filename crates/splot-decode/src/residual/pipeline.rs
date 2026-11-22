@@ -3,11 +3,9 @@
 
 //! Runtime residual transform dispatch.
 
-use splot_recon::{DpcmDirection, IntraCardinalDirection, PlaneId};
+use splot_recon::{DpcmDirection, IntraCardinalDirection, IntraSmoothMode, PlaneId};
 
-use crate::bitstream::tile_payload::{
-    CflParams, LumaPalette, SupportedChromaMode, SupportedNonDcLumaMode,
-};
+use crate::bitstream::tile_payload::{CflParams, LumaPalette, SupportedChromaMode};
 use crate::tile::block_context::{BlockRect, FrameTileCtx, TxShape};
 
 mod chroma_pair;
@@ -116,7 +114,7 @@ pub(crate) enum RectLumaPlan {
         use_tcq: bool,
     },
     Smooth {
-        mode: SupportedNonDcLumaMode,
+        mode: IntraSmoothMode,
         use_tcq: bool,
     },
 }

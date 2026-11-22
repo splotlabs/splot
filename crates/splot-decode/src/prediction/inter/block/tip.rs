@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::DecodeHeaderStateError;
+use splot_core::headers::frame::RESTRICTED_ORDER_HINT;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::{CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrame, ReconError};
 
@@ -48,7 +49,7 @@ fn tip_prediction_controls(
 struct TipUnit {
     rect: mc::McBlockRect,
     has_chroma: bool,
-    mvs: [Mv; 2],
+    mvs: [MotionVector; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -170,7 +171,7 @@ impl<'a, T: ReconSample> TipHeldReferences<'a, T> {
 
 #[derive(Debug, Default)]
 pub(super) struct TipReconstructScratch {
-    unit_mvs: Vec<[Mv; 2]>,
+    unit_mvs: Vec<[MotionVector; 2]>,
     tip_units: mc::TipUnits,
 }
 
@@ -282,7 +283,7 @@ fn tip_references_unscaled(
                 };
                 ref_order_hint
                     .get(slot)
-                    .is_some_and(|&order_hint| order_hint != u32::MAX)
+                    .is_some_and(|&order_hint| order_hint != RESTRICTED_ORDER_HINT)
                     && scale(ref_frame_width, frame_size.width)
                     && scale(ref_frame_height, frame_size.height)
             })
@@ -470,7 +471,7 @@ impl TipBlockPlan {
     }
 
     /// The whole block predicted with `mvs`, its first unit's candidates.
-    const fn batch_unit(&self, mvs: [Mv; 2]) -> TipUnit {
+    const fn batch_unit(&self, mvs: [MotionVector; 2]) -> TipUnit {
         TipUnit {
             rect: self.batch_rect,
             has_chroma: self.batch_has_chroma,
@@ -483,7 +484,7 @@ impl TipBlockPlan {
         &self,
         frame: &TipFramePlan,
         rect: &mc::McBlockRect,
-        stored_mvs: [Mv; 2],
+        stored_mvs: [MotionVector; 2],
     ) -> TemporalMotionBlock {
         TemporalMotionBlock::new(
             rect.luma_y / 4,
@@ -662,7 +663,7 @@ impl TipFramePlan {
 /// Fills `unit_mvs` with the § 7.13.3.2 `get_tip_cand` candidates of a
 /// block's units, read at each unit's top-left 8x8 cell.
 fn batch_candidates(
-    unit_mvs: &mut Vec<[Mv; 2]>,
+    unit_mvs: &mut Vec<[MotionVector; 2]>,
     plan: &TipBlockPlan,
     placed: &PlacedInterBlock,
     temporal: &TemporalMvContext,
@@ -770,7 +771,7 @@ fn push_batch_records(
     records: &mut Vec<TemporalMotionBlock>,
     plan: &TipBlockPlan,
     frame: &TipFramePlan,
-    stored_mvs: impl Fn(usize) -> Option<[Mv; 2]>,
+    stored_mvs: impl Fn(usize) -> Option<[MotionVector; 2]>,
 ) -> Result<()> {
     let stored = |index| {
         stored_mvs(index).ok_or(ReconError::ArithmeticOverflow {
@@ -1015,11 +1016,11 @@ impl<T: ReconSample> TipOutputStages<T> {
             block: InterBlock {
                 ref_frame0: TIP_REF_FRAME,
                 ref_frame1: None,
-                mv: Mv {
+                mv: MotionVector {
                     row: global_mv.row,
                     col: global_mv.col,
                 },
-                mv1: Mv::ZERO,
+                mv1: MotionVector::ZERO,
                 interp: ReconInterpolationFilter::EightTapSharp,
                 warp_params: [None, None],
                 bawp: BawpSyntax::default(),
@@ -1519,7 +1520,7 @@ mod tests {
             search_refinemv: false,
             optflow_sad_threshold: Some(6),
         };
-        let zero = [crate::prediction::inter::Mv::ZERO; 2];
+        let zero = [crate::prediction::inter::MotionVector::ZERO; 2];
         let unit = super::TipUnit {
             rect: mc::McBlockRect::from_luma_rect(0, 0, 8, 8),
             has_chroma: false,

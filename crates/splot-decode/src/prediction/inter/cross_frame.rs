@@ -114,7 +114,8 @@ pub(crate) fn choose_primary_secondary_ref_frame(
             continue;
         };
         if ref_is_inter.get(slot).copied() != Some(true)
-            || ref_order_hint.get(slot).copied() == Some(u32::MAX)
+            || ref_order_hint.get(slot).copied()
+                == Some(splot_core::headers::frame::RESTRICTED_ORDER_HINT)
             || ref_counter[..slot]
                 .iter()
                 .enumerate()

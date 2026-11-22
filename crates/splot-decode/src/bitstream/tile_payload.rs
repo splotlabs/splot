@@ -41,7 +41,6 @@ pub(crate) use block_decoded_state::{TileBlockDecodedState, TileBlockDecodedStat
 pub(crate) use cdf::block_context::IntraJointMode;
 pub(crate) use cdf::block_context::{
     IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
-    SupportedNonDcLumaMode,
 };
 pub(crate) use cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 pub(crate) use cdf::{

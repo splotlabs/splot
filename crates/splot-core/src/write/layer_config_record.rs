@@ -407,10 +407,10 @@ fn write_lcr_rep_info(scratch: &mut BitWriter, rep: &LcrRepInfo) -> WriteResult<
         scratch.write_uvlc(format.chroma_format_idc)?;
     }
     if let Some(window) = rep.cropping_window {
-        scratch.write_uvlc(window.left_offset)?;
-        scratch.write_uvlc(window.right_offset)?;
-        scratch.write_uvlc(window.top_offset)?;
-        scratch.write_uvlc(window.bottom_offset)?;
+        scratch.write_uvlc(window.left)?;
+        scratch.write_uvlc(window.right)?;
+        scratch.write_uvlc(window.top)?;
+        scratch.write_uvlc(window.bottom)?;
     }
     Ok(())
 }

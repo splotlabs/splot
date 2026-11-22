@@ -3,7 +3,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use super::input::{FrameCandidateTileMalformed, FrameCandidateTileUnsupportedReason};
+use super::input::{
+    EnvelopeField, FrameCandidateTileMalformed, FrameCandidateTileUnsupportedReason,
+};
 use super::*;
 use crate::{DecodeContext, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig};
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus};
@@ -440,7 +442,9 @@ fn derived_boundary_rejects_candidate_envelope_mismatch_before_slicing() {
 
     assert_malformed_error(
         &error,
-        FrameCandidateTileMalformed::CandidateEnvelopeMismatch { field: "size" },
+        FrameCandidateTileMalformed::CandidateEnvelopeMismatch {
+            field: EnvelopeField::Size,
+        },
     );
 }
 
@@ -462,7 +466,7 @@ fn derived_boundary_rejects_envelope_payload_from_different_input_buffer() {
     assert_malformed_error(
         &error,
         FrameCandidateTileMalformed::CandidateEnvelopeMismatch {
-            field: "payload_source",
+            field: EnvelopeField::PayloadSource,
         },
     );
 }

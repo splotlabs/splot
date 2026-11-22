@@ -25,8 +25,8 @@ fn block_at(mi_row: usize, mi_col: usize) -> MvBlockContext {
 #[test]
 fn globalmv_neighbour_uses_current_global_mv_and_retains_list0_model() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
-    let neighbour_mv = Mv { row: 6, col: 8 };
-    let current_global_mv = Mv { row: -4, col: 6 };
+    let neighbour_mv = MotionVector { row: 6, col: 8 };
+    let current_global_mv = MotionVector { row: -4, col: 6 };
     let model = [-73_728, 90_112, 65_152, 3_584, -3_584, 65_152];
     grid.record_warp_block(
         8,
@@ -68,8 +68,8 @@ fn globalmv_neighbour_uses_current_global_mv_and_retains_list0_model() {
 #[test]
 fn global_globalmv_neighbour_uses_current_global_mv_and_retains_list1_model() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
-    let neighbour_mv1 = Mv { row: -24, col: 40 };
-    let current_global_mv = Mv { row: 12, col: -10 };
+    let neighbour_mv1 = MotionVector { row: -24, col: 40 };
+    let current_global_mv = MotionVector { row: 12, col: -10 };
     let model1 = [32_768, -49_152, 65_280, -1_024, 768, 65_408];
     grid.record_flags(
         8,
@@ -90,7 +90,7 @@ fn global_globalmv_neighbour_uses_current_global_mv_and_retains_list1_model() {
         N4_32,
         N4_32,
         NeighbourMotionValues {
-            mv: [Mv { row: 8, col: 16 }, neighbour_mv1],
+            mv: [MotionVector { row: 8, col: 16 }, neighbour_mv1],
             cwp_weight: CWP_EQUAL,
             stored_warp: None,
             global_mv: [false, true],
@@ -122,9 +122,12 @@ fn global_globalmv_neighbour_uses_current_global_mv_and_retains_list1_model() {
 
 fn compound_stack_beside_global_globalmv(
     global_lists: [bool; 2],
-) -> (CompoundMvCandidate, [Mv; 2], [Mv; 2]) {
+) -> (CompoundMvCandidate, [MotionVector; 2], [MotionVector; 2]) {
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
-    let neighbour_mvs = [Mv { row: 8, col: 16 }, Mv { row: -24, col: 40 }];
+    let neighbour_mvs = [
+        MotionVector { row: 8, col: 16 },
+        MotionVector { row: -24, col: 40 },
+    ];
     grid.record_flags(
         8,
         0,
@@ -153,7 +156,10 @@ fn compound_stack_beside_global_globalmv(
     );
     let mut block = block_at(8, 8);
     block.ref_frame1 = Some(1);
-    let global_mvs = [Mv { row: 12, col: -10 }, Mv { row: 2, col: -8 }];
+    let global_mvs = [
+        MotionVector { row: 12, col: -10 },
+        MotionVector { row: 2, col: -8 },
+    ];
     let stack = find_compound_mv_stack_with_temporal(
         &grid,
         &block,
@@ -195,7 +201,7 @@ fn compound_derived_single_mv_substitutes_current_global_mv() {
         N4_32,
         0,
         false,
-        Mv { row: 6, col: 8 },
+        MotionVector { row: 6, col: 8 },
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -210,7 +216,7 @@ fn compound_derived_single_mv_substitutes_current_global_mv() {
         N4_32,
         1,
         false,
-        Mv { row: -16, col: 24 },
+        MotionVector { row: -16, col: 24 },
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -220,7 +226,10 @@ fn compound_derived_single_mv_substitutes_current_global_mv() {
     );
     let mut block = block_at(8, 8);
     block.ref_frame1 = Some(1);
-    let global_mvs = [Mv { row: 12, col: -10 }, Mv { row: 2, col: -8 }];
+    let global_mvs = [
+        MotionVector { row: 12, col: -10 },
+        MotionVector { row: 2, col: -8 },
+    ];
     let stack = find_compound_mv_stack_with_temporal(
         &grid,
         &block,
@@ -236,7 +245,7 @@ fn compound_derived_single_mv_substitutes_current_global_mv() {
 #[test]
 fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
-    let neighbour_mv = Mv { row: 8, col: 12 };
+    let neighbour_mv = MotionVector { row: 8, col: 12 };
     grid.record_warp_block(
         0,
         0,
@@ -272,7 +281,7 @@ fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
         &[None, None],
     )
     .unwrap();
-    let current_global_mv = Mv { row: -40, col: 80 };
+    let current_global_mv = MotionVector { row: -40, col: 80 };
 
     let stack = find_mv_stack_with_temporal(
         &grid,
@@ -288,8 +297,8 @@ fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
         false,
     );
 
-    assert_eq!(stack.candidate(0), Mv { row: 4, col: 6 });
-    assert_ne!(stack.candidate(0), Mv { row: -20, col: 40 });
+    assert_eq!(stack.candidate(0), MotionVector { row: 4, col: 6 });
+    assert_ne!(stack.candidate(0), MotionVector { row: -20, col: 40 });
 }
 
 /// § 7.12.2: `RefStackMv` starts at zero, so a `RefMvIdx` at or past
@@ -297,7 +306,7 @@ fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
 #[test]
 fn stack_index_past_the_candidates_reads_zero() {
     let grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
-    let global_mv = Mv { row: -4, col: 6 };
+    let global_mv = MotionVector { row: -4, col: 6 };
 
     let single = find_mv_stack(
         &grid,
@@ -312,13 +321,17 @@ fn stack_index_past_the_candidates_reads_zero() {
 
     assert_eq!(single.candidate(0), global_mv);
     for idx in 1..=MAX_REF_MV_STACK_SIZE {
-        assert_eq!(single.candidate(idx), Mv::ZERO, "single idx {idx}");
+        assert_eq!(
+            single.candidate(idx),
+            MotionVector::ZERO,
+            "single idx {idx}"
+        );
         assert_eq!(single.candidate_offsets(idx), (0, 0), "single idx {idx}");
     }
 
     let mut block = block_at(8, 8);
     block.ref_frame1 = Some(1);
-    let global_mvs = [global_mv, Mv { row: 2, col: -8 }];
+    let global_mvs = [global_mv, MotionVector { row: 2, col: -8 }];
     let compound = find_compound_mv_stack_with_temporal(
         &grid,
         &block,
@@ -333,7 +346,7 @@ fn stack_index_past_the_candidates_reads_zero() {
         assert_eq!(
             compound.candidate(idx),
             CompoundMvCandidate {
-                mvs: [Mv::ZERO; 2],
+                mvs: [MotionVector::ZERO; 2],
                 cwp_weight: CWP_EQUAL,
             },
             "compound idx {idx}"

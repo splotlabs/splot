@@ -3,8 +3,8 @@
 
 use super::{
     CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, FixedStack, MAX_PR_NUM,
-    MAX_REF_MV_STACK_SIZE, Mv, MvBlockContext, MvStackEntry, NeighbourFlags, OrderHintMvContext,
-    TIP_REF_FRAME, TemporalMvContext, insert_compound_mv_stack_entry,
+    MAX_REF_MV_STACK_SIZE, MotionVector, MvBlockContext, MvStackEntry, NeighbourFlags,
+    OrderHintMvContext, TIP_REF_FRAME, TemporalMvContext, insert_compound_mv_stack_entry,
 };
 
 const MAX_DR_STACK_SIZE: usize = 4;
@@ -31,14 +31,14 @@ fn push_bounded_unique<T: Eq>(
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 struct SingleMvCandidate {
     ref_frame: i8,
-    mv: Mv,
+    mv: MotionVector,
 }
 
 /// One compound probe's other-reference candidates, kept until
 /// [`CompoundDerivedMvState::fill`] shows the stack still has room.
 #[derive(Clone, Copy, Default)]
 struct CompoundDerivedSource {
-    candidates: [Option<(i8, Mv)>; 2],
+    candidates: [Option<(i8, MotionVector)>; 2],
     global_mv: [bool; 2],
 }
 
@@ -46,7 +46,7 @@ struct CompoundDerivedSource {
 const COMPOUND_PENDING_SOURCES: usize = 9;
 
 pub(super) struct CompoundDerivedMvState {
-    entries: FixedStack<[Mv; 2], MAX_DR_STACK_SIZE>,
+    entries: FixedStack<[MotionVector; 2], MAX_DR_STACK_SIZE>,
     singles: FixedStack<SingleMvCandidate, MAX_DR_STACK_SIZE>,
     prune_count: usize,
     single_prune_count: usize,
@@ -57,11 +57,11 @@ pub(super) struct CompoundScanState {
     pub(super) entries: FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
     pub(super) prune_count: usize,
     pub(super) derived: CompoundDerivedMvState,
-    pub(super) global_mvs: [Mv; 2],
+    pub(super) global_mvs: [MotionVector; 2],
 }
 
 impl CompoundScanState {
-    pub(super) fn new(global_mvs: [Mv; 2]) -> Self {
+    pub(super) fn new(global_mvs: [MotionVector; 2]) -> Self {
         Self {
             entries: FixedStack::new(),
             prune_count: 0,
@@ -86,9 +86,9 @@ impl CompoundDerivedMvState {
     pub(super) fn add_spatial(
         &mut self,
         block: &MvBlockContext,
-        candidates: [Option<(i8, Mv)>; 2],
+        candidates: [Option<(i8, MotionVector)>; 2],
         global_mv: [bool; 2],
-        global_mvs: [Mv; 2],
+        global_mvs: [MotionVector; 2],
         temporal: Option<&TemporalMvContext>,
     ) {
         let source = CompoundDerivedSource {
@@ -104,7 +104,7 @@ impl CompoundDerivedMvState {
     fn derive_pending(
         &mut self,
         block: &MvBlockContext,
-        global_mvs: [Mv; 2],
+        global_mvs: [MotionVector; 2],
         temporal: Option<&TemporalMvContext>,
     ) {
         let pending = core::mem::replace(&mut self.pending, FixedStack::new());
@@ -122,9 +122,9 @@ impl CompoundDerivedMvState {
     fn derive(
         &mut self,
         block: &MvBlockContext,
-        candidates: [Option<(i8, Mv)>; 2],
+        candidates: [Option<(i8, MotionVector)>; 2],
         global_mv: [bool; 2],
-        global_mvs: [Mv; 2],
+        global_mvs: [MotionVector; 2],
         temporal: Option<&TemporalMvContext>,
     ) {
         let Some(ref_frame1) = block.ref_frame1 else {
@@ -201,7 +201,7 @@ impl CompoundDerivedMvState {
     pub(super) fn fill(
         &mut self,
         block: &MvBlockContext,
-        global_mvs: [Mv; 2],
+        global_mvs: [MotionVector; 2],
         temporal: Option<&TemporalMvContext>,
         entries: &mut FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
         max_ref_mv_count: usize,
@@ -233,7 +233,7 @@ impl CompoundDerivedMvState {
 #[derive(Clone, Copy)]
 struct DerivedSource {
     refs: [i8; 2],
-    mvs: [Mv; 2],
+    mvs: [MotionVector; 2],
 }
 
 const PENDING_SOURCES: usize = 8;
@@ -241,9 +241,9 @@ const PENDING_SOURCES: usize = 8;
 pub(super) struct DerivedMvState<'a> {
     temporal: Option<&'a TemporalMvContext>,
     order_hints: Option<OrderHintMvContext<'a>>,
-    entries: FixedStack<Mv, MAX_DR_STACK_SIZE>,
+    entries: FixedStack<MotionVector, MAX_DR_STACK_SIZE>,
     prune_count: usize,
-    global_mv: Mv,
+    global_mv: MotionVector,
     pending: [DerivedSource; PENDING_SOURCES],
     pending_len: usize,
 }
@@ -252,7 +252,7 @@ impl<'a> DerivedMvState<'a> {
     pub(super) fn new(
         temporal: Option<&'a TemporalMvContext>,
         order_hints: Option<OrderHintMvContext<'a>>,
-        global_mv: Mv,
+        global_mv: MotionVector,
     ) -> Self {
         Self {
             temporal,
@@ -262,7 +262,7 @@ impl<'a> DerivedMvState<'a> {
             global_mv,
             pending: [DerivedSource {
                 refs: [0; 2],
-                mvs: [Mv::ZERO; 2],
+                mvs: [MotionVector::ZERO; 2],
             }; PENDING_SOURCES],
             pending_len: 0,
         }
@@ -276,9 +276,9 @@ impl<'a> DerivedMvState<'a> {
         &mut self,
         block: &MvBlockContext,
         candidate_ref: i8,
-        candidate_mv: Mv,
+        candidate_mv: MotionVector,
         flags: NeighbourFlags,
-        sub_mvs: impl FnOnce() -> [Mv; 2],
+        sub_mvs: impl FnOnce() -> [MotionVector; 2],
     ) {
         let source = if block.ref_frame0 == TIP_REF_FRAME {
             let Some(ref_frame1) = flags.ref_frame1() else {
@@ -297,7 +297,7 @@ impl<'a> DerivedMvState<'a> {
             }
             DerivedSource {
                 refs: [candidate_ref, 0],
-                mvs: [candidate_mv, Mv::ZERO],
+                mvs: [candidate_mv, MotionVector::ZERO],
             }
         };
         if self.pending_len == PENDING_SOURCES {
@@ -350,11 +350,11 @@ impl<'a> DerivedMvState<'a> {
         self.temporal
     }
 
-    pub(super) const fn global_mv(&self) -> Mv {
+    pub(super) const fn global_mv(&self) -> MotionVector {
         self.global_mv
     }
 
-    fn push(&mut self, candidate: Mv) {
+    fn push(&mut self, candidate: MotionVector) {
         push_bounded_unique(&mut self.entries, &mut self.prune_count, candidate);
     }
 
@@ -402,24 +402,24 @@ mod tests {
 
     #[test]
     fn fill_preserves_order_and_honors_the_drl_limit() {
-        let first = Mv { row: 10, col: 365 };
-        let second = Mv { row: -6, col: 233 };
-        let mut derived = DerivedMvState::new(None, None, Mv::ZERO);
+        let first = MotionVector { row: 10, col: 365 };
+        let second = MotionVector { row: -6, col: 233 };
+        let mut derived = DerivedMvState::new(None, None, MotionVector::ZERO);
         derived.push(first);
         derived.push(second);
         let mut entries = FixedStack::from_entries([
             MvStackEntry {
-                mv: Mv { row: 17, col: -10 },
+                mv: MotionVector { row: 17, col: -10 },
                 weight: 1,
                 offsets: (0, 0),
             },
             MvStackEntry {
-                mv: Mv { row: 17, col: -8 },
+                mv: MotionVector { row: 17, col: -8 },
                 weight: 1,
                 offsets: (0, 0),
             },
             MvStackEntry {
-                mv: Mv { row: 7, col: 315 },
+                mv: MotionVector { row: 7, col: 315 },
                 weight: 1,
                 offsets: (0, 0),
             },
@@ -446,8 +446,8 @@ mod tests {
 
     #[test]
     fn collection_prunes_an_early_duplicate() {
-        let candidate = Mv { row: 10, col: 365 };
-        let mut derived = DerivedMvState::new(None, None, Mv::ZERO);
+        let candidate = MotionVector { row: 10, col: 365 };
+        let mut derived = DerivedMvState::new(None, None, MotionVector::ZERO);
 
         derived.push(candidate);
         derived.push(candidate);
@@ -457,10 +457,10 @@ mod tests {
 
     #[test]
     fn derived_mv_storage_keeps_the_first_four_candidates() {
-        let mut derived = DerivedMvState::new(None, None, Mv::ZERO);
+        let mut derived = DerivedMvState::new(None, None, MotionVector::ZERO);
 
         for col in 0..5 {
-            derived.push(Mv { row: 0, col });
+            derived.push(MotionVector { row: 0, col });
         }
 
         assert_eq!(derived.entries.len(), MAX_DR_STACK_SIZE);
@@ -483,12 +483,13 @@ mod tests {
             ref_offset: 1,
         };
         let mut temporal =
-            TemporalMvContext::with_tip_sample(16, 16, references, 0, 0, Mv::ZERO).unwrap();
+            TemporalMvContext::with_tip_sample(16, 16, references, 0, 0, MotionVector::ZERO)
+                .unwrap();
         temporal
-            .set_trajectory_sample(0, 0, 0, Mv { row: 5, col: -3 })
+            .set_trajectory_sample(0, 0, 0, MotionVector { row: 5, col: -3 })
             .unwrap();
         temporal
-            .set_trajectory_sample(1, 0, 0, Mv { row: -2, col: 7 })
+            .set_trajectory_sample(1, 0, 0, MotionVector { row: -2, col: 7 })
             .unwrap();
         let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
         grid.record_block(
@@ -500,7 +501,7 @@ mod tests {
             1,
             None,
             false,
-            Mv::ZERO,
+            MotionVector::ZERO,
             false,
             0,
             false,
@@ -518,9 +519,9 @@ mod tests {
             mi_rows: 16,
             mi_cols: 16,
         };
-        let mut deferred = DerivedMvState::new(Some(&temporal), None, Mv::ZERO);
-        let mut eager = DerivedMvState::new(Some(&temporal), None, Mv::ZERO);
-        let mvs = (0..PENDING_SOURCES as i32 + 3).map(|i| Mv {
+        let mut deferred = DerivedMvState::new(Some(&temporal), None, MotionVector::ZERO);
+        let mut eager = DerivedMvState::new(Some(&temporal), None, MotionVector::ZERO);
+        let mvs = (0..PENDING_SOURCES as i32 + 3).map(|i| MotionVector {
             row: 1,
             col: (i - 1).max(0),
         });

@@ -12,7 +12,7 @@ use super::sink::{
     IntraEdgeAvailability, noneighbour_above, noneighbour_left, predict_intra_block,
 };
 use crate::bitstream::tile_payload::{
-    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedNonDcLumaMode,
+    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext,
     add_general_intra_coeff_block_residual_in_place,
 };
 
@@ -22,7 +22,7 @@ const SMOOTH_EDGE_CAPACITY: usize = 65;
 pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
-    mode: SupportedNonDcLumaMode,
+    mode: IntraSmoothMode,
     x: usize,
     y: usize,
     log2_width: u32,
@@ -35,16 +35,11 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
     availability: IntraEdgeAvailability,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let bit_depth = workspace.info().bit_depth();
-    let smooth_mode = match mode {
-        SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
-        SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
-        SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
-    };
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let request = IntraSmoothFrameRequest {
         size: IntraRectBlockSize::new(log2_w, log2_h)?,
-        mode: smooth_mode,
+        mode,
         above: availability.above,
         left: availability.left,
         above_right: num4_above_right > 0,
@@ -74,7 +69,7 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
         log2_width,
         log2_height,
         qindex,
-        smooth_mode,
+        mode,
         available_left_samples,
         available_above_samples,
         num4_above_right,

@@ -108,7 +108,10 @@ fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
     .unwrap()
 }
 
-fn compound_motion_grid_and_block(mv0: Mv, mv1: Mv) -> (NeighbourMvGrid, MvBlockContext) {
+fn compound_motion_grid_and_block(
+    mv0: MotionVector,
+    mv1: MotionVector,
+) -> (NeighbourMvGrid, MvBlockContext) {
     let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
     grid.record_compound_block(
         0,
@@ -148,7 +151,7 @@ fn compound_motion_contexts() -> (
     crate::prediction::inter::find_mv_stack::ModeContext,
     BlockNeighbourContext,
 ) {
-    let (grid, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
+    let (grid, block) = compound_motion_grid_and_block(MotionVector::ZERO, MotionVector::ZERO);
     (
         find_mode_ctx(&grid, &block),
         block_neighbour_ctx(&grid, &block),
@@ -284,12 +287,12 @@ fn compound_reference_tools_keep_missing_frame_size_typed() {
     let (_, mut core, _) =
         crate::prediction::inter::tests::parse_inter_core_for_validation(fixture).unwrap();
     let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-        y_mode: CompoundYMode::NearNear,
+        y_mode: CompoundMode::NearNear,
         use_optflow: false,
         ref_frame0: 0,
         ref_frame1: 1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv0: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
     };
     let reference = InterReferenceState::<u8>::empty().unwrap();
     core.frame_size = None;
@@ -541,12 +544,12 @@ fn compound_sized_reference_facts_reject_restricted_references() {
     reference.ref_frame_width = RefSlots::from_iter_checked([frame_size.width; 2]).unwrap();
     reference.ref_frame_height = RefSlots::from_iter_checked([frame_size.height; 2]).unwrap();
     let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-        y_mode: CompoundYMode::NearNear,
+        y_mode: CompoundMode::NearNear,
         use_optflow: false,
         ref_frame0: 0,
         ref_frame1: 1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv0: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
     };
 
     assert!(
@@ -755,13 +758,13 @@ fn narrow_global_compound_block_needs_interp_filter() {
     assert!(compound_needs_interp_filter(
         1,
         4,
-        CompoundYMode::GlobalGlobal,
+        CompoundMode::GlobalGlobal,
         false
     ));
     assert!(!compound_needs_interp_filter(
         2,
         2,
-        CompoundYMode::GlobalGlobal,
+        CompoundMode::GlobalGlobal,
         false
     ));
 }
@@ -799,15 +802,17 @@ fn compound_local_warp_symbol_reports_localwarp_when_set() {
 
 #[test]
 fn compound_local_warp_derives_a_model_per_explicit_reference_list() {
-    let (grid, mut block) =
-        compound_motion_grid_and_block(Mv { row: 24, col: -8 }, Mv { row: -16, col: 40 });
+    let (grid, mut block) = compound_motion_grid_and_block(
+        MotionVector { row: 24, col: -8 },
+        MotionVector { row: -16, col: 40 },
+    );
     block.ref_frame1 = None;
     let models = compound_local_warp_models(
         &grid,
         &block,
         1,
-        Mv { row: 24, col: -8 },
-        Mv { row: -16, col: 40 },
+        MotionVector { row: 24, col: -8 },
+        MotionVector { row: -16, col: 40 },
     )
     .unwrap();
 
@@ -827,7 +832,7 @@ fn compound_local_warp_uses_translation_for_a_list_without_samples() {
         0,
         None,
         true,
-        Mv { row: 24, col: -8 },
+        MotionVector { row: 24, col: -8 },
         false,
         0,
         false,
@@ -844,8 +849,14 @@ fn compound_local_warp_uses_translation_for_a_list_without_samples() {
         mi_rows: 16,
         mi_cols: 16,
     };
-    let models =
-        compound_local_warp_models(&grid, &block, 1, Mv { row: 24, col: -8 }, Mv::ZERO).unwrap();
+    let models = compound_local_warp_models(
+        &grid,
+        &block,
+        1,
+        MotionVector { row: 24, col: -8 },
+        MotionVector::ZERO,
+    )
+    .unwrap();
 
     assert!(models[0].is_some(), "list-0 warp model");
     assert_eq!(models[1], None, "list-1 translational fallback");
@@ -859,11 +870,11 @@ fn compound_warp_blend_forces_plain_average_but_keeps_masks() {
         cwp_weight: mc::CWP_EQUAL,
     };
     assert_eq!(
-        compound_warp_blend(average, true, CompoundYMode::NewNew),
+        compound_warp_blend(average, true, CompoundMode::NewNew),
         plain
     );
     assert_eq!(
-        compound_warp_blend(average, false, CompoundYMode::NewNew),
+        compound_warp_blend(average, false, CompoundMode::NewNew),
         average
     );
     let wedge = mc::CompoundBlend::Wedge {
@@ -871,7 +882,7 @@ fn compound_warp_blend_forces_plain_average_but_keeps_masks() {
         sign: true,
     };
     assert_eq!(
-        compound_warp_blend(wedge, true, CompoundYMode::NewNew),
+        compound_warp_blend(wedge, true, CompoundMode::NewNew),
         wedge
     );
 }
@@ -882,19 +893,19 @@ fn compound_warp_blend_forces_plain_average_but_keeps_masks() {
 fn global_globalmv_average_drops_the_implicit_mask() {
     let average = mc::CompoundBlend::average_with_implicit_mask(true);
     assert_eq!(
-        compound_warp_blend(average, false, CompoundYMode::GlobalGlobal),
+        compound_warp_blend(average, false, CompoundMode::GlobalGlobal),
         mc::CompoundBlend::Average {
             implicit_mask: false,
             cwp_weight: mc::CWP_EQUAL,
         }
     );
     assert_eq!(
-        compound_warp_blend(average, false, CompoundYMode::NearNear),
+        compound_warp_blend(average, false, CompoundMode::NearNear),
         average
     );
     let weighted = average.average_with_cwp_weight(12);
     assert_eq!(
-        compound_warp_blend(weighted, false, CompoundYMode::GlobalGlobal),
+        compound_warp_blend(weighted, false, CompoundMode::GlobalGlobal),
         mc::CompoundBlend::average_with_implicit_mask(false).average_with_cwp_weight(12)
     );
 }
@@ -904,7 +915,7 @@ fn compound_local_warp_motion_suppresses_cwp() {
     assert!(!compound_cwp_signal_allowed(
         true,
         CompoundCwpInput {
-            y_mode: CompoundYMode::NearNear,
+            y_mode: CompoundMode::NearNear,
             jmvd_scale_mode: 0,
             use_optflow: false,
             use_refinemv: false,
@@ -919,12 +930,12 @@ fn compound_local_warp_motion_suppresses_cwp() {
 #[test]
 fn compound_optflow_suppresses_local_warp_gate() {
     let compound = super::super::super::compound::CompoundBlockSyntax {
-        y_mode: CompoundYMode::NewNew,
+        y_mode: CompoundMode::NewNew,
         use_optflow: true,
         ref_frame0: 0,
         ref_frame1: 1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv0: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
     };
 
     assert!(!compound_local_warp_signal_allowed(
@@ -941,37 +952,37 @@ fn compound_optflow_suppresses_local_warp_gate() {
 #[test]
 fn joint_mvd_projection_uses_reference_distance_ratio() {
     assert_eq!(
-        project_joint_mvd(Mv { row: 96, col: -48 }, 1, 2),
-        Mv { row: 48, col: -24 }
+        project_joint_mvd(MotionVector { row: 96, col: -48 }, 1, 2),
+        MotionVector { row: 48, col: -24 }
     );
     assert_eq!(
-        project_joint_mvd(Mv { row: 96, col: -48 }, -1, 2),
-        Mv { row: -48, col: 24 }
+        project_joint_mvd(MotionVector { row: 96, col: -48 }, -1, 2),
+        MotionVector { row: -48, col: 24 }
     );
 }
 
 #[test]
 fn joint_mvd_scale_mode_matches_amvd_and_non_amvd_axes() {
     assert_eq!(
-        scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 1, true),
-        Mv { row: 20, col: 12 }
+        scale_joint_projected_mvd(MotionVector { row: 10, col: 6 }, 1, true),
+        MotionVector { row: 20, col: 12 }
     );
     assert_eq!(
-        scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 2, false),
-        Mv { row: 10, col: 12 }
+        scale_joint_projected_mvd(MotionVector { row: 10, col: 6 }, 2, false),
+        MotionVector { row: 10, col: 12 }
     );
     assert_eq!(
-        scale_joint_projected_mvd(Mv { row: 10, col: 6 }, 4, false),
-        Mv { row: 10, col: 3 }
+        scale_joint_projected_mvd(MotionVector { row: 10, col: 6 }, 4, false),
+        MotionVector { row: 10, col: 3 }
     );
 }
 
 #[test]
 fn compound_cwp_mode_allows_unscaled_joint_newmv() {
-    assert!(compound_cwp_mode_allowed(CompoundYMode::NearNear, 4));
-    assert!(compound_cwp_mode_allowed(CompoundYMode::JointNew, 0));
-    assert!(!compound_cwp_mode_allowed(CompoundYMode::JointNew, 1));
-    assert!(!compound_cwp_mode_allowed(CompoundYMode::NearNew, 0));
+    assert!(compound_cwp_mode_allowed(CompoundMode::NearNear, 4));
+    assert!(compound_cwp_mode_allowed(CompoundMode::JointNew, 0));
+    assert!(!compound_cwp_mode_allowed(CompoundMode::JointNew, 1));
+    assert!(!compound_cwp_mode_allowed(CompoundMode::NearNew, 0));
 }
 
 #[test]
@@ -979,7 +990,7 @@ fn compound_optflow_suppresses_cwp_symbols() {
     assert!(!compound_cwp_signal_allowed(
         true,
         CompoundCwpInput {
-            y_mode: CompoundYMode::NearNear,
+            y_mode: CompoundMode::NearNear,
             jmvd_scale_mode: 0,
             use_optflow: true,
             use_refinemv: false,
@@ -996,7 +1007,7 @@ fn compound_refinemv_suppresses_cwp_symbols() {
     assert!(!compound_cwp_signal_allowed(
         true,
         CompoundCwpInput {
-            y_mode: CompoundYMode::NearNear,
+            y_mode: CompoundMode::NearNear,
             jmvd_scale_mode: 0,
             use_optflow: false,
             use_refinemv: true,
@@ -1014,48 +1025,48 @@ fn refine_all_requires_equal_weight_non_global_average() {
     let unequal = equal.average_with_cwp_weight(12);
     let masked = mc::CompoundBlend::DiffWeighted { inverse: false };
     let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-        y_mode: CompoundYMode::NearNear,
+        y_mode: CompoundMode::NearNear,
         use_optflow: false,
         ref_frame0: 0,
         ref_frame1: 1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv0: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
     };
 
     assert!(compound_all_opfl_block_allowed(compound, 2, 2, equal));
     assert!(!compound_all_opfl_block_allowed(compound, 1, 2, equal));
     assert!(!compound_all_opfl_block_allowed(compound, 2, 2, unequal));
     assert!(!compound_all_opfl_block_allowed(compound, 2, 2, masked));
-    compound.y_mode = CompoundYMode::GlobalGlobal;
+    compound.y_mode = CompoundMode::GlobalGlobal;
     assert!(!compound_all_opfl_block_allowed(compound, 2, 2, equal));
 }
 
 #[test]
 fn compound_refinemv_switchability_matches_mode_and_optflow() {
     let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-        y_mode: CompoundYMode::NearNear,
+        y_mode: CompoundMode::NearNear,
         use_optflow: false,
         ref_frame0: 0,
         ref_frame1: 1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv0: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
     };
     assert!(!compound_refinemv_is_switchable(
         compound,
         REFINE_SWITCHABLE
     ));
-    compound.y_mode = CompoundYMode::NearNew;
+    compound.y_mode = CompoundMode::NearNew;
     assert!(compound_refinemv_is_switchable(compound, REFINE_SWITCHABLE));
     assert!(!compound_refinemv_mode_allowed(compound, REFINE_SWITCHABLE));
     compound.use_optflow = true;
     assert!(compound_refinemv_mode_allowed(compound, REFINE_SWITCHABLE));
-    compound.y_mode = CompoundYMode::JointNew;
+    compound.y_mode = CompoundMode::JointNew;
     assert!(!compound_refinemv_is_switchable(
         compound,
         REFINE_SWITCHABLE
     ));
     assert!(compound_refinemv_is_switchable(compound, REFINE_ALL));
-    compound.y_mode = CompoundYMode::GlobalGlobal;
+    compound.y_mode = CompoundMode::GlobalGlobal;
     compound.use_optflow = false;
     assert!(!compound_refinemv_mode_allowed(compound, REFINE_ALL));
 }
@@ -1104,12 +1115,12 @@ fn wedge_temporal_storage_keeps_only_a_dominant_reference() {
 #[test]
 fn compound_opfl_near_near_uses_one_paired_drl_idx() {
     let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-        y_mode: CompoundYMode::NearNear,
+        y_mode: CompoundMode::NearNear,
         use_optflow: false,
         ref_frame0: 0,
         ref_frame1: 1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv0: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
     };
 
     assert!(compound_reads_second_drl(compound));
@@ -1120,8 +1131,14 @@ fn compound_opfl_near_near_uses_one_paired_drl_idx() {
 #[test]
 fn compound_opfl_near_near_selects_the_indexed_paired_candidate() {
     let pairs = [
-        [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }],
-        [Mv { row: -4, col: -149 }, Mv { row: 4, col: 187 }],
+        [
+            MotionVector { row: 8, col: 16 },
+            MotionVector { row: -8, col: 24 },
+        ],
+        [
+            MotionVector { row: -4, col: -149 },
+            MotionVector { row: 4, col: 187 },
+        ],
     ];
     let stack = crate::prediction::inter::find_mv_stack::CompoundMvStack::from_candidates(
         pairs
@@ -1137,12 +1154,12 @@ fn compound_opfl_near_near_selects_the_indexed_paired_candidate() {
     assert_eq!(stack.candidate(1).mvs, pairs[1]);
 
     let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
-        y_mode: CompoundYMode::NearNear,
+        y_mode: CompoundMode::NearNear,
         use_optflow: true,
         ref_frame0: 0,
         ref_frame1: 1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv0: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
     };
     let independent_called = core::cell::Cell::new(false);
     let selected = select_near_near_candidates(
@@ -1175,7 +1192,7 @@ fn skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance() {
 
 #[test]
 fn compound_local_warp_neighbour_raises_warp_contexts() {
-    let (grid, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
+    let (grid, block) = compound_motion_grid_and_block(MotionVector::ZERO, MotionVector::ZERO);
     let baseline = block_neighbour_ctx(&grid, &block);
     assert_eq!(baseline.use_local_warp_ctx(), 0);
     assert_eq!(baseline.use_extend_warp_ctx(), 0);
@@ -1190,8 +1207,8 @@ fn compound_local_warp_neighbour_raises_warp_contexts() {
         1,
         true,
         true,
-        Mv::ZERO,
-        Mv::ZERO,
+        MotionVector::ZERO,
+        MotionVector::ZERO,
         false,
         0,
         false,
@@ -1216,12 +1233,8 @@ fn switchable_refinemv_reads_both_values_at_the_optflow_context() {
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&payload);
 
-        let use_refinemv = read_compound_use_refinemv_syntax(
-            &mut tile,
-            &mut symbols,
-            CompoundYMode::NearNew,
-            true,
-        );
+        let use_refinemv =
+            read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundMode::NearNew, true);
 
         assert_eq!(use_refinemv, enabled);
         symbols.exit_symbol().unwrap();
@@ -1235,7 +1248,7 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
     let mut symbols = symbol_decoder(&payload);
 
     let use_refinemv =
-        read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundYMode::NewNew, true);
+        read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundMode::NewNew, true);
 
     assert!(use_refinemv);
     symbols.exit_symbol().unwrap();
@@ -1245,7 +1258,7 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
     let mut symbols = symbol_decoder(&payload);
 
     let use_refinemv =
-        read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundYMode::JointNew, false);
+        read_compound_use_refinemv_syntax(&mut tile, &mut symbols, CompoundMode::JointNew, false);
 
     assert!(!use_refinemv);
     symbols.exit_symbol().unwrap();
@@ -1255,12 +1268,12 @@ fn switchable_refinemv_context_drops_one_past_global_for_optflow() {
 fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
     let compound = CompoundBlockSyntax {
-        y_mode: CompoundYMode::NewNew,
+        y_mode: CompoundMode::NewNew,
         use_optflow: false,
         ref_frame0: 0,
         ref_frame1: 1,
-        mv0: Mv { row: 8, col: -16 },
-        mv1: Mv { row: -24, col: 40 },
+        mv0: MotionVector { row: 8, col: -16 },
+        mv1: MotionVector { row: -24, col: 40 },
     };
     let records = |width, height, blend, warp_params| {
         let placed = PlacedInterBlock {

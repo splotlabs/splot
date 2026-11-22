@@ -9,6 +9,7 @@
 //! writer does not write inter headers, so the returned header keeps the exact
 //! bits, and [`encode_inter_frame_obu`] copies them into the tile group.
 
+use super::RESTRICTED_ORDER_HINT;
 use crate::bitio::BitReader;
 use crate::headers::content_interpretation::ContentInterpretation;
 use crate::headers::film_grain::{
@@ -239,7 +240,7 @@ pub fn build_inter_frame_header(
         let position = ref_frame_idx
             .iter()
             .zip(inter.order_hints.iter())
-            .position(|(&index, &hint)| index == slot && hint != u32::MAX)?;
+            .position(|(&index, &hint)| index == slot && hint != RESTRICTED_ORDER_HINT)?;
         u32::try_from(position).ok()
     });
     if position.is_none()

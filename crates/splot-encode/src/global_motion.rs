@@ -123,7 +123,7 @@ pub(crate) fn estimate(
 }
 
 /// A block centre and where its vector moves it, in luma samples.
-type Pair = [f64; 4];
+pub(crate) type Pair = [f64; 4];
 
 /// The pairs of the textured blocks that predict better from the reference
 /// than from intra.

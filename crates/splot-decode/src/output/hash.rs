@@ -7,14 +7,12 @@
 
 use core::num::NonZeroUsize;
 
-use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample};
+use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::DecodeOptions;
 use crate::bitstream::byte_stream::UnitSource;
 use crate::error::Result;
-use crate::hash_report::{
-    DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport,
-};
+use crate::hash_report::{DecodeHashEntry, DecodeHashFrame, DecodeHashReport};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn decode_hash_report_from_plan(
@@ -96,17 +94,8 @@ fn hash_frame_from_decoded<T: ReconSample>(
         chroma_width: chroma.map(|size| size.width() as u32),
         chroma_height: chroma.map(|size| size.height() as u32),
         bit_depth: frame.bit_depth().bits(),
-        pixel_format: decode_hash_pixel_format(frame.pixel_format()),
+        pixel_format: frame.pixel_format(),
         hashes: vec![DecodeHashEntry::raw_intermediate_output_sha256(digest_hex)],
-    }
-}
-
-fn decode_hash_pixel_format(pixel_format: PixelFormat) -> DecodeHashPixelFormat {
-    match pixel_format {
-        PixelFormat::Monochrome => DecodeHashPixelFormat::Monochrome,
-        PixelFormat::Yuv420 => DecodeHashPixelFormat::Yuv420,
-        PixelFormat::Yuv422 => DecodeHashPixelFormat::Yuv422,
-        PixelFormat::Yuv444 => DecodeHashPixelFormat::Yuv444,
     }
 }
 

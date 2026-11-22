@@ -12,8 +12,8 @@ pub(crate) use tile::{
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, TipFrameMode, TxMode,
-    get_qindex,
+    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, RESTRICTED_ORDER_HINT,
+    TipFrameMode, TxMode, get_qindex,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
 use splot_core::span::ByteOffset;
@@ -40,7 +40,7 @@ use super::read_mv::{
 };
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
-    InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
+    InterResidualBlock, MotionFieldHandle, MotionFieldLayout, MotionVector, PlacedInterBlock,
     ReferenceMetadata, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
     SegmentIdMapHandle, mc,
 };
@@ -99,7 +99,7 @@ fn global_motion_mv(
     logical_ref: i8,
     block: &MvBlockContext,
     precision: u8,
-) -> Mv {
+) -> MotionVector {
     warp_predicted_mv(
         global_motion_model(core, logical_ref).gm_params,
         block,
@@ -1075,7 +1075,7 @@ fn skip_segment_reference(
         let Some(&hint) = ref_order_hint.get(slot as usize) else {
             continue;
         };
-        if hint == u32::MAX {
+        if hint == RESTRICTED_ORDER_HINT {
             continue;
         }
         let distance = super::get_relative_dist(
@@ -1190,7 +1190,7 @@ fn frame_temporal_first(
 fn references_on_one_side(hints: impl Iterator<Item = u32>, current_order_hint: u32) -> bool {
     let mut has_past = false;
     let mut has_future = false;
-    for hint in hints.filter(|&hint| hint != u32::MAX) {
+    for hint in hints.filter(|&hint| hint != RESTRICTED_ORDER_HINT) {
         let dist = super::get_relative_dist(
             current_order_hint as i32,
             i32::try_from(hint).unwrap_or(i32::MAX),
@@ -1913,7 +1913,7 @@ fn decode_block(
             )?
         }
     } else {
-        Mv::ZERO
+        MotionVector::ZERO
     };
     let interp = if tip_ref {
         ReconInterpolationFilter::EightTapSharp
@@ -1985,8 +1985,8 @@ const fn parsed_inter_block(
     InterBlock {
         ref_frame0,
         ref_frame1,
-        mv: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
         interp,
         warp_params: [None, None],
         bawp: BawpSyntax {

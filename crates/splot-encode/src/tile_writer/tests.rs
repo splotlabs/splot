@@ -22,23 +22,7 @@ use splot_decode::encoder_syntax::{
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
 use super::*;
-use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
-
-/// A small deterministic generator (xorshift64*).
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-}
+use crate::test_support::{Rng, assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
 
 #[derive(Clone, Copy)]
 struct Case {

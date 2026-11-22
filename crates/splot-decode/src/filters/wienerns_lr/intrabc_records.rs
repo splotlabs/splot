@@ -15,7 +15,7 @@ use crate::bitstream::tile_payload::{
 use crate::error::{DecodeError, Result};
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
 use crate::prediction::inter::{
-    Mv,
+    MotionVector,
     read_mv::{
         MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, lower_mv_precision,
         mv_clamp_to_integer, read_newmv_block_mvd_with_config,
@@ -142,13 +142,7 @@ impl IntrabcBlockGeometry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcInfo {
     pub(crate) morph_pred: bool,
-    pub(crate) block_mv: IntrabcBlockVector,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct IntrabcBlockVector {
-    pub(crate) row: i32,
-    pub(crate) col: i32,
+    pub(crate) block_mv: MotionVector,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -196,7 +190,7 @@ impl IntrabcRefSelection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PendingIntrabcInfo {
     syntax: IntrabcInfoSyntax,
-    mvd: Option<Mv>,
+    mvd: Option<MotionVector>,
     morph_pred: bool,
 }
 
@@ -306,24 +300,6 @@ struct IntrabcNeighborScan {
     n4w: usize,
     n4h: usize,
     same_sb_row: bool,
-}
-
-impl From<Mv> for IntrabcBlockVector {
-    fn from(value: Mv) -> Self {
-        Self {
-            row: value.row,
-            col: value.col,
-        }
-    }
-}
-
-impl From<IntrabcBlockVector> for Mv {
-    fn from(value: IntrabcBlockVector) -> Self {
-        Self {
-            row: value.row,
-            col: value.col,
-        }
-    }
 }
 
 /// Saved cells of a [`TileIntrabcPreludeState`].
@@ -801,7 +777,7 @@ pub(crate) fn read_pending_intrabc_info(
 
 pub(crate) fn resolve_pending_intrabc_info(
     pending: PendingIntrabcInfo,
-    pred_mv: Mv,
+    pred_mv: MotionVector,
 ) -> IntrabcInfo {
     let syntax = pending.syntax;
     let block_mv = match pending.mvd {
@@ -811,7 +787,7 @@ pub(crate) fn resolve_pending_intrabc_info(
             } else {
                 pred_mv
             };
-            Mv {
+            MotionVector {
                 row: mv_clamp_to_integer(pred_mv.row + diff.row),
                 col: mv_clamp_to_integer(pred_mv.col + diff.col),
             }
@@ -820,7 +796,7 @@ pub(crate) fn resolve_pending_intrabc_info(
     };
     IntrabcInfo {
         morph_pred: pending.morph_pred,
-        block_mv: block_mv.into(),
+        block_mv,
     }
 }
 
@@ -909,7 +885,7 @@ fn read_intrabc_mvd(
     symbols: &mut SymbolDecoder<'_>,
     mv_precision: u8,
     tile_offset: ByteOffset,
-) -> Result<Mv> {
+) -> Result<MotionVector> {
     read_newmv_block_mvd_with_config(
         cdfs,
         symbols,
@@ -1001,7 +977,7 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
     })
 }
 
-const fn intrabc_block_vector_is_fractional(block_mv: IntrabcBlockVector) -> bool {
+const fn intrabc_block_vector_is_fractional(block_mv: MotionVector) -> bool {
     block_mv.row & 7 != 0 || block_mv.col & 7 != 0
 }
 
@@ -1118,7 +1094,7 @@ fn checked_i32_from_usize(value: usize) -> Result<i32> {
 
 fn intrabc_luma_source_envelope(
     target: PlaneRect,
-    block_mv: IntrabcBlockVector,
+    block_mv: MotionVector,
     tile_offset: ByteOffset,
 ) -> Result<PlaneRect> {
     let bottom_border = usize::from(block_mv.row & 7 != 0);

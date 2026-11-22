@@ -12,7 +12,9 @@ use super::{
 };
 use crate::pipeline::frame_progress::PublishedFrame;
 use crate::pipeline::inflight::RefFrameSlot;
-use crate::prediction::inter::{BawpSyntax, InterBlock, Mv, PlacedInterBlock, mc::CompoundBlend};
+use crate::prediction::inter::{
+    BawpSyntax, InterBlock, MotionVector, PlacedInterBlock, mc::CompoundBlend,
+};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -156,7 +158,7 @@ fn intrabc_morph_pred_skips_unavailable_top_left_template() -> TestResult {
         &mut workspace,
         target,
         (false, false),
-        Mv { row: 0, col: 0 },
+        MotionVector { row: 0, col: 0 },
     )?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 0, 0)?, 77);
@@ -177,7 +179,7 @@ fn inter_bawp_skips_unavailable_top_left_reference_template() -> TestResult {
             enabled: true,
             ..BawpSyntax::default()
         },
-        Mv { row: 0, col: 0 },
+        MotionVector { row: 0, col: 0 },
         splot_core::span::ByteOffset::new(0),
     )?;
 
@@ -199,7 +201,7 @@ fn intrabc_morph_pred_applies_large_luma_block() -> TestResult {
         &mut workspace,
         PlaneRect::new(16, 16, 128, 128)?,
         (true, true),
-        Mv { row: 64, col: 64 },
+        MotionVector { row: 64, col: 64 },
     )?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
@@ -221,7 +223,7 @@ fn intrabc_morph_pred_applies_block_cut_by_the_frame_edge() -> TestResult {
         &mut workspace,
         PlaneRect::new(16, 16, 16, 20)?,
         (true, true),
-        Mv { row: -64, col: -64 },
+        MotionVector { row: -64, col: -64 },
     )?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 20);
@@ -251,7 +253,7 @@ fn inter_bawp_applies_large_luma_block() -> TestResult {
             avail_left: true,
             ..BawpSyntax::default()
         },
-        Mv { row: 0, col: 0 },
+        MotionVector { row: 0, col: 0 },
         splot_core::span::ByteOffset::new(0),
     )?;
 
@@ -284,7 +286,7 @@ fn inter_bawp_uses_full_resolution_444_chroma_geometry() -> TestResult {
             avail_left: true,
             ..BawpSyntax::default()
         },
-        Mv::ZERO,
+        MotionVector::ZERO,
         splot_core::span::ByteOffset::new(0),
     )?;
 
@@ -347,7 +349,7 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
         ReferenceSamples::publishing(&admitted_frame),
         &placed,
         syntax,
-        Mv::ZERO,
+        MotionVector::ZERO,
         splot_core::span::ByteOffset::new(0),
     )?;
     assert_eq!(admitted.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
@@ -360,7 +362,7 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
         ReferenceSamples::publishing(&short_frame),
         &placed,
         syntax,
-        Mv::ZERO,
+        MotionVector::ZERO,
         splot_core::span::ByteOffset::new(0),
     );
     let refused = refused
@@ -458,8 +460,8 @@ fn placed_luma_block(x: usize, y: usize, width: usize, height: usize) -> PlacedI
         block: InterBlock {
             ref_frame0: 0,
             ref_frame1: None,
-            mv: Mv { row: 0, col: 0 },
-            mv1: Mv { row: 0, col: 0 },
+            mv: MotionVector { row: 0, col: 0 },
+            mv1: MotionVector { row: 0, col: 0 },
             interp: InterpolationFilter::EightTap,
             warp_params: [None, None],
             bawp: BawpSyntax::default(),

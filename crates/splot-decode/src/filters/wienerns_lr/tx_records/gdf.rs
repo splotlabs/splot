@@ -222,7 +222,7 @@ impl GdfState {
             self.values,
         )
         .map(Some)
-        .map_err(|()| gdf_state_error())
+        .ok_or_else(gdf_state_error)
     }
 }
 

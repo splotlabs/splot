@@ -28,7 +28,7 @@ use splot_recon::{
 };
 
 use crate::global_motion::{
-    ALPHA_MAX, ALPHA_STEP, MIN_PAIRS, MIN_TEXTURE, PREC, TRANS_MAX, TRANS_STEP, sampler,
+    ALPHA_MAX, ALPHA_STEP, MIN_PAIRS, MIN_TEXTURE, PREC, Pair, TRANS_MAX, TRANS_STEP, sampler,
 };
 use crate::lookahead::BlockMotion;
 
@@ -53,9 +53,6 @@ pub(crate) struct LumaPair<'a> {
     pub(crate) height: usize,
     pub(crate) bit_depth: BitDepth,
 }
-
-/// A point and where its vector moves it, in luma samples.
-type Pair = [f64; 4];
 
 /// An affine `[m2, m3, m4, m5, tx, ty]`: `u = m2 x + m3 y + tx`,
 /// `v = m4 x + m5 y + ty`.

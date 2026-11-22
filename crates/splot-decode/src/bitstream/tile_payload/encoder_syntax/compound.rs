@@ -10,8 +10,9 @@ use splot_recon::InterpolationFilter;
 
 use super::inter::{InterModes, MotionVector};
 use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, rule};
+pub use crate::prediction::inter::CompoundMode;
 pub use crate::prediction::inter::CompoundType;
-use crate::prediction::inter::{CompoundYMode, EncoderCompoundMotion, EncoderMotion, Mv};
+use crate::prediction::inter::{EncoderCompoundMotion, EncoderMotion};
 
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values a
 /// `JOINT_NEWMV` block codes.
@@ -40,23 +41,6 @@ pub struct CompoundTypes {
 
 /// The candidate failure of a prediction whose vectors the decoder cannot derive.
 const UNDERIVED: &str = "a prediction whose vectors the decoder cannot derive";
-
-/// A compound `YMode` (§ 5.20.7.6).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum CompoundMode {
-    /// `NEAR_NEARMV`: the DRL candidate pair.
-    NearNear,
-    /// `NEAR_NEWMV`: list 1 codes a difference.
-    NearNew,
-    /// `NEW_NEARMV`: list 0 codes a difference.
-    NewNear,
-    /// `GLOBAL_GLOBALMV`: the global motion vectors.
-    GlobalGlobal,
-    /// `JOINT_NEWMV`: one difference, projected onto the other list.
-    JointNew,
-    /// `NEW_NEWMV`: both lists code a difference.
-    NewNew,
-}
 
 /// Every [`CompoundMode`].
 pub const COMPOUND_MODES: [CompoundMode; 6] = [
@@ -168,10 +152,8 @@ impl IntraTileSyntax {
     ) -> Result<[MotionVector; 2]> {
         let motion = self.motion(leaf, prediction)?;
         let tile = &mut self.inter_state()?.tile;
-        Ok(tile
-            .motion_vectors(&leaf.frontier, motion)
-            .map_err(|_| EncoderSyntaxError::Unsupported(UNDERIVED))?
-            .map(MotionVector::from))
+        tile.motion_vectors(&leaf.frontier, motion)
+            .map_err(|_| EncoderSyntaxError::Unsupported(UNDERIVED))
     }
 
     /// Every `NEAR_NEARMV` DRL index pair of reference pair `refs` that
@@ -214,7 +196,7 @@ impl IntraTileSyntax {
         Ok(coded
             .into_iter()
             .zip(mvs)
-            .filter_map(|((drl, _), mvs)| Some((drl, mvs?.map(MotionVector::from))))
+            .filter_map(|((drl, _), mvs)| Some((drl, mvs?)))
             .collect())
     }
 
@@ -237,7 +219,7 @@ impl IntraTileSyntax {
         let base = tile
             .motion_vectors(&leaf.frontier, EncoderMotion::Compound(motion))
             .map_err(underived)?;
-        Ok([0, 1].map(|list| lists[list].then(|| base[list].into())))
+        Ok([0, 1].map(|list| lists[list].then(|| base[list])))
     }
 
     /// The decoder's motion syntax of `prediction` at `leaf`.
@@ -254,13 +236,12 @@ impl IntraTileSyntax {
                 let mut motion = self.compound_choice(leaf, &modes)?;
                 if motion.y_mode.has_newmv() {
                     let step = self.mv_step();
-                    let targets = modes.mvs.map(Mv::from);
                     let tile = &mut self.inter_state()?.tile;
                     motion.mvd = tile
-                        .compound_mvd(&leaf.frontier, motion, targets)
+                        .compound_mvd(&leaf.frontier, motion, modes.mvs)
                         .map_err(rule("motion vector"))?;
                     let amvd = |d: i32| d == 0 || super::AMVD_STEPS.contains(&d.abs());
-                    let off_lattice = |d: &Mv| {
+                    let off_lattice = |d: &MotionVector| {
                         if motion.use_amvd {
                             !amvd(d.row) || !amvd(d.col)
                         } else {
@@ -285,11 +266,11 @@ impl IntraTileSyntax {
                     ref_frames: tile
                         .skip_mode_pair(&leaf.frontier)
                         .map_err(rule("skip-mode references"))?,
-                    y_mode: CompoundYMode::NearNear,
+                    y_mode: CompoundMode::NearNear,
                     skip_mode: true,
                     ref_mv_idx: drl,
                     independent_idx: None,
-                    mvd: [Mv::default(); 2],
+                    mvd: [MotionVector::default(); 2],
                     jmvd_scale_mode: 0,
                     use_amvd: false,
                     interp: InterpolationFilter::EightTapSharp,
@@ -319,14 +300,7 @@ impl IntraTileSyntax {
         if !self.compound_allowed(leaf) || !coded.is_ok_and(codes) {
             return Err(EncoderSyntaxError::Unsupported("a compound block here"));
         }
-        let y_mode = match modes.mode {
-            CompoundMode::NearNear => CompoundYMode::NearNear,
-            CompoundMode::NearNew => CompoundYMode::NearNew,
-            CompoundMode::NewNear => CompoundYMode::NewNear,
-            CompoundMode::GlobalGlobal => CompoundYMode::GlobalGlobal,
-            CompoundMode::JointNew => CompoundYMode::JointNew,
-            CompoundMode::NewNew => CompoundYMode::NewNew,
-        };
+        let y_mode = modes.mode;
         let second_drl = !modes.optflow && y_mode.has_second_drl();
         let motion = EncoderCompoundMotion {
             ref_frames: (pair.0 as i8, pair.1 as i8),
@@ -338,8 +312,8 @@ impl IntraTileSyntax {
                 modes.drl[0]
             },
             independent_idx: second_drl.then_some(modes.drl),
-            mvd: [Mv::default(); 2],
-            jmvd_scale_mode: if y_mode == CompoundYMode::JointNew {
+            mvd: [MotionVector::default(); 2],
+            jmvd_scale_mode: if y_mode == CompoundMode::JointNew {
                 modes.jmvd_scale_mode
             } else {
                 0
