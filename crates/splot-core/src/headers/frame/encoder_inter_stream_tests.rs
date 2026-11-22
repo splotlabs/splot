@@ -1302,3 +1302,65 @@ fn global_motion_predict_codes_their_ref_and_the_same_models() {
     );
     assert_cut_header_fails(&seq, &on, &refs);
 }
+
+/// With `enable_short_refresh_frame_flags` an inter or TIP output header
+/// codes `has_refresh_frame_flags` and the `frame_to_refresh` of its one
+/// slot (§ 5.18.2), parses back to the same `refresh_frame_flags` and is
+/// shorter than the `NumRefFrames` bits; two slots, or a slot outside
+/// `NumRefFrames`, are rejected; a cut header does not parse.
+#[test]
+fn short_refresh_flags_code_one_slot_or_none() {
+    let stream = |short_refresh| EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            ref_frame_mvs: true,
+            tip: true,
+            tip_output: true,
+            short_refresh,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seqs = [false, true].map(|short| build_encoder_sequence_header(&stream(short)).unwrap());
+    let [long, short] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+    assert!(!long.enable_short_refresh_frame_flags && short.enable_short_refresh_frame_flags);
+    let mut slots = Slots::after_key(64, 64, 4);
+    slots.valid[1] = true;
+    slots.hints[1] = 8;
+    slots.counters[1] = 1;
+    let params = |refresh_frame_flags| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 6,
+        refresh_frame_flags,
+        show_frame: true,
+        primary_slot: Some(0),
+        tip_weight: Some(3),
+        ..InterFrameParams::default()
+    };
+    for (flags, saved) in [(0, 7), (0b10, 4), (0b1000_0000, 4)] {
+        let bits = |view: &CoreSeqView| {
+            let header = build_inter_frame_header(view, &slots.view(), &params(flags)).unwrap();
+            assert_eq!(header.core.refresh_frame_flags, Some(flags), "{flags:#b}");
+            assert_eq!(
+                header.core.consumed_bits,
+                header.bits.num_frame_header_bits()
+            );
+            header
+        };
+        let header = bits(&short);
+        let long_bits = bits(&long).bits.num_frame_header_bits();
+        assert_eq!(long_bits - header.bits.num_frame_header_bits(), saved);
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
+    for flags in [0b11, 1 << 8] {
+        assert!(build_inter_frame_header(&short, &slots.view(), &params(flags)).is_err());
+    }
+    let tip = build_tip_output_frame_header(&short, &slots.view(), &params(0), &[0, 1]).unwrap();
+    assert_eq!(tip.core.refresh_frame_flags, Some(0));
+    let obu = encode_tip_output_frame_obu(&tip).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    assert!(parsed.error.is_none() && parsed.obus.len() == 1);
+}
