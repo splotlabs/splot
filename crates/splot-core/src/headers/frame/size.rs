@@ -34,13 +34,21 @@ impl FrameSize {
 /// (AV2 v1.0.0 § 4.8, `docs/spec/av2/1.0.0/04-conventions.md#s-4-8`).
 ///
 /// Returns `0` for `x < 2`, matching the spec's `CeilLog2(0) == CeilLog2(1) == 0`.
+#[inline]
 #[must_use]
-pub(crate) const fn ceil_log2(x: u32) -> u32 {
+pub const fn ceil_log2(x: u32) -> u32 {
     if x < 2 {
         0
     } else {
         u32::BITS - (x - 1).leading_zeros()
     }
+}
+
+/// `FloorLog2(x)` (AV2 v1.0.0 § 4.7), with `FloorLog2(0) == 0` like [`ceil_log2`].
+#[inline]
+#[must_use]
+pub const fn floor_log2(x: u64) -> u32 {
+    if x < 2 { 0 } else { x.ilog2() }
 }
 
 /// Parses `frame_size()` for the paths whose dimensions are exactly known
@@ -97,6 +105,15 @@ mod tests {
         assert_eq!(ceil_log2(4), 2);
         assert_eq!(ceil_log2(8), 3);
         assert_eq!(ceil_log2(16), 4);
+    }
+
+    #[test]
+    fn floor_log2_matches_spec_definition() {
+        assert_eq!(floor_log2(0), 0);
+        assert_eq!(floor_log2(1), 0);
+        assert_eq!(floor_log2(2), 1);
+        assert_eq!(floor_log2(4096), 12);
+        assert_eq!(floor_log2(4095), 11);
     }
 
     #[test]

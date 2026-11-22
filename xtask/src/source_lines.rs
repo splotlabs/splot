@@ -3,12 +3,12 @@
 
 //! Source-file size budget check.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 
+use crate::comment_density::rust_source_files;
 use crate::feature_status::display_path;
-use crate::git_util::run_git;
 
 const SOFT_LINE_LIMIT: usize = 1_000;
 const HARD_LINE_LIMIT: usize = 2_500;
@@ -27,7 +27,7 @@ struct SourceLineReport {
 
 /// Checks Rust source files against the source-line budget.
 pub(crate) fn check_source_lines(root: &Path) -> Result<()> {
-    let files = rust_source_files(root)?;
+    let files = rust_source_files(root, &["*.rs"])?;
     let mut counts = Vec::with_capacity(files.len());
     for path in files {
         let displayed_path = normalized_display_path(root, &path);
@@ -55,29 +55,6 @@ pub(crate) fn check_source_lines(root: &Path) -> Result<()> {
         report.soft_warnings.len()
     );
     Ok(())
-}
-
-fn rust_source_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let output = run_git(
-        root,
-        &[
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--",
-            "*.rs",
-        ],
-    )?;
-    let mut files = output
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| root.join(line))
-        .filter(|path| path.exists())
-        .collect::<Vec<_>>();
-    files.sort();
-    files.dedup();
-    Ok(files)
 }
 
 pub(crate) fn physical_line_count(text: &str) -> usize {

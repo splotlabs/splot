@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrParams};
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 
 use super::DecodeTileWorkUnit;
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
@@ -141,7 +141,7 @@ pub(crate) fn minimal_partition_frame_facts(
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
     let chroma = sequence.general.chroma_format_idc;
     let num_planes = if chroma.is_monochrome() { 1 } else { 3 };
-    let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
+    let (subsampling_x, subsampling_y) = chroma.subsampling();
     let filter = sequence
         .filter
         .ok_or(TilePartitionFrontierError::MissingFact {
@@ -257,14 +257,6 @@ fn frame_sb_size_index(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usi
         }
         (SuperblockSize::Block256x256, false) => BLOCK_256X256_INDEX,
         (SuperblockSize::Block64x64, _) => BLOCK_64X64_INDEX,
-    }
-}
-
-pub(crate) fn chroma_subsampling(chroma: ChromaFormatIdc) -> (bool, bool) {
-    match chroma {
-        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (true, true),
-        ChromaFormatIdc::Yuv422 => (true, false),
-        ChromaFormatIdc::Yuv444 => (false, false),
     }
 }
 

@@ -4,6 +4,7 @@
 //! General intra block mode-info decode.
 
 use splot_core::Error as CoreError;
+use splot_core::headers::frame::ceil_log2;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, MAX_TX_SIZE_RECT, SIZE_GROUP};
 use splot_recon::{DpcmDirection, dpcm_direction};
@@ -766,7 +767,7 @@ fn read_palette_colors_y(
                     .min(max_sample);
                 colors[idx] = value as u16;
                 range = range.saturating_sub(value.saturating_sub(u32::from(colors[idx - 1])));
-                bits = bits.min(ceil_log2_u32(range));
+                bits = bits.min(ceil_log2(range));
                 idx += 1;
             }
         }
@@ -1178,14 +1179,6 @@ fn read_literal_u32(
     symbols
         .read_literal(bits)
         .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })
-}
-
-pub(crate) const fn ceil_log2_u32(value: u32) -> u32 {
-    if value < 2 {
-        0
-    } else {
-        u32::BITS - (value - 1).leading_zeros()
-    }
 }
 
 #[cfg(test)]

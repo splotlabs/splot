@@ -241,15 +241,11 @@ impl LrGeometry {
     /// (AV2 § 6.4.1, mirror :340-346).
     #[must_use]
     pub const fn new(sb_size: SuperblockSize, chroma: ChromaFormatIdc) -> Self {
-        let (subsampling_x, subsampling_y) = match chroma {
-            ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (1, 1),
-            ChromaFormatIdc::Yuv444 => (0, 0),
-            ChromaFormatIdc::Yuv422 => (1, 0),
-        };
+        let (subsampling_x, subsampling_y) = chroma.subsampling();
         Self {
             sb_size,
-            subsampling_x,
-            subsampling_y,
+            subsampling_x: subsampling_x as u8,
+            subsampling_y: subsampling_y as u8,
         }
     }
 }

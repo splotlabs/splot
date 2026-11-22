@@ -22,10 +22,11 @@
 //!
 //! Feature tracking: `INFRA-ZERO-COPY-MEDIA-POLICY`.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
+
+use crate::concurrency_policy::{CrateManifestInfo, collect_crate_manifest_info};
 
 /// Byte/transmute/zero-copy alternative crates that would bypass the splot view
 /// model. None may be added.
@@ -116,14 +117,6 @@ const VAGUE_MARKER_REASONS: &[&str] = &["temporary", "fix", "needed", "convenien
 
 /// The `splot-copy-ok:` marker token.
 const MARKER_TOKEN: &str = "splot-copy-ok";
-
-/// One workspace crate reduced to its name and resolved direct dependencies.
-pub(crate) struct ZcCrate {
-    /// The crate's `[package].name`.
-    pub name: String,
-    /// Resolved direct dependency names (`package = "…"` renames resolved).
-    pub deps: Vec<String>,
-}
 
 /// One scanned source line: display path (forward-slash normalized), 1-based line
 /// number, and text (trailing newline stripped).
@@ -363,13 +356,13 @@ fn has_safety_rationale(sources: &[ZcSourceLine], i: usize) -> bool {
 /// directly with synthetic fixtures. See the module docs for the rule set and
 /// `docs/ARCHITECTURE.md` for the policy.
 pub(crate) fn evaluate_zero_copy_policy(
-    crates: &[ZcCrate],
+    crates: &[CrateManifestInfo],
     sources: &[ZcSourceLine],
 ) -> Vec<String> {
     let mut violations: Vec<String> = Vec::new();
 
     for krate in crates {
-        for dep in &krate.deps {
+        for dep in &krate.direct_deps {
             if BANNED_BYTE_CRATES.contains(&dep.as_str()) {
                 violations.push(format!(
                     "{}: banned byte/transmute crate `{dep}`; use splot views",
@@ -528,7 +521,7 @@ fn clone_impl_target(text: &str) -> Option<&str> {
 /// Returns an error if a manifest or source file cannot be read/parsed, or if the
 /// evaluator reports one or more policy violations.
 pub(crate) fn check_zero_copy_policy(root: &Path) -> Result<()> {
-    let crates = collect_crate_deps(root)?;
+    let crates = collect_crate_manifest_info(root)?;
     let sources = collect_source_lines(root)?;
     let violations = evaluate_zero_copy_policy(&crates, &sources);
 
@@ -543,62 +536,6 @@ pub(crate) fn check_zero_copy_policy(root: &Path) -> Result<()> {
     }
 }
 
-/// Builds the per-crate resolved direct-dependency view from every workspace
-/// member's manifest (resolving `package = "…"` renames and `x.workspace = true`
-/// aliases, like the dependency-direction and concurrency gates).
-fn collect_crate_deps(root: &Path) -> Result<Vec<ZcCrate>> {
-    let root_manifest = crate::read_manifest(&root.join("Cargo.toml"))?;
-    let workspace_deps = crate::workspace_dep_names(&root_manifest);
-    let mut crates = Vec::new();
-    for member in crate::workspace_members(root)? {
-        let manifest_path = root.join(&member).join("Cargo.toml");
-        let manifest = crate::read_manifest(&manifest_path)?;
-        let name = manifest
-            .get("package")
-            .and_then(|package| package.get("name"))
-            .and_then(toml::Value::as_str)
-            .map(str::to_owned)
-            .with_context(|| format!("{} has no [package].name", manifest_path.display()))?;
-        let deps = direct_dependencies(&manifest, &workspace_deps);
-        crates.push(ZcCrate { name, deps });
-    }
-    Ok(crates)
-}
-
-/// Resolved direct dependency names across the dependency tables (deduplicated).
-fn direct_dependencies(
-    manifest: &toml::Table,
-    workspace_deps: &HashMap<String, String>,
-) -> Vec<String> {
-    let mut deps: Vec<String> = Vec::new();
-    collect_dep_entries(manifest, workspace_deps, &mut deps);
-    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
-        for target in targets.values() {
-            if let Some(table) = target.as_table() {
-                collect_dep_entries(table, workspace_deps, &mut deps);
-            }
-        }
-    }
-    deps.sort();
-    deps.dedup();
-    deps
-}
-
-/// Appends the resolved name of each entry in `parent`'s dependency tables.
-fn collect_dep_entries(
-    parent: &toml::Table,
-    workspace_deps: &HashMap<String, String>,
-    out: &mut Vec<String>,
-) {
-    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(table) = parent.get(table_name).and_then(toml::Value::as_table) {
-            for (key, value) in table {
-                out.push(crate::resolved_dep_name(key, value, workspace_deps));
-            }
-        }
-    }
-}
-
 /// Walks the scanned crate `src` trees and returns every line, sorted by
 /// `(path, line_no)`. All lines (including comments) are kept so the marker
 /// lookback can see `splot-copy-ok` comments above a copy.
@@ -608,43 +545,23 @@ fn collect_source_lines(root: &Path) -> Result<Vec<ZcSourceLine>> {
     if !crates_dir.is_dir() {
         return Ok(sources);
     }
-    let mut stack = vec![crates_dir];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .with_context(|| format!("failed to read directory {}", dir.display()))?;
-        for entry in entries {
-            let entry =
-                entry.with_context(|| format!("failed to read an entry in {}", dir.display()))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to stat {}", path.display()))?;
-            if file_type.is_dir() {
-                if !matches!(
-                    path.file_name().and_then(|name| name.to_str()),
-                    Some("target" | ".git")
-                ) {
-                    stack.push(path);
-                }
-            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-                let display = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if !is_clone_scan_src(&display) {
-                    continue;
-                }
-                let contents = std::fs::read_to_string(&path)
-                    .with_context(|| format!("failed to read {}", path.display()))?;
-                for (index, raw) in contents.lines().enumerate() {
-                    sources.push(ZcSourceLine {
-                        path: display.clone(),
-                        line_no: index + 1,
-                        text: raw.to_owned(),
-                    });
-                }
-            }
+    for path in crate::feature_status::collect_files(&crates_dir, &["rs"])? {
+        let display = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !is_clone_scan_src(&display) {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        for (index, raw) in contents.lines().enumerate() {
+            sources.push(ZcSourceLine {
+                path: display.clone(),
+                line_no: index + 1,
+                text: raw.to_owned(),
+            });
         }
     }
     sources.sort_by(|a, b| (a.path.as_str(), a.line_no).cmp(&(b.path.as_str(), b.line_no)));
@@ -657,10 +574,10 @@ mod tests {
 
     use super::*;
 
-    fn krate(name: &str, deps: &[&str]) -> ZcCrate {
-        ZcCrate {
+    fn krate(name: &str, deps: &[&str]) -> CrateManifestInfo {
+        CrateManifestInfo {
             name: name.to_owned(),
-            deps: deps.iter().map(|d| (*d).to_owned()).collect(),
+            direct_deps: deps.iter().map(|d| (*d).to_owned()).collect(),
         }
     }
 

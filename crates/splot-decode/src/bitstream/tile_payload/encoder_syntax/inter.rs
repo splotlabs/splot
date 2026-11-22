@@ -964,7 +964,7 @@ impl IntraTileSyntax {
         }
         .map_err(rule("inter prediction"))?;
         let units = inter_residual_units(&leaf.frontier, chroma).map_err(rule("inter residual"))?;
-        let (sub_x, sub_y) = super::super::tile_frontier::chroma_subsampling(chroma);
+        let (sub_x, sub_y) = chroma.subsampling();
         let mut blocks: Vec<TransformBlock> = units
             .into_iter()
             .filter(|&(plane, x, y, ..)| {

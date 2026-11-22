@@ -4,6 +4,8 @@
 //! AV2 `seq_profile_idc` / `multistream_profile_idc` profile value model
 //! (AV2 v1.0.0 § 5.4.1 / § 5.6, Annex A.2 Table A.1).
 
+use super::ChromaFormatIdc;
+
 /// The AV2 profile a `seq_profile_idc` (AV2 v1.0.0 § 5.4.1) or `multistream_profile_idc`
 /// (§ 5.6) value names. Both 5-bit fields share this value space, defined by Annex A.2
 /// Table A.1 (docs/spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md, mirror lines 59-90).
@@ -85,6 +87,30 @@ impl ProfileIdc {
     pub const fn is_configurable(self) -> bool {
         self.get() == 31
     }
+
+    /// Returns `true` when `chroma` is in this profile's allowed `chroma_format_idc` set
+    /// (Table A.1, mirror lines 61-90): 400 and 420 for profiles 0-2, plus 422 for
+    /// profile 3, plus 444 for profile 4, and every format for Configurable. A reserved
+    /// profile has no allowed set and returns `false`.
+    #[must_use]
+    pub const fn allows_chroma(self, chroma: ChromaFormatIdc) -> bool {
+        match self.get() {
+            0..=2 => matches!(
+                chroma,
+                ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
+            ),
+            3 => matches!(
+                chroma,
+                ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv422
+            ),
+            4 => matches!(
+                chroma,
+                ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv444
+            ),
+            31 => true,
+            _ => false,
+        }
+    }
 }
 
 impl PartialEq for ProfileIdc {
@@ -110,5 +136,40 @@ impl Ord for ProfileIdc {
 impl core::hash::Hash for ProfileIdc {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.get().hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL_CHROMA: [ChromaFormatIdc; 4] = [
+        ChromaFormatIdc::Monochrome,
+        ChromaFormatIdc::Yuv420,
+        ChromaFormatIdc::Yuv422,
+        ChromaFormatIdc::Yuv444,
+    ];
+
+    #[test]
+    fn allowed_chroma_sets_match_table_a1() {
+        for value in 0..=31 {
+            let profile = ProfileIdc::from_bits(value);
+            let allowed: Vec<ChromaFormatIdc> = ALL_CHROMA
+                .into_iter()
+                .filter(|&chroma| profile.allows_chroma(chroma))
+                .collect();
+            let expected: &[ChromaFormatIdc] = match value {
+                0..=2 => &ALL_CHROMA[..2],
+                3 => &ALL_CHROMA[..3],
+                4 => &[
+                    ChromaFormatIdc::Monochrome,
+                    ChromaFormatIdc::Yuv420,
+                    ChromaFormatIdc::Yuv444,
+                ],
+                31 => &ALL_CHROMA,
+                _ => &[],
+            };
+            assert_eq!(allowed, expected, "seq_profile_idc {value}");
+        }
     }
 }

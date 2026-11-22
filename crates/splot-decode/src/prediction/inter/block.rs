@@ -52,9 +52,9 @@ use crate::bitstream::tile_payload::{
     TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector, TileCdfSubset,
     TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
     TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
-    TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
-    current_segment_lossless, decode_general_intra_plane_coeffs, get_plane_residual_size,
-    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size, read_row, row_at,
+    TileSegmentIdStateError, TransformToolResidualPolicy, current_segment_lossless,
+    decode_general_intra_plane_coeffs, get_plane_residual_size, is_cctx_geometry_allowed,
+    neg_deinterleave, read_lossless_tx_size, read_row, row_at,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -145,7 +145,7 @@ const H_WEDGE_ANGLES: u8 = 10;
 
 /// § 5.20.4 chroma subsampling as `(subsamplingX, subsamplingY)` in MI shifts.
 pub(super) fn block_chroma_subsampling(chroma: ChromaFormatIdc) -> (u32, u32) {
-    let (sub_x, sub_y) = chroma_subsampling(chroma);
+    let (sub_x, sub_y) = chroma.subsampling();
     (u32::from(sub_x), u32::from(sub_y))
 }
 const WEDGE_0: u8 = 0;
@@ -1501,7 +1501,7 @@ fn decode_block(
                 non_inter_flag_syntax(Some(prelude.skip_flag), frame_mv_precision(core)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
-            let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
+            let (sub_x, sub_y) = sequence.general.chroma_format_idc.subsampling();
             return Ok(store(
                 GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
                 pending_intrabc_leaf(

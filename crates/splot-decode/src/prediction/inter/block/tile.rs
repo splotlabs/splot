@@ -1087,7 +1087,7 @@ fn superblock_coefficient_capacity(sb_h4: usize, chroma: ChromaFormatIdc) -> Res
     let luma = side
         .checked_mul(side)
         .ok_or(crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
-    let (sx, sy) = chroma_subsampling(chroma);
+    let (sx, sy) = chroma.subsampling();
     let chroma = if chroma == ChromaFormatIdc::Monochrome {
         0
     } else {
@@ -2002,7 +2002,7 @@ fn reset_tile_block_decoded(
     mi_col_end: usize,
     mi_row_end: usize,
 ) -> Result<()> {
-    let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
+    let (subsampling_x, subsampling_y) = chroma.subsampling();
     state
         .reset(
             if chroma == ChromaFormatIdc::Monochrome {

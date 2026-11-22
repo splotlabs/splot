@@ -98,14 +98,14 @@ pub(crate) use restoration::{
     CCSO_INPUT_INTERVAL, RESTORATION_TILESIZE_MAX, default_restoration_size, lr_plane_tool_table,
 };
 pub use segmentation::{CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params};
-pub use size::FrameSize;
-pub(crate) use size::ceil_log2;
 #[cfg(test)]
 pub(crate) use size::parse_frame_size;
+pub use size::{FrameSize, ceil_log2, floor_log2};
 pub use tail::{
     FilmGrainConfig, FrameHeaderTail, FrameTailInput, TxMode, parse_film_grain_config,
     parse_intra_tail, read_tx_mode,
 };
+pub(crate) use tiling::uniform_eligible;
 pub use tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
 
 /// A prefix-only parse of the AV2 frame header (AV2 v1.0.0 § 5.18.1 / § 5.18.2).

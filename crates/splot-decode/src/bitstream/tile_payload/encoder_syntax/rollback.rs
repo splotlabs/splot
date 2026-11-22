@@ -22,7 +22,6 @@ use super::super::block_decoded_state::TileBlockDecodedState;
 use super::super::cdf::coeff_context::CoeffBaseSelection;
 use super::super::cdf::{CoeffBaseRow, CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::super::intra_joint_modes::{IntraFacts, LumaPalette};
-use super::super::tile_frontier::chroma_subsampling;
 use super::intra::Recon;
 use super::{EncoderSyntaxError, IntraTileSyntax, PartitionNode, Result, rule};
 use crate::tile::SB_ROW_WINDOW_ABOVE_ROWS;
@@ -421,7 +420,7 @@ impl IntraTileSyntax {
 
     /// `(subsampling_x, subsampling_y)` of the sequence.
     fn subsampling(&self) -> (usize, usize) {
-        let (x, y) = chroma_subsampling(self.chroma);
+        let (x, y) = self.chroma.subsampling();
         (usize::from(x), usize::from(y))
     }
 

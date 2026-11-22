@@ -390,23 +390,7 @@ fn validate_profile_chroma(
     if profile.is_reserved() {
         return Err(SequenceProfileError::Reserved { profile_idc });
     }
-    let allowed = match profile_idc {
-        0..=2 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
-        ),
-        3 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv422
-        ),
-        4 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv444
-        ),
-        31 => true,
-        _ => false,
-    };
-    if allowed {
+    if profile.allows_chroma(chroma) {
         Ok(())
     } else {
         Err(SequenceProfileError::ChromaFormatMismatch {

@@ -1154,11 +1154,7 @@ pub fn encode_film_grain_obu(
     chroma: ChromaFormatIdc,
     model: &FilmGrainModel,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
-    let (sub_x, sub_y) = match chroma {
-        ChromaFormatIdc::Yuv444 => (false, false),
-        ChromaFormatIdc::Yuv422 => (true, false),
-        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (true, true),
-    };
+    let (sub_x, sub_y) = chroma.subsampling();
     let obu = FilmGrainObu {
         update_flags: 1,
         chroma_idc: chroma.get().into(),

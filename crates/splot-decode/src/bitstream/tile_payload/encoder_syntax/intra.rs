@@ -43,7 +43,6 @@ use super::super::intra_joint_modes::{IntraNeighbours, LumaPalette};
 use super::super::partition_traversal::{
     DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, publish_intra_leaf_state,
 };
-use super::super::tile_frontier::chroma_subsampling;
 use super::palette::{Palette, PlannedPalette, unit_map};
 use super::{
     EncoderSyntaxError, IntraMode, IntraTileSyntax, Ist, LeafBlock, Result, TileEnd,
@@ -379,7 +378,7 @@ impl Recon {
         sb_size4: usize,
     ) -> Result<Self> {
         let chroma = seq.general.chroma_format_idc;
-        let (sub_x, sub_y) = chroma_subsampling(chroma);
+        let (sub_x, sub_y) = chroma.subsampling();
         let size = core
             .frame_size
             .ok_or(EncoderSyntaxError::Unsupported("missing frame size"))?;
@@ -714,7 +713,7 @@ impl IntraTileSyntax {
         }
         let uv_mode = block_modes.coeff_uv_mode();
         let angle_delta_uv = inherited_chroma_angle_delta(uv_mode, modes.y_mode, modes.angle_delta);
-        let (sub_x, sub_y) = chroma_subsampling(self.chroma);
+        let (sub_x, sub_y) = self.chroma.subsampling();
         let (mi_rows, mi_cols) = (self.frame.mi_rows(), self.frame.mi_cols());
         let (mut plan_index, mut units) = core::mem::take(&mut self.recon.spare_units);
         plan_index.clear();

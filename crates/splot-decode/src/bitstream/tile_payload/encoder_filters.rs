@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{CurrentFrameWorkspace, DecodedFrame, PlaneId, PlaneRect};
 
 use splot_core::span::ByteOffset;
@@ -275,14 +275,10 @@ impl FilterRecorder {
                 "missing quantization params",
             ))?
             .base_q_idx;
-        let subsampling = match seq.general.chroma_format_idc {
-            ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (1, 1),
-            ChromaFormatIdc::Yuv422 => (1, 0),
-            ChromaFormatIdc::Yuv444 => (0, 0),
-        };
+        let (sub_x, sub_y) = seq.general.chroma_format_idc.subsampling();
         Ok(Self {
             qindex,
-            subsampling,
+            subsampling: (u32::from(sub_x), u32::from(sub_y)),
             deblock_blocks: Vec::new(),
             chroma_blocks: ChromaDeblockRecords::new(),
             tx_skip: Vec::new(),
