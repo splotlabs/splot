@@ -137,21 +137,59 @@ pub(crate) fn is_mv_valid(block: &IntrabcMvBlock, local: LocalArea<'_>, mv: [i32
     is_mv_valid_wide(block, local, mv.map(i64::from))
 }
 
+/// The source edges `[srcTopEdge, srcLeftEdge, srcBottomEdge, srcRightEdge]`
+/// of § 6.19.7.12 `is_mv_valid` for the leaf at `mi` of `size` samples, with
+/// `HasChroma` at `chroma_mi`.
+fn source_edges(
+    mi: (usize, usize),
+    size: (usize, usize),
+    chroma_mi: Option<(usize, usize)>,
+    mv: [i64; 2],
+) -> [i64; 4] {
+    let bottom_border = i64::from(mv[0] & 7 != 0);
+    let right_border = i64::from(mv[1] & 7 != 0);
+    let (delta_row, delta_col) = (mv[0] >> 3, mv[1] >> 3);
+    let top = mi.0 as i64 * MI_SIZE + delta_row;
+    let left = mi.1 as i64 * MI_SIZE + delta_col;
+    let bottom = top + size.1 as i64 + bottom_border;
+    let right = left + size.0 as i64 + right_border;
+    let (top, left) = match chroma_mi {
+        Some((row, col)) => (
+            row as i64 * MI_SIZE + delta_row,
+            col as i64 * MI_SIZE + delta_col,
+        ),
+        None => (top, left),
+    };
+    [top, left, bottom, right]
+}
+
+/// The tile-edge test of § 6.19.7.12 `is_mv_valid`: the source edges of the
+/// block vector `mv` lie in the tile `[top, left, bottom, right]` (luma
+/// samples).
+#[inline]
+pub(crate) fn source_within_tile(
+    mi: (usize, usize),
+    size: (usize, usize),
+    chroma_mi: Option<(usize, usize)>,
+    tile: [usize; 4],
+    mv: [i32; 2],
+) -> bool {
+    let [top, left, bottom, right] = source_edges(mi, size, chroma_mi, mv.map(i64::from));
+    top >= tile[0] as i64
+        && left >= tile[1] as i64
+        && bottom <= tile[2] as i64
+        && right <= tile[3] as i64
+}
+
 fn is_mv_valid_wide(block: &IntrabcMvBlock, local: LocalArea<'_>, mv: [i64; 2]) -> bool {
-    let (bw, bh) = (block.size.0 as i64, block.size.1 as i64);
     let bottom_border = i64::from(mv[0] & 7 != 0);
     let right_border = i64::from(mv[1] & 7 != 0);
     let delta_row = mv[0] >> 3;
     let delta_col = mv[1] >> 3;
     let (mi_row, mi_col) = (block.mi.0 as i64, block.mi.1 as i64);
-    let mut src_top = mi_row * MI_SIZE + delta_row;
-    let mut src_left = mi_col * MI_SIZE + delta_col;
-    let src_bottom = src_top + bh + bottom_border;
-    let src_right = src_left + bw + right_border;
-    if let Some(((chroma_row, chroma_col), _)) = block.chroma {
-        src_left = chroma_col as i64 * MI_SIZE + delta_col;
-        src_top = chroma_row as i64 * MI_SIZE + delta_row;
-    }
+    let chroma_mi = block.chroma.map(|(mi, _)| mi);
+    let [src_top, src_left, src_bottom, src_right] =
+        source_edges(block.mi, block.size, chroma_mi, mv);
     let (rows, cols) = &block.tile;
     if src_top < rows.start as i64 * MI_SIZE
         || src_left < cols.start as i64 * MI_SIZE
@@ -236,13 +274,42 @@ fn check_valid_local_ibc(state: &LocalAreaState<'_>, act: (i64, i64), x: i64, y:
 }
 
 /// Checks the block vector of the IntraBC leaf at `frontier` of `n4w x n4h`
-/// 4x4 units in superblocks of `sb_h4` 4x4 rows: § 6.19.7.12 `is_mv_valid`
-/// and, with `morph_pred`, § 6.19.5.4 `is_offset_mv_valid(-1, -1)`.
+/// 4x4 units in superblocks of `sb_h4` 4x4 rows with `AllowExtraIBCRange`:
+/// § 6.19.7.12 `is_mv_valid` and, with `morph_pred`, § 6.19.5.4
+/// `is_offset_mv_valid(-1, -1)`. The caller has already run the tile-edge
+/// test ([`source_within_tile`]) on the block vector: while the local area
+/// accepts ([`LocalArea::StateNotAvailable`]), nothing else is left to check
+/// for a block without `morph_pred`.
+#[inline]
 pub(crate) fn check_intrabc_block_vector(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     (n4w, n4h): (usize, usize),
-    sb_h4: usize,
+    (sb_h4, allow_extra_ibc_range): (usize, bool),
+    info: IntrabcInfo,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let params = core.intrabc;
+    let allow_local_intrabc = params.and_then(|p| p.allow_local_intrabc) != Some(false);
+    if allow_local_intrabc && !info.morph_pred {
+        return Ok(());
+    }
+    check_intrabc_block_vector_slow(
+        core,
+        frontier,
+        (n4w, n4h),
+        (sb_h4, allow_extra_ibc_range),
+        info,
+        tile_offset,
+    )
+}
+
+#[inline(never)]
+fn check_intrabc_block_vector_slow(
+    core: &FrameHeaderCore,
+    frontier: &DecodeBlockFrontier,
+    (n4w, n4h): (usize, usize),
+    (sb_h4, allow_extra_ibc_range): (usize, bool),
     info: IntrabcInfo,
     tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -267,7 +334,7 @@ pub(crate) fn check_intrabc_block_vector(
         sb_size: sb_h4 * 4,
         allow_local_intrabc: params.and_then(|p| p.allow_local_intrabc) != Some(false),
         allow_global_intrabc: params.and_then(|p| p.allow_global_intrabc) == Some(true),
-        allow_extra_ibc_range: frontier.allow_extra_ibc_range(),
+        allow_extra_ibc_range,
     };
     let mv = [info.block_mv.row, info.block_mv.col];
     let local = LocalArea::StateNotAvailable;

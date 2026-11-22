@@ -432,8 +432,6 @@ pub(crate) struct DecodeBlockFrontier {
     cfl_allowed_in_sdp: bool,
     /// Whether the block's superblock is § 5.20.2.1 `BRU_ACTIVE`.
     bru_active: bool,
-    /// § 5.20.3.1 `AllowExtraIBCRange` when the block is decoded.
-    allow_extra_ibc_range: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -454,15 +452,6 @@ impl DecodeBlockFrontier {
 
     pub(crate) const fn bru_active(&self) -> bool {
         self.bru_active
-    }
-
-    pub(crate) const fn with_allow_extra_ibc_range(mut self, allow: bool) -> Self {
-        self.allow_extra_ibc_range = allow;
-        self
-    }
-
-    pub(crate) const fn allow_extra_ibc_range(&self) -> bool {
-        self.allow_extra_ibc_range
     }
 
     pub(crate) const fn is_luma_part(&self) -> bool {
@@ -518,7 +507,6 @@ impl DecodeBlockFrontier {
             intra_region: false,
             cfl_allowed_in_sdp: true,
             bru_active: true,
-            allow_extra_ibc_range: false,
         }
     }
 }
