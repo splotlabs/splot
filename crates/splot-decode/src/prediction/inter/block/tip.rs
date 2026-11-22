@@ -501,13 +501,13 @@ impl TipBlockPlan {
 }
 
 impl TipFramePlan {
-    pub(super) fn new<T: ReconSample>(
+    pub(super) fn new(
         info: splot_recon::DecodedFrameInfo,
         temporal: &TemporalMvContext,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
     ) -> Result<Self> {
         let references = temporal
             .tip_references()
@@ -560,9 +560,7 @@ impl TipFramePlan {
             .transpose()?;
         let order_hint = |slot: u32| reference.ref_order_hint.get(slot as usize).copied();
         let scalings = |slot: u32| {
-            let reference = reference
-                .slot(slot)
-                .map_or(info, crate::pipeline::inflight::RefFrameSlot::info);
+            let reference = reference.frame_info(slot).unwrap_or(info);
             PlaneScaling::of_reference_planes(reference, info.coded_luma_size())
         };
         Ok(Self {
@@ -910,7 +908,7 @@ impl<T: ReconSample> TipOutputStages<T> {
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
         geometry: super::super::FrameDecodeGeometry,
         offset: ByteOffset,
         publish: Option<MotionFieldHandle>,
@@ -1115,11 +1113,7 @@ impl<T: ReconSample> TipOutputStages<T> {
     /// published, so [`Self::project`] may run. § 7.9.8 keeps a projection in
     /// its source's TMVP row and § 7.10.3 to § 7.10.5 stay inside one TMVP
     /// unit, so a band reads only the same band of each reference field.
-    pub(crate) fn projection_ready(
-        &self,
-        index: usize,
-        reference: &InterReferenceState<T>,
-    ) -> bool {
+    pub(crate) fn projection_ready(&self, index: usize, reference: &ReferenceMetadata) -> bool {
         self.plan
             .as_ref()
             .is_some_and(|plan| plan.sources_settled(index, &reference.ref_motion_fields))
@@ -1504,17 +1498,16 @@ mod tests {
     #[test]
     fn one_unit_tip_block_under_the_optflow_sad_gate_keeps_its_candidates()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut reference = crate::prediction::inter::InterReferenceState::<u8>::empty()?;
-        let mut store = splot_recon::ReferenceFrameStore::with_capacity(2)?;
+        let mut reference =
+            crate::prediction::inter::InterReferenceState::<u8>::with_slot_count(2)?;
         for slot in 0..2 {
-            store.put(
+            reference.put(
                 splot_recon::ReferenceSlot::new(slot)?,
                 crate::pipeline::inflight::RefFrameSlot::completed(splot_recon::SharedFrame::new(
                     tip_workspace()?.freeze()?,
                 )),
             )?;
         }
-        reference.store = store;
         let plan = TipReferencePlan {
             past: 0,
             future: Some(1),

@@ -164,6 +164,25 @@ impl TileWalkParams {
             .map_or_else(|| super::inter_mv_read_config(core), Ok)
     }
 
+    pub(super) fn parse_context<'a>(
+        &'a self,
+        sequence: &'a SequenceHeader,
+        core: &'a FrameHeaderCore,
+        previous_segment_ids: Option<&'a SegmentIdMapHandle>,
+    ) -> TileParseContext<'a> {
+        TileParseContext {
+            sequence,
+            core,
+            params: self,
+            previous_segment_ids: super::super::previous_segment_ids(
+                previous_segment_ids,
+                self.mi_rows,
+                self.mi_cols,
+            )
+            .map(Arc::as_ref),
+        }
+    }
+
     pub(super) fn context<'a, T: ReconSample>(
         &'a self,
         sequence: &'a SequenceHeader,
@@ -187,6 +206,78 @@ pub(super) struct TileDecodeContext<'a, T: ReconSample> {
     reference: &'a InterReferenceState<T>,
     ref_frame_idx: &'a [u32],
     params: &'a TileWalkParams,
+}
+
+impl<'a, T: ReconSample> TileDecodeContext<'a, T> {
+    fn parse(&self) -> TileParseContext<'a> {
+        self.params.parse_context(
+            self.sequence,
+            self.core,
+            super::super::previous_segment_handle(self.core, self.reference),
+        )
+    }
+}
+
+/// What the § 8.2 pass of one tile reads of its frame. It names no sample
+/// type, so the entropy pass compiles once for every bit depth.
+#[derive(Clone, Copy)]
+pub(super) struct TileParseContext<'a> {
+    sequence: &'a SequenceHeader,
+    core: &'a FrameHeaderCore,
+    params: &'a TileWalkParams,
+    previous_segment_ids: Option<&'a FrameSegmentIdMap>,
+}
+
+/// The inter leaf syntax of one walk, storing each leaf in its row.
+impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
+    for super::BlockDecodeContext<'_>
+{
+    type Command = ();
+    type Error = crate::DecodeError;
+
+    fn decode_leaf<const ACTIVE: bool>(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'payload>,
+        frontier: &DecodeBlockFrontier,
+        neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
+    ) -> Result<(crate::bitstream::tile_payload::GeneralIntraLeafMode, ())> {
+        #[cfg(test)]
+        crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_leaf(
+            frontier,
+            &neighbours,
+            self.sink.mv_grid,
+            self.sink.params.sb_h4,
+            self.sink.core.frame_is_intra == Some(true),
+        );
+        debug_assert_eq!(frontier.bru_active(), ACTIVE);
+        if ACTIVE {
+            decode_block(work_unit, symbols, frontier, self, neighbours)
+        } else {
+            super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
+        }
+        .map(|leaf| (leaf, ()))
+    }
+
+    #[cold]
+    fn out_of_frame(
+        &mut self,
+        origin: [usize; 2],
+        b_size: crate::bitstream::tile_payload::BlockSize,
+    ) {
+        let (Some(calls), Ok(w4), Ok(h4)) = (
+            self.out_of_frame.as_deref_mut(),
+            b_size.num_4x4_wide(),
+            b_size.num_4x4_high(),
+        ) else {
+            return;
+        };
+        calls.push(OutOfFrameCall {
+            entry: self.entries.len(),
+            origin,
+            size4: [w4, h4],
+        });
+    }
 }
 
 /// How far one [`TileParser::walk_leaves`] call parses.
@@ -333,10 +424,10 @@ fn inter_tile_grid_error(
 
 impl<'payload> TileParser<'payload> {
     #[allow(clippy::too_many_arguments)]
-    fn new<T: ReconSample>(
+    fn new(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         cdef_state: CdefState,
         gdf_state: GdfState,
         ccso_state: CcsoState,
@@ -425,10 +516,10 @@ impl<'payload> TileParser<'payload> {
     /// Row units, the single-thread walk's, reserve the superblock bound up
     /// front; scheduled units grow their slot's recycled lists instead, so a
     /// frame in flight holds only what it parsed.
-    fn next_unit<T: ReconSample>(
+    fn next_unit(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         buffers: Option<ReconRowBuffers>,
         row_units: bool,
     ) -> ParserStep<ReconRow> {
@@ -500,10 +591,10 @@ impl<'payload> TileParser<'payload> {
     /// Parses one superblock or one superblock row and stores every leaf's
     /// parse record as the next reconstruction entry, in walk order, for the
     /// resolve and reconstruction stages. Returns whether superblocks remain.
-    fn walk_leaves<T: ReconSample>(
+    fn walk_leaves(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         row: &mut ReconRow,
         span: WalkSpan,
     ) -> Result<bool> {
@@ -525,32 +616,22 @@ impl<'payload> TileParser<'payload> {
                 filter_records: &mut row.filter_records,
                 slots: &mut row.slots,
             },
-            previous_segment_ids: super::super::previous_segment_ids(
-                context.core,
-                context.reference,
-                context.params.mi_rows,
-                context.params.mi_cols,
-            )
-            .map(Arc::as_ref),
+            previous_segment_ids: context.previous_segment_ids,
             gdf_state: &mut self.output.gdf_state,
             cdef_state: &mut self.output.cdef_state,
             ccso_state: &mut self.output.ccso_state,
             delta_q_state: &mut self.delta_q_state,
             segment_id_state: &mut self.output.segment_id_state,
             entries: &mut row.entries,
+            out_of_frame: frame_allows_intrabc(context.core).then_some(&mut row.out_of_frame),
             sb_mask,
             arena: &mut row.residual_planes,
         };
         let mut on_published = |_: DecodedLeafPublication, ()| {};
-        let keep_out_of_frame = frame_allows_intrabc(context.core);
         loop {
             let first = block_context.entries.len();
-            let mut decode_leaf = InterLeafDecoder {
-                block: &mut block_context,
-                out_of_frame: keep_out_of_frame.then_some(&mut row.out_of_frame),
-            };
             let origin = walk.next_origin();
-            let next = walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published);
+            let next = walk.decode_next_superblock(tile, &mut block_context, &mut on_published);
             if let Some(superblock) =
                 ReconSuperblock::new(origin, first..block_context.entries.len())
                     .map(|sb| sb.with_allow_extra_ibc_range(walk.allow_extra_ibc_range()))
@@ -599,60 +680,6 @@ impl<'payload> TileParser<'payload> {
                 spent_filters: None,
             },
         )
-    }
-}
-
-/// The leaf decoder of one superblock walk. It keeps the walk's out-of-frame
-/// calls when the IntraBC local-area replay needs them.
-struct InterLeafDecoder<'c, 'a> {
-    block: &'c mut super::BlockDecodeContext<'a>,
-    out_of_frame: Option<&'c mut Vec<OutOfFrameCall>>,
-}
-
-impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload, (), crate::DecodeError>
-    for InterLeafDecoder<'_, '_>
-{
-    fn decode_leaf(
-        &mut self,
-        work_unit: &mut DecodeTileWorkUnit,
-        symbols: &mut SymbolDecoder<'payload>,
-        frontier: &DecodeBlockFrontier,
-        neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
-    ) -> Result<(GeneralIntraLeafMode, ())> {
-        #[cfg(test)]
-        crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_leaf(
-            frontier,
-            &neighbours,
-            self.block.sink.mv_grid,
-            self.block.sink.params.sb_h4,
-            self.block.sink.core.frame_is_intra == Some(true),
-        );
-        if frontier.bru_active() {
-            decode_block(work_unit, symbols, frontier, self.block, neighbours)
-        } else {
-            super::bru::decode_bru_leaf(work_unit, symbols, frontier, self.block)
-        }
-        .map(|leaf| (leaf, ()))
-    }
-
-    #[cold]
-    fn out_of_frame(
-        &mut self,
-        origin: [usize; 2],
-        b_size: crate::bitstream::tile_payload::BlockSize,
-    ) {
-        let (Some(calls), Ok(w4), Ok(h4)) = (
-            self.out_of_frame.as_deref_mut(),
-            b_size.num_4x4_wide(),
-            b_size.num_4x4_high(),
-        ) else {
-            return;
-        };
-        calls.push(OutOfFrameCall {
-            entry: self.block.entries.len(),
-            origin,
-            size4: [w4, h4],
-        });
     }
 }
 
@@ -1917,10 +1944,10 @@ pub(crate) fn publish_tile_geometry(
 impl<'payload> TileParser<'payload> {
     /// Opens tile `index` of a scheduled frame of `tiles` tiles.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn scheduled<T: ReconSample>(
+    pub(super) fn scheduled(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         cdef_state: CdefState,
         gdf_state: GdfState,
         ccso_state: CcsoState,
@@ -1969,10 +1996,10 @@ impl<'payload> TileParser<'payload> {
     }
 
     /// Parses and publishes the next unit, returning whether the tile ended.
-    pub(super) fn parse_scheduled_unit<T: ReconSample>(
+    pub(super) fn parse_scheduled_unit(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         parse_progress: &ParseProgress,
     ) -> Result<bool> {
         let row_set = parse_progress.take_row_buffers();
@@ -2208,7 +2235,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut parser = TileParser::new(
             tile,
             tile_bytes,
-            &context,
+            &context.parse(),
             tile_cdef,
             tile_gdf,
             tile_ccso,

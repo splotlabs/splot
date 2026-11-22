@@ -506,7 +506,6 @@ fn shared_reference_sample_failures_are_typed_reference_state_errors() {
     let (slot, _writer) = crate::pipeline::inflight::RefFrameSlot::pending(frame.info())
         .expect("pending reference slot");
     reference
-        .store
         .put(splot_recon::ReferenceSlot::new(0).expect("slot zero"), slot)
         .expect("store pending reference");
     let Err(error) = super::super::hold_reference_slot(&reference, 0) else {
@@ -591,7 +590,6 @@ fn admitted_reference_samples_survive_a_later_slot_failure() {
     progress.begin(&[(0, 4)]).expect("stripe geometry");
     progress.publish(0);
     reference
-        .store
         .put(splot_recon::ReferenceSlot::new(0).expect("slot zero"), slot)
         .expect("store pending reference");
 

@@ -302,23 +302,19 @@ impl InterReconCommand {
 
     fn single_temporal_record<T: ReconSample>(
         &self,
-        reference: &InterReferenceState<T>,
-        ref_frame_idx: &[u32],
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
+        shared: &ReconShared<'_, T>,
     ) -> TemporalMotionBlock {
         let block = &self.placed.block;
         temporal_motion_block(
-            reference,
-            ref_frame_idx,
+            shared.reference,
+            shared.ref_frame_idx,
             self.placed.luma_y() / 4,
             self.placed.luma_x() / 4,
             self.placed.luma_w() / 4,
             self.placed.luma_h() / 4,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
+            shared.mi_rows,
+            shared.mi_cols,
+            shared.current_order_hint,
             block.ref_frame0,
             block.ref_frame1,
             block.mv,
@@ -407,13 +403,7 @@ impl InterReconCommand {
         if let InterReconKind::Compound { .. } = self.kind {
             return self.compound_records(temporal_records, shared, None);
         }
-        temporal_records.push(self.single_temporal_record(
-            shared.reference,
-            shared.ref_frame_idx,
-            shared.mi_rows,
-            shared.mi_cols,
-            shared.current_order_hint,
-        ));
+        temporal_records.push(self.single_temporal_record(shared));
         Ok(())
     }
 

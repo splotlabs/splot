@@ -13,8 +13,7 @@ mod tests {
     #[test]
     fn parser_continuations_are_send_at_both_sample_depths() {
         fn requires_send<T: Send>() {}
-        requires_send::<crate::prediction::inter::frame_walk::PendingInterWalk<'static, u8>>();
-        requires_send::<crate::prediction::inter::frame_walk::PendingInterWalk<'static, u16>>();
+        requires_send::<crate::prediction::inter::frame_walk::PendingInterWalk<'static>>();
     }
 
     const MULTIROW_FIXTURE: &[u8] = include_bytes!(

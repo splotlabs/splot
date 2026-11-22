@@ -681,3 +681,70 @@ fn lossless_clips_decode_to_the_source_samples() {
     }
     round_trip(10, YUV444, &["--lossless", "--preset", "6"]);
 }
+
+/// `--icc`, `--itut-t35` and `--user-data-unregistered` put one metadata OBU
+/// of each file in front of every key frame, the stream does not depend on
+/// the thread count, and a file that its syntax cannot carry is refused.
+#[test]
+fn metadata_files_write_metadata_obus() {
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let icc = temp_input("icc", &[0x49; 130]);
+    let t35 = temp_input("t35", &[0xFF, 0x01, 0x00, 0x3C]);
+    let user = temp_input("uuid", b"0123456789abcdefuser data");
+    let files = [
+        ["--icc", icc.to_str().unwrap()],
+        ["--itut-t35", t35.to_str().unwrap()],
+        ["--user-data-unregistered", user.to_str().unwrap()],
+    ];
+    let encode = |threads: &str, extra: &[&str]| {
+        let ivf = temp_output("ivf");
+        let mut args = vec!["encode", input.to_str().unwrap(), "-o"];
+        args.extend([ivf.to_str().unwrap(), "--keyint", "4", "--threads", threads]);
+        args.extend(extra);
+        let status = splot(&args).status.success();
+        let bytes = std::fs::read(&ivf).unwrap_or_default();
+        let _ = std::fs::remove_file(&ivf);
+        (status, bytes)
+    };
+    let (ok, stream) = encode("1", files.as_flattened());
+    assert!(ok);
+    assert_eq!(encode("8", files.as_flattened()), (true, stream.clone()));
+    let ivf = temp_output("ivf");
+    std::fs::write(&ivf, &stream).unwrap();
+    for args in [vec!["inspect", "--json"], vec!["validate", "--strict"]] {
+        let mut args = args;
+        args.push(ivf.to_str().unwrap());
+        let output = splot(&args);
+        assert!(output.status.success(), "{output:?}");
+        if args[0] == "inspect" {
+            let json = String::from_utf8(output.stdout).unwrap();
+            for name in [
+                "METADATA_TYPE_ICC_PROFILE",
+                "METADATA_TYPE_ITUT_T35",
+                "METADATA_TYPE_USER_DATA_UNREGISTERED",
+            ] {
+                let named = json.matches(name).count();
+                assert!(
+                    named > 0 && named % FRAMES.div_ceil(4) == 0,
+                    "{name}: {named}"
+                );
+            }
+        }
+    }
+
+    let bad_icc = temp_input("icc", &[0x49; 127]);
+    let bad_t35 = temp_input("t35", &[0xFF]);
+    let bad_user = temp_input("uuid", &[0; 15]);
+    for bad in [
+        ["--icc", bad_icc.to_str().unwrap()],
+        ["--itut-t35", bad_t35.to_str().unwrap()],
+        ["--user-data-unregistered", bad_user.to_str().unwrap()],
+        ["--icc", "/nonexistent/splot.icc"],
+    ] {
+        assert!(!encode("1", &bad).0, "{bad:?}");
+    }
+    for path in [input, icc, t35, user, bad_icc, bad_t35, bad_user, ivf] {
+        let _ = std::fs::remove_file(path);
+    }
+}
