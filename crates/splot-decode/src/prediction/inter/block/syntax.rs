@@ -10,6 +10,7 @@ use splot_core::symbol::SymbolDecoder;
 use splot_recon::InterpolationFilter as ReconInterpolationFilter;
 
 use super::super::find_mv_stack::{BlockNeighbourContext, BlockPrecisionRecord};
+use super::super::mode_symbols::{InterModeSymbols, TileModeSymbols};
 use super::super::read_mv::{
     MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_TWO_PEL, lower_mv_precision,
 };
@@ -211,31 +212,27 @@ pub(super) fn read_block_mv_precision_syntax(
     frame_precision: u8,
     block_has_newmv: bool,
     is_adaptive_mvd: bool,
-    tile_offset: ByteOffset,
 ) -> Result<BlockPrecisionRecord> {
     block_mv_precision_with(
         per_block_precision,
         neighbour_ctx,
         frame_precision,
         (block_has_newmv, is_adaptive_mvd),
-        |selector| {
-            cdfs.read_block_symbol(selector, symbols)
-                .map_err(|error| symbol_read_error(error, tile_offset))
-        },
+        &mut TileModeSymbols { cdfs, symbols },
     )
 }
 
 /// The § 5.20.7.6 block motion vector precision of a block that codes
 /// `NEWMV` and adaptive MVD as `(block_has_newmv, is_adaptive_mvd)` in a
 /// frame whose [`use_per_block_mv_precision`] is `per_block_precision`;
-/// `read` gives each `use_most_probable_precision` and `pb_mv_precision`
+/// `symbols` gives each `use_most_probable_precision` and `pb_mv_precision`
 /// value, and the encoder facade answers it for a target.
 pub(crate) fn block_mv_precision_with(
     per_block_precision: bool,
     neighbour_ctx: &BlockNeighbourContext,
     frame_precision: u8,
     (block_has_newmv, is_adaptive_mvd): (bool, bool),
-    mut read: impl FnMut(TileCdfSelector) -> Result<u8>,
+    symbols: &mut impl InterModeSymbols,
 ) -> Result<BlockPrecisionRecord> {
     if is_adaptive_mvd
         || !block_has_newmv
@@ -244,16 +241,15 @@ pub(crate) fn block_mv_precision_with(
     {
         return Ok(BlockPrecisionRecord::most_probable(frame_precision));
     }
-    let use_most_probable = read(TileCdfSelector::UseMostProbablePrecision {
-        ctx: neighbour_ctx.most_probable_precision_ctx(),
-    })?;
+    let use_most_probable =
+        symbols.use_most_probable_precision(neighbour_ctx.most_probable_precision_ctx());
     if use_most_probable != 0 {
         return Ok(BlockPrecisionRecord::most_probable(frame_precision));
     }
-    let pb_mv_precision = read(TileCdfSelector::PbMvPrecision {
-        ctx: neighbour_ctx.pb_mv_precision_ctx(frame_precision),
-        frame_ctx: usize::from(frame_precision - MV_PRECISION_HALF_PEL),
-    })?;
+    let pb_mv_precision = symbols.pb_mv_precision(
+        neighbour_ctx.pb_mv_precision_ctx(frame_precision),
+        usize::from(frame_precision - MV_PRECISION_HALF_PEL),
+    );
     let adjusted = MV_PRECISION_ONE_PEL
         .max(frame_precision - 2)
         .checked_sub(pb_mv_precision)

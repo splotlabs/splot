@@ -69,33 +69,8 @@ impl TileCdfSubset {
             TileCdfSelector::CdefIndex0 { ctx } => {
                 read_row(symbols, row_at(tile.cdef_index0(), ctx))
             }
-            TileCdfSelector::CompRef0 { ctx, ref_idx } => {
-                read_row(symbols, row_at(row_at(rows.comp_ref0(), ctx), ref_idx))
-            }
-            TileCdfSelector::CompRef1 {
-                ctx,
-                bit_type,
-                ref_idx,
-            } => {
-                let bank = row_at(row_at(rows.comp_ref1(), ctx), bit_type);
-                read_row(symbols, row_at(bank, ref_idx))
-            }
-            TileCdfSelector::IsJoint { ctx } => read_row(symbols, row_at(rows.is_joint(), ctx)),
-            TileCdfSelector::CompoundModeNonJoint { ctx } => {
-                read_row(symbols, row_at(rows.compound_mode_non_joint(), ctx))
-            }
-            TileCdfSelector::CompoundModeSameRefs { ctx } => {
-                read_row(symbols, row_at(rows.compound_mode_same_refs(), ctx))
-            }
             TileCdfSelector::UseAmvd { index, ctx } => {
                 read_row(symbols, row_at(row_at(rows.use_amvd(), index), ctx))
-            }
-            TileCdfSelector::UseMostProbablePrecision { ctx } => {
-                read_row(symbols, row_at(rows.use_most_probable_precision(), ctx))
-            }
-            TileCdfSelector::PbMvPrecision { ctx, frame_ctx } => {
-                let bank = row_at(rows.pb_mv_precision(), ctx);
-                read_row(symbols, row_at(bank, frame_ctx))
             }
             TileCdfSelector::ExplicitBawp { ctx } => {
                 read_row(symbols, row_at(rows.explicit_bawp(), ctx))

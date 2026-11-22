@@ -392,20 +392,13 @@ pub(super) fn decode_compound_inter_block(
             ref_counts: neighbour_ctx.ref_counts(),
             ref_distance_nonnegative,
         },
-        tile_offset,
     )?;
     let compound_is_joint_ctx = facts.is_joint_context(pair)?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);
     let new_mv_context = new_mv_ctx_from_neighbours(block_ctx, tip_ref_pair, neighbour_ctx);
-    let mut compound = read_compound_mode_syntax(
-        cdfs,
-        symbols,
-        pair,
-        new_mv_context,
-        compound_is_joint_ctx,
-        tile_offset,
-    )?;
+    let mut compound =
+        read_compound_mode_syntax(cdfs, symbols, pair, new_mv_context, compound_is_joint_ctx);
     if compound_switchable_opfl_reachable(opfl_refine_type, facts, compound, n4w, n4h)? {
         compound.use_optflow = read_compound_use_optflow_syntax(cdfs, symbols, compound.y_mode);
     }
@@ -473,7 +466,6 @@ pub(super) fn decode_compound_inter_block(
         frame_mv_config.precision(),
         compound.y_mode.has_newmv(),
         use_amvd,
-        tile_offset,
     )?;
     let joint = (compound.y_mode == CompoundYMode::JointNew)
         .then(|| compound_joint_mv_projection(facts, compound.ref_frame0, compound.ref_frame1))

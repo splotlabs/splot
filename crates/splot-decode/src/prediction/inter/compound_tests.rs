@@ -46,10 +46,15 @@ fn read_compound_average_syntax(
     symbols: &mut SymbolDecoder<'_>,
     input: CompoundParseInput,
     is_joint_ctx: usize,
-    tile_offset: ByteOffset,
 ) -> Result<CompoundBlockSyntax> {
-    let pair = read_compound_reference_pair(cdfs, symbols, input, tile_offset)?;
-    read_compound_mode_syntax(cdfs, symbols, pair, 0, is_joint_ctx, tile_offset)
+    let pair = read_compound_reference_pair(cdfs, symbols, input)?;
+    Ok(read_compound_mode_syntax(
+        cdfs,
+        symbols,
+        pair,
+        0,
+        is_joint_ctx,
+    ))
 }
 
 #[test]
@@ -72,14 +77,8 @@ fn compound_average_syntax_roundtrips_through_symbol_encoder() {
 
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let syntax = read_compound_average_syntax(
-        &mut dec_tile,
-        &mut symbols,
-        default_input(),
-        1,
-        ByteOffset::new(0),
-    )
-    .unwrap();
+    let syntax =
+        read_compound_average_syntax(&mut dec_tile, &mut symbols, default_input(), 1).unwrap();
 
     assert_eq!(
         syntax,
@@ -129,14 +128,8 @@ fn non_joint_new_mv_modes_roundtrip_through_symbol_encoder() {
 
         let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&bytes);
-        let syntax = read_compound_average_syntax(
-            &mut dec_tile,
-            &mut symbols,
-            default_input(),
-            1,
-            ByteOffset::new(0),
-        )
-        .unwrap();
+        let syntax =
+            read_compound_average_syntax(&mut dec_tile, &mut symbols, default_input(), 1).unwrap();
 
         assert_eq!(syntax.y_mode, y_mode);
         symbols.exit_symbol().unwrap();
@@ -196,9 +189,7 @@ fn compound_average_reads_is_joint_context_zero() {
     let input = default_input();
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let syntax =
-        read_compound_average_syntax(&mut dec_tile, &mut symbols, input, 0, ByteOffset::new(0))
-            .unwrap();
+    let syntax = read_compound_average_syntax(&mut dec_tile, &mut symbols, input, 0).unwrap();
 
     assert_eq!(syntax.y_mode, CompoundYMode::NearNear);
     symbols.exit_symbol().unwrap();
@@ -251,9 +242,7 @@ fn compound_average_reads_same_ref_compound_ref_symbols() {
     input.num_same_ref_compound = 2;
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let syntax =
-        read_compound_average_syntax(&mut dec_tile, &mut symbols, input, 1, ByteOffset::new(0))
-            .unwrap();
+    let syntax = read_compound_average_syntax(&mut dec_tile, &mut symbols, input, 1).unwrap();
 
     assert_eq!(syntax.ref_frame0, 0);
     assert_eq!(syntax.ref_frame1, 1);
@@ -306,8 +295,7 @@ fn compound_reference_pair_roundtrips_three_ranked_refs() {
     input.num_same_ref_compound = 2;
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let pair = read_compound_reference_pair(&mut dec_tile, &mut symbols, input, ByteOffset::new(0))
-        .unwrap();
+    let pair = read_compound_reference_pair(&mut dec_tile, &mut symbols, input).unwrap();
 
     assert_eq!(pair, (0, 1));
     symbols.exit_symbol().unwrap();
@@ -336,9 +324,7 @@ fn compound_average_reads_same_reference_mode_symbol() {
     input.num_same_ref_compound = 2;
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let syntax =
-        read_compound_average_syntax(&mut dec_tile, &mut symbols, input, 1, ByteOffset::new(0))
-            .unwrap();
+    let syntax = read_compound_average_syntax(&mut dec_tile, &mut symbols, input, 1).unwrap();
 
     assert_eq!(syntax.ref_frame0, 0);
     assert_eq!(syntax.ref_frame1, 0);
@@ -378,15 +364,7 @@ fn same_reference_compound_mode_mapping_is_complete() {
         let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&bytes);
 
-        let syntax = read_compound_mode_syntax(
-            &mut dec_tile,
-            &mut symbols,
-            (0, 0),
-            0,
-            0,
-            ByteOffset::new(0),
-        )
-        .unwrap();
+        let syntax = read_compound_mode_syntax(&mut dec_tile, &mut symbols, (0, 0), 0, 0);
 
         assert_eq!(syntax.y_mode, expected, "symbol {symbol}");
         assert_eq!([syntax.ref_frame0, syntax.ref_frame1], [0, 0]);
@@ -420,14 +398,8 @@ fn compound_average_accepts_joint_mode_without_non_joint_symbol() {
 
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let syntax = read_compound_average_syntax(
-        &mut dec_tile,
-        &mut symbols,
-        default_input(),
-        1,
-        ByteOffset::new(0),
-    )
-    .unwrap();
+    let syntax =
+        read_compound_average_syntax(&mut dec_tile, &mut symbols, default_input(), 1).unwrap();
 
     assert_eq!(syntax.y_mode, CompoundYMode::JointNew);
     assert_eq!(syntax.ref_frame0, 0);
@@ -455,14 +427,8 @@ fn compound_average_reads_global_global_mode() {
 
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let syntax = read_compound_average_syntax(
-        &mut dec_tile,
-        &mut symbols,
-        default_input(),
-        1,
-        ByteOffset::new(0),
-    )
-    .unwrap();
+    let syntax =
+        read_compound_average_syntax(&mut dec_tile, &mut symbols, default_input(), 1).unwrap();
 
     assert_eq!(syntax.y_mode, CompoundYMode::GlobalGlobal);
     assert_eq!([syntax.mv0, syntax.mv1], [Mv::ZERO; 2]);
@@ -490,13 +456,7 @@ fn compound_average_does_not_gate_residual_geometry_before_reading_symbols() {
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
     let before = symbols.symbol_count();
-    let result = read_compound_average_syntax(
-        &mut dec_tile,
-        &mut symbols,
-        default_input(),
-        1,
-        ByteOffset::new(0),
-    );
+    let result = read_compound_average_syntax(&mut dec_tile, &mut symbols, default_input(), 1);
 
     assert!(result.is_ok());
     assert!(symbols.symbol_count() > before);
