@@ -739,6 +739,7 @@ fn encode_rejects_conflicting_rate_control_flags() {
         (&["--lossless", "--bitrate", "100"], "cannot be used with"),
         (&["--lossless", "--qp", "10"], "cannot be used with"),
         (&["--lossless", "--film-grain"], "cannot be used with"),
+        (&["--qp", "0"], "0 is not in 1..=303"),
         (&["--crf", "20", "--bitrate", "100"], "cannot be used with"),
         (&["--rc", "cbr"], "--bitrate <BITRATE>"),
         (&["--two-pass"], "--bitrate <BITRATE>"),

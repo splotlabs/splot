@@ -13,7 +13,7 @@ Options:
   -o, --output <OUTPUT>
           Output IVF file
       --qp <QP>
-          Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits
+          Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits; `--lossless` codes 0
       --lossless
           Lossless: every frame at `base_q_idx` 0, so the decoder output equals the input samples
       --crf <CRF>

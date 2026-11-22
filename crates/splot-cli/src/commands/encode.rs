@@ -27,8 +27,8 @@ pub(crate) struct EncodeArgs {
     /// Output IVF file.
     #[arg(short = 'o', long)]
     output: PathBuf,
-    /// Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits.
-    #[arg(long, conflicts_with_all = ["crf", "bitrate"])]
+    /// Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits; `--lossless` codes 0.
+    #[arg(long, conflicts_with_all = ["crf", "bitrate"], value_parser = clap::value_parser!(u16).range(1..=303))]
     qp: Option<u16>,
     /// Lossless: every frame at `base_q_idx` 0, so the decoder output equals the input samples.
     #[arg(long, conflicts_with_all = ["qp", "crf", "bitrate", "max_bitrate", "film_grain"])]
