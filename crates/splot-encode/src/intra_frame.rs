@@ -72,8 +72,9 @@ pub(crate) struct IntraFrameCoder {
     /// [`Self::preset`].
     screen: Option<PresetParams>,
     references: EncoderReferences,
-    /// The content interpretation OBU of every key frame; empty for none.
-    content_obu: Vec<u8>,
+    /// The content interpretation and HDR metadata OBUs of every key frame;
+    /// empty for none.
+    content_obus: Vec<u8>,
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
@@ -286,6 +287,7 @@ impl IntraFrameCoder {
                 df_par_bits_extra: preset.deblock_offset_bits.saturating_sub(3),
                 interintra: preset.interintra,
                 bawp: preset.bawp,
+                crop: config.crop,
                 parity_hiding: preset.parity_hiding,
                 long_term_frame_id_bits: preset.long_term_id_bits,
                 implicit_output: preset.implicit_output,
@@ -307,7 +309,7 @@ impl IntraFrameCoder {
         Ok(Self {
             params,
             references,
-            content_obu: config.content.obu(config.frame_rate)?,
+            content_obus: config.content.obus(config.frame_rate)?,
             sequence,
             view,
             bit_depth: config.bit_depth,
@@ -400,14 +402,14 @@ impl FrameCoder for IntraFrameCoder {
             .map_err(coding("reference update"))
     }
 
-    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
+    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>> {
         let seed = self.grain_active.then(|| {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
         });
-        let unit = gop::show_existing_unit(&self.view, slot, seed)?;
+        let unit = gop::show_existing_unit(&self.view, slot, order_hint, seed)?;
         self.references
-            .show_existing(slot)
+            .show_existing(slot, order_hint.is_none())
             .map_err(coding("show-existing frame"))?;
         Ok(unit)
     }
@@ -693,7 +695,7 @@ impl IntraFrameCoder {
         let segments = segments.map_or(Vec::new(), |(map, _)| map);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         let key_obus = if plan.frame_type == FrameType::Key {
-            [self.content_obu.as_slice(), &grain_obu].concat()
+            [self.content_obus.as_slice(), &grain_obu].concat()
         } else {
             grain_obu
         };

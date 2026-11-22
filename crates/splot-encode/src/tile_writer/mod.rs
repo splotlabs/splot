@@ -330,6 +330,10 @@ thread_local! {
     /// Leaves of the final passes on this thread that code explicit CFL
     /// alphas with alpha 0 in one plane.
     pub(crate) static CFL_ZERO_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// IntraBC leaves of the final passes on this thread under 8 samples on
+    /// a side, and those of them that code chroma.
+    pub(crate) static SMALL_INTRABC: core::cell::Cell<[usize; 2]> =
+        const { core::cell::Cell::new([0; 2]) };
     /// Intra leaves of the final passes on this thread that code a DIP
     /// prediction that only the wider DIP search offers.
     pub(crate) static DIP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -708,6 +712,11 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         coder: &mut impl ResidualCoder,
     ) -> Result<Vec<TransformBlock>> {
         let mut blocks = self.syntax.plan_intrabc_leaf(leaf, modes, tx_partition)?;
+        #[cfg(test)]
+        if self.filters.is_some() && leaf.dimensions()?.0.min(leaf.dimensions()?.1) < 8 {
+            let [small, chroma] = SMALL_INTRABC.get();
+            SMALL_INTRABC.set([small + 1, chroma + usize::from(leaf.has_chroma())]);
+        }
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
         self.syntax.write_use_intrabc(leaf, Some(skip), self.sink)?;
         self.syntax.write_segment_id(leaf, skip, self.sink)?;

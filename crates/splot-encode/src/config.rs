@@ -5,6 +5,7 @@
 
 use core::num::NonZeroU32;
 
+use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow};
 use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
@@ -126,7 +127,8 @@ pub struct Config {
     /// Frame rate as `(numerator, denominator)` frames per second.
     pub frame_rate: (u32, u32),
     /// What the source declares about its samples: colour, range, chroma
-    /// sample position, sample aspect ratio and timing. Nothing by default.
+    /// sample position, sample aspect ratio, timing and HDR metadata. Nothing
+    /// by default.
     pub content: ContentDescription,
     /// Rate-control mode.
     pub rate_control: RateControlMode,
@@ -146,6 +148,11 @@ pub struct Config {
     /// input size per axis, `9..=16`; `None` codes the input size. AV2 has no
     /// superres, so the stream decodes to the coded size.
     pub resize_denominator: Option<u8>,
+    /// Cropping window, in luma samples of the coded frame (after
+    /// [`Self::resize_denominator`]): the stream codes it in the sequence
+    /// header (§ 5.4.1) and decodes to the window (§ 5.18.4.4). `None`, the
+    /// default, codes no window.
+    pub crop: Option<CroppingWindow>,
     /// Film grain: every key frame codes a grain model fitted to the noise of
     /// its source (none under a threshold), and every output frame applies it
     /// (§ 5.14, § 5.18.10.1). Off by default; TIP output frames stay off.
@@ -209,6 +216,7 @@ impl Config {
             tiles: TileLayout::default(),
             keyint: Self::DEFAULT_KEYINT,
             resize_denominator: None,
+            crop: None,
             film_grain: false,
             tune: Tune::Psnr,
             first_pass: Vec::new(),
@@ -220,6 +228,7 @@ impl Config {
     ///
     /// # Errors
     /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
+    /// [`Error::InvalidCrop`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`] or [`Error::Preset`].
@@ -237,6 +246,17 @@ impl Config {
             && !Self::RESIZE_DENOMINATORS.contains(&denominator)
         {
             return Err(Error::InvalidResize { denominator });
+        }
+        let coded = self.coded();
+        let chroma = ChromaFormatIdc::try_new(u32::from(self.chroma.chroma_format_idc()));
+        if let Some(window) = self.crop
+            && !chroma.is_some_and(|chroma| window.fits(coded.width, coded.height, chroma))
+        {
+            return Err(Error::InvalidCrop {
+                window,
+                width: coded.width,
+                height: coded.height,
+            });
         }
         if self.frame_rate.0 == 0 || self.frame_rate.1 == 0 {
             return Err(Error::InvalidFrameRate {
@@ -312,7 +332,8 @@ impl Config {
     /// frames at half size, at the constant qindex [`Self::FIRST_PASS_QP`],
     /// in the mini-GOPs that VBR codes (the preset's
     /// `bitrate_mini_gop_size`), so the first pass sees the second pass's
-    /// prediction structure; no film grain and no first pass of its own.
+    /// prediction structure; no film grain, no cropping window and no first
+    /// pass of its own.
     ///
     /// # Errors
     /// Returns [`Error::Preset`] when the preset overrides do not apply.
@@ -324,6 +345,7 @@ impl Config {
             qp: Self::FIRST_PASS_QP,
         };
         first.film_grain = false;
+        first.crop = None;
         first.first_pass = Vec::new();
         first.preset_overrides.push((
             "mini_gop_size".to_owned(),

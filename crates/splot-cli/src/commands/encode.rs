@@ -14,8 +14,8 @@ use clap::{Args, ValueEnum};
 use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{
-    BitDepth, ChromaSamplePosition, Config, Encoder, FirstPass, Preset, RateControlMode,
-    SourceFrame, ThreadCount, TileLayout, Tune,
+    BitDepth, ChromaSamplePosition, Config, ContentLightLevel, CroppingWindow, Encoder, FirstPass,
+    MasteringDisplay, Preset, RateControlMode, SourceFrame, ThreadCount, TileLayout, Tune,
 };
 
 /// Arguments for `splot encode`.
@@ -91,6 +91,13 @@ pub(crate) struct EncodeArgs {
     /// `--stats` PSNR (against the resized source) are at the coded size.
     #[arg(long, value_name = "D")]
     resize_denominator: Option<u8>,
+    /// Cropping window: cut L, R, T and B luma samples off the left, right,
+    /// top and bottom of the coded frame (after --resize-denominator); the
+    /// stream decodes to the rest. L and T fall on a chroma sample (even for
+    /// 4:2:0, L even for 4:2:2). Off by default. The `--stats` PSNR covers the
+    /// full coded frame.
+    #[arg(long, value_name = "L,R,T,B", value_parser = parse_crop)]
+    crop: Option<CroppingWindow>,
     /// Film grain: each key frame codes a grain model fitted to the noise of
     /// its source, and every output frame applies it at decode; off by
     /// default. The encoder does not denoise, so the stats PSNR does not
@@ -121,6 +128,14 @@ pub(crate) struct EncodeArgs {
     /// Write the frame rate to the stream as timing info; off by default.
     #[arg(long)]
     timing_info: bool,
+    /// HDR mastering display as `G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)`:
+    /// chromaticities in units of 0.00002, luminance in units of 0.0001
+    /// cd/m2 (the SMPTE ST 2086 integers).
+    #[arg(long, value_name = "G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)", value_parser = parse_mastering_display)]
+    mastering_display: Option<MasteringDisplay>,
+    /// HDR content light level, MaxCLL and MaxFALL in cd/m2.
+    #[arg(long, value_name = "CLL,FALL", value_parser = parse_content_light)]
+    content_light: Option<ContentLightLevel>,
     /// Distance between key frames, in frames.
     #[arg(long, default_value_t = Config::DEFAULT_KEYINT)]
     keyint: NonZeroU32,
@@ -156,6 +171,74 @@ fn parse_sar(value: &str) -> Result<(u32, u32), String> {
         .split_once(':')
         .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
         .ok_or_else(|| format!("`{value}` is not W:H"))
+}
+
+/// Parses `--crop L,R,T,B`.
+fn parse_crop(value: &str) -> Result<CroppingWindow, String> {
+    let offsets: Vec<u32> = value
+        .split(',')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("`{value}` is not L,R,T,B"))?;
+    match offsets[..] {
+        [left, right, top, bottom] => Ok(CroppingWindow {
+            left,
+            right,
+            top,
+            bottom,
+        }),
+        _ => Err(format!("`{value}` is not L,R,T,B")),
+    }
+}
+
+/// Parses `--mastering-display G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)`.
+fn parse_mastering_display(value: &str) -> Result<MasteringDisplay, String> {
+    let invalid = || {
+        format!("`{value}` is not G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min), in that order, in integers")
+    };
+    let mut rest = value;
+    let mut pair = |name: &str| {
+        let (x, y) = rest
+            .strip_prefix(name)?
+            .strip_prefix('(')?
+            .split_once(')')
+            .and_then(|(pair, tail)| {
+                rest = tail;
+                pair.split_once(',')
+            })?;
+        Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?))
+    };
+    let mut chromaticity = |name: &str| {
+        let (x, y) = pair(name)?;
+        Some((u16::try_from(x).ok()?, u16::try_from(y).ok()?))
+    };
+    let primaries = [chromaticity("G"), chromaticity("B"), chromaticity("R")];
+    let white_point = chromaticity("WP");
+    let luminance = pair("L");
+    match (primaries, white_point, luminance, rest) {
+        ([Some(green), Some(blue), Some(red)], Some(white_point), Some((max, min)), "") => {
+            Ok(MasteringDisplay {
+                primaries: [green, blue, red],
+                white_point,
+                luminance_max: max,
+                luminance_min: min,
+            })
+        }
+        _ => Err(invalid()),
+    }
+}
+
+/// Parses `--content-light CLL,FALL`.
+fn parse_content_light(value: &str) -> Result<ContentLightLevel, String> {
+    value
+        .split_once(',')
+        .and_then(|(cll, fall)| {
+            Some(ContentLightLevel {
+                max_cll: cll.parse().ok()?,
+                max_fall: fall.parse().ok()?,
+            })
+        })
+        .ok_or_else(|| format!("`{value}` is not CLL,FALL"))
 }
 
 /// Ranges of `splot encode --color-range`.
@@ -299,6 +382,8 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     }
     content.sample_aspect_ratio = args.sar.or(content.sample_aspect_ratio);
     content.timing_info = args.timing_info;
+    content.mastering_display = args.mastering_display;
+    content.content_light_level = args.content_light;
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
     if args.low_delay {
@@ -314,6 +399,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.tiles = args.tiles;
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;
+    config.crop = args.crop;
     config.film_grain = args.film_grain;
     config.tune = match args.tune {
         TuneArg::Psnr => Tune::Psnr,

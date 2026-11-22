@@ -867,8 +867,8 @@ impl FrameCoder for Recording {
         self.coder.commit(frame)
     }
 
-    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
-        self.coder.show_existing_frame(slot)
+    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>> {
+        self.coder.show_existing_frame(slot, order_hint)
     }
 
     fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
@@ -991,7 +991,7 @@ fn order_hints_wrap_and_decode_to_the_encoder_recon() {
                     coded.temporal_unit
                 }
                 crate::gop::GopStep::ShowExisting { slot, .. } => {
-                    coder.show_existing_frame(slot).unwrap()
+                    coder.show_existing_frame(slot, None).unwrap()
                 }
             };
             units.push(unit);
@@ -2068,6 +2068,8 @@ mod cdef_skip;
 mod compound;
 #[path = "intra_frame_content_tests.rs"]
 mod content;
+#[path = "intra_frame_crop_tests.rs"]
+mod crop;
 #[path = "intra_frame_delta_q_tests.rs"]
 mod delta_q;
 #[path = "intra_frame_ext_sdp_tests.rs"]
@@ -2094,6 +2096,8 @@ mod mvpred;
 mod qm;
 #[path = "intra_frame_refine_tests.rs"]
 mod refine;
+#[path = "intra_frame_repeat_tests.rs"]
+mod repeat;
 #[path = "intra_frame_segmentation_tests.rs"]
 mod segmentation;
 #[path = "intra_frame_tf_tests.rs"]

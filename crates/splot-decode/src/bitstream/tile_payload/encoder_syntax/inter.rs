@@ -187,17 +187,21 @@ impl EncoderReferences {
         Ok(())
     }
 
-    /// Records a show-existing frame of `slot` with `derive_sef_order_hint = 1`
-    /// in its own temporal unit (§ 7.21).
+    /// Records a show-existing frame of `slot` in its own temporal unit
+    /// (§ 7.21): with `derive_sef_order_hint = 1` when `derive`, else with an
+    /// explicit `sef_order_hint`, whose output leaves the frame's own output
+    /// untouched (§ 7.21.4).
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] when `slot` holds no hidden frame that is
-    /// still waiting for output.
-    pub fn show_existing(&mut self, slot: u32) -> Result<()> {
+    /// Returns [`EncoderSyntaxError`] when `derive` and `slot` holds no hidden
+    /// frame that is still waiting for output.
+    pub fn show_existing(&mut self, slot: u32, derive: bool) -> Result<()> {
         self.buffer.prepare_for_frame(ObuType::RegularSef, true);
-        self.buffer
-            .mark_sef_derive_output(slot, false)
-            .map_err(rule("show-existing frame"))?;
+        if derive {
+            self.buffer
+                .mark_sef_derive_output(slot, false)
+                .map_err(rule("show-existing frame"))?;
+        }
         self.buffer.note_show_existing();
         Ok(())
     }

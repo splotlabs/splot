@@ -305,6 +305,11 @@ pub struct PresetParams {
     /// `monotonic_output_order_flag = 0` (§ 5.4.1, § 5.18.2), in place of
     /// show-existing frames.
     pub implicit_output: bool,
+    /// An input frame equal on every plane to the frame before it is not
+    /// coded: a show-existing frame with `derive_sef_order_hint = 0`
+    /// (§ 5.18.2) shows that frame's slot again at its display order hint.
+    /// Off in every row (not measured).
+    pub sef_repeat: bool,
     /// `NumRefFrames` (§ 5.4.6), `0..=16`: `0` keeps the default 8 slots
     /// without `explicit_num_ref_frames`; `n` codes `n` slots, which the GOP
     /// planner uses.
@@ -505,6 +510,11 @@ pub struct PresetParams {
     /// nearest of `intrabc_drl + 2` reference block vectors. 0 in every row,
     /// the screen-content rows too: not measured.
     pub intrabc_drl: u8,
+    /// With `intrabc`, leaves under 8 samples on a side, chroma-offset
+    /// leaves among them, get an RD trial of the best copy at or within 4
+    /// samples of a reference block vector. Off in every row, the
+    /// screen-content rows too: not measured.
+    pub intrabc_small: bool,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -1303,6 +1313,7 @@ preset_table! {
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
         long_term_id_bits:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_output:       [false, false, false, false, false, false, false, false, false, false, false],
+        sef_repeat:            [false, false, false, false, false, false, false, false, false, false, false],
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -1356,6 +1367,7 @@ preset_table! {
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {

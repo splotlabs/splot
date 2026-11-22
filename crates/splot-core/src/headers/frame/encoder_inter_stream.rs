@@ -32,6 +32,9 @@ use crate::headers::frame::{
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
+use crate::headers::metadata::{
+    MetadataHdrCll, MetadataHdrMdcv, MetadataPayload, MetadataShortObu, MetadataType, MetadataUnit,
+};
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::span::ByteOffset;
@@ -820,8 +823,10 @@ pub fn encode_tip_output_frame_obu(
 }
 
 /// Serializes an `OBU_REGULAR_SEF` OBU that shows reference slot
-/// `frame_to_show_map_idx` with `derive_sef_order_hint = 1` (§ 5.18.2) and
-/// the `film_grain_config()` of `grain_seed` (see [`KeyFrameTxParams::grain_seed`]).
+/// `frame_to_show_map_idx` (§ 5.18.2) with the `film_grain_config()` of
+/// `grain_seed` (see [`KeyFrameTxParams::grain_seed`]): with
+/// `derive_sef_order_hint = 1`, or with `sef_order_hint` = the low
+/// `OrderHintBits` of `order_hint` when it is given.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a slot outside the sequence's reference
@@ -831,6 +836,7 @@ pub fn encode_tip_output_frame_obu(
 pub fn encode_show_existing_frame_obu(
     seq: &CoreSeqView,
     frame_to_show_map_idx: u32,
+    order_hint: Option<u32>,
     grain_seed: Option<u16>,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     if frame_to_show_map_idx >= seq.num_ref_frames {
@@ -842,7 +848,13 @@ pub fn encode_show_existing_frame_obu(
     w.write_uvlc(0)?; // cur_mfh_id
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
     w.write_bits(frame_to_show_map_idx, ceil_log2(seq.num_ref_frames))?;
-    w.write_flag(true)?; // derive_sef_order_hint
+    w.write_flag(order_hint.is_none())?; // derive_sef_order_hint
+    if let Some(order_hint) = order_hint {
+        w.write_bits(
+            order_hint & ((1 << seq.order_hint_bits) - 1),
+            seq.order_hint_bits,
+        )?; // sef_order_hint
+    }
     write_film_grain_config(&mut w, seq, true, grain_seed)?;
     w.write_trailing_bits(8 - w.bit_len() % 8)?;
     let payload = w.into_bytes();
@@ -1015,6 +1027,55 @@ pub fn encode_content_interpretation_obu(
     annexb_obu(
         ObuType::ContentInterpretation,
         &crate::obu::ParsedObu::ContentInterpretation(*content),
+    )
+}
+
+/// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) with the
+/// `metadata_hdr_cll()` (§ 5.17.5) of `light_level`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] if the OBU does not serialize.
+pub fn encode_hdr_cll_obu(light_level: MetadataHdrCll) -> Result<Vec<u8>, EncoderHeaderError> {
+    hdr_metadata_obu(
+        MetadataType::HdrCll,
+        4,
+        MetadataPayload::HdrCll(light_level),
+    )
+}
+
+/// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) with the
+/// `metadata_hdr_mdcv()` (§ 5.17.6) of `display`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] if the OBU does not serialize.
+pub fn encode_hdr_mdcv_obu(display: MetadataHdrMdcv) -> Result<Vec<u8>, EncoderHeaderError> {
+    hdr_metadata_obu(MetadataType::HdrMdcv, 24, MetadataPayload::HdrMdcv(display))
+}
+
+/// A prefix `OBU_METADATA_SHORT` of `payload_size` bytes for every layer of
+/// its extended layer (`LAYER_GLOBAL`: Table 6.17 lists both types as not
+/// layer-specific) and the whole sequence (`GLOBAL_PERSISTENCE`, § 6.16.3).
+fn hdr_metadata_obu(
+    metadata_type: MetadataType,
+    payload_size: usize,
+    payload: MetadataPayload,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    let obu = MetadataShortObu {
+        metadata_is_suffix: false,
+        muh_layer_idc: 1,
+        muh_cancel_flag: false,
+        muh_persistence_idc: 0,
+        metadata_type,
+        metadata_type_leb128_bytes: 1,
+        unit: Some(MetadataUnit {
+            metadata_type,
+            payload_size,
+            payload,
+        }),
+    };
+    annexb_obu(
+        ObuType::MetadataShort,
+        &crate::obu::ParsedObu::MetadataShort(Box::new(obu)),
     )
 }
 

@@ -108,7 +108,7 @@ fn grain_streams_decode_to_the_recon_plus_grain() {
 }
 
 /// The visible samples of `pictures` as the decoder's raw output.
-fn picture_bytes(pictures: &[Picture]) -> Vec<u8> {
+pub(super) fn picture_bytes(pictures: &[Picture]) -> Vec<u8> {
     let mut out = Vec::new();
     for picture in pictures {
         for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {

@@ -57,7 +57,7 @@ pub mod y4m;
 
 pub use cancel::CancelToken;
 pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode, TileLayout, Tune};
-pub use content::{ChromaSamplePosition, ContentDescription};
+pub use content::{ChromaSamplePosition, ContentDescription, ContentLightLevel, MasteringDisplay};
 pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};
 pub use frame::SourceFrame;
@@ -66,6 +66,7 @@ pub use progress::Progress;
 pub use rate_control::{
     Cbr, ConstantQp, Crf, FirstPass, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };
+pub use splot_core::headers::sequence::CroppingWindow;
 pub use splot_parallel::ThreadCount;
 pub use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 pub use stats::FrameStats;
