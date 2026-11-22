@@ -521,6 +521,50 @@ fn film_grain_headers_code_the_seed_and_the_model() {
     assert_eq!((fg.update_flags, &fg.models[0].model), (1, &model));
 }
 
+/// The HDR metadata OBUs parse back as prefix short OBUs with `LAYER_GLOBAL`
+/// and `GLOBAL_PERSISTENCE`; a cut OBU does not parse.
+#[test]
+fn hdr_metadata_obus_parse_back() {
+    use crate::headers::metadata::parse_metadata_short;
+    let display = MetadataHdrMdcv {
+        primary_chromaticity_x: [8500, 6550, 35400],
+        primary_chromaticity_y: [39850, 2300, 14600],
+        white_point_chromaticity_x: 15635,
+        white_point_chromaticity_y: 16450,
+        luminance_max: 10_000_000,
+        luminance_min: 1,
+    };
+    let light = MetadataHdrCll {
+        max_cll: u16::MAX,
+        max_fall: 0,
+    };
+    for (obu, payload) in [
+        (
+            encode_hdr_mdcv_obu(display).unwrap(),
+            MetadataPayload::HdrMdcv(display),
+        ),
+        (
+            encode_hdr_cll_obu(light).unwrap(),
+            MetadataPayload::HdrCll(light),
+        ),
+    ] {
+        let parsed = parse_annex_b_obus_partial(&obu);
+        assert!(parsed.error.is_none());
+        let [envelope] = &parsed.obus[..] else {
+            unreachable!("one OBU");
+        };
+        assert_eq!(envelope.header.obu_type, ObuType::MetadataShort);
+        let parse = |bytes: &[u8]| {
+            parse_metadata_short(&mut BitReader::new(bytes, ByteOffset::new(0)), bytes.len())
+        };
+        let short = parse(envelope.payload).unwrap();
+        assert!(!short.metadata_is_suffix && !short.muh_cancel_flag);
+        assert_eq!((short.muh_layer_idc, short.muh_persistence_idc), (1, 0));
+        assert_eq!(short.unit.unwrap().payload, payload);
+        assert!(parse(&envelope.payload[..envelope.payload.len() - 2]).is_err());
+    }
+}
+
 #[test]
 fn rejects_out_of_range_inter_inputs() {
     let seq = sequence(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
