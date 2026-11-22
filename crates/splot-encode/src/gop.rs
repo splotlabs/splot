@@ -486,15 +486,13 @@ impl GopFrame {
         let core = match self.frame_type {
             FrameType::Key => {
                 build_key_frame_header(view, qindex, self.order_hint, filters, tx, tiles)
+                    .map_err(header_error)?
             }
-            FrameType::Inter => inter_header(
-                view,
-                refs,
-                &self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles)),
-            )
-            .map(|header| header.core),
-        }
-        .map_err(header_error)?;
+            FrameType::Inter => {
+                let params = self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles));
+                inter_header(view, refs, &params)?.core
+            }
+        };
         match core.display_order_hint() {
             Some(derived) if derived == self.order_hint => Ok(core),
             derived => Err(Error::OrderHintMismatch {
@@ -549,8 +547,7 @@ impl GopFrame {
             view,
             refs,
             &self.inter_params(qindex, filters, (tx, compound, mv_tools, layout)),
-        )
-        .map_err(header_error)?;
+        )?;
         if header.core != expected {
             return Err(Error::Unsupported {
                 what: "an inter frame header that changed after coding",
@@ -667,11 +664,24 @@ impl GopFrame {
     }
 }
 
+/// [`choose_inter_header`] with the parameters of each `reuse_ccso` plane
+/// loaded from its reference, as the decoder loads them (§ 5.18.7.12).
+fn inter_header(
+    view: &CoreSeqView,
+    refs: &EncoderReferences,
+    params: &InterFrameParams,
+) -> Result<EncodedFrameHeader> {
+    let mut header = choose_inter_header(view, refs, params).map_err(header_error)?;
+    refs.resolve_ccso_reuse(&mut header.core)
+        .map_err(header_error)?;
+    Ok(header)
+}
+
 /// The inter header of `params` with an explicit `primary_ref_frame`; with
 /// `choose_primary_ref_frame` the `PRIMARY_REF_CHOOSE` header instead when
 /// the reference the decoder derives (§ 5.18.2) is the explicit one, which
 /// keeps the CDFs and every `DerivedPrimaryRefFrame` use.
-fn inter_header(
+fn choose_inter_header(
     view: &CoreSeqView,
     refs: &EncoderReferences,
     params: &InterFrameParams,

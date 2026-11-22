@@ -886,6 +886,7 @@ impl Search<'_> {
                 source: self.source,
                 lambda: self.lambda,
                 pool: self.pool,
+                reuse: (preset.ccso_reuse > 0).then_some(self.refs),
             },
             usize::from(preset.ccso_candidates),
             preset.ccso_bo_band_log2,

@@ -204,3 +204,128 @@ fn wide_band_offsets_decode_to_the_encoder_recon() {
     let (_, _, off, _) = forced(Preset::new(9).unwrap().params());
     assert!(!off.contains(&true), "{off:?}");
 }
+
+/// Preset 9 with CCSO reuse.
+fn with_reuse() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        ccso_reuse: 1,
+        ..*Preset::new(9).unwrap().params()
+    }))
+}
+
+/// Whether some plane of `core` codes `reuse_ccso`.
+fn reuses_ccso(core: &FrameHeaderCore) -> bool {
+    core.ccso_params
+        .as_ref()
+        .is_some_and(|params| params.planes.iter().any(|plane| plane.reuse_ccso))
+}
+
+/// With `ccso_reuse` and the test hook that takes the cheapest reuse, the
+/// inter frames reuse the saved CCSO parameters of a reference (§ 5.18.7.12)
+/// and the decoder loads them; the stream decodes to the encoder recon and 1,
+/// 2 and 8 threads write the same bytes. Without the hook no frame of this
+/// pan or of a still source reuses at qp 110 to 220 (CCSO off or fresh
+/// parameters cost less). Without the field the hook finds nothing.
+#[test]
+fn ccso_reuse_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let yuv = PixelFormat::Yuv420;
+    let forced = |threads, preset| {
+        crate::loop_filter::ccso::FORCE_REUSE.with(|force| force.set(true));
+        let stream = ccso_stream_with((threads, yuv, 170), preset, reuses_ccso);
+        crate::loop_filter::ccso::FORCE_REUSE.with(|force| force.set(false));
+        stream
+    };
+    let (one, recon, flags, _) = forced(1, with_reuse());
+    assert!(
+        !flags[0] && flags[1..].iter().all(|&flag| flag),
+        "{flags:?}"
+    );
+    assert_same_samples(&decode(&one.concat()), &recon, "ccso reuse");
+    for threads in [2, 8] {
+        assert!(forced(threads, with_reuse()).0 == one, "{threads} threads");
+    }
+    let (_, _, off, _) = forced(1, Preset::new(9).unwrap().params());
+    assert!(!off.contains(&true), "{off:?}");
+    let (_, _, natural, _) = ccso_stream_with((1, yuv, 170), with_reuse(), reuses_ccso);
+    assert!(
+        !natural.contains(&true),
+        "a natural pick: drop the hook {natural:?}"
+    );
+}
+
+/// AVM decodes frames that reuse CCSO parameters to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_ccso_reuse_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    crate::loop_filter::ccso::FORCE_REUSE.with(|force| force.set(true));
+    let stream = ccso_stream_with((1, PixelFormat::Yuv420, 170), with_reuse(), reuses_ccso);
+    crate::loop_filter::ccso::FORCE_REUSE.with(|force| force.set(false));
+    let (units, recon, flags, _) = stream;
+    assert!(flags.contains(&true), "{flags:?}");
+    let avm = avm_decode(&avmdec, &units, (200, 96), BitDepth::Eight, "ccso-reuse");
+    assert!(avm == recon, "AVM output differs");
+}
+
+/// The facade keeps the `ccso_params()` of each reference slot as § 7.23
+/// saves them: after a key frame slot 0 holds the key frame's parameters and
+/// the other slots hold none (only slot 0 is valid, § 7.20), a frame that
+/// refreshes slots overwrites exactly those slots, and a frame that refreshes
+/// none and a show-existing frame leave every slot as it was.
+#[test]
+fn facade_saves_the_ccso_parameters_of_each_slot() {
+    let mut config = config(200, 96, BitDepth::Eight, 9, 170);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    let mut coder = IntraFrameCoder::with_preset(&config, with_reuse()).unwrap();
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, coder.preset.mini_gop_size.min(4));
+    let saved = |coder: &IntraFrameCoder| -> Vec<Option<splot_core::headers::frame::CcsoParams>> {
+        (0..8)
+            .map(|slot| coder.references.ccso_params(slot).cloned())
+            .collect()
+    };
+    let (mut queued, mut cases) = (9, [0usize; 4]);
+    while let Some(len) = planner.next_len(queued, true) {
+        queued -= len;
+        for step in planner.plan(len).unwrap() {
+            let before = saved(&coder);
+            match step {
+                crate::gop::GopStep::Code(plan) => {
+                    let source = panning_frame(&config, plan.display_index as u32);
+                    let mut coded = coder.code_frame(&source, &plan, 170, &[]).unwrap();
+                    let core = coded.reference.as_ref().unwrap().0.ccso_params.clone();
+                    coder.commit(&mut coded).unwrap();
+                    let after = saved(&coder);
+                    for slot in 0..8 {
+                        let refreshed = plan.refresh_frame_flags >> slot & 1 == 1;
+                        let expected = match (plan.frame_type, refreshed) {
+                            (FrameType::Key, _) if slot > 0 => &None,
+                            (_, true) => &core,
+                            (_, false) => &before[slot],
+                        };
+                        assert_eq!(&after[slot], expected, "slot {slot} of {plan:?}");
+                    }
+                    let kind = match (plan.frame_type, plan.refresh_frame_flags) {
+                        (FrameType::Key, _) => 0,
+                        (_, 0) => 1,
+                        _ => 2,
+                    };
+                    cases[kind] += 1;
+                }
+                crate::gop::GopStep::ShowExisting { slot, .. } => {
+                    coder.show_existing_frame(slot).unwrap();
+                    assert_eq!(saved(&coder), before, "show-existing slot {slot}");
+                    cases[3] += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        cases.iter().all(|&count| count > 0),
+        "key, no refresh, refresh, show-existing: {cases:?}"
+    );
+}

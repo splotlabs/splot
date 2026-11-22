@@ -347,6 +347,7 @@ fn ccso_search_classes_match_the_decoder_output() {
             source: &source,
             lambda: Lambda::from_qindex(u32::from(qp), config.bit_depth).unwrap(),
             pool: None,
+            reuse: None,
         };
         let max = config.bit_depth.max_sample();
         for plane in 0..3 {
