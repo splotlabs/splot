@@ -364,8 +364,9 @@ pub struct KeyFrameTxParams {
     /// one `qm_level` (`pic_qm_num_minus_1 = 0`).
     pub segment_alt_q: Option<[i16; 4]>,
     /// `cur_mfh_id = 1` (§ 5.18.2): the frame loads its sequence header from
-    /// the multi-frame header of [`encode_multi_frame_header_obu`]; `false`
-    /// codes `cur_mfh_id = 0`.
+    /// the multi-frame header of
+    /// [`encode_multi_frame_header_obu`](crate::headers::frame::encode_multi_frame_header_obu);
+    /// `false` codes `cur_mfh_id = 0`.
     pub multi_frame_header: bool,
 }
 
@@ -405,8 +406,9 @@ pub(crate) fn write_mfh_reference(
 }
 
 /// The § 5.18.2 state of the multi-frame header of
-/// [`encode_multi_frame_header_obu`], which codes no frame size, deblocking
-/// update or segmentation (§ 5.7); `None` for a frame with `cur_mfh_id = 0`.
+/// [`encode_multi_frame_header_obu`](crate::headers::frame::encode_multi_frame_header_obu),
+/// which codes no frame size, deblocking update or segmentation (§ 5.7);
+/// `None` for a frame with `cur_mfh_id = 0`.
 pub(crate) const fn encoder_mfh_view(
     seq: &CoreSeqView,
     multi_frame_header: bool,
