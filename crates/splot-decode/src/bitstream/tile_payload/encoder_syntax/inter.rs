@@ -559,6 +559,8 @@ struct PlannedInter {
     residual: EncoderInterResidual,
     /// `use_intrabc`: an IntraBC block transforms without DDT (§ 7.15.4).
     use_intrabc: bool,
+    /// The `morph_pred` of an IntraBC leaf.
+    morph: bool,
 }
 
 /// The saved inter state of one region.
@@ -904,7 +906,7 @@ impl IntraTileSyntax {
     pub(super) fn plan_motion_leaf(
         &mut self,
         leaf: &LeafBlock,
-        (motion, intrabc): (EncoderMotion, Option<Mv>),
+        (motion, intrabc): (EncoderMotion, Option<(Mv, bool)>),
         (partition, split): (TxPartition, Option<usize>),
     ) -> Result<Vec<TransformBlock>> {
         let (mi_rows, mi_cols) = self.mi_dimensions();
@@ -923,8 +925,10 @@ impl IntraTileSyntax {
                 workspace,
                 (&self.recon.block_decoded, self.tools.enable_ibp),
             ),
-            Some(mv) => (state.tile.predict_intrabc(&leaf.frontier, mv, workspace))
-                .map(|()| [mv, Mv::default()]),
+            Some((mv, morph)) => (state
+                .tile
+                .predict_intrabc(&leaf.frontier, mv, morph, workspace))
+            .map(|()| [mv, Mv::default()]),
         }
         .map_err(rule("inter prediction"))?;
         let units = inter_residual_units(&leaf.frontier, chroma, self.tools.lossless)
@@ -983,6 +987,7 @@ impl IntraTileSyntax {
             mvs,
             residual: EncoderInterResidual::default(),
             use_intrabc: intrabc.is_some(),
+            morph: intrabc.is_some_and(|(_, morph)| morph),
         });
         for index in 0..blocks.len() {
             if blocks[index].plane > 0 {
@@ -1709,11 +1714,14 @@ impl IntraTileSyntax {
             .is_some_and(|inter| !inter.tile.is_intra_frame())
     }
 
-    /// Takes the planned IntraBC leaf `leaf` and returns its block vector.
-    pub(super) fn take_planned_intrabc(&mut self, leaf: &LeafBlock) -> Result<Mv> {
+    /// Takes the planned IntraBC leaf `leaf` and returns its block vector
+    /// and `morph_pred`.
+    pub(super) fn take_planned_intrabc(&mut self, leaf: &LeafBlock) -> Result<(Mv, bool)> {
         let state = self.inter_state()?;
         match state.planned.take() {
-            Some(planned) if planned.use_intrabc && planned.leaf == *leaf => Ok(planned.mvs[0]),
+            Some(planned) if planned.use_intrabc && planned.leaf == *leaf => {
+                Ok((planned.mvs[0], planned.morph))
+            }
             _ => Err(NO_INTER_LEAF),
         }
     }

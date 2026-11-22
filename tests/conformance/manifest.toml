@@ -1251,6 +1251,17 @@ is_ref_motion_field_eligible_by_frame_type). avmdec and splot decode reject \
 it; the validator has no reference-state TIP rule yet, so it validates clean."""
 expect = "clean"
 
+[[vector]]
+path = "vectors/invalid/syn-intrabc-morph-offset-dv-512x128.ivf"
+description = """
+Non-conformant on purpose (DECODE-SELECTABLE-TRANSFORM-RECORDS): an encoder key \
+frame with 2x2 tiles in which an IntraBC leaf with morph_pred 1 copies from the \
+top row of its tile, so its block vector moved by (-1, -1) leaves the tile, \
+which § 6.19.5.4 forbids (is_offset_mv_valid through § 6.19.7.12 is_mv_valid). \
+avmdec and splot decode reject it; the validator has no IntraBC vector rule, \
+so it validates clean."""
+expect = "clean"
+
 # --- Diverse AVM positive vectors (avm-positive-vector-generation) ---
 # All from project-owned synthetic YUV input; --lag-in-frames=0 keeps the IVF
 # frame counts internally consistent.

@@ -406,16 +406,21 @@ fn intrabc_stream(
     case: (usize, PixelFormat, BitDepth),
     preset: &'static PresetParams,
 ) -> (Vec<u8>, Vec<u8>) {
-    source_stream(case, preset, (256, tiled_text))
+    source_stream(case, preset, (256, tiled_text, 0))
 }
 
-/// [`intrabc_stream`] of `source` frames `width` samples wide.
+/// [`intrabc_stream`] of `source` frames `width` samples wide, in
+/// `1 << tiles_log2` tile rows and columns.
 fn source_stream(
     (threads, chroma, bit_depth): (usize, PixelFormat, BitDepth),
     preset: &'static PresetParams,
-    (width, source): (u32, fn(&Config, u32) -> SourceFrame),
+    (width, source, tiles_log2): (u32, fn(&Config, u32) -> SourceFrame, u8),
 ) -> (Vec<u8>, Vec<u8>) {
     let mut config = config(width, 128, bit_depth, 9, 90);
+    config.tiles = TileLayout::Uniform {
+        cols_log2: tiles_log2,
+        rows_log2: tiles_log2,
+    };
     config.chroma = chroma;
     config.keyint = core::num::NonZeroU32::MIN;
     config.threads = splot_parallel::ThreadCount::from(threads);
@@ -539,7 +544,7 @@ fn subpel_stream(subpel: bool, case: (usize, PixelFormat, BitDepth)) -> (Vec<u8>
     };
     crate::mode_decision::FORCE_INTRABC.set(true);
     crate::tile_writer::QUARTER_INTRABC.set(0);
-    let (units, recon) = source_stream(case, preset, (640, half_sample_copy));
+    let (units, recon) = source_stream(case, preset, (640, half_sample_copy, 0));
     crate::mode_decision::FORCE_INTRABC.set(false);
     (units, recon, crate::tile_writer::QUARTER_INTRABC.get())
 }
@@ -1192,4 +1197,114 @@ fn avm_decodes_fast_decode_frames_like_splot() {
     let (units, recon, ..) = fast_decode_stream(true, 2);
     let avm = avm_decode(&avmdec, &units, (136, 72), BitDepth::Ten, "fast-decode");
     assert!(avm == recon, "fast decode: AVM output differs");
+}
+
+/// A 512x128 frame of smooth luma with two 32x32 blocks of noise at
+/// (288, 96) and (416, 96), in the lower-right tile of a 2x2 tile layout:
+/// the second block and its 8-sample top and left margin are the first ones a quarter
+/// of the sample range brighter, except their first 8x8 luma samples,
+/// which are equal, so only a brightness-adapted copy matches.
+fn brighter_copy(config: &Config, index: u32) -> SourceFrame {
+    let max = f64::from(config.bit_depth.max_sample());
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
+        let (w, h) = (size.width(), size.height());
+        if plane > 0 {
+            return vec![(max / 2.0) as u16 + 5 * plane as u16; w * h];
+        }
+        let sample = |x: usize, y: usize| {
+            let v = (x * 7919 + y * 104_729 + index as usize * 31).wrapping_mul(2_654_435_761);
+            let noise = f64::from((v >> 7) as u32 % 1000) / 1000.0;
+            let (fx, fy) = (x as f64, y as f64);
+            let smooth = 0.4 + 0.1 * (fx * 0.21 + fy * 0.13).sin();
+            let block = (96..128).contains(&y) && (288..320).contains(&x);
+            (max * if block { 0.2 + 0.4 * noise } else { smooth }).round() as u16
+        };
+        let mut samples: Vec<u16> = (0..w * h).map(|i| sample(i % w, i / w)).collect();
+        let offset = (max / 4.0) as u16;
+        for y in 88..128 {
+            for x in 0..40 {
+                let first = (96..104).contains(&y) && (8..16).contains(&x);
+                let a = samples[y * w + 280 + x];
+                samples[y * w + 408 + x] = if first { a } else { a + offset };
+            }
+        }
+        samples
+    });
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// Two key frames of [`brighter_copy`] in 2x2 tiles with local-area
+/// IntraBC, `bawp`, `integer_mv` (for `allow_screen_content_tools`) and
+/// `intrabc_morph` as `morph` says; `forced` makes IntraBC the only
+/// candidate where it has one and keeps only the `morph_pred = 1` twin.
+/// The units, the encoder recon and the count of final-pass leaves with
+/// `morph_pred = 1`.
+fn morph_stream(
+    (morph, forced): (bool, bool),
+    case: (usize, PixelFormat, BitDepth),
+) -> (Vec<u8>, Vec<u8>, usize) {
+    let mut preset = *small_intrabc_preset(false);
+    (preset.bawp, preset.integer_mv, preset.intrabc_morph) = (true, true, morph);
+    let preset = Box::leak(Box::new(preset));
+    crate::mode_decision::FORCE_INTRABC.set(forced);
+    crate::intrabc::FORCE_MORPH.set(forced);
+    crate::tile_writer::MORPH_INTRABC.set(0);
+    let (units, recon) = source_stream(case, preset, (512, brighter_copy, 1));
+    crate::mode_decision::FORCE_INTRABC.set(false);
+    crate::intrabc::FORCE_MORPH.set(false);
+    (units, recon, crate::tile_writer::MORPH_INTRABC.get())
+}
+
+/// With `intrabc_morph` and only the morph twins kept (one thread), the
+/// IntraBC leaves of [`brighter_copy`], which lie in a tile that does not
+/// start at (0, 0), code `morph_pred = 1` (§ 7.13.3.26) in both bit depths
+/// and decode to the encoder recon; without the field none do. The
+/// searched streams decode to the encoder recon in every chroma format and
+/// both bit depths, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn morph_intrabc_frames_decode_to_the_encoder_recon() {
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let case = (1, PixelFormat::Yuv420, bit_depth);
+        assert_eq!(morph_stream((false, true), case).2, 0, "{bit_depth:?}");
+        let (units, recon, morph) = morph_stream((true, true), case);
+        assert!(morph > 0, "{bit_depth:?}");
+        assert_same_samples(&decode(&units), &recon, "forced morph");
+    }
+    each_case(CHROMAS, |chroma| {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let (units, recon, _) = morph_stream((true, false), (2, chroma, bit_depth));
+            let name = format!("{chroma:?} {bit_depth:?}");
+            assert_same_samples(&decode(&units), &recon, &name);
+        }
+    });
+    let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
+    let (one, ..) = morph_stream((true, false), case(1));
+    each_case([2, 8], |threads| {
+        let (bytes, ..) = morph_stream((true, false), case(threads));
+        assert!(bytes == one, "{threads} threads");
+    });
+}
+
+/// AVM decodes key frames with forced morph twins ([`morph_stream`]) to
+/// the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_morph_intrabc_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv444, BitDepth::Ten),
+    ] {
+        let (units, recon, morph) = morph_stream((true, true), (1, chroma, bit_depth));
+        assert!(morph > 0, "{chroma:?} {bit_depth:?}");
+        let name = format!("morph-intrabc-{chroma:?}");
+        let avm = avm_decode(&avmdec, &[units], (512, 128), bit_depth, &name);
+        assert!(avm == recon, "{chroma:?} {bit_depth:?}: AVM output differs");
+    }
 }

@@ -7,7 +7,7 @@ use super::lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitActivity, WienerNsL
 use super::lr_syntax::read_loop_restoration_for_call;
 use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state};
 use super::{
-    BLOCK_8X32, BLOCK_64X64, BlockSize, CALL_CFL_ALLOWED_IN_SDP, CALL_HAS_PARENT,
+    BLOCK_8X32, BLOCK_64X64, BLOCK_128X128, BlockSize, CALL_CFL_ALLOWED_IN_SDP, CALL_HAS_PARENT,
     CALL_PARENT_64X64, ChildCallSink, ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart,
     DecodeLimitName, DecodeLimits, DecodeTileWorkUnit, GeneralIntraLeafMode, PartitionAllowedInput,
     PartitionContextInput, PartitionDecisionMemo, PartitionTreeType, PartitionType,
@@ -137,6 +137,8 @@ struct TreeWalker<'payload> {
     chroma_ref: ChromaRefGeometry,
     /// The current superblock's § 5.20.2.1 `bru_mode`.
     bru_mode: u8,
+    /// § 5.20.3.1 `AllowExtraIBCRange`.
+    allow_extra_ibc_range: bool,
 }
 
 /// The leaf callbacks and parser states one superblock walk lends its leaves.
@@ -172,6 +174,10 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
     /// The § 5.20.2.1 `bru_mode` of the last superblock the walk decoded.
     pub(crate) const fn bru_mode(&self) -> u8 {
         self.walker.bru_mode
+    }
+
+    pub(crate) const fn allow_extra_ibc_range(&self) -> bool {
+        self.walker.allow_extra_ibc_range
     }
 
     pub(crate) const fn sb_mask(&self) -> usize {
@@ -245,6 +251,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 partition_memo: PartitionDecisionMemo::default(),
                 chroma_ref: ChromaRefGeometry::new(0, 0, frame.sb_size),
                 bru_mode: BRU_ACTIVE,
+                allow_extra_ibc_range: false,
             },
             sb_size4,
             next_sb_row,
@@ -376,7 +383,7 @@ where
             let chroma = call.with_tree_type(PartitionTreeType::ChromaPart);
             return walk_detached::<_, _, _, _, ACTIVE>(frame, walker, hooks, chroma, chroma_ref);
         }
-        if call.b_size == frame.sb_size {
+        let (partition, mut call) = if call.b_size == frame.sb_size {
             read_loop_restoration_for_call(
                 *frame,
                 call,
@@ -386,13 +393,20 @@ where
                 &mut walker.lr_activity,
                 walker.limits,
             )?;
-        }
-        let (partition, mut call) = walker.read_partition_step::<ACTIVE>(
-            frame,
-            call,
-            hooks.mi_size_state,
-            hooks.work_unit.cdf_mut().tile_cdfs_mut(),
-        )?;
+            walker.read_root_partition_step::<ACTIVE>(
+                frame,
+                call,
+                hooks.mi_size_state,
+                hooks.work_unit.cdf_mut().tile_cdfs_mut(),
+            )?
+        } else {
+            walker.read_partition_step::<ACTIVE>(
+                frame,
+                call,
+                hooks.mi_size_state,
+                hooks.work_unit.cdf_mut().tile_cdfs_mut(),
+            )?
+        };
         if partition != PartitionType::None {
             let sub_size = valid_subsize(partition, call.b_size)?;
             let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
@@ -512,6 +526,22 @@ fn visit_partition_children<S: ChildCallSink>(
 }
 
 impl TreeWalker<'_> {
+    /// [`Self::read_partition_step`] for the superblock root, which also sets
+    /// the § 5.20.3.1 `AllowExtraIBCRange` of the superblock.
+    #[inline(never)]
+    fn read_root_partition_step<const ACTIVE: bool>(
+        &mut self,
+        frame: &TilePartitionFrameFacts,
+        node: TilePartitionCall,
+        mi_size_state: &TileMiSizeState,
+        cdfs: &mut super::cdf::TileCdfSubset,
+    ) -> Result<(PartitionType, TilePartitionCall), TilePartitionTraversalError> {
+        let step = self.read_partition_step::<ACTIVE>(frame, node, mi_size_state, cdfs)?;
+        self.allow_extra_ibc_range = frame.sb_size.index() == BLOCK_128X128
+            && matches!(step.0, PartitionType::Horz | PartitionType::Split);
+        Ok(step)
+    }
+
     /// Reads the § 5.20.3.2 partition of `call`, then the `CflAllowedInSdp`
     /// state it sets.
     #[allow(

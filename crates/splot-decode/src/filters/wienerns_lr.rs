@@ -10,6 +10,7 @@ const MI_SIZE: usize = 4;
 const WIENERNS_LR_TX_SKIP_UNWRITTEN: u8 = u8::MAX;
 
 mod diagnostics;
+pub(crate) mod intrabc_mv_valid;
 pub(crate) mod intrabc_records;
 pub(crate) mod intrabc_ref_mv_stack;
 pub(crate) mod recon;

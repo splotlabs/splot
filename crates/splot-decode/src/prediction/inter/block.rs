@@ -1875,7 +1875,6 @@ fn decode_block(
         frame_mv_config.precision(),
         single_mode == SINGLE_MODE_NEWMV,
         use_amvd,
-        tile_offset,
     )?;
 
     let mvd = if single_mode == SINGLE_MODE_NEWMV {

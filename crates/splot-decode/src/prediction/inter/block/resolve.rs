@@ -125,8 +125,12 @@ pub(super) fn resolve_parsed_leaves(
                     else {
                         return Err(invalid_inter_tile_scheduling_state());
                     };
-                    *slot =
-                        LeafSlot::Intrabc(resolve_pending_intrabc(block, state, intrabc_sb_h4)?);
+                    *slot = LeafSlot::Intrabc(resolve_pending_intrabc(
+                        block,
+                        state,
+                        intrabc_sb_h4,
+                        superblock.allow_extra_ibc_range,
+                    )?);
                 }
                 LeafSlot::Inter(_) | LeafSlot::Intrabc(_) | LeafSlot::Spent => {}
             }
@@ -143,6 +147,7 @@ fn resolve_pending_intrabc(
     pending: PendingIntrabcBlock,
     state: &mut MvResolutionState<'_>,
     sb_h4: usize,
+    allow_extra_ibc_range: bool,
 ) -> Result<intrabc::IntrabcReconCommand> {
     use crate::filters::wienerns_lr::intrabc_records::resolve_pending_intrabc_info;
     use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
@@ -219,6 +224,14 @@ fn resolve_pending_intrabc(
         n4h,
         info,
         subsampling,
+        state.tile_offset,
+    )?;
+    crate::filters::wienerns_lr::intrabc_mv_valid::check_intrabc_block_vector(
+        state.core,
+        &frontier,
+        (n4w, n4h),
+        (sb_h4, allow_extra_ibc_range),
+        info,
         state.tile_offset,
     )?;
     let command = intrabc::IntrabcReconCommand::new(
