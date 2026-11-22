@@ -1581,7 +1581,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
                 .map_err(kernel)?;
         }
-        let levels = self.quantize(syntax, tx, (&params, &forward), coeffs, dequant);
+        let levels = self.levels(syntax, tx, (&params, &forward), coeffs, dequant);
         self.scratch = scratch;
         Ok(TransformDecision {
             tx_type: tx.tx_type,
@@ -1729,8 +1729,8 @@ impl SourceResidualCoder<'_> {
                 ..*u
             };
             let u_levels =
-                self.quantize(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
-            let v_levels = self.quantize(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
+                self.levels(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
+            let v_levels = self.levels(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
             out.push([u_levels, v_levels, vec![cctx]]);
         }
         Ok(out)
@@ -1767,6 +1767,26 @@ impl SourceResidualCoder<'_> {
         Ok(cost.cost(self.lambda))
     }
 
+    /// The levels of the forward coefficients `coeffs` of `tx`: the
+    /// coefficients themselves in a lossless frame, where § 7.14.4 dequantizes
+    /// a level `l` to `8 * l`, else [`Self::quantize`]. The lossless copy stays
+    /// out of `quantize`, whose lossy code it would slow down.
+    fn levels(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        blocks: (&DequantBlockParams, &ForwardTransform2d),
+        coeffs: &[i32],
+        dequant: &mut Vec<i32>,
+    ) -> core::result::Result<Vec<i32>, TileWriterError> {
+        if !self.lossless {
+            return self.quantize(syntax, tx, blocks, coeffs, dequant);
+        }
+        dequant.clear();
+        dequant.extend(coeffs.iter().map(|&c| c * 8));
+        Ok(coeffs.to_vec())
+    }
+
     /// The levels of the forward coefficients `coeffs` of `tx`: TCQ, RDOQ or
     /// the deadzone quantizer as the preset and the trial ask, with parity
     /// hiding.
@@ -1780,13 +1800,6 @@ impl SourceResidualCoder<'_> {
     ) -> core::result::Result<Vec<i32>, TileWriterError> {
         let len = coeffs.len();
         dequant.resize(len, 0);
-        if self.lossless {
-            dequant
-                .iter_mut()
-                .zip(coeffs)
-                .for_each(|(dq, &c)| *dq = c * 8);
-            return Ok(coeffs.to_vec());
-        }
         let use_tcq = syntax.uses_tcq(tx);
         let mut levels = vec![0; len];
         let (block, lambda_q8) = self.rdoq_block(tx, params, forward)?;
