@@ -1051,7 +1051,7 @@ impl IntraTileSyntax {
                 )
                 .map_err(rule("inter residual"))?;
         }
-        let _qm = super::super::FrameQmScope::install(self.tools.qm);
+        let _quant = self.tools.quant_scopes();
         state
             .tile
             .add_residual(
