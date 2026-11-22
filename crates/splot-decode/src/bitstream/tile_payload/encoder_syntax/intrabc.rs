@@ -23,7 +23,7 @@ use crate::prediction::inter::read_mv::{
 /// The block vectors one leaf may code, see
 /// [`IntraTileSyntax::intrabc_vectors`].
 #[derive(Clone, Debug)]
-pub struct IntrabcVectors(BvFrame, Option<LocalArea>, bool);
+pub struct IntrabcVectors(BvFrame, Option<LocalArea>, bool, bool);
 
 impl IntrabcVectors {
     /// Whether the leaf may code the block vector `bv`.
@@ -36,7 +36,7 @@ impl IntrabcVectors {
         self.1
             .as_ref()
             .is_some_and(|area| local_bv_valid(&self.0, area, mv))
-            || global_bv_valid(&self.0, mv)
+            || self.3 && global_bv_valid(&self.0, mv)
     }
 
     /// Whether `bv` may code `morph_pred = 1`: § 6.19.5.4 requires
@@ -64,14 +64,24 @@ pub struct IntrabcModes {
 }
 
 impl IntraTileSyntax {
-    /// Whether `leaf` codes `use_intrabc`: an intra frame with
-    /// `allow_intrabc` and a leaf of at most 64x64 other than 64x64.
+    /// Whether `leaf` codes `use_intrabc` (§ 5.20.5.3, § 5.20.7.3): a frame
+    /// with `allow_intrabc`, a leaf of at most 64x64 other than 64x64 that
+    /// may code `is_inter = 0`, in a `MIXED_REGION` of an inter frame.
     #[must_use]
     pub fn intrabc_allowed(&self, leaf: &LeafBlock) -> bool {
-        self.inter.as_ref().is_some_and(|inter| {
-            inter.tile.is_intra_frame()
-                && matches!(inter.tile.intrabc_contexts(&leaf.frontier), Ok(Some(_)))
-        })
+        self.intra_allowed(leaf)
+            && self.inter.as_ref().is_some_and(|inter| {
+                matches!(inter.tile.intrabc_contexts(&leaf.frontier), Ok(Some(_)))
+            })
+    }
+
+    /// Whether the frame codes `allow_intrabc` with the local area, whose
+    /// vectors depend on the leaves coded before.
+    #[must_use]
+    pub fn intrabc_local_area(&self) -> bool {
+        self.inter
+            .as_ref()
+            .is_some_and(|inter| inter.tile.intrabc_local_area())
     }
 
     /// The reference block vector of each `RefMvIdx` of `leaf` (§ 7.12).
@@ -107,10 +117,11 @@ impl IntraTileSyntax {
     }
 
     /// The block vectors `leaf` may code, `None` when it codes no
-    /// `use_intrabc`: vectors that § 6.19.7.12 `is_mv_valid` accepts for the
-    /// global area, with the source in the current or the previous
-    /// superblock row, or, with `allow_local_intrabc`, for the local area
-    /// in a strict subset of § 6.19.7.12 `check_valid_local_ibc`.
+    /// `use_intrabc`: vectors that § 6.19.7.12 `is_mv_valid` accepts, with
+    /// `allow_global_intrabc` for the global area with the source in the
+    /// current or the previous superblock row, with `allow_local_intrabc`
+    /// (the only area of an inter frame) for the local area in a strict
+    /// subset of § 6.19.7.12 `check_valid_local_ibc`.
     #[must_use]
     pub fn intrabc_vectors(&self, leaf: &LeafBlock) -> Option<IntrabcVectors> {
         let size = leaf.dimensions().ok()?;
@@ -141,18 +152,18 @@ impl IntraTileSyntax {
             sb_size: self.sb_size4 * 4,
             chroma,
         };
-        let local = tile
-            .frame_header()
-            .intrabc
-            .and_then(|p| p.allow_local_intrabc)
-            == Some(true);
+        let (global, local) = tile.intrabc_areas();
         let area = local.then(|| {
             LocalArea::new(frame.mi, frame.sb_size, |row, col| {
                 tile.intrabc_coded_base_col(row, col)
             })
         });
-        let quarter = tile.frame_header().force_integer_mv != Some(true);
-        Some(IntrabcVectors(frame, area, quarter))
+        Some(IntrabcVectors(
+            frame,
+            area,
+            !tile.force_integer_mv(),
+            global,
+        ))
     }
 
     /// Plans the IntraBC leaf `leaf` of `modes` with the luma transform split
@@ -195,11 +206,11 @@ impl IntraTileSyntax {
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
         let contexts = match &self.inter {
-            Some(inter) if inter.tile.is_intra_frame() => inter
+            Some(inter) => inter
                 .tile
                 .intrabc_contexts(&leaf.frontier)
                 .map_err(rule("IntraBC contexts"))?,
-            _ => None,
+            None => None,
         };
         let Some(contexts) = contexts else {
             return match skip {
@@ -243,7 +254,7 @@ impl IntraTileSyntax {
             .intrabc_contexts(&leaf.frontier)
             .map_err(rule("IntraBC contexts"))?
             .ok_or(NO_INTRABC)?;
-        let force_integer_mv = tile.frame_header().force_integer_mv == Some(true);
+        let force_integer_mv = tile.force_integer_mv();
         let morph_coded = self.intrabc_morph_coded();
         if modes.morph && !morph_coded {
             return Err(EncoderSyntaxError::Unsupported("morph_pred in this frame"));
@@ -593,7 +604,7 @@ mod tests {
     /// A fractional vector needs `force_integer_mv = 0` and quarter samples.
     #[test]
     fn fractional_vectors_need_quarter_samples() {
-        let vectors = |quarter| IntrabcVectors(frame((16, 96), (16, 8)), None, quarter);
+        let vectors = |quarter| IntrabcVectors(frame((16, 96), (16, 8)), None, quarter, true);
         let col = |col| MotionVector { row: 0, col };
         assert!(vectors(true).valid(col(-272 * 8 - 6)));
         assert!(!vectors(false).valid(col(-272 * 8 - 6)));
@@ -715,11 +726,13 @@ mod tests {
     /// too: a copy from the frame's top row cannot code it.
     #[test]
     fn morph_needs_the_template_source() {
-        let vectors = IntrabcVectors(frame((0, 80), (8, 8)), None, true);
+        let vectors = IntrabcVectors(frame((0, 80), (8, 8)), None, true, true);
         let bv = |row, col| MotionVector { row, col };
         assert!(vectors.valid(bv(0, -64 * 8 * 5)));
+        let local_only = IntrabcVectors(frame((0, 80), (8, 8)), None, true, false);
+        assert!(!local_only.valid(bv(0, -64 * 8 * 5)));
         assert!(!vectors.morph_valid(bv(0, -64 * 8 * 5)));
-        let lower = IntrabcVectors(frame((16, 96), (16, 8)), None, true);
+        let lower = IntrabcVectors(frame((16, 96), (16, 8)), None, true, true);
         assert!(lower.morph_valid(bv(0, -272 * 8 - 8)));
     }
 

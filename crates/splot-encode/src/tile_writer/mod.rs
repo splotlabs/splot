@@ -339,6 +339,8 @@ thread_local! {
     pub(crate) static QUARTER_INTRABC: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// IntraBC leaves of the final passes on this thread with `morph_pred = 1`.
     pub(crate) static MORPH_INTRABC: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// IntraBC leaves the final passes coded on this thread.
+    pub(crate) static CODED_INTRABC: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Intra leaves of the final passes on this thread that code a DIP
     /// prediction that only the wider DIP search offers.
     pub(crate) static DIP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -746,10 +748,15 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             QUARTER_INTRABC.set(QUARTER_INTRABC.get() + 1);
         }
         #[cfg(test)]
+        if self.filters.is_some() {
+            CODED_INTRABC.set(CODED_INTRABC.get() + 1);
+        }
+        #[cfg(test)]
         if self.filters.is_some() && modes.morph {
             MORPH_INTRABC.set(MORPH_INTRABC.get() + 1);
         }
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
+        self.syntax.write_is_inter(leaf, false, self.sink)?;
         self.syntax.write_use_intrabc(leaf, Some(skip), self.sink)?;
         self.syntax.write_segment_id(leaf, skip, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {

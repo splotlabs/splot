@@ -1338,6 +1338,67 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
     assert_cut_header_fails(&seq, &on, &slots.view());
 }
 
+/// An inter frame codes `allow_intrabc` alone (§ 5.18.3.4: `allow_global_intrabc
+/// = 0` and `allow_local_intrabc = 1` are implied), plus `change_bvp_drl = 0`
+/// where the sequence allows a frame DRL change. IntraBC without the local
+/// area is refused; a cut header does not parse complete.
+#[test]
+fn inter_frames_code_allow_intrabc_with_the_implied_local_area() {
+    for drl in [false, true] {
+        let mut seq = sequence(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+        seq.inter.as_mut().unwrap().allow_frame_max_bvp_drl_bits = drl;
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let slots = Slots::after_key(64, 64, 0);
+        let params = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 1,
+            refresh_frame_flags: 2,
+            show_frame: true,
+            filters: FrameFilterParams::default(),
+            tx: KeyFrameTxParams::default(),
+            tiles: FrameTiles::default(),
+            reference_select: false,
+            skip_mode_present: false,
+            primary_slot: Some(0),
+            use_ref_frame_mvs: false,
+            high_precision_mv: false,
+            switchable_interp_filter: false,
+            tip_weight: None,
+            tip_hole_fill: false,
+            opfl_refine_type: 0,
+            force_integer_mv: false,
+            warp: false,
+            global_motion: [None; 7],
+            global_motion_predict: false,
+            explicit_refs: None,
+            implicit_output: false,
+            tip_global_mv: TipGlobalMv::default(),
+            tip_filter: None,
+            tip_deblocking: false,
+            leading: false,
+        };
+        let with = |allow_intrabc, allow_local_intrabc| {
+            let tx = KeyFrameTxParams {
+                allow_intrabc,
+                allow_local_intrabc,
+                ..KeyFrameTxParams::default()
+            };
+            build_inter_frame_header(&view, &slots.view(), &InterFrameParams { tx, ..params })
+        };
+        let off = with(false, false).unwrap();
+        let on = with(true, true).unwrap();
+        let allowed =
+            |header: &EncodedFrameHeader| header.core.inter.as_ref().unwrap().allow_intrabc;
+        assert_eq!((allowed(&off), allowed(&on)), (Some(false), Some(true)));
+        assert_eq!(
+            on.bits.num_frame_header_bits(),
+            off.bits.num_frame_header_bits() + u64::from(drl)
+        );
+        assert!(with(true, false).is_err());
+        assert_cut_header_fails(&seq, &on, &slots.view());
+    }
+}
+
 /// The inter header `header` cut by its last byte does not parse to a
 /// complete header with the § 7.23 state `refs`.
 fn assert_cut_header_fails(
