@@ -5609,7 +5609,7 @@ module = "crates/splot-encode/src/kernels/forward_transform.rs"
 change_id = "enc-lossless"
 owner = "encoder"
 risk = "medium"
-notes = "ConstantQp qp 0 (CLI --lossless, 2026-11-22; qp 0 was an error before) codes every frame at base_q_idx 0 with zero deltas, so CodedLossless = 1: TX_MODE_ONLY_4X4, no TCQ, parity hiding or loop filter syntax, every block 4x4 Walsh-Hadamard units whose levels invert the 7.15.2.2 lifting exactly. Blocks code use_dpcm_y/uv = 0, inter lossless_tx_size = 0 and lossless_inter_tx_type = 0. PresetParams::set_lossless switches off the searches that lossless forbids or that change samples, and for now SDP, palette, IntraBC, FSC/IDTX; segmentation, quant_matrices, film grain and resize are refused. DPCM, IDTX and large lossless transforms are a later search (B-11)."
+notes = "ConstantQp qp 0 (CLI --lossless, 2026-11-22; qp 0 was an error before) codes every frame at base_q_idx 0 with zero deltas, so CodedLossless = 1: TX_MODE_ONLY_4X4, no TCQ, parity hiding or loop filter syntax, every block 4x4 Walsh-Hadamard units whose levels invert the 7.15.2.2 lifting exactly. Blocks code use_dpcm_y/uv = 0, inter lossless_tx_size = 0 and lossless_inter_tx_type = 0. PresetParams::set_lossless switches off the searches that lossless forbids or that change samples, and for now palette, IntraBC, FSC/IDTX; SDP is on, and SDP chroma-part leaves code Walsh-Hadamard units; segmentation, quant_matrices, film grain and resize are refused. DPCM, IDTX and large lossless transforms are a later search (B-11)."
 
 [feature.status]
 mapped = "done"

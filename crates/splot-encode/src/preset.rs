@@ -914,7 +914,7 @@ impl PresetParams {
     /// `CodedLossless`: TCQ, parity hiding, delta-q, the loop filters) or that
     /// changes the coded samples (RDOQ, the temporal filter, TIP output), and
     /// the tools whose lossless forms are a later search (FSC, IDTX, IST,
-    /// CCTX, DDT, transform types and partitions, palette, IntraBC, SDP).
+    /// CCTX, DDT, transform types and partitions, palette, IntraBC).
     pub(crate) fn set_lossless(&mut self) {
         self.rdoq = false;
         self.rdoq_every_type = false;
@@ -942,7 +942,6 @@ impl PresetParams {
         self.idtx_intra = false;
         self.palette = false;
         self.intrabc = false;
-        self.sdp = false;
         (self.y_dc_delta_q, self.u_delta_q, self.v_delta_q) = (0, 0, 0);
     }
 
