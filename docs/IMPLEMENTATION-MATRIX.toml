@@ -5545,7 +5545,7 @@ module = "crates/splot-encode/src/tx_choice.rs"
 change_id = "enc-quant-matrices"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::quant_matrices (2026-11-22, 0 = off in every row): values 1, 2 and 3 fix the level band [10, 14], [5, 9] and [0, 14]; every frame codes using_qmatrix = 1 with qm_y = qm_u = qm_v = min + base_q_idx * (max - min + 1) / (MaxQ + 1), so the matrix gets flatter as the quantizer gets coarser. The encoder_syntax facade resolves useQm and segLvl with the decoder's own rule (recon_params takes IntraTileSyntax::quant_matrices) and reconstructs under the frame levels; the deadzone quantizer, RDOQ and TCQ use q2 = Round2(q * m, 5) of each coefficient with the built-in Quantizer_Matrix weights from splot-tables. Not done: user matrices in the quantizer matrix OBU (AV2-5.4.11-USER-QM), per-segment levels (segmentation stays refused)."
+notes = "PresetParams::quant_matrices (2026-11-22, 0 = off in every row): values 1, 2 and 3 fix the level band [10, 14], [5, 9] and [0, 14]; every frame codes using_qmatrix = 1 with qm_y = qm_u = qm_v = min + base_q_idx * (max - min + 1) / (MaxQ + 1), so the matrix gets flatter as the quantizer gets coarser. The encoder_syntax facade resolves useQm and segLvl with the decoder's own rule (recon_params takes IntraTileSyntax::quant_matrices) and reconstructs under the frame levels; the deadzone quantizer, RDOQ and TCQ use q2 = Round2(q * m, 5) of each coefficient with the built-in Quantizer_Matrix weights from splot-tables. Not done: user matrices in the quantizer matrix OBU (AV2-5.4.11-USER-QM), per-segment levels (every segment of ENC-SEGMENTATION shares the frame level, pic_qm_num_minus_1 = 0)."
 
 [feature.status]
 mapped = "done"
@@ -5562,6 +5562,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_qm_tests.rs::qm_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_qm_tests.rs::facade_resolves_the_matrix_level_of_each_block", "crates/splot-encode/src/intra_frame_qm_tests.rs::qm_level_rises_with_qindex_inside_its_band", "crates/splot-encode/src/intra_frame_qm_tests.rs::avm_decodes_qm_streams_like_splot", "crates/splot-encode/src/kernels/quantize_tests.rs::weighted_simd_matches_scalar_and_the_decoder", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs"]
 commands = ["cargo test -p splot-encode qm --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_qm -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SEGMENTATION"
+name = "Encoder source-activity segmentation"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.7.1", "5.20.5.7", "5.20.5.8", "5.20.7.2", "7.12.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-segmentation"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::segmentation (2026-11-22, 0 = off in every row): value 1 codes segmentation_enabled with 4 SEG_LVL_ALT_Q segments in every frame, segmentation_update_map = 1 and no temporal update. A superblock's segment is the bin of the mean log2 luma variance of its 16x16 blocks against the frame mean (edges -1, 0, +1 octave); segments 0..=3 take ALT_Q -9, -3, +3, +9 and lambda moves of -0.75, -0.25, +0.25, +0.75 octave, with base_q_idx + ALT_Q >= 1. The block qindex is the § 7.12.2 get_qindex on top of the delta-q CurrentQIndex. The encoder_syntax facade writes segment_id against the decoder's prediction (a skipped leaf takes the prediction) and keeps the segment ids in snapshots and superblock edges. Not done: SEG_LVL_SKIP, SEG_LVL_GLOBALMV, temporal update, enable_ext_seg, per-segment quantizer-matrix levels, a searched map."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_segmentation_tests.rs::segment_maps_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tile_writer/tests.rs::superblock_segments_round_trip_over_delta_q", "crates/splot-core/src/write/frame_segmentation_tests.rs::coded_map_flags_follow_the_feature_data"]
+commands = ["cargo test -p splot-encode segment --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_segment_maps -- --ignored"]
 fixtures = []
 diagnostics = []
 
