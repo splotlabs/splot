@@ -146,13 +146,28 @@ Generated status markdown is not committed; render it on demand.
   `splot-cli` and `xtask`.
 - No reachable library `unwrap`, `expect`, `panic!`, `todo!`, or
   `unimplemented!`.
-- Use strong types at public boundaries.
+- Do not satisfy the panic lints with a silent fallback. `unwrap_or`,
+  `unwrap_or_default`, `.ok()` or `else { return }` on a value that came from
+  the bitstream returns a typed error; a fallback that cannot fire is deleted.
+- Use strong types at public boundaries: an enum for a closed set, a struct
+  for values that travel together, `Option` for absence. No string, tuple or
+  sentinel stands in for them.
+- One type and one function per concept. Reuse the type or spec derivation of
+  the lowest crate that owns it; do not mirror it and convert.
+- An item that only tests call is `#[cfg(test)]`, not `pub`.
 - Public items and crates have docs.
 - Every `.rs` file starts with the PolyForm SPDX header.
 - Rust source files target <=1000 physical lines; hard cap is 2500.
 - `unsafe_code = "forbid"` workspace-wide, except the reviewed blocks in
   `splot-decode`, the `splot-recon` plane allocator and the `splot-capi` C ABI
   (`deny` plus module `allow`).
+- Waive a lint with `#[expect(lint, reason = "...")]` on the smallest item;
+  delete an expectation that is no longer fulfilled. `#[allow]` is only for a
+  waiver that cannot hold in every build: target- or cfg-gated code, macro
+  bodies, generated files and the `unsafe_code` module boundaries.
+- Test code needs no waiver for `unwrap`, `expect` or `panic!`: `clippy.toml`
+  covers `#[test]` functions and items under `#[cfg(test)]`. Helpers in
+  `crates/*/tests/` and items under `cfg(all(test, ...))` still need one.
 
 ## Rust and C Decoder API
 
@@ -240,7 +255,9 @@ adding a third-party dependency, changing crate dependency graph, adding an
 
 ## Comment and Documentation Policy
 
-Source comments are rare and high-signal. New codec support extends generic
+Source comments are rare and high-signal. A comment states what is true of the
+code now: no history, ticket ids, milestones or "now"/"previously" wording. A
+`TODO(spec: FEATURE-ID)` is one complete sentence. New codec support extends generic
 models, tables, dispatchers, or capability gates rather than one-off branches.
 `cargo xtask check-ai-slop`, `cargo xtask check-comment-density`, and
 `cargo xtask check-doc-budget` enforce the budget.
