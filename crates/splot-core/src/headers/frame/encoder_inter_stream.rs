@@ -678,15 +678,14 @@ pub(super) fn write_tile_groups(
         let group = tiles
             .get(tg_start as usize..=tg_end as usize)
             .ok_or(EncoderHeaderError::Incomplete)?;
-        let payload = match first.take() {
-            Some(first) => first(&structure, group)?,
-            None => {
-                let mut payload = BitWriter::new();
-                payload.write_flag(false)?; // is_first_tile_group
-                payload.write_flag(false)?; // frame_header_present_flag
-                write_group_tiles(&mut payload, core, &structure, group)?;
-                payload.into_bytes()
-            }
+        let payload = if let Some(first) = first.take() {
+            first(&structure, group)?
+        } else {
+            let mut payload = BitWriter::new();
+            payload.write_flag(false)?; // is_first_tile_group
+            payload.write_flag(false)?; // frame_header_present_flag
+            write_group_tiles(&mut payload, core, &structure, group)?;
+            payload.into_bytes()
         };
         write_annexb_obu(&mut w, &obu_header(obu_type), &payload)?;
     }
