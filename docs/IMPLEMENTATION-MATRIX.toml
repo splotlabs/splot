@@ -4712,10 +4712,10 @@ spec_sections = ["5.4", "5.2.2", "5.2.3", "B.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/frame/encoder_input.rs"
-change_id = "encoder-sequence-header-obu"
+change_id = "enc-long-term-ids"
 owner = "encoder"
 risk = "low"
-notes = "build_minimal_intra_sequence_header constructs the canonical minimal intra sequence model; encode_minimal_intra_sequence_header_obu writes its body, extension/trailing bits, and Annex B framing. Byte-exact conformance-vector comparison protects the complete OBU and its agreement with minimal frame-header construction. The encoder does not use it: it writes the sequence header of build_encoder_sequence_header."
+notes = "PresetParams::long_term_id_bits (2026-11-22, 0 in every row): the sequence codes long_term_frame_id_bits (§ 5.4.6) and key frames code long_term_id_plus_1, the ids cycling over the key frames (§ 5.18.2); num_key_ref_frames needs RAS or OLK frames. build_minimal_intra_sequence_header constructs the canonical minimal intra sequence model; encode_minimal_intra_sequence_header_obu writes its body, extension/trailing bits, and Annex B framing. Byte-exact conformance-vector comparison protects the complete OBU and its agreement with minimal frame-header construction. The encoder does not use it: it writes the sequence header of build_encoder_sequence_header."
 
 [feature.status]
 mapped = "done"
@@ -4730,8 +4730,8 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_sequence_header_obu_matches_conformance_vector"]
-commands = ["cargo test -p splot-core encoder_input"]
+tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::key_frames_cycle_their_long_term_ids", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::key_frames_code_their_long_term_ids", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_sequence_header_obu_matches_conformance_vector"]
+commands = ["cargo test -p splot-core key_frames_code_their_long_term_ids --locked", "cargo test -p splot-encode key_frames_cycle_their_long_term_ids --locked", "cargo test -p splot-core encoder_input"]
 fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
 diagnostics = []
 
@@ -6392,6 +6392,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_delta_q_tests.rs::superblock_offsets_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::empty_offsets_code_no_delta_q", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::avm_decodes_delta_q_frames_like_splot", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tpl.rs::tests::superblocks_follow_the_importance_of_their_blocks", "crates/splot-encode/src/tpl.rs::tests::recon_noise_grows_with_qindex_and_shrinks_with_the_block", "crates/splot-encode/src/kernels/tpl.rs::tests::simd_matches_scalar", "crates/splot-encode/src/rd/tests.rs::lambda_scaling_follows_powers_of_two", "crates/splot-encode/src/tile_writer/tests.rs::superblock_sized_skipped_leaf_keeps_current_qindex", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_deltas_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_needs_delta_q_present", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
 commands = ["cargo test -p splot-encode delta_q --locked", "cargo test -p splot-encode superblock_qindex --locked", "cargo test -p splot-encode tpl --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-PLANE-DELTA-Q"
+name = "Encoder plane quantizer deltas"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.8", "5.18.6.1", "5.18.6.3", "7.14.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-plane-delta-q"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::y_dc_delta_q, u_delta_q and v_delta_q (2026-11-22, -64..=63, 0 in every row, not measured): a non-zero luma value codes equal_ac_dc_q = 0 with y_dc_delta_q_enabled, a non-zero chroma value codes the chroma delta enables, and u != v codes separate_uv_delta_q (§ 5.4.8, Base*DeltaQ stay 0). Every key and inter frame codes DeltaQYDc, DeltaQU* and DeltaQV* (§ 5.18.6.1; chroma DC equals AC, diff_uv_delta when u != v); TIP output frames with enable_tip_explicit_qp code the chroma AC deltas. The facade reconstructs with the frame deltas (recon_params takes them), so RDOQ and TCQ quantize with the per-plane DC and AC steps. The RD lambda of every plane still comes from the luma AC step (pass 2)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::plane_delta_q_reaches_the_parsed_headers", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::plane_delta_q_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::avm_decodes_plane_delta_q_streams_like_splot"]
+commands = ["cargo test -p splot-core plane_delta_q --locked", "cargo test -p splot-encode plane_delta_q --locked"]
 fixtures = []
 diagnostics = []
 

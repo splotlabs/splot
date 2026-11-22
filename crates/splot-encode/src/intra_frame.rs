@@ -21,7 +21,7 @@ use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
 use splot_recon::{
     BitDepth, DecodedFrame, DequantBlockParams, PixelFormat, PlaneId, PlaneSize, QmFrameLevels,
-    secondary_transform_layout,
+    QuantizerDeltas, secondary_transform_layout,
 };
 
 use crate::cfl_filter::cfl_ds_filter;
@@ -91,6 +91,8 @@ pub(crate) struct IntraFrameCoder {
     /// The last committed key frame coded a film grain model, which the
     /// output frames after it apply.
     grain_active: bool,
+    /// Key frames committed so far; their long-term ids cycle over it.
+    key_frames: u32,
     /// Which temporal layers code warped motion, from the committed frames.
     warp_gate: crate::warp::WarpGate,
     /// The intra superblocks of the frame in each reference slot.
@@ -285,6 +287,7 @@ impl IntraFrameCoder {
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
+                long_term_frame_id_bits: preset.long_term_id_bits,
                 implicit_output: preset.implicit_output,
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
@@ -294,6 +297,7 @@ impl IntraFrameCoder {
                     allow_tile_info_change: preset.seq_tile_info > 1,
                 }),
                 short_refresh: preset.short_refresh,
+                plane_delta_q: preset.plane_delta_q(),
                 tcq: preset.tcq.values().contains(&true),
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
@@ -329,6 +333,7 @@ impl IntraFrameCoder {
             open_loop: crate::lookahead::OpenLoopMotion::new(),
             shown_existing: 0,
             grain_active: false,
+            key_frames: 0,
             warp_gate: crate::warp::WarpGate::default(),
             slot_intra: Default::default(),
             cancel: crate::cancel::CancelToken::default(),
@@ -385,6 +390,7 @@ impl FrameCoder for IntraFrameCoder {
             }
         }
         if frame.frame_type == FrameType::Key {
+            self.key_frames = self.key_frames.wrapping_add(1);
             self.grain_active = core
                 .intra_tail
                 .is_some_and(|tail| tail.film_grain.apply_grain);
@@ -650,10 +656,15 @@ impl IntraFrameCoder {
         let context = self.preset_context(plan, qindex);
         let mut tools = gop::frame_tools((&self.preset, context), self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
+        let ids = (1u32 << self.preset.long_term_id_bits) - 1;
+        if plan.frame_type == FrameType::Key && ids > 0 {
+            tools.0.long_term_id_plus_1 = 1 + self.key_frames % ids;
+        }
         tools.0.disable_cdf_update = self.preset.disable_cdf_update;
         tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
         tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;
         tools.0.qm_level = crate::tx_choice::qm_level(&self.preset, qindex, self.bit_depth);
+        tools.0.plane_delta_q = self.preset.plane_delta_q();
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
@@ -1002,7 +1013,7 @@ impl IntraFrameCoder {
                 &self.view,
                 &self.references,
                 ref_frame_idx,
-                (weight, grain_seed),
+                (weight, grain_seed, self.preset.plane_delta_q()),
                 (qindex, mv, filter, deblocking),
             )?;
             let (core, frame) = self
@@ -1556,7 +1567,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         syntax.set_scalar_trial(self.candidate || self.trial || self.scalar);
         let use_tcq = syntax.uses_tcq(tx);
         let ddt = syntax.uses_ddt();
-        let qm = syntax.quant_matrices();
+        let qm = (syntax.quant_matrices(), syntax.quantizer_deltas());
         let (params, forward) =
             self.forward(tx, (use_tcq, ddt, qm), prediction, residual, coeffs)?;
         if let Some(secondary) = syntax.secondary_transform(tx)? {
@@ -1670,7 +1681,8 @@ impl SourceResidualCoder<'_> {
         [residual, plain_u, dequant]: &mut [Vec<i32>; 3],
         [u_coeffs, v_coeffs]: &mut [Vec<i32>; 2],
     ) -> core::result::Result<Vec<[Vec<i32>; 3]>, TileWriterError> {
-        let ddt = (false, syntax.uses_ddt(), syntax.quant_matrices());
+        let quant = (syntax.quant_matrices(), syntax.quantizer_deltas());
+        let ddt = (false, syntax.uses_ddt(), quant);
         let (u_params, u_forward) = self.forward(u, ddt, u_prediction, residual, u_coeffs)?;
         let (v_params, v_forward) = self.forward(v, ddt, v_prediction, residual, v_coeffs)?;
         let [uu, vv, uv] = kernels().cctx_stats(u_coeffs, v_coeffs);
@@ -1845,7 +1857,7 @@ impl SourceResidualCoder<'_> {
     fn forward(
         &self,
         tx: &TransformBlock,
-        (use_tcq, use_ddt, qm): (bool, bool, Option<QmFrameLevels>),
+        (use_tcq, use_ddt, (qm, deltas)): (bool, bool, (Option<QmFrameLevels>, QuantizerDeltas)),
         prediction: &[u16],
         residual: &mut Vec<i32>,
         coeffs: &mut Vec<i32>,
@@ -1861,7 +1873,7 @@ impl SourceResidualCoder<'_> {
             plane_id(tx.plane)?,
             (log2_w, log2_h),
             (tx.tx_type, use_tcq, use_ddt),
-            (self.bit_depth, qm),
+            (self.bit_depth, qm, deltas),
         )?;
         let forward = ForwardTransform2d::new(
             log2_w,
@@ -1940,7 +1952,11 @@ impl SourceResidualCoder<'_> {
     ) -> core::result::Result<Option<u128>, TileWriterError> {
         let (params, forward) = self.forward(
             tx,
-            (false, syntax.uses_ddt(), syntax.quant_matrices()),
+            (
+                false,
+                syntax.uses_ddt(),
+                (syntax.quant_matrices(), syntax.quantizer_deltas()),
+            ),
             prediction,
             residual,
             coeffs,
@@ -2012,7 +2028,7 @@ impl SourceResidualCoder<'_> {
             (
                 syntax.uses_tcq(tx),
                 syntax.uses_ddt(),
-                syntax.quant_matrices(),
+                (syntax.quant_matrices(), syntax.quantizer_deltas()),
             ),
             prediction,
             residual,
