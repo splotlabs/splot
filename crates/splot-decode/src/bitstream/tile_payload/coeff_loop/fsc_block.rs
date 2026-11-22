@@ -8,7 +8,7 @@
 //! so the left, above and above-left neighbours of its first row and column
 //! read zero padding.
 
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder};
+use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
 use super::super::cdf::block_read::row_at;
@@ -77,11 +77,7 @@ pub(crate) fn decode_fsc_transform_block(
         size_ctx: usize::from(tx.size_ctx).min(2),
     };
     let grids = (&mut *levels, &mut *nonzero);
-    let (owned, nonzero_len, result) = if symbols.cdf_update_mode() == CdfUpdateMode::Enabled {
-        block.decode::<true>(cdfs, symbols, grids, quant)
-    } else {
-        block.decode::<false>(cdfs, symbols, grids, quant)
-    };
+    let (owned, nonzero_len, result) = block.decode(cdfs, symbols, grids, quant);
     for &entry in nonzero.get(..nonzero_len).unwrap_or_default() {
         levels[entry_grid(entry) + LEVEL_STRIDE + 1] = 0;
     }
@@ -111,7 +107,7 @@ impl Block<'_> {
     /// Works on a copy of the decoder and a local nonzero count, so the
     /// loops keep them in registers.
     #[inline(never)]
-    fn decode<'a, const UPD: bool>(
+    fn decode<'a>(
         &self,
         cdfs: &mut TileCdfSubset,
         symbols: &SymbolDecoder<'a>,
@@ -123,7 +119,7 @@ impl Block<'_> {
     ) -> Decoded<'a> {
         let mut symbols = symbols.clone();
         let mut nonzero_len = 0;
-        let result = self.decode_levels::<UPD>(
+        let result = self.decode_levels(
             cdfs,
             &mut symbols,
             (levels, nonzero, &mut nonzero_len),
@@ -132,9 +128,7 @@ impl Block<'_> {
         (symbols, nonzero_len, result)
     }
 
-    #[allow(clippy::inline_always, reason = "measured: one body per update mode")]
-    #[inline(always)]
-    fn decode_levels<const UPD: bool>(
+    fn decode_levels(
         &self,
         cdfs: &mut TileCdfSubset,
         symbols: &mut SymbolDecoder<'_>,
@@ -149,7 +143,7 @@ impl Block<'_> {
         let bob_row = row_at(row_at(rows.coeff_base_bob(), self.size_ctx), {
             coeff_base_bob_ctx(self.bob, self.seg_eob)
         });
-        let first = symbols.read_trusted::<4, UPD>(bob_row) + 1;
+        let first = symbols.read_trusted(bob_row) + 1;
         let mut carried = (usize::MAX, 0);
         for (index, &entry) in self.entries.iter().enumerate() {
             let grid = entry_grid(entry);
@@ -160,14 +154,14 @@ impl Block<'_> {
                 let ctx = (near & 0xff) as usize;
                 let word = (ctx == carried.0).then_some(carried.1);
                 let base = row_at(rows.coeff_base_idtx(), self.size_ctx);
-                let (level, word) = symbols.read_trusted_carried::<5, UPD>(row_at(base, ctx), word);
+                let (level, word) = symbols.read_trusted_carried(row_at(base, ctx), word);
                 carried = (ctx, word);
                 level
             };
             if level > NUM_BASE_LEVELS {
                 let ctx = (((near >> 8) & 0xff) as usize).min(6);
                 let br = row_at(rows.coeff_br_idtx(), self.size_ctx);
-                level += symbols.read_trusted::<5, UPD>(row_at(br, ctx));
+                level += symbols.read_trusted(row_at(br, ctx));
             }
             levels[grid + LEVEL_STRIDE + 1] = LEVEL_WORD[level as usize & 15];
             nonzero[*nonzero_len & (nonzero.len() - 1)] = entry;
@@ -209,7 +203,7 @@ impl Block<'_> {
                 } else {
                     0
                 };
-            let sign = symbols.read_trusted::<3, UPD>(row_at(signs, ctx)) != 0;
+            let sign = symbols.read_trusted(row_at(signs, ctx)) != 0;
             levels[at] = word | 1 << if sign { NEGATIVE_SHIFT } else { POSITIVE_SHIFT };
             let pos = entry_pos(entry);
             let magnitude = if level < FSC_MAX_LEVEL {

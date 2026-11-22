@@ -116,7 +116,7 @@ pub(crate) fn read_row<const L: usize>(
     symbols: &mut SymbolDecoder<'_>,
     row: &mut [u16; L],
 ) -> usize {
-    symbols.read_trusted_configured(row) as usize
+    symbols.read_trusted(row) as usize
 }
 
 /// `rows[ctx]` with the context clamped into the array: every context the
