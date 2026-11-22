@@ -84,7 +84,7 @@ impl IntraTileSyntax {
     /// chroma is its own, that § 6.19.7.12 `is_mv_valid` accepts for the
     /// global area, with the source in the current or the previous
     /// superblock row, or, with `allow_local_intrabc`, for the local area
-    /// as [`local_bv_valid`] restricts it.
+    /// in a strict subset of § 6.19.7.12 `check_valid_local_ibc`.
     #[must_use]
     pub fn intrabc_vectors(&self, leaf: &LeafBlock) -> Option<IntrabcVectors> {
         let size = leaf.dimensions().ok()?;
