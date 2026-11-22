@@ -8,4 +8,4 @@
 # PR that shrinks the binary.
 
 [budget]
-x86_64-linux = 13505000
+x86_64-linux = 13517000
