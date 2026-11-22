@@ -492,6 +492,10 @@ pub struct PresetParams {
     /// its luma that the block hashes find. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
     pub intrabc: bool,
+    /// With `intrabc`, key frames also code `allow_local_intrabc = 1`, and
+    /// the copy may come from the local area (§ 6.19.7.12). Off in every
+    /// row, the screen-content rows too: not measured.
+    pub intrabc_local: bool,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -1339,6 +1343,7 @@ preset_table! {
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {

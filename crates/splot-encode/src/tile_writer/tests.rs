@@ -126,6 +126,7 @@ impl Case {
                 allow_tcq: false,
                 delta_q_res: None,
                 allow_intrabc: false,
+                allow_local_intrabc: false,
                 grain_seed: None,
                 disable_cdf_update: false,
                 disable_cross_frame_cdf_init: false,
@@ -1558,7 +1559,7 @@ fn facade_rejects_unmodelled_tools() {
     let global_only = intrabc(true, Some(false));
     assert!(IntraTileSyntax::new(&seq, &global_only, &refs_for(&seq), 0).is_ok());
     assert!(rejects(&seq, &intrabc(false, None)), "local-only IntraBC");
-    assert!(rejects(&seq, &intrabc(true, Some(true))), "local IntraBC");
+    assert!(IntraTileSyntax::new(&seq, &intrabc(true, Some(true)), &refs_for(&seq), 0).is_ok());
     let mut inter = global_only;
     inter.frame_is_intra = Some(false);
     assert!(rejects(&seq, &inter), "IntraBC in an inter frame");

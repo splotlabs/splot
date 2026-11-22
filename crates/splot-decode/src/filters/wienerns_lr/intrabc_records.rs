@@ -703,7 +703,7 @@ impl TileIntrabcPreludeState {
         self.facts_at(row, col).is_some()
     }
 
-    fn block_base_col_at(&self, row: usize, col: usize) -> Option<usize> {
+    pub(crate) fn block_base_col_at(&self, row: usize, col: usize) -> Option<usize> {
         self.facts_at(row, col).map(|facts| facts.base_col)
     }
 

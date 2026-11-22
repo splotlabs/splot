@@ -21,13 +21,17 @@ use crate::prediction::inter::read_mv::{MV_PRECISION_ONE_PEL, MvReadConfig};
 /// The block vectors one leaf may code, see
 /// [`IntraTileSyntax::intrabc_vectors`].
 #[derive(Clone, Debug)]
-pub struct IntrabcVectors(BvFrame);
+pub struct IntrabcVectors(BvFrame, Option<LocalArea>);
 
 impl IntrabcVectors {
     /// Whether the leaf may code the block vector `bv`.
     #[must_use]
     pub fn valid(&self, bv: MotionVector) -> bool {
-        global_bv_valid(&self.0, [bv.row, bv.col])
+        let mv = [bv.row, bv.col];
+        self.1
+            .as_ref()
+            .is_some_and(|area| local_bv_valid(&self.0, area, mv))
+            || global_bv_valid(&self.0, mv)
     }
 }
 
@@ -79,19 +83,33 @@ impl IntraTileSyntax {
     /// `use_intrabc`: whole-sample vectors of a leaf at least 8x8 whose
     /// chroma is its own, that § 6.19.7.12 `is_mv_valid` accepts for the
     /// global area, with the source in the current or the previous
-    /// superblock row.
+    /// superblock row, or, with `allow_local_intrabc`, for the local area
+    /// in a strict subset of § 6.19.7.12 `check_valid_local_ibc`.
     #[must_use]
     pub fn intrabc_vectors(&self, leaf: &LeafBlock) -> Option<IntrabcVectors> {
         let size = leaf.dimensions().ok()?;
-        self.intrabc_allowed(leaf).then(|| {
-            IntrabcVectors(BvFrame {
-                mi: (leaf.row4(), leaf.col4()),
-                size,
-                tile: self.tile.clone(),
-                sb_size: self.sb_size4 * 4,
-                chroma_offset: leaf.frontier.chroma_offset,
+        if !self.intrabc_allowed(leaf) {
+            return None;
+        }
+        let frame = BvFrame {
+            mi: (leaf.row4(), leaf.col4()),
+            size,
+            tile: self.tile.clone(),
+            sb_size: self.sb_size4 * 4,
+            chroma_offset: leaf.frontier.chroma_offset,
+        };
+        let tile = &self.inter.as_ref()?.tile;
+        let local = tile
+            .frame_header()
+            .intrabc
+            .and_then(|p| p.allow_local_intrabc)
+            == Some(true);
+        let area = local.then(|| {
+            LocalArea::new(frame.mi, frame.sb_size, |row, col| {
+                tile.intrabc_coded_base_col(row, col)
             })
-        })
+        });
+        Some(IntrabcVectors(frame, area))
     }
 
     /// Plans the IntraBC leaf `leaf` of `modes` with the luma transform split
@@ -279,6 +297,123 @@ pub(super) struct BvFrame {
     pub(super) chroma_offset: bool,
 }
 
+/// The 64x64 local IntraBC buffers (§ 6.19.7.12 `check_valid_local_ibc`)
+/// a leaf copies from, each with the coded flags of its 16x16 4x4 cells.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct LocalArea {
+    /// `(bufRow, bufCol)` and one bit per coded 4x4 cell, a `u16` per row.
+    chunks: Vec<((usize, usize), [u16; 16])>,
+}
+
+/// 4x4 cells per side of an `IBC_BUFFER_SIZE` (§ 3) region.
+const CHUNK4: usize = 16;
+
+impl LocalArea {
+    /// The buffers of the leaf at `mi` in superblocks of `sb_size` samples:
+    /// its own 64x64 region; with 64x64 superblocks the three to its left;
+    /// with 128x128 superblocks the top regions of the current and the
+    /// previous superblock that a leaf entered (`update_ibc_buffers`) and no
+    /// later region of their `ibc_buffer_index` replaced. `base_col` gives
+    /// the base column of the coded block of a 4x4 cell, `None` uncoded.
+    pub(super) fn new(
+        mi: (usize, usize),
+        sb_size: usize,
+        base_col: impl Fn(usize, usize) -> Option<usize>,
+    ) -> Self {
+        let cur = (mi.0 / CHUNK4, mi.1 / CHUNK4);
+        let entered = |(r, c): (usize, usize)| base_col(r * CHUNK4, c * CHUNK4) == Some(c * CHUNK4);
+        let untouched = |(r, c): (usize, usize)| {
+            (0..CHUNK4 * CHUNK4)
+                .all(|i| base_col(r * CHUNK4 + i / CHUNK4, c * CHUNK4 + i % CHUNK4).is_none())
+        };
+        let index = |(r, c): (usize, usize)| (c & 1) | ((r & 1) << 1);
+        let mut regions = vec![cur];
+        match sb_size {
+            64 => regions.extend((1..=3).filter_map(|k| Some((cur.0, cur.1.checked_sub(k)?)))),
+            128 => {
+                let (top, col0) = (cur.0 & !1, cur.1 & !1);
+                let own = [col0, col0 + 1].map(|col| ((top, col), true));
+                let previous = [2, 1].map(|k| {
+                    let newer = (top, col0 + (k & 1));
+                    ((top, col0.wrapping_sub(k)), col0 >= k && untouched(newer))
+                });
+                regions.extend(own.into_iter().chain(previous).filter_map(|(at, ok)| {
+                    (ok && index(at) != index(cur) && entered(at)).then_some(at)
+                }));
+            }
+            _ => {}
+        }
+        let chunks = regions
+            .into_iter()
+            .map(|(r, c)| {
+                let rows = core::array::from_fn(|y| {
+                    (0..CHUNK4).fold(0u16, |bits, x| {
+                        let coded = base_col(r * CHUNK4 + y, c * CHUNK4 + x).is_some();
+                        bits | (u16::from(coded) << x)
+                    })
+                });
+                ((r, c), rows)
+            })
+            .collect();
+        Self { chunks }
+    }
+
+    fn coded(&self, row: usize, col: usize) -> bool {
+        let at = (row / CHUNK4, col / CHUNK4);
+        self.chunks
+            .iter()
+            .find(|(chunk, _)| *chunk == at)
+            .is_some_and(|(_, rows)| rows[row % CHUNK4] >> (col % CHUNK4) & 1 == 1)
+    }
+}
+
+/// Whether the whole-sample block vector `mv` passes § 6.19.7.12
+/// `is_mv_valid` through `check_valid_local_ibc` for a leaf at least 8x8
+/// whose chroma is its own, under a stricter rule: every 4x4 cell of the
+/// source is coded and lies in a buffer of `area`, and neither source
+/// corner lies at or right of and at or below the leaf's top-left sample.
+/// Not used: the `coloY`/`coloX` case (a buffer that shares its
+/// `ibc_buffer_index` with the current one), the lower 64x64 regions of a
+/// previous 128x128 superblock, other superblock sizes' older regions, and
+/// sources with an uncoded inner 4x4 cell.
+pub(super) fn local_bv_valid(frame: &BvFrame, area: &LocalArea, mv: [i32; 2]) -> bool {
+    let Some([top, left, bottom, right]) = source_edges(frame, mv) else {
+        return false;
+    };
+    let (row0, col0) = (frame.mi.0 as i64 * MI_SIZE, frame.mi.1 as i64 * MI_SIZE);
+    if [(left, top), (right - 1, bottom - 1)]
+        .iter()
+        .any(|&(x, y)| x >= col0 && y >= row0)
+    {
+        return false;
+    }
+    let cells = |a: i64, b: i64| (a / MI_SIZE) as usize..=((b - 1) / MI_SIZE) as usize;
+    cells(top, bottom).all(|row| cells(left, right).all(|col| area.coded(row, col)))
+}
+
+/// The source `[top, left, bottom, right]` sample edges of the whole-sample
+/// block vector `mv` of a leaf at least 8x8 whose chroma is its own, when
+/// they lie in the tile; `None` otherwise.
+fn source_edges(frame: &BvFrame, mv: [i32; 2]) -> Option<[i64; 4]> {
+    if mv[0] & 7 != 0
+        || mv[1] & 7 != 0
+        || frame.size.0 < 8
+        || frame.size.1 < 8
+        || frame.chroma_offset
+    {
+        return None;
+    }
+    let top = frame.mi.0 as i64 * MI_SIZE + i64::from(mv[0] >> 3);
+    let left = frame.mi.1 as i64 * MI_SIZE + i64::from(mv[1] >> 3);
+    let (bottom, right) = (top + frame.size.1 as i64, left + frame.size.0 as i64);
+    let (rows, cols) = &frame.tile;
+    let inside = top >= rows.start as i64 * MI_SIZE
+        && left >= cols.start as i64 * MI_SIZE
+        && bottom <= rows.end as i64 * MI_SIZE
+        && right <= cols.end as i64 * MI_SIZE;
+    inside.then_some([top, left, bottom, right])
+}
+
 /// Whether the whole-sample block vector `mv` (`[row, col]` in 1/8 samples)
 /// passes § 6.19.7.12 `is_mv_valid` for a frame with `allow_local_intrabc =
 /// 0` and `allow_global_intrabc = 1`, taking `sb64Residual = 0` (a subset of
@@ -367,6 +502,72 @@ mod tests {
             ..leaf
         };
         assert!(!global_bv_valid(&shared, sample(-64, 0)));
+    }
+
+    /// The buffers of a [`LocalArea`] whose coded 4x4 cells `coded` gives,
+    /// each cell in a block that starts at the left column of its 64x64
+    /// region, or at `wide` for a cell of the 128x64 block there.
+    fn regions(
+        mi: (usize, usize),
+        sb_size: usize,
+        coded: impl Fn(usize, usize) -> bool,
+        wide: Option<(usize, usize)>,
+    ) -> (LocalArea, Vec<(usize, usize)>) {
+        let area = LocalArea::new(mi, sb_size, |row, col| {
+            let base = match wide {
+                Some((r, c)) if row / 16 == r && col / 32 == c / 2 => c * 16,
+                _ => col / 16 * 16,
+            };
+            coded(row, col).then_some(base)
+        });
+        let chunks = area.chunks.iter().map(|&(at, _)| at).collect();
+        (area, chunks)
+    }
+
+    /// § 6.19.7.12 with 64x64 superblocks: a 16x16 leaf in the lower half of
+    /// the region at (64, 256) copies from its own coded top half and from
+    /// the three regions to its left; the fourth region to the left shares
+    /// the current `ibc_buffer_index` (the `coloY` case) and is refused, as
+    /// is a source with an uncoded 4x4 cell.
+    #[test]
+    fn local_vectors_use_the_last_four_regions_of_the_row() {
+        let leaf = frame((24, 64), (16, 16));
+        let coded = |row: usize, col: usize| row < 16 || col < 64 || row < 24;
+        let (area, chunks) = regions(leaf.mi, 64, coded, None);
+        assert_eq!(chunks, [(1, 4), (1, 3), (1, 2), (1, 1)]);
+        let sample = |dy: i32, dx: i32| [dy * 8, dx * 8];
+        assert!(local_bv_valid(&leaf, &area, sample(-32, 0)));
+        assert!(local_bv_valid(&leaf, &area, sample(-16, -64)));
+        assert!(local_bv_valid(&leaf, &area, sample(0, -192)));
+        assert!(!local_bv_valid(&leaf, &area, sample(0, -256)));
+        assert!(!global_bv_valid(&leaf, sample(0, -256)));
+        assert!(!local_bv_valid(&leaf, &area, sample(-8, 0)));
+        assert!(local_bv_valid(&leaf, &area, sample(-32, 8)));
+        assert!(!local_bv_valid(&leaf, &area, [-32 * 8 + 4, 0]));
+        let shared = BvFrame {
+            chroma_offset: true,
+            ..leaf
+        };
+        assert!(!local_bv_valid(&shared, &area, sample(-32, 0)));
+    }
+
+    /// § 6.19.7.12 with 128x128 superblocks: a leaf in the top-left region of
+    /// a superblock copies from the top-right region of the previous one,
+    /// whose buffer no newer region replaced; in the lower-left region after
+    /// a vertical split it also copies from its own top-left region, not
+    /// from the previous top-left one that region replaced. A region that a
+    /// 128x64 block covers is not entered and stays out.
+    #[test]
+    fn local_regions_of_128_superblocks_follow_the_buffer_index() {
+        let before = |row: usize, col: usize| row < 32 || col < 64;
+        let (_, chunks) = regions((32, 64), 128, before, None);
+        assert_eq!(chunks, [(2, 4), (2, 3)]);
+        let vertical = |row: usize, col: usize| before(row, col) || (row < 64 && col < 80);
+        let (_, chunks) = regions((48, 64), 128, vertical, None);
+        assert_eq!(chunks, [(3, 4), (2, 4), (2, 3)]);
+        let wide = |row: usize, col: usize| before(row, col) || row < 48;
+        let (_, chunks) = regions((48, 64), 128, wide, Some((2, 4)));
+        assert_eq!(chunks, [(3, 4), (2, 4)]);
     }
 
     #[test]
