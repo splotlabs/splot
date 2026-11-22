@@ -981,15 +981,12 @@ impl<'a> SymbolDecoder<'a> {
     ///
     /// # Errors
     /// Returns the same errors as [`Self::read_symbol`].
-    #[inline]
     pub fn read_symbol_u16(&mut self, cdf: &mut [u16]) -> Result<Symbol> {
         self.read_symbol_row(cdf)
     }
 
     /// Dispatches on the row length so each arity's search loop and
     /// adaptation are unrolled with constant bounds.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
     fn read_symbol_row<T: CdfStorage>(&mut self, cdf: &mut [T]) -> Result<Symbol> {
         match cdf.len() {
             3 => self.read_symbol_arity::<T, 2>(cdf),
@@ -1007,27 +1004,13 @@ impl<'a> SymbolDecoder<'a> {
     /// `next_cur` is 0 (`f = 0` and `Prob_Inc` 0), so a search that passes
     /// every other boundary ends there. Both validation modes return
     /// `n = N`; restating it keeps `n` constant in the adaptation step.
-    /// The validation branch stays out of the hot body: a conditional call
-    /// there spills every loop register even when the mode is trusted.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
     fn read_symbol_arity<T: CdfStorage, const N: usize>(
         &mut self,
         cdf: &mut [T],
     ) -> Result<Symbol> {
         if self.config.cdf_validation == CdfValidationMode::Validated {
             validate_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))?;
-            return self.read_symbol_arity_hot::<T, N>(cdf);
         }
-        self.read_symbol_arity_hot::<T, N>(cdf)
-    }
-
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    fn read_symbol_arity_hot<T: CdfStorage, const N: usize>(
-        &mut self,
-        cdf: &mut [T],
-    ) -> Result<Symbol> {
         trusted_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))?;
         let state = cdf[N - 1].to_u32() as u16;
         let rate = trusted_rate::<N>(state);
