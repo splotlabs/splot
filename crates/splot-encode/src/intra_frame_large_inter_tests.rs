@@ -38,7 +38,7 @@ pub(super) fn in_first_inter_frame<R>(
     let plan = crate::gop::plan(1, config.keyint);
     let tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         110,
     );
     let core = plan
@@ -276,7 +276,7 @@ fn large_leaves_are_128x128_128x64_or_64x128() {
     let plan = crate::gop::plan(1, config.keyint);
     let tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         110,
     );
     let filters = FrameFilterParams::default();

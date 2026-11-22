@@ -138,7 +138,8 @@ fn the_facade_codes_region_type_where_the_decoder_reads_it() {
         .encode_frame(&object_frame(&config, 0), &key, QP)
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tools = crate::gop::frame_tools((&coder.preset, PresetContext::default()), coder.tiles, 90);
+    let tools =
+        crate::gop::frame_tools((&coder.preset, PresetContext::default()), &coder.tiles, 90);
     let core = plan
         .header(
             &coder.view,

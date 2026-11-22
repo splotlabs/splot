@@ -362,7 +362,7 @@ fn warp_search_keeps_the_cheapest_models_under_the_bar() {
             &FrameFilterParams::default(),
             crate::gop::frame_tools(
                 (&coder.preset, crate::preset::PresetContext::default()),
-                coder.tiles,
+                &coder.tiles,
                 90,
             ),
         )

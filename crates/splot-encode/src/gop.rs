@@ -535,7 +535,7 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
 /// `opfl_refine_type`, and the `tiles`.
 pub(crate) fn frame_tools(
     (preset, context): (&PresetParams, PresetContext),
-    tiles: UniformTiles,
+    tiles: &UniformTiles,
     qindex: u32,
 ) -> FrameTools {
     (
@@ -559,7 +559,7 @@ pub(crate) fn frame_tools(
             preset.global_motion_predict,
             preset.explicit_refs.checked_sub(1).filter(|&refs| refs > 0),
         ),
-        tiles,
+        *tiles,
     )
 }
 

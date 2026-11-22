@@ -735,7 +735,7 @@ impl IntraFrameCoder {
         };
         let qindex = u32::from(qp);
         let context = self.preset_context(plan, qindex);
-        let mut tools = gop::frame_tools((&self.preset, context), self.tiles, qindex);
+        let mut tools = gop::frame_tools((&self.preset, context), &self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
         let ids = (1u32 << self.preset.long_term_id_bits) - 1;
         if plan.frame_type == FrameType::Key && ids > 0 {

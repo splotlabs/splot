@@ -123,7 +123,7 @@ fn a_frame_without_a_tip_pair_codes_tip_disabled() {
     };
     let tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         110,
     );
     let core = past_less
@@ -186,7 +186,7 @@ fn frames_between_intra_references_code_no_tip() {
     let middle = plans.next().unwrap();
     let tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         110,
     );
     let core = middle
@@ -247,7 +247,7 @@ fn the_tip_weight_search_follows_the_nearer_content() {
     let middle = plans.next().unwrap();
     let tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         110,
     );
     let core = middle

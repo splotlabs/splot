@@ -1569,7 +1569,7 @@ fn inter_stream_of(
     let plan = plan.unwrap();
     let mut tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
-        coder.tiles,
+        &coder.tiles,
         qindex,
     );
     (tools.1, tools.2.2) = (true, true);
@@ -1786,7 +1786,7 @@ fn search_frame_at(
             &FrameFilterParams::default(),
             crate::gop::frame_tools(
                 (&coder.preset, crate::preset::PresetContext::default()),
-                coder.tiles,
+                &coder.tiles,
                 u32::from(qindex),
             ),
         )
