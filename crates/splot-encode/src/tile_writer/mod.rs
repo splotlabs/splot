@@ -596,7 +596,8 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 );
             }
             if self.syntax.dpcm_allowed() {
-                self.syntax.set_leaf_lossless_tx_size(choice.lossless_tx_size);
+                self.syntax
+                    .set_leaf_lossless_tx_size(choice.lossless_tx_size);
             }
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }

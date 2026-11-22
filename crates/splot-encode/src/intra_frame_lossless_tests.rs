@@ -131,7 +131,10 @@ fn lossless_inter_tx_streams_decode_to_the_source_on_any_thread_count() {
                     assert!(coded[3] > 0, "{name}: no collocated chroma {coded:?}");
                 }
             }
-            assert!(crate::tile_writer::SDP_CODED.get() > 0, "{name}: no SDP tree");
+            assert!(
+                crate::tile_writer::SDP_CODED.get() > 0,
+                "{name}: no SDP tree"
+            );
             assert_same_samples(&decode(&units.concat()), &source, &name);
             for threads in [2, 8] {
                 let other = lossless_stream(case, threads, 8, overrides).0;

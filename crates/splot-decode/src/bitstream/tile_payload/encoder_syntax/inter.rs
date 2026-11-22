@@ -1053,9 +1053,8 @@ impl IntraTileSyntax {
             .as_ref()
             .and_then(|state| state.planned.as_ref())
             .is_some_and(|planned| planned.use_intrabc);
-        let current_block = intrabc
-            || leaf.frontier.r != reference.row()
-            || leaf.frontier.c != reference.col();
+        let current_block =
+            intrabc || leaf.frontier.r != reference.row() || leaf.frontier.c != reference.col();
         let collocated = chroma_inter_tx_type(
             &leaf.frontier,
             self.chroma,
