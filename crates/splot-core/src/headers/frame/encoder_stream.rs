@@ -24,7 +24,7 @@ use crate::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, CroppingWindow, SequenceHeader, SuperblockSize,
     parse_sequence_header,
 };
-use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
+use crate::headers::tile_group::TileGroupFraming;
 use crate::obu::{ObuHeader, ParsedObu};
 use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use crate::span::ByteOffset;
@@ -1353,8 +1353,9 @@ fn write_uniform_tile_params(
 }
 
 /// Serializes one Annex B temporal unit: a temporal delimiter, then `seq` when
-/// `with_sequence_header`, then the `OBU_CLOSED_LOOP_KEY` frame OBU whose one tile
-/// group carries the `tiles` of the frame in tile order.
+/// `with_sequence_header`, then the `OBU_CLOSED_LOOP_KEY` frame OBUs that carry
+/// the `tiles` of the frame in tile order in `tile_groups` tile groups (see
+/// [`tile_group_ranges`](crate::headers::frame::tile_group_ranges)).
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] if `seq` has no complete view, a tile is empty or
@@ -1366,7 +1367,7 @@ pub fn encode_key_frame_temporal_unit(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,
     with_sequence_header: bool,
-    tiles: &[&[u8]],
+    (tiles, tile_groups): (&[&[u8]], u32),
     key_obus: &[u8],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let view = CoreSeqView::from_sequence(seq).ok_or(EncoderHeaderError::Incomplete)?;
@@ -1388,25 +1389,27 @@ pub fn encode_key_frame_temporal_unit(
     }
     unit.extend_from_slice(&w.into_bytes());
     unit.extend_from_slice(key_obus);
-    let mut w = BitWriter::new();
-    let mut payload = BitWriter::new();
-    write_tile_group_obu(
-        &mut payload,
+    let groups = crate::headers::frame::encoder_inter_stream::write_tile_groups(
         core,
-        &view,
-        encoder_mfh_view(&view, !core.cur_mfh_id.is_zero()).as_ref(),
-        true,
-        &TileGroupStructure::whole_frame(tiles.len() as u32),
-        &tile_framing(core, tiles),
-        tiles,
-        true,
+        ObuType::ClosedLoopKey,
+        (tiles, tile_groups),
+        |structure, tiles| {
+            let mut payload = BitWriter::new();
+            write_tile_group_obu(
+                &mut payload,
+                core,
+                &view,
+                encoder_mfh_view(&view, !core.cur_mfh_id.is_zero()).as_ref(),
+                true,
+                structure,
+                &tile_framing(core, tiles),
+                tiles,
+                true,
+            )?;
+            Ok(payload.into_bytes())
+        },
     )?;
-    write_annexb_obu(
-        &mut w,
-        &obu_header(ObuType::ClosedLoopKey),
-        &payload.into_bytes(),
-    )?;
-    unit.extend_from_slice(&w.into_bytes());
+    unit.extend_from_slice(&groups);
     Ok(unit)
 }
 

@@ -142,6 +142,10 @@ pub struct Config {
     pub threads: ThreadCount,
     /// Tile layout of every frame. The thread count never changes it.
     pub tiles: TileLayout,
+    /// Tile groups per frame: the tiles split in raster order into this many
+    /// tile group OBUs of consecutive tiles (§ 5.19), at most one per tile.
+    /// `1`, the default, codes one tile group.
+    pub tile_groups: NonZeroU32,
     /// Distance between key frames, in frames.
     pub keyint: NonZeroU32,
     /// Fixed-ratio resize: every frame is coded at `8 / denominator` of the
@@ -223,6 +227,7 @@ impl Config {
             preset_overrides: Vec::new(),
             threads: ThreadCount::Auto,
             tiles: TileLayout::default(),
+            tile_groups: NonZeroU32::MIN,
             keyint: Self::DEFAULT_KEYINT,
             resize_denominator: None,
             crop: None,

@@ -668,7 +668,7 @@ impl GopFrame {
     }
 
     /// The OBUs of the frame `core` built by [`Self::header`] with
-    /// `(qindex, filters, tools)`, whose tile group carries
+    /// `(qindex, filters, tools)`, whose `tile_groups` tile groups carry
     /// `tiles`, after a temporal delimiter when the frame opens its temporal
     /// unit; a key frame repeats the sequence header, followed by `key_obus`,
     /// its content interpretation, HDR metadata and film grain OBUs. The
@@ -680,7 +680,7 @@ impl GopFrame {
         refs: &EncoderReferences,
         (qindex, filters, (tx, compound, mv_tools, layout)): (u32, &FrameFilterParams, FrameTools),
         core: &FrameHeaderCore,
-        (tiles, key_obus): (&[&[u8]], &[u8]),
+        (tiles, key_obus, tile_groups): (&[&[u8]], &[u8], u32),
     ) -> Result<Vec<u8>> {
         let longest = tiles.split_last().map_or(0, |(_, rest)| {
             rest.iter()
@@ -705,8 +705,14 @@ impl GopFrame {
             }
             let tools = (tx, compound, mv_tools, layout);
             let core = self.header(view, refs, qindex, filters, tools)?;
-            return encode_key_frame_temporal_unit(seq, &core, true, tiles, key_obus)
-                .map_err(header_error);
+            return encode_key_frame_temporal_unit(
+                seq,
+                &core,
+                true,
+                (tiles, tile_groups),
+                key_obus,
+            )
+            .map_err(header_error);
         }
         let header = inter_header(
             view,
@@ -724,7 +730,7 @@ impl GopFrame {
         } else {
             Vec::new()
         };
-        unit.extend(encode_inter_frame_obu(&header, tiles).map_err(header_error)?);
+        unit.extend(encode_inter_frame_obu(&header, tiles, tile_groups).map_err(header_error)?);
         Ok(unit)
     }
 
