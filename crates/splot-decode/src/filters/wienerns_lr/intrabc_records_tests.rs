@@ -703,7 +703,7 @@ fn intrabc_newmv_geometry_derives_integer_luma_copy_rectangles() {
     )
     .unwrap();
     let prediction =
-        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
             .unwrap();
 
     assert_eq!(prediction.target, PlaneRect::new(0, 80, 16, 16).unwrap());
@@ -736,7 +736,7 @@ fn intrabc_nearmv_geometry_derives_integer_luma_copy_rectangles() {
     )
     .unwrap();
     let prediction =
-        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
             .unwrap();
 
     assert_eq!(prediction.target, PlaneRect::new(0, 80, 16, 16).unwrap());
@@ -759,7 +759,7 @@ fn intrabc_geometry_derives_bilinear_fractional_luma_prediction_region() {
     };
 
     let prediction =
-        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
             .unwrap();
 
     assert_eq!(prediction.target, PlaneRect::new(32, 32, 16, 16).unwrap());
@@ -771,8 +771,10 @@ fn intrabc_geometry_derives_bilinear_fractional_luma_prediction_region() {
     assert_ne!((prediction.scaling.start_y >> 6) & 15, 0);
 }
 
+/// § 6.19.7.12: a half-sample row offset at the tile top reads the row
+/// above the tile (`srcTopEdge = -1`), so the vector is not valid.
 #[test]
-fn intrabc_geometry_admits_fractional_border_extension_at_frame_top() {
+fn intrabc_geometry_rejects_fractional_border_extension_above_the_tile() {
     let (_, core) = selectable_large_frame_fixture();
     let block = IntrabcBlockContext::new(0, 8, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
@@ -781,16 +783,11 @@ fn intrabc_geometry_admits_fractional_border_extension_at_frame_top() {
         block_mv: IntrabcBlockVector { row: -4, col: 0 },
     };
 
-    let prediction =
-        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
-            .unwrap();
+    let error =
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
+            .unwrap_err();
 
-    assert_eq!(prediction.target, PlaneRect::new(32, 0, 16, 16).unwrap());
-    assert_eq!(prediction.source, prediction.target);
-    assert!(prediction.fractional);
-    assert_eq!(prediction.scaling.start_x >> 10, 32);
-    assert_eq!(prediction.scaling.start_y >> 10, -1);
-    assert_ne!((prediction.scaling.start_y >> 6) & 15, 0);
+    assert_invalid_block_vector_error(&error);
 }
 
 #[test]
@@ -808,7 +805,7 @@ fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
     };
 
     let prediction =
-        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
             .unwrap();
 
     assert_eq!(prediction.target, PlaneRect::new(0, 8, 16, 8).unwrap());
@@ -835,8 +832,9 @@ fn intrabc_geometry_rejects_source_outside_current_tile() {
         block_mv: IntrabcBlockVector { row: 0, col: -128 },
     };
 
-    let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
-        .unwrap_err();
+    let error =
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
+            .unwrap_err();
 
     assert_invalid_block_vector_error(&error);
 }
@@ -852,7 +850,7 @@ fn intrabc_geometry_derives_overlapping_integer_copy_region() {
     };
 
     let prediction =
-        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
             .unwrap();
 
     assert_eq!(prediction.source, prediction.target);
@@ -869,8 +867,9 @@ fn intrabc_geometry_rejects_out_of_frame_source() {
         block_mv: IntrabcBlockVector { row: -512, col: 0 },
     };
 
-    let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
-        .unwrap_err();
+    let error =
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
+            .unwrap_err();
 
     assert_invalid_block_vector_error(&error);
 }
@@ -885,8 +884,9 @@ fn intrabc_geometry_rejects_out_of_frame_target() {
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
 
-    let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
-        .unwrap_err();
+    let error =
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
+            .unwrap_err();
 
     assert_state_error(&error);
 }
@@ -915,7 +915,7 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
     };
 
     let prediction =
-        derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
             .unwrap();
 
     assert_eq!(prediction.target, PlaneRect::new(0, 8, 16, 8).unwrap());
@@ -941,8 +941,9 @@ fn intrabc_geometry_rejects_off_frame_top_left_block() {
         block_mv: IntrabcBlockVector { row: -64, col: 0 },
     };
 
-    let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
-        .unwrap_err();
+    let error =
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
+            .unwrap_err();
 
     assert_state_error(&error);
 }
@@ -958,8 +959,9 @@ fn intrabc_geometry_rejects_missing_frame_size() {
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
 
-    let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
-        .unwrap_err();
+    let error =
+        derive_intrabc_luma_prediction_geometry(&core, geometry, None, info, ByteOffset::new(20))
+            .unwrap_err();
 
     assert_state_error(&error);
 }
