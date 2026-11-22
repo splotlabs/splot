@@ -11,8 +11,8 @@ use splot_recon::{
 
 use super::super::{EncoderKernels, Quantizer, ScalarKernels, SimdKernels};
 use super::{
-    EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, forward_lossless_4x4,
-    forward_walsh_hadamard_4x4, matrix_index, pair_sum_scalar, pair_sum_simd,
+    EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, forward_lossless_4x4, matrix_index,
+    pair_sum_scalar, pair_sum_simd,
 };
 
 /// The 25 AV2 `TX_SIZES_ALL` shapes as `(log2W, log2H)`.
@@ -289,7 +289,7 @@ proptest! {
     fn lossless_walsh_hadamard_round_trips_exactly(
         residual in proptest::array::uniform16(-1023i32..=1023),
     ) {
-        let levels = forward_walsh_hadamard_4x4(&residual);
+        let levels = forward_lossless_4x4(&residual, None);
         let dequant: Vec<i32> = levels.iter().map(|&level| level * 8).collect();
         let params = InverseTransform2d {
             log2_width: 2,
