@@ -380,7 +380,8 @@ where
             let chroma = call.with_tree_type(PartitionTreeType::ChromaPart);
             return walk_detached::<_, _, _, _, ACTIVE>(frame, walker, hooks, chroma, chroma_ref);
         }
-        if call.b_size == frame.sb_size {
+        let sb_root = call.b_size == frame.sb_size;
+        if sb_root {
             read_loop_restoration_for_call(
                 *frame,
                 call,
@@ -397,6 +398,10 @@ where
             hooks.mi_size_state,
             hooks.work_unit.cdf_mut().tile_cdfs_mut(),
         )?;
+        if sb_root {
+            walker.allow_extra_ibc_range = frame.sb_size.index() == BLOCK_128X128
+                && matches!(partition, PartitionType::Horz | PartitionType::Split);
+        }
         if partition != PartitionType::None {
             let sub_size = valid_subsize(partition, call.b_size)?;
             let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
@@ -555,12 +560,6 @@ impl TreeWalker<'_> {
                 facts.read_partition_decision_input(partition_context, square_context);
             super::partition::read_partition_symbols(decision_input, cdfs, &mut self.symbols)?
         };
-        if frame.sb_size.index() != BLOCK_128X128 {
-            self.allow_extra_ibc_range = false;
-        } else if node.b_size.index() == BLOCK_128X128 {
-            self.allow_extra_ibc_range =
-                matches!(partition, PartitionType::Horz | PartitionType::Split);
-        }
         let cfl_allowed_in_sdp = self.sdp_state.record_partition(frame, node, partition);
         Ok((partition, node.with_cfl_allowed_in_sdp(cfl_allowed_in_sdp)))
     }
