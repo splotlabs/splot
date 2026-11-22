@@ -1261,6 +1261,8 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) ref_counter: RefSlots<u32>,
     pub(crate) ref_chroma_ac_deltas: RefSlots<[i32; 2]>,
     pub(crate) ref_is_inter: RefSlots<bool>,
+    /// The § 7.9 `RefFrameType` is `KEY_FRAME` or `INTRA_ONLY_FRAME`.
+    pub(crate) ref_is_intra_frame: RefSlots<bool>,
     pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
     pub(crate) ref_num_total_refs: RefSlots<u32>,
     pub(crate) saved_global_motion_order_hints:
@@ -1350,6 +1352,7 @@ impl<T: ReconSample> InterReferenceState<T> {
             ref_counter: RefSlots::default(),
             ref_chroma_ac_deltas: RefSlots::default(),
             ref_is_inter: RefSlots::default(),
+            ref_is_intra_frame: RefSlots::default(),
             ref_long_term_id: RefSlots::default(),
             ref_num_total_refs: RefSlots::default(),
             saved_global_motion_order_hints: RefSlots::default(),
@@ -1749,16 +1752,30 @@ fn required_tip_reference_pair(
     let current_order_hint = core
         .display_order_hint()
         .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
-    find_mv_stack::tip_reference_pair_from_hints(current_order_hint, &hints).ok_or_else(|| {
-        DecodeError::MalformedSource {
+    let pair = find_mv_stack::tip_reference_pair_from_hints(current_order_hint, &hints)
+        .ok_or_else(|| DecodeError::MalformedSource {
             issue: DecodeSourceIssue::frame_header_conformance(
                 offset,
                 frame_index,
                 SPEC_TIP_TEMPORAL_SCALE,
                 "TIP has no usable past/future reference pair".to_owned(),
             ),
-        }
-    })
+        })?;
+    let intra = |ref_frame| {
+        block_reference_slot(&inter.ref_frame_idx, ref_frame)
+            .map(|slot| reference.ref_is_intra_frame.get(slot as usize) == Some(&true))
+    };
+    if intra(pair.past_ref)? && intra(pair.future_ref)? {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                offset,
+                frame_index,
+                SPEC_TIP_TEMPORAL_SCALE,
+                "TIP has no inter frame as ClosestPast or ClosestFuture".to_owned(),
+            ),
+        });
+    }
+    Ok(pair)
 }
 
 /// Validates the parsed TIP output frame `core` and infers its quantizer.
