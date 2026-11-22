@@ -67,6 +67,7 @@ mod intrabc;
 mod mv;
 mod palette;
 mod parity;
+mod region;
 mod rollback;
 mod tcq;
 mod transform;

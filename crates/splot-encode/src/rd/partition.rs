@@ -62,6 +62,25 @@ pub(crate) trait PartitionSearch {
         node: Self::Node,
         partition: Partition,
     ) -> Result<Bits, Self::Error>;
+    /// The rate of the `region_type` that `node` codes after `partition`,
+    /// `INTRA_REGION` when `intra`; `None` when it codes none.
+    fn region_rate(
+        &mut self,
+        _node: Self::Node,
+        _partition: Partition,
+        _intra: bool,
+    ) -> Result<Option<Bits>, Self::Error> {
+        Ok(None)
+    }
+    /// The luma child nodes and the chroma node of an `INTRA_REGION` at
+    /// `node` coded with `partition`.
+    fn region_children(
+        &self,
+        _node: Self::Node,
+        _partition: Partition,
+    ) -> Result<(Vec<Self::Node>, Self::Node), Self::Error> {
+        Err(TileWriterError::Shape("no extended SDP region").into())
+    }
     /// Saves the state that coding `node` can change; with `start`, a live
     /// save of the same node, the state a trial reached from it.
     fn save(
@@ -241,6 +260,8 @@ impl Levels {
 thread_local! {
     /// Nodes on this thread that the `NONE` breakout ended.
     pub(crate) static BREAKOUTS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// `INTRA_REGION` trials on this thread that beat their shared tree.
+    pub(crate) static REGIONS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
 /// What a searched node found: its tree, or a budget it found no tree under
@@ -367,7 +388,7 @@ fn search<S: PartitionSearch>(
             candidates = self::candidates(coder, node, preset, extended)?;
         }
     }
-    let start = if candidates.len() > 1 {
+    let start = if candidates.len() > 1 || preset.extended_sdp > 0 {
         Some(coder.save(node, None)?)
     } else {
         None
@@ -396,7 +417,12 @@ fn search<S: PartitionSearch>(
         {
             coder.restore(start)?;
         }
-        let rate = coder.partition_rate(node, *partition)?;
+        let mut rate = coder.partition_rate(node, *partition)?;
+        if *partition != Partition::None {
+            rate += coder
+                .region_rate(node, *partition, false)?
+                .unwrap_or_default();
+        }
         let three_way_shape = matches!(extended_shape(*partition), Some((_, false)));
         let exits = early_exit && unsplit.is_some() && best_split.is_none();
         let bound = match (three_way_shape, exits) {
@@ -437,13 +463,28 @@ fn search<S: PartitionSearch>(
                 trees.push(tree);
                 cost = cost + child_cost;
             }
-            (trees.len() == children.len()).then(|| {
+            let split = (trees.len() == children.len()).then(|| {
                 let tree = PartitionTree::Split {
                     kind: *partition,
                     children: trees,
                 };
                 (tree, cost)
-            })
+            });
+            let all_intra = split
+                .as_ref()
+                .is_some_and(|(tree, _)| tree.count_leaves(&|choice| choice.inter.is_some()) == 0);
+            let level = preset.extended_sdp;
+            match &start {
+                Some(start) if level == 2 || level == 1 && all_intra => better_region(
+                    coder,
+                    (node, *partition),
+                    (preset, lambda),
+                    (memo, levels),
+                    (nested, bound),
+                    (start, split),
+                )?,
+                _ => split,
+            }
         };
         let j = match found {
             Some((tree, cost)) => {
@@ -494,6 +535,63 @@ fn search<S: PartitionSearch>(
     Ok(Some((tree, cost)))
 }
 
+/// The cheaper of the shared-tree result `split` of `partition` at `node`
+/// and an `INTRA_REGION` coded from `start` with the luma children searched
+/// as the shared children are, under `bound`; leaves the coder in the state
+/// of the result. `split` when the node codes no `region_type`.
+fn better_region<S: PartitionSearch>(
+    coder: &mut S,
+    (node, partition): (S::Node, Partition),
+    (preset, lambda): (&PresetParams, Lambda),
+    (memo, levels): (&mut Memo<S::Node>, Option<&Levels>),
+    (nested, bound): (bool, Option<u128>),
+    (start, split): (&S::Saved, Found),
+) -> Result<Found, S::Error> {
+    let split_end = coder.save(node, Some(start))?;
+    coder.restore(start)?;
+    let rate = coder.partition_rate(node, partition)?;
+    let Some(region_rate) = coder.region_rate(node, partition, true)? else {
+        coder.restore(&split_end)?;
+        return Ok(split);
+    };
+    let bound = lower(bound, split.as_ref().map(|(_, cost)| cost.cost(lambda)));
+    let (children, chroma) = coder.region_children(node, partition)?;
+    let mut cost = RdCost {
+        distortion: 0,
+        rate: rate + region_rate,
+    };
+    let mut luma = Vec::with_capacity(children.len());
+    for &child in &children {
+        let spent = cost.cost(lambda);
+        if bound.is_some_and(|bound| spent >= bound) {
+            break;
+        }
+        let rest = bound.map(|bound| bound - spent);
+        let found = search(coder, child, preset, lambda, (memo, levels), (nested, rest))?;
+        let Some((tree, child_cost)) = found else {
+            break;
+        };
+        luma.push(tree);
+        cost = cost + child_cost;
+    }
+    if luma.len() == children.len() && bound.is_none_or(|bound| cost.cost(lambda) < bound) {
+        let (chroma_cost, choice) = coder.evaluate_leaf(chroma)?;
+        cost = cost + chroma_cost;
+        if bound.is_none_or(|bound| cost.cost(lambda) < bound) {
+            #[cfg(test)]
+            REGIONS.set(REGIONS.get() + 1);
+            let tree = PartitionTree::Region {
+                kind: partition,
+                luma,
+                chroma: choice,
+            };
+            return Ok(Some((tree, cost)));
+        }
+    }
+    coder.restore(&split_end)?;
+    Ok(split)
+}
+
 /// Whether the `NONE` cost `cost` of a block of luma log2 size `(w, h)` is
 /// under the breakout thresholds of `level`: a distortion per luma sample of
 /// at most `(level * sqrt(lambda) / 16)^2` and a rate per luma sample of at
@@ -523,9 +621,21 @@ fn recode<S: PartitionSearch>(
             return Err(TileWriterError::Shape("SDP tree at a shared node or none").into());
         }
         (PartitionTree::Leaf(_), None) => Partition::None,
-        (PartitionTree::Split { kind, .. }, None) => *kind,
+        (PartitionTree::Split { kind, .. } | PartitionTree::Region { kind, .. }, None) => *kind,
     };
-    let rate = coder.partition_rate(node, partition)?;
+    let mut rate = coder.partition_rate(node, partition)?;
+    if partition != Partition::None {
+        let intra = matches!(tree, PartitionTree::Region { .. });
+        match coder.region_rate(node, partition, intra)? {
+            Some(region) => rate += region,
+            None if intra => {
+                return Err(
+                    TileWriterError::Shape("a region at a node without region_type").into(),
+                );
+            }
+            None => {}
+        }
+    }
     let mut cost = match tree {
         PartitionTree::Split { kind, children } => {
             let mut cost = RdCost::default();
@@ -535,6 +645,14 @@ fn recode<S: PartitionSearch>(
             cost
         }
         PartitionTree::Leaf(choice) => coder.code_leaf(node, *choice)?,
+        PartitionTree::Region { kind, luma, chroma } => {
+            let (children, chroma_node) = coder.region_children(node, *kind)?;
+            let mut cost = RdCost::default();
+            for (child, tree) in children.into_iter().zip(luma) {
+                cost = cost + recode(coder, child, tree)?;
+            }
+            cost + coder.code_leaf(chroma_node, *chroma)?
+        }
         PartitionTree::Sdp { .. } => RdCost::default(),
     };
     cost.rate += rate;

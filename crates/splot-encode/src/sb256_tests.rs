@@ -139,6 +139,7 @@ fn widest_leaf(trees: &[PartitionTree]) -> usize {
                 children.iter().map(|c| widest(c, child)).max().unwrap_or(0)
             }
             PartitionTree::Sdp { luma, .. } => widest(luma, width),
+            PartitionTree::Region { .. } => unreachable!("no extended SDP region"),
         }
     }
     trees

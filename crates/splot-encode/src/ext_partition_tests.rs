@@ -78,6 +78,12 @@ fn kinds(tree: &PartitionTree, out: &mut Vec<Partition>) {
             kinds(luma, out);
             kinds(chroma, out);
         }
+        PartitionTree::Region { kind, luma, .. } => {
+            out.push(*kind);
+            for child in luma {
+                kinds(child, out);
+            }
+        }
         PartitionTree::Leaf(_) => {}
     }
 }

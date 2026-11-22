@@ -342,6 +342,11 @@ pub struct PresetParams {
     /// that only merges luma leaves. On in every row: intra frames gain luma
     /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
     pub sdp: bool,
+    /// Extended SDP (`enable_extended_sdp`, § 5.20.3.1) with `sdp`, `0..=2`:
+    /// an inter-frame node may code an `INTRA_REGION`, an intra luma tree and
+    /// one chroma block. `1` tries the region where the shared tree of the
+    /// same partition chose intra leaves only, `2` at every eligible node.
+    pub extended_sdp: u8,
     /// CCSO `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` triples the
     /// filter search tries per plane, `0..=112`: the first 8 of a fixed
     /// ladder, then every other triple of § 5.18.7.12; `0` disables CCSO in
@@ -865,6 +870,7 @@ impl PresetParams {
         check("delta_q_res", self.delta_q_res, 0, 3, "")?;
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
+        check("extended_sdp", self.extended_sdp, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
@@ -1084,6 +1090,7 @@ preset_table! {
         ref_intra_margin:      [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        extended_sdp:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     intra {
         intra_modes:           frames_sd([
@@ -1349,6 +1356,7 @@ mod tests {
             assert!(at_most(&slow.breakout_area, &fast.breakout_area));
             assert!(at_most(&slow.leaf_reuse, &fast.leaf_reuse));
             assert!(fast.sdp <= slow.sdp);
+            assert!(fast.extended_sdp <= slow.extended_sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);
@@ -1638,6 +1646,7 @@ mod tests {
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("interintra_search", "2")], "interintra_search"),
+            (&[("extended_sdp", "3")], "extended_sdp"),
             (&[("warp_interintra", "3")], "warp_interintra"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
