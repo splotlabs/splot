@@ -106,6 +106,7 @@ impl Case {
                 num_ref_frames: None,
                 explicit_ref_frame_map: false,
                 seq_tiles: None,
+                plane_delta_q: [0; 3],
                 short_refresh: false,
                 masked_compound: false,
                 cwp: false,
@@ -128,6 +129,7 @@ impl Case {
                 disable_cross_frame_cdf_init: false,
                 choose_primary_ref_frame: false,
                 qm_level: None,
+                plane_delta_q: [0; 3],
             },
         }
     }

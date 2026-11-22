@@ -112,6 +112,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         disable_cross_frame_cdf_init: false,
                         choose_primary_ref_frame: false,
                         qm_level: [None, Some(0), Some(14)][index],
+                        plane_delta_q: [0; 3],
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -196,6 +197,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         num_ref_frames: Some(5),
         explicit_ref_frame_map: true,
         seq_tiles: None,
+        plane_delta_q: [0; 3],
         short_refresh: true,
         masked_compound: true,
         cwp: true,
@@ -949,5 +951,88 @@ fn explicit_slot_counts_reach_the_parsed_sequence() {
     }
     for slots in [0, 17] {
         assert!(build_encoder_sequence_header(&stream(Some(slots), false)).is_err());
+    }
+}
+
+#[test]
+fn plane_delta_q_reaches_the_parsed_headers() {
+    let stream = |chroma, plane_delta_q| EncoderStreamParams {
+        chroma,
+        tools: EncoderToolFlags {
+            plane_delta_q,
+            ..EncoderToolFlags::default()
+        },
+        ..params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64)
+    };
+    let key = |view: &CoreSeqView, plane_delta_q| {
+        let tx = KeyFrameTxParams {
+            plane_delta_q,
+            ..KeyFrameTxParams::default()
+        };
+        let filters = FrameFilterParams::default();
+        build_key_frame_header(view, 90, 0, &filters, tx, UniformTiles::default())
+    };
+    let chromas = [
+        ChromaFormatIdc::Yuv420,
+        ChromaFormatIdc::Yuv444,
+        ChromaFormatIdc::Monochrome,
+    ];
+    for chroma in chromas {
+        let mono = chroma == ChromaFormatIdc::Monochrome;
+        for d in [[-5, 0, 0], [0, 7, 7], [0, 0, -9], [-64, 63, -2], [3, 4, 4]] {
+            let seq = build_encoder_sequence_header(&stream(chroma, d)).unwrap();
+            assert_eq!(reparse_sequence(&seq), seq);
+            let view = CoreSeqView::from_sequence(&seq).unwrap();
+            let quant = &view.quant;
+            assert_eq!(quant.y_dc_delta_q_enabled, d[0] != 0);
+            assert_eq!(quant.uv_ac_delta_q_enabled, !mono && d[1..] != [0, 0]);
+            assert_eq!(quant.separate_uv_delta_q, !mono && d[1] != d[2]);
+            let core = key(&view, d).unwrap();
+            assert_eq!(reparse_core(&core, &view), core);
+            let q = core.quantization_params.unwrap();
+            let [y, u, v] = d.map(i32::from);
+            let [u, v] = if mono { [0, 0] } else { [u, v] };
+            let got = [
+                q.delta_q_y_dc,
+                q.delta_q_u_dc,
+                q.delta_q_u_ac,
+                q.delta_q_v_dc,
+            ];
+            assert_eq!((got, q.delta_q_v_ac), ([y, u, u, v], v), "{chroma:?} {d:?}");
+            let bytes = key_frame_header_bits(
+                &view,
+                (90, UniformTiles::default()),
+                0,
+                &FrameFilterParams::default(),
+                KeyFrameTxParams {
+                    plane_delta_q: d,
+                    ..KeyFrameTxParams::default()
+                },
+            )
+            .unwrap();
+            for len in 0..core.consumed_bits.div_ceil(8) as usize {
+                let mut cut = BitReader::new(&bytes[..len], ByteOffset::new(0));
+                let parsed =
+                    parse_frame_header_prefix(&mut cut, ObuType::ClosedLoopKey, Some(true))
+                        .and_then(|prefix| {
+                            let mut core =
+                                init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
+                            let refs = FrameReferenceStateView::unknown();
+                            parse_core_body(&mut cut, &mut core, &view, None, &refs)?;
+                            Ok(core.status)
+                        });
+                let complete = FrameHeaderParseStatus::IntraHeaderComplete;
+                assert!(parsed.map_or(true, |s| s != complete), "{d:?} cut at {len}");
+            }
+        }
+        let off = CoreSeqView::from_sequence(
+            &build_encoder_sequence_header(&stream(chroma, [0; 3])).unwrap(),
+        )
+        .unwrap();
+        assert!(key(&off, [-1, 0, 0]).is_err());
+        let y_only = build_encoder_sequence_header(&stream(chroma, [2, 0, 0])).unwrap();
+        let y_only = CoreSeqView::from_sequence(&y_only).unwrap();
+        assert!(key(&y_only, [2, 1, 1]).is_err() != mono);
+        assert!(key(&y_only, [64, 0, 0]).is_err());
     }
 }

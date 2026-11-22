@@ -6,7 +6,7 @@
 use super::*;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::types::ObuType;
-use splot_recon::QmFrameLevels;
+use splot_recon::{QmFrameLevels, QuantizerDeltas};
 
 /// Preset 6 with `quant_matrices`.
 fn with_qm(quant_matrices: u8) -> &'static PresetParams {
@@ -104,7 +104,7 @@ fn facade_resolves_the_matrix_level_of_each_block() {
             plane,
             log2,
             (tx_type, false, false),
-            (BitDepth::Eight, Some(qm)),
+            (BitDepth::Eight, Some(qm), QuantizerDeltas::default()),
         )
         .unwrap();
         params.qm.map(|qm| qm.seg_level)

@@ -89,7 +89,11 @@ pub(crate) fn reconstruct(
         [PlaneId::Y, PlaneId::U, PlaneId::V][tx.plane.min(2)],
         (log2_w, log2_h),
         (tx.tx_type, tcq, syntax.uses_ddt()),
-        (bit_depth, syntax.quant_matrices()),
+        (
+            bit_depth,
+            syntax.quant_matrices(),
+            syntax.quantizer_deltas(),
+        ),
     )?;
     dequant.clear();
     dequant.resize(1 << (adj_w + adj_h), 0);
