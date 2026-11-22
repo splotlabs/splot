@@ -15,8 +15,8 @@ use crate::headers::film_grain::{
     FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate,
 };
 use crate::headers::frame::encoder_stream::{
-    UniformTiles, check_tx_params, obu_header, tile_framing, write_film_grain_config,
-    write_quant_and_filters, write_uniform_tile_info,
+    UniformTiles, check_tx_params, obu_header, plane_quantization, tile_framing,
+    write_film_grain_config, write_quant_and_filters, write_uniform_tile_info,
 };
 use crate::headers::frame::get_ref_frames::get_relative_dist;
 use crate::headers::frame::global_motion::{DEFAULT_WARP_PARAMS, REFS_PER_FRAME, base_prediction};
@@ -698,7 +698,14 @@ pub fn build_tip_output_frame_header(
         w.write_flag(regular)?; // tip_regular
     }
     if inter.enable_tip_explicit_qp {
-        let quant = QuantizationParams::inferred_tip(params.base_q_idx, 0, 0);
+        let plane = plane_quantization(seq, params.base_q_idx, params.tx);
+        let dc = |ac| if seq.quant.equal_ac_dc_q { ac } else { 0 };
+        let quant = QuantizationParams {
+            delta_q_y_dc: 0,
+            delta_q_u_dc: dc(plane.delta_q_u_ac),
+            delta_q_v_dc: dc(plane.delta_q_v_ac),
+            ..plane
+        };
         write_quantization_params(&mut w, &quant, &seq.quant, true)?;
     }
     if seq.filter.enable_df_sub_pu {

@@ -458,7 +458,13 @@ mod tests {
             Err(Error::LosslessWith { what }) => what,
             _ => String::new(),
         };
-        for (name, value) in [("segmentation", "1"), ("quant_matrices", "2")] {
+        for (name, value) in [
+            ("segmentation", "1"),
+            ("quant_matrices", "2"),
+            ("y_dc_delta_q", "-3"),
+            ("u_delta_q", "4"),
+            ("v_delta_q", "1"),
+        ] {
             let mut explicit = config.clone();
             explicit
                 .preset_overrides

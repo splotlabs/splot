@@ -389,3 +389,97 @@ fn avm_decodes_delta_q_frames_like_splot() {
         );
     }
 }
+
+/// Preset 6 with TIP output, explicit TIP quantization and the plane
+/// quantizer deltas `[y, u, v]`.
+fn with_plane_deltas([y, u, v]: [i8; 3]) -> &'static crate::preset::PresetParams {
+    Box::leak(Box::new(crate::preset::PresetParams {
+        y_dc_delta_q: y,
+        u_delta_q: u,
+        v_delta_q: v,
+        tip: 1,
+        tip_output: 200,
+        df_sub_pu: true,
+        tip_explicit_qp: true,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// A panning mini-GOP stream in `chroma` with the plane deltas `d` on
+/// `threads` threads: its units, the encoder recon and the frame headers.
+fn plane_delta_stream(
+    chroma: PixelFormat,
+    d: [i8; 3],
+    threads: usize,
+) -> (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<splot_core::headers::frame::FrameHeaderCore>,
+) {
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.chroma = chroma;
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, with_plane_deltas(d)).unwrap();
+    let (units, expected, cores, _) =
+        super::carry::planned_stream_of(&config, coder, panning_frame, 150);
+    (units, expected, cores)
+}
+
+const PLANE_DELTAS: [[i8; 3]; 4] = [[-9, 0, 0], [0, 12, 12], [0, 0, -7], [-9, 12, -7]];
+
+/// Each plane quantizer delta alone and all three together, in 4:2:0 and
+/// 4:4:4: key and inter frames code them (§ 5.18.6.1), the TIP output
+/// frames (4:2:0 here) code the chroma AC deltas of explicit TIP quantization, the stream
+/// decodes to the encoder recon, and 1, 2 and 8 threads code the same bytes.
+#[test]
+fn plane_delta_q_streams_decode_alike_on_any_thread_count() {
+    let mut tip_outputs = 0;
+    for chroma in [PixelFormat::Yuv420, PixelFormat::Yuv444] {
+        for d in PLANE_DELTAS {
+            let (units, expected, cores) = plane_delta_stream(chroma, d, 1);
+            let name = format!("{chroma:?} {d:?}");
+            let [y, u, v] = d.map(i32::from);
+            let mut kinds = [0; 2];
+            for core in &cores {
+                let q = core.quantization_params.unwrap();
+                if core.obu_type == splot_core::types::ObuType::RegularTip {
+                    assert_eq!((q.delta_q_u_ac, q.delta_q_v_ac), (u, v), "{name}");
+                    tip_outputs += 1;
+                } else {
+                    let got = [
+                        q.delta_q_y_dc,
+                        q.delta_q_u_dc,
+                        q.delta_q_u_ac,
+                        q.delta_q_v_dc,
+                    ];
+                    assert_eq!((got, q.delta_q_v_ac), ([y, u, u, v], v), "{name}");
+                    kinds[usize::from(core.inter.is_some())] += 1;
+                }
+            }
+            assert!(kinds.iter().all(|&count| count > 0), "{name}: {kinds:?}");
+            assert_same_samples(&decode(&units), &expected, &name);
+            for threads in [2, 8] {
+                let other = plane_delta_stream(chroma, d, threads).0;
+                assert!(other == units, "{name}: {threads} threads");
+            }
+        }
+    }
+    assert!(tip_outputs > 0, "no TIP output frame");
+}
+
+/// AVM decodes plane quantizer delta streams like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_plane_delta_q_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for chroma in [PixelFormat::Yuv420, PixelFormat::Yuv444] {
+        for d in PLANE_DELTAS {
+            let (units, expected, _) = plane_delta_stream(chroma, d, 1);
+            let name = format!("planedq{chroma:?}{}", d.map(|x| x.to_string()).join("_"));
+            let avm = avm_decode(&avmdec, &[units], (72, 40), BitDepth::Eight, &name);
+            assert!(avm == expected, "{chroma:?} {d:?}: AVM output differs");
+        }
+    }
+}

@@ -28,6 +28,7 @@ pub(crate) fn key_frame_tx_params(
         },
         reduced_tx_set: if preset.tx_type_depth == 0 { 2 } else { 0 },
         allow_intrabc: preset.intrabc,
+        allow_local_intrabc: preset.intrabc_local,
         ..KeyFrameTxParams::default()
     }
 }
@@ -89,7 +90,11 @@ pub(crate) fn reconstruct(
         [PlaneId::Y, PlaneId::U, PlaneId::V][tx.plane.min(2)],
         (log2_w, log2_h),
         (tx.tx_type, tcq, syntax.uses_ddt()),
-        (bit_depth, syntax.quant_matrices()),
+        (
+            bit_depth,
+            syntax.quant_matrices(),
+            syntax.quantizer_deltas(),
+        ),
     )?;
     dequant.clear();
     dequant.resize(1 << (adj_w + adj_h), 0);

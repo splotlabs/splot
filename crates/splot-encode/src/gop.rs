@@ -612,7 +612,8 @@ impl GopFrame {
     }
 
     /// The header and OBUs of the frame as a `TIP_FRAME_AS_OUTPUT` frame with
-    /// `tip_global_wtd_index` `weight` and the film grain of `grain_seed` over
+    /// `tip_global_wtd_index` `weight`, the film grain of `grain_seed` and the
+    /// chroma of the plane quantizer deltas `plane_delta_q` over
     /// the reference map `ref_frame_idx` references, after a temporal
     /// delimiter when the frame opens its temporal unit; `tip` is its
     /// `(qindex, TipGlobalMv, TipInterpFilter, TIP deblocking)`, the qindex
@@ -622,7 +623,7 @@ impl GopFrame {
         view: &CoreSeqView,
         refs: &EncoderReferences,
         ref_frame_idx: &[u32],
-        (weight, grain_seed): (u8, Option<u16>),
+        (weight, grain_seed, plane_delta_q): (u8, Option<u16>, [i8; 3]),
         (qindex, mv, filter, deblocking): TipOutputChoice,
     ) -> Result<(FrameHeaderCore, Vec<u8>)> {
         let params = InterFrameParams {
@@ -637,6 +638,7 @@ impl GopFrame {
             tip_hole_fill: true,
             tx: KeyFrameTxParams {
                 grain_seed,
+                plane_delta_q,
                 ..KeyFrameTxParams::default()
             },
             ..InterFrameParams::default()
