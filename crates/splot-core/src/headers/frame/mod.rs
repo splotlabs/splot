@@ -131,7 +131,7 @@ pub struct FrameHeaderPrefix {
     /// (AV2 § 5.18.2). `FirstPictureInTU` is decoder state the caller supplies.
     /// `None` only when the carried type is `OBU_CLOSED_LOOP_KEY` *and* the caller
     /// withheld `FirstPictureInTU` (the stateless dispatch front door): startCVS is
-    /// then genuinely unknown rather than fabricated `false`. For every non-CLK type
+    /// then unknown rather than fabricated `false`. For every non-CLK type
     /// the derivation does not consult `FirstPictureInTU`, so it is always
     /// `Some(false)` regardless of the input.
     pub starts_cvs: Option<bool>,
@@ -178,7 +178,7 @@ pub(crate) fn derive_is_regular(obu_type: ObuType) -> bool {
 /// pass `None` on the stateless dispatch front door that does not. Per AV2 § 5.18.2,
 /// `startCVS = obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`, so the derivation
 /// consults the input *only* for `OBU_CLOSED_LOOP_KEY`: a non-CLK type is always
-/// `Some(false)`, and a CLK with a withheld input is `None` (genuinely unknown, not a
+/// `Some(false)`, and a CLK with a withheld input is `None` (unknown, not a
 /// fabricated `false`). The parser reads `cur_mfh_id` (unless this is a bridge frame,
 /// where it is inferred `0`) and, when `cur_mfh_id == 0`, `seq_header_id_in_frame_header`.
 /// It stops immediately afterward.

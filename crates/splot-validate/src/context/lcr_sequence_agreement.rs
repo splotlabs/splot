@@ -11,7 +11,7 @@ impl ValidatorContext {
     /// dependency-closed under the activated sequence header's maps. The pairing
     /// is the sequence header activated for `xlayer` and that header's § 6.4.1
     /// LCR association — the snapshot taken at the header's latest observation
-    /// (see [`ValidatorContext::lcr_associations`]), NOT a live resolution: a
+    /// (see [`ValidatorContext::lcr_associations`]), not a live resolution: a
     /// record redefined after the header is not the associated one. Only the
     /// `xId == xlayer` entry is constrained by this activation. Unresolved
     /// references are owned by the existing § 7.3.8.3 availability diagnostics,
@@ -115,7 +115,7 @@ impl ValidatorContext {
     ///
     /// The pairing is the sequence header activated for `xlayer` and that header's
     /// § 6.4.1 LCR association (the [`LcrAssociation::ptl`] snapshot taken at the
-    /// header's latest observation, NOT a live resolution — a record redefined after the
+    /// header's latest observation, not a live resolution — a record redefined after the
     /// header is not the associated one). The § 6.8.5 sentence keys the ceiling on the
     /// *local* LCR; the snapshot reads the local record's PTL for a local association and
     /// the global record's PTL for that xlayer for a global one. An association without

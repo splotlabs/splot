@@ -126,7 +126,7 @@ impl TileGroupLayout {
 /// (mirror :4653-4669), which an intra frame never enters. So the `bru_inactive`
 /// early-return `trailing_bits()` arm (mirror :8453-8463) and the `use_bru`
 /// `bru_tile_active` loop (mirror :8495-8517) are both **dead** on the intra path, and
-/// the structure is fully decidable. This honest-stop reason exists for callers that
+/// the structure is fully decidable. This stop reason exists for callers that
 /// cannot establish the intra precondition (e.g. an inter / TIP / bridge frame, or a
 /// frame whose header did not parse to completion).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,7 +170,7 @@ pub struct TileGroupStructure {
     pub header_bytes: Option<u64>,
     /// `sz - headerBytes`: the byte length of the unparsed § 5.20 `tile_group_payload()`
     /// region (mirror :8525-8527), or `None` when `header_bytes` is unknown. The payload
-    /// bytes themselves are NOT parsed here (named residual: `AV2-5.20-TILE-GROUP-PAYLOAD`).
+    /// bytes themselves are not parsed here (named residual: `AV2-5.20-TILE-GROUP-PAYLOAD`).
     pub payload_size: Option<u64>,
 }
 
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn record_frame_header_bits_huge_count_short_reader_is_eof_not_oom() {
-        // A huge num_frame_header_bits must NOT allocate ceil(n/8) bytes before any EOF check;
+        // A huge num_frame_header_bits must not allocate ceil(n/8) bytes before any EOF check;
         // that can OOM-abort instead of returning the
         // documented UnexpectedEof (no-panic rule). The remaining-bits check must precede the
         // allocation, so an empty / short reader yields a structured error and no blowup.

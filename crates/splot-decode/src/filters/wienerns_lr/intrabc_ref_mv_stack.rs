@@ -23,7 +23,7 @@
 //!    leaves the frame boundary (`mvref_common.c:1828`-`1832`).
 //! 3. The default-BVP extra search (§ 7.12.2.20, the `use_intrabc` `add_to_ref_bv`
 //!    tail, `mvref_common.c:2711`-`2732`): the four default block vectors fill the
-//!    remaining slots with NO dedup, up to `max_bvp_drl_bits_minus_1 + 2`.
+//!    remaining slots with no dedup, up to `max_bvp_drl_bits_minus_1 + 2`.
 //!
 //! The bank itself is maintained by AV2 § 7.12.2 `av2_update_ref_mv_bank`:
 //! intra-only frames zero it at each superblock row, while inter frames seed up

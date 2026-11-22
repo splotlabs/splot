@@ -40,7 +40,7 @@ pub(super) struct ContentInterpretationRecord {
 /// layer unit of the sequence ... for a given embedded layer."
 ///
 /// The "first coded extended layer unit of the sequence" for an extended layer is its CELU
-/// in the coded video sequence's FIRST temporal unit (a CVS starts at the temporal unit
+/// in the coded video sequence's first temporal unit (a CVS starts at the temporal unit
 /// containing a CLK, § 7.3.6). This state records — scoped to the layer's CVS — the embedded
 /// layers whose first CELU carried a CI, so a later CELU that adds a CI for an embedded layer
 /// the first CELU lacked can be flagged. Reset per coded video sequence in
@@ -150,7 +150,7 @@ pub(super) fn compare_timing_across_embedded_layers(
 /// presets, reserved ids, and absence to their canonical (incl. unspecified)
 /// values: an alias-equivalent re-encoding (a preset vs. the equivalent explicit
 /// triple / SAR, or a reserved id vs. an explicit unspecified one) is not flagged,
-/// while genuinely different color/aspect information is — including a present value
+/// while different color/aspect information is — including a present value
 /// vs. an absent (unspecified) one. The aspect ratio is compared only when both
 /// derived SARs are decidable; a reserved `ci_aspect_ratio_idc` (already an
 /// out-of-range error) yields no derived SAR and is not double-reported here.

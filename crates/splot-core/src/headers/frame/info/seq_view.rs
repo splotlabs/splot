@@ -107,10 +107,10 @@ pub struct CoreSeqView {
     /// header did not signal grain, `Some(true)` when it did. `None` when the active
     /// sequence header was recorded from a **bounded** stop that ended before
     /// `film_grain_params_present` (read last in § 5.4.1, after the child configs), e.g.
-    /// the bounded `sequence_tile_config()` residual: the flag is then genuinely unknown.
+    /// the bounded `sequence_tile_config()` residual: the flag is then unknown.
     /// The control region (frame size, output flags, order hint, tile/quant/segmentation)
     /// does not consume this flag, so the parser still reaches and reports those facts; it
-    /// stops honestly only when `film_grain_config()` itself needs the unknown flag.
+    /// stops only when `film_grain_config()` itself needs the unknown flag.
     pub(crate) film_grain_params_present: Option<bool>,
 }
 

@@ -492,7 +492,7 @@ fn lcr_msdo_agreement_uses_association_time_global_lcr_snapshot() {
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
     data.extend(seq_header_obu_lcr_ref(1, 1, 0, true, 1)); // associates rev A
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 1));
-    data.extend(global_b); // rev B redefines id 1 AFTER the headers associated rev A
+    data.extend(global_b); // rev B redefines id 1 after the headers associated rev A
     data.extend(temporal_delimiter_obu());
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
@@ -717,7 +717,7 @@ fn lcr_only_cmvs_window_survives_to_later_frame_confirmed_activation() {
 #[test]
 fn lcr_msdo_agreement_flags_earlier_nonconforming_msdo_overwritten_by_later() {
     let global = global_lcr_obu_agreement(1, 0b11, None, None, false); // LcrXLayerID {0,1}
-    let mut data = temporal_delimiter_obu(); // TU1: opens the CMVS, NO global LCR activated
+    let mut data = temporal_delimiter_obu(); // TU1: opens the CMVS, no global LCR activated
     data.extend(msdo_obu_configured(
         31,
         false,

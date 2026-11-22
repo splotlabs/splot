@@ -284,7 +284,7 @@ fn derived_annex_b_tile_payload_preserves_tile_offsets_and_boundary() {
 
     assert_eq!(plan.work_units().len(), 1);
     let unit = &plan.work_units()[0];
-    assert_eq!(unit.tile_bytes(), &[0x80, 0x00]);
+    assert_eq!(plan.resolved_tile_bytes(unit).unwrap(), &[0x80, 0x00]);
     assert_eq!(unit.tile_byte_span(), ByteSpan::new(ByteOffset::new(3), 2));
     assert_eq!(unit.mi_row_range(), 0..8);
     assert_eq!(unit.mi_col_range(), 0..16);
@@ -322,7 +322,7 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
     assert_eq!(first.mi_row_range(), 0..8);
     assert_eq!(first.mi_col_range(), 0..16);
     assert_eq!(first.tile_byte_span(), ByteSpan::new(ByteOffset::new(5), 1));
-    assert_eq!(first.tile_bytes(), &[0x80]);
+    assert_eq!(plan.resolved_tile_bytes(first).unwrap(), &[0x80]);
     assert!(first.cdf().save_policy().copy_cdf);
     let second = &plan.work_units()[1];
     assert_eq!(second.tile_num(), 1);
@@ -332,7 +332,7 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
         second.tile_byte_span(),
         ByteSpan::new(ByteOffset::new(6), 1)
     );
-    assert_eq!(second.tile_bytes(), &[0x00]);
+    assert_eq!(plan.resolved_tile_bytes(second).unwrap(), &[0x00]);
     assert!(!second.cdf().save_policy().copy_cdf);
 }
 
@@ -354,7 +354,10 @@ fn derived_ivf_tile_payload_preserves_tile_offsets() {
         plan.work_units()[0].tile_byte_span(),
         ByteSpan::new(ByteOffset::new(47), 2)
     );
-    assert_eq!(plan.work_units()[0].tile_bytes(), &[0x80, 0x00]);
+    assert_eq!(
+        plan.resolved_tile_bytes(&plan.work_units()[0]).unwrap(),
+        &[0x80, 0x00]
+    );
 }
 
 #[test]
@@ -655,5 +658,10 @@ fn derived_boundary_is_deterministic_across_decode_context_thread_policies() {
 
     assert_eq!(plans[0], plans[1]);
     assert_eq!(plans[1], plans[2]);
-    assert_eq!(plans[0].work_units()[0].tile_bytes(), &[0x80, 0x00]);
+    assert_eq!(
+        plans[0]
+            .resolved_tile_bytes(&plans[0].work_units()[0])
+            .unwrap(),
+        &[0x80, 0x00]
+    );
 }

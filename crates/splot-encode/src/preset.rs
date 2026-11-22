@@ -9,9 +9,6 @@ use crate::error::{Error, Result};
 use crate::rate_control::FrameType;
 
 /// Search limits of one speed preset. These are encoder policy, not AV2 syntax.
-///
-/// The intra-only DC coder reads only the block-size limits; the other fields
-/// take effect as mode, transform, motion and loop-filter search land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresetParams {
     /// log2 of the smallest square block size searched (2 = 4x4), per frame

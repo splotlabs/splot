@@ -27,8 +27,7 @@
 //!   § 5.20.1 payload framing — drafting the whole OBU payload into a scratch [`BitWriter`] and
 //!   committing only on full success. It owns no OBU header / size / trailing bits.
 //!
-//! Like the other writers this module is additive: it depends on the model/parser read-only and
-//! serializes a parsed structure back to bits via [`BitWriter`]. It threads the same
+//! Serializes a parsed structure back to bits via [`BitWriter`]. It threads the same
 //! [`TileGroupLayout`] the parser receives (carrying `NumTiles` / `TileColsLog2` / `TileRowsLog2`),
 //! so it derives `tileBits` and the range bounds identically. The whole structure is validated
 //! before any bit is written (reject-before-write): every reject path leaves `writer.bit_len()`
@@ -311,17 +310,17 @@ fn check_tile_group_payload_encodable(
 /// writer's `byte_alignment()` handles it) and owns no OBU header / size / trailing bits (the OBU
 /// writer's job).
 ///
-/// `is_first_tile_group` is the § 5.19 first-group selector. This composer is the first-group form
-/// (`is_first_tile_group == 1`); the non-first `frame_header_copy()` continuation
-/// (`is_first_tile_group == 0`) is out of scope and rejected before any bit.
+/// `is_first_tile_group` is the § 5.19 first-group selector. This composer writes the first-group
+/// form (`is_first_tile_group == 1`); [`write_tile_group_continuation_obu`] writes the non-first
+/// `frame_header_copy()` form.
 ///
 /// # Errors
 /// All validated before any bit (the caller's `writer` is untouched on failure):
 /// - [`WriteError::WriterNotByteAligned`] if `writer` is not on a byte boundary (an OBU payload
 ///   begins byte-aligned).
 /// - [`WriteError::NonCanonicalTileGroup`] with `what == "continuation_unsupported"` if
-///   `is_first_tile_group == false` (the non-first `frame_header_copy()` continuation is a follow-up
-///   slice); `"not_tile_group_obu"` if `core.obu_type` is not a tile-group carrier (a SEF / TIP
+///   `is_first_tile_group == false` (use [`write_tile_group_continuation_obu`]);
+///   `"not_tile_group_obu"` if `core.obu_type` is not a tile-group carrier (a SEF / TIP
 ///   header); `"first_tg_start_not_zero"` if `structure.tg_start != 0` (the § 6.18 first-group rule);
 ///   `"framing_range_mismatch"` if `framing.tiles.len()` disagrees with the structure's
 ///   `tg_end - tg_start + 1` tile count; or `"missing_tile_info"` if `core.tile_info` is absent (the

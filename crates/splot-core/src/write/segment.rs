@@ -6,9 +6,8 @@
 //! `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-9`) (`ENC-BITSTREAM-WRITER`).
 //!
 //! `seg_info()` is the reusable segmentation-feature syntax shared by the sequence
-//! segment config (§ 5.4.4) and the multi-frame header (§ 5.7). This writer is
-//! additive: it reads a parsed [`SegmentInfo`] and serializes it back to bits via
-//! [`BitWriter`], in the spec's `for i { for j { ... } }` order.
+//! segment config (§ 5.4.4) and the multi-frame header (§ 5.7). This writer
+//! serializes a parsed [`SegmentInfo`] back to bits via [`BitWriter`], in the spec's `for i { for j { ... } }` order.
 //!
 //! The parser stores *clipped* feature data — each enabled signed feature is
 //! `Clip3(-limit, limit, su(n))` and each unsigned feature is `Clip3(0, limit, f(b))`

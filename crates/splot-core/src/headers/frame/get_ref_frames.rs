@@ -484,7 +484,7 @@ mod tests {
     /// AV2 § 7.7 worked example — the minimal `syn-key-inter-64x64` inter frame.
     ///
     /// After the CLK key frame (`refresh_frame_flags == 255`, § 7.23 :14132 `first` rule),
-    /// ONLY slot 0 is `RefValid` (slots 1..15 take `(KEY) ? first(0) : 1 == 0`). The key
+    /// only slot 0 is `RefValid` (slots 1..15 take `(KEY) ? first(0) : 1 == 0`). The key
     /// stored `RefOrderHint[0] == 0`, `RefBaseQIdx[0] == 70` (the fixture's `base_q_idx`),
     /// `RefFrameWidth/Height[0] == 64`. The inter frame has `OrderHint == 1`, single spatial
     /// layer (`obu_mlayer_id == obu_tlayer_id == 0`), `AllowedFrames == -1`.
@@ -527,7 +527,7 @@ mod tests {
         assert!(res.ref_frame_idx.is_empty());
     }
 
-    /// AV2 § 7.7 `first_slot_with_ref` — two valid slots that store the SAME decoded frame
+    /// AV2 § 7.7 `first_slot_with_ref` — two valid slots that store the same decoded frame
     /// (equal `RefCounter`) collapse to one distinct reference (the lowest-indexed slot).
     ///
     /// Slots 0 and 3 both valid with `RefCounter == 5`; slot 3 is suppressed because slot 0

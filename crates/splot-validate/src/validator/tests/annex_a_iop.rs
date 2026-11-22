@@ -206,7 +206,7 @@ fn annex_a_iop_window_uses_association_time_global_lcr_snapshot() {
     data.extend(seq_header_obu_lcr_ref(0, 0, 0, true, 1)); // profile 0, seq_lcr_id 1
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK confirms xlayer 0
     data.extend(temporal_delimiter_obu()); // TU2: rev B redefines id 1, then same-id CLK
-    data.extend(global_b); // redefine id 1 AFTER the header associated rev A
+    data.extend(global_b); // redefine id 1 after the header associated rev A
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // same-id CLK re-activates
     data.extend(temporal_delimiter_obu());
     let report = Validator::new(false).validate_bytes(&data);

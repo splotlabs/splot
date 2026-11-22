@@ -30,9 +30,8 @@ const DIAGNOSTICS_DOC: &str = "docs/DIAGNOSTICS.md";
 /// Current decoder diagnostic emission source roots.
 ///
 /// The CLI renders the current unsupported diagnostic owned by `splot-decode`.
-/// `splot-recon` is intentionally not scanned here because it is shared reconstruction
-/// infrastructure for future decoder and encoder work; add a narrower decoder-owned
-/// reconstruction path if one starts emitting `decode/*` diagnostics later.
+/// `splot-recon` emits no `decode/*` diagnostics, so it is not scanned; add its path
+/// here if it starts to.
 const DECODER_SOURCE_ROOTS: &[&str] = &[
     "crates/splot-cli/src/commands/decode.rs",
     "crates/splot-decode/src",

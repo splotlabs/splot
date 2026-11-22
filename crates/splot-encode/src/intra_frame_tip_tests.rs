@@ -418,7 +418,6 @@ fn refined_tip_streams_decode_to_the_encoder_recon() {
     );
 }
 
-/// AVM decodes refined TIP streams like splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_refined_tip_streams_like_splot() {

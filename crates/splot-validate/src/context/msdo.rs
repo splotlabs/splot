@@ -20,7 +20,7 @@ pub(super) struct MsdoSubstreamMax {
     /// anchor when the violation is detected at sequence-header activation time.
     ///
     /// The § 6.8.2 MSDO↔global-LCR agreement uses the separate per-MSDO
-    /// [`ValidatorContext::msdo_agreement_snapshots`] accumulator (it must evaluate EVERY
+    /// [`ValidatorContext::msdo_agreement_snapshots`] accumulator (it must evaluate every
     /// MSDO in the CMVS, not just this live last-wins one), so the raw declaration-order
     /// aggregate / observation temporal unit are kept there rather than on this § 6.6 record.
     pub(super) offset: ByteOffset,

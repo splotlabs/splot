@@ -157,7 +157,7 @@ pub fn is_random_access_point(unit: &[u8]) -> bool {
 pub enum ReaderError {
     /// A non-EOF I/O error from the underlying reader.
     #[error("input read error: {0}")]
-    Io(io::Error),
+    Io(#[source] io::Error),
     /// A declared unit size exceeded the configured per-unit byte cap.
     #[error(
         "temporal unit at byte {offset} declares {declared} byte(s), exceeding the {cap}-byte cap"
@@ -171,7 +171,7 @@ pub enum ReaderError {
         cap: usize,
     },
     /// A terminal IVF container structural error (header or frame framing).
-    #[error("{0}")]
+    #[error(transparent)]
     Ivf(IvfError),
 }
 

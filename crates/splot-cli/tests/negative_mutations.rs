@@ -73,7 +73,7 @@ struct MutationCase {
     what: &'static str,
     /// The deterministic mutation to apply in memory.
     mutation: Mutation,
-    /// The PRIMARY registered error `rule_id` the mutated stream MUST emit. This
+    /// The primary registered error `rule_id` the mutated stream must emit. This
     /// is matched by presence, not set-equality: a single low-level mutation can
     /// legitimately cascade into downstream errors (each row's comment notes any
     /// such known secondary diagnostics), so the row pins the anchor diagnostic

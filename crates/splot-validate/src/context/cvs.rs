@@ -17,7 +17,7 @@ use super::*;
 ///   `OBU_CLOSED_LOOP_KEY` observed for an `obu_xlayer_id` within a temporal unit
 ///   starts the new coded video sequence (later CLKs in the same temporal unit are
 ///   idempotent). The raw OBU header suffices — § 7.3.6 is stated at the OBU level,
-///   so an unparsable CLK payload still starts the sequence. OLK / RAS OBUs do NOT
+///   so an unparsable CLK payload still starts the sequence. OLK / RAS OBUs do not
 ///   start one during sequential decoding (§ 2 "Coded video sequence"; § 7.4.4:
 ///   "During sequential decoding, the process does not start a new coded video
 ///   sequence for the extended layer").
@@ -32,7 +32,7 @@ use super::*;
 ///   coded video sequence and are emitted eagerly.
 ///
 /// Records keyed under `GLOBAL_XLAYER_ID` have no single owning extended layer; as a
-/// documented approximation their deferred diagnostics are dropped when ANY extended
+/// documented approximation their deferred diagnostics are dropped when any extended
 /// layer started a coded video sequence in the completed temporal unit (sound — it
 /// only drops comparisons, never inventing one).
 #[derive(Debug, Default)]
@@ -59,7 +59,7 @@ pub(super) struct CvsTracker {
     /// layer that scopes the comparison; flushed when the temporal unit completes. Each
     /// entry may carry an optional `on_drop` replacement diagnostic emitted in place of
     /// the primary when the primary is dropped because a § 7.3.6 coded-video-sequence
-    /// boundary was crossed (the comparison was genuinely cross-CVS after all). The
+    /// boundary was crossed (the comparison was cross-CVS after all). The
     /// mechanism is rule-id-agnostic: a caller that wants no replacement passes `None`.
     pub(super) pending_cross_tu: Vec<PendingCrossTu>,
 }
@@ -79,7 +79,7 @@ pub(super) enum PendingPolarity {
     /// Both observations are in the CURRENT temporal unit but no coded video sequence has
     /// started for the layer yet (the pre-first-CLK silence path). Per § 7.3.6 the whole
     /// temporal unit containing a CLK belongs to the NEW coded video sequence, so a CLK
-    /// later in this temporal unit pulls BOTH observations into one coded video sequence
+    /// later in this temporal unit pulls both observations into one coded video sequence
     /// and the change is intra-CVS — emit the primary on the CVS start. If the temporal
     /// unit instead completes with no CLK for the layer, the observations remain in no
     /// coded video sequence (the § 6.10.5 random-access-point precondition is
@@ -267,7 +267,7 @@ impl CvsTracker {
     ///
     /// An entry tagged with `GLOBAL_XLAYER_ID` scopes records with no single owning
     /// extended layer and treats "started a coded video sequence in this temporal unit"
-    /// as ANY extended layer having done so (documented approximation, sound: it only
+    /// as any extended layer having done so (documented approximation, sound: it only
     /// drops comparisons).
     pub(super) fn flush_completed_tu(&mut self, report: &mut ValidationReport) {
         let tu_index = self.tu_index;
@@ -345,7 +345,7 @@ impl ValidatorContext {
     /// content-interpretation scope.
     ///
     /// NB: the §6.12/§6.13 quantizer-matrix / film-grain duplicate windows are
-    /// deliberately NOT reset here. Those windows close at a *coded frame*, not at a
+    /// deliberately not reset here. Those windows close at a *coded frame*, not at a
     /// temporal-unit or CVS boundary, so a QM level / film-grain slot reused across
     /// a temporal delimiter with no intervening frame is still a duplicate (see
     /// reset_coded_frame_window, called from the frame-bearing branch).

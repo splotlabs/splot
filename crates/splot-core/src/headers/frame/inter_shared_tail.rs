@@ -35,7 +35,7 @@ use crate::headers::frame::tiling::parse_tile_info;
 
 use super::info::FrameType;
 
-/// The Feature ID for an honest inter shared-tail coverage stop.
+/// The Feature ID for an inter shared-tail coverage stop.
 const FRAME_HEADER_INFO_FEATURE: &str = "AV2-5.18.2-FRAME-HEADER-INFO";
 
 /// `DELTAWARP` (AV2 v1.0.0 § 3): the delta-warp motion-mode index, gating
@@ -86,7 +86,7 @@ pub struct InterTail {
 /// `setup_qm_params`, `delta_q_params`, `lossless_info`, the loop-filter cluster) and the
 /// inter-tail facts on `core.inter_tail`, and the status is set to
 /// [`FrameHeaderParseStatus::InterHeaderComplete`]. Anything outside the modeled subset
-/// stops honestly with [`FrameHeaderParseStatus::UnsupportedUntilFeature`].
+/// stops with [`FrameHeaderParseStatus::UnsupportedUntilFeature`].
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends

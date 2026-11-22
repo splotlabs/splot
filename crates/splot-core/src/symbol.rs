@@ -1618,10 +1618,7 @@ fn symbol_max_bits_for_len(len: usize, base: ByteOffset) -> Result<i64> {
 
 #[inline]
 fn total_bits(len: usize) -> u64 {
-    match u64::try_from(len) {
-        Ok(bytes) => bytes.saturating_mul(8),
-        Err(_) => u64::MAX,
-    }
+    (len as u64).saturating_mul(8)
 }
 
 #[cfg(test)]

@@ -275,8 +275,8 @@ proptest! {
         }
     }
 
-    /// The buffered bypass window must match the historical per-bit
-    /// reference it replaced — `SymbolValue` scaled up by `bits` with the
+    /// The buffered bypass window must match the per-bit
+    /// reference — `SymbolValue` scaled up by `bits` with the
     /// next payload bits read MSB-first, clamped by `SymbolMaxBits`,
     /// zero-padded past the payload end, and inverted — at every reachable
     /// width, start alignment, and end-of-payload overlap.
@@ -305,7 +305,7 @@ proptest! {
     }
 
     /// `read_symbol` must never panic on an arbitrary caller CDF row. The
-    /// relaxed `validate_cdf` now admits equal-adjacent (and thus possibly
+    /// relaxed `validate_cdf` admits equal-adjacent (and thus possibly
     /// zero-width) buckets, so the "parsers never panic" property must
     /// exercise arbitrary rows — equal, strictly decreasing, out-of-range
     /// entries, and unsupported lengths — and only ever return `Ok` or a

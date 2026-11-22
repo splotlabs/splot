@@ -4,7 +4,7 @@
 use super::*;
 
 /// The `frame_header()` bits of a complete intra CLK first tile group (the syntax
-/// AFTER the `tile_group_obu()` `is_first_tile_group` flag) for a
+/// after the `tile_group_obu()` `is_first_tile_group` flag) for a
 /// [`frame_core_seq_payload`] base sequence. Reaches `IntraHeaderComplete`. The same
 /// bit sequence is the `frame_header_copy()` a conformant non-first tile group must
 /// carry (AV2 § 5.18.1 / § 6.17.1).
@@ -24,7 +24,7 @@ pub(in crate::validator::tests) fn complete_intra_clk_frame_header_body() -> Bit
     fb
 }
 
-/// A complete intra CLK FIRST tile group OBU: `is_first_tile_group == 1` then the
+/// A complete intra CLK first tile group OBU: `is_first_tile_group == 1` then the
 /// frame header body (AV2 § 5.19 / § 5.18.1).
 pub(in crate::validator::tests) fn clk_first_tile_group() -> Vec<u8> {
     let mut fb = Bits::default();
@@ -35,7 +35,7 @@ pub(in crate::validator::tests) fn clk_first_tile_group() -> Vec<u8> {
     annex_b_obu(CLK_HEADER, &fb.into_bytes())
 }
 
-/// A CLK NON-FIRST tile group OBU: `is_first_tile_group == 0`,
+/// A CLK non-first tile group OBU: `is_first_tile_group == 0`,
 /// `frame_header_present_flag == 1`, then `body_bits` as the `frame_header_copy()`
 /// region (AV2 § 5.18.1). `body_bits` is appended verbatim so a caller can supply a
 /// matching, mismatched, or truncated copy.
@@ -49,14 +49,14 @@ pub(in crate::validator::tests) fn clk_non_first_tile_group(body_bits: &[u8]) ->
     annex_b_obu(CLK_HEADER, &fb.into_bytes())
 }
 
-/// Builds a complete intra CLK FIRST tile group for a 160x16 frame (TileCols == 3,
+/// Builds a complete intra CLK first tile group for a 160x16 frame (TileCols == 3,
 /// TileRows == 1, NumTiles == 3, TileColsLog2 == 2, TileRowsLog2 == 0 -> tileBits ==
 /// 2), reaching `IntraHeaderComplete`, then appends the §5.19 tile_group_obu()
 /// structure: `tile_start_and_end_present_flag` (NumTiles > 1) and, when present, the
 /// `tg_start` / `tg_end` f(2) reads, followed by `payload` as the byte-aligned
 /// tile_group_payload() region (§5.20.1). `tg_range` is `Some((tg_start, tg_end))` for an
 /// explicit range (flag == 1) or `None` to infer 0 .. NumTiles - 1 (flag == 0).
-/// The complete intra CLK FIRST tile group `frame_header()` bits for the 160x16
+/// The complete intra CLK first tile group `frame_header()` bits for the 160x16
 /// (TileCols == 3, TileRows == 1, NumTiles == 3, TileColsLog2 == 2, TileRowsLog2 == 0 ->
 /// tileBits == 2) multi-tile layout, INCLUDING the leading `tile_group_obu()`
 /// `is_first_tile_group == 1` flag ([`clk_frame_until_tile_info`] writes it first),
@@ -116,7 +116,7 @@ pub(in crate::validator::tests) fn clk_first_tile_group_multitile_payload(
     finish_multitile_tile_group(multitile_clk_first_body(), tg_range, payload)
 }
 
-/// A 160x16 multi-tile CLK NON-FIRST tile group OBU: `is_first_tile_group == 0`,
+/// A 160x16 multi-tile CLK non-first tile group OBU: `is_first_tile_group == 0`,
 /// `frame_header_present_flag` per `header_present`, then (when present) the
 /// `frame_header_copy()` bits from `copy_body`, then the §5.19 structure for `tg_range`
 /// and the `tile_group_payload()` region (AV2 § 5.18.1 / § 5.19). `copy_body` is appended

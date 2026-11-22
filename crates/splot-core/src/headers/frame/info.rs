@@ -84,9 +84,8 @@ pub struct FrameReferenceStateView<'a> {
     /// § 7.7 `get_ref_frames()` scoring input: with **two or more** valid reference
     /// slots the implicit reference-map ranking depends on it, so the inter parser
     /// can only lift its at-most-one-valid-slot gate once the caller supplies it.
-    /// `None` (the [`Self::from_slots`] constructor) keeps the historical
-    /// at-most-one-valid-slot behavior — the unmodeled `RefBaseQIdx` makes a
-    /// multi-valid-slot derivation an honest `UnmodeledDerivation` stop.
+    /// `None` (the [`Self::from_slots`] constructor) limits the § 7.7 derivation to at
+    /// most one valid slot; more valid slots stop with `UnmodeledDerivation`.
     pub ref_base_q_idx: Option<&'a [u32]>,
     /// `[RefDeltaQUAc[i], RefDeltaQVAc[i]]` per reference slot (AV2 § 7.23), used by
     /// bridge and implicit-QP TIP output frames.
@@ -156,11 +155,10 @@ impl<'a> FrameReferenceStateView<'a> {
     ///
     /// The slices are parallel, one entry per reference slot. The caller (the validator's
     /// § 7.23 buffer model) owns the backing storage; the view borrows it for the parse.
-    /// A `cur_mfh_id == 0` / intra parse does not read these today — the constructor is
-    /// the forward-plumbing entry point for the § 5.18 inter reference paths.
+    /// A `cur_mfh_id == 0` / intra parse does not read these.
     ///
     /// Because `RefBaseQIdx` is left unmodeled, a § 7.7 derivation that finds **two or
-    /// more** valid slots stays an honest `UnmodeledDerivation` stop (the ranking needs
+    /// more** valid slots stays an `UnmodeledDerivation` stop (the ranking needs
     /// the per-slot quantizer). Use [`Self::from_slots_with_base_q_idx`] when the caller
     /// models `RefBaseQIdx` and needs the multi-valid-slot ranking.
     #[must_use]
@@ -499,7 +497,7 @@ pub struct FrameHeaderCore {
     pub inter: Option<crate::headers::frame::inter::InterControl>,
     /// `true` once the parse passes the § 5.18.2 `reset_qm()` call site (AV2 mirror
     /// `05-syntax-structures.md` :4279-4283) with its trigger condition satisfied — i.e. the
-    /// parse reached the point AFTER `restricted_prediction_switch`, the
+    /// parse reached the point after `restricted_prediction_switch`, the
     /// `num_key_ref_frames` / `ref_long_term_id[i]` list, and the SWITCH-restricted output
     /// flush, with `obu_type == OBU_RAS_FRAME || (obu_type == OBU_SWITCH &&
     /// restricted_prediction_switch)`. This is an explicit "reached reset_qm" fact: it stays
@@ -508,7 +506,7 @@ pub struct FrameHeaderCore {
     /// so a consumer can confirm the § 7.3.8.9 quantizer-matrix availability reset from the
     /// parsed bits alone rather than requiring the whole core parse to complete.
     /// `false` for every frame type whose `reset_qm()` trigger is not met, and for a RAS /
-    /// restricted SWITCH whose parse stops BEFORE the call site (truncated mid-prefix or
+    /// restricted SWITCH whose parse stops before the call site (truncated mid-prefix or
     /// mid-`ref_long_term_id` — the reset is then unconfirmed).
     pub reached_qm_reset: bool,
     /// Bits consumed by this parse (not necessarily the whole frame header).
@@ -1104,7 +1102,7 @@ pub(crate) fn build_inter_seq_view(
 /// `IsBridge` early-return arm (mirror :4971/:5045). With the selected reference's
 /// § 7.23 quantizer state available, the zero-bit bridge `tile_info()` layout, inherited
 /// quantizer, and `film_grain_config()` are derived and the header completes. Missing
-/// reference facts remain an honest unsupported stop, with parsed bridge facts preserved.
+/// reference facts remain an unsupported stop, with parsed bridge facts preserved.
 fn parse_bridge_inter_path(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,

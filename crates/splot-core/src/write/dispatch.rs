@@ -35,14 +35,8 @@
 //! [`ParsedObu::Padding`] (§ 5.16) owns its own tail (the `obu_padding_byte` run plus the
 //! `trailing_bits()` that begin at the last non-zero byte), so it is **not** followed by
 //! the generic extensible tail above — exactly as `dispatch_obu_payload` special-cases it.
-//! All fourteen OBU payload types now have a body writer ([`ParsedObu::TemporalDelimiter`],
-//! [`ParsedObu::SequenceHeader`], [`ParsedObu::Padding`], [`ParsedObu::MetadataShort`],
-//! [`ParsedObu::MetadataGroup`], [`ParsedObu::BufferRemovalTiming`], [`ParsedObu::Msdo`],
-//! [`ParsedObu::OperatingPointSet`], [`ParsedObu::ContentInterpretation`],
-//! [`ParsedObu::FilmGrain`], [`ParsedObu::AtlasSegment`], [`ParsedObu::MultiFrameHeader`],
-//! [`ParsedObu::LayerConfigurationRecord`], [`ParsedObu::QuantizationMatrix`]) — the dispatch no
-//! longer has an unwritable fallback. Adding a future [`ParsedObu`] variant requires extending the
-//! exhaustive dispatch.
+//! Every [`ParsedObu`] variant has a body writer and the dispatch is exhaustive, so a new
+//! variant needs one.
 
 use crate::headers::padding::PaddingObu;
 use crate::obu::{ObuHeader, ParsedObu};
@@ -324,7 +318,7 @@ fn bits_to_byte_boundary(bit_len: u64) -> u64 {
 /// empty payload (`padding_len == 0 && trailing_len == 0`, `obuPayloadSize == 0`) writes
 /// nothing; a single trailing byte (`padding_len == 0 && trailing_len == 1`,
 /// `obuPayloadSize == 1`) writes one `trailing_bits()` byte. Padding owns its tail, so the
-/// caller does NOT add the generic extensible tail.
+/// caller does not add the generic extensible tail.
 ///
 /// # Errors
 /// - [`WriteError::NonCanonicalMetadata`] with `what == "padding_trailing_len"` if

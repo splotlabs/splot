@@ -9,7 +9,7 @@
 //! (`crates/splot-cli/tests/conformance.rs`), which shares this manifest format
 //! and runs under `cargo test`.
 //!
-//! There is NO AVM dependency: the runner only validates already-committed vector
+//! There is no AVM dependency: the runner only validates already-committed vector
 //! bytes against the manifest, and never invokes AVM or touches the network. AVM
 //! is the LOCAL generator of the committed vectors only (see docs/CONFORMANCE.md).
 //!
@@ -90,7 +90,7 @@ enum JsonSeverity {
 
 /// Runs the committed conformance corpus against its manifest and prints a
 /// per-vector pass/fail summary. Builds the `splot` binary once, then validates
-/// every committed vector with `splot validate --json`. NO AVM is invoked.
+/// every committed vector with `splot validate --json`. No AVM is invoked.
 pub(crate) fn run_conformance(root: &Path) -> Result<()> {
     let conformance_root = root.join("tests").join("conformance");
     let manifest_path = conformance_root.join("manifest.toml");

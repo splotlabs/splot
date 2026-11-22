@@ -79,7 +79,7 @@ impl ValidatorContext {
     /// Two correctness properties of this resolution:
     ///
     /// - **Association-time snapshot.** The record returned is the [`GlobalLcrRecord`]
-    ///   cloned into the association at the header's latest observation, NOT a live
+    ///   cloned into the association at the header's latest observation, not a live
     ///   `global_lcr_records` lookup. A same-id global-LCR redefinition *after* the header
     ///   associated therefore cannot retarget the agreement at the later revision (the same
     ///   discipline the § 6.8.9 dependency path uses for its embedded maps).
@@ -113,13 +113,13 @@ impl ValidatorContext {
     /// divergence turns on whether the BOUNDARY temporal unit itself "has an activated global
     /// layer configuration record". An activated global LCR activated only EARLIER in the CMVS
     /// (its association still chain-resolvable, but its activation temporal unit precedes the
-    /// boundary TU) does NOT make end condition 2 false at a later CLK boundary TU that carries
+    /// boundary TU) does not make end condition 2 false at a later CLK boundary TU that carries
     /// no activation of its own — both rule sets end the CMVS there, so there is no mismatch.
     /// The scope is the *activation* temporal unit, not the global
     /// record's observation temporal unit, because a same-id CLK re-references an already-active
     /// header (re-activating in the boundary TU) without re-sending its sequence header — so the
     /// association snapshot keeps the global record's earlier observation timestamp while the
-    /// activation is genuinely in the boundary TU.
+    /// activation is in the boundary TU.
     pub(super) fn activated_global_lcr_in_tu(
         &self,
         boundary_tu_index: u64,
@@ -415,7 +415,7 @@ impl ValidatorContext {
     /// LCR OBU.
     ///
     /// The loop is scoped to [`Self::frame_confirmed_xlayers_in_current_cmvs`] — headers
-    /// whose latest activation lies within the current CMVS window — NOT the whole-history
+    /// whose latest activation lies within the current CMVS window — not the whole-history
     /// `frame_confirmed_xlayers` accumulator, so a non-monotonic header left active from an
     /// earlier, already-ended coded video sequence outside this CMVS is not flagged against
     /// this CMVS's global LCR.

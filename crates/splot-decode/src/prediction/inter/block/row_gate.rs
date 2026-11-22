@@ -31,7 +31,7 @@
 //!   projected motion field, so it is bounded band by band over the 8x8 field
 //!   cells its prediction units sample.
 //!
-//! What is left is genuinely unboundable here: a list that resolves to no slot,
+//! What is left is unboundable here: a list that resolves to no slot,
 //! a scaled reference read through the § 7.13.3.20 extended warp, and a TIP
 //! block whose reference pair or motion field is missing. Those rows require
 //! their references to settle.

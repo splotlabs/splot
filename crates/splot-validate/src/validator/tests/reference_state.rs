@@ -25,7 +25,7 @@ pub(in crate::validator::tests) fn ref_sef(slot: u32) -> Vec<u8> {
 /// `refresh_frame_flags` IS parsed (`enable_short_refresh_frame_flags == 0` ->
 /// f(NumRefFrames) read here), but as an INTER frame on a path the core parser does
 /// not fully model, `frame_core_against_referenced_header` does not resolve it, so the
-/// validator poisons all slots (the mask could touch any slot). Used to test honest
+/// validator poisons all slots (the mask could touch any slot). Used to test
 /// poisoning. The body is a best-effort inter header; the validator's core parse stops
 /// before the flags, so the update is `PoisonAll` either way.
 pub(in crate::validator::tests) fn ref_inter_tile_group() -> Vec<u8> {

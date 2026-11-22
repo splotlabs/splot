@@ -22,8 +22,7 @@
 //!   (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`): the recovered per-segment
 //!   `qm_index`, plus `allow_tcq` / `allow_parity_hiding`.
 //!
-//! Like the other frame-header config writers, this module is additive: it depends on the
-//! model/parser read-only and serializes a parsed structure back to bits via [`BitWriter`].
+//! Serializes a parsed structure back to bits via [`BitWriter`].
 //! Each writer threads the same gating inputs the parser receives (the
 //! [`CoreSeqQuantView`] sequence flags, `tip_frame_as_output`, `segmentation_enabled`,
 //! `base_q_idx`, …) and validates the whole structure before any bit is written
