@@ -105,9 +105,9 @@ merge needs the task to name it.
 
 In autonomous mode, do the whole path without asking or reporting progress:
 branch, implement, commit, run the gate and a code review, push, open the PR
-linked to its issue, address every review comment (fix it, or reply with the
-reason it stays), and merge when CI is green. Diagnose failing checks and
-conflicts, and continue.
+(linked to its issue, if any), address every review comment (fix it, or reply
+with the reason it stays), and merge when CI is green. Diagnose failing checks
+and conflicts, and continue.
 
 Stop only for a decision that is the owner's:
 
