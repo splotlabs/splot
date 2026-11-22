@@ -103,6 +103,7 @@ impl Case {
                 mvd_tools: [false; 3],
                 warp: false,
                 global_motion: false,
+                long_term_frame_id_bits: 0,
                 num_ref_frames: None,
                 explicit_ref_frame_map: false,
                 seq_tiles: None,
@@ -128,6 +129,7 @@ impl Case {
                 disable_cross_frame_cdf_init: false,
                 choose_primary_ref_frame: false,
                 qm_level: None,
+                long_term_id_plus_1: 0,
             },
         }
     }

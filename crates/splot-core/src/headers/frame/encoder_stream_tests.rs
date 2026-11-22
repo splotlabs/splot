@@ -112,6 +112,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         disable_cross_frame_cdf_init: false,
                         choose_primary_ref_frame: false,
                         qm_level: [None, Some(0), Some(14)][index],
+                        long_term_id_plus_1: 0,
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -193,6 +194,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         mvd_tools: [true, false, true],
         warp: true,
         global_motion: true,
+        long_term_frame_id_bits: 3,
         num_ref_frames: Some(5),
         explicit_ref_frame_map: true,
         seq_tiles: None,
@@ -236,6 +238,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
     assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
     assert!(inter.enable_tip_explicit_qp && inter.enable_short_refresh_frame_flags);
+    assert_eq!(inter.long_term_frame_id_bits, 3);
     assert_eq!(inter.num_ref_frames, 5);
     assert!(inter.explicit_ref_frame_map);
     let filter = seq.filter.unwrap();
@@ -950,4 +953,48 @@ fn explicit_slot_counts_reach_the_parsed_sequence() {
     for slots in [0, 17] {
         assert!(build_encoder_sequence_header(&stream(Some(slots), false)).is_err());
     }
+}
+
+/// `long_term_frame_id_bits` reaches the parsed sequence (§ 5.4.6) and a key
+/// frame codes `long_term_id_plus_1` in that many bits (§ 5.18.2): `LongTermId`
+/// is `long_term_id_plus_1 - 1` (`-1` for none). An id that does not fit and
+/// 8 bits are rejected, and a cut sequence header does not parse.
+#[test]
+fn key_frames_code_their_long_term_ids() {
+    let stream = |bits| EncoderStreamParams {
+        tools: EncoderToolFlags {
+            long_term_frame_id_bits: bits,
+            ..EncoderToolFlags::default()
+        },
+        ..params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64)
+    };
+    for bits in [1, 3, 7] {
+        let seq = build_encoder_sequence_header(&stream(bits)).unwrap();
+        assert_eq!(seq.inter.unwrap().long_term_frame_id_bits, bits);
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let key = |long_term_id_plus_1| {
+            let tx = KeyFrameTxParams {
+                long_term_id_plus_1,
+                ..KeyFrameTxParams::default()
+            };
+            build_key_frame_header(
+                &view,
+                60,
+                0,
+                &FrameFilterParams::default(),
+                tx,
+                UniformTiles::default(),
+            )
+        };
+        for plus_1 in [0, 1, (1 << bits) - 1] {
+            let id = key(plus_1).unwrap().long_term_id;
+            assert_eq!(id, Some(plus_1 as i32 - 1), "{bits} {plus_1}");
+        }
+        assert!(key(1 << bits).is_err());
+        let bytes = sequence_header_bits(&stream(bits)).unwrap();
+        let cut = &bytes[..bytes.len() - 1];
+        let parsed = parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0)));
+        assert!(parsed.map_or(true, |header| !header.is_fully_parsed()));
+    }
+    assert!(build_encoder_sequence_header(&stream(8)).is_err());
 }

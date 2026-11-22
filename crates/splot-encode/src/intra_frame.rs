@@ -91,6 +91,8 @@ pub(crate) struct IntraFrameCoder {
     /// The last committed key frame coded a film grain model, which the
     /// output frames after it apply.
     grain_active: bool,
+    /// Key frames committed so far; their long-term ids cycle over it.
+    key_frames: u32,
     /// Which temporal layers code warped motion, from the committed frames.
     warp_gate: crate::warp::WarpGate,
     /// The intra superblocks of the frame in each reference slot.
@@ -284,6 +286,7 @@ impl IntraFrameCoder {
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
+                long_term_frame_id_bits: preset.long_term_id_bits,
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
@@ -327,6 +330,7 @@ impl IntraFrameCoder {
             open_loop: crate::lookahead::OpenLoopMotion::new(),
             shown_existing: 0,
             grain_active: false,
+            key_frames: 0,
             warp_gate: crate::warp::WarpGate::default(),
             slot_intra: Default::default(),
             cancel: crate::cancel::CancelToken::default(),
@@ -383,6 +387,7 @@ impl FrameCoder for IntraFrameCoder {
             }
         }
         if frame.frame_type == FrameType::Key {
+            self.key_frames = self.key_frames.wrapping_add(1);
             self.grain_active = core
                 .intra_tail
                 .is_some_and(|tail| tail.film_grain.apply_grain);
@@ -616,6 +621,10 @@ impl IntraFrameCoder {
         let context = self.preset_context(plan, qindex);
         let mut tools = gop::frame_tools((&self.preset, context), self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
+        let ids = (1u32 << self.preset.long_term_id_bits) - 1;
+        if plan.frame_type == FrameType::Key && ids > 0 {
+            tools.0.long_term_id_plus_1 = 1 + self.key_frames % ids;
+        }
         tools.0.disable_cdf_update = self.preset.disable_cdf_update;
         tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
         tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;

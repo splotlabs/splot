@@ -4712,10 +4712,10 @@ spec_sections = ["5.4", "5.2.2", "5.2.3", "B.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/frame/encoder_input.rs"
-change_id = "encoder-sequence-header-obu"
+change_id = "enc-long-term-ids"
 owner = "encoder"
 risk = "low"
-notes = "build_minimal_intra_sequence_header constructs the canonical minimal intra sequence model; encode_minimal_intra_sequence_header_obu writes its body, extension/trailing bits, and Annex B framing. Byte-exact conformance-vector comparison protects the complete OBU and its agreement with minimal frame-header construction. The encoder does not use it: it writes the sequence header of build_encoder_sequence_header."
+notes = "PresetParams::long_term_id_bits (2026-11-22, 0 in every row): the sequence codes long_term_frame_id_bits (§ 5.4.6) and key frames code long_term_id_plus_1, the ids cycling over the key frames (§ 5.18.2); num_key_ref_frames needs RAS or OLK frames. build_minimal_intra_sequence_header constructs the canonical minimal intra sequence model; encode_minimal_intra_sequence_header_obu writes its body, extension/trailing bits, and Annex B framing. Byte-exact conformance-vector comparison protects the complete OBU and its agreement with minimal frame-header construction. The encoder does not use it: it writes the sequence header of build_encoder_sequence_header."
 
 [feature.status]
 mapped = "done"
@@ -4730,7 +4730,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_sequence_header_obu_matches_conformance_vector"]
+tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::key_frames_cycle_their_long_term_ids", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::key_frames_code_their_long_term_ids", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_sequence_header_obu_matches_conformance_vector"]
 commands = ["cargo test -p splot-core encoder_input"]
 fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
 diagnostics = []
