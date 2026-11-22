@@ -5,8 +5,8 @@
 
 use proptest::prelude::*;
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
-    UniformTiles, build_encoder_sequence_header, build_key_frame_header,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameTiles,
+    KeyFrameTxParams, build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -113,7 +113,7 @@ fn tcq_syntax(bit_depth: BitDepthIdc) -> IntraTileSyntax {
             allow_tcq: true,
             ..KeyFrameTxParams::default()
         },
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap()

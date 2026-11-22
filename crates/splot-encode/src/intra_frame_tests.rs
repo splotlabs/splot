@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use splot_core::headers::frame::{UniformTiles, build_key_frame_header};
+use splot_core::headers::frame::{FrameTiles, build_key_frame_header};
 use splot_decode::encoder_syntax::LeafBlock;
 
 use crate::config::{RateControlMode, TileLayout};
@@ -773,8 +773,8 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let tx =
             tx_choice::key_frame_tx_params(&frame.preset, crate::preset::PresetContext::default());
         let header = FrameFilterParams::default();
-        let core = build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default())
-            .unwrap();
+        let core =
+            build_key_frame_header(&frame.view, 90, 0, &header, tx, FrameTiles::default()).unwrap();
         let mut writer =
             KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence), 0).unwrap();
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();

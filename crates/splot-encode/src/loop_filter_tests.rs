@@ -6,7 +6,7 @@
 use splot_core::annexb::parse_annex_b_obus_partial;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    CcsoOffsets, CcsoPlaneParams, CoreSeqView, FrameFilterParams, KeyFrameTxParams, UniformTiles,
+    CcsoOffsets, CcsoPlaneParams, CoreSeqView, FrameFilterParams, FrameTiles, KeyFrameTxParams,
     build_key_frame_header,
 };
 use splot_core::headers::frame::{
@@ -328,7 +328,7 @@ fn ccso_search_classes_match_the_decoder_output() {
             0,
             &filters,
             KeyFrameTxParams::default(),
-            UniformTiles::default(),
+            FrameTiles::default(),
         )
         .unwrap();
         let grid = CcsoGrid::new(&seq, &core).unwrap();

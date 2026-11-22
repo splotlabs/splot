@@ -444,7 +444,7 @@ pub struct SeqTiles {
 ///
 /// `Default` is one tile with `TileSizeBytes = 4`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UniformTiles {
+pub struct FrameTiles {
     /// `TileColsLog2` before the cap at `maxLog2TileCols`.
     pub cols_log2: u8,
     /// `TileRowsLog2` before the cap at `maxLog2TileRows`.
@@ -465,7 +465,7 @@ pub struct UniformTiles {
     pub explicit: Option<[TileStarts; 2]>,
 }
 
-impl Default for UniformTiles {
+impl Default for FrameTiles {
     fn default() -> Self {
         Self {
             cols_log2: 0,
@@ -478,7 +478,7 @@ impl Default for UniformTiles {
     }
 }
 
-impl UniformTiles {
+impl FrameTiles {
     /// Checks that the intra and the inter frames of `seq` code this layout
     /// (§ 5.18.7.3).
     ///
@@ -858,7 +858,7 @@ pub fn build_key_frame_header(
     order_hint: u32,
     filters: &FrameFilterParams,
     tx: KeyFrameTxParams,
-    tiles: UniformTiles,
+    tiles: FrameTiles,
 ) -> Result<FrameHeaderCore, EncoderHeaderError> {
     let bytes = key_frame_header_bits(seq, (base_q_idx, tiles), order_hint, filters, tx)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
@@ -880,7 +880,7 @@ pub fn build_key_frame_header(
 
 fn key_frame_header_bits(
     seq: &CoreSeqView,
-    (base_q_idx, tiles): (u32, UniformTiles),
+    (base_q_idx, tiles): (u32, FrameTiles),
     order_hint: u32,
     filters: &FrameFilterParams,
     tx: KeyFrameTxParams,
@@ -911,7 +911,7 @@ fn key_frame_header_bits(
 pub(super) fn write_intra_frame_tail(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    (base_q_idx, tiles, show): (u32, UniformTiles, bool),
+    (base_q_idx, tiles, show): (u32, FrameTiles, bool),
     filters: &FrameFilterParams,
     tx: KeyFrameTxParams,
 ) -> Result<(), EncoderHeaderError> {
@@ -1018,7 +1018,7 @@ pub(super) fn plane_quantization(
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    (base_q_idx, tiles, tx): (u32, UniformTiles, KeyFrameTxParams),
+    (base_q_idx, tiles, tx): (u32, FrameTiles, KeyFrameTxParams),
     filters: &FrameFilterParams,
     (frame_is_intra, lr_refs, coded_map): (bool, LrReferenceFilters<'_>, Option<bool>),
 ) -> Result<(), EncoderHeaderError> {
@@ -1293,7 +1293,7 @@ fn write_filter_params(
 pub(super) fn write_encoder_tile_info(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    tiles: &UniformTiles,
+    tiles: &FrameTiles,
     frame_is_intra: bool,
 ) -> Result<([TileSpacing; 2], u32), WriteError> {
     let sb_size = seq.tile.frame_sb_size(frame_is_intra);
@@ -1361,7 +1361,7 @@ fn reused_tile_layout(seq: &CoreSeqView, sb_size: SuperblockSize) -> Option<[Til
 fn write_frame_tile_params(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    tiles: &UniformTiles,
+    tiles: &FrameTiles,
     sb_size: SuperblockSize,
 ) -> Result<([TileSpacing; 2], u32), WriteError> {
     let input = TileParamsInput {
