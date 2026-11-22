@@ -767,7 +767,7 @@ fn encode_case(
         assert!(writer.syntax().coded_segment_ids() > 0);
     }
     let (tile, recon) = writer.finish().unwrap();
-    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile], &[]).unwrap();
+    let unit = encode_key_frame_temporal_unit(&seq, &core, true, (&[&tile], 1), &[]).unwrap();
     (unit, recon, modes, coder.coverage)
 }
 
@@ -1727,7 +1727,7 @@ fn cfl_chroma_of_a_128x128_leaf_reads_the_whole_luma() {
         )
         .unwrap();
     let (tile, recon) = writer.finish().unwrap();
-    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile], &[]).unwrap();
+    let unit = encode_key_frame_temporal_unit(&seq, &core, true, (&[&tile], 1), &[]).unwrap();
     let view = recon.as_frame_ref();
     let expected = raw_bytes(
         [PlaneId::Y, PlaneId::U, PlaneId::V]

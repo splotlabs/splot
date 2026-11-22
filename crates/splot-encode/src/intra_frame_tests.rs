@@ -1611,7 +1611,7 @@ fn inter_stream_of(
             &coder.references,
             (qindex, &filters, tools),
             &core,
-            (&[&tile], &[]),
+            (&[&tile], &[], 1),
         )
         .unwrap();
     let planes = visible_planes(&recon).unwrap();
@@ -2104,6 +2104,8 @@ mod repeat;
 mod segmentation;
 #[path = "intra_frame_tf_tests.rs"]
 mod tf;
+#[path = "intra_frame_tile_group_tests.rs"]
+mod tile_group;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
 #[path = "intra_frame_warp_tests.rs"]

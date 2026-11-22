@@ -76,6 +76,8 @@ pub(crate) struct IntraFrameCoder {
     /// empty for none.
     content_obus: Vec<u8>,
     tiles: UniformTiles,
+    /// [`crate::Config::tile_groups`].
+    tile_groups: u32,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
     /// The global motion models every inter frame codes, set by tests.
@@ -317,6 +319,7 @@ impl IntraFrameCoder {
             preset: *preset,
             screen: (preset.screen_detect && core::ptr::eq(preset, config.preset.params()))
                 .then(|| *config.preset.screen_params()),
+            tile_groups: config.tile_groups.get(),
             tiles: UniformTiles {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
@@ -946,7 +949,7 @@ impl IntraFrameCoder {
             &self.references,
             (qindex, &filters, tools),
             &core,
-            (&tiles, &key_obus),
+            (&tiles, &key_obus, self.tile_groups),
         )?;
         let coded = CodedFrame {
             temporal_unit,

@@ -604,9 +604,10 @@ pub fn build_intra_only_frame_header(
     Ok(EncodedFrameHeader { core, bits })
 }
 
-/// Serializes the `OBU_REGULAR_TILE_GROUP` OBU of `header` whose one tile group
-/// carries the `tiles` of the frame: `is_first_tile_group`, the recorded header
-/// bits, the § 5.19 structure, and the tiles.
+/// Serializes the `OBU_REGULAR_TILE_GROUP` OBUs of `header` that carry the
+/// `tiles` of the frame in `tile_groups` tile groups (see
+/// [`tile_group_ranges`]): the first codes `is_first_tile_group` and the
+/// recorded header bits, each codes its § 5.19 structure and tiles.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] if the header has no tile info, a tile is empty
@@ -615,9 +616,92 @@ pub fn build_intra_only_frame_header(
 pub fn encode_inter_frame_obu(
     header: &EncodedFrameHeader,
     tiles: &[&[u8]],
+    tile_groups: u32,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
-    let tile_info = header
-        .core
+    write_tile_groups(
+        &header.core,
+        ObuType::RegularTileGroup,
+        (tiles, tile_groups),
+        |structure, tiles| {
+            let mut payload = BitWriter::new();
+            payload.write_flag(true)?; // is_first_tile_group
+            for index in 0..header.bits.num_frame_header_bits() {
+                let bit = header
+                    .bits
+                    .bit(index)
+                    .ok_or(EncoderHeaderError::Incomplete)?;
+                payload.write_flag(bit)?;
+            }
+            write_group_tiles(&mut payload, &header.core, structure, tiles)?;
+            Ok(payload.into_bytes())
+        },
+    )
+}
+
+/// The `(tg_start, tg_end)` of each tile group when `num_tiles` tiles in
+/// raster order split into `tile_groups` groups of consecutive tiles
+/// (§ 5.19): the count clamps to `1..=num_tiles`, and group `g` starts at
+/// tile `g * num_tiles / tile_groups`, so the group sizes differ by at most 1.
+#[must_use]
+pub fn tile_group_ranges(num_tiles: u32, tile_groups: u32) -> Vec<(u32, u32)> {
+    let groups = tile_groups.clamp(1, num_tiles.max(1));
+    (0..groups)
+        .map(|g| {
+            let end = (g + 1) * num_tiles / groups;
+            (g * num_tiles / groups, end.saturating_sub(1))
+        })
+        .collect()
+}
+
+/// The tile group OBUs of type `obu_type` of the frame `core`, with its
+/// `tiles` in the groups of [`tile_group_ranges`]. `first` writes the
+/// payload of the first group from its structure and tiles; each later group
+/// codes `is_first_tile_group = 0` and `frame_header_present_flag = 0`
+/// (§ 5.19), so the frame header stays in the first group alone.
+pub(super) fn write_tile_groups(
+    core: &FrameHeaderCore,
+    obu_type: ObuType,
+    (tiles, tile_groups): (&[&[u8]], u32),
+    first: impl FnOnce(&TileGroupStructure, &[&[u8]]) -> Result<Vec<u8>, EncoderHeaderError>,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    let num_tiles = tiles.len() as u32;
+    let ranges = tile_group_ranges(num_tiles, tile_groups);
+    let mut first = Some(first);
+    let mut w = BitWriter::new();
+    for &(tg_start, tg_end) in &ranges {
+        let structure = TileGroupStructure {
+            tile_start_and_end_present_flag: ranges.len() > 1,
+            tg_start,
+            tg_end,
+            ..TileGroupStructure::whole_frame(num_tiles)
+        };
+        let group = tiles
+            .get(tg_start as usize..=tg_end as usize)
+            .ok_or(EncoderHeaderError::Incomplete)?;
+        let payload = match first.take() {
+            Some(first) => first(&structure, group)?,
+            None => {
+                let mut payload = BitWriter::new();
+                payload.write_flag(false)?; // is_first_tile_group
+                payload.write_flag(false)?; // frame_header_present_flag
+                write_group_tiles(&mut payload, core, &structure, group)?;
+                payload.into_bytes()
+            }
+        };
+        write_annexb_obu(&mut w, &obu_header(obu_type), &payload)?;
+    }
+    Ok(w.into_bytes())
+}
+
+/// Writes the § 5.19 structure of `structure` and the § 5.20.1 framing of
+/// its `tiles` with the tile info of `core`.
+fn write_group_tiles(
+    payload: &mut BitWriter,
+    core: &FrameHeaderCore,
+    structure: &TileGroupStructure,
+    tiles: &[&[u8]],
+) -> Result<(), EncoderHeaderError> {
+    let tile_info = core
         .tile_info
         .as_ref()
         .ok_or(EncoderHeaderError::Incomplete)?;
@@ -627,34 +711,15 @@ pub fn encode_inter_frame_obu(
         tile_info.tile_cols_log2,
         tile_info.tile_rows_log2,
     );
-    let mut payload = BitWriter::new();
-    payload.write_flag(true)?; // is_first_tile_group
-    for index in 0..header.bits.num_frame_header_bits() {
-        let bit = header
-            .bits
-            .bit(index)
-            .ok_or(EncoderHeaderError::Incomplete)?;
-        payload.write_flag(bit)?;
-    }
-    write_tile_group_structure(
-        &mut payload,
-        &TileGroupStructure::whole_frame(tiles.len() as u32),
-        layout,
-    )?;
+    write_tile_group_structure(payload, structure, layout)?;
     write_tile_group_payload(
-        &mut payload,
-        &tile_framing(&header.core, tiles),
+        payload,
+        &tile_framing(core, tiles),
         tiles,
         tile_info.tile_size_bytes.unwrap_or(1),
         false,
     )?;
-    let mut w = BitWriter::new();
-    write_annexb_obu(
-        &mut w,
-        &obu_header(ObuType::RegularTileGroup),
-        &payload.into_bytes(),
-    )?;
-    Ok(w.into_bytes())
+    Ok(())
 }
 
 /// Builds the `OBU_REGULAR_TIP` header of a `TIP_FRAME_AS_OUTPUT` frame

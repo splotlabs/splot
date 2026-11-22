@@ -86,6 +86,10 @@ pub(crate) struct EncodeArgs {
     /// on more threads and cost some compression.
     #[arg(long, value_parser = parse_tiles, default_value = "1x1")]
     tiles: TileLayout,
+    /// Tile groups per frame: the tiles split in raster order into N tile
+    /// group OBUs; N above the tile count codes one tile per group.
+    #[arg(long, value_name = "N", default_value = "1")]
+    tile_groups: NonZeroU32,
     /// Stop after this many input frames.
     #[arg(long)]
     limit: Option<NonZeroU64>,
@@ -406,6 +410,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
         .extend(args.preset_set.iter().cloned());
     config.threads = args.threads;
     config.tiles = args.tiles;
+    config.tile_groups = args.tile_groups;
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;
     config.crop = args.crop;

@@ -463,6 +463,33 @@ fn two_tile_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
     );
 }
 
+/// `--tile-groups 2` codes each frame of a 2-tile clip in two tile group
+/// OBUs that validate with `--strict`; `--tile-groups 0` is a usage error.
+#[test]
+fn tile_group_clips_validate_and_decode() {
+    round_trip(
+        8,
+        YUV420,
+        &[
+            "--qp",
+            "90",
+            "--preset",
+            "10",
+            "--tiles",
+            "2x1",
+            "--tile-groups",
+            "2",
+        ],
+    );
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let (input_s, ivf_s) = (input.to_str().unwrap(), ivf.to_str().unwrap());
+    let bad = splot(&["encode", input_s, "-o", ivf_s, "--tile-groups", "0"]);
+    assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    let _ = std::fs::remove_file(input);
+}
+
 /// The content flags and the Y4M `A` tag reach the stream: every key frame
 /// has a content interpretation OBU and the two HDR metadata OBUs, and the
 /// clip still validates and decodes. `splot inspect` may name a metadata

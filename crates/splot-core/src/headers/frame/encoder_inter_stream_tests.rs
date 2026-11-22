@@ -362,7 +362,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
     )
     .unwrap();
     let tile = [0xab, 0xcd, 0xef];
-    let obu = encode_inter_frame_obu(&header, &[&tile]).unwrap();
+    let obu = encode_inter_frame_obu(&header, &[&tile], 1).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -383,6 +383,17 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
         parse_frame_header_core(&mut reader, &input).unwrap(),
         header.core
     );
+}
+
+/// Tiles split into groups of consecutive tiles in raster order whose sizes
+/// differ by at most 1 (§ 5.19); the count clamps to `1..=num_tiles`.
+#[test]
+fn tile_group_ranges_split_the_tiles_evenly() {
+    assert_eq!(tile_group_ranges(4, 1), [(0, 3)]);
+    assert_eq!(tile_group_ranges(4, 3), [(0, 0), (1, 1), (2, 3)]);
+    assert_eq!(tile_group_ranges(5, 2), [(0, 1), (2, 4)]);
+    assert_eq!(tile_group_ranges(4, 8), [(0, 0), (1, 1), (2, 2), (3, 3)]);
+    assert_eq!(tile_group_ranges(1, 0), [(0, 0)]);
 }
 
 #[test]
@@ -1206,7 +1217,7 @@ fn assert_cut_header_fails(
     let info = header.core.tile_info.as_ref();
     let tiles =
         vec![&[0xab][..]; info.map_or(1, |info| (info.tile_cols * info.tile_rows) as usize)];
-    let obu = encode_inter_frame_obu(header, &tiles).unwrap();
+    let obu = encode_inter_frame_obu(header, &tiles, 1).unwrap();
     let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
     let cut = header.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
     let input = FrameHeaderParseInput {
@@ -1294,7 +1305,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         UniformTiles::default(),
     );
     assert!(key.is_err(), "a key frame cannot reuse CCSO");
-    let obu = encode_inter_frame_obu(&reused, &[&[0xab]]).unwrap();
+    let obu = encode_inter_frame_obu(&reused, &[&[0xab]], 1).unwrap();
     let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
     let cut = reused.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
     let input = FrameHeaderParseInput {
@@ -1634,7 +1645,7 @@ fn intra_only_headers_keep_the_other_slots() {
             assert_eq!(core.immediate_output_frame, Some(show_frame));
             assert!(core.inter.is_none());
             assert_eq!(header.bits.num_frame_header_bits(), core.consumed_bits);
-            let bytes = encode_inter_frame_obu(&header, &[&[0x5a; 3]]).unwrap();
+            let bytes = encode_inter_frame_obu(&header, &[&[0x5a; 3]], 1).unwrap();
             assert!(!bytes.is_empty());
             let mut w = BitWriter::new();
             for index in 0..header.bits.num_frame_header_bits() {
