@@ -1075,18 +1075,17 @@ impl IntraTileSyntax {
     }
 
     /// Whether chroma of the lossless inter `leaf` takes the type of the
-    /// leaf's first luma block (§ 5.20.7.29): in an intra frame (an IntraBC
-    /// leaf) or when the chroma reference is another leaf.
+    /// leaf's first luma block (§ 5.20.7.29): in an intra frame or when the
+    /// chroma reference is another leaf.
     #[cold]
     #[inline(never)]
     fn lossless_chroma_reads_leaf_start(&self, leaf: &LeafBlock) -> bool {
         let reference = leaf.frontier.chroma_ref_geometry();
-        let intrabc = self
+        let intra_frame = self
             .inter
             .as_ref()
-            .and_then(|state| state.planned.as_ref())
-            .is_some_and(|planned| planned.use_intrabc);
-        intrabc || leaf.frontier.r != reference.row() || leaf.frontier.c != reference.col()
+            .is_some_and(|state| state.tile.is_intra_frame());
+        intra_frame || leaf.frontier.r != reference.row() || leaf.frontier.c != reference.col()
     }
 
     /// Adds the residual of the planned inter leaf: `levels[i]` holds the
