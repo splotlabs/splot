@@ -6,7 +6,7 @@
 //! horizontal groups. A cell reads its window in place, or by clamped row
 //! addresses and a `pshufb` column gather, so a border cell needs no copy.
 
-use super::{Horizontal, SKIPPED, load16, store_rows};
+use super::{Horizontal, SKIPPED, even_pairs, load16, store_rows};
 use crate::subpel_mc::ReferencePlaneView;
 use crate::subpel_mc::block::{Block, Geometry, Taps, Window, is_cell};
 use crate::subpel_mc::cell::{Cell, Plane, Written};
@@ -29,18 +29,18 @@ const NARROW_ROWS: [u8; 32] = {
 };
 
 /// `Some` of `$f::<$w, G, H, V, $put, $c>` for the kernel key `5 * H + V`
-/// of a reference of a `$w`-square cell, `None` for any other key.
+/// of a reference of a `$w`-square cell, `H` its [`even_pairs`], `None` for
+/// any other key.
 macro_rules! by_key {
     ($key:expr, 8, $put:literal, $c:expr, $f:ident $args:tt) => {
         by_key!(@ $key, 8, $put, $c, $f $args, [
-            0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 5 1 0, 6 1 1, 7 1 2, 8 1 3, 9 1 4,
-            10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4, 15 3 0, 16 3 1, 17 3 2, 18 3 3,
-            19 3 4, 20 4 0, 21 4 1, 22 4 2, 23 4 3, 24 4 4
+            0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4,
+            20 4 0, 21 4 1, 22 4 2, 23 4 3, 24 4 4
         ])
     };
     ($key:expr, 4, $put:literal, $c:expr, $f:ident $args:tt) => {
         by_key!(@ $key, 4, $put, $c, $f $args, [
-            0 0 0, 1 0 1, 2 0 2, 5 1 0, 6 1 1, 7 1 2, 10 2 0, 11 2 1, 12 2 2
+            0 0 0, 1 0 1, 2 0 2, 10 2 0, 11 2 1, 12 2 2
         ])
     };
     (@ $key:expr, $w:literal, $put:literal, $c:expr, $f:ident $args:tt,
@@ -164,9 +164,9 @@ fn row_offsets(t: Avx2, top: i32, [first, last]: [i32; 2], stride: u32) -> [u32;
 }
 
 /// The kernel key `5 * H + V` of a reference's tap-pair counts, zero for
-/// a skipped pass.
+/// a skipped pass, `H` its [`even_pairs`].
 fn key(horizontal: Option<&Taps>, vertical: Option<&Taps>) -> usize {
-    5 * horizontal.map_or(0, |taps| taps.count) + vertical.map_or(0, |taps| taps.count)
+    5 * even_pairs(horizontal) + vertical.map_or(0, |taps| taps.count)
 }
 
 /// The groups of one reference of a `W`-square cell of `G` groups, `None`
