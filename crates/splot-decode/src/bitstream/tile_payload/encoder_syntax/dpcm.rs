@@ -23,7 +23,7 @@ pub(super) const DPCM_LOSSY: EncoderSyntaxError =
 const DPCM_MODE: EncoderSyntaxError = EncoderSyntaxError::Unsupported("DPCM mode");
 
 /// `dpcm_mode_y` / `dpcm_mode_uv` of `mode`: `V_PRED` is 0, `H_PRED` is 1.
-fn dpcm_mode(mode: IntraMode) -> Result<usize> {
+pub(super) fn dpcm_mode(mode: IntraMode) -> Result<u8> {
     match mode {
         IntraMode::Vertical => Ok(0),
         IntraMode::Horizontal => Ok(1),
@@ -35,19 +35,24 @@ fn dpcm_mode(mode: IntraMode) -> Result<usize> {
 #[cold]
 #[inline(never)]
 pub(super) fn dpcm_joint_mode(y_mode: IntraMode) -> Result<IntraJointMode> {
-    let joint = [DPCM_VERTICAL_JOINT_MODE, DPCM_HORIZONTAL_JOINT_MODE][dpcm_mode(y_mode)?];
+    let joint = match dpcm_mode(y_mode)? {
+        0 => DPCM_VERTICAL_JOINT_MODE,
+        _ => DPCM_HORIZONTAL_JOINT_MODE,
+    };
     IntraJointMode::try_new(joint).map_err(rule("DPCM joint mode"))
 }
 
 impl IntraTileSyntax {
     /// Whether the leaves code `use_dpcm_y` and `use_dpcm_uv`: every block is lossless.
     #[must_use]
+    #[inline]
     pub const fn dpcm_allowed(&self) -> bool {
         self.tools.lossless
     }
 
     /// The § 7.14.4 DPCM direction of `tx` of the planned leaf, `None` without DPCM.
     #[must_use]
+    #[inline]
     pub const fn dpcm(&self, tx: &TransformBlock) -> Option<DpcmDirection> {
         self.dpcm_leaf[if tx.plane == 0 { 0 } else { 1 }]
     }
@@ -98,7 +103,7 @@ impl IntraTileSyntax {
         self.put(
             symbols,
             TileCdfSelector::DpcmModeY,
-            dpcm_mode(modes.y_mode)?,
+            dpcm_mode(modes.y_mode)?.into(),
         )?;
         self.write_fsc_mode(leaf, modes, symbols)
     }
@@ -114,6 +119,10 @@ impl IntraTileSyntax {
         let ChromaMode::Intra(mode) = modes.uv_mode else {
             return Err(DPCM_MODE);
         };
-        self.put(symbols, TileCdfSelector::DpcmModeUv, dpcm_mode(mode)?)
+        self.put(
+            symbols,
+            TileCdfSelector::DpcmModeUv,
+            dpcm_mode(mode)?.into(),
+        )
     }
 }
