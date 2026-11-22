@@ -1864,7 +1864,7 @@ fn validate_tip_output_frame_parse(
     Ok(())
 }
 
-fn resolve_ccso_reference_reuse(
+pub(crate) fn resolve_ccso_reference_reuse(
     core: &mut FrameHeaderCore,
     reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,

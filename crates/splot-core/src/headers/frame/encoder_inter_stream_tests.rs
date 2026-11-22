@@ -1122,3 +1122,88 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         Ok(ref core) if core.status == FrameHeaderParseStatus::InterHeaderComplete
     ));
 }
+
+/// A `reuse_ccso` plane of an inter frame codes its two reuse flags and no
+/// parameters (§ 5.18.7.12): it parses back with the flags, `ccso_ref_idx`
+/// inferred `0` over one reference, and no parameters, and the header is
+/// shorter than the one that codes them. A `ccso_ref_idx` outside the
+/// references and reuse in a key frame are refused; a cut header does not
+/// parse complete.
+#[test]
+fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
+    let sb = SuperblockSize::Block64x64;
+    let seq = sequence(64, 64, BitDepthIdc::Eight, sb);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(64, 64, 0);
+    let coded = filters(sb);
+    let reuse = |ccso_ref_idx| FrameFilterParams {
+        ccso: coded.ccso.map(|plane| CcsoPlaneParams {
+            reuse_ccso: plane.ccso_planes,
+            ccso_ref_idx: plane.ccso_planes.then_some(ccso_ref_idx),
+            ..plane
+        }),
+        ..coded
+    };
+    let params = |filters| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 1,
+        refresh_frame_flags: 2,
+        show_frame: true,
+        filters,
+        tx: KeyFrameTxParams::default(),
+        tiles: UniformTiles::default(),
+        reference_select: false,
+        skip_mode_present: false,
+        primary_slot: Some(0),
+        use_ref_frame_mvs: false,
+        high_precision_mv: false,
+        switchable_interp_filter: false,
+        tip_weight: None,
+        tip_hole_fill: false,
+        opfl_refine_type: 0,
+        force_integer_mv: false,
+        warp: false,
+        global_motion: [None; 7],
+        tip_global_mv: TipGlobalMv::default(),
+        tip_filter: None,
+        tip_deblocking: false,
+    };
+    let build = |filters| build_inter_frame_header(&view, &slots.view(), &params(filters));
+    let fresh = build(coded).unwrap();
+    let reused = build(reuse(0)).unwrap();
+    let plane = &reused.core.ccso_params.as_ref().unwrap().planes[1];
+    assert!(plane.ccso_planes && plane.reuse_ccso && !plane.sb_reuse_ccso);
+    assert_eq!(plane.ccso_ref_idx, Some(0));
+    assert_eq!(plane.ccso_scale_idx, None);
+    assert!(reused.bits.num_frame_header_bits() < fresh.bits.num_frame_header_bits());
+    let fresh_plane = &fresh.core.ccso_params.as_ref().unwrap().planes[1];
+    assert!(!fresh_plane.reuse_ccso && fresh_plane.ccso_scale_idx == Some(2));
+    assert!(build(reuse(1)).is_err(), "one reference has no index 1");
+    let key = crate::headers::frame::build_key_frame_header(
+        &view,
+        90,
+        0,
+        &reuse(0),
+        KeyFrameTxParams::default(),
+        UniformTiles::default(),
+    );
+    assert!(key.is_err(), "a key frame cannot reuse CCSO");
+    let obu = encode_inter_frame_obu(&reused, &[&[0xab]]).unwrap();
+    let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
+    let cut = reused.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::RegularTileGroup,
+        first_picture_in_tu: true,
+        active_sequence: Some(&seq),
+        mfh_record: None,
+        reference_state: slots.view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let mut reader = BitReader::new(&payload[..cut], ByteOffset::new(0));
+    assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
+    let cut_core = parse_frame_header_core(&mut reader, &input);
+    assert!(!matches!(
+        cut_core,
+        Ok(ref core) if core.status == FrameHeaderParseStatus::InterHeaderComplete
+    ));
+}

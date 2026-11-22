@@ -24,9 +24,9 @@ use crate::headers::frame::inter::tip_weight_coded;
 use crate::headers::frame::inter_shared_tail::lr_reference_filters;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
-    CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore, FrameHeaderParseStatus,
-    FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode, init_core_from_prefix,
-    parse_core_body, parse_frame_header_prefix,
+    CcsoPlaneParams, CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
+    FrameHeaderParseStatus, FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode,
+    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
@@ -160,6 +160,12 @@ pub fn build_inter_frame_header(
         filters: FrameFilterParams {
             lr_luma_wiener_ns: None,
             lr_chroma_wiener_ns: [None; 2],
+            ccso: params.filters.ccso.map(|plane| CcsoPlaneParams {
+                reuse_ccso: false,
+                sb_reuse_ccso: false,
+                ccso_ref_idx: None,
+                ..plane
+            }),
             ..params.filters
         },
         ..*params

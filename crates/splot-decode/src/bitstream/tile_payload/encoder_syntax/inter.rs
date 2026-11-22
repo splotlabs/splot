@@ -83,11 +83,13 @@ pub struct EncoderReferences {
     state: InterReferenceState<u16>,
 }
 
-/// One coded frame: its filtered reconstruction, saved CDFs and motion field.
+/// One coded frame: its filtered reconstruction, saved CDFs, motion field and
+/// header, whose `ccso_params()` a later frame may reuse (§ 7.23).
 type SettledFrame = (
     SharedFrame<u16>,
     Arc<FrameCdfSubset>,
     Option<MotionFieldHandle>,
+    Arc<FrameHeaderCore>,
 );
 
 impl EncoderReferences {
@@ -159,7 +161,12 @@ impl EncoderReferences {
         if index == self.frames.len() {
             self.frames.push(None);
         }
-        self.frames[index] = Some((SharedFrame::new(frame), cdfs, motion));
+        self.frames[index] = Some((
+            SharedFrame::new(frame),
+            cdfs,
+            motion,
+            Arc::new(core.clone()),
+        ));
         self.buffer.update(index, &update, is_key_or_switch(core));
         self.buffer.note_frame(core.obu_type, true, &update);
         for (index, frame) in self.frames.iter_mut().enumerate() {
@@ -254,6 +261,34 @@ impl EncoderReferences {
         Some(derived)
     }
 
+    /// The saved `ccso_params()` of reference `slot` (§ 7.23), which a plane
+    /// of a later frame loads with `reuse_ccso`; `None` for a slot without
+    /// them.
+    pub fn ccso_params(&self, slot: u32) -> Option<&splot_core::headers::frame::CcsoParams> {
+        self.state
+            .ref_ccso_headers
+            .get(usize::try_from(slot).ok()?)?
+            .as_deref()?
+            .ccso_params
+            .as_ref()
+    }
+
+    /// `core` with the parameters of each `reuse_ccso` plane loaded from its
+    /// reference (§ 5.18.7.12 `load_ccso_params`), as the decoder loads them.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for a `ccso_ref_idx` outside the
+    /// references or a reference without that saved plane.
+    pub fn resolve_ccso_reuse(&self, core: &mut FrameHeaderCore) -> Result<()> {
+        crate::prediction::inter::resolve_ccso_reference_reuse(
+            core,
+            &self.state,
+            ByteOffset::new(0),
+            None,
+        )
+        .map_err(rule("ccso reuse"))
+    }
+
     /// A fresh reference state for one tile.
     fn tile_state(&self) -> Result<InterReferenceState<u16>> {
         settled_state(&self.buffer, &self.frames)
@@ -320,19 +355,26 @@ fn settled_state(
             Ok((RefFrameSlot::completed(frame.share()), None))
         })
         .map_err(rule("reference state"))?;
+    let settled = |slot: usize| {
+        buffer
+            .frame_index_for_slot(slot as u32)
+            .ok()
+            .and_then(|index| frames.get(index)?.as_ref())
+    };
     for (slot, (cdfs, motion)) in state
         .ref_frame_cdfs
         .iter_mut()
         .zip(state.ref_motion_fields.iter_mut())
         .enumerate()
     {
-        if let Some((_, saved, field)) = buffer
-            .frame_index_for_slot(slot as u32)
-            .ok()
-            .and_then(|index| frames.get(index)?.as_ref())
-        {
+        if let Some((_, saved, field, _)) = settled(slot) {
             *cdfs = Some(FrameCdfHandle::settled(Arc::clone(saved)));
             motion.clone_from(field);
+        }
+    }
+    for (slot, ccso) in state.ref_ccso_headers.iter_mut().enumerate() {
+        if let Some((.., header)) = settled(slot) {
+            *ccso = Some(Arc::clone(header));
         }
     }
     Ok(state)
