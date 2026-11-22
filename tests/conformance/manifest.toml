@@ -1241,6 +1241,16 @@ container layer flags exactly one truncation error. Bootstrap negative that \
 exercises the manifest's diagnostics arm so the runner is not vacuous."""
 expect = { diagnostics = ["ivf/truncated-frame-payload"] }
 
+[[vector]]
+path = "vectors/invalid/syn-tip-intra-pair-72x40.ivf"
+description = """
+Non-conformant on purpose (DECODE-INTER-TIP-REFERENCE): an encoder stream in which a \
+later frame codes TIP with the key frame and an intra-only frame as \
+ClosestPast and ClosestFuture, which § 7.10.1 forbids (§ 7.9 \
+is_ref_motion_field_eligible_by_frame_type). avmdec and splot decode reject \
+it; the validator has no reference-state TIP rule yet, so it validates clean."""
+expect = "clean"
+
 # --- Diverse AVM positive vectors (avm-positive-vector-generation) ---
 # All from project-owned synthetic YUV input; --lag-in-frames=0 keeps the IVF
 # frame counts internally consistent.
