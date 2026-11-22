@@ -8,12 +8,13 @@ use crate::encoder::Encoder;
 use crate::test_support::{avm_decode, avm_decoder};
 
 /// The units and the source bytes of `frames` panning frames of `chroma` at
-/// `bit_depth`, coded lossless at `preset` with the `intra_only` field on
-/// `threads` threads with a key frame every 6 frames.
+/// `bit_depth`, coded lossless at `preset` with the `intra_only` field and
+/// `overrides` on `threads` threads with a key frame every 6 frames.
 fn lossless_stream(
     (chroma, bit_depth, preset, intra_only): (PixelFormat, BitDepth, u8, u8),
     threads: usize,
     frames: u32,
+    overrides: &[(&str, &str)],
 ) -> (Vec<Vec<u8>>, Vec<u8>) {
     let mut config = config(96, 72, bit_depth, preset, 0);
     config.chroma = chroma;
@@ -22,6 +23,11 @@ fn lossless_stream(
     config
         .preset_overrides
         .push(("intra_only".to_owned(), intra_only.to_string()));
+    for &(name, value) in overrides {
+        config
+            .preset_overrides
+            .push((name.to_owned(), value.to_owned()));
+    }
     let mut encoder = Encoder::new(config.clone()).unwrap();
     let mut source = Vec::new();
     for index in 0..frames {
@@ -55,7 +61,7 @@ fn lossless_streams_decode_to_the_source_on_any_thread_count() {
     each_case(CASES, |case| {
         let name = format!("{case:?}");
         crate::tile_writer::SDP_CODED.set(0);
-        let (units, source) = lossless_stream(case, 1, 8);
+        let (units, source) = lossless_stream(case, 1, 8, &[]);
         assert!(
             crate::tile_writer::SDP_CODED.get() > 0,
             "{name}: no SDP tree"
@@ -63,7 +69,7 @@ fn lossless_streams_decode_to_the_source_on_any_thread_count() {
         assert_same_samples(&decode(&units.concat()), &source, &name);
         for threads in [2, 8] {
             assert_eq!(
-                lossless_stream(case, threads, 8).0,
+                lossless_stream(case, threads, 8, &[]).0,
                 units,
                 "{name} {threads}"
             );
@@ -71,7 +77,36 @@ fn lossless_streams_decode_to_the_source_on_any_thread_count() {
     });
 }
 
-/// AVM decodes the lossless streams to the source samples.
+const DPCM: &[(&str, &str)] = &[("lossless_dpcm", "1")];
+
+/// With `lossless_dpcm`, DPCM luma and chroma leaves next to SDP trees decode
+/// to the source samples exactly, with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn lossless_dpcm_streams_decode_to_the_source_on_any_thread_count() {
+    each_case(CASES, |case| {
+        let name = format!("{case:?}");
+        crate::tile_writer::SDP_CODED.set(0);
+        crate::tile_writer::DPCM_CODED.set([0; 2]);
+        let (units, source) = lossless_stream(case, 1, 8, DPCM);
+        let [luma, chroma] = crate::tile_writer::DPCM_CODED.get();
+        assert!(luma > 0 && chroma > 0, "{name}: DPCM {luma} {chroma}");
+        assert!(
+            crate::tile_writer::SDP_CODED.get() > 0,
+            "{name}: no SDP tree"
+        );
+        assert_same_samples(&decode(&units.concat()), &source, &name);
+        for threads in [2, 8] {
+            assert_eq!(
+                lossless_stream(case, threads, 8, DPCM).0,
+                units,
+                "{name} {threads}"
+            );
+        }
+    });
+}
+
+/// AVM decodes the lossless streams, with and without DPCM, to the source
+/// samples.
 #[test]
 #[ignore = "needs SPLOT_AVM_DECODER"]
 fn avm_decodes_lossless_streams_to_the_source() {
@@ -79,8 +114,10 @@ fn avm_decodes_lossless_streams_to_the_source() {
         return;
     };
     for case in CASES {
-        let (units, source) = lossless_stream(case, 1, 8);
-        let avm = avm_decode(&avmdec, &units, (96, 72), case.1, "lossless");
-        assert_same_samples(&avm, &source, &format!("{case:?}"));
+        for overrides in [&[][..], DPCM] {
+            let (units, source) = lossless_stream(case, 1, 8, overrides);
+            let avm = avm_decode(&avmdec, &units, (96, 72), case.1, "lossless");
+            assert_same_samples(&avm, &source, &format!("{case:?} {overrides:?}"));
+        }
     }
 }

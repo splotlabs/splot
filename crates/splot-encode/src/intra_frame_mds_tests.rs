@@ -387,7 +387,7 @@ fn leaf_coded_follows_the_last_coded_leaf() {
     let tx = tx_choice::key_frame_tx_params(&frame.preset, crate::preset::PresetContext::default());
     let header = FrameFilterParams::default();
     let core =
-        build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default()).unwrap();
+        build_key_frame_header(&frame.view, 90, 0, &header, tx, FrameTiles::default()).unwrap();
     let mut writer =
         KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence), 0).unwrap();
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();

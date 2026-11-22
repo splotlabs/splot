@@ -13,7 +13,7 @@ use std::ops::Range;
 
 use crate::bitstream::tile_payload::{
     BlockSymbolTraceReadError, DecodeBlockFrontier, DecodeTileWorkUnit, GeneralIntraResidualError,
-    LumaTxPartition, TileCdfSelector, TileCdfSubset, luma_transform_records_for_partition,
+    LumaTxPartition, TileCdfSelector, luma_transform_records_for_partition,
 };
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
@@ -462,25 +462,19 @@ impl CdefState {
             let tile_col_start = work_unit.mi_col_range().start as usize;
             let ctx =
                 self.cdef_index0_ctx_at(frontier.r, frontier.c, tile_row_start, tile_col_start)?;
-            let cdef_index0 = read_tx_symbol_cdef(
-                work_unit,
-                symbols,
-                TileCdfSelector::CdefIndex0 { ctx },
-                tile_offset,
-            )?;
+            let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
+            let cdef_index0 = cdfs
+                .read_block_symbol(TileCdfSelector::CdefIndex0 { ctx }, symbols)
+                .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.10.1"))?;
             if cdef_index0 != 0 {
                 0
             } else if strengths == 2 {
                 1
             } else {
-                read_tx_symbol_cdef(
-                    work_unit,
-                    symbols,
-                    TileCdfSelector::CdefIndexMinus1 { strengths },
-                    tile_offset,
-                )?
-                .checked_add(1)
-                .ok_or_else(selectable_state_error)?
+                let index_minus1 = cdfs
+                    .read_block_symbol(TileCdfSelector::CdefIndexMinus1 { strengths }, symbols)
+                    .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.10.1"))?;
+                usize::from(index_minus1) + 1
             }
         };
         self.fill_units(frontier.r, frontier.c, n4w, n4h, strength)
@@ -673,46 +667,18 @@ pub(crate) fn read_tx_partition_symbols(
     })
 }
 
-fn read_tx_symbol_cdef(
-    work_unit: &mut DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    selector: TileCdfSelector,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    read_tx_symbol(work_unit, symbols, selector, tile_offset, "5.20.10.1")
-}
-
-fn read_tx_symbol(
-    work_unit: &mut DecodeTileWorkUnit,
-    symbols: &mut SymbolDecoder<'_>,
-    selector: TileCdfSelector,
+/// The decode error of a CDF symbol read that `spec_section` specifies.
+pub(super) fn symbol_read_error(
+    error: &BlockSymbolTraceReadError,
     tile_offset: ByteOffset,
     spec_section: &'static str,
-) -> Result<usize> {
-    read_symbol(
-        work_unit.cdf_mut().tile_cdfs_mut(),
-        symbols,
-        selector,
-        tile_offset,
-        spec_section,
-    )
-}
-
-pub(super) fn read_symbol(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    selector: TileCdfSelector,
-    tile_offset: ByteOffset,
-    spec_section: &'static str,
-) -> Result<usize> {
-    cdfs.read_block_symbol(selector, symbols)
-        .map(usize::from)
-        .map_err(|error| match error {
-            BlockSymbolTraceReadError::Cdf(_) => selectable_state_error(),
-            BlockSymbolTraceReadError::Symbol(_) => {
-                selectable_symbol_read_error(tile_offset, spec_section)
-            }
-        })
+) -> crate::error::DecodeError {
+    match error {
+        BlockSymbolTraceReadError::Cdf(_) => selectable_state_error(),
+        BlockSymbolTraceReadError::Symbol(_) => {
+            selectable_symbol_read_error(tile_offset, spec_section)
+        }
+    }
 }
 
 fn read_delta_q_abs(
@@ -720,13 +686,12 @@ fn read_delta_q_abs(
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let delta_q_abs = read_tx_symbol(
-        work_unit,
-        symbols,
-        TileCdfSelector::DeltaQ,
-        tile_offset,
-        "5.20.5.11",
-    )?;
+    let delta_q_abs = work_unit
+        .cdf_mut()
+        .tile_cdfs_mut()
+        .read_block_symbol(TileCdfSelector::DeltaQ, symbols)
+        .map(usize::from)
+        .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.5.11"))?;
     if delta_q_abs != DELTA_Q_SMALL {
         return Ok(delta_q_abs);
     }

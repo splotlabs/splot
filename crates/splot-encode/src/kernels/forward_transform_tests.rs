@@ -5,13 +5,13 @@
 
 use proptest::prelude::*;
 use splot_recon::{
-    BitDepth, InverseTransform1dType, InverseTransform2d, InverseTransform2dDim,
-    inverse_transform_2d, transform_shift,
+    BitDepth, DpcmDirection, InverseTransform1dType, InverseTransform2d, InverseTransform2dDim,
+    InverseTransform2dOuter, inverse_transform_2d, inverse_transform_2d_outer, transform_shift,
 };
 
 use super::super::{EncoderKernels, Quantizer, ScalarKernels, SimdKernels};
 use super::{
-    EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, forward_walsh_hadamard_4x4, matrix_index,
+    EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, forward_lossless_4x4, matrix_index,
     pair_sum_scalar, pair_sum_simd,
 };
 
@@ -289,7 +289,7 @@ proptest! {
     fn lossless_walsh_hadamard_round_trips_exactly(
         residual in proptest::array::uniform16(-1023i32..=1023),
     ) {
-        let levels = forward_walsh_hadamard_4x4(&residual);
+        let levels = forward_lossless_4x4(&residual, None);
         let dequant: Vec<i32> = levels.iter().map(|&level| level * 8).collect();
         let params = InverseTransform2d {
             log2_width: 2,
@@ -303,6 +303,34 @@ proptest! {
         };
         let mut out = vec![0; 16];
         inverse_transform_2d(&params, &dequant, &mut out).unwrap();
+        prop_assert_eq!(out, residual.to_vec());
+    }
+
+    /// With DPCM, the § 7.14.4 inverse transform and cumulative sum give back
+    /// every 10-bit residual exactly in both directions.
+    #[test]
+    fn lossless_dpcm_round_trips_exactly(
+        residual in proptest::array::uniform16(-1023i32..=1023),
+        vertical: bool,
+    ) {
+        let dpcm = if vertical { DpcmDirection::Vertical } else { DpcmDirection::Horizontal };
+        let levels = forward_lossless_4x4(&residual, Some(dpcm));
+        let dequant: Vec<i32> = levels.iter().map(|&level| level * 8).collect();
+        let dct = InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
+        let params = InverseTransform2dOuter {
+            log2_width: 2,
+            log2_height: 2,
+            lossless: true,
+            plane_tx_type_is_idtx: false,
+            row_type: dct,
+            col_type: dct,
+            row_shift: 0,
+            col_shift: 0,
+            bit_depth: BitDepth::Ten,
+            dpcm: Some(dpcm),
+        };
+        let mut out = vec![0; 16];
+        inverse_transform_2d_outer(&params, &dequant, &mut out).unwrap();
         prop_assert_eq!(out, residual.to_vec());
     }
 }

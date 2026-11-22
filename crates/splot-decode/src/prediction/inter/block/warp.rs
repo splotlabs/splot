@@ -33,36 +33,26 @@ pub(crate) fn read_warp_newmv_motion_mode_syntax(
     core: &FrameHeaderCore,
     neighbour_ctx: &BlockNeighbourContext,
     warp_sample_found: bool,
-    tile_offset: ByteOffset,
-) -> Result<MotionMode> {
+) -> MotionMode {
     let frame_modes = core
         .inter
         .as_ref()
         .and_then(|inter| inter.frame_enabled_motion_modes)
         .unwrap_or([false; splot_core::headers::frame::MOTION_MODES]);
-    let mut read_flag = |selector: TileCdfSelector| -> Result<bool> {
-        let flag = cdfs
-            .read_block_symbol(selector, symbols)
-            .map_err(|error| symbol_read_error(error, tile_offset))?;
-        Ok(flag != 0)
-    };
-    if warp_sample_found
-        && frame_modes[splot_core::headers::frame::EXTENDWARP]
-        && read_flag(TileCdfSelector::UseExtendWarp {
-            ctx: neighbour_ctx.use_extend_warp_ctx(),
-        })?
-    {
-        return Ok(MotionMode::ExtendWarp);
+    let rows = cdfs.block_rows_mut();
+    if warp_sample_found && frame_modes[splot_core::headers::frame::EXTENDWARP] {
+        let row = row_at(rows.use_extend_warp(), neighbour_ctx.use_extend_warp_ctx());
+        if read_row(symbols, row) != 0 {
+            return MotionMode::ExtendWarp;
+        }
     }
-    if warp_sample_found
-        && frame_modes[splot_core::headers::frame::LOCALWARP]
-        && read_flag(TileCdfSelector::UseLocalWarp {
-            ctx: neighbour_ctx.use_local_warp_ctx(),
-        })?
-    {
-        return Ok(MotionMode::LocalWarp);
+    if warp_sample_found && frame_modes[splot_core::headers::frame::LOCALWARP] {
+        let row = row_at(rows.use_local_warp(), neighbour_ctx.use_local_warp_ctx());
+        if read_row(symbols, row) != 0 {
+            return MotionMode::LocalWarp;
+        }
     }
-    Ok(MotionMode::DeltaWarp)
+    MotionMode::DeltaWarp
 }
 
 pub(super) fn warp_round2(value: i64, n: u32) -> i32 {

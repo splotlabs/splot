@@ -6,8 +6,8 @@
 use crate::test_support::refs_for;
 use proptest::prelude::*;
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
-    UniformTiles, build_encoder_sequence_header, build_key_frame_header,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameTiles,
+    KeyFrameTxParams, build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
 use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock, TxType, dct_recon_params};
@@ -228,7 +228,7 @@ fn facade_rows_back_the_rate_model() {
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
-        UniformTiles::default(),
+        FrameTiles::default(),
     )
     .unwrap();
     let mut rng = Residuals(7);
