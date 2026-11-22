@@ -160,10 +160,13 @@ impl<'payload> InterFrameParser<'payload> {
         tile_bytes: &'payload [u8],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        reference: &InterReferenceState<impl ReconSample>,
+        previous_segment_ids: Option<&SegmentIdMapHandle>,
         parse_progress: &tile::ParseProgress,
     ) -> Result<bool> {
-        let context = &self.setup.params.parse_context(sequence, core, reference);
+        let context = &self
+            .setup
+            .params
+            .parse_context(sequence, core, previous_segment_ids);
         if self.tiles != 1 {
             return Err(tile::invalid_inter_tile_scheduling_state());
         }
@@ -191,12 +194,12 @@ impl<'payload> InterFrameParser<'payload> {
             .parse_scheduled_unit(tile, context, parse_progress)
     }
 
-    pub(crate) fn finish<T: ReconSample>(
+    pub(crate) fn finish(
         self,
         work_units: &mut [crate::bitstream::tile_payload::DecodeTileWorkUnit],
         mut records: crate::filters::wienerns_lr::FrameFilterRecords,
         core: &FrameHeaderCore,
-        reference: &InterReferenceState<T>,
+        previous_segment_ids: Option<&SegmentIdMapHandle>,
         parse_progress: &tile::ParseProgress,
         mut products: super::super::FrameProductWriters,
     ) -> Result<InterFrameParse> {
@@ -205,7 +208,8 @@ impl<'payload> InterFrameParser<'payload> {
             filter_states,
             initial_frame_cdfs,
         } = self.setup;
-        let previous = final_segment_ids(core, reference, params.mi_rows, params.mi_cols);
+        let previous =
+            final_segment_ids(core, previous_segment_ids, params.mi_rows, params.mi_cols);
         let segment_ids = if previous.is_some() {
             None
         } else {
@@ -272,11 +276,13 @@ impl OpenTile {
         tile_bytes: &[u8],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        reference: &InterReferenceState<impl ReconSample>,
+        previous_segment_ids: Option<&SegmentIdMapHandle>,
         parse_progress: &tile::ParseProgress,
         (index, tiles): (usize, usize),
     ) -> Result<TileParse> {
-        let context = &self.params.parse_context(sequence, core, reference);
+        let context = &self
+            .params
+            .parse_context(sequence, core, previous_segment_ids);
         let (cdef, gdf, ccso) = self.states;
         let mut parser = tile::TileParser::scheduled(
             tile,

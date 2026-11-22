@@ -115,7 +115,7 @@ pub(crate) struct SplitFrame<T: SplitSample> {
     filter: ParallelStage,
     tiles: ParallelStage,
     project: Stage,
-    tile_jobs: OnceLock<inter::TileParseJobs<T>>,
+    tile_jobs: OnceLock<inter::TileParseJobs>,
     filter_jobs: Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
     filter_error: Mutex<Option<DecodeError>>,
     early_ready: AtomicBool,
@@ -133,7 +133,7 @@ pub(crate) struct SplitFrame<T: SplitSample> {
     motion_deps: OnceLock<RefSlots<Option<inter::MotionFieldHandle>>>,
     parse_progress: OnceLock<Arc<inter::ParseProgress>>,
     early: Mutex<Option<inter::InterWalkEarly<T>>>,
-    deferred: Mutex<Option<inter::DeferredInterWalk<T>>>,
+    deferred: Mutex<Option<inter::DeferredInterWalk>>,
     pending_filters: Mutex<Option<inter::PendingFilterAttach<T>>>,
     finish: Mutex<Option<PendingFinish<T>>>,
     output_filter: Mutex<Option<crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>>>,
@@ -329,7 +329,7 @@ impl<T: SplitSample> SplitFrame<T> {
         }
     }
 
-    fn parse_finished(&self, mut deferred: inter::DeferredInterWalk<T>) -> Result<()> {
+    fn parse_finished(&self, mut deferred: inter::DeferredInterWalk) -> Result<()> {
         deferred.publish_products()?;
         *self.deferred.lock() = Some(deferred);
         self.parse_done.store(true, Ordering::Release);

@@ -630,12 +630,12 @@ fn previous_segment_slot(
         .and_then(|&slot| usize::try_from(slot).ok())
 }
 
-fn previous_segment_ids<'a>(
+/// The segment-ID product of the frame § 7.21 `load_previous_segment_ids`
+/// reads, which the entropy pass holds in place of the typed references.
+fn previous_segment_handle<'a>(
     core: &FrameHeaderCore,
     reference: &'a InterReferenceState<impl ReconSample>,
-    mi_rows: usize,
-    mi_cols: usize,
-) -> Option<&'a Arc<FrameSegmentIdMap>> {
+) -> Option<&'a SegmentIdMapHandle> {
     if !core
         .segmentation_params
         .as_ref()
@@ -644,10 +644,15 @@ fn previous_segment_ids<'a>(
         return None;
     }
     let slot = previous_segment_slot(core, reference)?;
-    reference
-        .ref_segment_ids
-        .get(slot)?
-        .as_ref()?
+    reference.ref_segment_ids.get(slot)?.as_ref()
+}
+
+fn previous_segment_ids(
+    previous: Option<&SegmentIdMapHandle>,
+    mi_rows: usize,
+    mi_cols: usize,
+) -> Option<&Arc<FrameSegmentIdMap>> {
+    previous?
         .product()
         .filter(|map| map.dimensions() == (mi_rows, mi_cols))
 }

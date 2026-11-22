@@ -41,7 +41,8 @@ use super::read_mv::{
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
     InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
-    SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc,
+    SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
+    SegmentIdMapHandle, mc,
 };
 use crate::bitstream::tile_payload::{
     BlockSize, BlockSymbolTraceReadError, CoeffContextReset, DecodeBlockFrontier,
@@ -566,7 +567,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let temporal_context = prelude.run(&mut lease.temporal, core, ref_frame_idx, reference)?;
     let mut tile_scratch = scratch.tile.take().unwrap_or_default();
     tile_scratch.buffers.clone_from(&scratch.buffers);
-    let previous = final_segment_ids(core, reference, params.mi_rows, params.mi_cols);
+    let previous = final_segment_ids(
+        core,
+        super::previous_segment_handle(core, reference),
+        params.mi_rows,
+        params.mi_cols,
+    );
     let segment_ids = if previous.is_some() {
         None
     } else {
@@ -623,9 +629,9 @@ pub(crate) fn segmentation_enabled(core: &FrameHeaderCore) -> bool {
         .is_some_and(|seg| seg.segmentation_enabled)
 }
 
-fn final_segment_ids<'a, T: ReconSample>(
+fn final_segment_ids<'a>(
     core: &FrameHeaderCore,
-    reference: &'a InterReferenceState<T>,
+    previous: Option<&'a SegmentIdMapHandle>,
     mi_rows: usize,
     mi_cols: usize,
 ) -> Option<&'a Arc<FrameSegmentIdMap>> {
@@ -633,7 +639,7 @@ fn final_segment_ids<'a, T: ReconSample>(
         .segmentation_params
         .as_ref()
         .is_some_and(|seg| seg.segmentation_enabled && !seg.segmentation_update_map)
-        && let Some(previous) = super::previous_segment_ids(core, reference, mi_rows, mi_cols)
+        && let Some(previous) = super::previous_segment_ids(previous, mi_rows, mi_cols)
     {
         return Some(previous);
     }

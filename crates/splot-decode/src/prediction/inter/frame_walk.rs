@@ -340,11 +340,10 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
 /// Everything reconstruction reads is owned here. Entropy products publish to
 /// the canonical `PipelineFrame`, while the reference update records header
 /// metadata before reconstruction runs after the next frame's entropy pass.
-pub(crate) struct DeferredInterWalk<T: ReconSample> {
+pub(crate) struct DeferredInterWalk {
     parse: InterFrameParse,
     parse_progress: Arc<super::ParseProgress>,
     payload_scratch: crate::bitstream::tile_payload::TilePayloadScratch,
-    marker: core::marker::PhantomData<T>,
 }
 
 /// The half of an inter walk that is settled before the § 8.2 pass reads its
@@ -387,7 +386,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         self,
         bytes: SourceBytes<'unit>,
         reusable: &mut block::ScheduledTileWorkspace<T>,
-    ) -> Result<(InterWalkEarly<T>, PendingInterWalk<'unit, T>)> {
+    ) -> Result<(InterWalkEarly<T>, PendingInterWalk<'unit>)> {
         let Self {
             mut records,
             candidate,
@@ -469,13 +468,14 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
                 return Err(error);
             }
         };
+        let previous_segment_ids = super::previous_segment_handle(&core, &reference).cloned();
         let early = InterWalkEarly {
             core: Arc::clone(&core),
             motion: motion.clone(),
             workspace,
             setup,
             sequence: Arc::clone(&sequence),
-            reference: Arc::clone(&reference),
+            reference,
             ref_frame_idx,
             quantizer: quantizer.clone(),
             parse_progress: Arc::clone(&parse_progress),
@@ -492,7 +492,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             records,
             core,
             sequence: Arc::clone(&sequence),
-            reference,
+            previous_segment_ids,
             parse_progress: Arc::clone(&parse_progress),
             parser,
             quantizer,
@@ -506,13 +506,14 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
 /// Splitting the walk here lets the frame build its reconstruction batches
 /// from the published prologue before the pass reads its first unit, so the
 /// batches exist -- and can claim units -- while the pass runs. The pass owns
-/// everything it reads, so it runs as its own row on any worker.
-pub(crate) struct PendingInterWalk<'payload, T: ReconSample> {
+/// everything it reads, so it runs as its own row on any worker. It holds no
+/// sample: the pass compiles once for every bit depth.
+pub(crate) struct PendingInterWalk<'payload> {
     tile_plan: DecodeTilePayloadPlan<'payload>,
     records: FrameFilterRecords,
     core: Arc<FrameHeaderCore>,
     sequence: Arc<SequenceHeader>,
-    reference: Arc<InterReferenceState<T>>,
+    previous_segment_ids: Option<SegmentIdMapHandle>,
     parse_progress: Arc<super::ParseProgress>,
     parser: InterFrameParser<'payload>,
     quantizer: FrameQuantizerSnapshot,
@@ -520,7 +521,7 @@ pub(crate) struct PendingInterWalk<'payload, T: ReconSample> {
     payload_scratch: crate::bitstream::tile_payload::TilePayloadScratch,
 }
 
-impl<T: ReconSample> PendingInterWalk<'_, T> {
+impl PendingInterWalk<'_> {
     /// Parses at most `units` units, returning whether entropy has ended.
     pub(crate) fn parse_units(&mut self, units: core::num::NonZeroUsize) -> Result<bool> {
         let _quantizer_scopes = self.quantizer.install_frame();
@@ -535,7 +536,7 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
                         tile_bytes,
                         &self.sequence,
                         &self.core,
-                        &self.reference,
+                        self.previous_segment_ids.as_ref(),
                         &self.parse_progress,
                     )
                 });
@@ -552,14 +553,14 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
     }
 
     /// Finalizes entropy products after the last parsed unit.
-    pub(crate) fn finish(mut self) -> Result<DeferredInterWalk<T>> {
+    pub(crate) fn finish(mut self) -> Result<DeferredInterWalk> {
         let _quantizer_scopes = self.quantizer.install_frame();
         let (_, _, work_units) = self.tile_plan.payloads_and_work_units_mut();
         let parse = match self.parser.finish(
             work_units,
             self.records,
             &self.core,
-            &self.reference,
+            self.previous_segment_ids.as_ref(),
             &self.parse_progress,
             self.products,
         ) {
@@ -574,19 +575,16 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
             parse,
             parse_progress: self.parse_progress,
             payload_scratch: self.payload_scratch,
-            marker: core::marker::PhantomData,
         })
     }
-}
 
-impl<T: ReconSample> PendingInterWalk<'_, T> {
     pub(crate) fn tiles(&self) -> usize {
         self.tile_plan.work_units().len()
     }
 
     /// Hands each tile to its own scheduler row. A row finds its tile's
     /// bytes in `unit` at the tile's span, which must be the plan's bytes.
-    pub(crate) fn into_tile_jobs(mut self, unit: &UnitBytes) -> Result<TileParseJobs<T>> {
+    pub(crate) fn into_tile_jobs(mut self, unit: &UnitBytes) -> Result<TileParseJobs> {
         let view = unit.view();
         for index in 0..self.tiles() {
             let found = self.tile_plan.tile_mut(index).is_some_and(|(bytes, tile)| {
@@ -617,7 +615,7 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
             })),
             core: self.core,
             sequence: self.sequence,
-            reference: self.reference,
+            previous_segment_ids: self.previous_segment_ids,
             parse_progress: self.parse_progress,
             quantizer: self.quantizer,
         })
@@ -628,13 +626,13 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
 /// starts from the frame's initial CDFs with its own symbol decoder and
 /// above contexts (§ 8.2.2), so the tiles parse at once; the row that ends
 /// the last tile merges them in tile order and saves the CDFs (§ 8.2.4).
-pub(crate) struct TileParseJobs<T: ReconSample> {
+pub(crate) struct TileParseJobs {
     unit: UnitBytes,
     tiles: Vec<Mutex<Option<DecodeTileWorkUnit>>>,
     rest: RwLock<Option<TileWalkRest>>,
     core: Arc<FrameHeaderCore>,
     sequence: Arc<SequenceHeader>,
-    reference: Arc<InterReferenceState<T>>,
+    previous_segment_ids: Option<SegmentIdMapHandle>,
     parse_progress: Arc<super::ParseProgress>,
     quantizer: FrameQuantizerSnapshot,
 }
@@ -647,14 +645,14 @@ struct TileWalkRest {
     payload_scratch: crate::bitstream::tile_payload::TilePayloadScratch,
 }
 
-impl<T: ReconSample> TileParseJobs<T> {
+impl TileParseJobs {
     pub(crate) fn len(&self) -> usize {
         self.tiles.len()
     }
 
     /// Parses tile `index`; the row that parses the last tile returns the
     /// finished walk.
-    pub(crate) fn parse_tile(&self, index: usize) -> Result<Option<DeferredInterWalk<T>>> {
+    pub(crate) fn parse_tile(&self, index: usize) -> Result<Option<DeferredInterWalk>> {
         let parsed = self.parse_one(index);
         if parsed.is_err() {
             self.parse_progress.fail();
@@ -662,7 +660,7 @@ impl<T: ReconSample> TileParseJobs<T> {
         parsed
     }
 
-    fn parse_one(&self, index: usize) -> Result<Option<DeferredInterWalk<T>>> {
+    fn parse_one(&self, index: usize) -> Result<Option<DeferredInterWalk>> {
         let invalid = block::invalid_inter_tile_scheduling_state;
         let _quantizer_scopes = self.quantizer.install_frame();
         let slot = self.tiles.get(index).ok_or_else(invalid)?;
@@ -685,7 +683,7 @@ impl<T: ReconSample> TileParseJobs<T> {
                 bytes,
                 &self.sequence,
                 &self.core,
-                &self.reference,
+                self.previous_segment_ids.as_ref(),
                 &self.parse_progress,
                 (index, self.tiles.len()),
             )
@@ -716,7 +714,7 @@ impl<T: ReconSample> TileParseJobs<T> {
             &mut work_units,
             records,
             &self.core,
-            &self.reference,
+            self.previous_segment_ids.as_ref(),
             &self.parse_progress,
             products,
         )?;
@@ -725,17 +723,16 @@ impl<T: ReconSample> TileParseJobs<T> {
             parse,
             parse_progress: Arc::clone(&self.parse_progress),
             payload_scratch,
-            marker: core::marker::PhantomData,
         }))
     }
 }
 
-impl<T: ReconSample> DeferredInterWalk<T> {
+impl DeferredInterWalk {
     pub(crate) fn publish_products(&mut self) -> Result<()> {
         self.parse.publish_products()
     }
     /// Hands the scheduled frontier the filter state the pass settles last.
-    pub(crate) fn attach_filters(
+    pub(crate) fn attach_filters<T: ReconSample>(
         self,
         pending: block::PendingFilterAttach<T>,
         reconstruction: &block::ScheduledTileRecon<T>,

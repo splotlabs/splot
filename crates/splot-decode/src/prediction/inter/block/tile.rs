@@ -166,15 +166,14 @@ impl TileWalkParams {
         &'a self,
         sequence: &'a SequenceHeader,
         core: &'a FrameHeaderCore,
-        reference: &'a InterReferenceState<impl ReconSample>,
+        previous_segment_ids: Option<&'a SegmentIdMapHandle>,
     ) -> TileParseContext<'a> {
         TileParseContext {
             sequence,
             core,
             params: self,
             previous_segment_ids: super::super::previous_segment_ids(
-                core,
-                reference,
+                previous_segment_ids,
                 self.mi_rows,
                 self.mi_cols,
             )
@@ -209,8 +208,11 @@ pub(super) struct TileDecodeContext<'a, T: ReconSample> {
 
 impl<'a, T: ReconSample> TileDecodeContext<'a, T> {
     fn parse(&self) -> TileParseContext<'a> {
-        self.params
-            .parse_context(self.sequence, self.core, self.reference)
+        self.params.parse_context(
+            self.sequence,
+            self.core,
+            super::super::previous_segment_handle(self.core, self.reference),
+        )
     }
 }
 
