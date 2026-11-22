@@ -286,6 +286,10 @@ pub struct PresetParams {
     /// § 5.18.2) when the reference the decoder derives is their primary
     /// reference: the same CDFs for 3 fewer header bits.
     pub primary_ref_choose: bool,
+    /// `long_term_frame_id_bits` (§ 5.4.6), `0..=7`: key frames code
+    /// `long_term_id_plus_1` in this many bits, the ids cycling over the key
+    /// frames.
+    pub long_term_id_bits: u8,
     /// Hidden frames code `implicit_output_frame = 1` in a sequence with
     /// `monotonic_output_order_flag = 0` (§ 5.4.1, § 5.18.2), in place of
     /// show-existing frames.
@@ -949,6 +953,7 @@ impl PresetParams {
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
+        check("long_term_id_bits", self.long_term_id_bits, 0, 7, "")?;
         check("num_ref_frames", self.num_ref_frames, 0, 16, "")?;
         for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
             let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
@@ -1259,6 +1264,7 @@ preset_table! {
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
+        long_term_id_bits:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_output:       [false, false, false, false, false, false, false, false, false, false, false],
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],

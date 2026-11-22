@@ -178,6 +178,9 @@ pub struct EncoderToolFlags {
     /// `enable_global_motion` (§ 5.4.6): each inter frame codes
     /// `use_global_motion`.
     pub global_motion: bool,
+    /// `long_term_frame_id_bits`, `0..=7` (§ 5.4.6): key frames code
+    /// `long_term_id_plus_1` in this many bits.
+    pub long_term_frame_id_bits: u8,
     /// `monotonic_output_order_flag = 0` (§ 5.4.1): hidden frames code
     /// `implicit_output_frame`.
     pub implicit_output: bool,
@@ -329,6 +332,9 @@ pub struct KeyFrameTxParams {
     /// `PRIMARY_REF_CHOOSE`, so the decoder derives `primary_ref_frame`; a
     /// key frame ignores it.
     pub choose_primary_ref_frame: bool,
+    /// `long_term_id_plus_1` of a key frame (§ 5.18.2), below
+    /// `1 << long_term_frame_id_bits`; `0` gives it no long-term id.
+    pub long_term_id_plus_1: u32,
     /// `using_qmatrix = 1` with this § 5.18.6.2 level, `0..=15`, in `qm_y`,
     /// `qm_u` and `qm_v`; `None` codes `using_qmatrix = 0`.
     pub qm_level: Option<u8>,
@@ -351,6 +357,7 @@ impl Default for KeyFrameTxParams {
             disable_cdf_update: false,
             disable_cross_frame_cdf_init: false,
             choose_primary_ref_frame: false,
+            long_term_id_plus_1: 0,
             qm_level: None,
             segment_alt_q: None,
         }
@@ -616,7 +623,12 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         }
         w.write_bits(u32::from(slots) - 1, 4)?; // num_ref_frames_minus_1
     }
-    w.write_bits(0, 3)?; // long_term_frame_id_bits
+    if tools.long_term_frame_id_bits > 7 {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "long_term_frame_id_bits",
+        });
+    }
+    w.write_bits(u32::from(tools.long_term_frame_id_bits), 3)?;
     w.write_ns(tools.max_drl_bits_minus_1, 5)?; // ns(MAX_REF_MV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_drl_bits
     w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
@@ -745,7 +757,13 @@ fn key_frame_header_bits(
     let mut w = BitWriter::new();
     w.write_uvlc(0)?; // cur_mfh_id
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
-    w.write_bits(0, seq.long_term_frame_id_bits)?; // long_term_id_plus_1
+    if tx.long_term_id_plus_1 >> seq.long_term_frame_id_bits != 0 {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "long_term_id_plus_1",
+        }
+        .into());
+    }
+    w.write_bits(tx.long_term_id_plus_1, seq.long_term_frame_id_bits)?;
     w.write_flag(true)?; // immediate_output_frame
     w.write_flag(false)?; // frame_size_override_flag
     w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
