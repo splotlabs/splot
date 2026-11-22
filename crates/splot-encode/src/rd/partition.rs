@@ -12,6 +12,9 @@ use crate::hme::FrameMotion;
 use crate::preset::{PresetContext, PresetParams};
 use crate::tile_writer::{LeafChoice, Partition, PartitionTree, TileWriterError};
 
+/// The luma child nodes and the chroma node of an `INTRA_REGION`.
+pub(crate) type RegionNodes<N> = (Vec<N>, N);
+
 /// What the partition search needs from a coder. Trials code into live state:
 /// [`Self::evaluate_leaf`] leaves its leaf coded, and the search rolls back
 /// through [`Self::save`] and [`Self::restore`].
@@ -78,7 +81,7 @@ pub(crate) trait PartitionSearch {
         &self,
         _node: Self::Node,
         _partition: Partition,
-    ) -> Result<(Vec<Self::Node>, Self::Node), Self::Error> {
+    ) -> Result<RegionNodes<Self::Node>, Self::Error> {
         Err(TileWriterError::Shape("no extended SDP region").into())
     }
     /// Saves the state that coding `node` can change; with `start`, a live
