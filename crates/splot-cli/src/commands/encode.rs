@@ -107,6 +107,11 @@ pub(crate) struct EncodeArgs {
     /// include the grain.
     #[arg(long)]
     film_grain: bool,
+    /// CBR filler: a temporal unit that would overflow the decoder buffer
+    /// ends with a padding OBU of the overflow, so the stream keeps the
+    /// target bitrate. Only with `--rc cbr`; off by default.
+    #[arg(long)]
+    cbr_padding: bool,
     /// H.273 colour primaries code point (1 BT.709, 9 BT.2020), written to
     /// the stream as declared; the samples are not converted. Without the
     /// colour flags the stream declares no colour.
@@ -405,6 +410,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.resize_denominator = args.resize_denominator;
     config.crop = args.crop;
     config.film_grain = args.film_grain;
+    config.cbr_padding = args.cbr_padding;
     config.tune = match args.tune {
         TuneArg::Psnr => Tune::Psnr,
         TuneArg::Ssim => Tune::Ssim,

@@ -70,6 +70,9 @@ thread_local! {
     /// this thread.
     pub(crate) static FORCE_INTERINTRA: core::cell::Cell<bool> =
         const { core::cell::Cell::new(false) };
+    /// Memoized trees that this thread searched again instead of replaying.
+    pub(crate) static SKIPPED_REPLAYS: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
     /// Makes the IntraBC candidate of a leaf its only candidate on this
     /// thread.
     pub(crate) static FORCE_INTRABC: core::cell::Cell<bool> =
@@ -1585,6 +1588,16 @@ fn codable<T>(result: Result<T>) -> Result<Option<T>> {
 }
 
 impl PartitionSearch for TrialCoder<'_, '_> {
+    /// A tree with an IntraBC leaf replays only without the local area,
+    /// whose vectors depend on what is coded before the leaf.
+    fn replays(&self, tree: &PartitionTree) -> bool {
+        let replays = !self.preset.intrabc_local
+            || tree.count_leaves(&|choice: &LeafChoice| choice.intrabc.is_some()) == 0;
+        #[cfg(test)]
+        SKIPPED_REPLAYS.set(SKIPPED_REPLAYS.get() + usize::from(!replays));
+        replays
+    }
+
     type Node = PartitionNode;
     type Saved = SyntaxSnapshot;
     type Error = TileWriterError;

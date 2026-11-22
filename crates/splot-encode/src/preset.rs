@@ -104,7 +104,9 @@ pub struct PresetParams {
     pub full_trials: u8,
     /// Luma transform-type search depth: depth `d` tries the first `2 * d + 1`
     /// types a block offers, most probable first. `0` codes every intra luma
-    /// block with `DCT_DCT` and signals no type (`reduced_tx_set = 2`).
+    /// block with `DCT_DCT` and signals no type (`reduced_tx_set = 2`). `8`
+    /// at p0 (p0 batch 1, see [`Self::warp`]); alone p0 measured paris f30
+    /// -0.22%, rush_hour_444 f60 -0.88%, niklas f10 -0.39%, park_joy f10 -0.81%.
     pub tx_type_depth: u8,
     /// Luma types per block that get the exact trial: `0` tries every offered
     /// type; `k` ranks the offered types by the plain deadzone levels (error in
@@ -330,7 +332,8 @@ pub struct PresetParams {
     /// and their own tile info.
     pub seq_tile_info: u8,
     /// `enable_short_refresh_frame_flags`: inter frames code the one slot
-    /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2).
+    /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2). On at p0 (p0
+    /// batch 1, see [`Self::warp`]): the same frames in fewer header bits.
     pub short_refresh: bool,
     /// Quantizer matrices (`using_qmatrix`, § 5.18.6.2), `0..=3`: `0` off; each
     /// other value fixes the level band `[min, max]` of `tx_choice::qm_level`
@@ -612,9 +615,11 @@ pub struct PresetParams {
     /// refines with optical flow and codes no `use_optflow` (§ 5.18.3.2).
     pub opfl_refine_all: bool,
     /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
-    /// with a past and a future reference may code `use_refinemv`. Off in
-    /// every row (2026-10-30): alone it measured niklas +0.23% at p6, largely
-    /// from the refinement the decoder infers on `NEAR_NEARMV` blocks.
+    /// with a past and a future reference may code `use_refinemv`. On at p0
+    /// (p0 batch 1, see [`Self::warp`]); alone p0 measured paris -0.31%,
+    /// rush_hour -0.09%, niklas +0.02%, park_joy -0.71%, flat qp -0.02%. Off
+    /// in the other rows (2026-10-30): alone it measured niklas +0.23% at p6,
+    /// largely from the refinement the decoder infers on `NEAR_NEARMV` blocks.
     pub refinemv: bool,
     /// TIP refinement (`enable_tip_refinemv`): with `tip` and `opfl` or
     /// `refinemv`, TIP blocks and TIP output frames refine their projected
@@ -626,10 +631,16 @@ pub struct PresetParams {
     /// Warped motion (`seq_enabled_motion_modes` `LOCALWARP`, `DELTAWARP`,
     /// `EXTENDWARP`), `0..=2`: inter frames of a layer that picks warp code
     /// `allow_warpmv_mode`, and a leaf gives this many warp models of its best
-    /// translational reference an RD trial when their luma SATD plus rate
-    /// beats its `NEWMV`. Off in every row (2026-10-30): at `1` p6 measured
-    /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
-    /// p0 park_joy +0.20%.
+    /// translational reference an RD trial when their luma SATD plus rate beats
+    /// its `NEWMV`. `2` at p0 with p0 batch 1 (2026-11-22: `warp` 2,
+    /// `tx_type_depth` 8, `refinemv`, `short_refresh` and `compound_types` 2
+    /// together, CRF 20..44 and flat qp 85..190, keyint 30, 6:1:1 BD-rate
+    /// against main): paris f30 -1.50%, rush_hour_444 f60 -1.39%, niklas f10
+    /// -0.80%, park_joy f10 -0.47%, paris flat qp -0.90%, at 1.242x / 1.166x /
+    /// 1.202x / 1.263x instructions. Alone p0 measured paris -0.61%, rush_hour
+    /// -0.08%, niklas -0.14%, park_joy -0.04%, flat qp -0.44%. Off in the other
+    /// rows (2026-10-30): at `1` p6 measured paris -0.57%, park_joy +0.63%,
+    /// niklas +0.02% at about +9% CPU.
     pub warp: u8,
     /// Global motion (`enable_global_motion`), `0..=2`: inter frames code
     /// `use_global_motion` with the models the lookahead estimates; `2`
@@ -645,10 +656,11 @@ pub struct PresetParams {
     pub global_motion_predict: bool,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
-    /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows that search
+    /// `cwp_idx` weights (`enable_cwp`). `1` on p1-p8, the rows that search
     /// masked compound (2026-10-30, p6 vs main): park_joy -5.70%, paris -0.82%,
-    /// niklas -1.04% for 11% more CPU. `2` measured paris -1.00% and
-    /// park_joy -5.51% at the same CPU, so the weights stay off.
+    /// niklas -1.04% for 11% more CPU. `2` at p0 (p0 batch 1, see
+    /// [`Self::warp`]); alone p0 measured paris -0.01%, rush_hour -0.07%,
+    /// niklas -0.57%, park_joy -0.21%, flat qp paris +0.34%, rush_hour +0.17%.
     pub compound_types: u8,
     /// `enable_imp_msk_bld`: `COMPOUND_AVERAGE` and TIP blocks blend with the
     /// implicit mask the decoder derives, and the compound shortlist scores
@@ -1298,7 +1310,7 @@ preset_table! {
         tcq:                   frames([[true; 11], [true; 11], [false; 11], [false; 11]]),
         tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         tcq_type_trellis:      [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
-        tx_type_depth:         [    3,     3,     3,     2,     2,     2,     3,     1,     1,     0,     0],
+        tx_type_depth:         [    8,     3,     3,     2,     2,     2,     3,     1,     1,     0,     0],
         tx_type_model_keep:    [    0,     0,     0,     0,     0,     0,     2,     0,     0,     0,     0],
         tx_partition_search:   frames([
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
@@ -1363,7 +1375,7 @@ preset_table! {
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],
+        short_refresh:         [ true, false, false, false, false, false, false, false, false, false, false],
         quant_matrices:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
@@ -1372,12 +1384,12 @@ preset_table! {
         tip_hole_fill:         [false, false, false, false, false, false, false, false, false, false, false],
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         opfl_refine_all:       [false, false, false, false, false, false, false, false, false, false, false],
-        refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
+        refinemv:              [ true, false, false, false, false, false, false, false, false, false, false],
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
-        warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        warp:                  [    2,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion_predict: [false, false, false, false, false, false, false, false, false, false, false],
-        compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
+        compound_types:        [    2,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
         interintra_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],

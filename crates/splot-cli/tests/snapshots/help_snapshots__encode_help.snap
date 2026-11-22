@@ -52,6 +52,8 @@ Options:
           Cropping window: cut L, R, T and B luma samples off the left, right, top and bottom of the coded frame (after --resize-denominator); the stream decodes to the rest. L and T fall on a chroma sample (even for 4:2:0, L even for 4:2:2). Off by default. The `--stats` PSNR covers the full coded frame
       --film-grain
           Film grain: each key frame codes a grain model fitted to the noise of its source, and every output frame applies it at decode; off by default. The encoder does not denoise, so the stats PSNR does not include the grain
+      --cbr-padding
+          CBR filler: a temporal unit that would overflow the decoder buffer ends with a padding OBU of the overflow, so the stream keeps the target bitrate. Only with `--rc cbr`; off by default
       --color-primaries <N>
           H.273 colour primaries code point (1 BT.709, 9 BT.2020), written to the stream as declared; the samples are not converted. Without the colour flags the stream declares no colour
       --transfer-characteristics <N>
