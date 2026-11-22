@@ -739,7 +739,10 @@ fn encode_case(
             let segment = rng.below(4) as u8;
             let qindex = writer.syntax_mut().set_superblock_segment(segment).unwrap();
             let data = i32::from(alt_q[usize::from(segment)]);
-            assert_eq!(qindex as i32, (current as i32 + data).clamp(0, max_q as i32));
+            assert_eq!(
+                qindex as i32,
+                (current as i32 + data).clamp(0, max_q as i32)
+            );
             segment
         });
         let tree = writer
@@ -1335,7 +1338,13 @@ fn rejects_sdp_tree_mismatches() {
             map: Vec::new(),
         };
         assert!(matches!(
-            writer.write_superblock(&SuperblockDecision { tree, segment: None }, &mut coder),
+            writer.write_superblock(
+                &SuperblockDecision {
+                    tree,
+                    segment: None
+                },
+                &mut coder
+            ),
             Err(TileWriterError::Shape(_))
         ));
     }
@@ -1366,7 +1375,10 @@ fn rejects_unsupported_decisions() {
     let tree = PartitionTree::Leaf(LeafChoice::DC);
     assert!(matches!(
         writer.write_superblock(
-            &SuperblockDecision { tree, segment: None },
+            &SuperblockDecision {
+                tree,
+                segment: None
+            },
             &mut RandomLevels {
                 rng: Rng(1),
                 max_level: 1,
@@ -1697,7 +1709,13 @@ fn cfl_chroma_of_a_128x128_leaf_reads_the_whole_luma() {
     };
     let tree = PartitionTree::Leaf(LeafChoice::largest(modes));
     writer
-        .write_superblock(&SuperblockDecision { tree, segment: None }, &mut coder)
+        .write_superblock(
+            &SuperblockDecision {
+                tree,
+                segment: None,
+            },
+            &mut coder,
+        )
         .unwrap();
     let (tile, recon) = writer.finish().unwrap();
     let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile], &[]).unwrap();

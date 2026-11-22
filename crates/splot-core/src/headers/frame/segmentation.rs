@@ -615,8 +615,13 @@ mod tests {
         };
         let seg = no_seq_info_view(8);
         let mut writer = crate::write::BitWriter::new();
-        crate::write::write_inter_segmentation_params(&mut writer, &params, (&seg, None), Some(false))
-            .unwrap();
+        crate::write::write_inter_segmentation_params(
+            &mut writer,
+            &params,
+            (&seg, None),
+            Some(false),
+        )
+        .unwrap();
         let bits = writer.bit_len();
         let data = writer.into_bytes();
         let parse = |bytes: &[u8]| {

@@ -30,9 +30,9 @@ use crate::tile::TileSpacing;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
-    write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_intrabc_params,
-    write_inter_segmentation_params, write_lr_params_for_inter, write_obu_payload,
-    write_setup_qm_params, write_tile_group_obu,
+    write_cdef_params, write_deblocking_filter_params, write_gdf_params,
+    write_inter_segmentation_params, write_intrabc_params, write_lr_params_for_inter,
+    write_obu_payload, write_setup_qm_params, write_tile_group_obu,
 };
 
 /// The [`SegmentationParams`] of [`KeyFrameTxParams::segment_alt_q`].

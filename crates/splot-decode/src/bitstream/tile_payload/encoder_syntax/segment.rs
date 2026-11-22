@@ -104,9 +104,12 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Unsupported`] when the frame has no
     /// segmentation or `segment` is past `LastActiveSegId`.
     pub fn set_superblock_segment(&mut self, segment: u8) -> Result<u32> {
-        let segments = self.segments.as_mut().ok_or(EncoderSyntaxError::Unsupported(
-            "a segment without segmentation",
-        ))?;
+        let segments = self
+            .segments
+            .as_mut()
+            .ok_or(EncoderSyntaxError::Unsupported(
+                "a segment without segmentation",
+            ))?;
         if segment > segments.params.last_active_seg_id {
             return Err(EncoderSyntaxError::Unsupported(
                 "a segment past LastActiveSegId",

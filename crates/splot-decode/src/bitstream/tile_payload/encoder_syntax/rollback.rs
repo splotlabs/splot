@@ -419,7 +419,9 @@ impl IntraTileSyntax {
             .grid_mut()
             .visit_cells(rows.clone(), cols, |c| intra_facts.visit(c));
         if let Some(segments) = &mut self.segments {
-            segments.ids.visit_cells(rows.clone(), cols, |c| bytes.visit(c));
+            segments
+                .ids
+                .visit_cells(rows.clone(), cols, |c| bytes.visit(c));
         }
         bytes.done() && intra_facts.done()
     }

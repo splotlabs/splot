@@ -60,7 +60,6 @@ mod cctx;
 mod coeff_walk;
 mod compound;
 mod delta_q;
-mod segment;
 mod fsc;
 mod inter;
 mod intra;
@@ -70,6 +69,7 @@ mod palette;
 mod parity;
 mod region;
 mod rollback;
+mod segment;
 mod tcq;
 mod transform;
 mod warp;
@@ -773,8 +773,7 @@ impl IntraTileSyntax {
             (base_q_idx, tools.bit_depth),
         )?;
         let delta_q = delta_q::DeltaQ::new(core, base_q_idx, tools.bit_depth);
-        let segments =
-            segment::Segments::new(seq, core, (rows.clone(), cols.clone()), base_q_idx)?;
+        let segments = segment::Segments::new(seq, core, (rows.clone(), cols.clone()), base_q_idx)?;
         let mut coeff = TileCoeffContextState::default();
         coeff
             .reset_for_tile_chroma(rows.clone(), cols.clone(), chroma)
