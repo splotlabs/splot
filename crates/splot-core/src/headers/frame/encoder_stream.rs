@@ -157,6 +157,9 @@ pub struct EncoderToolFlags {
     /// `explicit_num_ref_frames` with `NumRefFrames`, `1..=16` (§ 5.4.6);
     /// `None` keeps the default 8 slots.
     pub num_ref_frames: Option<u8>,
+    /// `explicit_ref_frame_map` (§ 5.4.6): inter frames code
+    /// `frame_explicit_ref_frame_map`.
+    pub explicit_ref_frame_map: bool,
     /// `seq_tile_info_present_flag` (§ 5.4.2): the sequence codes this
     /// uniform layout, which frames reuse (§ 5.18.7.2).
     pub seq_tiles: Option<SeqTiles>,
@@ -566,7 +569,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     if let Some(constrain) = tools.drl_reorder {
         w.write_flag(constrain)?; // constrain_drl_reorder
     }
-    w.write_flag(false)?; // explicit_ref_frame_map
+    w.write_flag(tools.explicit_ref_frame_map)?;
     w.write_flag(tools.num_ref_frames.is_some())?; // explicit_num_ref_frames
     if let Some(slots) = tools.num_ref_frames {
         if !(1..=16).contains(&slots) {

@@ -157,6 +157,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         warp: false,
                         global_motion: [None; 7],
                         global_motion_predict: false,
+                        explicit_refs: None,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -248,6 +249,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         warp: false,
         global_motion: [None; 7],
         global_motion_predict: false,
+        explicit_refs: None,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -352,6 +354,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             warp: false,
             global_motion: [None; 7],
             global_motion_predict: false,
+            explicit_refs: None,
         },
     )
     .unwrap();
@@ -513,6 +516,7 @@ fn rejects_out_of_range_inter_inputs() {
         warp: false,
         global_motion: [None; 7],
         global_motion_predict: false,
+        explicit_refs: None,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -1043,6 +1047,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         warp: false,
         global_motion: [None; 7],
         global_motion_predict: false,
+        explicit_refs: None,
         tip_global_mv: TipGlobalMv::default(),
         tip_filter: None,
         tip_deblocking: false,
@@ -1186,6 +1191,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         tip_filter: None,
         tip_deblocking: false,
         global_motion_predict: false,
+        explicit_refs: None,
     };
     let build = |filters| build_inter_frame_header(&view, &slots.view(), &params(filters));
     let fresh = build(coded).unwrap();
@@ -1450,4 +1456,72 @@ fn sequence_tile_info_is_reused_or_coded_per_frame() {
         assert!(build_inter_frame_header(&seq, &slots.view(), &bad).is_err());
         assert_cut_header_fails(&seqs[1], &header, &slots.view());
     }
+}
+
+/// With `explicit_ref_frame_map` an inter frame codes
+/// `frame_explicit_ref_frame_map` (§ 5.18.2): `0` keeps the default map for one
+/// more bit, and `1` codes `num_total_refs` and the first `ref_frame_idx` of
+/// the default map. An explicit map without the sequence flag, or with no
+/// reference, is rejected; a TIP output header codes the flag `0`; a cut
+/// header does not parse.
+#[test]
+fn explicit_reference_maps_code_the_first_default_references() {
+    let stream = |explicit_ref_frame_map| EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            ref_frame_mvs: true,
+            tip: true,
+            tip_output: true,
+            explicit_ref_frame_map,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seqs = [false, true].map(|map| build_encoder_sequence_header(&stream(map)).unwrap());
+    let [implicit, explicit] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+    let mut slots = Slots::after_key(64, 64, 4);
+    for slot in 1..4 {
+        slots.valid[slot] = true;
+        slots.hints[slot] = 4 + 2 * slot as u32;
+        slots.counters[slot] = slot as u32;
+    }
+    let params = |explicit_refs| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 7,
+        refresh_frame_flags: 0b1_0000,
+        show_frame: true,
+        primary_slot: Some(1),
+        tip_weight: Some(3),
+        explicit_refs,
+        ..InterFrameParams::default()
+    };
+    let map =
+        |header: &EncodedFrameHeader| header.core.inter.as_ref().unwrap().ref_frame_idx.clone();
+    let default = build_inter_frame_header(&implicit, &slots.view(), &params(None)).unwrap();
+    assert_eq!(default.core.inter.as_ref().unwrap().num_total_refs, Some(4));
+    let bits = |header: &EncodedFrameHeader| header.bits.num_frame_header_bits();
+    let flag_off = build_inter_frame_header(&explicit, &slots.view(), &params(None)).unwrap();
+    assert_eq!(
+        (map(&flag_off), bits(&flag_off)),
+        (map(&default), bits(&default) + 1)
+    );
+    for limit in [1, 2, 4, 7] {
+        let header =
+            build_inter_frame_header(&explicit, &slots.view(), &params(Some(limit))).unwrap();
+        let count = usize::from(limit).min(4);
+        assert_eq!(map(&header)[..], map(&default)[..count], "{limit}");
+        let inter = header.core.inter.as_ref().unwrap();
+        assert_eq!(inter.explicit_ref_frame_map, Some(true));
+        assert_eq!(header.core.consumed_bits, bits(&header));
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
+    assert!(build_inter_frame_header(&implicit, &slots.view(), &params(Some(2))).is_err());
+    assert!(build_inter_frame_header(&explicit, &slots.view(), &params(Some(0))).is_err());
+    let tip =
+        build_tip_output_frame_header(&explicit, &slots.view(), &params(None), &map(&default))
+            .unwrap();
+    assert_eq!(tip.core.inter.unwrap().explicit_ref_frame_map, Some(false));
 }

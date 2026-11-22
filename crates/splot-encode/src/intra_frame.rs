@@ -285,6 +285,7 @@ impl IntraFrameCoder {
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
+                explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
                     cols_log2: config.tiles.cols_log2,
                     rows_log2: config.tiles.rows_log2,
