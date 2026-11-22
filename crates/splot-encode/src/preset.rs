@@ -501,6 +501,10 @@ pub struct PresetParams {
     /// the copy may come from the local area (§ 6.19.7.12). Off in every
     /// row, the screen-content rows too: not measured.
     pub intrabc_local: bool,
+    /// `seq_max_bvp_drl_bits_minus_1`, `0..=2`: IntraBC leaves choose the
+    /// nearest of `intrabc_drl + 2` reference block vectors. 0 in every row,
+    /// the screen-content rows too: not measured.
+    pub intrabc_drl: u8,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -949,6 +953,7 @@ impl PresetParams {
             " (mini_gop_size..)",
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
+        check("intrabc_drl", self.intrabc_drl, 0, 2, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
         check("ssim_aq", self.ssim_aq, 0, 200, "")?;
         check("segmentation", self.segmentation, 0, 1, "")?;
@@ -1350,6 +1355,7 @@ preset_table! {
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
