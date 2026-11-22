@@ -682,7 +682,9 @@ impl IntraTileSyntax {
         }
         let mut plan = if leaf.is_chroma_part() {
             let chroma = chroma.ok_or(EncoderSyntaxError::Unsupported("chroma-part plan"))?;
-            GeneralIntraResidualPlan::chroma(block_ctx, chroma, self.tools.lossless)
+            let (r, c) = (leaf.frontier.r, leaf.frontier.c);
+            let lossless_luma_fsc = self.tools.lossless && self.intra_facts.uses_fsc_at(r, c);
+            GeneralIntraResidualPlan::chroma(block_ctx, chroma, lossless_luma_fsc)
         } else {
             let luma = rect_luma_plan(&block_modes, &block_ctx, self.tools.tcq, self.sb_size4)
                 .map_err(rule("luma plan"))?;
