@@ -1723,12 +1723,23 @@ fn validate_sef_frame_core(
 }
 
 /// Whether frame `core` over `reference` has the past/future reference pair
-/// TIP needs (§ 7.12.2).
+/// TIP needs (§ 7.12.2) with an inter frame on at least one side (§ 7.9). The
+/// encoder codes no switch frames, so `ref_is_inter` is the § 7.9 frame type
+/// rule here.
 pub(crate) fn tip_pair_available(
     core: &FrameHeaderCore,
     reference: &InterReferenceState<impl ReconSample>,
 ) -> bool {
-    required_tip_reference_pair(core, reference, ByteOffset::new(0), None).is_ok()
+    let (Ok(pair), Some(inter)) = (
+        required_tip_reference_pair(core, reference, ByteOffset::new(0), None),
+        core.inter.as_ref(),
+    ) else {
+        return false;
+    };
+    [pair.past_ref, pair.future_ref].into_iter().any(|ref_frame| {
+        block_reference_slot(&inter.ref_frame_idx, ref_frame)
+            .is_ok_and(|slot| reference.ref_is_inter.get(slot as usize) == Some(&true))
+    })
 }
 
 fn required_tip_reference_pair(
