@@ -894,3 +894,49 @@ fn avm_decodes_tip_output_options_like_splot() {
     let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "tip-options");
     assert!(avm == expected, "AVM output differs");
 }
+
+/// With `short_refresh` the sequence codes `enable_short_refresh_frame_flags`;
+/// inter and TIP output frames code the one slot they refresh, or none, and
+/// the mini-GOP stream is shorter than without it, decodes to the encoder
+/// recon, and has the same bytes on 1, 2 and 8 threads.
+#[test]
+fn short_refresh_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let stream = |short_refresh: bool, threads: usize| {
+        let mut config = config(72, 40, BitDepth::Eight, 6, 250);
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let params = Box::leak(Box::new(PresetParams {
+            short_refresh,
+            ..*with_tip_output(1, 200)
+        }));
+        let coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+        super::carry::planned_stream_of(&config, coder, panning_frame, 250)
+    };
+    let (units, expected, cores, coder) = stream(true, 1);
+    assert!(
+        coder
+            .sequence
+            .inter
+            .unwrap()
+            .enable_short_refresh_frame_flags
+    );
+    let refreshed: Vec<u32> = cores
+        .iter()
+        .filter(|core| core.frame_type != Some(splot_core::headers::frame::FrameType::Key))
+        .map(|core| core.refresh_frame_flags.unwrap().count_ones())
+        .collect();
+    assert!(
+        refreshed.contains(&0) && refreshed.contains(&1),
+        "{refreshed:?}"
+    );
+    assert!(refreshed.iter().all(|&slots| slots <= 1));
+    assert!(
+        cores
+            .iter()
+            .any(|core| core.obu_type == splot_core::types::ObuType::RegularTip)
+    );
+    assert_same_samples(&decode(&units), &expected, "short refresh");
+    assert!(units.len() < stream(false, 1).0.len());
+    for threads in [2, 8] {
+        assert!(stream(true, threads).0 == units, "{threads} threads");
+    }
+}

@@ -283,6 +283,7 @@ impl IntraFrameCoder {
                     rows_log2: config.tiles.rows_log2,
                     allow_tile_info_change: preset.seq_tile_info > 1,
                 }),
+                short_refresh: preset.short_refresh,
                 tcq: preset.tcq.values().contains(&true),
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()

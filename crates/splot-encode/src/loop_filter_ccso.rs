@@ -17,7 +17,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::adapt_cdf_u16;
 use splot_decode::encoder_syntax::{
-    CcsoBlockMap, CcsoGrid, FrameStart, ccso_offset, ccso_taps, tile_count,
+    CcsoBlockMap, CcsoGrid, EncoderReferences, FrameStart, ccso_offset, ccso_taps, tile_count,
 };
 use splot_parallel::WorkerPool;
 use splot_recon::{DecodedFrame, PlaneId};
@@ -26,6 +26,7 @@ use super::coding;
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::intra_frame::map_tiles;
+
 use crate::kernels::ccso::{BO_CLASSES, CcsoRow, CcsoStats, EDGE_CLASSES, accumulate_simd};
 use crate::rd::{Bits, Lambda, symbol_cost, unary_cost};
 
@@ -57,6 +58,9 @@ pub(super) struct CcsoInput<'a> {
     pub(super) source: &'a SourceFrame,
     pub(super) lambda: Lambda,
     pub(super) pool: Option<&'a WorkerPool>,
+    /// The references whose saved parameters a plane may reuse, with
+    /// `ccso_reuse` above `0`.
+    pub(super) reuse: Option<&'a EncoderReferences>,
 }
 
 /// The CCSO parameters of each plane and `ccso_blk` per plane and unit.
@@ -159,6 +163,7 @@ pub(super) fn search(
     let rows = map_tiles(input.pool, (0..grid.rows).collect(), |row| {
         unit_row_stats(input, grid, row, (planes, wide), ladder)
     })?;
+    let reused = reuse_sources(input, grid, planes)?;
     let mut params: [CcsoPlaneParams; 3] = Default::default();
     let mut blocks = Vec::new();
     for plane in 0..planes {
@@ -191,12 +196,28 @@ pub(super) fn search(
             } else {
                 merge(&stats[variant.candidate], variant)
             };
-            let choice = evaluate(input, (plane, &cdfs, grid.cols), &merged, ladder, variant)?;
+            let choice = evaluate(
+                input,
+                (plane, &cdfs, grid.cols),
+                &merged,
+                (ladder, variant),
+                None,
+            )?;
             if best.as_ref().is_none_or(|best| choice.cost < best.cost) {
                 best = Some(choice);
             }
         }
-        if let Some(choice) = best.filter(|choice| choice.cost < 0 || forced()) {
+        let reuse = reuse_choices(input, (plane, &cdfs, grid), &reused)?;
+        let force = forced_reuse() && !reuse.is_empty();
+        if force {
+            best = None;
+        }
+        for choice in reuse {
+            if best.as_ref().is_none_or(|best| choice.cost < best.cost) {
+                best = Some(choice);
+            }
+        }
+        if let Some(choice) = best.filter(|choice| choice.cost < 0 || forced() || force) {
             params[plane] = choice.params;
             blocks.resize(plane + 1, Vec::new());
             blocks[plane] = choice.on.iter().map(|&on| u8::from(on)).collect();
@@ -205,11 +226,163 @@ pub(super) fn search(
     Ok((params, blocks))
 }
 
+/// The saved planes that the frame may reuse: per plane, each reference
+/// position whose saved parameters enable that plane, and the unit
+/// statistics of the reused triples (in [`unit_row_stats`] layout, one row
+/// of tables per grid row) with their 64-band statistics.
+struct Reused {
+    /// `(plane, ccso_ref_idx, saved plane, triple index)`.
+    sources: Vec<(usize, u32, CcsoPlaneParams, usize)>,
+    triples: Vec<(u8, u8, u8)>,
+    rows: Vec<(Vec<CcsoStats>, Vec<CcsoStats<BO_CLASSES>>)>,
+}
+
+/// The [`Reused`] sources of an inter frame with `ccso_reuse`; empty for a
+/// key frame or without it.
+fn reuse_sources(input: &CcsoInput<'_>, grid: CcsoGrid, planes: usize) -> Result<Reused> {
+    let mut reused = Reused {
+        sources: Vec::new(),
+        triples: Vec::new(),
+        rows: Vec::new(),
+    };
+    let (Some(refs), Some(inter)) = (input.reuse, input.core.inter.as_ref()) else {
+        return Ok(reused);
+    };
+    for (index, &slot) in inter.ref_frame_idx.iter().enumerate() {
+        let Some(saved) = refs.ccso_params(slot) else {
+            continue;
+        };
+        for (plane, saved) in saved.planes.iter().enumerate().take(planes) {
+            if !saved.ccso_planes {
+                continue;
+            }
+            let triple = (
+                saved.ccso_ext_filter.unwrap_or(0),
+                saved.ccso_scale_idx.unwrap_or(0),
+                saved.ccso_quant_idx.unwrap_or(0),
+            );
+            let position = reused
+                .triples
+                .iter()
+                .position(|&t| t == triple)
+                .unwrap_or_else(|| {
+                    reused.triples.push(triple);
+                    reused.triples.len() - 1
+                });
+            let index = u32::try_from(index).map_err(|_| Error::Unsupported {
+                what: "a reference index above u32",
+            })?;
+            reused.sources.push((plane, index, *saved, position));
+        }
+    }
+    if !reused.sources.is_empty() {
+        let triples = &reused.triples;
+        reused.rows = map_tiles(input.pool, (0..grid.rows).collect(), |row| {
+            unit_row_stats(input, grid, row, (planes, true), triples)
+        })?;
+    }
+    Ok(reused)
+}
+
+/// The cost of reusing each saved plane of `reused` on `plane`: its fixed
+/// parameters and offsets, `ccso_blk` per unit, and the reuse header bits.
+fn reuse_choices(
+    input: &CcsoInput<'_>,
+    (plane, cdfs, grid): (usize, &[Vec<u16>], CcsoGrid),
+    reused: &Reused,
+) -> Result<Vec<PlaneChoice>> {
+    let num_refs = input
+        .core
+        .inter
+        .as_ref()
+        .map_or(0, |inter| inter.ref_frame_idx.len() as u32);
+    let index_bits = if num_refs > 1 {
+        u32::BITS - (num_refs - 1).leading_zeros()
+    } else {
+        0
+    };
+    let mut choices = Vec::new();
+    for &(source_plane, ref_index, saved, triple) in &reused.sources {
+        if source_plane != plane {
+            continue;
+        }
+        let band_log2 = saved.ccso_max_band_log2.unwrap_or(0);
+        let variant = Variant {
+            candidate: triple,
+            bo_only: saved.ccso_bo_only == Some(true),
+            edge_clf: saved.ccso_edge_clf == Some(true),
+            band_log2,
+            stats_log2: if band_log2 > 3 { 6 } else { 3 },
+        };
+        let stride = reused.triples.len();
+        let merged = if variant.stats_log2 == 6 {
+            let bands: Vec<CcsoStats<BO_CLASSES>> = reused
+                .rows
+                .iter()
+                .filter_map(|(_, bands)| bands.get(plane * grid.cols..(plane + 1) * grid.cols))
+                .flatten()
+                .cloned()
+                .collect();
+            merge(&bands, variant)
+        } else {
+            let stats: Vec<CcsoStats> = reused
+                .rows
+                .iter()
+                .flat_map(|(row, _)| {
+                    let start = (plane * stride + triple) * grid.cols;
+                    row[start..start + grid.cols].iter().cloned()
+                })
+                .collect();
+            merge(&stats, variant)
+        };
+        let scale = saved.ccso_scale_idx.unwrap_or(0);
+        let offsets: Vec<(u8, i32)> = saved
+            .ccso_offset_idx
+            .iter()
+            .map(|&index| (index, ccso_offset(index, scale).unwrap_or(0)))
+            .collect();
+        if offsets.len() != variant.classes() {
+            continue;
+        }
+        let bits = Bits::whole(1 + 2 + index_bits);
+        let mut choice = evaluate(
+            input,
+            (plane, cdfs, grid.cols),
+            &merged,
+            (&reused.triples, variant),
+            Some((&offsets, bits)),
+        )?;
+        choice.params.reuse_ccso = true;
+        choice.params.ccso_ref_idx = Some(ref_index);
+        choices.push(choice);
+    }
+    Ok(choices)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Test hook: every CCSO plane codes the cheapest band offsets of more
     /// than 8 bands that the search allows.
     pub(crate) static FORCE_WIDE_BANDS: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: every CCSO plane that can reuse a reference's saved
+    /// parameters codes the cheapest such reuse, whatever its cost.
+    pub(crate) static FORCE_REUSE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Whether [`FORCE_REUSE`] is set on this thread.
+fn forced_reuse() -> bool {
+    #[cfg(test)]
+    {
+        FORCE_REUSE.with(core::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 /// Whether [`FORCE_WIDE_BANDS`] is set on this thread.
@@ -302,8 +475,8 @@ fn evaluate(
     input: &CcsoInput<'_>,
     (plane, cdfs, grid_cols): (usize, &[Vec<u16>], usize),
     merged: &[Vec<(i64, u32)>],
-    ladder: &[(u8, u8, u8)],
-    variant: Variant,
+    (ladder, variant): (&[(u8, u8, u8)], Variant),
+    fixed: Option<(&[(u8, i32)], Bits)>,
 ) -> Result<PlaneChoice> {
     let (ext_filter, scale, quant) = ladder[variant.candidate];
     let classes = variant.classes();
@@ -321,21 +494,25 @@ fn evaluate(
                 total.1 += count;
             }
         }
-        let offsets: Vec<(u8, i32)> = totals
-            .iter()
-            .map(|&(sum, count)| {
-                (0..OFFSET_INDICES)
-                    .filter_map(|index| Some((index, ccso_offset(index, scale)?)))
-                    .min_by_key(|&(index, offset)| {
-                        rd(
-                            offset_delta(sum, count, offset),
-                            unary_cost(u32::from(index), 7),
-                            input.lambda,
-                        )
-                    })
-                    .unwrap_or((0, 0))
-            })
-            .collect();
+        let offsets: Vec<(u8, i32)> = if let Some((offsets, _)) = fixed {
+            offsets.to_vec()
+        } else {
+            totals
+                .iter()
+                .map(|&(sum, count)| {
+                    (0..OFFSET_INDICES)
+                        .filter_map(|index| Some((index, ccso_offset(index, scale)?)))
+                        .min_by_key(|&(index, offset)| {
+                            rd(
+                                offset_delta(sum, count, offset),
+                                unary_cost(u32::from(index), 7),
+                                input.lambda,
+                            )
+                        })
+                        .unwrap_or((0, 0))
+                })
+                .collect()
+        };
         let deltas: Vec<i64> = merged
             .iter()
             .map(|unit| {
@@ -346,7 +523,10 @@ fn evaluate(
             })
             .collect();
         let (flags, flag_bits) = decide(input, (plane, cdfs, grid_cols), &deltas)?;
-        let header = header_bits(input, variant, ladder, &offsets);
+        let header = fixed.map_or_else(
+            || header_bits(input, variant, ladder, &offsets),
+            |(_, bits)| bits,
+        );
         let distortion = deltas
             .iter()
             .zip(&flags)

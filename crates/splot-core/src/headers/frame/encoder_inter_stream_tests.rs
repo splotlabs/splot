@@ -1141,6 +1141,92 @@ fn assert_cut_header_fails(
     ));
 }
 
+/// A `reuse_ccso` plane of an inter frame codes its two reuse flags and no
+/// parameters (§ 5.18.7.12): it parses back with the flags, `ccso_ref_idx`
+/// inferred `0` over one reference, and no parameters, and the header is
+/// shorter than the one that codes them. A `ccso_ref_idx` outside the
+/// references and reuse in a key frame are refused; a cut header does not
+/// parse complete.
+#[test]
+fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
+    let sb = SuperblockSize::Block64x64;
+    let seq = sequence(64, 64, BitDepthIdc::Eight, sb);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(64, 64, 0);
+    let coded = filters(sb);
+    let reuse = |ccso_ref_idx| FrameFilterParams {
+        ccso: coded.ccso.map(|plane| CcsoPlaneParams {
+            reuse_ccso: plane.ccso_planes,
+            ccso_ref_idx: plane.ccso_planes.then_some(ccso_ref_idx),
+            ..plane
+        }),
+        ..coded
+    };
+    let params = |filters| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 1,
+        refresh_frame_flags: 2,
+        show_frame: true,
+        filters,
+        tx: KeyFrameTxParams::default(),
+        tiles: UniformTiles::default(),
+        reference_select: false,
+        skip_mode_present: false,
+        primary_slot: Some(0),
+        use_ref_frame_mvs: false,
+        high_precision_mv: false,
+        switchable_interp_filter: false,
+        tip_weight: None,
+        tip_hole_fill: false,
+        opfl_refine_type: 0,
+        force_integer_mv: false,
+        warp: false,
+        global_motion: [None; 7],
+        tip_global_mv: TipGlobalMv::default(),
+        tip_filter: None,
+        tip_deblocking: false,
+        global_motion_predict: false,
+    };
+    let build = |filters| build_inter_frame_header(&view, &slots.view(), &params(filters));
+    let fresh = build(coded).unwrap();
+    let reused = build(reuse(0)).unwrap();
+    let plane = &reused.core.ccso_params.as_ref().unwrap().planes[1];
+    assert!(plane.ccso_planes && plane.reuse_ccso && !plane.sb_reuse_ccso);
+    assert_eq!(plane.ccso_ref_idx, Some(0));
+    assert_eq!(plane.ccso_scale_idx, None);
+    assert!(reused.bits.num_frame_header_bits() < fresh.bits.num_frame_header_bits());
+    let fresh_plane = &fresh.core.ccso_params.as_ref().unwrap().planes[1];
+    assert!(!fresh_plane.reuse_ccso && fresh_plane.ccso_scale_idx == Some(2));
+    assert!(build(reuse(1)).is_err(), "one reference has no index 1");
+    let key = crate::headers::frame::build_key_frame_header(
+        &view,
+        90,
+        0,
+        &reuse(0),
+        KeyFrameTxParams::default(),
+        UniformTiles::default(),
+    );
+    assert!(key.is_err(), "a key frame cannot reuse CCSO");
+    let obu = encode_inter_frame_obu(&reused, &[&[0xab]]).unwrap();
+    let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
+    let cut = reused.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::RegularTileGroup,
+        first_picture_in_tu: true,
+        active_sequence: Some(&seq),
+        mfh_record: None,
+        reference_state: slots.view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let mut reader = BitReader::new(&payload[..cut], ByteOffset::new(0));
+    assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
+    let cut_core = parse_frame_header_core(&mut reader, &input);
+    assert!(!matches!(
+        cut_core,
+        Ok(ref core) if core.status == FrameHeaderParseStatus::InterHeaderComplete
+    ));
+}
+
 /// Each slot saved `model` against a frame as far behind it as the current
 /// frame is ahead. With `global_motion_predict` the header codes the `our_ref`
 /// and `their_ref` (§ 5.18.9.1) whose saved model predicts the coded one: fewer
@@ -1218,6 +1304,68 @@ fn global_motion_predict_codes_their_ref_and_the_same_models() {
             .bits
     );
     assert_cut_header_fails(&seq, &on, &refs);
+}
+
+/// With `enable_short_refresh_frame_flags` an inter or TIP output header
+/// codes `has_refresh_frame_flags` and the `frame_to_refresh` of its one
+/// slot (§ 5.18.2), parses back to the same `refresh_frame_flags` and is
+/// shorter than the `NumRefFrames` bits; two slots, or a slot outside
+/// `NumRefFrames`, are rejected; a cut header does not parse.
+#[test]
+fn short_refresh_flags_code_one_slot_or_none() {
+    let stream = |short_refresh| EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            ref_frame_mvs: true,
+            tip: true,
+            tip_output: true,
+            short_refresh,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seqs = [false, true].map(|short| build_encoder_sequence_header(&stream(short)).unwrap());
+    let [long, short] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+    assert!(!long.enable_short_refresh_frame_flags && short.enable_short_refresh_frame_flags);
+    let mut slots = Slots::after_key(64, 64, 4);
+    slots.valid[1] = true;
+    slots.hints[1] = 8;
+    slots.counters[1] = 1;
+    let params = |refresh_frame_flags| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 6,
+        refresh_frame_flags,
+        show_frame: true,
+        primary_slot: Some(0),
+        tip_weight: Some(3),
+        ..InterFrameParams::default()
+    };
+    for (flags, saved) in [(0, 7), (0b10, 4), (0b1000_0000, 4)] {
+        let bits = |view: &CoreSeqView| {
+            let header = build_inter_frame_header(view, &slots.view(), &params(flags)).unwrap();
+            assert_eq!(header.core.refresh_frame_flags, Some(flags), "{flags:#b}");
+            assert_eq!(
+                header.core.consumed_bits,
+                header.bits.num_frame_header_bits()
+            );
+            header
+        };
+        let header = bits(&short);
+        let long_bits = bits(&long).bits.num_frame_header_bits();
+        assert_eq!(long_bits - header.bits.num_frame_header_bits(), saved);
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
+    for flags in [0b11, 1 << 8] {
+        assert!(build_inter_frame_header(&short, &slots.view(), &params(flags)).is_err());
+    }
+    let tip = build_tip_output_frame_header(&short, &slots.view(), &params(0), &[0, 1]).unwrap();
+    assert_eq!(tip.core.refresh_frame_flags, Some(0));
+    let obu = encode_tip_output_frame_obu(&tip).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    assert!(parsed.error.is_none() && parsed.obus.len() == 1);
 }
 
 /// A sequence with `seq_tile_info_present_flag` codes its uniform layout

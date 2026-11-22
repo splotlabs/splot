@@ -25,9 +25,9 @@ use crate::headers::frame::inter::tip_weight_coded;
 use crate::headers::frame::inter_shared_tail::lr_reference_filters;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
-    CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore, FrameHeaderParseStatus,
-    FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode, init_core_from_prefix,
-    parse_core_body, parse_frame_header_prefix,
+    CcsoPlaneParams, CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
+    FrameHeaderParseStatus, FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode,
+    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
@@ -172,6 +172,12 @@ pub fn build_inter_frame_header(
         filters: FrameFilterParams {
             lr_luma_wiener_ns: None,
             lr_chroma_wiener_ns: [None; 2],
+            ccso: params.filters.ccso.map(|plane| CcsoPlaneParams {
+                reuse_ccso: false,
+                sb_reuse_ccso: false,
+                ccso_ref_idx: None,
+                ..plane
+            }),
             ..params.filters
         },
         ..*params
@@ -280,12 +286,10 @@ fn inter_frame_header_bits(
     if !choose {
         w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
     }
-    if seq.enable_short_refresh_frame_flags || seq.seq_force_screen_content_tools == 1 {
-        return Err(unsupported(
-            "short refresh flags or forced screen content tools",
-        ));
+    if seq.seq_force_screen_content_tools == 1 {
+        return Err(unsupported("forced screen content tools"));
     }
-    w.write_bits(params.refresh_frame_flags, seq.num_ref_frames)?;
+    write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
     if params.use_ref_frame_mvs && !seq.inter.enable_ref_frame_mvs {
         return Err(unsupported(
             "use_ref_frame_mvs without enable_ref_frame_mvs",
@@ -609,9 +613,6 @@ pub fn build_tip_output_frame_header(
             "TIP output without TIP, reference MVs or two references",
         ));
     }
-    if seq.enable_short_refresh_frame_flags {
-        return Err(unsupported("TIP output header tools"));
-    }
     let mv = params.tip_global_mv;
     if mv.row.unsigned_abs() > 15 || mv.col.unsigned_abs() > 15 {
         return Err(unsupported("TipGlobalMv outside -15..=15"));
@@ -644,7 +645,7 @@ pub fn build_tip_output_frame_header(
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
     w.write_flag(true)?; // signal_primary_ref_frame
     w.write_bits(PRIMARY_REF_NONE, 3)?; // primary_ref_frame
-    w.write_bits(params.refresh_frame_flags, seq.num_ref_frames)?;
+    write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
     w.write_flag(true)?; // use_ref_frame_mvs
     if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
@@ -942,6 +943,29 @@ fn annexb_obu(
     let mut w = BitWriter::new();
     write_annexb_obu(&mut w, &obu_header(obu_type), &payload.into_bytes())?;
     Ok(w.into_bytes())
+}
+
+/// The § 5.18.2 `refresh_frame_flags` of an inter frame: with
+/// `enable_short_refresh_frame_flags`, `has_refresh_frame_flags` and the
+/// `frame_to_refresh` of at most one slot.
+fn write_refresh_frame_flags(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    flags: u32,
+) -> Result<(), EncoderHeaderError> {
+    if !seq.enable_short_refresh_frame_flags {
+        return Ok(w.write_bits(flags, seq.num_ref_frames)?);
+    }
+    if flags.count_ones() > 1 || flags >> seq.num_ref_frames != 0 {
+        return Err(unsupported(
+            "short refresh_frame_flags of more than one slot",
+        ));
+    }
+    w.write_flag(flags != 0)?; // has_refresh_frame_flags
+    if flags != 0 {
+        w.write_bits(flags.trailing_zeros(), ceil_log2(seq.num_ref_frames))?; // frame_to_refresh
+    }
+    Ok(())
 }
 
 fn unsupported(what: &'static str) -> EncoderHeaderError {

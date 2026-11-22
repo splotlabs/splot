@@ -282,6 +282,9 @@ pub struct PresetParams {
     /// frames code `reuse_tile_info = 1`; `3` frames code `reuse_tile_info = 0`
     /// and their own tile info.
     pub seq_tile_info: u8,
+    /// `enable_short_refresh_frame_flags`: inter frames code the one slot
+    /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2).
+    pub short_refresh: bool,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -359,6 +362,10 @@ pub struct PresetParams {
     /// (§ 5.18.7.12), `3..=6`: above `3` the search also tries 16, 32 and up
     /// to 64 bands from 64-band statistics of each unit.
     pub ccso_bo_band_log2: u8,
+    /// CCSO reuse in inter frames (§ 5.18.7.12), `0..=1`: `1` also prices
+    /// `reuse_ccso` of each reference's saved parameters per plane, with
+    /// `ccso_blk` coded per unit.
+    pub ccso_reuse: u8,
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
@@ -894,6 +901,7 @@ impl PresetParams {
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
         check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
         check("ccso_bo_band_log2", self.ccso_bo_band_log2, 3, 6, "")?;
+        check("ccso_reuse", self.ccso_reuse, 0, 1, "")?;
         check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
         check("lr_chroma_unit_sizes", self.lr_chroma_unit_sizes, 1, 4, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
@@ -1196,6 +1204,7 @@ preset_table! {
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tip_output_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -1220,6 +1229,7 @@ preset_table! {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
         ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
         ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
+        ccso_reuse:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         lr_unit_sizes:         [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         lr_chroma_unit_sizes:  [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
@@ -1666,6 +1676,7 @@ mod tests {
             (&[("cdef_strengths", "0")], "cdef_strengths"),
             (&[("ccso_candidates", "113")], "ccso_candidates"),
             (&[("ccso_bo_band_log2", "7")], "ccso_bo_band_log2"),
+            (&[("ccso_reuse", "2")], "ccso_reuse"),
             (&[("lr_unit_sizes", "0")], "lr_unit_sizes"),
             (&[("lr_chroma_unit_sizes", "5")], "lr_chroma_unit_sizes"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
