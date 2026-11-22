@@ -471,7 +471,7 @@ fn cell<const W: usize, const H: usize, const V: usize, const C: bool>(
                 lines[r] = pair(lines[r], line);
                 if r + 1 >= 2 * V {
                     let y = r + 1 - 2 * V;
-                    let sum = madds::<V>(&v_weights, |p| lines[y + 2 * p + 1]);
+                    let sum = madds!(V, &v_weights, |p| lines[y + 2 * p + 1]);
                     groups[y] = finish(if H > 0 { interleave(sum) } else { sum });
                 }
             }
@@ -500,7 +500,7 @@ fn cell<const W: usize, const H: usize, const V: usize, const C: bool>(
             lines[m] = line;
             if m >= V && m - V < 2 {
                 let g = m - V;
-                groups[g] = finish(madds::<V>(&v_weights, |p| lines[g + p]));
+                groups[g] = finish(madds!(V, &v_weights, |p| lines[g + p]));
             }
         }
     });
