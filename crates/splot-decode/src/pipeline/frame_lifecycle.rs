@@ -550,6 +550,7 @@ pub(crate) fn frame_ref_update_from_core(
         delta_q_u_ac: quantization.delta_q_u_ac,
         delta_q_v_ac: quantization.delta_q_v_ac,
         is_inter,
+        is_intra_frame: matches!(core.frame_type, Some(FrameType::Key | FrameType::IntraOnly)),
         num_total_refs,
         saved_order_hints,
         saved_gm_params,

@@ -41,6 +41,7 @@ struct Slot {
     delta_q_u_ac: i32,
     delta_q_v_ac: i32,
     is_inter: bool,
+    is_intra_frame: bool,
     num_total_refs: u32,
     saved_order_hints: SavedGlobalMotionOrderHints,
     saved_gm_params: SavedGlobalMotionParams,
@@ -65,6 +66,7 @@ impl Slot {
         delta_q_u_ac: 0,
         delta_q_v_ac: 0,
         is_inter: false,
+        is_intra_frame: false,
         num_total_refs: 0,
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
@@ -95,6 +97,7 @@ impl Slot {
             delta_q_u_ac: update.delta_q_u_ac,
             delta_q_v_ac: update.delta_q_v_ac,
             is_inter: update.is_inter,
+            is_intra_frame: update.is_intra_frame,
             num_total_refs: update.num_total_refs,
             saved_order_hints: update.saved_order_hints,
             saved_gm_params: update.saved_gm_params,
@@ -120,6 +123,8 @@ pub(crate) struct FrameRefUpdate<'a> {
     pub(crate) delta_q_u_ac: i32,
     pub(crate) delta_q_v_ac: i32,
     pub(crate) is_inter: bool,
+    /// `RefFrameType` is `KEY_FRAME` or `INTRA_ONLY_FRAME` (§ 7.9).
+    pub(crate) is_intra_frame: bool,
     pub(crate) num_total_refs: u32,
     pub(crate) saved_order_hints: SavedGlobalMotionOrderHints,
     pub(crate) saved_gm_params: SavedGlobalMotionParams,
@@ -490,6 +495,7 @@ impl<T: ReconSample> InterReferenceState<T> {
         self.ref_chroma_ac_deltas
             .push([slot.delta_q_u_ac, slot.delta_q_v_ac]);
         self.ref_is_inter.push(slot.is_inter);
+        self.ref_is_intra_frame.push(slot.is_intra_frame);
         self.ref_long_term_id.push(slot.long_term_id);
         self.ref_num_total_refs.push(slot.num_total_refs);
         self.saved_global_motion_order_hints
