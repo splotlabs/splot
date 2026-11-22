@@ -106,6 +106,7 @@ impl Case {
                 long_term_frame_id_bits: 0,
                 num_ref_frames: None,
                 explicit_ref_frame_map: false,
+                implicit_output: false,
                 seq_tiles: None,
                 short_refresh: false,
                 masked_compound: false,

@@ -4,6 +4,7 @@
 //! Cross-frame CDF carry (§ 5.18.2 `set_primary_ref_frame_and_ctx`, § 7.23).
 
 use super::*;
+use crate::Packet;
 use crate::gop::{GopPlanner, GopStep};
 use crate::preset::PresetParams;
 use splot_core::headers::frame::FrameHeaderCore;
@@ -363,6 +364,75 @@ fn explicit_slot_count_streams_decode_alike_on_any_thread_count() {
     let mut config = config(72, 40, BitDepth::Eight, 6, 150);
     config.preset_overrides = vec![("num_ref_frames".to_owned(), "2".to_owned())];
     assert!(config.validate().is_err());
+}
+
+/// The packets of `frames` panning frames coded through the [`Encoder`] with
+/// `implicit_output` on `threads`, and the encoder recon in display order.
+fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, Vec<u8>) {
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.preset_overrides = vec![("implicit_output".to_owned(), "true".to_owned())];
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let recons = Arc::default();
+    let coder = Recording {
+        coder: IntraFrameCoder::new(&config).unwrap(),
+        bit_depth: config.bit_depth,
+        recons: Arc::clone(&recons),
+    };
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
+    let mut packets = Vec::new();
+    for index in (0..frames).map(Some).chain([None]) {
+        match index {
+            Some(index) => encoder.send_frame(panning_frame(&config, index)).unwrap(),
+            None => encoder.flush().unwrap(),
+        }
+        while let Some(packet) = encoder.receive_packet().unwrap() {
+            packets.push(packet);
+        }
+    }
+    let expected = recons.lock().unwrap().values().flatten().copied().collect();
+    (config, packets, expected)
+}
+
+/// With `implicit_output` a stream of 11 frames, which ends inside its second
+/// mini-GOP of 8, codes one temporal unit per frame and no show-existing
+/// frame; the packets come in coding order, so their pts is not monotonic,
+/// and cover every input frame once. `splot decode` outputs every frame, in
+/// display order, equal to the encoder recon (§ 7.21.3, the § 7.21.5 flush
+/// at the end), and the bytes are the same on 1, 2 and 8 threads.
+#[test]
+fn implicit_output_streams_decode_in_display_order() {
+    let (_, packets, expected) = implicit_output_stream(11, 1);
+    let mut pts: Vec<u64> = packets.iter().map(|packet| packet.pts).collect();
+    assert!(!pts.is_sorted(), "{pts:?}");
+    pts.sort_unstable();
+    assert_eq!(pts, (0..11).collect::<Vec<_>>());
+    assert!(packets.iter().all(|packet| packet.stats.len() == 1));
+    let units: Vec<u8> = packets
+        .iter()
+        .flat_map(|packet| packet.data.clone())
+        .collect();
+    assert_same_samples(&decode(&units), &expected, "implicit output");
+    for threads in [2, 8] {
+        let other: Vec<u8> = implicit_output_stream(11, threads)
+            .1
+            .iter()
+            .flat_map(|packet| packet.data.clone())
+            .collect();
+        assert!(other == units, "{threads} threads");
+    }
+}
+
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_implicit_output_streams_in_display_order() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (config, packets, expected) = implicit_output_stream(11, 1);
+    let units: Vec<Vec<u8>> = packets.into_iter().map(|packet| packet.data).collect();
+    let size = (config.width, config.height);
+    let avm = avm_decode(&avmdec, &units, size, config.bit_depth, "implicit");
+    assert!(avm == expected, "AVM output differs");
 }
 
 /// With `long_term_id_bits` 2 the sequence codes 2 bits and the key frames of
