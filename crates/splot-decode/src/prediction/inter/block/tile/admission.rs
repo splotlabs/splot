@@ -722,12 +722,13 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
     commit: &mut TileCommit<T>,
 ) -> Result<()> {
     references.wait()?;
+    let parse = context.parse();
     pending.clear();
     let mut parsed = 0;
     let mut reached_last = false;
     while !reached_last && parsed < unit_count {
         while !reached_last && parsed < unit_count && pending.len() < PARSE_AHEAD_ROWS {
-            let step = parser.next_unit(tile, context, row_buffers.pop(), true);
+            let step = parser.next_unit(tile, &parse, row_buffers.pop(), true);
             let step = resolve_parser_step(step, |row| {
                 resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)?;
                 #[cfg(test)]

@@ -162,6 +162,26 @@ impl TileWalkParams {
             .map_or_else(|| super::inter_mv_read_config(core), Ok)
     }
 
+    pub(super) fn parse_context<'a>(
+        &'a self,
+        sequence: &'a SequenceHeader,
+        core: &'a FrameHeaderCore,
+        reference: &'a InterReferenceState<impl ReconSample>,
+    ) -> TileParseContext<'a> {
+        TileParseContext {
+            sequence,
+            core,
+            params: self,
+            previous_segment_ids: super::super::previous_segment_ids(
+                core,
+                reference,
+                self.mi_rows,
+                self.mi_cols,
+            )
+            .map(Arc::as_ref),
+        }
+    }
+
     pub(super) fn context<'a, T: ReconSample>(
         &'a self,
         sequence: &'a SequenceHeader,
@@ -185,6 +205,23 @@ pub(super) struct TileDecodeContext<'a, T: ReconSample> {
     reference: &'a InterReferenceState<T>,
     ref_frame_idx: &'a [u32],
     params: &'a TileWalkParams,
+}
+
+impl<'a, T: ReconSample> TileDecodeContext<'a, T> {
+    fn parse(&self) -> TileParseContext<'a> {
+        self.params
+            .parse_context(self.sequence, self.core, self.reference)
+    }
+}
+
+/// What the § 8.2 pass of one tile reads of its frame. It names no sample
+/// type, so the entropy pass compiles once for every bit depth.
+#[derive(Clone, Copy)]
+pub(super) struct TileParseContext<'a> {
+    sequence: &'a SequenceHeader,
+    core: &'a FrameHeaderCore,
+    params: &'a TileWalkParams,
+    previous_segment_ids: Option<&'a FrameSegmentIdMap>,
 }
 
 /// How far one [`TileParser::walk_leaves`] call parses.
@@ -331,10 +368,10 @@ fn inter_tile_grid_error(
 
 impl<'payload> TileParser<'payload> {
     #[allow(clippy::too_many_arguments)]
-    fn new<T: ReconSample>(
+    fn new(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         cdef_state: CdefState,
         gdf_state: GdfState,
         ccso_state: CcsoState,
@@ -423,10 +460,10 @@ impl<'payload> TileParser<'payload> {
     /// Row units, the single-thread walk's, reserve the superblock bound up
     /// front; scheduled units grow their slot's recycled lists instead, so a
     /// frame in flight holds only what it parsed.
-    fn next_unit<T: ReconSample>(
+    fn next_unit(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         buffers: Option<ReconRowBuffers>,
         row_units: bool,
     ) -> ParserStep<ReconRow> {
@@ -494,10 +531,10 @@ impl<'payload> TileParser<'payload> {
     /// Parses one superblock or one superblock row and stores every leaf's
     /// parse record as the next reconstruction entry, in walk order, for the
     /// resolve and reconstruction stages. Returns whether superblocks remain.
-    fn walk_leaves<T: ReconSample>(
+    fn walk_leaves(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         row: &mut ReconRow,
         span: WalkSpan,
     ) -> Result<bool> {
@@ -519,13 +556,7 @@ impl<'payload> TileParser<'payload> {
                 filter_records: &mut row.filter_records,
                 slots: &mut row.slots,
             },
-            previous_segment_ids: super::super::previous_segment_ids(
-                context.core,
-                context.reference,
-                context.params.mi_rows,
-                context.params.mi_cols,
-            )
-            .map(Arc::as_ref),
+            previous_segment_ids: context.previous_segment_ids,
             gdf_state: &mut self.output.gdf_state,
             cdef_state: &mut self.output.cdef_state,
             ccso_state: &mut self.output.ccso_state,
@@ -1856,10 +1887,10 @@ pub(crate) fn publish_tile_geometry(
 impl<'payload> TileParser<'payload> {
     /// Opens tile `index` of a scheduled frame of `tiles` tiles.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn scheduled<T: ReconSample>(
+    pub(super) fn scheduled(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         cdef_state: CdefState,
         gdf_state: GdfState,
         ccso_state: CcsoState,
@@ -1908,10 +1939,10 @@ impl<'payload> TileParser<'payload> {
     }
 
     /// Parses and publishes the next unit, returning whether the tile ended.
-    pub(super) fn parse_scheduled_unit<T: ReconSample>(
+    pub(super) fn parse_scheduled_unit(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
-        context: &TileDecodeContext<'_, T>,
+        context: &TileParseContext<'_>,
         parse_progress: &ParseProgress,
     ) -> Result<bool> {
         let row_set = parse_progress.take_row_buffers();
@@ -2147,7 +2178,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut parser = TileParser::new(
             tile,
             tile_bytes,
-            &context,
+            &context.parse(),
             tile_cdef,
             tile_gdf,
             tile_ccso,

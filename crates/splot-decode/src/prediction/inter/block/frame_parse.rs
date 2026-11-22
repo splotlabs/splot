@@ -154,21 +154,16 @@ impl<'payload> InterFrameParser<'payload> {
 
     /// Parses the next unit of the current tile, returning whether the frame's
     /// entropy pass has ended.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn parse_unit<T: ReconSample>(
+    pub(crate) fn parse_unit(
         &mut self,
         tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        ref_frame_idx: &[u32],
-        reference: &InterReferenceState<T>,
+        reference: &InterReferenceState<impl ReconSample>,
         parse_progress: &tile::ParseProgress,
     ) -> Result<bool> {
-        let context = &self
-            .setup
-            .params
-            .context(sequence, core, reference, ref_frame_idx);
+        let context = &self.setup.params.parse_context(sequence, core, reference);
         if self.tiles != 1 {
             return Err(tile::invalid_inter_tile_scheduling_state());
         }
@@ -271,20 +266,17 @@ pub(crate) struct TileParse(tile::ParsedTile);
 impl OpenTile {
     /// Runs tile `index` of `tiles` through its whole § 8.2 pass.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn parse<T: ReconSample>(
+    pub(crate) fn parse(
         self,
         tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
         tile_bytes: &[u8],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        ref_frame_idx: &[u32],
-        reference: &InterReferenceState<T>,
+        reference: &InterReferenceState<impl ReconSample>,
         parse_progress: &tile::ParseProgress,
         (index, tiles): (usize, usize),
     ) -> Result<TileParse> {
-        let context = &self
-            .params
-            .context(sequence, core, reference, ref_frame_idx);
+        let context = &self.params.parse_context(sequence, core, reference);
         let (cdef, gdf, ccso) = self.states;
         let mut parser = tile::TileParser::scheduled(
             tile,
