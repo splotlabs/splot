@@ -101,6 +101,8 @@ pub(crate) use intra_joint_modes::{
 pub(crate) use mi_size_state::{PartitionNeighbours, UvEdges};
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
+#[cfg(test)]
+pub(crate) use partition::PartitionType;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
 pub(crate) use partition_traversal::BRU_ACTIVE;
@@ -108,6 +110,8 @@ pub(crate) use partition_traversal::LrUnitRestorationType;
 #[cfg(test)]
 pub(crate) use partition_traversal::TilePartitionCall;
 pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
+#[cfg(test)]
+pub(crate) use partition_traversal::tests::frame as partition_test_frame;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
@@ -118,6 +122,8 @@ pub(crate) use partition_traversal::{
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
 };
+#[cfg(test)]
+pub(crate) use partition_traversal::{child_calls, valid_subsize};
 #[cfg(test)]
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{

@@ -162,8 +162,14 @@ impl IbcLocalReplay {
         Some(())
     }
 
-    /// Replays the rest of the superblock, whose entries end before `end`,
-    /// with the out-of-frame calls after its last entry.
+    /// Brings the state to the end of the superblock, whose entries end
+    /// before `end`, and drops its out-of-frame calls.
+    ///
+    /// Up to 128x128 only the set of 64x64 buffers that the superblock
+    /// visits is visible later, as the next `update_ibc_buffers` call stores
+    /// the current buffer, and each buffer has a call in it (see the test
+    /// `the_superblock_summary_matches_the_leaf_replay`). A 256x256
+    /// superblock has four buffers for each index, so it is replayed.
     #[inline(never)]
     pub(crate) fn finish_superblock(
         &mut self,
@@ -172,26 +178,47 @@ impl IbcLocalReplay {
         block: impl Fn(usize) -> Option<[usize; 4]>,
         calls: &mut &[OutOfFrameCall],
     ) -> Option<()> {
-        self.replay_before(superblock, end, &block, calls)
+        let (origin, sb4, _) = superblock;
+        if sb4 > 32 {
+            return self.replay_before(superblock, end, &block, calls);
+        }
+        self.enter(superblock);
+        for [dr, dc] in [[0, 0], [0, 16], [16, 0], [16, 16]] {
+            if dr < sb4 && dc < sb4 {
+                self.buffers.update(origin[0] + dr, origin[1] + dc);
+            }
+        }
+        let done = calls.iter().take_while(|call| call.entry <= end).count();
+        *calls = calls.get(done..)?;
+        self.next = end;
+        self.chunks_owed = false;
+        Some(())
+    }
+
+    /// Makes the superblock at `origin` (side `sb4`, first entry `first`)
+    /// current, if it is not.
+    fn enter(&mut self, (origin, sb4, first): ([usize; 2], usize, usize)) {
+        if self.sb == Some((origin, sb4)) {
+            return;
+        }
+        if self.sb.is_none_or(|(at, _)| at[0] != origin[0]) {
+            self.buffers = IbcBuffers::start_sb_row(origin[0], sb4 == 16);
+        }
+        self.sb = Some((origin, sb4));
+        self.next = first;
+        self.chunks_owed = false;
+        self.coded = [0; 64];
     }
 
     /// Replays every call before entry `stop` that is not replayed yet.
     fn replay_before(
         &mut self,
-        (origin, sb4, first): ([usize; 2], usize, usize),
+        superblock: ([usize; 2], usize, usize),
         stop: usize,
         block: &impl Fn(usize) -> Option<[usize; 4]>,
         calls: &mut &[OutOfFrameCall],
     ) -> Option<()> {
-        if self.sb != Some((origin, sb4)) {
-            if self.sb.is_none_or(|(at, _)| at[0] != origin[0]) {
-                self.buffers = IbcBuffers::start_sb_row(origin[0], sb4 == 16);
-            }
-            self.sb = Some((origin, sb4));
-            self.next = first;
-            self.chunks_owed = false;
-            self.coded = [0; 64];
-        }
+        self.enter(superblock);
         if self.chunks_owed {
             let [r, c, w4, h4] = block(self.next)?;
             self.update_chunks([r, c], [w4, h4], ChunkOrder::Grouped);

@@ -52,7 +52,7 @@ fn context() -> TileMiSizeState {
     context_of(64, BLOCK_64X64)
 }
 
-fn frame(sb_size: usize) -> TilePartitionFrameFacts {
+pub(crate) fn frame(sb_size: usize) -> TilePartitionFrameFacts {
     TilePartitionFrameFacts::new(
         64,
         64,

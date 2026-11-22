@@ -2,6 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::bitstream::tile_payload::{
+    BlockSize, PartitionType, TilePartitionCall, child_calls, partition_test_frame, valid_subsize,
+};
 
 /// A `size`-sample square leaf at 4x4 position `mi` of a tile of
 /// `rows x cols` 4x4 units that starts at (0, 0).
@@ -351,7 +354,7 @@ fn an_extended_sdp_chroma_block_moves_the_current_buffer_back() {
     let mut replay = IbcLocalReplay::new(false);
     assert!(
         replay
-            .finish_superblock(([0, 0], 32, 0), 3, entry(&blocks), &mut &[][..])
+            .replay_to_leaf(([0, 0], 32, 0), 2, entry(&blocks), &mut &[][..])
             .is_some()
     );
     assert_eq!(replay.buffers.cur, (0, 0));
@@ -363,7 +366,7 @@ fn ibc_coded_outside_the_superblock_is_one_only_to_its_left_in_its_row() {
     let mut replay = IbcLocalReplay::new(false);
     assert!(
         replay
-            .finish_superblock(([16, 32], 16, 0), 1, entry(&[[16, 32, 4, 4]]), &mut &[][..])
+            .replay_to_leaf(([16, 32], 16, 0), 0, entry(&[[16, 32, 4, 4]]), &mut &[][..])
             .is_some()
     );
     assert!(
@@ -408,4 +411,99 @@ fn the_buffer_test_refuses_sources_right_of_the_superblock_or_in_earlier_rows() 
         !local(&block, false, &lower, &all, bv(-32, 0)),
         "the superblock row above"
     );
+}
+
+/// A step of a xorshift generator.
+fn next(seed: &mut u64) -> usize {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    *seed as usize
+}
+
+/// A random partition tree under `call` in a frame of `mi` 4x4 rows and
+/// columns: its leaves in `blocks`, its calls outside the frame in `calls`.
+fn random_tree(
+    seed: &mut u64,
+    call: TilePartitionCall,
+    mi: [usize; 2],
+    (blocks, calls): (&mut Vec<[usize; 4]>, &mut Vec<OutOfFrameCall>),
+) {
+    let [h4, w4] = call.b_size.num_4x4();
+    if call.r() >= mi[0] || call.c() >= mi[1] {
+        calls.push(OutOfFrameCall {
+            entry: blocks.len(),
+            origin: [call.r(), call.c()],
+            size4: [w4, h4],
+        });
+        return;
+    }
+    let splits: Vec<_> = PartitionType::ALL
+        .into_iter()
+        .filter_map(|p| Some((p, valid_subsize(p, call.b_size).ok()?)))
+        .filter(|&(p, _)| p != PartitionType::None)
+        .collect();
+    let frame = partition_test_frame(15);
+    let children = (next(seed) % 3 != 0 && !splits.is_empty())
+        .then(|| splits[next(seed) % splits.len()])
+        .and_then(|(p, sub)| child_calls(call, call.own_chroma_ref(), p, sub, &frame, false).ok());
+    let Some(children) = children else {
+        blocks.push([call.r(), call.c(), w4, h4]);
+        return;
+    };
+    for &child in children.as_slice() {
+        random_tree(seed, child, mi, (&mut *blocks, &mut *calls));
+    }
+}
+
+#[test]
+fn the_superblock_summary_matches_the_leaf_replay() {
+    let mut seed = 0x2545_f491_4f6c_dd1d;
+    for (sb4, size) in [(16, 12), (32, 15), (64, 18)] {
+        for _ in 0..400 {
+            let mi = [
+                1 + next(&mut seed) % (2 * sb4),
+                sb4 + 1 + next(&mut seed) % (2 * sb4),
+            ];
+            let mut blocks = vec![[0, 0, sb4, sb4]];
+            let mut calls = Vec::new();
+            let root = TilePartitionCall::root(0, sb4, BlockSize::new(size).unwrap(), true);
+            random_tree(&mut seed, root, mi, (&mut blocks, &mut calls));
+            let superblock = ([0, sb4], sb4, 1);
+            let mut replay = IbcLocalReplay::new(false);
+            let mut pending = &[][..];
+            assert!(
+                replay
+                    .replay_before(([0, 0], sb4, 0), 1, &entry(&blocks), &mut pending)
+                    .is_some()
+            );
+            let mut summary = replay.clone();
+            let mut pending = &calls[..];
+            assert!(
+                replay
+                    .replay_before(superblock, blocks.len(), &entry(&blocks), &mut pending)
+                    .is_some()
+            );
+            assert!(pending.is_empty());
+            let mut pending = &calls[..];
+            let leaf = 1 + next(&mut seed) % blocks.len();
+            if leaf < blocks.len() {
+                assert!(
+                    summary
+                        .replay_to_leaf(superblock, leaf, entry(&blocks), &mut pending)
+                        .is_some()
+                );
+            }
+            assert!(
+                summary
+                    .finish_superblock(superblock, blocks.len(), entry(&blocks), &mut pending)
+                    .is_some()
+            );
+            assert!(pending.is_empty());
+            for state in [&mut replay, &mut summary] {
+                state.buffers.update(0, 2 * sb4);
+            }
+            assert_eq!(replay.buffers, summary.buffers, "{blocks:?} {calls:?}");
+        }
+    }
 }
