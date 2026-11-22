@@ -11,6 +11,7 @@ use super::super::super::compound::{
     CompoundParseInput, compound_reference_pair, compound_y_mode, non_joint_compound_mode,
     same_refs_compound_mode,
 };
+use super::super::super::mode_symbols::InterModeSymbols;
 use super::super::compound_path::{
     compound_all_opfl_reachable, compound_joint_mv_projection, compound_needs_interp_filter,
     compound_refinemv_active_after_blend, compound_refinemv_is_switchable,
@@ -224,12 +225,10 @@ impl EncoderInterTile {
                 &neighbour,
                 self.precision,
                 (true, false),
-                |selector| {
-                    Ok(match selector {
-                        TileCdfSelector::UseMostProbablePrecision { .. } => 0,
-                        _ => pb,
-                    })
-                },
+                &mut SelectorAnswers(|selector| match selector {
+                    TileCdfSelector::UseMostProbablePrecision { .. } => 0,
+                    _ => pb,
+                }),
             );
             if let Ok(read) = read
                 && !read.use_most_probable_precision
@@ -259,7 +258,7 @@ impl EncoderInterTile {
                 neighbour,
                 self.precision,
                 (has_newmv, use_amvd),
-                |selector| {
+                &mut SelectorAnswers(|selector| {
                     let value = match selector {
                         TileCdfSelector::UseMostProbablePrecision { .. } => {
                             u8::from(target.use_most_probable_precision)
@@ -267,8 +266,8 @@ impl EncoderInterTile {
                         _ => pb,
                     };
                     coded.push((selector, value));
-                    Ok(value)
-                },
+                    value
+                }),
             );
             if read.is_ok_and(|read| read == target) {
                 out.extend(coded);
@@ -727,17 +726,19 @@ impl EncoderInterTile {
         let new_mv = mode_ctx.new_mv_context;
         let input = self.compound_input(neighbour.ref_counts(), self.ref_facts.distance_signs()?);
         let target = compound.ref_frames;
-        let pair = compound_reference_pair(input, |selector| {
+        let mut comp_refs = SelectorAnswers(|selector| {
             let value = comp_ref_bit(selector, target);
             out.push((selector, value));
-            Ok(value)
-        })?;
+            value
+        });
+        let pair = compound_reference_pair(input, &mut comp_refs)?;
         let is_joint = self.ref_facts.is_joint_context(pair)?;
-        let y_mode = compound_y_mode(pair, (new_mv, is_joint), |selector| {
+        let mut modes = SelectorAnswers(|selector| {
             let value = compound_mode_symbol(selector, compound.y_mode);
             out.push((selector, value));
-            Ok(value)
-        })?;
+            value
+        });
+        let y_mode = compound_y_mode(pair, (new_mv, is_joint), &mut modes);
         if pair != target || y_mode != compound.y_mode {
             return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
@@ -904,10 +905,50 @@ impl EncoderInterTile {
     }
 }
 
+/// Answers each element as the value its selector maps to.
+struct SelectorAnswers<F>(F);
+
+impl<F: FnMut(TileCdfSelector) -> u8> InterModeSymbols for SelectorAnswers<F> {
+    fn comp_ref0(&mut self, ctx: usize, ref_idx: usize) -> u8 {
+        self.0(TileCdfSelector::CompRef0 { ctx, ref_idx })
+    }
+
+    fn comp_ref1(&mut self, ctx: usize, bit_type: usize, ref_idx: usize) -> u8 {
+        self.0(TileCdfSelector::CompRef1 {
+            ctx,
+            bit_type,
+            ref_idx,
+        })
+    }
+
+    fn is_joint(&mut self, ctx: usize) -> u8 {
+        self.0(TileCdfSelector::IsJoint { ctx })
+    }
+
+    fn compound_mode_same_refs(&mut self, ctx: usize) -> u8 {
+        self.0(TileCdfSelector::CompoundModeSameRefs { ctx })
+    }
+
+    fn compound_mode_non_joint(&mut self, ctx: usize) -> u8 {
+        self.0(TileCdfSelector::CompoundModeNonJoint { ctx })
+    }
+
+    fn use_most_probable_precision(&mut self, ctx: usize) -> u8 {
+        self.0(TileCdfSelector::UseMostProbablePrecision { ctx })
+    }
+
+    fn pb_mv_precision(&mut self, ctx: usize, frame_ctx: usize) -> u8 {
+        self.0(TileCdfSelector::PbMvPrecision { ctx, frame_ctx })
+    }
+}
+
 /// Whether the § 5.20.7.11 walk of `input` can end on `pair`.
 fn codes_pair(input: CompoundParseInput, pair: (i8, i8)) -> bool {
-    compound_reference_pair(input, |selector| Ok(comp_ref_bit(selector, pair)))
-        .is_ok_and(|coded| coded == pair)
+    compound_reference_pair(
+        input,
+        &mut SelectorAnswers(|selector| comp_ref_bit(selector, pair)),
+    )
+    .is_ok_and(|coded| coded == pair)
 }
 
 /// The `comp_ref` value that keeps the § 5.20.7.11 walk on `pair`.
