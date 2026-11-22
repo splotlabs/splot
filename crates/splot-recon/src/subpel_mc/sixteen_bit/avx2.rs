@@ -28,16 +28,26 @@ fn token() -> Option<Avx2> {
 }
 
 /// Predicts a filtered 16-bit `block` into `sink`, as [`super::predict`]
-/// admits.
+/// admits: in word lanes when a row holds the 16 samples a horizontal pass
+/// loads, else in the portable kernels.
 pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
     match token() {
-        Some(t) => predict_lanes(t, block, sink),
-        None => generic::predict(block, sink),
+        Some(t) if block.stride >= 16 => predict_lanes(t, block, sink),
+        _ => generic::predict(block, sink),
     }
 }
 
+/// The tap pairs of the horizontal pass of a kernel: those of `taps`, an
+/// odd count with one more pair, whose taps are zero. A row is loaded whole
+/// whatever its taps, so the pair reads nothing more, and the kernels of
+/// one and of three pairs need not exist.
+pub(super) fn even_pairs(taps: &Taps) -> usize {
+    taps.count.next_multiple_of(2)
+}
+
 /// Calls `$f::<W, P, _>` for 4-column pairs or 8-column strips and the
-/// pair count.
+/// pair count of a vertical pass, or with `even` the [`even_pairs`] of a
+/// horizontal one.
 macro_rules! specialize {
     ($four:expr, $pairs:expr, $f:ident($($arg:expr),*)) => {
         match ($four, $pairs) {
@@ -51,14 +61,22 @@ macro_rules! specialize {
             (false, _) => $f::<8, 4, _>($($arg),*),
         }
     };
+    (even $four:expr, $pairs:expr, $f:ident($($arg:expr),*)) => {
+        match ($four, $pairs) {
+            (true, 2) => $f::<4, 2, _>($($arg),*),
+            (true, _) => $f::<4, 4, _>($($arg),*),
+            (false, 2) => $f::<8, 2, _>($($arg),*),
+            (false, _) => $f::<8, 4, _>($($arg),*),
+        }
+    };
 }
 
-/// Calls `$f::<W, H, V, _>` for the group width and the pair counts of
-/// both passes.
+/// Calls `$f::<W, H, V, _>` for the group width, the [`even_pairs`] of the
+/// horizontal pass and the pair count of the vertical one.
 macro_rules! specialize_pairs {
     ($four:expr, $h:expr, $v:expr, $f:ident $args:tt) => {
         specialize_pairs!(@ $four, $h, $v, $f $args,
-            [1 1, 1 2, 1 3, 1 4, 2 1, 2 2, 2 3, 2 4, 3 1, 3 2, 3 3, 3 4, 4 1, 4 2, 4 3, 4 4])
+            [2 1, 2 2, 2 3, 2 4, 4 1, 4 2, 4 3, 4 4])
     };
     (@ $four:expr, $h:expr, $v:expr, $f:ident $args:tt, [$($hh:literal $vv:literal),*]) => {
         match ($four, $h.min(4), $v.min(4)) {
@@ -134,11 +152,13 @@ fn shapes<O: WordOut>(t: Avx2, block: &Block<'_, u16>, out: &mut O, max: u16) {
         return;
     }
     match (block.horizontal, block.vertical) {
-        (Some(taps), None) => specialize!(four, taps.count, horizontal(t, block, taps, out, max)),
+        (Some(taps), None) => {
+            specialize!(even four, even_pairs(taps), horizontal(t, block, taps, out, max));
+        }
         (None, Some(taps)) => specialize!(four, taps.count, vertical(t, block, taps, out, max)),
         (Some(h_taps), Some(v_taps)) => specialize_pairs!(
             four,
-            h_taps.count,
+            even_pairs(h_taps),
             v_taps.count,
             two_pass(t, block, (h_taps, v_taps), out, max)
         ),

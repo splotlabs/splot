@@ -207,20 +207,29 @@ impl RowStart for u32 {
     }
 }
 
+/// The tap pairs of the horizontal pass of a kernel: those of `taps`, an
+/// odd count with one more pair, whose taps are zero. A row is loaded whole
+/// whatever its taps, so the pair reads nothing more, and the kernels of
+/// one and of three pairs need not exist.
+#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[inline(always)]
+pub(in crate::subpel_mc) fn even_pairs(taps: Option<&Taps>) -> usize {
+    pairs(taps).next_multiple_of(2)
+}
+
 /// Calls `$call!(H, V)` for the shape key `5 * H + V` of a kernel whose
-/// passes have `H` and `V` tap pairs; `$narrow` keys have `H` at most 2.
+/// passes have `H` ([`even_pairs`]) and `V` tap pairs; `$narrow` keys have
+/// `H` at most 2.
 macro_rules! shapes {
     ($key:expr, $narrow:literal, $call:ident) => {
         if $narrow {
             shapes!(@ $key, $call, [
-                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 5 1 0, 6 1 1, 7 1 2, 8 1 3, 9 1 4,
-                10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4
+                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4
             ])
         } else {
             shapes!(@ $key, $call, [
-                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 5 1 0, 6 1 1, 7 1 2, 8 1 3, 9 1 4,
-                10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4, 15 3 0, 16 3 1, 17 3 2, 18 3 3,
-                19 3 4, 20 4 0, 21 4 1, 22 4 2, 23 4 3, 24 4 4
+                0 0 0, 1 0 1, 2 0 2, 3 0 3, 4 0 4, 10 2 0, 11 2 1, 12 2 2, 13 2 3, 14 2 4,
+                20 4 0, 21 4 1, 22 4 2, 23 4 3, 24 4 4
             ])
         }
     };
@@ -352,7 +361,7 @@ fearless_simd::kernel!(
 #[inline]
 #[target_feature(enable = "avx2")]
 fn strips<O: LaneOut>(t: Avx2, block: &Block<'_, u8>, out: &mut O) {
-    let key = 5 * pairs(block.horizontal) + pairs(block.vertical);
+    let key = 5 * even_pairs(block.horizontal) + pairs(block.vertical);
     macro_rules! narrow {
         ($h:literal, $v:literal) => {
             pair_block::<$h, $v, 4, O>(t, block, out)

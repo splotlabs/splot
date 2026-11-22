@@ -11,8 +11,8 @@ use super::super::super::cell::{Cell as ProgramCell, Plane, Written, fullpel_u16
 use super::super::super::rows;
 use super::super::super::{CellPlacement, ReferencePlaneView};
 use super::{
-    average, generic, interleave, load8, madds, pair, pairs_of, round, store_words, sums_of, token,
-    weights,
+    average, even_pairs, generic, interleave, load8, madds, pair, pairs_of, round, store_words,
+    sums_of, token, weights,
 };
 use core::arch::x86_64::*;
 use fearless_simd::Avx2;
@@ -320,7 +320,8 @@ fn store_cell<const W: usize>(
 }
 
 /// Calls `cell::<$w, H, V, C>` for the listed tap-pair counts of both
-/// passes and both read forms, the in-place cell of `$common` pairs inline.
+/// passes, `H` the [`even_pairs`] of the horizontal one, and both read
+/// forms, the in-place cell of `$common` pairs inline.
 macro_rules! by_pairs {
     ($h:expr, $v:expr, $c:expr, $w:literal, $common:literal, $args:tt, [$($hh:literal $vv:literal),*]) => {
         #[allow(unreachable_patterns, reason = "the inline key is listed again")]
@@ -340,14 +341,13 @@ macro_rules! by_pairs {
 #[target_feature(enable = "avx2")]
 fn cell_of<const W: usize>(t: Avx2, source: &[u16], placed: &Placed) -> Option<[__m256i; 8]> {
     let &(ref reads, clamped, horizontal, vertical) = placed;
-    let pairs = |taps: Option<&Taps>| taps.map_or(0, |taps| taps.count);
-    let (h, v) = (pairs(horizontal), pairs(vertical));
+    let h = horizontal.map_or(0, even_pairs);
+    let v = vertical.map_or(0, |taps| taps.count);
     if W == 4 {
-        by_pairs!(h, v, clamped, 4, 2, (t, source, reads, (horizontal, vertical)), [0 0, 0 1, 0 2, 1 0, 1 1, 1 2, 2 0, 2 1, 2 2])
+        by_pairs!(h, v, clamped, 4, 2, (t, source, reads, (horizontal, vertical)), [0 0, 0 1, 0 2, 2 0, 2 1, 2 2])
     } else {
         by_pairs!(h, v, clamped, 8, 4, (t, source, reads, (horizontal, vertical)),
-            [0 0, 0 1, 0 2, 0 3, 0 4, 1 0, 1 1, 1 2, 1 3, 1 4, 2 0, 2 1, 2 2, 2 3, 2 4,
-             3 0, 3 1, 3 2, 3 3, 3 4, 4 0, 4 1, 4 2, 4 3, 4 4])
+            [0 0, 0 1, 0 2, 0 3, 0 4, 2 0, 2 1, 2 2, 2 3, 2 4, 4 0, 4 1, 4 2, 4 3, 4 4])
     }
 }
 
