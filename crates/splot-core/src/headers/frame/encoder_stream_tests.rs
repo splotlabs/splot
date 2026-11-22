@@ -1032,7 +1032,7 @@ fn plane_delta_q_reaches_the_parsed_headers() {
         assert!(key(&off, [-1, 0, 0]).is_err());
         let y_only = build_encoder_sequence_header(&stream(chroma, [2, 0, 0])).unwrap();
         let y_only = CoreSeqView::from_sequence(&y_only).unwrap();
-        assert!(key(&y_only, [2, 1, 1]).is_err() != mono);
+        assert_ne!(key(&y_only, [2, 1, 1]).is_err(), mono);
         assert!(key(&y_only, [64, 0, 0]).is_err());
     }
 }
