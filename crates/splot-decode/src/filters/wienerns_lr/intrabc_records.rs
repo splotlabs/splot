@@ -1070,9 +1070,6 @@ fn intrabc_luma_prediction_domain(
         geometry,
     )?;
     let tile_bounds = tile_area.luma_rect()?;
-    if !tile_bounds.is_within(storage) {
-        return Err(selectable_state_error());
-    }
     Ok(IntrabcLumaPredictionDomain {
         storage,
         tile_bounds,

@@ -394,7 +394,27 @@ mod tests {
 
     fn parse(view: &CoreSeqTileView, data: &[u8], frame: FrameSize) -> Result<TileInfo> {
         let mut reader = BitReader::new(data, ByteOffset::new(0));
-        parse_tile_info(&mut reader, view, frame, true, false, false)
+        let info = parse_tile_info(&mut reader, view, frame, true, false, false);
+        if let Ok(info) = &info {
+            assert_starts_reach_the_frame_end(info, frame);
+        }
+        info
+    }
+
+    /// `MiColStarts` and `MiRowStarts` increase strictly and end at `MiCols`
+    /// and `MiRows`, so every tile lies inside the frame.
+    pub(super) fn assert_starts_reach_the_frame_end(info: &TileInfo, frame: FrameSize) {
+        let mi = |samples: u32| 2 * (samples.saturating_add(7) >> 3);
+        for (starts, end) in [
+            (info.mi_col_starts.as_ref(), mi(frame.width)),
+            (info.mi_row_starts.as_ref(), mi(frame.height)),
+        ] {
+            assert_eq!(starts.last(), Some(&end), "{starts:?}");
+            assert!(
+                starts.windows(2).all(|pair| pair[0] < pair[1]),
+                "{starts:?}"
+            );
+        }
     }
 
     #[test]
@@ -721,8 +741,10 @@ mod tests {
 
 #[cfg(test)]
 mod proptests {
+    use super::tests::assert_starts_reach_the_frame_end;
     use super::*;
     use crate::span::ByteOffset;
+    use crate::test_support::base_view;
     use proptest::prelude::*;
 
     fn sb_flags(idx: u8) -> (bool, bool) {
@@ -738,6 +760,57 @@ mod proptests {
             0 => SuperblockSize::Block64x64,
             1 => SuperblockSize::Block128x128,
             _ => SuperblockSize::Block256x256,
+        }
+    }
+
+    proptest! {
+        /// Each branch of `tile_info()` gives tile starts inside the frame, with
+        /// the sequence layout that § 5.4.2 parses from bits.
+        #[test]
+        fn tile_starts_stay_inside_the_frame(
+            seq_data in proptest::collection::vec(any::<u8>(), 1..24),
+            data in proptest::collection::vec(any::<u8>(), 0..24),
+            seq_size in (1u32..=8192, 1u32..=8192),
+            frame_size in (1u32..=8192, 1u32..=8192),
+            sb in any::<u8>(),
+            level in 0u8..=31,
+            frame_is_intra in any::<bool>(),
+        ) {
+            let (use_256, use_128) = sb_flags(sb);
+            let seq_sb = sb_size(sb);
+            let seq_level_idx = LevelIdx::from_bits(level);
+            let mut reader = BitReader::new(&seq_data, ByteOffset::new(0));
+            let Ok(tile) = crate::headers::sequence::parse_sequence_tile_config(
+                &mut reader,
+                TileParamsInput {
+                    frame_width: seq_size.0,
+                    frame_height: seq_size.1,
+                    uniform_sb_size: seq_sb,
+                    sb_size: seq_sb,
+                    is_bridge: false,
+                    seq_tier: Tier::Main,
+                    seq_level_idx,
+                },
+            ) else {
+                return Ok(());
+            };
+            let view = CoreSeqTileView {
+                seq_tile_info_present_flag: tile.seq_tile_info_present_flag,
+                allow_tile_info_change: tile.allow_tile_info_change.unwrap_or(false),
+                seq_tile_params: tile.params,
+                seq_sb_col_starts: tile.seq_sb_col_starts,
+                seq_sb_row_starts: tile.seq_sb_row_starts,
+                seq_sb_size: seq_sb,
+                use_256x256_superblock: use_256,
+                use_128x128_superblock: use_128,
+                seq_level_idx,
+                ..base_view()
+            };
+            let frame = FrameSize::new(frame_size.0, frame_size.1);
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            if let Ok(info) = parse_tile_info(&mut reader, &view, frame, frame_is_intra, false, false) {
+                assert_starts_reach_the_frame_end(&info, frame);
+            }
         }
     }
 
