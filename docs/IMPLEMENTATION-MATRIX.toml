@@ -6588,6 +6588,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-MULTI-FRAME-HEADER"
+name = "Encoder multi-frame header OBU and frame references to it"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.7", "5.18.2", "7.3.3", "7.3.8.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-multi-frame-header"
+owner = "encoder"
+risk = "low"
+notes = "Config::multi_frame_header (2026-11-22, off by default; CLI --multi-frame-header): each key frame unit codes one OBU_MULTI_FRAME_HEADER after the sequence header and the content interpretation OBU (§ 7.3.3), with mfh_seq_header_id = 0 and mfh_id_minus_1 = 0. It codes no frame size (frames take the sequence maximum), no deblocking update (the loop-filter search picks apply_deblocking_filter per frame) and no segmentation information (segmentation stays per frame). Every key, inter, intra-only, TIP output and show-existing frame codes cur_mfh_id = 1 and no seq_header_id_in_frame_header (§ 5.18.2). The recon does not change; splot and AVM decode the streams alike."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::multi_frame_header_obu_and_references_parse_back", "crates/splot-encode/src/intra_frame_mfh_tests.rs::mfh_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_repeat_tests.rs::repeats_refer_to_the_multi_frame_header", "crates/splot-cli/tests/encode_decode_roundtrip.rs::multi_frame_header_clips_validate_and_decode"]
+commands = ["cargo test -p splot-core multi_frame_header_obu --locked", "cargo test -p splot-encode mfh --locked", "cargo test -p splot-encode multi_frame_header --locked", "cargo test -p splot-cli --test encode_decode_roundtrip multi_frame_header --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-PALETTE"
 name = "Encoder luma palette"
 category = "encoder"

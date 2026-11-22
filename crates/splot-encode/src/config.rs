@@ -167,6 +167,10 @@ pub struct Config {
     /// Fast decode: the preset takes [`Self::FAST_DECODE`] before
     /// [`Self::preset_overrides`]. Off by default.
     pub fast_decode: bool,
+    /// Multi-frame header: each key frame unit codes one multi-frame header
+    /// OBU (§ 5.7) after the sequence header, and every frame header refers
+    /// to it with `cur_mfh_id = 1` (§ 5.18.2). Off by default.
+    pub multi_frame_header: bool,
     /// The coded bits of each input frame in a first pass, in input order
     /// ([`Self::first_pass_config`]); [`RateControlMode::Vbr`] splits its
     /// budget over the frames in proportion to them. Empty (the default) is
@@ -227,6 +231,7 @@ impl Config {
             tune: Tune::Psnr,
             first_pass: Vec::new(),
             fast_decode: false,
+            multi_frame_header: false,
         }
     }
 

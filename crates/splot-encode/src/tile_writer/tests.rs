@@ -137,6 +137,7 @@ impl Case {
                 plane_delta_q: [0; 3],
                 long_term_id_plus_1: 0,
                 segment_alt_q: None,
+                multi_frame_header: false,
             },
         }
     }
