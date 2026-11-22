@@ -65,7 +65,7 @@ pub(super) fn in_first_inter_frame<R>(
 }
 
 /// A single-reference prediction from the first reference.
-fn single(mode: InterMode, mv: MotionVector) -> InterPrediction {
+pub(super) fn single(mode: InterMode, mv: MotionVector) -> InterPrediction {
     InterPrediction::Single(InterModes {
         ref_frame: 0,
         mode,

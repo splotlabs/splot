@@ -195,6 +195,25 @@ impl CdfJournal {
     }
 }
 
+/// The luma samples around the snapshot cells that the debug rollback check
+/// also compares, so a trial that writes outside its snapshot fails.
+#[cfg(debug_assertions)]
+const CHECK_MARGIN: usize = 16;
+
+/// The luma rectangle `(x, y, width, height)` of the 4x4 `rows` x `cols`,
+/// widened by `margin` samples on each side and clipped at the origin.
+fn cell_area(
+    rows: &Range<usize>,
+    cols: &Range<usize>,
+    margin: usize,
+) -> (usize, usize, usize, usize) {
+    let (x, y) = (
+        (cols.start * 4).saturating_sub(margin),
+        (rows.start * 4).saturating_sub(margin),
+    );
+    (x, y, cols.end * 4 + margin - x, rows.end * 4 + margin - y)
+}
+
 const STALE: EncoderSyntaxError =
     EncoderSyntaxError::Unsupported("a snapshot the facade can no longer restore");
 
@@ -261,6 +280,8 @@ pub struct SyntaxSnapshot {
 #[cfg(debug_assertions)]
 #[derive(PartialEq)]
 struct WholeState {
+    /// The samples of the snapshot cells widened by [`CHECK_MARGIN`].
+    samples: Vec<(PlaneId, PlaneRect, Vec<u16>)>,
     cdfs: TileCdfSubset,
     coeff: super::TileCoeffContextState,
     mi_sizes: super::TileMiSizeState,
@@ -326,11 +347,12 @@ impl IntraTileSyntax {
         if snapshot
             .check
             .as_ref()
-            .is_some_and(|whole| **whole != self.whole_state())
+            .is_some_and(|whole| **whole != self.whole_state(&snapshot.rows, &snapshot.cols))
         {
-            return Err(EncoderSyntaxError::Unsupported(
-                "a rollback that differs from the saved state",
-            ));
+            return Err(EncoderSyntaxError::Rule {
+                stage: "rollback",
+                source: "a rollback that differs from the saved state".into(),
+            });
         }
         Ok(())
     }
@@ -345,9 +367,9 @@ impl IntraTileSyntax {
         }
     }
 
-    /// The neighbour cells cover the node and its chroma reference block,
-    /// which every chroma block a leaf under the node codes lies in, from
-    /// the 8x8 origin. The samples cover the node alone.
+    /// The neighbour cells and the samples cover the node and its chroma
+    /// reference block, which every chroma block a leaf under the node codes
+    /// lies in, from the 8x8 origin.
     fn save(
         &mut self,
         node: PartitionNode,
@@ -371,6 +393,14 @@ impl IntraTileSyntax {
         self.intra_facts.grid_mut().enter_row(rows.start);
         let mut cells = Cells::default();
         self.visit_cells(&rows, &cols, Some(&mut cells), &Cells::default());
+        let samples = self
+            .recon
+            .save_samples(cell_area(&rows, &cols, 0), (sub_x, sub_y))?;
+        #[cfg(debug_assertions)]
+        let check = self
+            .journal
+            .sample()
+            .then(|| Box::new(self.whole_state(&rows, &cols)));
         Ok(SyntaxSnapshot {
             generation: self.journal.generation,
             mark,
@@ -381,11 +411,11 @@ impl IntraTileSyntax {
             palettes: self.mi_sizes.palettes_mut().clone(),
             block_decoded: self.recon.block_decoded.clone(),
             sdp: self.sdp,
-            samples: self.recon.save_samples((x, y, w, h), (sub_x, sub_y))?,
+            samples,
             inter: self.inter_snapshot((x, y, w, h), since),
             segment: (self.coded_segment_ids(), self.leaf_segment()),
             #[cfg(debug_assertions)]
-            check: self.journal.sample().then(|| Box::new(self.whole_state())),
+            check,
         })
     }
 
@@ -427,8 +457,12 @@ impl IntraTileSyntax {
     }
 
     #[cfg(debug_assertions)]
-    fn whole_state(&self) -> WholeState {
+    fn whole_state(&self, rows: &Range<usize>, cols: &Range<usize>) -> WholeState {
         WholeState {
+            samples: self
+                .recon
+                .save_samples(cell_area(rows, cols, CHECK_MARGIN), self.subsampling())
+                .unwrap_or_default(),
             cdfs: self.cdfs.clone(),
             coeff: self.coeff.clone(),
             mi_sizes: self.mi_sizes.clone(),
