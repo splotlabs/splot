@@ -566,8 +566,11 @@ pub struct PresetParams {
     /// run (paris -1.35% Y at p6, -1.28% Y at p10 for +3% CPU).
     pub gdf_candidates: u8,
     /// The CDEF search also tries the frame with CDEF on skipped transform
-    /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. Off
-    /// in every row: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
+    /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. On at
+    /// p0 (p0 batch 2, 2026-11-22; 6:1:1 BD-rate, CRF 20..44, keyint 30, main
+    /// f8ddc33f4): paris f30 +0.03%, rush_hour_444 f60 +0.04%, niklas f10
+    /// -0.05%, park_joy f10 -0.01%, paris flat qp 85..190 +0.29%. Off in the
+    /// other rows: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
     pub cdef_on_skip: bool,
     /// With `loop_filter_search`, deblocking also moves the vertical and then
     /// the horizontal luma `DfDeltaQ` alone, or turns one direction off,
@@ -1436,7 +1439,7 @@ preset_table! {
         cdef_strengths:        [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         cdef_pairs:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cdef_damping_search:   [false, false, false, false, false, false, false, false, false, false, false],
-        cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
+        cdef_on_skip:          [ true, false, false, false, false, false, false, false, false, false, false],
         deblock_luma_split:    [false, false, false, false, false, false, false, false, false, false, false],
         deblock_offset_bits:   [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         df_sub_pu:             [false, false, false, false, false, false, false, false, false, false, false],
