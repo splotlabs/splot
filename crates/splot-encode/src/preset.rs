@@ -321,6 +321,13 @@ pub struct PresetParams {
     /// frames may still reference the frames before it. `0` in every row
     /// (not measured).
     pub intra_only: u8,
+    /// `n > 0` codes every `n`th periodic key frame as an
+    /// `OBU_OPEN_LOOP_KEY` (§ 7.4.4): the hidden first frame of the mini-GOP
+    /// that ends at it; the other frames of that mini-GOP are leading frames.
+    /// Scene cuts stay closed-loop. Needs `long_term_id_bits = 0`: closed-loop
+    /// long-term slots stay valid after it in sequential decoding but not at
+    /// random access. `0` in every row (not measured).
+    pub open_loop_key: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -634,6 +641,7 @@ pub struct PresetParams {
     /// With `opfl`, inter frames code `opfl_refine_type = REFINE_ALL`
     /// instead of `REFINE_SWITCHABLE`: every compound block that allows it
     /// refines with optical flow and codes no `use_optflow` (§ 5.18.3.2).
+    /// The compound shortlist ranks those blocks by the refined prediction.
     pub opfl_refine_all: bool,
     /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
     /// with a past and a future reference may code `use_refinemv`. On at p0
@@ -1080,6 +1088,18 @@ impl PresetParams {
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
         check("long_term_id_bits", self.long_term_id_bits, 0, 7, "")?;
         check("num_ref_frames", self.num_ref_frames, 0, 16, "")?;
+        check(
+            "open_loop_key",
+            self.open_loop_key,
+            0,
+            if self.long_term_id_bits == 0 {
+                u8::MAX
+            } else {
+                0
+            },
+            " (above 0 needs long_term_id_bits = 0: closed-loop long-term slots stay \
+             valid after an open-loop key frame in sequential decoding only)",
+        )?;
         for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
             let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
                 .with_ref_slots(self.num_ref_frames);
@@ -1401,6 +1421,7 @@ preset_table! {
         sef_repeat:            [false, false, false, false, false, false, false, false, false, false, false],
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        open_loop_key:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],

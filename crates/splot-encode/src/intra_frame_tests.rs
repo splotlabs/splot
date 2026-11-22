@@ -868,8 +868,17 @@ impl FrameCoder for Recording {
         self.coder.commit(frame)
     }
 
-    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>> {
-        self.coder.show_existing_frame(slot, order_hint)
+    fn end_leading_frames(&mut self) -> Result<()> {
+        self.coder.end_leading_frames()
+    }
+
+    fn show_existing_frame(
+        &mut self,
+        slot: u32,
+        order_hint: Option<u32>,
+        leading: bool,
+    ) -> Result<Vec<u8>> {
+        self.coder.show_existing_frame(slot, order_hint, leading)
     }
 
     fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
@@ -992,7 +1001,7 @@ fn order_hints_wrap_and_decode_to_the_encoder_recon() {
                     coded.temporal_unit
                 }
                 crate::gop::GopStep::ShowExisting { slot, .. } => {
-                    coder.show_existing_frame(slot, None).unwrap()
+                    coder.show_existing_frame(slot, None, false).unwrap()
                 }
             };
             units.push(unit);
@@ -1308,12 +1317,12 @@ fn random_modes(
                 return LeafChoice::inter(InterPrediction::Compound(local));
             }
             let mut side = Rng(rng.0.rotate_left(17));
-            let (reads_optflow, _) = syntax.compound_refinements(leaf, modes).unwrap();
+            let (reads_optflow, ..) = syntax.compound_refinements(leaf, modes).unwrap();
             let modes = CompoundModes {
                 optflow: reads_optflow && side.below(4) != 0,
                 ..modes
             };
-            let (_, reads_refinemv) = syntax.compound_refinements(leaf, modes).unwrap();
+            let (_, reads_refinemv, _) = syntax.compound_refinements(leaf, modes).unwrap();
             let modes = CompoundModes {
                 refinemv: reads_refinemv && side.below(4) != 0,
                 ..modes
@@ -2087,6 +2096,8 @@ mod inter_ist;
 mod inter_tx;
 #[path = "intra_tools_tests.rs"]
 mod intra_tools;
+#[path = "intrabc_inter_tests.rs"]
+mod intrabc_inter;
 #[path = "intra_frame_large_inter_tests.rs"]
 mod large_inter;
 #[path = "intra_frame_lossless_tests.rs"]

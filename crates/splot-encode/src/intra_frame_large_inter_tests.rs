@@ -30,22 +30,40 @@ pub(super) fn in_first_inter_frame<R>(
         &mut SourceResidualCoder,
     ) -> core::result::Result<R, TileWriterError>,
 ) -> R {
+    in_first_inter_frame_at(config, preset, 110, test)
+}
+
+/// [`in_first_inter_frame`] with both frames at `qindex`.
+fn in_first_inter_frame_at<R>(
+    config: &Config,
+    preset: &'static PresetParams,
+    qindex: u16,
+    test: impl FnOnce(
+        &mut IntraTileSyntax,
+        PartitionNode,
+        &mut SourceResidualCoder,
+    ) -> core::result::Result<R, TileWriterError>,
+) -> R {
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
+    let q = u32::from(qindex);
     let key = crate::gop::plan(0, config.keyint);
     coder
-        .encode_frame(&panning_frame(config, 0), &key, 110)
+        .encode_frame(&panning_frame(config, 0), &key, qindex)
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tools = crate::gop::frame_tools(
+    let mut tools = crate::gop::frame_tools(
         (&coder.preset, crate::preset::PresetContext::default()),
         &coder.tiles,
-        110,
+        q,
     );
+    if q == 0 {
+        tools.0.tx_mode = splot_core::headers::frame::TxMode::Only4x4;
+    }
     let core = plan
         .header(
             &coder.view,
             &coder.references,
-            110,
+            q,
             &FrameFilterParams::default(),
             tools,
         )
@@ -55,10 +73,10 @@ pub(super) fn in_first_inter_frame<R>(
     let sb = writer.syntax().superblock_size4() * 4;
     let source = panning_frame(config, 1);
     let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
-    let lambda = Lambda::from_qindex(110, config.bit_depth).unwrap();
+    let lambda = Lambda::from_qindex(q, config.bit_depth).unwrap();
     let mut residual =
-        SourceResidualCoder::new(&padded, 110, config.bit_depth, &coder.preset, lambda);
-    residual.context = coder.preset_context(&plan, 110);
+        SourceResidualCoder::new(&padded, q, config.bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(&plan, q);
     writer
         .search_superblock(|syntax, root| test(syntax, root, &mut residual))
         .unwrap()
@@ -135,6 +153,35 @@ fn a_128x128_inter_leaf_plans_the_chunked_residual() {
             "{chroma:?} TX_64X64"
         );
     });
+}
+
+/// A lossless 128x64 inter leaf on the bottom frame edge plans each 64x64
+/// luma chunk followed by its own 4x4 U, then V blocks: a lossless leaf
+/// groups no chroma chunks (§ 5.20.7.23 `doubleChromaW`, `!Lossless`).
+#[test]
+fn a_lossless_128x64_inter_leaf_plans_chroma_per_chunk() {
+    let mut config = config(136, 96, BitDepth::Eight, 6, 0);
+    config.chroma = PixelFormat::Yuv420;
+    let mut lossless = *preset6(true);
+    lossless.set_lossless();
+    let preset = Box::leak(Box::new(lossless));
+    let blocks = in_first_inter_frame_at(&config, preset, 0, |syntax, root, _| {
+        let bottom = syntax.children(root, Partition::Horz)?[1];
+        let leaf = syntax.leaf(bottom)?;
+        assert_eq!(leaf.dimensions()?, (128, 64));
+        assert!(syntax.dpcm_allowed() && syntax.inter_allowed(&leaf));
+        let prediction = single(InterMode::Global, MotionVector::default());
+        Ok(syntax.plan_inter_leaf(&leaf, prediction)?)
+    });
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for tx in &blocks {
+        assert_eq!(tx.tx_size, 0, "{tx:?}");
+        let chunk = (tx.x << usize::from(tx.plane > 0)) / 64;
+        if runs.last() != Some(&(tx.plane, chunk)) {
+            runs.push((tx.plane, chunk));
+        }
+    }
+    assert_eq!(runs, [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]);
 }
 
 /// A trial 128x128 inter leaf with a coded residual is rolled back whole: the

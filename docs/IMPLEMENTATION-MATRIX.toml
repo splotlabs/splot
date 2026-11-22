@@ -4832,6 +4832,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-KEY-FRAME-METADATA"
+name = "Encoder ICC profile, ITU-T T.35 and unregistered user data metadata"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.17.2", "5.17.4", "5.17.9", "5.17.13", "6.16.3", "6.16.4", "6.16.9", "6.16.12", "7.3.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/content.rs"
+change_id = "encoder-key-frame-metadata"
+owner = "encoder"
+risk = "low"
+notes = "Config::key_frame_metadata takes the bytes of an ICC profile, of metadata_itut_t35() and of metadata_user_data_unregistered(). The encoder copies each unchanged into a prefix metadata short OBU with LAYER_GLOBAL and GLOBAL_PERSISTENCE after the HDR metadata of every key frame. It refuses an ICC profile shorter than its 128-byte header, T.35 data without a country code, extension byte or payload byte, and user data shorter than its UUID. splot encode takes --icc, --itut-t35 and --user-data-unregistered files."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_content_tests.rs::key_frames_carry_the_metadata_payloads", "crates/splot-encode/src/intra_frame_content_tests.rs::avm_decodes_a_stream_with_metadata_payloads_like_splot", "crates/splot-encode/src/intra_frame_content_tests.rs::rejects_a_metadata_payload_its_syntax_cannot_carry", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::metadata_obus_parse_back", "crates/splot-cli/tests/encode_decode_roundtrip.rs::metadata_files_write_metadata_obus"]
+commands = ["cargo test -p splot-encode metadata_payload", "cargo test -p splot-cli --test encode_decode_roundtrip metadata_files"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MINIMAL-INTRA-IVF"
 name = "Encoder minimal-intra IVF temporal-unit assembler"
 category = "encoder"
@@ -6025,7 +6057,7 @@ module = "crates/splot-encode/src/mode_decision.rs"
 change_id = "enc-p0-batch1"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::opfl (on at p0-p9) and refinemv (off in the other rows; alone it measured niklas +0.23% at p6): the sequence codes enable_opfl_refine = REFINE_AUTO and enable_refinemv; inter frames with a TIP reference pair code opfl_refine_type REFINE_SWITCHABLE, others REFINE_NONE. CompoundModes::optflow and refinemv set use_optflow and use_refinemv where IntraTileSyntax::compound_refinements says the block reads them; the facade takes every reachability rule, the use_optflow and use_refinemv contexts, the single DRL of optical-flow blocks and the optical-flow distances from the decoder's compound path, predicts through the decoder's refinement grid, records the decoder's deblocking sub-PU size (compound_deblock_sub_pu_size; deblock sub-PU records match the decoder, df_sub_pu not coded yet), and stores the grid's 8x8 temporal records in place of the leaf's. The mode decision (A6 PR2) gives each of the final compound_candidates survivors the use_optflow and use_refinemv variants it reads, predicts each once through IntraTileSyntax::luma_prediction (the decoder's own refinement), and keeps the least luma SATD plus mode and filter rate; a use_refinemv variant must cost 3% less (REFINEMV_MARGIN_PCT). Off writes the old stream byte-identically. PresetParams::opfl_refine_all (change enc-opfl-refine-all, 2026-11-21; off in every row until its p0 table passes) codes opfl_refine_type = REFINE_ALL instead of REFINE_SWITCHABLE: every compound block that allows it refines with optical flow and codes no use_optflow; the facade predicts it with the decoder's compound path. Change enc-p0-batch1 (2026-11-22): p0 turns on tx_type_depth 8, warp 2, refinemv, short_refresh and compound_types 2 together; the p0 table (CRF 20..44 and flat qp 85..190, 6:1:1 BD-rate against main) measured paris f30 -1.50%, rush_hour_444 f60 -1.39%, niklas f10 -0.80%, park_joy f10 -0.47%, paris flat qp -0.90%."
+notes = "PresetParams::opfl (on at p0-p9) and refinemv (off in the other rows; alone it measured niklas +0.23% at p6): the sequence codes enable_opfl_refine = REFINE_AUTO and enable_refinemv; inter frames with a TIP reference pair code opfl_refine_type REFINE_SWITCHABLE, others REFINE_NONE. CompoundModes::optflow and refinemv set use_optflow and use_refinemv where IntraTileSyntax::compound_refinements says the block reads them; the facade takes every reachability rule, the use_optflow and use_refinemv contexts, the single DRL of optical-flow blocks and the optical-flow distances from the decoder's compound path, predicts through the decoder's refinement grid, records the decoder's deblocking sub-PU size (compound_deblock_sub_pu_size; deblock sub-PU records match the decoder, df_sub_pu not coded yet), and stores the grid's 8x8 temporal records in place of the leaf's. The mode decision (A6 PR2) gives each of the final compound_candidates survivors the use_optflow and use_refinemv variants it reads, predicts each once through IntraTileSyntax::luma_prediction (the decoder's own refinement), and keeps the least luma SATD plus mode and filter rate; a use_refinemv variant must cost 3% less (REFINEMV_MARGIN_PCT). Off writes the old stream byte-identically. PresetParams::opfl_refine_all (change enc-opfl-refine-all, 2026-11-21; off in every row until its p0 table passes) codes opfl_refine_type = REFINE_ALL instead of REFINE_SWITCHABLE: every compound block that allows it refines with optical flow and codes no use_optflow; the facade predicts it with the decoder's compound path. Change enc-opfl-refine-rank (2026-11-22): with opfl_refine_all the compound shortlist ranks each candidate that the decoder refines (the third value of IntraTileSyntax::compound_refinements, from compound_all_opfl_reachable) by the luma SATD of its refined prediction, and the others by the plain average as before. Change enc-p0-batch1 (2026-11-22): p0 turns on tx_type_depth 8, warp 2, refinemv, short_refresh and compound_types 2 together; the p0 table (CRF 20..44 and flat qp 85..190, 6:1:1 BD-rate against main) measured paris f30 -1.50%, rush_hour_444 f60 -1.39%, niklas f10 -0.80%, park_joy f10 -0.47%, paris flat qp -0.90%."
 
 [feature.status]
 mapped = "done"
@@ -6588,6 +6620,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-OPEN-LOOP-KEY"
+name = "Encoder open-loop key frames and leading frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.1", "5.18.2", "7.4.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-open-loop-key"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::open_loop_key (2026-11-22, 0 = off in every row, not measured): value N codes every Nth periodic key frame as OBU_OPEN_LOOP_KEY, the hidden layer-0 frame of the mini-GOP that ends at it, refreshing one slot; the frames before it in that mini-GOP code OBU_LEADING_TILE_GROUP, OBU_LEADING_SEF and OBU_LEADING_TIP, and after it only its slot stays valid. Scene cuts and key frames without a leading frame stay closed-loop. Needs long_term_id_bits = 0. Rate class Key. AVM decodes the streams from the start and from the open-loop key frame; splot decode does not discard leading frames at random access yet."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::open_loop_key_headers_keep_the_other_slots", "crates/splot-encode/src/gop_tests.rs::periodic_key_frames_open_their_mini_gops", "crates/splot-encode/src/intra_frame_carry_tests.rs::open_loop_key_streams_decode_alike_on_any_thread_count"]
+commands = ["cargo test -p splot-core open_loop_key --locked", "cargo test -p splot-encode open_loop --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-SEF-REPEAT"
 name = "Encoder repeats of an input frame as show-existing frames with an explicit order hint"
 category = "encoder"
@@ -6695,7 +6759,7 @@ module = "crates/splot-encode/src/intrabc.rs"
 change_id = "enc-intrabc"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::intrabc, OFF in every PRESETS row and ON in SCREEN_PRESETS (ENC-SCREEN-DETECT). Key frames code allow_intrabc = 1 with allow_global_intrabc = 1 and allow_local_intrabc = PresetParams::intrabc_local (OFF in every row, the screen rows too); inter frames code 0. The local area is a strict subset of § 6.19.7.12 check_valid_local_ibc: every source 4x4 cell coded, in the leaf's 64x64 region, the 3 regions to its left (64x64 superblocks) or the top regions of the current and previous 128x128 superblock whose buffer no newer region replaced; the colo case is not used. With the local area, the partition search does not replay a memoized tree or leaf with an IntraBC leaf (PartitionSearch::replays); it searches the node again in the coded state. Each leaf of at most 64x64 other than 64x64 (the § 5.20.5.3 and § 5.20.7.3 use_intrabc rule) and at least 8x8 gets an RD trial (a leaf under 8 samples on a side, chroma-offset leaves among them, only with PresetParams::intrabc_small, OFF in every row and the screen rows too, through the hash of the 8x8 block that holds its top-left sample; § 6.19.7.12 takes its top and left source edges from the chroma reference block) of the copy that the frame's 8x8 block hash table finds: up to 32 accepted earlier positions with the leaf's top-left hash (of the 1024 closest), then a +-4 whole-sample refinement, with the RefMvIdx of the nearest of the seq_max_bvp_drl_bits_minus_1 + 2 reference vectors (PresetParams::intrabc_drl, 0 in every row, the screen rows too). With PresetParams::intrabc_subpel (OFF in every row, the screen rows too) a half-sample and then a quarter-sample step to the 8 neighbours of that copy, priced by the squared error against the § 7.13.3.18 BILINEAR prediction from the source, can give a fractional vector, which the leaf codes with intrabc_precision = 1 (§ 5.20.5.4) and the § 6.19.7.12 bottom and right borders. With PresetParams::intrabc_morph (OFF in every row, the screen rows too; refused without bawp, whose enable_bawp lets key frames with allow_screen_content_tools code morph_pred) each IntraBC candidate gets a twin with morph_pred = 1 (§ 7.13.3.26) where the vector one sample up and left is valid too (§ 6.19.5.4 is_offset_mv_valid( -1, -1 )), and the leaf's RD trial picks one. The row_hashes and column_hashes kernels have std::simd forms and scalar twins. The facade gives EncoderInterTile an intra-frame mode (neighbour grid, reference MV bank and the decoder's IntraBC prelude state, all covered by snapshots and the debug WholeState check), writes use_intrabc, skip_txfm, intrabc_mode, the BVP DRL bits, intrabc_precision, the vector difference (IntraBC MV context) and morph_pred, checks § 6.19.7.12 is_mv_valid for the global area (plus the current or previous superblock row), predicts through the decoder's IntraBC copy and codes the residual on the inter paths. With allow_intrabc = 0 every intra frame codes byte-identically. Against main c4a1cf3 (detected sequences, f10 unless noted): screendata p6 intra Y -42.72% (1.48x CPU), p6 inter Y -31.29% (0.97x), p10 intra Y -22.43% (1.24x), p0 intra f3 Y -46.83% (1.01x); desktop_credits p6 intra Y -0.38% (1.03x), inter Y -0.34% (1.03x)."
+notes = "PresetParams::intrabc, OFF in every PRESETS row and ON in SCREEN_PRESETS (ENC-SCREEN-DETECT). Key frames code allow_intrabc = 1 with allow_global_intrabc = 1 and allow_local_intrabc = PresetParams::intrabc_local (OFF in every row, the screen rows too); inter frames code 0. The local area is a strict subset of § 6.19.7.12 check_valid_local_ibc: every source 4x4 cell coded, in the leaf's 64x64 region, the 3 regions to its left (64x64 superblocks) or the top regions of the current and previous 128x128 superblock whose buffer no newer region replaced; the colo case is not used. With the local area, the partition search does not replay a memoized tree or leaf with an IntraBC leaf (PartitionSearch::replays); it searches the node again in the coded state. Each leaf of at most 64x64 other than 64x64 (the § 5.20.5.3 and § 5.20.7.3 use_intrabc rule) and at least 8x8 gets an RD trial (a leaf under 8 samples on a side, chroma-offset leaves among them, only with PresetParams::intrabc_small, OFF in every row and the screen rows too, through the hash of the 8x8 block that holds its top-left sample; § 6.19.7.12 takes its top and left source edges from the chroma reference block) of the copy that the frame's 8x8 block hash table finds: up to 32 accepted earlier positions with the leaf's top-left hash (of the 1024 closest), then a +-4 whole-sample refinement, with the RefMvIdx of the nearest of the seq_max_bvp_drl_bits_minus_1 + 2 reference vectors (PresetParams::intrabc_drl, 0 in every row, the screen rows too). With PresetParams::intrabc_subpel (OFF in every row, the screen rows too) a half-sample and then a quarter-sample step to the 8 neighbours of that copy, priced by the squared error against the § 7.13.3.18 BILINEAR prediction from the source, can give a fractional vector, which the leaf codes with intrabc_precision = 1 (§ 5.20.5.4) and the § 6.19.7.12 bottom and right borders. With PresetParams::intrabc_morph (OFF in every row, the screen rows too; refused without bawp, whose enable_bawp lets key frames with allow_screen_content_tools code morph_pred) each IntraBC candidate gets a twin with morph_pred = 1 (§ 7.13.3.26) where the vector one sample up and left is valid too (§ 6.19.5.4 is_offset_mv_valid( -1, -1 )), and the leaf's RD trial picks one. The row_hashes and column_hashes kernels have std::simd forms and scalar twins. The facade gives EncoderInterTile an intra-frame mode (neighbour grid, reference MV bank and the decoder's IntraBC prelude state, all covered by snapshots and the debug WholeState check), writes use_intrabc, skip_txfm, intrabc_mode, the BVP DRL bits, intrabc_precision, the vector difference (IntraBC MV context) and morph_pred, checks § 6.19.7.12 is_mv_valid for the global area (plus the current or previous superblock row), predicts through the decoder's IntraBC copy and codes the residual on the inter paths. With allow_intrabc = 0 every intra frame codes byte-identically. Inter frames code allow_intrabc only under the cfg(test) hook gop::INTER_INTRABC (§ 5.18.3.4: the local area only); there the facade takes the use_intrabc and skip_txfm contexts, the spatial block-vector probes and the coded cells of the local area from the neighbour grid, as the decoder does, codes use_intrabc after is_inter = 0 in a MIXED_REGION (§ 5.20.7.3), and the partition memo replays no tree with an IntraBC leaf in a frame with the local area. Against main c4a1cf3 (detected sequences, f10 unless noted): screendata p6 intra Y -42.72% (1.48x CPU), p6 inter Y -31.29% (0.97x), p10 intra Y -22.43% (1.24x), p0 intra f3 Y -46.83% (1.01x); desktop_credits p6 intra Y -0.38% (1.03x), inter Y -0.34% (1.03x)."
 
 [feature.status]
 mapped = "done"

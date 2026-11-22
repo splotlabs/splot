@@ -3,14 +3,12 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use splot_recon::ReconSample;
-
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
-use super::super::{InterReferenceState, MotionFieldHandle, Mv};
+use super::super::{MotionFieldHandle, Mv, ReferenceMetadata};
 use parking_lot::Mutex;
 
-fn temporal_ref_order_hint<T: ReconSample>(
-    reference: &InterReferenceState<T>,
+fn temporal_ref_order_hint(
+    reference: &ReferenceMetadata,
     ref_frame_idx: &[u32],
     ref_frame: i8,
 ) -> Option<u32> {
@@ -22,8 +20,8 @@ fn temporal_ref_order_hint<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn temporal_motion_block<T: ReconSample>(
-    reference: &InterReferenceState<T>,
+pub(super) fn temporal_motion_block(
+    reference: &ReferenceMetadata,
     ref_frame_idx: &[u32],
     mi_row: usize,
     mi_col: usize,

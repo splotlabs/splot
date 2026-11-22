@@ -98,6 +98,33 @@ impl TileCdfSubset {
         Ok(symbol as u8)
     }
 
+    /// The luma palette colour index of context `ctx` (§ 8.3.2), read once
+    /// per pixel of a palette block.
+    pub(crate) fn read_palette_y_color(
+        &mut self,
+        palette_size: usize,
+        ctx: usize,
+        symbols: &mut SymbolDecoder<'_>,
+    ) -> Result<u8, BlockSymbolTraceReadError> {
+        let rows = &mut self.rows.block;
+        let symbol = match palette_size {
+            2 => read_row(symbols, row_at(rows.palette_size_2_y_color(), ctx)),
+            3 => read_row(symbols, row_at(rows.palette_size_3_y_color(), ctx)),
+            4 => read_row(symbols, row_at(rows.palette_size_4_y_color(), ctx)),
+            5 => read_row(symbols, row_at(rows.palette_size_5_y_color(), ctx)),
+            6 => read_row(symbols, row_at(rows.palette_size_6_y_color(), ctx)),
+            7 => read_row(symbols, row_at(rows.palette_size_7_y_color(), ctx)),
+            8 => read_row(symbols, row_at(rows.palette_size_8_y_color(), ctx)),
+            _ => {
+                let selector = TileCdfSelector::PaletteYColorIndex { palette_size, ctx };
+                return self
+                    .read_block_symbol_trace(selector, symbols)
+                    .map(Symbol::get);
+            }
+        };
+        Ok(symbol as u8)
+    }
+
     #[inline]
     pub(crate) fn block_rows_mut(&mut self) -> &mut BlockCdfRows {
         &mut self.rows.block
@@ -116,7 +143,7 @@ pub(crate) fn read_row<const L: usize>(
     symbols: &mut SymbolDecoder<'_>,
     row: &mut [u16; L],
 ) -> usize {
-    symbols.read_trusted_configured(row) as usize
+    symbols.read_trusted(row) as usize
 }
 
 /// `rows[ctx]` with the context clamped into the array: every context the

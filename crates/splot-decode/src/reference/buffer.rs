@@ -23,7 +23,7 @@ use crate::pipeline::PipelineFrame;
 use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::frame_tasks::SplitSample;
 use crate::pipeline::inflight::RefFrameSlot;
-use crate::prediction::inter::InterReferenceState;
+use crate::prediction::inter::{InterReferenceState, ReferenceMetadata};
 
 const NO_LR_FRAME_FILTER_TAPS: SlotFrameFilterTaps = [InlineVec::empty(InlineVec::empty(0)); 3];
 
@@ -346,7 +346,7 @@ impl RuntimeReferenceBuffer {
             let reference_slot = ReferenceSlot::new(i)?;
             ensure_slot_matches_frame(i, slot, frame_index, reference_frame.info())?;
             state.push_slot(slot, frame);
-            state.store.put(reference_slot, reference_frame)?;
+            state.put(reference_slot, reference_frame)?;
         }
         Ok(state)
     }
@@ -479,7 +479,7 @@ fn ensure_slot_matches_frame(
 /// allocation of its own.
 pub(crate) type RefSlots<T> = splot_core::tile::InlineVec<T, MAX_REF_FRAMES>;
 
-impl<T: ReconSample> InterReferenceState<T> {
+impl ReferenceMetadata {
     fn push_slot(&mut self, slot: &Slot, frame: Option<&PipelineFrame>) {
         self.ref_valid.push(slot.valid);
         self.ref_order_hint.push(slot.order_hint);

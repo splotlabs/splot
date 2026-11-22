@@ -7,7 +7,7 @@
 
 use super::*;
 
-use splot_recon::{ReferenceFrameStore, ReferenceSlot};
+use splot_recon::ReferenceSlot;
 
 use crate::pipeline::frame_tasks::SplitSample;
 use crate::prediction::inter::InterReferenceState;
@@ -185,14 +185,11 @@ fn pixel_reference_wait_drains_later_slots_after_the_first_failure() {
             .set(SlotValue::Ready(SharedFrame::new(frame)))
             .is_ok()
     );
-    let mut references = InterReferenceState::<u8>::empty().expect("reference state");
-    references.store = ReferenceFrameStore::with_capacity(2).expect("reference store");
+    let mut references = InterReferenceState::<u8>::with_slot_count(2).expect("reference state");
     references
-        .store
         .put(ReferenceSlot::new(0).expect("first slot"), failed)
         .expect("store failed slot");
     references
-        .store
         .put(ReferenceSlot::new(1).expect("second slot"), late.share())
         .expect("store late slot");
     let gate = references.pixel_reference_gate([u32::MAX, 0, 0, 7, 1, 1]);

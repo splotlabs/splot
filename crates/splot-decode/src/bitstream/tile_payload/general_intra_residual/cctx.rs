@@ -134,7 +134,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
                 &setup.transform()?,
                 dequant,
                 residual,
-                &mut scratch.transform,
+                &mut scratch.transform[0],
             )?;
             reconstruct_add_residual(prediction, residual, bit_depth, out)?;
         }
@@ -205,7 +205,7 @@ pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
             &setup.transform()?,
             dequant,
             residual,
-            &mut scratch.transform,
+            &mut scratch.transform[0],
         )?;
         surface.add_residual_rect_block(plane, x, y, size, residual)?;
     }

@@ -6,7 +6,7 @@
 //! Feature tracking: `DECODE-TILE-PARTITION-SYMBOL-READ-BOUNDARY`.
 
 use splot_core::Error as CoreError;
-use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder};
+use splot_core::symbol::{Symbol, SymbolDecoder};
 
 use super::block_read::BlockSymbolTraceReadError;
 use super::{TileCdfError, TileCdfSelector, TileCdfSubset};
@@ -55,11 +55,7 @@ impl TileCdfSubset {
             _ => None,
         };
         if let Some(row) = row {
-            let symbol = match symbols.cdf_update_mode() {
-                CdfUpdateMode::Enabled => symbols.read_trusted::<3, true>(row),
-                CdfUpdateMode::Disabled => symbols.read_trusted::<3, false>(row),
-            };
-            return Ok(symbol != 0);
+            return Ok(symbols.read_trusted(row) != 0);
         }
         Ok(self.read_partition_entry_symbol(selector, symbols)?.get() != 0)
     }

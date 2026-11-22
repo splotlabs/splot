@@ -81,6 +81,10 @@ thread_local! {
     /// pair its only compound candidate on this thread.
     pub(crate) static FORCE_GLOBAL_GLOBAL: core::cell::Cell<bool> =
         const { core::cell::Cell::new(false) };
+    /// Ranked compound candidates on this thread: refined, not refined, and
+    /// refined `GLOBAL_GLOBALMV`.
+    pub(crate) static RANKED_REFINED: core::cell::Cell<[usize; 3]> =
+        const { core::cell::Cell::new([0; 3]) };
 }
 #[cfg(test)]
 thread_local! {
@@ -1055,7 +1059,24 @@ impl TrialCoder<'_, '_> {
                 {
                     continue;
                 }
-                let satd = if self.preset.implicit_mask {
+                let refined = self.preset.opfl_refine_all
+                    && codable(
+                        self.syntax
+                            .compound_refinements(leaf, trial)
+                            .map_err(Into::into),
+                    )?
+                    .is_some_and(|(.., refined)| refined);
+                #[cfg(test)]
+                RANKED_REFINED.set({
+                    let global = trial.mode == CompoundMode::GlobalGlobal;
+                    let [yes, no, global_yes] = RANKED_REFINED.get();
+                    [
+                        yes + usize::from(refined),
+                        no + usize::from(!refined),
+                        global_yes + usize::from(refined && global),
+                    ]
+                });
+                let satd = if self.preset.implicit_mask || refined {
                     let prediction = InterPrediction::Compound(trial);
                     let Some((satd, _)) = self.luma_score(leaf, prediction)? else {
                         continue;
@@ -1201,7 +1222,7 @@ impl TrialCoder<'_, '_> {
     ) -> Result<CompoundModes> {
         let mut variants = vec![trial];
         if self.preset.opfl || self.preset.refinemv {
-            let (reads_optflow, _) = self.syntax.compound_refinements(leaf, trial)?;
+            let (reads_optflow, ..) = self.syntax.compound_refinements(leaf, trial)?;
             if reads_optflow {
                 variants.push(CompoundModes {
                     optflow: true,
@@ -1631,10 +1652,10 @@ fn codable<T>(result: Result<T>) -> Result<Option<T>> {
 }
 
 impl PartitionSearch for TrialCoder<'_, '_> {
-    /// A tree with an IntraBC leaf replays only without the local area,
-    /// whose vectors depend on what is coded before the leaf.
+    /// A tree with an IntraBC leaf replays only in a frame without the
+    /// local area, whose vectors depend on what is coded before the leaf.
     fn replays(&self, tree: &PartitionTree) -> bool {
-        let replays = !self.preset.intrabc_local
+        let replays = !self.syntax.intrabc_local_area()
             || tree.count_leaves(&|choice: &LeafChoice| choice.intrabc.is_some()) == 0;
         #[cfg(test)]
         SKIPPED_REPLAYS.set(SKIPPED_REPLAYS.get() + usize::from(!replays));
@@ -1850,10 +1871,6 @@ impl TrialCoder<'_, '_> {
                 self.preset.intrabc_morph,
             ),
         )?);
-        #[cfg(test)]
-        if FORCE_INTRABC.get() && candidates.iter().any(|choice| choice.intrabc.is_some()) {
-            candidates.retain(|choice| choice.intrabc.is_some());
-        }
         if inter {
             let inter = self.inter_candidates(&leaf)?;
             #[cfg(test)]
@@ -1869,6 +1886,10 @@ impl TrialCoder<'_, '_> {
                 candidates.clear();
             }
             candidates.extend(inter);
+        }
+        #[cfg(test)]
+        if FORCE_INTRABC.get() && candidates.iter().any(|choice| choice.intrabc.is_some()) {
+            candidates.retain(|choice| choice.intrabc.is_some());
         }
         let candidates = self.mds0(&leaf, candidates)?;
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
