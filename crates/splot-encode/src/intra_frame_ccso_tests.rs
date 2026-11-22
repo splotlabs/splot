@@ -46,7 +46,7 @@ fn ccso_stream_tiles(
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>, bool) {
     let mut config = config(200, 96, BitDepth::Eight, 9, qp);
     config.chroma = chroma;
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2,
         rows_log2: 0,
     };
@@ -360,7 +360,7 @@ fn avm_decodes_ccso_block_reuse_frames_like_splot() {
 #[test]
 fn facade_saves_the_ccso_parameters_of_each_slot() {
     let mut config = config(200, 96, BitDepth::Eight, 9, 170);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };

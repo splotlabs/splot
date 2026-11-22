@@ -36,7 +36,7 @@ fn sdp_stream(case: SdpCase, threads: usize, chroma: u8) -> (Vec<Vec<u8>>, Vec<u
     let mut config = config(width, height, bit_depth, preset, QP);
     config.chroma = format;
     config.keyint = core::num::NonZeroU32::new(2).unwrap();
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2,
         rows_log2,
     };

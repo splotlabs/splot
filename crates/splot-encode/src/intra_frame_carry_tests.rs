@@ -114,7 +114,7 @@ fn inter_frames_start_from_the_primary_reference_cdfs() {
 /// A mini-GOP stream in 2x2 tiles, coded through the [`Encoder`] on `threads`.
 fn tiled_mini_gop(threads: usize) -> (Config, Vec<Vec<u8>>, Vec<u8>) {
     let mut config = config(72, 72, BitDepth::Eight, 7, 100);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 1,
     };
@@ -153,7 +153,7 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
     let stream = |preset: PresetParams, threads: usize| {
         let preset: &'static PresetParams = Box::leak(Box::new(preset));
         let mut config = config(136, 136, BitDepth::Eight, 6, 150);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 1,
         };
@@ -277,7 +277,7 @@ fn sequence_tile_info_streams_decode_alike_on_any_thread_count() {
                 ..params
             }));
             let mut config = config(136, 136, BitDepth::Eight, 6, 150);
-            config.tiles = TileLayout {
+            config.tiles = TileLayout::Uniform {
                 cols_log2: 1,
                 rows_log2: 1,
             };

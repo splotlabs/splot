@@ -33,7 +33,7 @@ fn staged_stream(
     threads: usize,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, usize) {
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -197,7 +197,7 @@ fn fnv(bytes: &[u8]) -> u64 {
 /// one thread).
 fn two_pass_stream(preset: u8, threads: usize) -> (Vec<u8>, Vec<u8>, usize, usize) {
     let mut config = config(136, 72, BitDepth::Ten, preset, 200);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };

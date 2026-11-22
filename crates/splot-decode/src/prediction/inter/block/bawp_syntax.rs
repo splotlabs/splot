@@ -43,7 +43,7 @@ pub(crate) fn read_bawp_syntax(
         return Ok(BawpSyntax::default());
     }
 
-    if read_row(symbols, &mut cdfs.block_rows_mut().use_bawp) == 0 {
+    if read_row(symbols, cdfs.block_rows_mut().use_bawp()) == 0 {
         return Ok(BawpSyntax::default());
     }
 

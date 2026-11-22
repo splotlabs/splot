@@ -22,7 +22,7 @@ fn gdf_stream(
     preset: &'static PresetParams,
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>, bool) {
     let mut config = config(200, 136, BitDepth::Ten, 9, 200);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 1,
     };

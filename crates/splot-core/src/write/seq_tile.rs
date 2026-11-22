@@ -46,8 +46,9 @@ use crate::headers::sequence::{
     CdefOnSkipTxfm, SequenceFilterConfig, SequenceHeader, SequenceTileConfig, SuperblockSize,
 };
 use crate::tile::{
-    MAX_TILE_AREA, MAX_TILE_COLS, MAX_TILE_ROWS, MAX_TILE_WIDTH, TileParams, TileParamsInput,
-    mi_width_log2, num_4x4_blocks_wide, tile_log2, tile_scaling_factors, uniform_spacing,
+    MAX_TILE_AREA, MAX_TILE_COLS, MAX_TILE_ROWS, MAX_TILE_WIDTH, TileLayout, TileParams,
+    TileParamsInput, TileStarts, mi_width_log2, num_4x4_blocks_wide, tile_log2,
+    tile_scaling_factors, uniform_spacing,
 };
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
@@ -408,6 +409,93 @@ pub(crate) fn write_tile_params(
         write_non_uniform_tile_params(writer, sb_col_starts, sb_row_starts, &grid)?;
     }
     Ok(())
+}
+
+/// The § 5.18.7.3 layout that a uniform `tile_params()` of `cols_log2` x `rows_log2`
+/// tiles over `input` decodes to: each log2 is clamped into its `[min, max]` loop range
+/// (`minLog2TileRows` follows the coded column count), as the increment runs of
+/// [`write_tile_params`] code it.
+///
+/// # Errors
+/// [`WriteError::NonCanonicalSequenceValue`] for a reserved `seq_level_idx`.
+pub(crate) fn uniform_tile_layout(
+    input: &TileParamsInput,
+    cols_log2: u8,
+    rows_log2: u8,
+) -> WriteResult<TileLayout> {
+    let grid = compute_tile_grid(input).ok_or(WriteError::NonCanonicalSequenceValue {
+        what: "tile_params_level",
+    })?;
+    let clamp = |log2: u8, min: u8, max: u8| log2.min(max).max(min.min(max));
+    let cols_log2 = clamp(cols_log2, grid.min_log2_tile_cols, grid.max_log2_tile_cols);
+    let cols = uniform_spacing(cols_log2, grid.mi_cols, input.uniform_sb_size);
+    let tile_cols_log2 = tile_log2(1, cols.count);
+    let min_rows_log2 = grid.min_log2_tiles.saturating_sub(tile_cols_log2);
+    let rows_log2 = clamp(rows_log2, min_rows_log2, grid.max_log2_tile_rows);
+    let rows = uniform_spacing(rows_log2, grid.mi_rows, input.uniform_sb_size);
+    Ok(TileLayout {
+        params: TileParams {
+            tile_cols: cols.count,
+            tile_rows: rows.count,
+            tile_cols_log2,
+            tile_rows_log2: tile_log2(1, rows.count),
+            sb_cols: grid.sb_cols,
+            sb_rows: grid.sb_rows,
+            uniform_spacing: true,
+            covers_cols: true,
+            covers_rows: true,
+        },
+        sb_col_starts: cols.starts,
+        sb_row_starts: rows.starts,
+        sb_shift2: mi_width_log2(input.uniform_sb_size),
+    })
+}
+
+/// The § 5.18.7.3 non-uniform layout (`uniform_tile_spacing_flag = 0`) whose tiles start
+/// at `sb_col_starts` and `sb_row_starts`, superblocks of `input.sb_size`; the last
+/// column and row run to the frame edge.
+///
+/// # Errors
+/// [`WriteError::NonCanonicalSequenceValue`] for a reserved `seq_level_idx`, starts
+/// that are not `0` then strictly increasing inside the frame, or more than
+/// `MAX_TILE_COLS` columns or `MAX_TILE_ROWS` rows; [`WriteError::ValueOutOfRange`] for
+/// a tile wider than `maxTileWidthSb` or higher than `maxTileHeightSb`.
+pub(crate) fn explicit_tile_layout(
+    input: &TileParamsInput,
+    sb_col_starts: &[u32],
+    sb_row_starts: &[u32],
+) -> WriteResult<TileLayout> {
+    let grid = compute_tile_grid(input).ok_or(WriteError::NonCanonicalSequenceValue {
+        what: "tile_params_level",
+    })?;
+    let starts = |starts: &[u32], max: u32, what| {
+        TileStarts::from_iter_checked(starts.iter().copied())
+            .filter(|starts| starts.len() <= max as usize)
+            .ok_or(WriteError::NonCanonicalSequenceValue { what })
+    };
+    let (cols, rows) = (
+        starts(sb_col_starts, MAX_TILE_COLS, "tile_col_starts")?,
+        starts(sb_row_starts, MAX_TILE_ROWS, "tile_row_starts")?,
+    );
+    let count = |starts: &TileStarts| starts.len() as u32;
+    let params = TileParams {
+        tile_cols: count(&cols),
+        tile_rows: count(&rows),
+        tile_cols_log2: tile_log2(1, count(&cols)),
+        tile_rows_log2: tile_log2(1, count(&rows)),
+        sb_cols: grid.sb_cols,
+        sb_rows: grid.sb_rows,
+        uniform_spacing: false,
+        covers_cols: true,
+        covers_rows: true,
+    };
+    check_tile_params_encodable(&params, &cols, &rows, input, &grid)?;
+    Ok(TileLayout {
+        params,
+        sb_col_starts: cols,
+        sb_row_starts: rows,
+        sb_shift2: mi_width_log2(input.sb_size),
+    })
 }
 
 /// Writes the `increment_tile_*_log2` unary run for the uniform branch (§ 5.18.7.3): one

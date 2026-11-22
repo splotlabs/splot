@@ -3,56 +3,8 @@
 
 //! Crate-private AV2 tile CDF selection and lifecycle boundaries.
 
-/// Reinterprets a nested CDF-row array as one contiguous slice of rows; each
-/// trailing `flatten` token peels one nesting level, mirroring the iterator
-/// `.flatten()` chains these lifecycle macros previously built.
-macro_rules! flat_cdf_rows {
-    ($e:expr) => { &$e[..] };
-    ($e:expr, $f:ident $(, $rest:ident)*) => { flat_cdf_rows!($e.as_flattened() $(, $rest)*) };
-}
-macro_rules! flat_cdf_rows_mut {
-    ($e:expr) => { &mut $e[..] };
-    ($e:expr, $f:ident $(, $rest:ident)*) => { flat_cdf_rows_mut!($e.as_flattened_mut() $(, $rest)*) };
-}
-
-macro_rules! tile_cdf_saved_rows {
-    ($row:ident, $rows:ident) => {
-        $rows!(do_split.flatten());
-        $rows!(do_ext_partition.flatten());
-        $rows!(do_square_split.flatten());
-        $rows!(rect_type.flatten());
-        $rows!(do_uneven_4way_partition.flatten());
-        $rows!(tx_do_partition.flatten().flatten());
-        $rows!(tx_2or3_partition_type.flatten().flatten());
-        $rows!(tx_partition_type.flatten().flatten());
-        $rows!(tx_partition_type_reduced.flatten().flatten());
-        $rows!(lossless_tx_size.flatten());
-        $row!(lossless_inter_tx_type);
-        $row!(delta_q);
-        $row!(use_gdf);
-        $row!(bru_mode);
-        $rows!(cdef_index0);
-        $rows!(ccso_blk.flatten());
-        $row!(cdef_index_minus1_with3);
-        $row!(cdef_index_minus1_with4);
-        $row!(cdef_index_minus1_with5);
-        $row!(cdef_index_minus1_with6);
-        $row!(cdef_index_minus1_with7);
-        $row!(cdef_index_minus1_with8);
-        $rows!(intrabc);
-        $row!(intrabc_mode);
-        $row!(intrabc_precision);
-        $rows!(morph_pred);
-        $rows!(fsc_mode.flatten());
-        $rows!(mrl_index);
-        $rows!(mrl_sec_index);
-        $rows!(region_type);
-        $rows!(seg_id_ext_flag);
-        $rows!(segment_id);
-        $rows!(segment_id_ext);
-        $rows!(segment_id_predicted);
-    };
-}
+#[macro_use]
+mod layout;
 
 pub(crate) mod block_context;
 pub(crate) mod block_read;
@@ -94,9 +46,9 @@ pub(crate) use self::block_rows::{
 };
 pub(crate) use self::coeff_rows::{CoeffBaseRow, CoeffCdfRows, CoeffCdfSelector, CoeffLevelRows};
 #[cfg(any(debug_assertions, fuzzing, test))]
-pub(in crate::bitstream::tile_payload::cdf) use self::util::cdf_rows_valid;
+pub(in crate::bitstream::tile_payload::cdf) use self::util::cdf_store_valid;
 pub(in crate::bitstream::tile_payload::cdf) use self::util::{
-    avg_cdf_row, avg_cdf_rows, blend_cdf_row, blend_cdf_rows, scale_cdf_count, scale_cdf_rows,
+    avg_cdf_store, blend_cdf_store, scale_cdf_store,
 };
 use self::util::{
     checked_context, checked_plane, checked_square_split_plane, floor_log2, tx_partition_type_array,
@@ -168,43 +120,6 @@ impl CoeffCdfQContext {
     }
 }
 
-type DoSplitCdfRows = [[[u16; CDF_ROW_LEN]; DO_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
-type DoExtPartitionCdfRows =
-    [[[u16; CDF_ROW_LEN]; DO_EXT_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
-type DoSquareSplitCdfRows =
-    [[[u16; CDF_ROW_LEN]; DO_SQUARE_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
-type DoUneven4WayPartitionCdfRows =
-    [[[u16; CDF_ROW_LEN]; DO_UNEVEN_4WAY_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
-type RectTypeCdfRows = [[[u16; CDF_ROW_LEN]; RECT_TYPE_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
-type TxDoPartitionCdfRows =
-    [[[[u16; CDF_ROW_LEN]; TXFM_SPLIT_GROUPS]; TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
-type Tx2Or3PartitionTypeCdfRows = [[[[u16; CDF_ROW_LEN]; TX_2OR3_PARTITION_TYPE_CONTEXTS];
-    TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
-type TxPartitionTypeCdfRows = [[[[u16; TX_PARTITION_TYPE_ROW_LEN]; TX_PARTITION_TYPE_CONTEXTS];
-    TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
-type LosslessTxSizeCdfRows =
-    [[[u16; CDF_ROW_LEN]; LOSSLESS_TX_SIZE_IS_INTER_CONTEXTS]; LOSSLESS_TX_SIZE_GROUPS];
-type LosslessInterTxTypeCdfRow = [u16; CDF_ROW_LEN];
-type DeltaQCdfRow = [u16; DELTA_Q_CDF_ROW_LEN];
-type FscModeCdfRows = [[[u16; CDF_ROW_LEN]; FSC_BSIZE_CONTEXTS]; FSC_MODE_CONTEXTS];
-type CdefIndex0CdfRows = [[u16; CDF_ROW_LEN]; CDEF_STRENGTH_INDEX0_CONTEXTS];
-type CcsoBlkCdfRows = [[[u16; CDF_ROW_LEN]; CCSO_CONTEXTS]; CCSO_PLANES];
-type CdefIndexMinus1With3CdfRow = [u16; CDEF_INDEX_MINUS1_WITH3_ROW_LEN];
-type CdefIndexMinus1With4CdfRow = [u16; CDEF_INDEX_MINUS1_WITH4_ROW_LEN];
-type CdefIndexMinus1With5CdfRow = [u16; CDEF_INDEX_MINUS1_WITH5_ROW_LEN];
-type CdefIndexMinus1With6CdfRow = [u16; CDEF_INDEX_MINUS1_WITH6_ROW_LEN];
-type CdefIndexMinus1With7CdfRow = [u16; CDEF_INDEX_MINUS1_WITH7_ROW_LEN];
-type CdefIndexMinus1With8CdfRow = [u16; CDEF_INDEX_MINUS1_WITH8_ROW_LEN];
-type IntrabcCdfRows = [[u16; CDF_ROW_LEN]; INTRABC_CONTEXTS];
-type IntrabcModeCdfRow = [u16; CDF_ROW_LEN];
-type IntrabcPrecisionCdfRow = [u16; CDF_ROW_LEN];
-type MorphPredCdfRows = [[u16; CDF_ROW_LEN]; MORPH_PRED_CONTEXTS];
-type MrlIndexCdfRows = [[u16; MRL_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
-type MrlSecIndexCdfRows = [[u16; MRL_SEC_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
-type SegmentIdCdfRows = [[u16; SEGMENT_ID_ROW_LEN]; SEGMENT_ID_CONTEXTS];
-type SegIdExtFlagCdfRows = [[u16; SEG_ID_EXT_FLAG_ROW_LEN]; SEGMENT_ID_CONTEXTS];
-type SegmentIdPredictedCdfRows = [[u16; CDF_ROW_LEN]; SEGMENT_ID_CONTEXTS];
-type RegionTypeCdfRows = [[u16; CDF_ROW_LEN]; INTER_SDP_BSIZE_GROUPS];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCdfPolicyInput {
     tile_cols: u32,
@@ -973,45 +888,48 @@ pub(crate) fn tile_cdf_save_policy(
     })
 }
 
-/// `Copy` so that resetting a boxed table is one copy into place, never a
-/// 48 KB temporary on the stack.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TileCdfRows {
-    do_split: DoSplitCdfRows,
-    do_ext_partition: DoExtPartitionCdfRows,
-    do_square_split: DoSquareSplitCdfRows,
-    rect_type: RectTypeCdfRows,
-    do_uneven_4way_partition: DoUneven4WayPartitionCdfRows,
-    tx_do_partition: TxDoPartitionCdfRows,
-    tx_2or3_partition_type: Tx2Or3PartitionTypeCdfRows,
-    tx_partition_type: TxPartitionTypeCdfRows,
-    tx_partition_type_reduced: TxPartitionTypeCdfRows,
-    lossless_tx_size: LosslessTxSizeCdfRows,
-    lossless_inter_tx_type: LosslessInterTxTypeCdfRow,
-    delta_q: DeltaQCdfRow,
-    use_gdf: [u16; CDF_ROW_LEN],
-    bru_mode: [u16; 4],
-    cdef_index0: CdefIndex0CdfRows,
-    ccso_blk: CcsoBlkCdfRows,
-    cdef_index_minus1_with3: CdefIndexMinus1With3CdfRow,
-    cdef_index_minus1_with4: CdefIndexMinus1With4CdfRow,
-    cdef_index_minus1_with5: CdefIndexMinus1With5CdfRow,
-    cdef_index_minus1_with6: CdefIndexMinus1With6CdfRow,
-    cdef_index_minus1_with7: CdefIndexMinus1With7CdfRow,
-    cdef_index_minus1_with8: CdefIndexMinus1With8CdfRow,
-    intrabc: IntrabcCdfRows,
-    intrabc_mode: IntrabcModeCdfRow,
-    intrabc_precision: IntrabcPrecisionCdfRow,
-    morph_pred: MorphPredCdfRows,
-    fsc_mode: FscModeCdfRows,
-    mrl_index: MrlIndexCdfRows,
-    mrl_sec_index: MrlSecIndexCdfRows,
-    seg_id_ext_flag: SegIdExtFlagCdfRows,
-    segment_id: SegmentIdCdfRows,
-    segment_id_ext: SegmentIdCdfRows,
-    segment_id_predicted: SegmentIdPredictedCdfRows,
-    region_type: RegionTypeCdfRows,
-    block: BlockCdfRows,
+cdf_rows! {
+    /// `Copy` so that resetting a boxed table is one copy into place, never a
+    /// 48 KB temporary on the stack.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) struct TileCdfRows[TileCdfElement](q: CoeffCdfQContext) {
+        do_split[DO_SPLIT_PLANE_CONTEXTS][DO_SPLIT_CONTEXTS]: CDF_ROW_LEN = DEFAULT_DO_SPLIT_CDF,
+        do_ext_partition[DO_SPLIT_PLANE_CONTEXTS][DO_EXT_PARTITION_CONTEXTS]: CDF_ROW_LEN = DEFAULT_DO_EXT_PARTITION_CDF,
+        do_square_split[DO_SPLIT_PLANE_CONTEXTS][DO_SQUARE_SPLIT_CONTEXTS]: CDF_ROW_LEN = DEFAULT_DO_SQUARE_SPLIT_CDF,
+        rect_type[DO_SPLIT_PLANE_CONTEXTS][RECT_TYPE_CONTEXTS]: CDF_ROW_LEN = DEFAULT_RECT_TYPE_CDF,
+        do_uneven_4way_partition[DO_SPLIT_PLANE_CONTEXTS][DO_UNEVEN_4WAY_PARTITION_CONTEXTS]: CDF_ROW_LEN = DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
+        tx_do_partition[TX_FSC_CONTEXTS][TX_IS_INTER_CONTEXTS][TXFM_SPLIT_GROUPS]: CDF_ROW_LEN = DEFAULT_TX_DO_PARTITION_CDF,
+        tx_2or3_partition_type[TX_FSC_CONTEXTS][TX_IS_INTER_CONTEXTS][TX_2OR3_PARTITION_TYPE_CONTEXTS]: CDF_ROW_LEN = DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
+        tx_partition_type[TX_FSC_CONTEXTS][TX_IS_INTER_CONTEXTS][TX_PARTITION_TYPE_CONTEXTS]: TX_PARTITION_TYPE_ROW_LEN = DEFAULT_TX_PARTITION_TYPE_CDF,
+        tx_partition_type_reduced[TX_FSC_CONTEXTS][TX_IS_INTER_CONTEXTS][TX_PARTITION_TYPE_CONTEXTS]: TX_PARTITION_TYPE_ROW_LEN = DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
+        lossless_tx_size[LOSSLESS_TX_SIZE_GROUPS][LOSSLESS_TX_SIZE_IS_INTER_CONTEXTS]: CDF_ROW_LEN = DEFAULT_LOSSLESS_TX_SIZE_CDF,
+        lossless_inter_tx_type: CDF_ROW_LEN = DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF,
+        delta_q: DELTA_Q_CDF_ROW_LEN = DEFAULT_DELTA_Q_CDF,
+        use_gdf: CDF_ROW_LEN = DEFAULT_USE_GDF_CDF,
+        bru_mode: 4 = DEFAULT_BRU_MODE_CDF,
+        cdef_index0[CDEF_STRENGTH_INDEX0_CONTEXTS]: CDF_ROW_LEN = DEFAULT_CDEF_INDEX0_CDF,
+        ccso_blk[CCSO_PLANES][CCSO_CONTEXTS]: CDF_ROW_LEN = DEFAULT_CCSO_BLK_CDF,
+        cdef_index_minus1_with3: CDEF_INDEX_MINUS1_WITH3_ROW_LEN = DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF,
+        cdef_index_minus1_with4: CDEF_INDEX_MINUS1_WITH4_ROW_LEN = DEFAULT_CDEF_INDEX_MINUS1_WITH4_CDF,
+        cdef_index_minus1_with5: CDEF_INDEX_MINUS1_WITH5_ROW_LEN = DEFAULT_CDEF_INDEX_MINUS1_WITH5_CDF,
+        cdef_index_minus1_with6: CDEF_INDEX_MINUS1_WITH6_ROW_LEN = DEFAULT_CDEF_INDEX_MINUS1_WITH6_CDF,
+        cdef_index_minus1_with7: CDEF_INDEX_MINUS1_WITH7_ROW_LEN = DEFAULT_CDEF_INDEX_MINUS1_WITH7_CDF,
+        cdef_index_minus1_with8: CDEF_INDEX_MINUS1_WITH8_ROW_LEN = DEFAULT_CDEF_INDEX_MINUS1_WITH8_CDF,
+        intrabc[INTRABC_CONTEXTS]: CDF_ROW_LEN = DEFAULT_INTRABC_CDF,
+        intrabc_mode: CDF_ROW_LEN = DEFAULT_INTRABC_MODE_CDF,
+        intrabc_precision: CDF_ROW_LEN = DEFAULT_INTRABC_PRECISION_CDF,
+        morph_pred[MORPH_PRED_CONTEXTS]: CDF_ROW_LEN = DEFAULT_MORPH_PRED_CDF,
+        fsc_mode[FSC_MODE_CONTEXTS][FSC_BSIZE_CONTEXTS]: CDF_ROW_LEN = DEFAULT_FSC_MODE_CDF,
+        mrl_index[MRL_INDEX_CONTEXTS]: MRL_INDEX_ROW_LEN = DEFAULT_MRL_INDEX_CDF,
+        mrl_sec_index[MRL_INDEX_CONTEXTS]: MRL_SEC_INDEX_ROW_LEN = DEFAULT_MRL_SEC_INDEX_CDF,
+        seg_id_ext_flag[SEGMENT_ID_CONTEXTS]: SEG_ID_EXT_FLAG_ROW_LEN = DEFAULT_SEG_ID_EXT_FLAG_CDF,
+        segment_id[SEGMENT_ID_CONTEXTS]: SEGMENT_ID_ROW_LEN = DEFAULT_SEGMENT_ID_CDF,
+        segment_id_ext[SEGMENT_ID_CONTEXTS]: SEGMENT_ID_ROW_LEN = DEFAULT_SEGMENT_ID_EXT_CDF,
+        segment_id_predicted[SEGMENT_ID_CONTEXTS]: CDF_ROW_LEN = DEFAULT_SEGMENT_ID_PREDICTED_CDF,
+        region_type[INTER_SDP_BSIZE_GROUPS]: CDF_ROW_LEN = DEFAULT_REGION_TYPE_CDF,
+        ..
+        block: BlockCdfRows = BlockCdfRows::from_defaults(q),
+    }
 }
 
 macro_rules! selected_cdf_row {
@@ -1032,15 +950,18 @@ macro_rules! selected_cdf_row {
 macro_rules! partition_cdf_row {
     ($self:expr, $field:ident, $array:expr, $plane:expr, $ctx:expr) => {{
         let plane = $plane;
-        selected_cdf_row!($self.$field[plane], $ctx, $array, "ctx")
+        selected_cdf_row!($self.$field()[plane], $ctx, $array, "ctx")
     }};
 }
 
+type TxPartitionTypeCdfRows = [[[[u16; TX_PARTITION_TYPE_ROW_LEN]; TX_PARTITION_TYPE_CONTEXTS];
+    TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
+
 fn tx_partition_rows_mut(rows: &mut TileCdfRows, reduced: bool) -> &mut TxPartitionTypeCdfRows {
     if reduced {
-        &mut rows.tx_partition_type_reduced
+        rows.tx_partition_type_reduced()
     } else {
-        &mut rows.tx_partition_type
+        rows.tx_partition_type()
     }
 }
 
@@ -1056,46 +977,6 @@ fn default_tile_cdf_rows(base_q_idx: u32) -> &'static TileCdfRows {
 }
 
 impl TileCdfRows {
-    const fn from_defaults(q: CoeffCdfQContext) -> Self {
-        Self {
-            do_split: DEFAULT_DO_SPLIT_CDF,
-            do_ext_partition: DEFAULT_DO_EXT_PARTITION_CDF,
-            do_square_split: DEFAULT_DO_SQUARE_SPLIT_CDF,
-            rect_type: DEFAULT_RECT_TYPE_CDF,
-            do_uneven_4way_partition: DEFAULT_DO_UNEVEN_4WAY_PARTITION_CDF,
-            tx_do_partition: DEFAULT_TX_DO_PARTITION_CDF,
-            tx_2or3_partition_type: DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
-            tx_partition_type: DEFAULT_TX_PARTITION_TYPE_CDF,
-            tx_partition_type_reduced: DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
-            lossless_tx_size: DEFAULT_LOSSLESS_TX_SIZE_CDF,
-            lossless_inter_tx_type: DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF,
-            delta_q: DEFAULT_DELTA_Q_CDF,
-            use_gdf: DEFAULT_USE_GDF_CDF,
-            bru_mode: DEFAULT_BRU_MODE_CDF,
-            cdef_index0: DEFAULT_CDEF_INDEX0_CDF,
-            ccso_blk: DEFAULT_CCSO_BLK_CDF,
-            cdef_index_minus1_with3: DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF,
-            cdef_index_minus1_with4: DEFAULT_CDEF_INDEX_MINUS1_WITH4_CDF,
-            cdef_index_minus1_with5: DEFAULT_CDEF_INDEX_MINUS1_WITH5_CDF,
-            cdef_index_minus1_with6: DEFAULT_CDEF_INDEX_MINUS1_WITH6_CDF,
-            cdef_index_minus1_with7: DEFAULT_CDEF_INDEX_MINUS1_WITH7_CDF,
-            cdef_index_minus1_with8: DEFAULT_CDEF_INDEX_MINUS1_WITH8_CDF,
-            intrabc: DEFAULT_INTRABC_CDF,
-            intrabc_mode: DEFAULT_INTRABC_MODE_CDF,
-            intrabc_precision: DEFAULT_INTRABC_PRECISION_CDF,
-            morph_pred: DEFAULT_MORPH_PRED_CDF,
-            fsc_mode: DEFAULT_FSC_MODE_CDF,
-            mrl_index: DEFAULT_MRL_INDEX_CDF,
-            mrl_sec_index: DEFAULT_MRL_SEC_INDEX_CDF,
-            seg_id_ext_flag: DEFAULT_SEG_ID_EXT_FLAG_CDF,
-            segment_id: DEFAULT_SEGMENT_ID_CDF,
-            segment_id_ext: DEFAULT_SEGMENT_ID_EXT_CDF,
-            segment_id_predicted: DEFAULT_SEGMENT_ID_PREDICTED_CDF,
-            region_type: DEFAULT_REGION_TYPE_CDF,
-            block: BlockCdfRows::from_defaults(q),
-        }
-    }
-
     #[allow(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
@@ -1166,7 +1047,7 @@ impl TileCdfRows {
                     TX_IS_INTER_CONTEXTS,
                 )?;
                 selected_cdf_row!(
-                    self.tx_do_partition[fsc_mode][is_inter],
+                    self.tx_do_partition()[fsc_mode][is_inter],
                     txfm_split_group,
                     TileCdfArray::TxDoPartition,
                     "txfm_split_group"
@@ -1190,7 +1071,7 @@ impl TileCdfRows {
                     TX_IS_INTER_CONTEXTS,
                 )?;
                 selected_cdf_row!(
-                    self.tx_2or3_partition_type[fsc_mode][is_inter],
+                    self.tx_2or3_partition_type()[fsc_mode][is_inter],
                     ctx,
                     TileCdfArray::Tx2Or3PartitionType,
                     "ctx"
@@ -1212,8 +1093,8 @@ impl TileCdfRows {
                 size_group,
                 is_inter,
             } => {
-                let max_exclusive = self.lossless_tx_size.len();
-                let group = self.lossless_tx_size.get_mut(size_group).ok_or(
+                let max_exclusive = self.lossless_tx_size().len();
+                let group = self.lossless_tx_size().get_mut(size_group).ok_or(
                     TileCdfError::SelectorOutOfRange {
                         array: TileCdfArray::LosslessTxSize,
                         index_name: "size_group",
@@ -1232,17 +1113,19 @@ impl TileCdfRows {
                     })?;
                 Ok(row.as_mut_slice())
             }
-            TileCdfSelector::LosslessInterTxType => Ok(self.lossless_inter_tx_type.as_mut_slice()),
-            TileCdfSelector::DeltaQ => Ok(self.delta_q.as_mut_slice()),
-            TileCdfSelector::UseGdf => Ok(self.use_gdf.as_mut_slice()),
-            TileCdfSelector::BruMode => Ok(self.bru_mode.as_mut_slice()),
+            TileCdfSelector::LosslessInterTxType => {
+                Ok(self.lossless_inter_tx_type().as_mut_slice())
+            }
+            TileCdfSelector::DeltaQ => Ok(self.delta_q().as_mut_slice()),
+            TileCdfSelector::UseGdf => Ok(self.use_gdf().as_mut_slice()),
+            TileCdfSelector::BruMode => Ok(self.bru_mode().as_mut_slice()),
             TileCdfSelector::CdefIndex0 { ctx } => {
-                selected_cdf_row!(self.cdef_index0, ctx, TileCdfArray::CdefIndex0, "ctx")
+                selected_cdf_row!(self.cdef_index0(), ctx, TileCdfArray::CdefIndex0, "ctx")
             }
             TileCdfSelector::CcsoBlk { plane, ctx } => {
-                let max_exclusive = self.ccso_blk.len();
+                let max_exclusive = self.ccso_blk().len();
                 let plane_rows =
-                    self.ccso_blk
+                    self.ccso_blk()
                         .get_mut(plane)
                         .ok_or(TileCdfError::SelectorOutOfRange {
                             array: TileCdfArray::CcsoBlk,
@@ -1265,17 +1148,17 @@ impl TileCdfRows {
                 cdef_index_minus1_row_mut(self, strengths)
             }
             TileCdfSelector::Intrabc { ctx } => {
-                selected_cdf_row!(self.intrabc, ctx, TileCdfArray::Intrabc, "ctx")
+                selected_cdf_row!(self.intrabc(), ctx, TileCdfArray::Intrabc, "ctx")
             }
-            TileCdfSelector::IntrabcMode => Ok(self.intrabc_mode.as_mut_slice()),
-            TileCdfSelector::IntrabcPrecision => Ok(self.intrabc_precision.as_mut_slice()),
+            TileCdfSelector::IntrabcMode => Ok(self.intrabc_mode().as_mut_slice()),
+            TileCdfSelector::IntrabcPrecision => Ok(self.intrabc_precision().as_mut_slice()),
             TileCdfSelector::MorphPred { ctx } => {
-                selected_cdf_row!(self.morph_pred, ctx, TileCdfArray::MorphPred, "ctx")
+                selected_cdf_row!(self.morph_pred(), ctx, TileCdfArray::MorphPred, "ctx")
             }
             TileCdfSelector::FscMode { ctx, bsize_group } => {
                 let ctx = checked_context(TileCdfArray::FscMode, "ctx", ctx, FSC_MODE_CONTEXTS)?;
                 selected_cdf_row!(
-                    self.fsc_mode[ctx],
+                    self.fsc_mode()[ctx],
                     bsize_group,
                     TileCdfArray::FscMode,
                     "bsize_group"
@@ -1283,25 +1166,25 @@ impl TileCdfRows {
             }
             TileCdfSelector::MrlIndex { ctx } => {
                 let ctx = checked_context(TileCdfArray::MrlIndex, "ctx", ctx, MRL_INDEX_CONTEXTS)?;
-                Ok(self.mrl_index[ctx].as_mut_slice())
+                Ok(self.mrl_index()[ctx].as_mut_slice())
             }
             TileCdfSelector::MrlSecIndex { ctx } => {
                 let ctx =
                     checked_context(TileCdfArray::MrlSecIndex, "ctx", ctx, MRL_INDEX_CONTEXTS)?;
-                Ok(self.mrl_sec_index[ctx].as_mut_slice())
+                Ok(self.mrl_sec_index()[ctx].as_mut_slice())
             }
             TileCdfSelector::SegIdExtFlag { ctx } => {
                 let ctx =
                     checked_context(TileCdfArray::SegIdExtFlag, "ctx", ctx, SEGMENT_ID_CONTEXTS)?;
-                Ok(self.seg_id_ext_flag[ctx].as_mut_slice())
+                Ok(self.seg_id_ext_flag()[ctx].as_mut_slice())
             }
             TileCdfSelector::SegmentId { ctx, ext } => {
                 let ctx =
                     checked_context(TileCdfArray::SegmentId, "ctx", ctx, SEGMENT_ID_CONTEXTS)?;
                 if ext {
-                    Ok(self.segment_id_ext[ctx].as_mut_slice())
+                    Ok(self.segment_id_ext()[ctx].as_mut_slice())
                 } else {
-                    Ok(self.segment_id[ctx].as_mut_slice())
+                    Ok(self.segment_id()[ctx].as_mut_slice())
                 }
             }
             TileCdfSelector::SegmentIdPredicted { ctx } => {
@@ -1311,70 +1194,39 @@ impl TileCdfRows {
                     ctx,
                     SEGMENT_ID_CONTEXTS,
                 )?;
-                Ok(self.segment_id_predicted[ctx].as_mut_slice())
+                Ok(self.segment_id_predicted()[ctx].as_mut_slice())
             }
             TileCdfSelector::RegionType { ctx } => {
-                selected_cdf_row!(self.region_type, ctx, TileCdfArray::RegionType, "ctx")
+                selected_cdf_row!(self.region_type(), ctx, TileCdfArray::RegionType, "ctx")
             }
             selector => self.block.row_mut(selector),
         }
     }
 
     fn avg_from_tile(&mut self, tile_num: u32, tile: &Self, num_log2: u8) {
-        macro_rules! avg_row {
-            ($field:ident) => {
-                avg_cdf_row(&mut self.$field, &tile.$field, tile_num, num_log2);
-            };
-        }
-        macro_rules! avg_rows {
-            ($field:ident $(. $flatten:ident())*) => {
-                avg_cdf_rows(
-                    flat_cdf_rows_mut!(self.$field $(, $flatten)*),
-                    flat_cdf_rows!(tile.$field $(, $flatten)*),
-                    tile_num,
-                    num_log2,
-                );
-            };
-        }
-
-        tile_cdf_saved_rows!(avg_row, avg_rows);
+        avg_cdf_store(
+            &mut self.store,
+            &tile.store,
+            &Self::BOUNDS,
+            tile_num,
+            num_log2,
+        );
         self.block.avg_from_tile(tile_num, &tile.block, num_log2);
     }
 
     fn blend_from_saved(&mut self, saved: &Self) {
-        macro_rules! blend_row {
-            ($field:ident) => {
-                blend_cdf_row(&mut self.$field, &saved.$field);
-            };
-        }
-        macro_rules! blend_rows {
-            ($field:ident $(. $flatten:ident())*) => {
-                blend_cdf_rows(
-                    flat_cdf_rows_mut!(self.$field $(, $flatten)*),
-                    flat_cdf_rows!(saved.$field $(, $flatten)*),
-                );
-            };
-        }
-
-        tile_cdf_saved_rows!(blend_row, blend_rows);
+        blend_cdf_store(&mut self.store, &saved.store, &Self::BOUNDS);
         self.block.blend_from_saved(&saved.block);
+    }
+
+    fn scale_counts_for_frame_end_update(&mut self) {
+        scale_cdf_store(&mut self.store, &Self::BOUNDS);
+        self.block.scale_counts_for_frame_end_update();
     }
 
     #[cfg(any(debug_assertions, fuzzing, test))]
     pub(crate) fn rows_valid(&self) -> bool {
-        let mut valid = true;
-        macro_rules! row_valid {
-            ($field:ident) => {
-                valid &= cdf_rows_valid(core::slice::from_ref(&self.$field));
-            };
-        }
-        macro_rules! rows_valid {
-            ($field:ident $(. $flatten:ident())*) => {
-                valid &= cdf_rows_valid(flat_cdf_rows!(self.$field $(, $flatten)*));
-            };
-        }
-        tile_cdf_saved_rows!(row_valid, rows_valid);
-        valid && self.block.rows_valid()
+        cdf_store_valid(&self.store, &Self::BOUNDS) && self.block.rows_valid()
     }
 }
 
@@ -1383,12 +1235,12 @@ fn cdef_index_minus1_row_mut(
     strengths: usize,
 ) -> Result<&mut [u16], TileCdfError> {
     match strengths {
-        3 => Ok(rows.cdef_index_minus1_with3.as_mut_slice()),
-        4 => Ok(rows.cdef_index_minus1_with4.as_mut_slice()),
-        5 => Ok(rows.cdef_index_minus1_with5.as_mut_slice()),
-        6 => Ok(rows.cdef_index_minus1_with6.as_mut_slice()),
-        7 => Ok(rows.cdef_index_minus1_with7.as_mut_slice()),
-        MAX_CDEF_STRENGTH_SETS => Ok(rows.cdef_index_minus1_with8.as_mut_slice()),
+        3 => Ok(rows.cdef_index_minus1_with3().as_mut_slice()),
+        4 => Ok(rows.cdef_index_minus1_with4().as_mut_slice()),
+        5 => Ok(rows.cdef_index_minus1_with5().as_mut_slice()),
+        6 => Ok(rows.cdef_index_minus1_with6().as_mut_slice()),
+        7 => Ok(rows.cdef_index_minus1_with7().as_mut_slice()),
+        MAX_CDEF_STRENGTH_SETS => Ok(rows.cdef_index_minus1_with8().as_mut_slice()),
         actual => Err(TileCdfError::SelectorOutOfRange {
             array: TileCdfArray::CdefIndexMinus1,
             index_name: "strengths",

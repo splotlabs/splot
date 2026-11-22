@@ -393,7 +393,7 @@ pub(super) fn read_reference(
     if tip_frame_mode == TipFrameMode::Disabled || !tip_block_allowed(frontier, n4w, n4h) {
         return false;
     }
-    let rows = &mut cdfs.block_rows_mut().tip_mode;
+    let rows = cdfs.block_rows_mut().tip_mode();
     read_row(symbols, row_at(rows, neighbour_ctx.tip_mode_ctx())) != 0
 }
 

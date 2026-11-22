@@ -821,6 +821,7 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
             size_bytes: 2,
             middle_cdf_update_tile: false,
             reuse_tile_info: true,
+            explicit: None,
         };
         let key = |tiles| {
             build_key_frame_header(
@@ -902,6 +903,94 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
                 2.min(1 + u32::from(multi))
             )
         );
+    }
+}
+
+/// Explicit starts code `uniform_tile_spacing_flag = 0` and read back as the
+/// same tile edges: 64x64 superblocks, and the 128x128 superblocks of a key
+/// frame of a 256x256 sequence, which codes each start doubled. Starts outside
+/// the frame, unordered starts, a uniform log2 beside starts and a header cut
+/// before its end are refused.
+#[test]
+fn explicit_tiles_round_trip_and_bad_starts_are_refused() {
+    let starts = |values: &[u32]| TileStarts::from_iter_checked(values.iter().copied()).unwrap();
+    for (sb_size, (width, height), [cols, rows], mi_cols) in [
+        (
+            SuperblockSize::Block64x64,
+            (200, 136),
+            [starts(&[0, 1]), starts(&[0, 2])],
+            vec![0, 16, 50],
+        ),
+        (
+            SuperblockSize::Block256x256,
+            (520, 300),
+            [starts(&[0, 1, 2]), starts(&[0, 1])],
+            vec![0, 64, 128, 130],
+        ),
+    ] {
+        let seq =
+            build_encoder_sequence_header(&params(width, height, BitDepthIdc::Eight, sb_size))
+                .unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let key = |tiles| {
+            build_key_frame_header(
+                &view,
+                60,
+                0,
+                &FrameFilterParams::default(),
+                KeyFrameTxParams::default(),
+                tiles,
+            )
+        };
+        let tiles = UniformTiles {
+            explicit: Some([cols, rows]),
+            middle_cdf_update_tile: true,
+            ..UniformTiles::default()
+        };
+        assert!(tiles.check(&view).is_ok());
+        let core = key(tiles).unwrap();
+        let info = core.tile_info.as_ref().unwrap();
+        assert!(!info.tile_params.unwrap().uniform_spacing);
+        assert_eq!(info.mi_col_starts[..], mi_cols[..]);
+        assert_eq!(info.tile_rows as usize, rows.len());
+        assert_eq!(
+            info.context_update_tile_id,
+            info.tile_cols * info.tile_rows / 2
+        );
+        assert_eq!(reparse_core(&core, &view), core);
+
+        let bytes = key_frame_header_bits(
+            &view,
+            (60, tiles),
+            0,
+            &FrameFilterParams::default(),
+            KeyFrameTxParams::default(),
+        )
+        .unwrap();
+        let cut = &bytes[..bytes.len() / 2];
+        let mut reader = BitReader::new(cut, ByteOffset::new(0));
+        let prefix =
+            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)).unwrap();
+        let mut header = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
+        let unknown = FrameReferenceStateView::unknown();
+        assert!(parse_core_body(&mut reader, &mut header, &view, None, &unknown).is_err());
+
+        let bad_cols = |values: &[u32]| UniformTiles {
+            explicit: Some([starts(values), rows]),
+            ..tiles
+        };
+        for bad in [
+            bad_cols(&[0, 9]),
+            bad_cols(&[0, 1, 1]),
+            bad_cols(&[1]),
+            UniformTiles {
+                cols_log2: 1,
+                ..tiles
+            },
+        ] {
+            assert!(bad.check(&view).is_err(), "{bad:?}");
+            assert!(key(bad).is_err(), "{bad:?}");
+        }
     }
 }
 

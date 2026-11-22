@@ -25,7 +25,7 @@ fn cfl_stream(
 ) -> (Vec<Vec<u8>>, Vec<u8>, SequenceHeader) {
     let mut config = config(136, 72, bit_depth, 9, 120);
     config.chroma = chroma;
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -1117,7 +1117,7 @@ fn fast_decode_stream(
 ) -> (Vec<Vec<u8>>, Vec<u8>, SequenceHeader, Vec<FrameHeaderCore>) {
     let mut config = config(136, 72, BitDepth::Ten, 6, 220);
     config.fast_decode = fast_decode;
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
