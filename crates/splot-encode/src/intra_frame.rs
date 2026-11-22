@@ -14,7 +14,7 @@ use splot_core::headers::frame::{
     encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
-use splot_core::tile::{MAX_TILE_COLS, TileStarts};
+use splot_core::tile::{MAX_TILE_COLS, MAX_TILE_ROWS, TileStarts};
 use splot_decode::encoder_syntax::{
     CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, ParityHiding,
     Partition, PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
@@ -238,14 +238,14 @@ fn frame_tiles(
         },
         TileLayout::Explicit { widths, heights } => {
             let sb = 4 * splot_core::tile::num_4x4_blocks_wide(params.sb_size);
-            let axis = |sizes: &[u32], frame: u32| {
+            let axis = |sizes: &[u32], frame: u32, max: u32| {
                 let sbs = frame.next_multiple_of(8).div_ceil(sb);
                 let mut starts = TileStarts::default();
                 let mut start = 0u32;
                 for &size in core::iter::once(&0).chain(sizes) {
                     start = start.saturating_add(size);
                     if start < sbs {
-                        if starts.len() == MAX_TILE_COLS as usize {
+                        if starts.len() == max as usize {
                             return Err(refused("more than 64 tile columns or rows"));
                         }
                         starts
@@ -258,7 +258,10 @@ fn frame_tiles(
                 Ok(starts)
             };
             UniformTiles {
-                explicit: Some([axis(widths, params.width)?, axis(heights, params.height)?]),
+                explicit: Some([
+                    axis(widths, params.width, MAX_TILE_COLS)?,
+                    axis(heights, params.height, MAX_TILE_ROWS)?,
+                ]),
                 ..base
             }
         }
