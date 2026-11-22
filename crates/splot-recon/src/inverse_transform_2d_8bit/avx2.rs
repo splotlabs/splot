@@ -432,9 +432,15 @@ const IDENTITY: u8 = 0;
 const SPLIT: u8 = 1;
 const DENSE: u8 = 2;
 
+/// The words between two column pairs of the row-pass output and between two
+/// rows of the tile: those of the widest block, so that neither layout
+/// depends on the block width and every offset of a pass is in bounds.
+const PAIR: usize = 32;
+const TILE_ROW: usize = 16;
+
 /// The row pass of a 16- or 32-wide block (`H = N / 2`) over the column `pairs`
 /// with the `KIND` transform on the pair `kernel` or the identity `scale`:
-/// writes pair `q` at `scratch[q * N..][..N]` and returns the written pairs.
+/// writes pair `q` at `scratch[q * PAIR..][..N]` and returns the written pairs.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 #[allow(
@@ -456,7 +462,7 @@ fn row_pass<const N: usize, const H: usize, const KIND: u8>(
         if a >= rows.coded && b >= rows.coded {
             continue;
         }
-        let Some(out) = scratch.get_mut(q * N..q * N + N) else {
+        let Some(out) = scratch.get_mut(q * PAIR..q * PAIR + N) else {
             break;
         };
         let written = if KIND == IDENTITY {
@@ -508,7 +514,7 @@ fn row_pass_direct<
         if a >= coded && b >= coded {
             continue;
         }
-        let Some(out) = scratch.get_mut(q * N..q * N + N) else {
+        let Some(out) = scratch.get_mut(q * PAIR..q * PAIR + N) else {
             break;
         };
         let written = if N == 4 {
@@ -879,7 +885,7 @@ fn row_pass8<const N: usize, const H: usize, const KIND: u8>(
         if is_zero(_mm256_set_m128i(xa, xb)) {
             continue;
         }
-        let Some(out) = scratch.get_mut(q * N..q * N + N) else {
+        let Some(out) = scratch.get_mut(q * PAIR..q * PAIR + N) else {
             break;
         };
         let ya = row(xa);
@@ -1003,18 +1009,20 @@ const RESIDUAL: u8 = 1;
 /// Column outputs kept in `rows` for an add in row order (`W <= 8`).
 const DIRECT: u8 = 2;
 
-/// Where the column pass puts the shifted output rows of chunk `c`, by
-/// `OUT`: as `i16` rows of the `W`-wide `tile` (two samples per word), clamped
+/// Where the column pass puts the shifted output rows of chunk `c` of a
+/// `w`-wide block, by `OUT`: as `i16` rows of `tile`, `TILE_ROW` words apart
+/// (a 4-wide block leaves the last 4 samples of its chunk unused), clamped
 /// into `residual`, or as `i32` rows in `rows`.
-struct Put<'a, const W: usize, const OUT: u8> {
+struct Put<'a, const OUT: u8> {
     tile: &'a mut [i32],
     residual: &'a mut [i32],
     rows: [__m256i; 16],
     round: Round,
+    w: usize,
     c: usize,
 }
 
-impl<const W: usize, const OUT: u8> Put<'_, W, OUT> {
+impl<const OUT: u8> Put<'_, OUT> {
     /// Puts output rows `a` and `b` before their `Round2`.
     #[inline]
     #[target_feature(enable = "avx2")]
@@ -1022,7 +1030,15 @@ impl<const W: usize, const OUT: u8> Put<'_, W, OUT> {
         let shift = |v| _mm256_sra_epi32(v, self.round.shift);
         let (va, vb) = (shift(va), shift(vb));
         if OUT == RESIDUAL {
-            put_residual::<W>(t, (a, b, self.c), va, vb, self.residual);
+            let (low, high) = (_mm256_set1_epi32(-256), _mm256_set1_epi32(255));
+            for (row, v) in [(a, va), (b, vb)] {
+                let v = _mm256_min_epi32(_mm256_max_epi32(v, low), high);
+                if self.w == 4 {
+                    store4(t, self.residual, 4 * row, _mm256_castsi256_si128(v));
+                } else {
+                    store8(t, self.residual, row * self.w + 8 * self.c, v);
+                }
+            }
             return;
         }
         if OUT == DIRECT {
@@ -1033,32 +1049,10 @@ impl<const W: usize, const OUT: u8> Put<'_, W, OUT> {
             }
             return;
         }
-        let packed = _mm256_packs_epi32(va, vb);
-        if W >= 8 {
-            let packed = _mm256_permute4x64_epi64::<0xD8>(packed);
-            store4(
-                t,
-                self.tile,
-                (a * W + 8 * self.c) / 2,
-                _mm256_castsi256_si128(packed),
-            );
-            store4(
-                t,
-                self.tile,
-                (b * W + 8 * self.c) / 2,
-                _mm256_extracti128_si256::<1>(packed),
-            );
-        } else {
-            let low = _mm256_castsi256_si128(packed);
-            for (row, word) in [
-                (a, _mm_cvtsi128_si64(low)),
-                (b, _mm_extract_epi64::<1>(low)),
-            ] {
-                if let Some(out) = self.tile.get_mut(2 * row..2 * row + 2) {
-                    out.copy_from_slice(&[word as i32, (word >> 32) as i32]); // splot-copy-ok: one 4-sample row
-                }
-            }
-        }
+        let packed = _mm256_permute4x64_epi64::<0xD8>(_mm256_packs_epi32(va, vb));
+        let at = |row: usize| row * TILE_ROW + 4 * self.c;
+        store4(t, self.tile, at(a), _mm256_castsi256_si128(packed));
+        store4(t, self.tile, at(b), _mm256_extracti128_si256::<1>(packed));
     }
 }
 
@@ -1079,12 +1073,12 @@ fn used_pairs(mask: u32, len: usize) -> usize {
     clippy::many_single_char_names,
     reason = "even half e, odd inputs v, kernel k and odd sum o, as in § 7.15.2.1"
 )]
-fn odd_rows<const H: usize, const P: usize, const W: usize, const OUT: u8, const U: usize>(
+fn odd_rows<const H: usize, const P: usize, const OUT: u8, const U: usize>(
     t: Avx2,
     e: &[__m256i; H],
     v: &[__m256i],
     k: &[[u32; H]; P],
-    put: &mut Put<'_, W, OUT>,
+    put: &mut Put<'_, OUT>,
 ) {
     for (n, &e) in e.iter().enumerate() {
         let o = v
@@ -1104,16 +1098,16 @@ fn odd_rows<const H: usize, const P: usize, const W: usize, const OUT: u8, const
 /// [`odd_rows`] over the first `used` odd inputs, the rest being zero.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn odd_rows_used<const H: usize, const P: usize, const W: usize, const OUT: u8>(
+fn odd_rows_used<const H: usize, const P: usize, const OUT: u8>(
     t: Avx2,
     (e, v, used): (&[__m256i; H], &[__m256i], usize),
     k: &[[u32; H]; P],
-    put: &mut Put<'_, W, OUT>,
+    put: &mut Put<'_, OUT>,
 ) {
     match used {
-        0..=2 => odd_rows::<H, P, W, OUT, 2>(t, e, v, k, put),
-        3..=4 => odd_rows::<H, P, W, OUT, 4>(t, e, v, k, put),
-        _ => odd_rows::<H, P, W, OUT, 8>(t, e, v, k, put),
+        0..=2 => odd_rows::<H, P, OUT, 2>(t, e, v, k, put),
+        3..=4 => odd_rows::<H, P, OUT, 4>(t, e, v, k, put),
+        _ => odd_rows::<H, P, OUT, 8>(t, e, v, k, put),
     }
 }
 
@@ -1121,12 +1115,12 @@ fn odd_rows_used<const H: usize, const P: usize, const W: usize, const OUT: u8>(
 /// being zero.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn dense_rows<const M: usize, const HM: usize, const W: usize, const OUT: u8, const U: usize>(
+fn dense_rows<const M: usize, const HM: usize, const OUT: u8, const U: usize>(
     t: Avx2,
     v: &[__m256i; HM],
     k: &[[u32; M]; HM],
     rnd: __m256i,
-    put: &mut Put<'_, W, OUT>,
+    put: &mut Put<'_, OUT>,
 ) {
     for m in 0..HM {
         let dot = |n: usize| {
@@ -1139,45 +1133,45 @@ fn dense_rows<const M: usize, const HM: usize, const W: usize, const OUT: u8, co
     }
 }
 
-/// The column pass of a `W`-wide, `M`-tall block (`HM = M / 2`) over the
+/// The column pass of a `w`-wide, `M`-tall block (`HM = M / 2`) over the
 /// written pairs `mask` of `pairs` with the `KIND` transform on the pair
 /// kernel `k` or the identity `scale`, through `Put` by `OUT`.
 /// Each output row is summed with its inputs in registers and put at once.
+/// A 4-wide block runs as the low half of an 8-wide chunk. `W` is the block
+/// width where the pass stores at offsets that depend on it (the residual),
+/// else 0 for the run-time width `w`.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 #[allow(
     clippy::many_single_char_names,
     reason = "kernel k, column chunk c and output rows a and b, as in § 7.15.4.1"
 )]
-fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, const OUT: u8>(
+fn col_pass<const M: usize, const HM: usize, const KIND: u8, const OUT: u8, const W: usize>(
     t: Avx2,
     (k, scale): (&[[u32; M]; HM], i32),
-    pairs: &[i32; 16 * 32],
-    (mask, shift): (u32, u32),
+    pairs: &[i32; 16 * PAIR],
+    (mask, shift, w): (u32, u32, usize),
     tile: &mut [i32; 512],
     residual: &mut [i32],
 ) {
-    let round = Round::new(shift);
-    let mut put = Put::<W, OUT> {
+    let w = if W == 0 { w } else { W };
+    let mut put = Put::<OUT> {
         tile,
         residual,
         rows: [_mm256_setzero_si256(); 16],
-        round,
+        round: Round::new(shift),
+        w,
         c: 0,
     };
-    for c in 0..(W / 8).max(1) {
+    for c in 0..(w / 8).clamp(1, PAIR / 8) {
         put.c = c;
         let mut v = [_mm256_setzero_si256(); HM];
         for (q, v) in v.iter_mut().enumerate() {
             if mask & (1 << q) != 0 {
-                *v = if W == 4 {
-                    _mm256_broadcastsi128_si256(load4(t, pairs, 4 * q))
-                } else {
-                    load8(t, pairs, q * W + 8 * c)
-                };
+                *v = load8(t, pairs, q * PAIR + 8 * c);
             }
         }
-        col_rows::<W, M, HM, KIND, OUT>(t, (k, scale), &v, mask, &mut put);
+        col_rows::<M, HM, KIND, OUT>(t, (k, scale), &v, mask, &mut put);
     }
 }
 
@@ -1186,12 +1180,12 @@ fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
 /// output row put through `put`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn col_rows<const W: usize, const M: usize, const HM: usize, const KIND: u8, const OUT: u8>(
+fn col_rows<const M: usize, const HM: usize, const KIND: u8, const OUT: u8>(
     t: Avx2,
     (k, scale): (&[[u32; M]; HM], i32),
     v: &[__m256i; HM],
     mask: u32,
-    put: &mut Put<'_, W, OUT>,
+    put: &mut Put<'_, OUT>,
 ) {
     let round = put.round;
     match (KIND, M) {
@@ -1210,7 +1204,7 @@ fn col_rows<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
             put.rows(t, (0, 3), e[0], e[3]);
             put.rows(t, (1, 2), e[1], e[2]);
         }
-        (SPLIT, 8) => odd_rows::<4, 2, W, OUT, 2>(
+        (SPLIT, 8) => odd_rows::<4, 2, OUT, 2>(
             t,
             &dct4(v, mask, round.rnd),
             v.get(2..4).unwrap_or_default(),
@@ -1238,10 +1232,10 @@ fn col_rows<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
             put,
         ),
         _ => match used_pairs(mask, HM) {
-            0..=2 => dense_rows::<M, HM, W, OUT, 2>(t, v, k, round.rnd, put),
-            3..=4 => dense_rows::<M, HM, W, OUT, 4>(t, v, k, round.rnd, put),
-            5..=8 => dense_rows::<M, HM, W, OUT, 8>(t, v, k, round.rnd, put),
-            _ => dense_rows::<M, HM, W, OUT, 16>(t, v, k, round.rnd, put),
+            0..=2 => dense_rows::<M, HM, OUT, 2>(t, v, k, round.rnd, put),
+            3..=4 => dense_rows::<M, HM, OUT, 4>(t, v, k, round.rnd, put),
+            5..=8 => dense_rows::<M, HM, OUT, 8>(t, v, k, round.rnd, put),
+            _ => dense_rows::<M, HM, OUT, 16>(t, v, k, round.rnd, put),
         },
     }
 }
@@ -1256,7 +1250,7 @@ fn add_tile<const W: usize>(t: Avx2, tile: &[i32; 512], h: usize, dst: &mut [u8]
         let Some(row) = dst.get_mut(at..at + W) else {
             return;
         };
-        let words = r * W / 2;
+        let words = r * TILE_ROW;
         if W == 4 {
             let Some(row) = row.first_chunk_mut::<4>() else {
                 return;
@@ -1351,49 +1345,21 @@ fn add_pairs<const W: usize>(
     }
 }
 
-/// Stores rows `a` and `b` of the column `Clip3` outputs of the 8 (4 when
-/// `W == 4`) columns from `8 * c`.
-#[inline]
-#[target_feature(enable = "avx2")]
-fn put_residual<const W: usize>(
-    t: Avx2,
-    (a, b, c): (usize, usize, usize),
-    first: __m256i,
-    second: __m256i,
-    residual: &mut [i32],
-) {
-    let (low, high) = (_mm256_set1_epi32(-256), _mm256_set1_epi32(255));
-    let first = _mm256_min_epi32(_mm256_max_epi32(first, low), high);
-    let second = _mm256_min_epi32(_mm256_max_epi32(second, low), high);
-    if W == 4 {
-        store4(t, residual, 4 * a, _mm256_castsi256_si128(first));
-        store4(t, residual, 4 * b, _mm256_castsi256_si128(second));
-    } else {
-        store8(t, residual, a * W + 8 * c, first);
-        store8(t, residual, b * W + 8 * c, second);
-    }
-}
-
-/// The constant residual `value` of a `W`-wide, `h`-tall block, added to
-/// `dst` with `ADD` or stored in `residual`.
+/// The constant residual `value` of a `W`-wide, `h`-tall block added to `dst`.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-fn flat<const W: usize, const ADD: bool>(
-    t: Avx2,
-    value: i32,
-    h: usize,
-    (dst, stride): (&mut [u8], usize),
-    residual: &mut [i32],
-) {
+fn add_flat<const W: usize>(value: i32, h: usize, (dst, stride): (&mut [u8], usize)) {
     let v = _mm256_set1_epi32(value);
-    if ADD {
-        add_pairs::<W>(dst, (stride, h), |_| _mm256_packs_epi32(v, v));
-        return;
-    }
-    for c in 0..(W / 8).max(1) {
-        for m in (0..h).step_by(2) {
-            put_residual::<W>(t, (m, m + 1, c), v, v, residual);
-        }
+    add_pairs::<W>(dst, (stride, h), |_| _mm256_packs_epi32(v, v));
+}
+
+/// The constant residual `value` stored in every 8 samples of `residual`.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn put_flat(t: Avx2, value: i32, residual: &mut [i32]) {
+    let v: i32x8<Avx2> = _mm256_set1_epi32(value).simd_into(t);
+    for out in residual.as_chunks_mut::<8>().0 {
+        v.store_array(out);
     }
 }
 
@@ -1678,14 +1644,15 @@ fn small<
             }
         }
     });
-    let mut put = Put::<W, DIRECT> {
+    let mut put = Put::<DIRECT> {
         tile: &mut [],
         residual: &mut [],
         rows: [_mm256_setzero_si256(); 16],
         round: Round::new(col_shift),
+        w: W,
         c: 0,
     };
-    col_rows::<W, H, HH, CK, DIRECT>(t, (col.1, col.2), &v, mask, &mut put);
+    col_rows::<H, HH, CK, DIRECT>(t, (col.1, col.2), &v, mask, &mut put);
     let rows = &put.rows;
     add_pairs::<W>(dst, (stride, H), |m| {
         _mm256_packs_epi32(rows[(2 * m) % 16], rows[(2 * m + 1) % 16])
@@ -1757,45 +1724,53 @@ fn add_small(
 fn cols<const OUT: u8>(
     t: Avx2,
     shape: &InverseTransformAdd,
-    pairs: &[i32; 16 * 32],
+    pairs: &[i32; 16 * PAIR],
     mask: u32,
-    out: &mut [i32; 512],
+    tile: &mut [i32; 512],
     residual: &mut [i32],
 ) {
-    let passes = (mask, u32::from(shape.col_shift));
+    let passes = (mask, u32::from(shape.col_shift), shape.w());
     macro_rules! pass {
         ($m:literal, $hm:literal, $kind:expr, $k:expr, $scale:expr) => {
-            match shape.w_log2 {
-                2 => col_pass::<4, $m, $hm, { $kind }, OUT>(
+            match (OUT, shape.w_log2) {
+                (RESIDUAL, 2) => col_pass::<$m, $hm, { $kind }, OUT, 4>(
                     t,
                     ($k, $scale),
                     pairs,
                     passes,
-                    out,
+                    tile,
                     residual,
                 ),
-                3 => col_pass::<8, $m, $hm, { $kind }, OUT>(
+                (RESIDUAL, 3) => col_pass::<$m, $hm, { $kind }, OUT, 8>(
                     t,
                     ($k, $scale),
                     pairs,
                     passes,
-                    out,
+                    tile,
                     residual,
                 ),
-                4 => col_pass::<16, $m, $hm, { $kind }, OUT>(
+                (RESIDUAL, 4) => col_pass::<$m, $hm, { $kind }, OUT, 16>(
                     t,
                     ($k, $scale),
                     pairs,
                     passes,
-                    out,
+                    tile,
                     residual,
                 ),
-                _ => col_pass::<32, $m, $hm, { $kind }, OUT>(
+                (RESIDUAL, _) => col_pass::<$m, $hm, { $kind }, OUT, 32>(
                     t,
                     ($k, $scale),
                     pairs,
                     passes,
-                    out,
+                    tile,
+                    residual,
+                ),
+                _ => col_pass::<$m, $hm, { $kind }, OUT, 0>(
+                    t,
+                    ($k, $scale),
+                    pairs,
+                    passes,
+                    tile,
                     residual,
                 ),
             }
@@ -1842,9 +1817,9 @@ fearless_simd::kernel!(
         if let Some(value) = shape.flat_residual(coeffs, dequant, crate::BitDepth::Eight) {
             let out = (dst, stride);
             if shape.w_log2 == 2 {
-                flat::<4, true>(t, value, shape.h(), out, &mut []);
+                add_flat::<4>(value, shape.h(), out);
             } else {
-                flat::<8, true>(t, value, shape.h(), out, &mut []);
+                add_flat::<8>(value, shape.h(), out);
             }
             return true;
         }
@@ -1878,18 +1853,14 @@ fearless_simd::kernel!(
             Sink::Add { dst, stride } => (dst, stride, None),
             Sink::Residual(residual) => (&mut [][..], 0, Some(residual)),
         };
-        let mut empty = [];
         if let Some(value) = shape.flat_residual(coeffs, dequant, crate::BitDepth::Eight) {
             let out = (dst, stride);
             match (residual, shape.w_log2) {
-                (None, 2) => flat::<4, true>(t, value, h, out, &mut empty),
-                (None, 3) => flat::<8, true>(t, value, h, out, &mut empty),
-                (None, 4) => flat::<16, true>(t, value, h, out, &mut empty),
-                (None, _) => flat::<32, true>(t, value, h, out, &mut empty),
-                (Some(residual), 2) => flat::<4, false>(t, value, h, out, residual),
-                (Some(residual), 3) => flat::<8, false>(t, value, h, out, residual),
-                (Some(residual), 4) => flat::<16, false>(t, value, h, out, residual),
-                (Some(residual), _) => flat::<32, false>(t, value, h, out, residual),
+                (None, 2) => add_flat::<4>(value, h, out),
+                (None, 3) => add_flat::<8>(value, h, out),
+                (None, 4) => add_flat::<16>(value, h, out),
+                (None, _) => add_flat::<32>(value, h, out),
+                (Some(residual), _) => put_flat(t, value, residual),
             }
             return;
         }
@@ -1932,7 +1903,7 @@ fearless_simd::kernel!(
             return;
         };
         let Some(residual) = residual else {
-            cols::<TILE>(t, shape, pairs, mask, tile, &mut empty);
+            cols::<TILE>(t, shape, pairs, mask, tile, &mut []);
             match shape.w_log2 {
                 2 => add_tile::<4>(t, tile, h, dst, stride),
                 3 => add_tile::<8>(t, tile, h, dst, stride),
