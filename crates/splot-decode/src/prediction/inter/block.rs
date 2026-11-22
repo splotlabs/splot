@@ -41,7 +41,8 @@ use super::read_mv::{
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
     InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
-    SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc,
+    ReferenceMetadata, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
+    SegmentIdMapHandle, mc,
 };
 use crate::bitstream::tile_payload::{
     BlockSize, BlockSymbolTraceReadError, CoeffContextReset, DecodeBlockFrontier,
@@ -322,14 +323,14 @@ pub(crate) struct InterBlockFacts {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn derive_inter_block_setup<T: ReconSample>(
+pub(crate) fn derive_inter_block_setup(
     work_units: &[DecodeTileWorkUnit],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
     facts: InterBlockFacts,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     deferred_motion: bool,
     products: &mut super::FrameProductWriters,
     cdef_grid_values: Vec<Option<usize>>,
@@ -566,7 +567,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let temporal_context = prelude.run(&mut lease.temporal, core, ref_frame_idx, reference)?;
     let mut tile_scratch = scratch.tile.take().unwrap_or_default();
     tile_scratch.buffers.clone_from(&scratch.buffers);
-    let previous = final_segment_ids(core, reference, params.mi_rows, params.mi_cols);
+    let previous = final_segment_ids(
+        core,
+        super::previous_segment_handle(core, reference),
+        params.mi_rows,
+        params.mi_cols,
+    );
     let segment_ids = if previous.is_some() {
         None
     } else {
@@ -623,9 +629,9 @@ pub(crate) fn segmentation_enabled(core: &FrameHeaderCore) -> bool {
         .is_some_and(|seg| seg.segmentation_enabled)
 }
 
-fn final_segment_ids<'a, T: ReconSample>(
+fn final_segment_ids<'a>(
     core: &FrameHeaderCore,
-    reference: &'a InterReferenceState<T>,
+    previous: Option<&'a SegmentIdMapHandle>,
     mi_rows: usize,
     mi_cols: usize,
 ) -> Option<&'a Arc<FrameSegmentIdMap>> {
@@ -633,7 +639,7 @@ fn final_segment_ids<'a, T: ReconSample>(
         .segmentation_params
         .as_ref()
         .is_some_and(|seg| seg.segmentation_enabled && !seg.segmentation_update_map)
-        && let Some(previous) = super::previous_segment_ids(core, reference, mi_rows, mi_cols)
+        && let Some(previous) = super::previous_segment_ids(previous, mi_rows, mi_cols)
     {
         return Some(previous);
     }
@@ -705,12 +711,12 @@ pub(crate) struct TemporalPrelude {
 }
 
 impl TemporalPrelude {
-    fn run<'a, T: ReconSample>(
+    fn run<'a>(
         &self,
         temporal_context: &'a mut TemporalMvContext,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
     ) -> Result<&'a mut TemporalMvContext> {
         frame_temporal_context(
             temporal_context,
@@ -725,12 +731,12 @@ impl TemporalPrelude {
         )
     }
 
-    fn begin_scheduled<T: ReconSample>(
+    fn begin_scheduled(
         &self,
         temporal_context: &mut TemporalMvContext,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
     ) -> Result<super::find_mv_stack::TemporalBandPlan> {
         let (metadata, layouts) =
             scheduled_motion_field_inputs(&reference.ref_motion_fields, ref_frame_idx)?;
@@ -809,7 +815,7 @@ fn scheduled_motion_field_inputs(
 /// The driver derives the TIP reference pair once and passes that exact pair to
 /// both the entropy pass and this prelude.
 #[allow(clippy::too_many_arguments)]
-fn frame_temporal_context<'a, T: ReconSample>(
+fn frame_temporal_context<'a>(
     temporal_context: &'a mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,
@@ -817,7 +823,7 @@ fn frame_temporal_context<'a, T: ReconSample>(
     current_order_hint: u32,
     temporal_config: TemporalProjectionConfig,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     expected_tip_pair: Option<TipReferencePair>,
 ) -> Result<&'a mut TemporalMvContext> {
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
@@ -1160,11 +1166,11 @@ pub(super) fn frame_uses_temporal_mvs(core: &FrameHeaderCore) -> bool {
 
 /// Whether the frame orders temporal candidates first: DRL reordering is not
 /// `Always`, temporal MVs are on and every reference lies on one side.
-fn frame_temporal_first<T: ReconSample>(
+fn frame_temporal_first(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     current_order_hint: u32,
     num_total_refs: usize,
 ) -> bool {
@@ -1875,7 +1881,6 @@ fn decode_block(
         frame_mv_config.precision(),
         single_mode == SINGLE_MODE_NEWMV,
         use_amvd,
-        tile_offset,
     )?;
 
     let mvd = if single_mode == SINGLE_MODE_NEWMV {

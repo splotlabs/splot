@@ -38,6 +38,17 @@ impl IntrabcVectors {
             .is_some_and(|area| local_bv_valid(&self.0, area, mv))
             || global_bv_valid(&self.0, mv)
     }
+
+    /// Whether `bv` may code `morph_pred = 1`: § 6.19.5.4 requires
+    /// `is_offset_mv_valid( -1, -1 )`, the vector one sample up and left,
+    /// whose source holds the reference template.
+    #[must_use]
+    pub fn morph_valid(&self, bv: MotionVector) -> bool {
+        self.valid(MotionVector {
+            row: bv.row - 8,
+            col: bv.col - 8,
+        })
+    }
 }
 
 /// An intra block copy of a leaf (§ 5.20.5.4).
@@ -47,6 +58,9 @@ pub struct IntrabcModes {
     pub bv: MotionVector,
     /// `RefMvIdx`, below the length of [`IntraTileSyntax::intrabc_ref_bvs`].
     pub drl: usize,
+    /// `morph_pred`: the § 7.13.3.26 morphological luma prediction, only
+    /// where [`IntraTileSyntax::intrabc_morph_coded`] says it is coded.
+    pub morph: bool,
 }
 
 impl IntraTileSyntax {
@@ -76,12 +90,20 @@ impl IntraTileSyntax {
         Ok(mvs.into_iter().map(MotionVector::from).collect())
     }
 
-    /// Whether `leaf` may code the block vector `bv`; see
-    /// [`Self::intrabc_vectors`].
+    /// Whether IntraBC leaves code `morph_pred` (§ 5.20.5.4): an intra
+    /// frame with `allow_screen_content_tools` and `enable_bawp`.
     #[must_use]
-    pub fn intrabc_bv_valid(&self, leaf: &LeafBlock, bv: MotionVector) -> bool {
-        self.intrabc_vectors(leaf)
-            .is_some_and(|vectors| vectors.valid(bv))
+    pub fn intrabc_morph_coded(&self) -> bool {
+        self.inter.as_ref().is_some_and(|inter| {
+            inter.tile.is_intra_frame()
+                && inter.tile.frame_header().allow_screen_content_tools == Some(true)
+                && inter
+                    .tile
+                    .sequence_header()
+                    .inter
+                    .as_ref()
+                    .is_some_and(|inter| inter.enable_bawp)
+        })
     }
 
     /// The block vectors `leaf` may code, `None` when it codes no
@@ -147,11 +169,16 @@ impl IntraTileSyntax {
         partition: TxPartition,
     ) -> Result<Vec<TransformBlock>> {
         let split = self.partitioned_tx_size(leaf, partition)?;
-        if !self.intrabc_bv_valid(leaf, modes.bv) {
+        let vectors = self.intrabc_vectors(leaf);
+        let valid = vectors.as_ref().is_some_and(|vectors| {
+            vectors.valid(modes.bv) && (!modes.morph || vectors.morph_valid(modes.bv))
+        });
+        if !valid {
             return Err(EncoderSyntaxError::Unsupported("this IntraBC vector"));
         }
         let motion = self.inter_ref()?.tile.intrabc_motion(modes.drl);
-        self.plan_motion_leaf(leaf, (motion, Some(modes.bv.into())), (partition, split))
+        let intrabc = Some((modes.bv.into(), modes.morph));
+        self.plan_motion_leaf(leaf, (motion, intrabc), (partition, split))
     }
 
     /// Writes `use_intrabc` of `leaf` and, for an IntraBC leaf (`skip` is
@@ -198,7 +225,7 @@ impl IntraTileSyntax {
     /// Writes the § 5.20.5.4 IntraBC syntax of `leaf` under `modes`:
     /// `intrabc_mode`, the `intrabc_drl_mode` bits, `intrabc_precision`
     /// (quarter samples for a fractional vector), the vector difference and
-    /// `morph_pred = 0`.
+    /// `morph_pred`.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an index or vector `leaf` cannot
@@ -216,14 +243,11 @@ impl IntraTileSyntax {
             .intrabc_contexts(&leaf.frontier)
             .map_err(rule("IntraBC contexts"))?
             .ok_or(NO_INTRABC)?;
-        let core = tile.frame_header();
-        let force_integer_mv = core.force_integer_mv == Some(true);
-        let morph_coded = core.allow_screen_content_tools == Some(true)
-            && tile
-                .sequence_header()
-                .inter
-                .as_ref()
-                .is_some_and(|inter| inter.enable_bawp);
+        let force_integer_mv = tile.frame_header().force_integer_mv == Some(true);
+        let morph_coded = self.intrabc_morph_coded();
+        if modes.morph && !morph_coded {
+            return Err(EncoderSyntaxError::Unsupported("morph_pred in this frame"));
+        }
         let mode = usize::from(modes.bv == reference);
         self.put(symbols, TileCdfSelector::IntrabcMode, mode)?;
         let max = refs.len() - 1;
@@ -271,7 +295,11 @@ impl IntraTileSyntax {
         }
         if morph_coded {
             let ctx = contexts.morph_pred;
-            self.put(symbols, TileCdfSelector::MorphPred { ctx }, 0)?;
+            self.put(
+                symbols,
+                TileCdfSelector::MorphPred { ctx },
+                usize::from(modes.morph),
+            )?;
         }
         Ok(())
     }
@@ -282,7 +310,7 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] without a planned IntraBC leaf.
     pub fn publish_intrabc_leaf(&mut self, leaf: &LeafBlock, skip: bool) -> Result<()> {
-        let mv = self.take_planned_intrabc(leaf)?;
+        let (mv, morph) = self.take_planned_intrabc(leaf)?;
         let state = self.inter.as_mut().ok_or(NO_INTRABC)?;
         if skip {
             state
@@ -291,7 +319,7 @@ impl IntraTileSyntax {
                 .map_err(rule("coefficient contexts"))?;
         }
         let tile = &mut self.inter_state()?.tile;
-        tile.publish_intrabc(&leaf.frontier, mv, skip)
+        tile.publish_intrabc(&leaf.frontier, mv, (morph, skip))
             .map_err(rule("IntraBC publication"))?;
         self.publish_leaf_modes(leaf, GeneralIntraLeafMode::no_luma_mode().mark_intrabc())?;
         self.end_leaf_segment();
@@ -681,6 +709,18 @@ mod tests {
         let wide = |row: usize, col: usize| before(row, col) || row < 48;
         let (_, chunks) = regions((48, 64), 128, wide, Some((2, 4)));
         assert_eq!(chunks, [(3, 4), (2, 4)]);
+    }
+
+    /// `morph_pred = 1` needs the vector one sample up and left to be valid
+    /// too: a copy from the frame's top row cannot code it.
+    #[test]
+    fn morph_needs_the_template_source() {
+        let vectors = IntrabcVectors(frame((0, 80), (8, 8)), None, true);
+        let bv = |row, col| MotionVector { row, col };
+        assert!(vectors.valid(bv(0, -64 * 8 * 5)));
+        assert!(!vectors.morph_valid(bv(0, -64 * 8 * 5)));
+        let lower = IntrabcVectors(frame((16, 96), (16, 8)), None, true);
+        assert!(lower.morph_valid(bv(0, -272 * 8 - 8)));
     }
 
     #[test]

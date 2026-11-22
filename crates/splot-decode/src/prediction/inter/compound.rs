@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
 use super::Mv;
 use super::find_mv_stack::ref_count_ctx;
+use super::mode_symbols::{InterModeSymbols, TileModeSymbols};
 use crate::Result;
 use crate::bitstream::tile_payload::{
-    COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, TileCdfSelector,
-    TileCdfSubset,
+    COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, TileCdfSubset,
 };
 
 const COMPOUND_MODE_NEAR_NEARMV: u8 = 0;
@@ -19,7 +18,6 @@ const COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV: u8 = 2;
 const COMPOUND_MODE_NEW_NEWMV: u8 = 4;
 const RANKED_REF0_TO_PRUNE: usize = 3;
 const MAX_REFS_PER_FRAME: usize = 7;
-const SPEC_INTER_BLOCK_MODE_INFO: &str = "5.20.7.6";
 const _COMPOUND_MODE_MATCH_CDF_ROW_LEN_CHECK: () = {
     assert!(COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN == 5);
     assert!(COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN == 6);
@@ -123,21 +121,17 @@ pub(crate) fn read_compound_reference_pair(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CompoundParseInput,
-    tile_offset: ByteOffset,
 ) -> Result<(i8, i8)> {
-    compound_reference_pair(input, |selector| {
-        cdfs.read_block_symbol(selector, symbols)
-            .map_err(|error| compound_symbol_read_error(error, tile_offset))
-    })
+    compound_reference_pair(input, &mut TileModeSymbols { cdfs, symbols })
 }
 
-/// § 5.20.7.11 `read_compound_ref`: `read_symbol` answers each `comp_ref`
+/// § 5.20.7.11 `read_compound_ref`: `symbols` answers each `comp_ref`
 /// symbol, so a writer that answers for a target pair codes exactly the
 /// symbols the decoder reads.
 #[inline]
 pub(crate) fn compound_reference_pair(
     input: CompoundParseInput,
-    mut read_symbol: impl FnMut(TileCdfSelector) -> Result<u8>,
+    symbols: &mut impl InterModeSymbols,
 ) -> Result<(i8, i8)> {
     let n_refs = input.num_total_refs;
     let same_ref_compound = usize::from(input.num_same_ref_compound).min(n_refs);
@@ -155,18 +149,15 @@ pub(crate) fn compound_reference_pair(
         let comp_ref = if implicit_ref0 {
             1
         } else if n_bits == 0 {
-            read_symbol(TileCdfSelector::CompRef0 {
-                ctx: ref_count_ctx(input.ref_counts, n_refs, ref_idx),
-                ref_idx,
-            })?
+            symbols.comp_ref0(ref_count_ctx(input.ref_counts, n_refs, ref_idx), ref_idx)
         } else {
             let first_ref = ref_frames[0];
             let bit_type = compound_ref_bit_type(input, first_ref, ref_idx);
-            read_symbol(TileCdfSelector::CompRef1 {
-                ctx: ref_count_ctx(input.ref_counts, n_refs, ref_idx),
+            symbols.comp_ref1(
+                ref_count_ctx(input.ref_counts, n_refs, ref_idx),
                 bit_type,
                 ref_idx,
-            })?
+            )
         };
 
         if comp_ref != 0 {
@@ -209,41 +200,37 @@ pub(crate) fn read_compound_mode_syntax(
     pair: (i8, i8),
     new_mv_context: usize,
     is_joint_ctx: usize,
-    tile_offset: ByteOffset,
-) -> Result<CompoundBlockSyntax> {
-    let y_mode = compound_y_mode(pair, (new_mv_context, is_joint_ctx), |selector| {
-        cdfs.read_block_symbol(selector, symbols)
-            .map_err(|error| compound_symbol_read_error(error, tile_offset))
-    })?;
-    Ok(CompoundBlockSyntax {
+) -> CompoundBlockSyntax {
+    let y_mode = compound_y_mode(
+        pair,
+        (new_mv_context, is_joint_ctx),
+        &mut TileModeSymbols { cdfs, symbols },
+    );
+    CompoundBlockSyntax {
         y_mode,
         use_optflow: false,
         ref_frame0: pair.0,
         ref_frame1: pair.1,
         mv0: Mv::ZERO,
         mv1: Mv::ZERO,
-    })
+    }
 }
 
 /// § 5.20.7.6 compound `YMode` of the reference `pair` with the
-/// `(NewMvContext, is_joint)` contexts; `read_symbol` answers each symbol.
+/// `(NewMvContext, is_joint)` contexts; `symbols` answers each symbol.
 #[inline]
 pub(crate) fn compound_y_mode(
     pair: (i8, i8),
     (new_mv_context, is_joint_ctx): (usize, usize),
-    mut read_symbol: impl FnMut(TileCdfSelector) -> Result<u8>,
-) -> Result<CompoundYMode> {
-    Ok(if pair.0 == pair.1 {
-        same_refs_compound_mode(read_symbol(TileCdfSelector::CompoundModeSameRefs {
-            ctx: new_mv_context,
-        })?)
-    } else if read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })? != 0 {
+    symbols: &mut impl InterModeSymbols,
+) -> CompoundYMode {
+    if pair.0 == pair.1 {
+        same_refs_compound_mode(symbols.compound_mode_same_refs(new_mv_context))
+    } else if symbols.is_joint(is_joint_ctx) != 0 {
         CompoundYMode::JointNew
     } else {
-        non_joint_compound_mode(read_symbol(TileCdfSelector::CompoundModeNonJoint {
-            ctx: new_mv_context,
-        })?)
-    })
+        non_joint_compound_mode(symbols.compound_mode_non_joint(new_mv_context))
+    }
 }
 
 /// The `YMode` of `compound_mode` over the same-reference alphabet.
@@ -280,13 +267,6 @@ fn compound_ref_bit_type(input: CompoundParseInput, first_ref: usize, second_ref
     let first_nonnegative = input.ref_distance_nonnegative[first_ref];
     let second_nonnegative = input.ref_distance_nonnegative[second_ref];
     usize::from(first_nonnegative ^ second_nonnegative)
-}
-
-fn compound_symbol_read_error(
-    error: impl core::fmt::Display,
-    tile_offset: ByteOffset,
-) -> crate::error::DecodeError {
-    crate::pipeline::malformed_tile_payload(tile_offset, SPEC_INTER_BLOCK_MODE_INFO, error)
 }
 
 #[cfg(test)]

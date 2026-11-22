@@ -321,6 +321,13 @@ pub struct PresetParams {
     /// frames may still reference the frames before it. `0` in every row
     /// (not measured).
     pub intra_only: u8,
+    /// `n > 0` codes every `n`th periodic key frame as an
+    /// `OBU_OPEN_LOOP_KEY` (§ 7.4.4): the hidden first frame of the mini-GOP
+    /// that ends at it; the other frames of that mini-GOP are leading frames.
+    /// Scene cuts stay closed-loop. Needs `long_term_id_bits = 0`: closed-loop
+    /// long-term slots stay valid after it in sequential decoding but not at
+    /// random access. `0` in every row (not measured).
+    pub open_loop_key: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -536,6 +543,12 @@ pub struct PresetParams {
     /// `intrabc_precision = 1` for a fractional vector. Off in every row,
     /// the screen-content rows too: not measured.
     pub intrabc_subpel: bool,
+    /// With `intrabc`, each IntraBC candidate of a key-frame leaf gets a
+    /// twin with `morph_pred = 1`, the § 7.13.3.26 brightness-adapted luma
+    /// copy, and the leaf's RD trial picks one. Needs `bawp`, whose
+    /// `enable_bawp` lets frames code `morph_pred`. Off in every row, the
+    /// screen-content rows too: not measured.
+    pub intrabc_morph: bool,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -1001,6 +1014,13 @@ impl PresetParams {
             }
         };
         check("max_block_log2", self.max_block_log2, 2, 8, "")?;
+        if self.intrabc_morph && !self.bawp {
+            return Err(PresetError::OutOfRange {
+                field: "intrabc_morph",
+                value: 1,
+                allowed: "0 without bawp (morph_pred needs enable_bawp)".to_owned(),
+            });
+        }
         if self.sb256_min_height < 64 {
             return Err(PresetError::OutOfRange {
                 field: "sb256_min_height",
@@ -1074,6 +1094,18 @@ impl PresetParams {
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
         check("long_term_id_bits", self.long_term_id_bits, 0, 7, "")?;
         check("num_ref_frames", self.num_ref_frames, 0, 16, "")?;
+        check(
+            "open_loop_key",
+            self.open_loop_key,
+            0,
+            if self.long_term_id_bits == 0 {
+                u8::MAX
+            } else {
+                0
+            },
+            " (above 0 needs long_term_id_bits = 0: closed-loop long-term slots stay \
+             valid after an open-loop key frame in sequential decoding only)",
+        )?;
         for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
             let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
                 .with_ref_slots(self.num_ref_frames);
@@ -1395,6 +1427,7 @@ preset_table! {
         sef_repeat:            [false, false, false, false, false, false, false, false, false, false, false],
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        open_loop_key:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
@@ -1448,6 +1481,7 @@ preset_table! {
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_subpel:        [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_morph:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     lossless {
@@ -1908,6 +1942,7 @@ mod tests {
             (&[("warp", "3")], "warp"),
             (&[("global_motion", "3")], "global_motion"),
             (&[("compound_types", "4")], "compound_types"),
+            (&[("intrabc_morph", "1"), ("bawp", "0")], "intrabc_morph"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

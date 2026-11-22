@@ -285,7 +285,6 @@ fn read_warp_newmv_tail(
         mv_config.precision(),
         true,
         false,
-        tile_offset,
     )?;
     let block_config = MvReadConfig::inter(precision.mv_precision);
     let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, block_config)?;

@@ -284,7 +284,7 @@ fn parse_key_core_with_effects(
 fn parse_olk_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &inter::InterReferenceState<impl splot_recon::ReconSample>,
+    reference: &inter::ReferenceMetadata,
     effects: &OutputEffectState,
     first_picture_in_tu: bool,
 ) -> Result<FrameHeaderCore> {
@@ -419,7 +419,7 @@ impl InBandLongTermPrelude {
 fn parse_inter_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &inter::InterReferenceState<impl splot_recon::ReconSample>,
+    reference: &inter::ReferenceMetadata,
     effects: &OutputEffectState,
     first_picture_in_tu: bool,
     frame_index: Option<usize>,

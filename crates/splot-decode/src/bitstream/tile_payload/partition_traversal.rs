@@ -42,7 +42,7 @@ use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    LeafNeighbours, SdpPartitionState, TileTraversalStorage, decode_block_frontier,
+    LeafDecoder, LeafNeighbours, SdpPartitionState, TileTraversalStorage, decode_block_frontier,
     decode_block_part, is_intra_sdp_shared_root, partition_allowed_input, partition_context_inputs,
     updated_chroma_offset,
 };
@@ -210,6 +210,7 @@ const CALL_EXTENDED_SDP_ALLOWED: u8 = 1 << 5;
 const CALL_EXTENDED_SDP_CHROMA_BLOCK: u8 = 1 << 6;
 const CALL_PARENT_64X64: u8 = 1 << 7;
 const BLOCK_64X64: usize = 12;
+const BLOCK_128X128: usize = 15;
 
 /// § 5.18.4.4 `MiCols = 2 * ((FrameWidth + 7) >> 3)` with `FrameWidth` at most
 /// `1 << 16`: positions and child offsets then fit `u16`.

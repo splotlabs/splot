@@ -109,6 +109,13 @@ pub enum Error {
         what: &'static str,
     },
 
+    /// A metadata payload that its syntax cannot carry.
+    #[error("metadata: {what}")]
+    InvalidMetadata {
+        /// The rule the payload breaks.
+        what: &'static str,
+    },
+
     /// A tile layout that the frames cannot code.
     #[error("tile layout {tiles:?}: {reason}")]
     InvalidTiles {

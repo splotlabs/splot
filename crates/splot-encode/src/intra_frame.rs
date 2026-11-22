@@ -74,7 +74,7 @@ pub(crate) struct IntraFrameCoder {
     /// [`Self::preset`].
     screen: Option<PresetParams>,
     references: EncoderReferences,
-    /// The content interpretation and HDR metadata OBUs of every key frame;
+    /// The content interpretation and metadata OBUs of every key frame;
     /// empty for none.
     content_obus: Vec<u8>,
     /// [`crate::Config::multi_frame_header`].
@@ -390,7 +390,11 @@ impl IntraFrameCoder {
         Ok(Self {
             params,
             references,
-            content_obus: config.content.obus(config.frame_rate, &mfh_obu)?,
+            content_obus: [
+                config.content.obus(config.frame_rate, &mfh_obu)?,
+                config.key_frame_metadata.obus()?,
+            ]
+            .concat(),
             multi_frame_header: config.multi_frame_header,
             sequence,
             view,
@@ -470,16 +474,25 @@ impl FrameCoder for IntraFrameCoder {
         }
         if frame.frame_type == FrameType::Key {
             self.key_frames = self.key_frames.wrapping_add(1);
-            self.grain_active = core
-                .intra_tail
-                .is_some_and(|tail| tail.film_grain.apply_grain);
+            self.grain_active = frame.film_grain_model;
         }
         self.references
             .update(&core, recon, &initial, &cdfs, &ccso_blocks)
             .map_err(coding("reference update"))
     }
 
-    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>> {
+    fn end_leading_frames(&mut self) -> Result<()> {
+        self.references
+            .end_leading_frames()
+            .map_err(coding("leading frames"))
+    }
+
+    fn show_existing_frame(
+        &mut self,
+        slot: u32,
+        order_hint: Option<u32>,
+        leading: bool,
+    ) -> Result<Vec<u8>> {
         let seed = self.grain_active.then(|| {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
@@ -488,10 +501,15 @@ impl FrameCoder for IntraFrameCoder {
             &self.view,
             slot,
             order_hint,
-            (seed, self.multi_frame_header),
+            (seed, self.multi_frame_header, leading),
         )?;
+        let obu_type = if leading {
+            splot_core::types::ObuType::LeadingSef
+        } else {
+            splot_core::types::ObuType::RegularSef
+        };
         self.references
-            .show_existing(slot, order_hint.is_none())
+            .show_existing(slot, order_hint.is_none(), obu_type)
             .map_err(coding("show-existing frame"))?;
         Ok(unit)
     }
@@ -780,6 +798,7 @@ impl IntraFrameCoder {
         tools.0.segment_alt_q = segments.as_ref().map(|&(_, alt_q)| alt_q);
         let segments = segments.map_or(Vec::new(), |(map, _)| map);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
+        let grain_obu_empty = grain_obu.is_empty();
         let key_obus = if plan.frame_type == FrameType::Key {
             [self.content_obus.as_slice(), &grain_obu].concat()
         } else {
@@ -1035,6 +1054,7 @@ impl IntraFrameCoder {
             temporal_unit,
             recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
+            film_grain_model: !grain_obu_empty,
             reference: Some((core, recon, initial, cdfs, ccso_blocks)),
             tip_output: None,
             intra_cells,
@@ -1121,6 +1141,7 @@ impl IntraFrameCoder {
             let normal = cost(&coded.recon, coded.temporal_unit.len());
             return Ok(
                 (tip * 100 <= normal * u128::from(self.preset.tip_output)).then(|| CodedFrame {
+                    film_grain_model: false,
                     temporal_unit,
                     recon,
                     frame_type: plan.frame_type,
@@ -1176,6 +1197,7 @@ impl IntraFrameCoder {
         let normal = cost(&coded.recon, coded.temporal_unit.len());
         Ok(
             (tip * 100 <= normal * u128::from(self.preset.tip_output)).then(|| CodedFrame {
+                film_grain_model: false,
                 temporal_unit,
                 recon,
                 frame_type: plan.frame_type,

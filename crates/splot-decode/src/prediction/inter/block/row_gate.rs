@@ -122,7 +122,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         for (entry, slot) in lists.iter_mut().zip(ref_frame_idx) {
             *entry = ReferenceSlot::new(*slot as usize)
                 .ok()
-                .and_then(|slot| reference.store.get(slot).ok().flatten());
+                .and_then(|slot| reference.frame(slot));
         }
         Self {
             lists,
@@ -348,7 +348,7 @@ pub(crate) fn bounds_satisfied<T: ReconSample>(
         need == 0
             || ReferenceSlot::new(*slot as usize)
                 .ok()
-                .and_then(|slot| reference.store.get(slot).ok().flatten())
+                .and_then(|slot| reference.frame(slot))
                 .is_none_or(|slot| {
                     slot.is_settled()
                         || slot

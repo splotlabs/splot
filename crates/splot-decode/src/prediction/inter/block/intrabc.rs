@@ -46,9 +46,14 @@ impl IntrabcReconPrediction {
         (sub_x, sub_y): (u32, u32),
         tile_offset: ByteOffset,
     ) -> Result<Self> {
+        let chroma_mi = frontier.has_chroma.then(|| {
+            let chroma = frontier.chroma_ref_geometry();
+            (chroma.row(), chroma.col())
+        });
         let luma = derive_intrabc_luma_prediction_geometry(
             core,
             IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
+            chroma_mi,
             info,
             tile_offset,
         )?;
@@ -92,6 +97,7 @@ impl IntrabcReconPrediction {
                     chroma_ref.col(),
                     chroma_ref.size(),
                 )?,
+                None,
                 info,
                 tile_offset,
             )?

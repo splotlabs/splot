@@ -34,7 +34,7 @@ const MI_SIZE: usize = 4;
 const INTRABC_CONTEXT_MAX: usize = 2;
 const SKIP_CONTEXT_MAX: usize = 2;
 const MORPH_PRED_CONTEXT_MAX: usize = 2;
-fn intrabc_invalid_block_vector_error(tile_offset: ByteOffset) -> DecodeError {
+pub(super) fn intrabc_invalid_block_vector_error(tile_offset: ByteOffset) -> DecodeError {
     crate::pipeline::malformed_tile_payload(
         tile_offset,
         "6.19.7.12",
@@ -945,13 +945,30 @@ fn read_intrabc_morph_pred(
         != 0)
 }
 
+/// Derives the copy of the block at `geometry` (with `HasChroma`, its
+/// `ChromaMiRow`, `ChromaMiCol` at `chroma_mi`) after the tile-edge test of
+/// § 6.19.7.12 `is_mv_valid`.
 pub(crate) fn derive_intrabc_luma_prediction_geometry(
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
+    chroma_mi: Option<(usize, usize)>,
     info: IntrabcInfo,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcPredictionGeometry> {
     let domain = intrabc_luma_prediction_domain(core, geometry)?;
+    let tile = domain.tile_bounds;
+    let tile_edges = [
+        tile.y(),
+        tile.x(),
+        tile.y() + tile.height(),
+        tile.x() + tile.width(),
+    ];
+    let mi = (geometry.block.row, geometry.block.col);
+    let size = (geometry.n4w * MI_SIZE, geometry.n4h * MI_SIZE);
+    let mv = [info.block_mv.row, info.block_mv.col];
+    if !super::intrabc_mv_valid::source_within_tile(mi, size, chroma_mi, tile_edges, mv) {
+        return Err(intrabc_invalid_block_vector_error(tile_offset));
+    }
     let block = IntrabcBlockPixels::from_geometry(geometry)?;
     let target = intrabc_clamped_target(block.x, block.y, block.width, block.height, &domain)?;
     let fractional = intrabc_block_vector_is_fractional(info.block_mv);
@@ -960,11 +977,6 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
     } else {
         intrabc_luma_source_envelope(target, info.block_mv, tile_offset)?
     };
-    if !fractional
-        && (!source.is_within(domain.storage) || !rect_is_within_rect(source, domain.tile_bounds))
-    {
-        return Err(intrabc_invalid_block_vector_error(tile_offset));
-    }
     let frame_size = core.frame_size.ok_or_else(selectable_state_error)?;
     let frame_width = i32::try_from(frame_size.width).map_err(|_| selectable_state_error())?;
     let frame_height = i32::try_from(frame_size.height).map_err(|_| selectable_state_error())?;
@@ -1058,13 +1070,16 @@ fn intrabc_luma_prediction_domain(
         geometry,
     )?;
     let tile_bounds = tile_area.luma_rect()?;
+    if !tile_bounds.is_within(storage) {
+        return Err(selectable_state_error());
+    }
     Ok(IntrabcLumaPredictionDomain {
         storage,
         tile_bounds,
     })
 }
 
-fn tile_interval_for_block(
+pub(super) fn tile_interval_for_block(
     starts: &[u32],
     block_start: usize,
     block_len: usize,
@@ -1099,25 +1114,6 @@ fn checked_mi_u32_to_luma(mi: u32) -> Result<usize> {
 
 fn checked_i32_from_usize(value: usize) -> Result<i32> {
     i32::try_from(value).map_err(|_| selectable_state_error())
-}
-
-fn rect_is_within_rect(rect: PlaneRect, bounds: PlaneRect) -> bool {
-    let Some(rect_right) = rect.x().checked_add(rect.width()) else {
-        return false;
-    };
-    let Some(rect_bottom) = rect.y().checked_add(rect.height()) else {
-        return false;
-    };
-    let Some(bounds_right) = bounds.x().checked_add(bounds.width()) else {
-        return false;
-    };
-    let Some(bounds_bottom) = bounds.y().checked_add(bounds.height()) else {
-        return false;
-    };
-    rect.x() >= bounds.x()
-        && rect.y() >= bounds.y()
-        && rect_right <= bounds_right
-        && rect_bottom <= bounds_bottom
 }
 
 fn intrabc_luma_source_envelope(

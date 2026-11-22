@@ -411,6 +411,7 @@ fn repeats_show_the_newest_coded_frame_with_an_explicit_order_hint() {
                 slot,
                 display_index,
                 order_hint: Some(hint),
+                ..
             } => {
                 let newest = slots.iter().flatten().max().copied();
                 assert_eq!(slots[slot as usize], newest, "{display_index}");
@@ -452,4 +453,105 @@ fn a_repeat_run_stops_inside_half_the_order_hint_window() {
     assert_eq!(off.next_len(3, true), Some(1));
     off.plan(1).unwrap();
     assert_eq!(off.next_len(3, true), Some(3));
+}
+
+/// With `open_loop_key = 1` each periodic key frame is the hidden first frame
+/// of the mini-GOP that ends at it, coded as an open-loop key frame that
+/// refreshes one slot; the frames before it in that mini-GOP and their
+/// show-existing frames are leading; after it only its slot stays valid. The
+/// first frame and a scene cut stay closed-loop.
+#[test]
+fn periodic_key_frames_open_their_mini_gops() {
+    let mut planner = GopPlanner::new(NonZeroU32::new(12).unwrap(), 4).with_open_loop_key(1);
+    planner.force_key(30);
+    let mut steps = Vec::new();
+    while let Some(len) = planner.next_len(usize::MAX, true) {
+        steps.extend(planner.plan(len).unwrap());
+        if planner.next_display() > 44 {
+            break;
+        }
+    }
+    let frames: Vec<GopFrame> = steps
+        .iter()
+        .filter_map(|step| match *step {
+            GopStep::Code(frame) => Some(frame),
+            GopStep::ShowExisting { .. } => None,
+        })
+        .collect();
+    let keys: Vec<(u64, bool)> = frames
+        .iter()
+        .filter(|frame| frame.frame_type == FrameType::Key)
+        .map(|frame| (frame.display_index, frame.open_loop))
+        .collect();
+    assert_eq!(
+        keys,
+        [(0, false), (12, true), (24, true), (30, false), (42, true)]
+    );
+    for olk in frames.iter().filter(|frame| frame.open_loop) {
+        let key = olk.display_index;
+        assert!(!olk.show_frame && olk.layer == 0 && olk.primary_slot.is_none());
+        assert_eq!(olk.refresh_frame_flags.count_ones(), 1);
+        let closed_loop = if key > 30 { 30 } else { 0 };
+        assert_eq!(
+            u64::from(olk.order_hint),
+            key - closed_loop,
+            "{key}: order hint"
+        );
+        let at = frames.iter().position(|frame| frame == olk).unwrap();
+        let leading: Vec<u64> = frames[at + 1..]
+            .iter()
+            .take_while(|frame| frame.display_index < key)
+            .map(|frame| frame.display_index)
+            .collect();
+        assert_eq!(leading, [key - 2, key - 3, key - 1]);
+        assert!(frames[at + 1..at + 4].iter().all(|frame| frame.leading));
+        let regular = frames[at + 4];
+        assert!(!regular.leading && regular.display_index > key);
+        assert_eq!(regular.ref_slots, olk.refresh_frame_flags);
+    }
+    let sefs: Vec<(u64, bool)> = steps
+        .iter()
+        .filter_map(|step| match *step {
+            GopStep::ShowExisting {
+                display_index,
+                leading,
+                ..
+            } => Some((display_index, leading)),
+            GopStep::Code(_) => None,
+        })
+        .filter(|&(display, _)| (9..=24).contains(&display))
+        .collect();
+    assert_eq!(
+        sefs,
+        [
+            (10, true),
+            (12, false),
+            (14, false),
+            (16, false),
+            (18, false),
+            (20, false),
+            (22, true),
+            (24, false)
+        ]
+    );
+}
+
+/// An open-loop key frame without a leading frame stays closed-loop: with
+/// mini-GOPs of one frame every periodic key frame is a closed-loop key frame.
+#[test]
+fn key_frames_without_leading_frames_stay_closed_loop() {
+    let mut planner = GopPlanner::new(NonZeroU32::new(5).unwrap(), 1).with_open_loop_key(1);
+    let mut keys = Vec::new();
+    while planner.next_display() < 16 {
+        let len = planner.next_len(usize::MAX, true).unwrap();
+        for step in planner.plan(len).unwrap() {
+            if let GopStep::Code(frame) = step {
+                assert!(!frame.open_loop && !frame.leading);
+                if frame.frame_type == FrameType::Key {
+                    keys.push(frame.display_index);
+                }
+            }
+        }
+    }
+    assert_eq!(keys, [0, 5, 10, 15]);
 }

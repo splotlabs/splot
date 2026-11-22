@@ -18,6 +18,8 @@ cargo build --release
 x86-64 builds target `x86-64-v3` (AVX2/FMA/BMI2) for decode throughput; an
 older CPU traps with `SIGILL`. Use `RUSTFLAGS="-C target-cpu=x86-64"` for a
 portable baseline. `aarch64` uses 128-bit NEON as its baseline.
+Linux GNU builds link packed relative relocations (`DT_RELR`) and need glibc
+2.36 or newer.
 
 ## Crates
 
