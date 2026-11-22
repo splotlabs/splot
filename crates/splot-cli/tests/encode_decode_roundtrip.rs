@@ -211,6 +211,50 @@ fn multi_frame_header_clips_validate_and_decode() {
     round_trip(8, YUV420, &["--qp", "90", "--multi-frame-header"]);
 }
 
+/// `--output-format annexb` writes the IVF frame payloads back to back with
+/// no container header; the raw stream validates with `--strict` and decodes
+/// to the frames of the IVF stream.
+#[test]
+fn annexb_output_is_the_ivf_payloads_without_the_container() {
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let (ivf, obu, raw_ivf, raw_obu) = (
+        temp_output("ivf"),
+        temp_output("obu"),
+        temp_output("yuv"),
+        temp_output("yuv"),
+    );
+    let paths = [&input, &ivf, &obu, &raw_ivf, &raw_obu].map(|path| path.to_str().unwrap());
+    let [input_s, ivf_s, obu_s, raw_ivf_s, raw_obu_s] = paths;
+    let encode = splot(&["encode", input_s, "-o", ivf_s, "--qp", "90"]);
+    assert!(encode.status.success(), "{encode:?}");
+    let annexb = ["--qp", "90", "--output-format", "annexb"];
+    let encode = splot(&[&["encode", input_s, "-o", obu_s][..], &annexb].concat());
+    assert!(encode.status.success(), "{encode:?}");
+    let (ivf_bytes, obu_bytes) = (std::fs::read(&ivf).unwrap(), std::fs::read(&obu).unwrap());
+    let mut payloads = Vec::new();
+    let mut at = 32;
+    while at < ivf_bytes.len() {
+        let size = u32::from_le_bytes(ivf_bytes[at..at + 4].try_into().unwrap()) as usize;
+        payloads.extend_from_slice(&ivf_bytes[at + 12..at + 12 + size]);
+        at += 12 + size;
+    }
+    assert_eq!(obu_bytes, payloads);
+    let validate = splot(&["validate", "--strict", obu_s]);
+    assert!(validate.status.success(), "{validate:?}");
+    for (stream, raw) in [(ivf_s, raw_ivf_s), (obu_s, raw_obu_s)] {
+        let decode = splot(&["decode", stream, "--output", raw, "--output-format", "raw"]);
+        assert!(decode.status.success(), "{decode:?}");
+    }
+    assert_eq!(
+        std::fs::read(&raw_obu).unwrap(),
+        std::fs::read(&raw_ivf).unwrap()
+    );
+    for path in [input, ivf, obu, raw_ivf, raw_obu] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn low_delay_clips_code_every_frame_in_input_order() {
     round_trip(8, YUV420, &["--qp", "90", "--low-delay"]);

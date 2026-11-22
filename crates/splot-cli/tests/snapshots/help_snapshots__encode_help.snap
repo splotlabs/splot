@@ -11,7 +11,9 @@ Arguments:
 
 Options:
   -o, --output <OUTPUT>
-          Output IVF file
+          Output file, in the container of `--output-format`
+      --output-format <OUTPUT_FORMAT>
+          Output container: `ivf`, or `annexb`, the raw length-delimited OBUs of AV2 Annex B without a container header [default: ivf] [possible values: ivf, annexb]
       --qp <QP>
           Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits; `--lossless` codes 0
       --lossless
