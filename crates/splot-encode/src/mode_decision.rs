@@ -81,6 +81,10 @@ thread_local! {
     /// pair its only compound candidate on this thread.
     pub(crate) static FORCE_GLOBAL_GLOBAL: core::cell::Cell<bool> =
         const { core::cell::Cell::new(false) };
+    /// Ranked compound candidates on this thread: refined, not refined, and
+    /// refined `GLOBAL_GLOBALMV`.
+    pub(crate) static RANKED_REFINED: core::cell::Cell<[usize; 3]> =
+        const { core::cell::Cell::new([0; 3]) };
 }
 #[cfg(test)]
 thread_local! {
@@ -1055,7 +1059,24 @@ impl TrialCoder<'_, '_> {
                 {
                     continue;
                 }
-                let satd = if self.preset.implicit_mask {
+                let refined = self.preset.opfl_refine_all
+                    && codable(
+                        self.syntax
+                            .compound_refinements(leaf, trial)
+                            .map_err(Into::into),
+                    )?
+                    .is_some_and(|(.., refined)| refined);
+                #[cfg(test)]
+                RANKED_REFINED.set({
+                    let global = trial.mode == CompoundMode::GlobalGlobal;
+                    let [yes, no, global_yes] = RANKED_REFINED.get();
+                    [
+                        yes + usize::from(refined),
+                        no + usize::from(!refined),
+                        global_yes + usize::from(refined && global),
+                    ]
+                });
+                let satd = if self.preset.implicit_mask || refined {
                     let prediction = InterPrediction::Compound(trial);
                     let Some((satd, _)) = self.luma_score(leaf, prediction)? else {
                         continue;
@@ -1201,7 +1222,7 @@ impl TrialCoder<'_, '_> {
     ) -> Result<CompoundModes> {
         let mut variants = vec![trial];
         if self.preset.opfl || self.preset.refinemv {
-            let (reads_optflow, _) = self.syntax.compound_refinements(leaf, trial)?;
+            let (reads_optflow, ..) = self.syntax.compound_refinements(leaf, trial)?;
             if reads_optflow {
                 variants.push(CompoundModes {
                     optflow: true,
