@@ -520,3 +520,34 @@ fn avm_decodes_implicit_output_streams_in_display_order() {
     let avm = avm_decode(&avmdec, &units, size, config.bit_depth, "implicit");
     assert!(avm == expected, "AVM output differs");
 }
+
+/// With `long_term_id_bits` 2 the sequence codes 2 bits and the key frames of
+/// a stream with a key frame every 2 frames take the long-term ids 0, 1, 2,
+/// 0, 1 (§ 5.18.2); the stream decodes to the encoder recon with the same bytes
+/// on 1, 2 and 8 threads.
+#[test]
+fn key_frames_cycle_their_long_term_ids() {
+    let stream = |threads: usize| {
+        let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            long_term_id_bits: 2,
+            ..*Preset::new(6).unwrap().params()
+        }));
+        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        config.keyint = core::num::NonZeroU32::new(2).unwrap();
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        planned_stream_of(&config, coder, panning_frame, 150)
+    };
+    let (units, expected, cores, coder) = stream(1);
+    assert_eq!(coder.sequence.inter.unwrap().long_term_frame_id_bits, 2);
+    let ids: Vec<Option<i32>> = cores
+        .iter()
+        .filter(|core| core.frame_type == Some(splot_core::headers::frame::FrameType::Key))
+        .map(|core| core.long_term_id)
+        .collect();
+    assert_eq!(ids, [Some(0), Some(1), Some(2), Some(0), Some(1)]);
+    assert_same_samples(&decode(&units), &expected, "long-term ids");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == units, "{threads} threads");
+    }
+}
