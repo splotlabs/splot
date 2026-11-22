@@ -97,7 +97,7 @@ const V_ADST: usize = 12;
 const H_ADST: usize = 13;
 const V_FLIPADST: usize = 14;
 const H_FLIPADST: usize = 15;
-const ZERO_QUANTIZER_DELTAS: QuantizerDeltas = QuantizerDeltas {
+pub(crate) const ZERO_QUANTIZER_DELTAS: QuantizerDeltas = QuantizerDeltas {
     y_dc: 0,
     u_dc: 0,
     v_dc: 0,
@@ -1973,16 +1973,16 @@ fn intra_secondary_transform_kernel(
 
 /// The § 7.14.4 dequantization and § 7.15.4 inverse-transform parameters the
 /// decoder uses for a `plane_tx_type` block of segment 0 without secondary
-/// transforms, in a frame with the quantizer matrices `qm`.
+/// transforms, in a frame with the quantizer matrices `qm` and plane `deltas`.
 pub(crate) fn block_recon_params(
     qindex: u32,
     plane_id: PlaneId,
     (log2_width, log2_height): (u32, u32),
     (plane_tx_type, use_tcq, use_ddt): (usize, bool, bool),
-    (bit_depth, qm): (BitDepth, Option<QmFrameLevels>),
+    (bit_depth, qm, deltas): (BitDepth, Option<QmFrameLevels>, QuantizerDeltas),
 ) -> Result<(DequantBlockParams, InverseTransform2dOuter), GeneralIntraResidualError> {
     let samples = (1usize << log2_width) << log2_height;
-    let _deltas = FrameQuantizerDeltasScope::install(ZERO_QUANTIZER_DELTAS);
+    let _deltas = FrameQuantizerDeltasScope::install(deltas);
     let _qm = FrameQmScope::install(qm);
     let _segment = FrameQmSegmentScope::install(0);
     let setup = reconstruct::reconstruct_block_setup(

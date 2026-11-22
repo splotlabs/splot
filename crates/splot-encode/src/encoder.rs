@@ -87,8 +87,8 @@ pub(crate) trait FrameCoder {
     /// Stores a frame of [`Self::encode_wave`] in the references, in coding order.
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()>;
     /// A temporal delimiter and the show-existing frame that outputs the
-    /// hidden frame in `slot`.
-    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>>;
+    /// frame in `slot`, with the explicit `order_hint` when given.
+    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>>;
     /// Fits the sequence to `first`, the first frame in display order,
     /// before any frame is coded.
     fn start_sequence(&mut self, _first: &SourceFrame) -> Result<()> {
@@ -252,7 +252,9 @@ impl Encoder {
         };
         let planner = GopPlanner::new(config.keyint, mini_gop_size)
             .with_ref_slots(slots)
-            .with_implicit_output(params.implicit_output);
+            .with_intra_only(params.intra_only)
+            .with_implicit_output(params.implicit_output)
+            .with_sef_repeat(params.sef_repeat);
         Ok(Self {
             rate_control,
             stats_sink: None,
@@ -351,6 +353,17 @@ impl Encoder {
         let display_index = self.planner.next_display() + self.pending.len() as u64;
         if self.lookahead.push(&frame, display_index) {
             self.planner.force_key(display_index);
+        }
+        if self.planner.sef_repeat() {
+            let previous = self.pending.back().or_else(|| {
+                self.coding
+                    .as_ref()
+                    .and_then(|mini_gop| mini_gop.frames.last())
+                    .or(self.last_coded.as_ref())
+            });
+            if previous.is_some_and(|previous| previous.planes() == frame.planes()) {
+                self.planner.repeat(display_index);
+            }
         }
         self.pending.push_back(frame);
         self.cancel.check()
@@ -587,13 +600,20 @@ impl Encoder {
                     frame_types[(plan.display_index - first) as usize] = coded.frame_type;
                     data.extend(coded.temporal_unit);
                 }
-                GopStep::ShowExisting { slot, .. } => {
-                    let unit = self.coder.show_existing_frame(slot)?;
+                GopStep::ShowExisting {
+                    slot,
+                    display_index,
+                    order_hint,
+                } => {
+                    let unit = self.coder.show_existing_frame(slot, order_hint)?;
+                    let bits = unit.len() as u64 * 8;
                     if let Some(buffer) = &mut self.buffer {
-                        buffer.add(unit.len() as u64 * 8);
+                        buffer.add(bits);
                     }
-                    self.rate_control
-                        .update_show_existing(unit.len() as u64 * 8);
+                    match order_hint {
+                        Some(_) => self.rate_control.update_repeat(bits, display_index),
+                        None => self.rate_control.update_show_existing(bits),
+                    }
                     data.extend(unit);
                 }
             }

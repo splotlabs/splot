@@ -15,7 +15,7 @@ use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, OutputIndex, PixelFormat,
-    PlaneId, PlaneRect, PlaneSize, QmFrameLevels,
+    PlaneId, PlaneRect, PlaneSize, QmFrameLevels, QuantizerDeltas,
 };
 
 use super::super::block_decoded_state::TileBlockDecodedState;
@@ -36,7 +36,8 @@ use super::super::general_intra_block::{
     INTER_FSC_MODE_CONTEXT, allow_fsc_intra, dip_mode_info_allowed, fsc_bsize_group,
 };
 use super::super::general_intra_residual::{
-    FrameQmScope, LumaTransformTypeContext, intra_chroma_plane_tx_type,
+    FrameQmScope, FrameQuantizerDeltasScope, LumaTransformTypeContext, ZERO_QUANTIZER_DELTAS,
+    intra_chroma_plane_tx_type,
 };
 use super::super::intra_joint_modes::{IntraNeighbours, LumaPalette};
 use super::super::partition_traversal::{
@@ -243,9 +244,19 @@ pub(super) struct IntraTools {
     pub(super) scalar_trial: bool,
     /// The § 7.14.4 quantizer-matrix levels of `using_qmatrix`.
     pub(super) qm: Option<QmFrameLevels>,
+    /// The § 7.14.2 plane quantizer deltas of the frame.
+    pub(super) deltas: QuantizerDeltas,
 }
 
 impl IntraTools {
+    /// Installs the frame's quantizer matrices and plane deltas for a reconstruction.
+    pub(super) fn quant_scopes(&self) -> (FrameQmScope, FrameQuantizerDeltasScope) {
+        (
+            FrameQmScope::install(self.qm),
+            FrameQuantizerDeltasScope::install(self.deltas),
+        )
+    }
+
     /// Rejects every tool whose syntax or reconstruction the facade does not model.
     pub(super) fn new(seq: &SequenceHeader, core: &FrameHeaderCore, qindex: u32) -> Result<Self> {
         let tail = match (&core.intra_tail, &core.inter_tail) {
@@ -266,11 +277,10 @@ impl IntraTools {
             (
                 frame_allows_intrabc(core)
                     && !(core.frame_is_intra == Some(true)
-                        && core.intrabc.is_some_and(|params| {
-                            params.allow_global_intrabc == Some(true)
-                                && params.allow_local_intrabc == Some(false)
-                        })),
-                "intra block copy other than global-only in an intra frame",
+                        && core
+                            .intrabc
+                            .is_some_and(|params| params.allow_global_intrabc == Some(true))),
+                "intra block copy without the global area in an intra frame",
             ),
             (
                 qindex == 0
@@ -305,6 +315,11 @@ impl IntraTools {
             tcq: lossless.is_some_and(|info| info.allow_tcq),
             scalar_trial: false,
             qm: crate::pipeline::frame_engine::intra::build_frame_qm_levels(core),
+            deltas: core
+                .quantization_params
+                .as_ref()
+                .and_then(|quant| crate::prediction::inter::effective_quantizer_deltas(seq, quant))
+                .unwrap_or(ZERO_QUANTIZER_DELTAS),
         })
     }
 }
@@ -913,7 +928,7 @@ impl IntraTileSyntax {
         } = &mut self.recon;
         let leaf = leaf.as_ref().ok_or(NO_LEAF)?;
         let [u_index, v_index] = [leaf.plan_index(u_index)?, leaf.plan_index(v_index)?];
-        let _qm = FrameQmScope::install(self.tools.qm);
+        let _quant = self.tools.quant_scopes();
         leaf.plan
             .reconstruct_cctx_pair(
                 [(u_index, u_levels, u_eob), (v_index, v_levels, v_eob)],
@@ -1009,7 +1024,7 @@ impl IntraTileSyntax {
             )?,
             _ => None,
         };
-        let _qm = FrameQmScope::install(self.tools.qm);
+        let _quant = self.tools.quant_scopes();
         leaf.plan
             .reconstruct_unit(
                 leaf.plan_index(index)?,

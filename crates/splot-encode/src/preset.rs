@@ -232,6 +232,17 @@ pub struct PresetParams {
     /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
     /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
     pub delta_q_res: u8,
+    /// `DeltaQYDc` of every frame (§ 5.18.6.1), `-64..=63`; non-zero codes
+    /// `equal_ac_dc_q = 0` with `y_dc_delta_q_enabled` (§ 5.4.8). `0` in
+    /// every row (not measured).
+    pub y_dc_delta_q: i8,
+    /// `DeltaQUDc = DeltaQUAc` of every frame, `-64..=63`; non-zero codes the
+    /// chroma delta enables. `0` in every row (not measured).
+    pub u_delta_q: i8,
+    /// `DeltaQVDc = DeltaQVAc` of every frame, `-64..=63`; a value other
+    /// than `u_delta_q` codes `separate_uv_delta_q` and `diff_uv_delta`.
+    /// `0` in every row (not measured).
+    pub v_delta_q: i8,
     /// Compound candidates of an inter leaf that get a full RD trial, best
     /// prediction SATD first; skip-mode candidates are tried besides them.
     /// `0` codes neither compound nor skip-mode blocks. At least `1` in every
@@ -288,14 +299,28 @@ pub struct PresetParams {
     /// § 5.18.2) when the reference the decoder derives is their primary
     /// reference: the same CDFs for 3 fewer header bits.
     pub primary_ref_choose: bool,
+    /// `long_term_frame_id_bits` (§ 5.4.6), `0..=7`: key frames code
+    /// `long_term_id_plus_1` in this many bits, the ids cycling over the key
+    /// frames.
+    pub long_term_id_bits: u8,
     /// Hidden frames code `implicit_output_frame = 1` in a sequence with
     /// `monotonic_output_order_flag = 0` (§ 5.4.1, § 5.18.2), in place of
     /// show-existing frames.
     pub implicit_output: bool,
+    /// An input frame equal on every plane to the frame before it is not
+    /// coded: a show-existing frame with `derive_sef_order_hint = 0`
+    /// (§ 5.18.2) shows that frame's slot again at its display order hint.
+    /// Off in every row (not measured).
+    pub sef_repeat: bool,
     /// `NumRefFrames` (§ 5.4.6), `0..=16`: `0` keeps the default 8 slots
     /// without `explicit_num_ref_frames`; `n` codes `n` slots, which the GOP
     /// planner uses.
     pub num_ref_frames: u8,
+    /// `n > 0` codes the first frame of every `n`th mini-GOP as an
+    /// `INTRA_ONLY_FRAME` (§ 5.18.2) that refreshes one slot; the later
+    /// frames may still reference the frames before it. `0` in every row
+    /// (not measured).
+    pub intra_only: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -480,6 +505,14 @@ pub struct PresetParams {
     /// its luma that the block hashes find. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
     pub intrabc: bool,
+    /// With `intrabc`, key frames also code `allow_local_intrabc = 1`, and
+    /// the copy may come from the local area (§ 6.19.7.12). Off in every
+    /// row, the screen-content rows too: not measured.
+    pub intrabc_local: bool,
+    /// `seq_max_bvp_drl_bits_minus_1`, `0..=2`: IntraBC leaves choose the
+    /// nearest of `intrabc_drl + 2` reference block vectors. 0 in every row,
+    /// the screen-content rows too: not measured.
+    pub intrabc_drl: u8,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -874,6 +907,11 @@ pub enum PresetError {
 }
 
 impl PresetParams {
+    /// `[y_dc_delta_q, u_delta_q, v_delta_q]`, the plane quantizer deltas of every frame.
+    pub(crate) const fn plane_delta_q(&self) -> [i8; 3] {
+        [self.y_dc_delta_q, self.u_delta_q, self.v_delta_q]
+    }
+
     /// Checks the ranges the encoder supports, per field and across fields;
     /// every [`PRESETS`] row passes, a row with overrides may not.
     ///
@@ -932,6 +970,7 @@ impl PresetParams {
             " (mini_gop_size..)",
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
+        check("intrabc_drl", self.intrabc_drl, 0, 2, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
         check("ssim_aq", self.ssim_aq, 0, 200, "")?;
         check("segmentation", self.segmentation, 0, 1, "")?;
@@ -961,6 +1000,7 @@ impl PresetParams {
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
+        check("long_term_id_bits", self.long_term_id_bits, 0, 7, "")?;
         check("num_ref_frames", self.num_ref_frames, 0, 16, "")?;
         for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
             let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
@@ -1020,6 +1060,13 @@ impl FieldValue for u8 {
     const EXPECTED: &'static str = "an integer in 0..=255";
     fn parse(value: &str) -> Option<Self> {
         value.parse().ok()
+    }
+}
+
+impl FieldValue for i8 {
+    const EXPECTED: &'static str = "an integer in -64..=63 (su(7), § 5.18.6.3)";
+    fn parse(value: &str) -> Option<Self> {
+        value.parse().ok().filter(|v| (-64..=63).contains(v))
     }
 }
 
@@ -1271,8 +1318,11 @@ preset_table! {
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
+        long_term_id_bits:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_output:       [false, false, false, false, false, false, false, false, false, false, false],
+        sef_repeat:            [false, false, false, false, false, false, false, false, false, false, false],
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [ true, false, false, false, false, false, false, false, false, false, false],
@@ -1322,6 +1372,8 @@ preset_table! {
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
@@ -1339,6 +1391,9 @@ preset_table! {
                                [4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0],
                                [0; 11], [0; 11], [0; 11]]),
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        y_dc_delta_q:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        u_delta_q:             [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        v_delta_q:             [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     mode_decision {
         psy_rd:                [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],

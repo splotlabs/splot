@@ -107,11 +107,14 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         allow_tcq: false,
                         delta_q_res: [None, Some(0), Some(3)][index],
                         allow_intrabc: index == 1,
+                        allow_local_intrabc: index == 1 && sb == SuperblockSize::Block64x64,
                         grain_seed: None,
                         disable_cdf_update: index == 2,
                         disable_cross_frame_cdf_init: false,
                         choose_primary_ref_frame: false,
                         qm_level: [None, Some(0), Some(14)][index],
+                        plane_delta_q: [0; 3],
+                        long_term_id_plus_1: 0,
                         segment_alt_q: [None, Some([-9, -3, 3, 9]), None][index],
                     };
                     let core = build_key_frame_header(
@@ -138,7 +141,8 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     let intrabc = core.intrabc.unwrap();
                     let global = tx.allow_intrabc.then_some(true);
                     assert_eq!(intrabc.allow_global_intrabc, global);
-                    assert_eq!(intrabc.allow_local_intrabc, global.map(|_| false));
+                    let local = global.map(|_| tx.allow_local_intrabc);
+                    assert_eq!(intrabc.allow_local_intrabc, local);
                     let dq = core.delta_q_params.unwrap();
                     assert_eq!(dq.delta_q_present.then_some(dq.delta_q_res), tx.delta_q_res);
                     let qm = core.setup_qm_params.unwrap();
@@ -194,13 +198,16 @@ fn every_tool_flag_reaches_the_parsed_header() {
         drl_reorder: Some(true),
         mv_traj: true,
         max_drl_bits_minus_1: 3,
+        max_bvp_drl_bits_minus_1: 2,
         mvd_tools: [true, false, true],
         warp: true,
         global_motion: true,
+        long_term_frame_id_bits: 3,
         num_ref_frames: Some(5),
         explicit_ref_frame_map: true,
         implicit_output: true,
         seq_tiles: None,
+        plane_delta_q: [0; 3],
         short_refresh: true,
         masked_compound: true,
         cwp: true,
@@ -231,6 +238,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
     assert!(inter.enable_refmvbank && inter.drl_reorder == DrlReorder::Constraint);
     assert_eq!(inter.seq_max_drl_bits_minus_1, 3);
+    assert_eq!(inter.seq_max_bvp_drl_bits_minus_1, 2);
     assert!(inter.enable_tip && inter.enable_tip_output && inter.enable_tip_hole_fill);
     assert!(inter.enable_adaptive_mvd && !inter.enable_mvd_sign_derive && inter.enable_flex_mvres);
     assert_eq!(
@@ -241,6 +249,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
     assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
     assert!(inter.enable_tip_explicit_qp && inter.enable_short_refresh_frame_flags);
+    assert_eq!(inter.long_term_frame_id_bits, 3);
     assert_eq!(inter.num_ref_frames, 5);
     assert!(inter.explicit_ref_frame_map && !seq.general.monotonic_output_order_flag);
     let filter = seq.filter.unwrap();
@@ -649,6 +658,9 @@ fn rejects_out_of_range_inputs() {
         )),
         Err(EncoderHeaderError::InvalidDimension { value: 0 })
     ));
+    let mut bvp = params(8, 8, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    bvp.tools.max_bvp_drl_bits_minus_1 = 3;
+    assert!(build_encoder_sequence_header(&bvp).is_err());
     let seq = build_encoder_sequence_header(&params(
         8,
         8,
@@ -954,5 +966,132 @@ fn explicit_slot_counts_reach_the_parsed_sequence() {
     }
     for slots in [0, 17] {
         assert!(build_encoder_sequence_header(&stream(Some(slots), false)).is_err());
+    }
+}
+
+/// `long_term_frame_id_bits` reaches the parsed sequence (§ 5.4.6) and a key
+/// frame codes `long_term_id_plus_1` in that many bits (§ 5.18.2): `LongTermId`
+/// is `long_term_id_plus_1 - 1` (`-1` for none). An id that does not fit and
+/// 8 bits are rejected, and a cut sequence header does not parse.
+#[test]
+fn key_frames_code_their_long_term_ids() {
+    let stream = |bits| EncoderStreamParams {
+        tools: EncoderToolFlags {
+            long_term_frame_id_bits: bits,
+            ..EncoderToolFlags::default()
+        },
+        ..params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64)
+    };
+    for bits in [1, 3, 7] {
+        let seq = build_encoder_sequence_header(&stream(bits)).unwrap();
+        assert_eq!(seq.inter.unwrap().long_term_frame_id_bits, bits);
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let key = |long_term_id_plus_1| {
+            let tx = KeyFrameTxParams {
+                long_term_id_plus_1,
+                ..KeyFrameTxParams::default()
+            };
+            build_key_frame_header(
+                &view,
+                60,
+                0,
+                &FrameFilterParams::default(),
+                tx,
+                UniformTiles::default(),
+            )
+        };
+        for plus_1 in [0, 1, (1 << bits) - 1] {
+            let id = key(plus_1).unwrap().long_term_id;
+            assert_eq!(id, Some(plus_1 as i32 - 1), "{bits} {plus_1}");
+        }
+        assert!(key(1 << bits).is_err());
+        let bytes = sequence_header_bits(&stream(bits)).unwrap();
+        let cut = &bytes[..bytes.len() - 1];
+        let parsed = parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0)));
+        assert!(parsed.map_or(true, |header| !header.is_fully_parsed()));
+    }
+    assert!(build_encoder_sequence_header(&stream(8)).is_err());
+}
+
+#[test]
+fn plane_delta_q_reaches_the_parsed_headers() {
+    let stream = |chroma, plane_delta_q| EncoderStreamParams {
+        chroma,
+        tools: EncoderToolFlags {
+            plane_delta_q,
+            ..EncoderToolFlags::default()
+        },
+        ..params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64)
+    };
+    let key = |view: &CoreSeqView, plane_delta_q| {
+        let tx = KeyFrameTxParams {
+            plane_delta_q,
+            ..KeyFrameTxParams::default()
+        };
+        let filters = FrameFilterParams::default();
+        build_key_frame_header(view, 90, 0, &filters, tx, UniformTiles::default())
+    };
+    let chromas = [
+        ChromaFormatIdc::Yuv420,
+        ChromaFormatIdc::Yuv444,
+        ChromaFormatIdc::Monochrome,
+    ];
+    for chroma in chromas {
+        let mono = chroma == ChromaFormatIdc::Monochrome;
+        for d in [[-5, 0, 0], [0, 7, 7], [0, 0, -9], [-64, 63, -2], [3, 4, 4]] {
+            let seq = build_encoder_sequence_header(&stream(chroma, d)).unwrap();
+            assert_eq!(reparse_sequence(&seq), seq);
+            let view = CoreSeqView::from_sequence(&seq).unwrap();
+            let quant = &view.quant;
+            assert_eq!(quant.y_dc_delta_q_enabled, d[0] != 0);
+            assert_eq!(quant.uv_ac_delta_q_enabled, !mono && d[1..] != [0, 0]);
+            assert_eq!(quant.separate_uv_delta_q, !mono && d[1] != d[2]);
+            let core = key(&view, d).unwrap();
+            assert_eq!(reparse_core(&core, &view), core);
+            let q = core.quantization_params.unwrap();
+            let [y, u, v] = d.map(i32::from);
+            let [u, v] = if mono { [0, 0] } else { [u, v] };
+            let got = [
+                q.delta_q_y_dc,
+                q.delta_q_u_dc,
+                q.delta_q_u_ac,
+                q.delta_q_v_dc,
+            ];
+            assert_eq!((got, q.delta_q_v_ac), ([y, u, u, v], v), "{chroma:?} {d:?}");
+            let bytes = key_frame_header_bits(
+                &view,
+                (90, UniformTiles::default()),
+                0,
+                &FrameFilterParams::default(),
+                KeyFrameTxParams {
+                    plane_delta_q: d,
+                    ..KeyFrameTxParams::default()
+                },
+            )
+            .unwrap();
+            for len in 0..core.consumed_bits.div_ceil(8) as usize {
+                let mut cut = BitReader::new(&bytes[..len], ByteOffset::new(0));
+                let parsed =
+                    parse_frame_header_prefix(&mut cut, ObuType::ClosedLoopKey, Some(true))
+                        .and_then(|prefix| {
+                            let mut core =
+                                init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
+                            let refs = FrameReferenceStateView::unknown();
+                            parse_core_body(&mut cut, &mut core, &view, None, &refs)?;
+                            Ok(core.status)
+                        });
+                let complete = FrameHeaderParseStatus::IntraHeaderComplete;
+                assert!(parsed.map_or(true, |s| s != complete), "{d:?} cut at {len}");
+            }
+        }
+        let off = CoreSeqView::from_sequence(
+            &build_encoder_sequence_header(&stream(chroma, [0; 3])).unwrap(),
+        )
+        .unwrap();
+        assert!(key(&off, [-1, 0, 0]).is_err());
+        let y_only = build_encoder_sequence_header(&stream(chroma, [2, 0, 0])).unwrap();
+        let y_only = CoreSeqView::from_sequence(&y_only).unwrap();
+        assert_ne!(key(&y_only, [2, 1, 1]).is_err(), mono);
+        assert!(key(&y_only, [64, 0, 0]).is_err());
     }
 }

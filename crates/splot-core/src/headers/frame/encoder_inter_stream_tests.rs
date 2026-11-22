@@ -389,7 +389,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
 fn show_existing_frame_obu_parses_complete() {
     let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let obu = encode_show_existing_frame_obu(&view, 5, None).unwrap();
+    let obu = encode_show_existing_frame_obu(&view, 5, None, None).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -413,7 +413,38 @@ fn show_existing_frame_obu_parses_complete() {
     );
     assert_eq!(core.frame_to_show_map_idx, Some(5));
     assert_eq!(core.order_hint, Some(7));
-    assert!(encode_show_existing_frame_obu(&view, 8, None).is_err());
+    assert!(encode_show_existing_frame_obu(&view, 8, None, None).is_err());
+}
+
+/// An explicit `sef_order_hint` codes `derive_sef_order_hint = 0` and its
+/// low `OrderHintBits` (§ 5.18.2); the parser rebuilds the display order
+/// hint, and a payload cut inside the hint does not parse.
+#[test]
+fn show_existing_frame_obu_codes_an_explicit_order_hint() {
+    let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(17, 9, 7);
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::RegularSef,
+        first_picture_in_tu: true,
+        active_sequence: Some(&seq),
+        mfh_record: None,
+        reference_state: slots.view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let obu = encode_show_existing_frame_obu(&view, 5, Some(9 + 256), None).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    let payload = parsed.obus[0].payload;
+    let core =
+        parse_frame_header_core(&mut BitReader::new(payload, ByteOffset::new(0)), &input).unwrap();
+    assert_eq!(
+        core.status,
+        FrameHeaderParseStatus::ShowExistingFrameComplete
+    );
+    assert_eq!(core.derive_sef_order_hint, Some(false));
+    assert_eq!((core.order_hint_lsb, core.order_hint), (Some(9), Some(9)));
+    let cut = &payload[..1];
+    assert!(parse_frame_header_core(&mut BitReader::new(cut, ByteOffset::new(0)), &input).is_err());
 }
 
 /// A film-grain sequence codes `apply_grain` with the seed of each output
@@ -453,12 +484,12 @@ fn film_grain_headers_code_the_seed_and_the_model() {
         (grain.apply_grain, grain.fgm_id, grain.grain_seed),
         (true, Some(0), Some(0xa5c3))
     );
-    let sef = encode_show_existing_frame_obu(&view, 2, Some(0x0f0f)).unwrap();
+    let sef = encode_show_existing_frame_obu(&view, 2, None, Some(0x0f0f)).unwrap();
     assert!(parse_annex_b_obus_partial(&sef).error.is_none());
     params.tools.film_grain = false;
     let plain =
         CoreSeqView::from_sequence(&build_encoder_sequence_header(&params).unwrap()).unwrap();
-    assert!(encode_show_existing_frame_obu(&plain, 2, Some(1)).is_err());
+    assert!(encode_show_existing_frame_obu(&plain, 2, None, Some(1)).is_err());
     assert!(
         crate::headers::frame::build_key_frame_header(
             &plain,
@@ -488,6 +519,50 @@ fn film_grain_headers_code_the_seed_and_the_model() {
     ))
     .unwrap();
     assert_eq!((fg.update_flags, &fg.models[0].model), (1, &model));
+}
+
+/// The HDR metadata OBUs parse back as prefix short OBUs with `LAYER_GLOBAL`
+/// and `GLOBAL_PERSISTENCE`; a cut OBU does not parse.
+#[test]
+fn hdr_metadata_obus_parse_back() {
+    use crate::headers::metadata::parse_metadata_short;
+    let display = MetadataHdrMdcv {
+        primary_chromaticity_x: [8500, 6550, 35400],
+        primary_chromaticity_y: [39850, 2300, 14600],
+        white_point_chromaticity_x: 15635,
+        white_point_chromaticity_y: 16450,
+        luminance_max: 10_000_000,
+        luminance_min: 1,
+    };
+    let light = MetadataHdrCll {
+        max_cll: u16::MAX,
+        max_fall: 0,
+    };
+    for (obu, payload) in [
+        (
+            encode_hdr_mdcv_obu(display).unwrap(),
+            MetadataPayload::HdrMdcv(display),
+        ),
+        (
+            encode_hdr_cll_obu(light).unwrap(),
+            MetadataPayload::HdrCll(light),
+        ),
+    ] {
+        let parsed = parse_annex_b_obus_partial(&obu);
+        assert!(parsed.error.is_none());
+        let [envelope] = &parsed.obus[..] else {
+            unreachable!("one OBU");
+        };
+        assert_eq!(envelope.header.obu_type, ObuType::MetadataShort);
+        let parse = |bytes: &[u8]| {
+            parse_metadata_short(&mut BitReader::new(bytes, ByteOffset::new(0)), bytes.len())
+        };
+        let short = parse(envelope.payload).unwrap();
+        assert!(!short.metadata_is_suffix && !short.muh_cancel_flag);
+        assert_eq!((short.muh_layer_idc, short.muh_persistence_idc), (1, 0));
+        assert_eq!(short.unit.unwrap().payload, payload);
+        assert!(parse(&envelope.payload[..envelope.payload.len() - 2]).is_err());
+    }
 }
 
 #[test]
@@ -1530,6 +1605,77 @@ fn explicit_reference_maps_code_the_first_default_references() {
         build_tip_output_frame_header(&explicit, &slots.view(), &params(None), &map(&default))
             .unwrap();
     assert_eq!(tip.core.inter.unwrap().explicit_ref_frame_map, Some(false));
+}
+
+#[test]
+fn intra_only_headers_keep_the_other_slots() {
+    for sb in [SuperblockSize::Block64x64, SuperblockSize::Block256x256] {
+        let seq = sequence(200, 136, BitDepthIdc::Eight, sb);
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let slots = Slots::after_key(200, 136, 4);
+        for (show_frame, refresh_frame_flags, filters) in [
+            (true, 0b10, FrameFilterParams::default()),
+            (false, 0b1000_0000, filters(sb)),
+        ] {
+            let params = InterFrameParams {
+                base_q_idx: 90,
+                order_hint: 6,
+                refresh_frame_flags,
+                show_frame,
+                filters,
+                ..InterFrameParams::default()
+            };
+            let header = build_intra_only_frame_header(&view, &slots.view(), &params).unwrap();
+            let core = &header.core;
+            assert_eq!(core.frame_type, Some(FrameType::IntraOnly));
+            assert_eq!(core.frame_is_intra, Some(true));
+            assert_eq!(core.refresh_frame_flags, Some(refresh_frame_flags));
+            assert_eq!(core.display_order_hint(), Some(6));
+            assert_eq!(core.immediate_output_frame, Some(show_frame));
+            assert!(core.inter.is_none());
+            assert_eq!(header.bits.num_frame_header_bits(), core.consumed_bits);
+            let bytes = encode_inter_frame_obu(&header, &[&[0x5a; 3]]).unwrap();
+            assert!(!bytes.is_empty());
+            let mut w = BitWriter::new();
+            for index in 0..header.bits.num_frame_header_bits() {
+                w.write_flag(header.bits.bit(index).unwrap()).unwrap();
+            }
+            let full = w.into_bytes();
+            for len in 0..core.consumed_bits.div_ceil(8) as usize {
+                let mut cut = BitReader::new(&full[..len], ByteOffset::new(0));
+                let parsed =
+                    parse_frame_header_prefix(&mut cut, ObuType::RegularTileGroup, Some(true))
+                        .and_then(|prefix| {
+                            let mut cut_core =
+                                init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
+                            parse_core_body(&mut cut, &mut cut_core, &view, None, &slots.view())?;
+                            Ok(cut_core.status)
+                        });
+                let complete = FrameHeaderParseStatus::IntraHeaderComplete;
+                assert!(parsed.map_or(true, |s| s != complete), "cut at {len}");
+            }
+        }
+        let bad = |params: InterFrameParams| {
+            build_intra_only_frame_header(&view, &slots.view(), &params).is_err()
+        };
+        let base = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 6,
+            refresh_frame_flags: 0b10,
+            ..InterFrameParams::default()
+        };
+        assert!(bad(InterFrameParams {
+            base_q_idx: 0,
+            ..base
+        }));
+        assert!(bad(InterFrameParams {
+            tx: KeyFrameTxParams {
+                tx_mode: TxMode::Only4x4,
+                ..KeyFrameTxParams::default()
+            },
+            ..base
+        }));
+    }
 }
 
 /// With `implicit_output` the sequence codes `monotonic_output_order_flag =

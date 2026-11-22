@@ -114,8 +114,8 @@ impl FrameCoder for Recording {
         self.coder.commit(frame)
     }
 
-    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
-        self.coder.show_existing_frame(slot)
+    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>> {
+        self.coder.show_existing_frame(slot, order_hint)
     }
 }
 
@@ -770,4 +770,21 @@ fn the_buffer_re_code_ends_fitting_or_at_the_maximum_qindex() {
             assert!(tries.len() <= MAX_RECODES + 9, "{name}: {tries:?}");
         }
     }
+}
+
+/// A repeat spends its bits against its own budget, so VBR and CBR bank the
+/// bits it saves for later frames; a show-existing frame of a hidden frame
+/// spends against no budget.
+#[test]
+fn repeats_bank_their_budget() {
+    let frame_bits = 200_000 / 30;
+    let mut vbr = Vbr::new(200, (30, 1)).unwrap();
+    vbr.update_repeat(100, 0);
+    assert_eq!(vbr.drift, 100 - frame_bits);
+    vbr.update_show_existing(100);
+    assert_eq!(vbr.drift, 200 - frame_bits);
+    let mut cbr = Cbr::new(200, (1000, 500), (30, 1)).unwrap();
+    let before = cbr.vbr.drift;
+    cbr.update_repeat(100, 0);
+    assert_eq!(cbr.vbr.drift, before + 100 - frame_bits);
 }

@@ -389,7 +389,9 @@ fn two_tile_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
 }
 
 /// The content flags and the Y4M `A` tag reach the stream: every key frame
-/// has a content interpretation OBU, and the clip still validates and decodes.
+/// has a content interpretation OBU and the two HDR metadata OBUs, and the
+/// clip still validates and decodes. `splot inspect` may name a metadata
+/// type more than once per OBU.
 #[test]
 fn content_flags_write_a_content_interpretation_obu() {
     let content = [
@@ -399,6 +401,11 @@ fn content_flags_write_a_content_interpretation_obu() {
         ["--color-range", "full"],
         ["--chroma-sample-position", "left"],
         ["--sar", "4:3"],
+        [
+            "--mastering-display",
+            "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+        ],
+        ["--content-light", "1000,400"],
     ];
     let mut flags = vec!["--qp", "90", "--timing-info"];
     flags.extend(content.as_flattened());
@@ -420,16 +427,21 @@ fn content_flags_write_a_content_interpretation_obu() {
         let present = format!("\"{field}_present\": true");
         assert_eq!(json.matches(&present).count(), described, "{field}");
     }
+    for name in ["METADATA_TYPE_HDR_MDCV", "METADATA_TYPE_HDR_CLL"] {
+        let named = json.matches(name).count();
+        assert!(named > 0 && named % described == 0, "{name}: {named}");
+    }
 
-    let rejected = splot(&[
-        "encode",
-        input.to_str().unwrap(),
-        "-o",
-        ivf.to_str().unwrap(),
-        "--sar",
-        "4:0",
-    ]);
-    assert!(!rejected.status.success());
+    for bad in [
+        ["--sar", "4:0"],
+        ["--mastering-display", "G(1,2)B(3,4)R(5,6)WP(7,8)"],
+        ["--content-light", "1000"],
+    ] {
+        let mut args = vec!["encode", input.to_str().unwrap(), "-o"];
+        args.push(ivf.to_str().unwrap());
+        args.extend(bad);
+        assert!(!splot(&args).status.success(), "{bad:?}");
+    }
     for path in [input, ivf] {
         let _ = std::fs::remove_file(path);
     }

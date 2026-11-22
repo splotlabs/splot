@@ -100,13 +100,16 @@ impl Case {
                 drl_reorder: None,
                 mv_traj: false,
                 max_drl_bits_minus_1: 0,
+                max_bvp_drl_bits_minus_1: 0,
                 mvd_tools: [false; 3],
                 warp: false,
                 global_motion: false,
+                long_term_frame_id_bits: 0,
                 num_ref_frames: None,
                 explicit_ref_frame_map: false,
                 implicit_output: false,
                 seq_tiles: None,
+                plane_delta_q: [0; 3],
                 short_refresh: false,
                 masked_compound: false,
                 cwp: false,
@@ -124,11 +127,14 @@ impl Case {
                 allow_tcq: false,
                 delta_q_res: None,
                 allow_intrabc: false,
+                allow_local_intrabc: false,
                 grain_seed: None,
                 disable_cdf_update: false,
                 disable_cross_frame_cdf_init: false,
                 choose_primary_ref_frame: false,
                 qm_level: None,
+                plane_delta_q: [0; 3],
+                long_term_id_plus_1: 0,
                 segment_alt_q: None,
             },
         }
@@ -1554,7 +1560,7 @@ fn facade_rejects_unmodelled_tools() {
     let global_only = intrabc(true, Some(false));
     assert!(IntraTileSyntax::new(&seq, &global_only, &refs_for(&seq), 0).is_ok());
     assert!(rejects(&seq, &intrabc(false, None)), "local-only IntraBC");
-    assert!(rejects(&seq, &intrabc(true, Some(true))), "local IntraBC");
+    assert!(IntraTileSyntax::new(&seq, &intrabc(true, Some(true)), &refs_for(&seq), 0).is_ok());
     let mut inter = global_only;
     inter.frame_is_intra = Some(false);
     assert!(rejects(&seq, &inter), "IntraBC in an inter frame");

@@ -441,6 +441,137 @@ fn avm_decodes_intrabc_frames_like_splot() {
     }
 }
 
+/// Preset 9 with IntraBC, the local area as `local` says, and superblocks
+/// of `1 << sb_log2`.
+fn local_intrabc_preset(local: bool, sb_log2: u8) -> &'static PresetParams {
+    let mut preset = PRESETS[9];
+    (preset.intrabc, preset.intrabc_local, preset.max_block_log2) = (true, local, sb_log2);
+    Box::leak(Box::new(preset))
+}
+
+/// In the first 64 rows of a 256-wide key frame no global-area vector is
+/// valid (§ 6.19.7.12), so its IntraBC leaves there copy from the local
+/// area: some with `intrabc_local`, none without, with 64x64 and 128x128
+/// superblocks.
+#[test]
+fn local_intrabc_codes_copies_in_the_first_superblock_row() {
+    let intrabc = |choice: &LeafChoice| choice.intrabc.is_some();
+    let first_row = |local, sb_log2| {
+        let config = config(256, 128, BitDepth::Eight, 9, 90);
+        let preset = local_intrabc_preset(local, sb_log2);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        let key = crate::gop::plan(0, config.keyint);
+        let trees = search_frame(&coder, &key, &tiled_text(&config, 0), BitDepth::Eight);
+        let per_row = 256 >> sb_log2;
+        let count: usize = trees[..per_row].iter().map(|t| leaves(t, intrabc)).sum();
+        count
+    };
+    for sb_log2 in [6, 7] {
+        assert_eq!(first_row(false, sb_log2), 0, "global only, sb {sb_log2}");
+        assert!(first_row(true, sb_log2) > 0, "local, sb {sb_log2}");
+    }
+}
+
+/// Local-area IntraBC streams decode to the encoder recon in every chroma
+/// format and both bit depths, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn local_intrabc_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    for sb_log2 in [6, 7] {
+        let stream = |case| intrabc_stream(case, local_intrabc_preset(true, sb_log2));
+        each_case(CHROMAS, |chroma| {
+            for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+                let (units, recon) = stream((2, chroma, bit_depth));
+                let name = format!("{chroma:?} {bit_depth:?} sb {sb_log2}");
+                assert_same_samples(&decode(&units), &recon, &name);
+            }
+        });
+        let (one, _) = stream((1, PixelFormat::Yuv420, BitDepth::Ten));
+        each_case([2, 8], |threads| {
+            let (bytes, _) = stream((threads, PixelFormat::Yuv420, BitDepth::Ten));
+            assert!(bytes == one, "{threads} threads, sb {sb_log2}");
+        });
+    }
+}
+
+/// AVM decodes local-area IntraBC key frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_local_intrabc_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (sb_log2, bit_depth) in [(6, BitDepth::Eight), (7, BitDepth::Ten)] {
+        let preset = local_intrabc_preset(true, sb_log2);
+        let (units, recon) = intrabc_stream((2, PixelFormat::Yuv420, bit_depth), preset);
+        let avm = avm_decode(&avmdec, &[units], (256, 128), bit_depth, "local-intrabc");
+        assert!(
+            avm == recon,
+            "local intrabc sb {sb_log2}: AVM output differs"
+        );
+    }
+}
+
+/// With `intrabc_drl = 2` the sequence codes `seq_max_bvp_drl_bits_minus_1 =
+/// 2`, some IntraBC leaves code `RefMvIdx` 2 or 3, and the streams decode
+/// to the encoder recon in every chroma format and both bit depths; 1, 2
+/// and 8 threads write the same bytes.
+#[test]
+fn intrabc_drl_streams_code_far_reference_vectors() {
+    let preset = preset_with(|p| (p.intrabc, p.intrabc_drl) = (true, 2));
+    let far = |choice: &LeafChoice| choice.intrabc.is_some_and(|modes| modes.drl >= 2);
+    let config = config(256, 128, BitDepth::Eight, 9, 90);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    assert_eq!(
+        coder
+            .sequence
+            .inter
+            .as_ref()
+            .unwrap()
+            .seq_max_bvp_drl_bits_minus_1,
+        2
+    );
+    let key = crate::gop::plan(0, config.keyint);
+    let trees = search_frame(&coder, &key, &tiled_text(&config, 0), BitDepth::Eight);
+    assert!(trees.iter().map(|tree| leaves(tree, far)).sum::<usize>() > 0);
+    let stream = |case| intrabc_stream(case, preset);
+    each_case(CHROMAS, |chroma| {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let (units, recon) = stream((2, chroma, bit_depth));
+            assert_same_samples(
+                &decode(&units),
+                &recon,
+                &format!("{chroma:?} {bit_depth:?}"),
+            );
+        }
+    });
+    let (one, _) = stream((1, PixelFormat::Yuv420, BitDepth::Ten));
+    each_case([2, 8], |threads| {
+        assert!(
+            stream((threads, PixelFormat::Yuv420, BitDepth::Ten)).0 == one,
+            "{threads} threads"
+        );
+    });
+}
+
+/// AVM decodes key frames whose IntraBC leaves pick among four reference
+/// block vectors to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_intrabc_drl_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let preset = preset_with(|p| (p.intrabc, p.intrabc_drl) = (true, 2));
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let (units, recon) = intrabc_stream((2, PixelFormat::Yuv420, bit_depth), preset);
+        let avm = avm_decode(&avmdec, &[units], (256, 128), bit_depth, "intrabc-drl");
+        assert!(
+            avm == recon,
+            "intrabc drl {bit_depth:?}: AVM output differs"
+        );
+    }
+}
+
 /// Repeated text codes IntraBC leaves in key frames at both bit depths and
 /// in 4:2:0 and 4:4:4; its streams decode to the encoder recon in every
 /// chroma format and both bit depths, and 1, 2 and 8 threads write the same

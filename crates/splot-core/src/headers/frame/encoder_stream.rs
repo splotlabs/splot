@@ -15,9 +15,10 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
     FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, SegmentationParams,
-    SetupQmParams, TxMode, WienerNsFrameFilterBank, encode_temporal_delimiter_obu,
-    gdf_per_block_is_coded, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, QuantizationParams,
+    SegmentationParams, SetupQmParams, TxMode, WienerNsFrameFilterBank,
+    encode_temporal_delimiter_obu, gdf_per_block_is_coded, init_core_from_prefix, parse_core_body,
+    parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
@@ -32,7 +33,7 @@ use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
     write_cdef_params, write_deblocking_filter_params, write_gdf_params,
     write_inter_segmentation_params, write_intrabc_params, write_lr_params_for_inter,
-    write_obu_payload, write_setup_qm_params, write_tile_group_obu,
+    write_obu_payload, write_quantization_params, write_setup_qm_params, write_tile_group_obu,
 };
 
 /// The [`SegmentationParams`] of [`KeyFrameTxParams::segment_alt_q`].
@@ -167,6 +168,9 @@ pub struct EncoderToolFlags {
     /// `seq_max_drl_bits_minus_1` (§ 5.4.6), `0..=4`: `NEARMV` and `NEWMV`
     /// code `RefMvIdx` below `seq_max_drl_bits_minus_1 + 2`.
     pub max_drl_bits_minus_1: u32,
+    /// `seq_max_bvp_drl_bits_minus_1` (§ 5.4.6), `0..=2`: IntraBC leaves code
+    /// `RefMvIdx` below `seq_max_bvp_drl_bits_minus_1 + 2` (§ 5.20.5.4).
+    pub max_bvp_drl_bits_minus_1: u32,
     /// `enable_adaptive_mvd`, `enable_mvd_sign_derive` and
     /// `enable_flex_mvres` (§ 5.4.6).
     pub mvd_tools: [bool; 3],
@@ -178,6 +182,9 @@ pub struct EncoderToolFlags {
     /// `enable_global_motion` (§ 5.4.6): each inter frame codes
     /// `use_global_motion`.
     pub global_motion: bool,
+    /// `long_term_frame_id_bits`, `0..=7` (§ 5.4.6): key frames code
+    /// `long_term_id_plus_1` in this many bits.
+    pub long_term_frame_id_bits: u8,
     /// `monotonic_output_order_flag = 0` (§ 5.4.1): hidden frames code
     /// `implicit_output_frame`.
     pub implicit_output: bool,
@@ -190,6 +197,11 @@ pub struct EncoderToolFlags {
     /// `seq_tile_info_present_flag` (§ 5.4.2): the sequence codes this
     /// uniform layout, which frames reuse (§ 5.18.7.2).
     pub seq_tiles: Option<SeqTiles>,
+    /// The plane quantizer deltas `[DeltaQYDc, DeltaQU*, DeltaQV*]` frames may
+    /// code (§ 5.4.8): a non-zero luma value codes `equal_ac_dc_q = 0` with
+    /// `y_dc_delta_q_enabled`, a non-zero chroma value codes the chroma
+    /// enables, and `u != v` codes `separate_uv_delta_q`.
+    pub plane_delta_q: [i8; 3],
     /// `enable_short_refresh_frame_flags` (§ 5.4.6): inter frames code
     /// `has_refresh_frame_flags` and `frame_to_refresh`.
     pub short_refresh: bool,
@@ -312,9 +324,11 @@ pub struct KeyFrameTxParams {
     pub allow_tcq: bool,
     /// `delta_q_res` of a frame that codes `delta_q_present` (§ 5.18.7.8), `0..=3`.
     pub delta_q_res: Option<u8>,
-    /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1` and
-    /// `allow_local_intrabc = 0` (§ 5.18.3.4); an inter frame refuses it.
+    /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1`
+    /// (§ 5.18.3.4); an inter frame refuses it.
     pub allow_intrabc: bool,
+    /// With `allow_intrabc`, `allow_local_intrabc` (else 0).
+    pub allow_local_intrabc: bool,
     /// `grain_seed` of an output frame of a sequence with
     /// `film_grain_params_present`, which codes `apply_grain = 1` with
     /// `fgm_id = 0` (§ 5.18.10.1); `None` codes `apply_grain = 0`.
@@ -329,9 +343,16 @@ pub struct KeyFrameTxParams {
     /// `PRIMARY_REF_CHOOSE`, so the decoder derives `primary_ref_frame`; a
     /// key frame ignores it.
     pub choose_primary_ref_frame: bool,
+    /// `long_term_id_plus_1` of a key frame (§ 5.18.2), below
+    /// `1 << long_term_frame_id_bits`; `0` gives it no long-term id.
+    pub long_term_id_plus_1: u32,
     /// `using_qmatrix = 1` with this § 5.18.6.2 level, `0..=15`, in `qm_y`,
     /// `qm_u` and `qm_v`; `None` codes `using_qmatrix = 0`.
     pub qm_level: Option<u8>,
+    /// `[DeltaQYDc, DeltaQUDc = DeltaQUAc, DeltaQVDc = DeltaQVAc]` (§ 5.18.6.1),
+    /// each in the `su(7)` range; the sequence [`EncoderToolFlags::plane_delta_q`]
+    /// must enable each non-zero value.
+    pub plane_delta_q: [i8; 3],
     /// `segmentation_enabled` (§ 5.18.7.1) with segments 0..=3 enabling
     /// `SEG_LVL_ALT_Q` at these data, an updated map and no temporal update;
     /// `None` codes `segmentation_enabled = 0`. Every segment shares the
@@ -347,11 +368,14 @@ impl Default for KeyFrameTxParams {
             allow_tcq: false,
             delta_q_res: None,
             allow_intrabc: false,
+            allow_local_intrabc: false,
             grain_seed: None,
             disable_cdf_update: false,
             disable_cross_frame_cdf_init: false,
             choose_primary_ref_frame: false,
+            long_term_id_plus_1: 0,
             qm_level: None,
+            plane_delta_q: [0; 3],
             segment_alt_q: None,
         }
     }
@@ -616,10 +640,15 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         }
         w.write_bits(u32::from(slots) - 1, 4)?; // num_ref_frames_minus_1
     }
-    w.write_bits(0, 3)?; // long_term_frame_id_bits
+    if tools.long_term_frame_id_bits > 7 {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "long_term_frame_id_bits",
+        });
+    }
+    w.write_bits(u32::from(tools.long_term_frame_id_bits), 3)?;
     w.write_ns(tools.max_drl_bits_minus_1, 5)?; // ns(MAX_REF_MV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_drl_bits
-    w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
+    w.write_ns(tools.max_bvp_drl_bits_minus_1, 3)?; // ns(MAX_REF_BV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_bvp_drl_bits
     w.write_bits(NUM_SAME_REF_COMPOUND, 2)?;
     w.write_flag(tools.tip)?; // enable_tip
@@ -648,7 +677,8 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_flag(tools.short_refresh) // enable_short_refresh_frame_flags
 }
 
-/// § 5.4.8 with zero quantizer offsets.
+/// § 5.4.8 with zero `Base*DeltaQ` and the frame delta enables of
+/// [`EncoderToolFlags::plane_delta_q`].
 fn write_transform_quant_entropy_config(
     w: &mut BitWriter,
     tools: EncoderToolFlags,
@@ -677,13 +707,23 @@ fn write_transform_quant_entropy_config(
     if let Some(across_tiles) = tools.avg_cdf {
         w.write_flag(across_tiles)?; // avg_cdf_type
     }
+    let [y, u, v] = tools.plane_delta_q.map(|delta| delta != 0);
+    let uv = !monochrome && (u || v);
     if !monochrome {
-        w.write_flag(false)?; // separate_uv_delta_q
+        w.write_flag(tools.plane_delta_q[1] != tools.plane_delta_q[2])?; // separate_uv_delta_q
     }
-    w.write_flag(true)?; // equal_ac_dc_q
+    w.write_flag(!y)?; // equal_ac_dc_q
+    if y {
+        w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_y_dc_delta_q
+        w.write_flag(true)?; // y_dc_delta_q_enabled
+    }
     if !monochrome {
+        if y {
+            w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_uv_dc_delta_q
+            w.write_flag(uv)?; // uv_dc_delta_q_enabled
+        }
         w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_uv_ac_delta_q
-        w.write_flag(false)?; // uv_ac_delta_q_enabled
+        w.write_flag(uv)?; // uv_ac_delta_q_enabled
     }
     Ok(())
 }
@@ -735,20 +775,40 @@ fn key_frame_header_bits(
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
     }
+    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
+    let mut w = BitWriter::new();
+    w.write_uvlc(0)?; // cur_mfh_id
+    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    if tx.long_term_id_plus_1 >> seq.long_term_frame_id_bits != 0 {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "long_term_id_plus_1",
+        }
+        .into());
+    }
+    w.write_bits(tx.long_term_id_plus_1, seq.long_term_frame_id_bits)?;
+    w.write_flag(true)?; // immediate_output_frame
+    w.write_flag(false)?; // frame_size_override_flag
+    w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
+    write_intra_frame_tail(&mut w, seq, (base_q_idx, tiles, true), filters, tx)?;
+    Ok(w.into_bytes())
+}
+
+/// § 5.18.2 of an intra frame from `screen_content_params()` to
+/// `film_grain_config()`: the `base_q_idx`, `tiles`, `filters` and `tx` of a
+/// frame with `immediate_output_frame` `show`, then the byte alignment.
+pub(super) fn write_intra_frame_tail(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    (base_q_idx, tiles, show): (u32, UniformTiles, bool),
+    filters: &FrameFilterParams,
+    tx: KeyFrameTxParams,
+) -> Result<(), EncoderHeaderError> {
     if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
         return Err(EncoderHeaderError::InvalidTxParams {
             tx_mode: tx.tx_mode,
             reduced_tx_set: tx.reduced_tx_set,
         });
     }
-    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
-    let mut w = BitWriter::new();
-    w.write_uvlc(0)?; // cur_mfh_id
-    w.write_uvlc(0)?; // seq_header_id_in_frame_header
-    w.write_bits(0, seq.long_term_frame_id_bits)?; // long_term_id_plus_1
-    w.write_flag(true)?; // immediate_output_frame
-    w.write_flag(false)?; // frame_size_override_flag
-    w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
     if seq.seq_force_screen_content_tools == 2 {
         w.write_flag(true)?; // allow_screen_content_tools
         if seq.seq_force_integer_mv == 2 {
@@ -758,14 +818,14 @@ fn key_frame_header_bits(
     let intrabc = IntrabcParams {
         allow_intrabc: tx.allow_intrabc,
         allow_global_intrabc: tx.allow_intrabc.then_some(true),
-        allow_local_intrabc: tx.allow_intrabc.then_some(false),
+        allow_local_intrabc: tx.allow_intrabc.then_some(tx.allow_local_intrabc),
         change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
         max_bvp_drl_bits_minus_1: None,
     };
-    write_intrabc_params(&mut w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
+    write_intrabc_params(w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
     w.write_flag(tx.disable_cdf_update)?;
     write_quant_and_filters(
-        &mut w,
+        w,
         seq,
         (base_q_idx, tiles, tx),
         filters,
@@ -773,9 +833,9 @@ fn key_frame_header_bits(
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
-    write_film_grain_config(&mut w, seq, true, tx.grain_seed)?;
+    write_film_grain_config(w, seq, show, tx.grain_seed)?;
     w.align_to_byte();
-    Ok(w.into_bytes())
+    Ok(())
 }
 
 /// § 5.18.10.1 `film_grain_config()` of a frame with `immediate_output_frame`
@@ -801,6 +861,28 @@ pub(super) fn write_film_grain_config(
         w.write_bits(u32::from(seed), 16)?;
     }
     Ok(())
+}
+
+/// The § 5.18.6.1 model of `base_q_idx` with the plane deltas of `tx`: chroma
+/// codes one value for DC and AC, and V differs from U only with
+/// `separate_uv_delta_q`.
+pub(super) fn plane_quantization(
+    seq: &CoreSeqView,
+    base_q_idx: u32,
+    tx: KeyFrameTxParams,
+) -> QuantizationParams {
+    let chroma = seq.quant.num_planes > 1;
+    let [y, u, v] = tx.plane_delta_q.map(i32::from);
+    let [u, v] = if chroma { [u, v] } else { [0, 0] };
+    QuantizationParams {
+        base_q_idx,
+        delta_q_y_dc: y,
+        delta_q_u_dc: u,
+        delta_q_u_ac: u,
+        delta_q_v_dc: v,
+        delta_q_v_ac: v,
+        diff_uv_delta: chroma && seq.quant.separate_uv_delta_q && u != v,
+    }
 }
 
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
@@ -829,7 +911,12 @@ pub(super) fn write_quant_and_filters(
         });
     }
     let spacing = write_uniform_tile_info(w, seq, tiles, frame_is_intra)?;
-    w.write_bits(base_q_idx, q_bits)?;
+    write_quantization_params(
+        w,
+        &plane_quantization(seq, base_q_idx, tx),
+        &seq.quant,
+        false,
+    )?;
     write_inter_segmentation_params(
         w,
         &segmentation_params(tx.segment_alt_q),
@@ -1175,7 +1262,8 @@ fn write_uniform_tile_params(
 /// Returns [`EncoderHeaderError`] if `seq` has no complete view, a tile is empty or
 /// too long for `TileSizeBytes`, the tile count differs from the header, or an OBU
 /// does not serialize. The OBUs `key_obus` (empty for none) follow the sequence
-/// header: a content interpretation OBU, then film grain OBUs (§ 7.3.3).
+/// header: a content interpretation OBU, then metadata and film grain OBUs
+/// (§ 7.3.3).
 pub fn encode_key_frame_temporal_unit(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,

@@ -24,6 +24,11 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
   `--chroma-sample-position`, `--sar` and `--timing-info`, and passes the Y4M
   `A` tag, `XCOLORRANGE` and the `C420mpeg2` / `C420paldv` siting through. A
   Y4M input with a nonzero `A` tag now codes a few more bytes per key frame.
+- `Config::content` takes an HDR mastering display colour volume and a
+  content light level (`MasteringDisplay`, `ContentLightLevel`), written as
+  metadata OBUs (§ 5.17.5, § 5.17.6) on every key frame. `splot encode` takes
+  `--mastering-display "G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)"` and
+  `--content-light CLL,FALL`.
 
 ### Encoder 4:2:2 and 4:4:4
 
