@@ -5385,7 +5385,7 @@ module = "crates/splot-encode/src/rd/partition.rs"
 change_id = "enc-ext-partitions"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::ext_partitions sets enable_ext_partitions (1) and enable_uneven_4way_partitions (2); the encoder_syntax facade supplies the allowed shapes and their children. The RD partition search tries HORZ_3/VERT_3 only when the NONE cost is within ext_three_way_margin/256 of the best cost so far, and HORZ_4A/4B/VERT_4A/4B only when the three-way shape of the same axis is within ext_four_way_margin/256 (255 tries every shape). The children of an extended shape search without extended shapes. Implemented, off in every preset (level 0, presets write the old stream byte-identically): the measured gain per CPU is below the preset ladder (p6 margin 26: -0.26%/-0.43% at 1.20x; p0 level 2 margin 26: -0.47% at 1.69x on park_joy; full search at p0: -1.52% at 5.6x). p0 placement declined (2026-10-31): ext_partitions 1 with ext_three_way_margin 255 measured park_joy f10 p0 -1.04% at 3.137x CPU against main 336b8b726, while the ladder near p0 buys about 0.55% per 10% CPU (3.1x would need about -11%)."
+notes = "PresetParams::ext_partitions sets enable_ext_partitions (1) and enable_uneven_4way_partitions (2); the encoder_syntax facade supplies the allowed shapes and their children. The RD partition search tries HORZ_3/VERT_3 only when the NONE cost is within ext_three_way_margin/256 of the best cost so far, and HORZ_4A/4B/VERT_4A/4B only when the three-way shape of the same axis is within ext_four_way_margin/256 (255 tries every shape). The children of an extended shape search without extended shapes. Implemented, off in every preset (level 0, presets write the old stream byte-identically): the measured gain per CPU is below the preset ladder (p6 margin 26: -0.26%/-0.43% at 1.20x; p0 level 2 margin 26: -0.47% at 1.69x on park_joy; full search at p0: -1.52% at 5.6x). p0 placement declined (2026-10-31): ext_partitions 1 with ext_three_way_margin 255 measured park_joy f10 p0 -1.04% at 3.137x CPU against main 336b8b726, while the ladder near p0 buys about 0.55% per 10% CPU (3.1x would need about -11%). A trial snapshot saves the samples of the node and of its chroma reference block, so the trial of a has-chroma child of a 3-way or 4-way split gives back the chroma samples of its siblings (2026-11-22)."
 
 [feature.status]
 mapped = "done"
@@ -21178,7 +21178,7 @@ module = "crates/splot-cli/src/commands/encode.rs"
 change_id = "encode-cli-y4m-to-ivf"
 owner = "cli"
 risk = "medium"
-notes = "splot encode reads Y4M (file or stdin), builds Config from the stream header and --qp/--preset/--threads/--keyint, sends frames up to --limit, and writes AV02 IVF; --stats prints frame,qp,bits,psnr_y,psnr_u,psnr_v CSV lines. Unsupported input (bit depth other than 8/10, non-4:2:0) fails before the output file is created. Encoding fails with Unsupported until the frame coder is wired."
+notes = "splot encode reads Y4M (file or stdin), builds Config from the stream header and --qp/--preset/--threads/--keyint, sends frames up to --limit, and writes AV02 IVF, or with --output-format annexb (2026-11-22) the temporal units back to back as raw AV2 Annex B with no container header; --stats prints frame,qp,bits,psnr_y,psnr_u,psnr_v CSV lines. Unsupported input (bit depth other than 8/10, non-4:2:0) fails before the output file is created. Encoding fails with Unsupported until the frame coder is wired."
 
 [feature.status]
 mapped = "done"
@@ -21193,8 +21193,8 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/cli.rs::encode_rejects_malformed_and_unsupported_y4m_without_writing_output", "crates/splot-cli/tests/help_snapshots.rs::encode_help"]
-commands = ["cargo test -p splot-cli --test cli encode --locked", "cargo test -p splot-cli --test help_snapshots --locked"]
+tests = ["crates/splot-cli/tests/cli.rs::encode_rejects_malformed_and_unsupported_y4m_without_writing_output", "crates/splot-cli/tests/help_snapshots.rs::encode_help", "crates/splot-cli/tests/encode_decode_roundtrip.rs::annexb_output_is_the_ivf_payloads_without_the_container", "crates/splot-cli/tests/encode_decode_roundtrip.rs::avm_decodes_annexb_output_like_the_ivf_output"]
+commands = ["cargo test -p splot-cli --test cli encode --locked", "cargo test -p splot-cli --test help_snapshots --locked", "cargo test -p splot-cli --test encode_decode_roundtrip annexb --locked"]
 fixtures = []
 diagnostics = []
 

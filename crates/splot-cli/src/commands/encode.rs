@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `splot encode` — encode a Y4M file to an AV2 IVF stream.
+//! `splot encode` — encode a Y4M file to an AV2 IVF or Annex B stream.
 
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -24,9 +24,13 @@ use splot_encode::{
 pub(crate) struct EncodeArgs {
     /// Input Y4M file, or `-` for standard input.
     input: PathBuf,
-    /// Output IVF file.
+    /// Output file, in the container of `--output-format`.
     #[arg(short = 'o', long)]
     output: PathBuf,
+    /// Output container: `ivf`, or `annexb`, the raw length-delimited
+    /// OBUs of AV2 Annex B without a container header.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Ivf)]
+    output_format: OutputFormat,
     /// Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits; `--lossless` codes 0.
     #[arg(long, conflicts_with_all = ["crf", "bitrate"], value_parser = clap::value_parser!(u16).range(1..=303))]
     qp: Option<u16>,
@@ -291,6 +295,20 @@ enum RcMode {
     Cbr,
 }
 
+/// Containers of `splot encode --output-format`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Ivf,
+    Annexb,
+}
+
+/// The open output file of an encode: an IVF container, or the temporal
+/// units back to back as raw Annex B.
+enum Output {
+    Ivf(IvfWriter<BufWriter<File>>),
+    AnnexB(BufWriter<File>),
+}
+
 /// Metrics of `splot encode --tune`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum TuneArg {
@@ -428,7 +446,8 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     };
     config.fast_decode = args.fast_decode;
     config.multi_frame_header = args.multi_frame_header;
-    if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
+    let ivf = args.output_format == OutputFormat::Ivf;
+    if ivf && (u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err()) {
         bail!("IVF output supports at most 65535 samples per side");
     }
     if args.two_pass {
@@ -448,10 +467,17 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
                 let output = File::create(&args.output).with_context(|| {
                     format!("failed to create output file: {}", args.output.display())
                 })?;
-                writer = Some(IvfWriter::new(BufWriter::new(output), &config)?);
+                let output = BufWriter::new(output);
+                writer = Some(if ivf {
+                    Output::Ivf(IvfWriter::new(output, &config)?)
+                } else {
+                    Output::AnnexB(output)
+                });
             }
-            if let Some(writer) = &mut writer {
-                writer.write_packet(&packet)?;
+            match &mut writer {
+                Some(Output::Ivf(writer)) => writer.write_packet(&packet)?,
+                Some(Output::AnnexB(writer)) => writer.write_all(&packet.data)?,
+                None => {}
             }
             if args.stats {
                 for s in &packet.stats {
@@ -477,9 +503,10 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     encoder.flush()?;
     drain(&mut encoder)?;
     match writer {
-        Some(writer) => {
+        Some(Output::Ivf(writer)) => {
             writer.finish()?;
         }
+        Some(Output::AnnexB(mut writer)) => writer.flush()?,
         None => bail!("the input has no frames"),
     }
     Ok(ExitCode::SUCCESS)
