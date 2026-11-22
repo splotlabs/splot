@@ -28,6 +28,7 @@ pub(crate) fn key_frame_tx_params(
         },
         reduced_tx_set: if preset.tx_type_depth == 0 { 2 } else { 0 },
         allow_intrabc: preset.intrabc,
+        allow_local_intrabc: preset.intrabc_local,
         ..KeyFrameTxParams::default()
     }
 }
