@@ -35,6 +35,11 @@ const II_SCALED_WEIGHTS: [[u8; 64]; 5] = {
     rows
 };
 const MASK_MASTER_SIZE: usize = 128;
+/// Stored rows of a sharp master mask. A sharp mask serves blocks up to 16
+/// rows high, whose windows start at row `MASK_MASTER_SIZE / 2 - 16` or later
+/// and end at row `MASK_MASTER_SIZE / 2 + 16` or earlier.
+const SHARP_MASK_ROWS: usize = 32;
+const SHARP_MASK_FIRST_ROW: usize = (MASK_MASTER_SIZE - SHARP_MASK_ROWS) / 2;
 const MAX_WEDGE_TYPES: usize = 68;
 const WEDGE_ANGLES: usize = 20;
 const WEDGE_BOUNDARY_SHARP: usize = 0;
@@ -186,25 +191,30 @@ const fn master_weight(boundary: usize, direction: usize, column: usize, row: us
     weight << 2
 }
 
-static MASTER_MASKS: [[[u8; MASK_MASTER_SIZE * MASK_MASTER_SIZE]; WEDGE_ANGLES]; 2] = {
-    let mut masks = [[[0; MASK_MASTER_SIZE * MASK_MASTER_SIZE]; WEDGE_ANGLES]; 2];
-    let mut boundary = 0;
-    while boundary < masks.len() {
-        let mut angle = 0;
-        while angle < WEDGE_ANGLES {
-            let mut i = 0;
-            while i < MASK_MASTER_SIZE * MASK_MASTER_SIZE {
-                masks[boundary][angle][i] =
-                    master_weight(boundary, angle, i % MASK_MASTER_SIZE, i / MASK_MASTER_SIZE)
-                        as u8;
-                i += 1;
-            }
-            angle += 1;
+/// Rows `first_row..first_row + LEN / MASK_MASTER_SIZE` of
+/// `MasterMask[boundary][angle]`.
+const fn master_masks<const LEN: usize>(
+    boundary: usize,
+    first_row: usize,
+) -> [[u8; LEN]; WEDGE_ANGLES] {
+    let mut masks = [[0; LEN]; WEDGE_ANGLES];
+    let mut angle = 0;
+    while angle < WEDGE_ANGLES {
+        let mut i = 0;
+        while i < LEN {
+            let (column, row) = (i % MASK_MASTER_SIZE, first_row + i / MASK_MASTER_SIZE);
+            masks[angle][i] = master_weight(boundary, angle, column, row) as u8;
+            i += 1;
         }
-        boundary += 1;
+        angle += 1;
     }
     masks
-};
+}
+
+static SHARP_MASKS: [[u8; SHARP_MASK_ROWS * MASK_MASTER_SIZE]; WEDGE_ANGLES] =
+    master_masks(WEDGE_BOUNDARY_SHARP, SHARP_MASK_FIRST_ROW);
+static SMOOTH_MASKS: [[u8; MASK_MASTER_SIZE * MASK_MASTER_SIZE]; WEDGE_ANGLES] =
+    master_masks(WEDGE_BOUNDARY_SMOOTH, 0);
 
 /// The § 7.13.3.27 `WedgeMasks[MiSize][sign][wedge_index]` of a luma block:
 /// its rows start `MASK_MASTER_SIZE` apart in one master mask. The inverse
@@ -221,16 +231,26 @@ fn wedge_mask_window(
     let &(direction, x_offset, y_offset) = WEDGE_CODEBOOK
         .get(wedge_index)
         .ok_or(overflow("interintra wedge index"))?;
-    let boundary = wedge_boundary_index(luma_width, luma_height);
-    let direction = (direction + usize::from(sign) * WEDGE_ANGLES / 2) % WEDGE_ANGLES;
+    let direction = direction + usize::from(sign) * WEDGE_ANGLES / 2;
+    let direction = direction.checked_sub(WEDGE_ANGLES).unwrap_or(direction);
     let start = |offset: usize, size: usize| {
         (MASK_MASTER_SIZE / 2)
             .checked_sub((offset * size) >> 3)
             .filter(|&start| start + size <= MASK_MASTER_SIZE)
             .ok_or(overflow("wedge mask block size"))
     };
-    let start = start(y_offset, luma_height)? * MASK_MASTER_SIZE + start(x_offset, luma_width)?;
-    let master = &MASTER_MASKS[boundary][direction];
+    let (row, column) = (start(y_offset, luma_height)?, start(x_offset, luma_width)?);
+    let sharp = wedge_boundary_index(luma_width, luma_height) == WEDGE_BOUNDARY_SHARP;
+    let (master, row): (&[u8], _) = if sharp {
+        let row = row.checked_sub(SHARP_MASK_FIRST_ROW);
+        (
+            &SHARP_MASKS[direction],
+            row.ok_or(overflow("sharp wedge mask row"))?,
+        )
+    } else {
+        (&SMOOTH_MASKS[direction], row)
+    };
+    let start = row * MASK_MASTER_SIZE + column;
     let len = luma_height.saturating_sub(1) * MASK_MASTER_SIZE + luma_width;
     Ok(master.get(start..start + len).unwrap_or_default())
 }
