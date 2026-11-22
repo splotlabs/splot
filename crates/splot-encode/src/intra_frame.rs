@@ -94,7 +94,7 @@ pub(crate) struct IntraFrameCoder {
     /// Which temporal layers code warped motion, from the committed frames.
     warp_gate: crate::warp::WarpGate,
     /// The intra superblocks of the frame in each reference slot.
-    slot_intra: [Option<Arc<IntraCells>>; 8],
+    slot_intra: [Option<Arc<IntraCells>>; 16],
     /// Stops the frames of a cancelled encoder.
     pub(crate) cancel: crate::cancel::CancelToken,
     /// Counts the searched superblocks of the encoder's frames.
@@ -285,6 +285,7 @@ impl IntraFrameCoder {
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
                 implicit_output: preset.implicit_output,
+                num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
                     cols_log2: config.tiles.cols_log2,

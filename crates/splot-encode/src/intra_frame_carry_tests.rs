@@ -338,6 +338,34 @@ fn explicit_reference_map_streams_decode_alike_on_any_thread_count() {
     assert!(most > 2, "no frame with more than two references");
 }
 
+/// With `num_ref_frames` the sequence codes that many slots and the mini-GOP
+/// of 8 plans over them: streams of 4, 5 and 16 slots decode to the encoder
+/// recon with the same bytes on 1, 2 and 8 threads. Too few slots for the
+/// mini-GOP fail validation.
+#[test]
+fn explicit_slot_count_streams_decode_alike_on_any_thread_count() {
+    let stream = |slots: u8, threads: usize| {
+        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        config.preset_overrides = vec![("num_ref_frames".to_owned(), slots.to_string())];
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        encode_frames(&config, (0..20).map(|index| panning_frame(&config, index)))
+    };
+    for slots in [4, 5, 16] {
+        let (units, expected) = stream(slots, 1);
+        let units = units.concat();
+        assert_same_samples(&decode(&units), &expected, &format!("{slots} slots"));
+        for threads in [2, 8] {
+            assert!(
+                stream(slots, threads).0.concat() == units,
+                "{slots}: {threads} threads"
+            );
+        }
+    }
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.preset_overrides = vec![("num_ref_frames".to_owned(), "2".to_owned())];
+    assert!(config.validate().is_err());
+}
+
 /// The packets of `frames` panning frames coded through the [`Encoder`] with
 /// `implicit_output` on `threads`, and the encoder recon in display order.
 fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, Vec<u8>) {
