@@ -911,6 +911,7 @@ impl IntraTileSyntax {
         self.recon.leaf = None;
         self.plan_cctx(leaf);
         self.fsc_leaf = false;
+        self.dpcm_leaf = [None; 2];
         let chroma = self.chroma;
         let state = self.inter.as_mut().ok_or(INTRA_FRAME)?;
         state.planned = None;

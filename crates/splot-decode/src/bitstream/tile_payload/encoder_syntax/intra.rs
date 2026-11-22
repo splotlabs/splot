@@ -44,6 +44,7 @@ use super::super::partition_traversal::{
     DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, publish_intra_leaf_state,
 };
 use super::super::tile_frontier::chroma_subsampling;
+use super::dpcm::{DPCM_LOSSY, dpcm_joint_mode};
 use super::palette::{Palette, PlannedPalette, unit_map};
 use super::{
     EncoderSyntaxError, IntraMode, IntraTileSyntax, Ist, LeafBlock, Result, TileEnd,
@@ -103,6 +104,12 @@ pub struct IntraModes {
     /// `has_palette_y` with its palette: a `DC_PRED` luma prediction from
     /// the color map [`IntraTileSyntax::set_palette_map`] sets.
     pub palette: Option<Palette>,
+    /// `use_dpcm_y` of a lossless leaf: a `V_PRED` or `H_PRED` luma without
+    /// angle delta, MRL, DIP or palette (§ 5.20.5.5).
+    pub dpcm_y: bool,
+    /// `use_dpcm_uv` of a lossless leaf: a `V_PRED` or `H_PRED` chroma
+    /// (§ 5.20.5.6).
+    pub dpcm_uv: bool,
 }
 
 /// `dip_mode` and `dip_transpose` of a DIP luma prediction (§ 5.20.7.9).
@@ -124,6 +131,8 @@ impl IntraModes {
         fsc: false,
         dip: None,
         palette: None,
+        dpcm_y: false,
+        dpcm_uv: false,
     };
 }
 
@@ -543,11 +552,16 @@ impl IntraTileSyntax {
         modes: IntraModes,
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
+        if self.tools.lossless {
+            self.put(symbols, TileCdfSelector::UseDpcmY, modes.dpcm_y.into())?;
+            if modes.dpcm_y {
+                return self.write_dpcm_y(leaf, modes, symbols);
+            }
+        } else if modes.dpcm_y {
+            return Err(DPCM_LOSSY);
+        }
         let (mode_idx, _) = self.y_mode_index(leaf, modes)?;
         let ctx = self.y_mode_ctx(leaf)?;
-        if self.tools.lossless {
-            self.put(symbols, TileCdfSelector::UseDpcmY, 0)?;
-        }
         if mode_idx < FIRST_MODE_COUNT {
             let last = usize::from(MODE_INDEX_COUNT - 1);
             self.put(symbols, TileCdfSelector::YModeSet, 0)?;
@@ -572,18 +586,7 @@ impl IntraTileSyntax {
             )?;
             literal(symbols, second % SECOND_MODE_COUNT, Y_SECOND_MODE_BITS)?;
         }
-        if self.fsc_allowed(leaf) {
-            let ctx = if !self.inter_frame() || !leaf.frontier.is_mixed_region() {
-                self.intra_neighbours(leaf)?.fsc_mode_ctx()
-            } else {
-                INTER_FSC_MODE_CONTEXT
-            };
-            let bsize_group = fsc_bsize_group(leaf.frontier.b_size);
-            let selector = TileCdfSelector::FscMode { ctx, bsize_group };
-            self.put(symbols, selector, modes.fsc.into())?;
-        } else if modes.fsc {
-            return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
-        }
+        self.write_fsc_mode(leaf, modes, symbols)?;
         self.mrl_selection(modes)?;
         if self.tools.enable_mrls && modes.y_mode.is_directional() {
             let neighbours = self.intra_neighbours(leaf)?;
@@ -602,16 +605,43 @@ impl IntraTileSyntax {
         Ok(())
     }
 
+    /// `fsc_mode` of `leaf` when it may code one (§ 5.20.5.5).
+    pub(super) fn write_fsc_mode(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        if self.fsc_allowed(leaf) {
+            let ctx = if !self.inter_frame() || !leaf.frontier.is_mixed_region() {
+                self.intra_neighbours(leaf)?.fsc_mode_ctx()
+            } else {
+                INTER_FSC_MODE_CONTEXT
+            };
+            let bsize_group = fsc_bsize_group(leaf.frontier.b_size);
+            let selector = TileCdfSelector::FscMode { ctx, bsize_group };
+            self.put(symbols, selector, modes.fsc.into())?;
+        } else if modes.fsc {
+            return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
+        }
+        Ok(())
+    }
+
     fn write_uv_modes(
         &mut self,
         leaf: &LeafBlock,
         modes: IntraModes,
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
-        let is_cfl = !matches!(modes.uv_mode, ChromaMode::Intra(_));
         if self.tools.lossless {
-            self.put(symbols, TileCdfSelector::UseDpcmUv, 0)?;
+            self.put(symbols, TileCdfSelector::UseDpcmUv, modes.dpcm_uv.into())?;
+            if modes.dpcm_uv {
+                return self.write_dpcm_uv(modes, symbols);
+            }
+        } else if modes.dpcm_uv {
+            return Err(DPCM_LOSSY);
         }
+        let is_cfl = !matches!(modes.uv_mode, ChromaMode::Intra(_));
         if self.cfl_allowed(leaf) {
             let chroma_ref = leaf.frontier.chroma_ref_geometry();
             let ctx = self
@@ -671,8 +701,13 @@ impl IntraTileSyntax {
         self.clear_inter_plan();
         self.plan_cctx(leaf);
         self.fsc_leaf = modes.fsc;
+        self.dpcm_leaf = if modes.dpcm_y || modes.dpcm_uv {
+            self.dpcm_directions(modes)?
+        } else {
+            [None; 2]
+        };
         let (block_ctx, _) = self.block_ctx(leaf);
-        let (_, joint) = self.y_mode_index(leaf, modes)?;
+        let joint = self.joint_mode(leaf, modes)?;
         let palette = self.plan_palette(leaf, modes)?;
         let mrl = self.mrl_selection(modes)?;
         let block_modes = block_modes(leaf, modes, joint, mrl, palette.map(|p| p.palette))?;
@@ -978,7 +1013,7 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError`] for an invalid geometry or mode.
     pub fn publish_intra_leaf(&mut self, leaf: &LeafBlock, modes: IntraModes) -> Result<()> {
         let modes = part_modes(leaf, modes)?;
-        let (_, joint) = self.y_mode_index(leaf, modes)?;
+        let joint = self.joint_mode(leaf, modes)?;
         let mrl = self.mrl_selection(modes)?;
         let palette = modes
             .palette
@@ -1194,6 +1229,14 @@ impl IntraTileSyntax {
     /// The § 5.20.5.5 mode index that codes the luma modes of `modes` in `leaf`,
     /// found by running the decoder's list derivation over every index once
     /// per neighbour context.
+    /// `IntraJointMode` of the luma of `modes` in `leaf`.
+    fn joint_mode(&mut self, leaf: &LeafBlock, modes: IntraModes) -> Result<IntraJointMode> {
+        if modes.dpcm_y {
+            return dpcm_joint_mode(modes.y_mode);
+        }
+        Ok(self.y_mode_index(leaf, modes)?.1)
+    }
+
     fn y_mode_index(
         &mut self,
         leaf: &LeafBlock,
@@ -1289,6 +1332,7 @@ fn part_modes(leaf: &LeafBlock, modes: IntraModes) -> Result<IntraModes> {
         y_mode,
         angle_delta: angle_delta_y,
         uv_mode: modes.uv_mode,
+        dpcm_uv: modes.dpcm_uv,
         ..IntraModes::DC
     };
     let luma_only = IntraModes {
@@ -1321,13 +1365,16 @@ fn block_modes(
         use_dip: modes.dip.is_some().into(),
         dip_transpose: modes.dip.is_some_and(|dip| dip.transpose).into(),
         dip_mode: modes.dip.map_or(0, |dip| dip.mode),
-        use_dpcm_y: 0,
-        dpcm_mode_y: 0,
+        use_dpcm_y: modes.dpcm_y.into(),
+        dpcm_mode_y: (modes.dpcm_y && modes.y_mode == IntraMode::Horizontal).into(),
     };
     if !leaf.has_chroma() {
         return Ok(GeneralIntraBlockModes::luma_only(luma).with_palette_y(palette));
     }
     let chroma = match modes.uv_mode {
+        ChromaMode::Intra(uv_mode) if modes.dpcm_uv => {
+            GeneralIntraChromaBlockMode::dpcm((uv_mode == IntraMode::Horizontal).into())
+        }
         ChromaMode::Intra(uv_mode) => {
             let symbol = uv_mode_symbol(modes.y_mode, uv_mode)?;
             GeneralIntraChromaBlockMode::Prediction {

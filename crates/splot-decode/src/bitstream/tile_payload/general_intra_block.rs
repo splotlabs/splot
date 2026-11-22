@@ -35,8 +35,8 @@ const DPCM_MODE_UV_REASON: &str = "intra_dpcm_mode_uv";
 // AV2 § 5.20.5.5 and § 5.20.5.6 syntax literals for parse-then-fail-closed DPCM.
 const DPCM_VERTICAL_UV_MODE: u8 = 1;
 const DPCM_HORIZONTAL_UV_MODE: u8 = 2;
-const DPCM_VERTICAL_JOINT_MODE: usize = 22;
-const DPCM_HORIZONTAL_JOINT_MODE: usize = 50;
+pub(crate) const DPCM_VERTICAL_JOINT_MODE: usize = 22;
+pub(crate) const DPCM_HORIZONTAL_JOINT_MODE: usize = 50;
 const Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
 const Y_MODE_OFFSET_REASON: &str = "intra_y_mode_offset";
 const Y_SECOND_MODE_REASON: &str = "intra_y_second_mode";
@@ -234,7 +234,7 @@ impl GeneralIntraChromaBlockMode {
         }
     }
 
-    const fn dpcm(dpcm_mode_uv: u8) -> Self {
+    pub(crate) const fn dpcm(dpcm_mode_uv: u8) -> Self {
         if dpcm_mode_uv == 0 {
             Self::prediction(
                 SupportedChromaMode::Vertical,

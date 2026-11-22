@@ -62,6 +62,7 @@ mod cctx;
 mod coeff_walk;
 mod compound;
 mod delta_q;
+mod dpcm;
 mod fsc;
 mod inter;
 mod intra;
@@ -713,6 +714,8 @@ pub struct IntraTileSyntax {
     cctx_leaf: bool,
     /// The planned intra leaf codes `fsc_mode`.
     fsc_leaf: bool,
+    /// The § 7.14.4 DPCM directions of the planned intra leaf's luma and chroma.
+    dpcm_leaf: [Option<splot_recon::DpcmDirection>; 2],
     /// The color map of the next palette leaf, then of the planned one.
     palette_map: Vec<u8>,
     /// The color map of one transform block of the planned palette leaf.
@@ -803,6 +806,7 @@ impl IntraTileSyntax {
             segments,
             cctx_leaf: false,
             fsc_leaf: false,
+            dpcm_leaf: [None; 2],
             palette_map: Vec::new(),
             palette_unit: Vec::new(),
             mode_symbols: Vec::new(),
