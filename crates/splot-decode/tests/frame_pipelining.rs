@@ -537,3 +537,100 @@ fn intrabc_morph_offset_vector_outside_the_tile_is_rejected_at_every_width() {
         }
     }
 }
+
+/// IntraBC block vectors outside the § 6.19.7.12 local area (a coded
+/// colocated cell) and outside the global area (the delay, the wavefront and
+/// the `AllowExtraIBCRange` delay) are rejected at every worker count and
+/// frame delay, while the spec-legal vectors next to them decode alike.
+#[test]
+fn intrabc_vectors_outside_the_local_and_global_areas_are_rejected_at_every_width() {
+    let bad: [(&str, &[u8]); 5] = [
+        (
+            "chroma-offset",
+            include_bytes!(
+                "../../../tests/conformance/vectors/invalid/syn-intrabc-chroma-offset-local-edge-512x128.ivf"
+            ),
+        ),
+        (
+            "colo-coded",
+            include_bytes!(
+                "../../../tests/conformance/vectors/invalid/syn-intrabc-local-colo-coded-512x128.ivf"
+            ),
+        ),
+        (
+            "delay",
+            include_bytes!(
+                "../../../tests/conformance/vectors/invalid/syn-intrabc-global-delay-512x128.ivf"
+            ),
+        ),
+        (
+            "wavefront",
+            include_bytes!(
+                "../../../tests/conformance/vectors/invalid/syn-intrabc-global-wavefront-512x128.ivf"
+            ),
+        ),
+        (
+            "extra-range",
+            include_bytes!(
+                "../../../tests/conformance/vectors/invalid/syn-intrabc-extra-range-delay-512x128.ivf"
+            ),
+        ),
+    ];
+    let good: [(&str, &[u8]); 6] = [
+        (
+            "sdp-luma",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-intrabc-sdp-luma-local-edge-512x128.ivf"
+            ),
+        ),
+        (
+            "colo-uncoded",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-intrabc-local-colo-uncoded-512x128.ivf"
+            ),
+        ),
+        (
+            "older-region",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-intrabc-global-older-region-512x128.ivf"
+            ),
+        ),
+        (
+            "wavefront",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-intrabc-global-wavefront-512x128.ivf"
+            ),
+        ),
+        (
+            "extra-range",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-intrabc-extra-range-512x128.ivf"
+            ),
+        ),
+        (
+            "inter-local",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-intrabc-inter-local-128x64.ivf"
+            ),
+        ),
+    ];
+    for threads in [1, 2, 8] {
+        for delay in [FrameDelay::from(1usize), FrameDelay::Auto] {
+            for (name, bytes) in bad {
+                let error = collect_raw(&context(threads, delay), bytes, &DecodeOptions::default())
+                    .expect_err(name);
+                assert!(
+                    matches!(error, DecodeError::MalformedSource { .. })
+                        && error.to_string().contains("is_mv_valid"),
+                    "{name} at {threads} workers: {error}"
+                );
+            }
+            for (name, bytes) in good {
+                let expected = collect_raw(&depth_one(), bytes, &DecodeOptions::default()).unwrap();
+                let actual =
+                    collect_raw(&context(threads, delay), bytes, &DecodeOptions::default());
+                assert!(actual.unwrap() == expected, "{name} at {threads} workers");
+            }
+        }
+    }
+}
