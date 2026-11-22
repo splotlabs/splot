@@ -65,7 +65,7 @@ pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_row<const N: usize>(
     );
 }
 
-#[inline(always)]
+#[inline]
 fn avg_one<const N: usize>(cdf: &mut [u16; N], tile_cdf: &[u16; N], tile_num: u32, num_log2: u8) {
     if tile_num == 0 {
         for value in &mut cdf[..N - 2] {
@@ -94,7 +94,7 @@ pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_row<const N: usize>(
     blend_cdf_rows(core::slice::from_mut(cdf), core::slice::from_ref(saved_cdf));
 }
 
-#[inline(always)]
+#[inline]
 fn blend_one<const N: usize>(cdf: &mut [u16; N], saved_cdf: &[u16; N]) {
     for i in 0..N - 2 {
         let saved = u32::from(saved_cdf[i]);
@@ -110,9 +110,6 @@ fn blend_one<const N: usize>(cdf: &mut [u16; N], saved_cdf: &[u16; N]) {
 pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_count<const N: usize>(cdf: &mut [u16; N]) {
     scale_cdf_rows(core::slice::from_mut(cdf));
 }
-
-// The three row loops below stay out of line: the CDF structs call them once
-// per field, and an inlined copy per field cost about 190 KB of code.
 
 #[inline(never)]
 pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_rows<const N: usize>(
