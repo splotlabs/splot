@@ -235,7 +235,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
                     (Some(flat), bit_depth),
                     dst,
                     stride,
-                    &mut scratch.dequant_pair,
+                    &mut scratch.transform,
                 )
             {
                 return Ok(());
@@ -376,7 +376,7 @@ fn add_secondary_fused<T: ReconSample>(
             block.quant,
             &mut scratch.dequant[..samples],
             (dst, stride),
-            &mut scratch.dequant_pair,
+            &mut scratch.transform,
         )
         .map_err(reconstruct_error)
 }
@@ -455,7 +455,7 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
                 (Some(flat), bit_depth),
                 dst,
                 stride,
-                &mut scratch.dequant_pair,
+                &mut scratch.transform,
             )
         {
             return Ok(());
@@ -590,7 +590,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
                     (Some(flat), bit_depth),
                     dst,
                     stride,
-                    &mut scratch.dequant_pair,
+                    &mut scratch.transform,
                 )
             });
         if added {

@@ -140,7 +140,7 @@ fn check_fused<T: ReconSample + PartialEq + core::fmt::Debug>(
     (pred, block, expected): (&[T], &[T], &[T]),
     label: &str,
 ) {
-    let mut scratch = [i32::MAX; 32 * 32];
+    let mut scratch = [[i32::MAX; 32 * 32]; 2];
     let exact = pred.len() - stride + block.len() / (pred.len() / stride);
     for (coeffs, flat) in inputs {
         let mut dst = pred.to_vec(); // splot-copy-ok: test destination copy
@@ -234,7 +234,7 @@ fn check_secondary_add<T: ReconSample + PartialEq + core::fmt::Debug>(bit_depth:
                 .map(|_| T::try_from_u16(rng.next(max + 1) as u16).unwrap())
                 .collect();
             let mut dequant = vec![0; w * h];
-            let mut scratch = [i32::MAX; 32 * 32];
+            let mut scratch = [[i32::MAX; 32 * 32]; 2];
             let coded =
                 dequantize_with_secondary(&dq, &quant, Some(&secondary), &mut dequant).unwrap();
             let mut expected = pred.clone();
