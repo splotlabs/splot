@@ -1610,7 +1610,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
                 allowed.push(partition);
             }
         }
-        if node.is_chroma_part() && !self.luma.is_empty() {
+        if node.is_chroma_part() && !self.luma.is_empty() && self.preset.sdp_chroma_search == 0 {
             let luma = self.luma.get(&self.key(node)).copied();
             let merges: Vec<Partition> = allowed
                 .iter()

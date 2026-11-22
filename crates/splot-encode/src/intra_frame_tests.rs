@@ -281,6 +281,44 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     });
 }
 
+/// Parity hiding with the preset's TCQ frames: mid and leaf frames of a
+/// mini-GOP hide parity (`allow_parity_hiding`), TCQ frames do not, and the
+/// transform-type model of p6 prices levels that hide it; the streams decode
+/// to the encoder recon with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn parity_hiding_codes_the_frames_without_tcq() {
+    for (width, height, bit_depth, qp) in
+        [(136, 72, BitDepth::Eight, 110), (72, 40, BitDepth::Ten, 60)]
+    {
+        let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            parity_hiding: true,
+            ..*Preset::new(6).unwrap().params()
+        }));
+        assert!(params.tx_type_model_keep > 0);
+        let stream = |threads: usize| {
+            let mut config = config(width, height, bit_depth, 6, 60);
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            carry::planned_stream_of(&config, coder, panning_frame, qp)
+        };
+        let (units, expected, cores, _) = stream(1);
+        let hidden = cores
+            .iter()
+            .filter_map(|core| core.lossless_info.as_ref())
+            .map(|info| (info.allow_tcq, info.allow_parity_hiding))
+            .collect::<Vec<_>>();
+        assert!(
+            hidden.contains(&(false, true)) && hidden.contains(&(true, false)),
+            "{hidden:?}"
+        );
+        assert!(!hidden.contains(&(true, true)));
+        assert_same_samples(&decode(&units), &expected, &format!("{bit_depth:?}"));
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == units, "{bit_depth:?} {threads}");
+        }
+    }
+}
+
 /// TCQ on every frame: key and inter frames at a full-trial and a
 /// candidate-trial preset, at both bit depths and in every chroma format,
 /// decode to the encoder recon, with the same bytes on 1, 2 and 8 threads.
