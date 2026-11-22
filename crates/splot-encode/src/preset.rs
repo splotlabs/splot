@@ -491,6 +491,10 @@ pub struct PresetParams {
     /// an intra leaf gets one RD trial with `fsc_mode`, which then codes a
     /// plain IDTX block without the FSC coefficient path (§ 5.20.5.5).
     pub idtx_intra: bool,
+    /// A lossless intra leaf gets RD trials with `use_dpcm_y` and
+    /// `use_dpcm_uv` (§ 5.20.5.5, § 5.20.5.6) in `V_PRED` and `H_PRED`. Off
+    /// in every row; only a lossless frame codes DPCM.
+    pub lossless_dpcm: bool,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -1426,6 +1430,9 @@ preset_table! {
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
+    }
+    lossless {
+        lossless_dpcm:         [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],

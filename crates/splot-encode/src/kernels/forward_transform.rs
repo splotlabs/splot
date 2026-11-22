@@ -420,6 +420,36 @@ pub(crate) fn forward_walsh_hadamard_4x4(residual: &[i32; 16]) -> [i32; 16] {
     dispatch!(Level::baseline(), simd => walsh_hadamard_kernel(simd, residual))
 }
 
+/// [`forward_walsh_hadamard_4x4`] of the differences of `residual` along the
+/// `dpcm` direction, which the § 7.14.4 cumulative sum after the inverse
+/// transform maps back to `residual`.
+pub(crate) fn forward_lossless_4x4(
+    residual: &[i32; 16],
+    dpcm: Option<splot_recon::DpcmDirection>,
+) -> [i32; 16] {
+    match dpcm {
+        None => forward_walsh_hadamard_4x4(residual),
+        Some(direction) => forward_walsh_hadamard_4x4(&dpcm_differences(residual, direction)),
+    }
+}
+
+/// The differences of the row-major 4x4 `residual` to the previous sample
+/// along `direction`; the first row (`Vertical`) or column keeps its values.
+#[cold]
+#[inline(never)]
+fn dpcm_differences(residual: &[i32; 16], direction: splot_recon::DpcmDirection) -> [i32; 16] {
+    let vertical = direction == splot_recon::DpcmDirection::Vertical;
+    let step = if vertical { 4 } else { 1 };
+    core::array::from_fn(|i| {
+        let first = if vertical { i < 4 } else { i % 4 == 0 };
+        if first {
+            residual[i]
+        } else {
+            residual[i] - residual[i - step]
+        }
+    })
+}
+
 /// [`forward_walsh_hadamard_4x4`]: the column pass runs on the four row
 /// vectors at once, the row pass on their transpose.
 #[inline]

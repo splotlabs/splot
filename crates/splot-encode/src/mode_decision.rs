@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use splot_decode::encoder_syntax::{
-    ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax,
+    ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraMode, IntraModes, IntraTileSyntax,
     JMVD_AMVD_SCALE_MODES, LeafBlock, MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, PartitionNode, SingleMvs,
     SyntaxSnapshot, TxPartition, WarpModel, tx_log2,
 };
@@ -1384,13 +1384,37 @@ impl TrialCoder<'_, '_> {
         Ok(searches)
     }
 
+    /// Adds to `candidates` the `V_PRED` and `H_PRED` DPCM luma (`luma`) or
+    /// chroma of `base` when the preset searches DPCM in a lossless frame.
+    fn push_dpcm(&self, candidates: &mut Vec<LeafChoice>, base: IntraModes, luma: bool) {
+        if !self.preset.lossless_dpcm || !self.syntax.dpcm_allowed() {
+            return;
+        }
+        candidates.extend([IntraMode::Vertical, IntraMode::Horizontal].map(|mode| {
+            LeafChoice::largest(if luma {
+                IntraModes {
+                    y_mode: mode,
+                    dpcm_y: true,
+                    ..base
+                }
+            } else {
+                IntraModes {
+                    uv_mode: ChromaMode::Intra(mode),
+                    dpcm_uv: true,
+                    ..base
+                }
+            })
+        }));
+    }
+
     /// The best chroma mode of the `CHROMA_PART` leaf `leaf` over its
     /// collocated luma: the shortlist of chroma SATD, then RD trials.
     fn chroma_choice(&mut self, leaf: &LeafBlock, start: &SyntaxSnapshot) -> Result<LeafChoice> {
         let modes = self.chroma_candidates(leaf, IntraModes::DC)?;
         let mut ranked = Vec::new();
         self.rank(leaf, modes, CHROMA, &mut ranked)?;
-        let candidates = self.shortlist(ranked);
+        let mut candidates = self.shortlist(ranked);
+        self.push_dpcm(&mut candidates, IntraModes::DC, false);
         self.best(leaf, candidates, CHROMA, start)
     }
 
@@ -1436,6 +1460,11 @@ impl TrialCoder<'_, '_> {
             }
             choice = self.best(leaf, candidates, LUMA, start)?;
         }
+        if self.preset.lossless_dpcm && self.syntax.dpcm_allowed() {
+            let mut candidates = vec![choice];
+            self.push_dpcm(&mut candidates, IntraModes::DC, true);
+            choice = self.best(leaf, candidates, LUMA, start)?;
+        }
         if (self.preset.fsc || self.preset.idtx_intra) && self.syntax.fsc_allowed(leaf) {
             let fsc = LeafChoice::largest(IntraModes {
                 fsc: true,
@@ -1463,7 +1492,8 @@ impl TrialCoder<'_, '_> {
             let modes = self.chroma_candidates(leaf, choice.modes)?;
             let mut ranked = Vec::new();
             self.rank(leaf, modes, CHROMA, &mut ranked)?;
-            let candidates = self.shortlist(ranked);
+            let mut candidates = self.shortlist(ranked);
+            self.push_dpcm(&mut candidates, choice.modes, false);
             let chroma = candidates
                 .into_iter()
                 .map(|candidate| LeafChoice {

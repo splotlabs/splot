@@ -21,8 +21,8 @@ use splot_decode::encoder_syntax::{
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
 use splot_recon::{
-    BitDepth, DecodedFrame, DequantBlockParams, PixelFormat, PlaneId, PlaneSize, QmFrameLevels,
-    QuantizerDeltas, secondary_transform_layout,
+    BitDepth, DecodedFrame, DequantBlockParams, DpcmDirection, PixelFormat, PlaneId, PlaneSize,
+    QmFrameLevels, QuantizerDeltas, secondary_transform_layout,
 };
 
 use crate::cfl_filter::cfl_ds_filter;
@@ -1593,8 +1593,13 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let use_tcq = syntax.uses_tcq(tx);
         let ddt = syntax.uses_ddt();
         let qm = (syntax.quant_matrices(), syntax.quantizer_deltas());
-        let (params, forward) =
-            self.forward(tx, (use_tcq, ddt, qm), prediction, residual, coeffs)?;
+        let (params, forward) = self.forward(
+            (tx, syntax.dpcm(tx)),
+            (use_tcq, ddt, qm),
+            prediction,
+            residual,
+            coeffs,
+        )?;
         if let Some(secondary) = syntax.secondary_transform(tx)? {
             kernels()
                 .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
@@ -1708,8 +1713,10 @@ impl SourceResidualCoder<'_> {
     ) -> core::result::Result<Vec<[Vec<i32>; 3]>, TileWriterError> {
         let quant = (syntax.quant_matrices(), syntax.quantizer_deltas());
         let ddt = (false, syntax.uses_ddt(), quant);
-        let (u_params, u_forward) = self.forward(u, ddt, u_prediction, residual, u_coeffs)?;
-        let (v_params, v_forward) = self.forward(v, ddt, v_prediction, residual, v_coeffs)?;
+        let (u_params, u_forward) =
+            self.forward((u, syntax.dpcm(u)), ddt, u_prediction, residual, u_coeffs)?;
+        let (v_params, v_forward) =
+            self.forward((v, syntax.dpcm(v)), ddt, v_prediction, residual, v_coeffs)?;
         let [uu, vv, uv] = kernels().cctx_stats(u_coeffs, v_coeffs);
         let energy = |[c, s]: [i32; 2]| {
             let (c, s) = (i128::from(c), i128::from(s));
@@ -1898,10 +1905,11 @@ impl SourceResidualCoder<'_> {
     }
 
     /// The source residual of `tx` over `prediction` and its primary forward
-    /// transform into `coeffs`, with the block's dequantization parameters.
+    /// transform into `coeffs`, with the block's dequantization parameters;
+    /// a lossless `tx` with a `dpcm` direction codes its residual differences.
     fn forward(
         &self,
-        tx: &TransformBlock,
+        (tx, dpcm): (&TransformBlock, Option<DpcmDirection>),
         (use_tcq, use_ddt, (qm, deltas)): (bool, bool, (Option<QmFrameLevels>, QuantizerDeltas)),
         prediction: &[u16],
         residual: &mut Vec<i32>,
@@ -1932,7 +1940,7 @@ impl SourceResidualCoder<'_> {
         if self.lossless {
             let block = <&[i32; 16]>::try_from(residual.as_slice())
                 .map_err(|_| TileWriterError::Shape("a lossless block that is not 4x4"))?;
-            coeffs.copy_from_slice(&crate::kernels::forward_walsh_hadamard_4x4(block));
+            coeffs.copy_from_slice(&crate::kernels::forward_lossless_4x4(block, dpcm));
             return Ok((params, forward));
         }
         kernels()
@@ -2002,7 +2010,7 @@ impl SourceResidualCoder<'_> {
         levels: &mut Vec<i32>,
     ) -> core::result::Result<Option<u128>, TileWriterError> {
         let (params, forward) = self.forward(
-            tx,
+            (tx, syntax.dpcm(tx)),
             (
                 false,
                 syntax.uses_ddt(),
@@ -2075,7 +2083,7 @@ impl SourceResidualCoder<'_> {
         let mut scratch = core::mem::take(&mut self.scratch);
         let [residual, coeffs, work] = &mut scratch;
         let found = self.forward(
-            tx,
+            (tx, syntax.dpcm(tx)),
             (
                 syntax.uses_tcq(tx),
                 syntax.uses_ddt(),

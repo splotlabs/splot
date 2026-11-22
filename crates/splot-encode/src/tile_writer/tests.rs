@@ -571,6 +571,8 @@ impl ModePicker {
             fsc,
             dip: None,
             palette: None,
+            dpcm_y: false,
+            dpcm_uv: false,
         }
     }
 }
