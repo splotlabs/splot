@@ -21,7 +21,7 @@ pub(super) use cells::{compound_cell, compound_windows, program};
 mod cells;
 use core::arch::x86_64::*;
 use core::cell::Cell;
-use fearless_simd::{Avx2, Simd, SimdBase, SimdFrom, i32x4, i32x8, u8x32, u16x8, u16x16};
+use fearless_simd::{Avx2, Simd, SimdBase, SimdFrom, i32x4, i32x8, u8x16, u8x32, u16x8, u16x16};
 
 fn token() -> Option<Avx2> {
     fearless_simd::Level::baseline().as_avx2()
@@ -92,6 +92,10 @@ fearless_simd::kernel!(
     fn predict_lanes(t: Avx2, block: &Block<'_, u16>, sink: &mut Sink<'_>) {
         let w = block.w;
         match sink {
+            Sink::Put { output, stride } => {
+                let stride = *stride;
+                shapes(t, block, &mut Put { output, stride }, 255);
+            }
             Sink::PutWide {
                 output,
                 stride,
@@ -103,6 +107,22 @@ fearless_simd::kernel!(
             Sink::Prep { output, stride } => {
                 let stride = *stride;
                 shapes(t, block, &mut Prep { output, stride }, 0);
+            }
+            Sink::Average {
+                pred0,
+                forward,
+                output,
+                stride,
+            } => {
+                let (forward, stride) = (*forward, *stride);
+                let out = &mut Average {
+                    pred0,
+                    w,
+                    forward,
+                    output,
+                    stride,
+                };
+                shapes(t, block, out, 255);
             }
             Sink::AverageWide {
                 pred0,
@@ -121,10 +141,7 @@ fearless_simd::kernel!(
                 };
                 shapes(t, block, out, *max);
             }
-            Sink::Put { .. }
-            | Sink::Average { .. }
-            | Sink::PrepNarrow { .. }
-            | Sink::AverageNarrow { .. } => {}
+            Sink::PrepNarrow { .. } | Sink::AverageNarrow { .. } => {}
         }
     }
 );
@@ -170,40 +187,83 @@ fn shapes<O: WordOut>(t: Avx2, block: &Block<'_, u16>, out: &mut O, max: u16) {
 /// each of rows `a` and `b`, as `Clip1` samples ([`Self::words`]) or
 /// compound predictors ([`Self::sums`]).
 trait WordOut: Out {
+    /// Whether the samples are bytes.
+    const BYTES: bool = false;
     /// The first predictors of the outputs.
     fn first(t: Avx2, _: &Self::Row<'_>, _: Option<&Self::Row<'_>>) -> __m256i {
         i32x8::splat(t, 0).into()
     }
-    /// Stores eight samples.
+    /// Stores eight samples: words, or bytes in the low half.
     fn words(_: Avx2, _: Self::Row<'_>, _: Option<Self::Row<'_>>, _: __m128i) {}
     /// Stores eight compound predictors.
     fn sums(_: Avx2, _: Self::Row<'_>, _: Option<Self::Row<'_>>, _: __m256i) {}
-    /// Stores sixteen samples.
+    /// Stores sixteen samples: words, or bytes in the low lane.
     fn words16(_: Avx2, _: Self::Row<'_>, _: __m256i) {}
 }
 
-/// Stores eight samples into row `a`, or lanes `0..4` into `a` and `4..8`
-/// into `b`.
-#[inline(always)]
-fn store_words(t: Avx2, a: &mut [u16], b: Option<&mut [u16]>, values: __m128i) {
-    let values = u16x8::<Avx2>::simd_from(t, values);
-    match (b, a.first_chunk_mut::<8>()) {
-        (Some(b), _) => store_pair(a, b, values.to_array()),
-        (None, Some(slot)) => values.store_array(slot),
-        (None, None) => {}
+/// Sample storage of word lanes whose values fit it.
+trait Word: Copy {
+    /// Whether the samples are bytes.
+    const BYTES: bool;
+    /// Stores eight samples into row `a`, or lanes `0..4` into `a` and
+    /// `4..8` into `b`.
+    fn store(t: Avx2, a: &mut [Self], b: Option<&mut [Self]>, values: __m128i);
+    /// Stores sixteen samples into `row`: words, or bytes in the low lane.
+    fn store16(t: Avx2, row: &mut [Self], values: __m256i);
+}
+
+impl Word for u8 {
+    const BYTES: bool = true;
+    #[inline(always)]
+    fn store(t: Avx2, a: &mut [u8], b: Option<&mut [u8]>, values: __m128i) {
+        let bytes = u8x16::<Avx2>::simd_from(t, values).to_array();
+        let Some(&bytes) = bytes.first_chunk::<8>() else {
+            return;
+        };
+        match (b, a.first_chunk_mut::<8>()) {
+            (Some(b), _) => store_pair(a, b, bytes),
+            (None, Some(slot)) => *slot = bytes,
+            (None, None) => {}
+        }
+    }
+    #[inline(always)]
+    fn store16(t: Avx2, row: &mut [u8], values: __m256i) {
+        let bytes = u8x32::<Avx2>::simd_from(t, values).to_array();
+        if let (Some(slot), Some(bytes)) = (row.first_chunk_mut::<16>(), bytes.first_chunk::<16>())
+        {
+            *slot = *bytes;
+        }
     }
 }
 
-impl WordOut for Put<'_, u16> {
+impl Word for u16 {
+    const BYTES: bool = false;
     #[inline(always)]
-    fn words(t: Avx2, a: &mut [u16], b: Option<&mut [u16]>, values: __m128i) {
-        store_words(t, a, b, values);
+    fn store(t: Avx2, a: &mut [u16], b: Option<&mut [u16]>, values: __m128i) {
+        let values = u16x8::<Avx2>::simd_from(t, values);
+        match (b, a.first_chunk_mut::<8>()) {
+            (Some(b), _) => store_pair(a, b, values.to_array()),
+            (None, Some(slot)) => values.store_array(slot),
+            (None, None) => {}
+        }
     }
     #[inline(always)]
-    fn words16(t: Avx2, row: &mut [u16], values: __m256i) {
+    fn store16(t: Avx2, row: &mut [u16], values: __m256i) {
         if let Some(slot) = row.first_chunk_mut::<16>() {
             u16x16::<Avx2>::simd_from(t, values).store_array(slot);
         }
+    }
+}
+
+impl<T: Word> WordOut for Put<'_, T> {
+    const BYTES: bool = T::BYTES;
+    #[inline(always)]
+    fn words(t: Avx2, a: &mut [T], b: Option<&mut [T]>, values: __m128i) {
+        T::store(t, a, b, values);
+    }
+    #[inline(always)]
+    fn words16(t: Avx2, row: &mut [T], values: __m256i) {
+        T::store16(t, row, values);
     }
 }
 
@@ -219,11 +279,10 @@ impl WordOut for Prep<'_, i32> {
     }
 }
 
-type AverageRow<'r> = (&'r [i32], &'r mut [u16]);
-
-impl WordOut for Average<'_, i32, u16> {
+impl<T: Word> WordOut for Average<'_, i32, T> {
+    const BYTES: bool = T::BYTES;
     #[inline(always)]
-    fn first(t: Avx2, (a, _): &AverageRow<'_>, b: Option<&AverageRow<'_>>) -> __m256i {
+    fn first(t: Avx2, (a, _): &(&[i32], &mut [T]), b: Option<&(&[i32], &mut [T])>) -> __m256i {
         let half = |lanes: Option<&[i32; 4]>| {
             lanes.map_or(i32x4::splat(t, 0), |lanes| i32x4::load_array_ref(t, lanes))
         };
@@ -238,8 +297,8 @@ impl WordOut for Average<'_, i32, u16> {
         }
     }
     #[inline(always)]
-    fn words(t: Avx2, (_, a): AverageRow<'_>, b: Option<AverageRow<'_>>, values: __m128i) {
-        store_words(t, a, b.map(|(_, b)| b), values);
+    fn words(t: Avx2, (_, a): (&[i32], &mut [T]), b: Option<(&[i32], &mut [T])>, values: __m128i) {
+        T::store(t, a, b.map(|(_, b)| b), values);
     }
 }
 
@@ -276,7 +335,12 @@ fn store<O: WordOut>(
 ) {
     let clip = |x: __m256i| {
         let words = _mm_packus_epi32(_mm256_castsi256_si128(x), _mm256_extracti128_si256::<1>(x));
-        _mm_min_epu16(words, max)
+        let words = _mm_min_epu16(words, max);
+        if O::BYTES {
+            _mm_packus_epi16(words, words)
+        } else {
+            words
+        }
     };
     if O::PUT {
         O::words(t, a, b, clip(values));
@@ -558,7 +622,17 @@ fn bilinear<O: WordOut, const H: bool, const V: usize>(
     };
     let emit = |row: O::Row<'_>, y: __m256i| {
         let put = _mm256_srli_epi16::<4>(_mm256_add_epi16(y, _mm256_set1_epi16(8)));
-        O::words16(t, row, _mm256_min_epu16(put, max));
+        let put = _mm256_min_epu16(put, max);
+        let put = if O::BYTES {
+            let (low, high) = (
+                _mm256_castsi256_si128(put),
+                _mm256_extracti128_si256::<1>(put),
+            );
+            _mm256_castsi128_si256(_mm_packus_epi16(low, high))
+        } else {
+            put
+        };
+        O::words16(t, row, put);
     };
     let zero = _mm256_setzero_si256();
     let reach = if H { 17 } else { 16 };

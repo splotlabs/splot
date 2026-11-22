@@ -10,9 +10,8 @@
 //! an 8- or 4-column block. The rows of a vertical pass stay in a register
 //! ring, so no pass stages through memory. The [`cell`] kernels keep a 4x4
 //! or 8x8 cell in registers. Each entry takes the blocks [`super`] sends
-//! it; a shape these kernels do not cover, an average with `i32` first
-//! predictors, or a CPU without AVX2, declines to the portable kernels of
-//! [`super::generic`].
+//! it; a shape these kernels do not cover, or a CPU without AVX2, declines
+//! to the portable kernels of [`super::generic`].
 
 use super::super::ReferencePlaneView;
 use super::super::block::{Block, Sink, Taps, Window};
@@ -20,7 +19,7 @@ use super::super::cell::{Cell, Plane, Written};
 use super::super::rows::{self, Average, Out, Prep, Put};
 use super::{generic, pairs};
 use core::arch::x86_64::*;
-use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x8, i16x16, i32x8, u8x16, u8x32, u16x16};
+use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x8, i16x16, i32x4, i32x8, u8x16, u8x32, u16x16};
 
 mod cell;
 
@@ -38,14 +37,10 @@ fn fits<T>(block: &Block<'_, T>) -> bool {
     block.w >= 16 || (block.h.is_multiple_of(2) && (block.w == 4 || block.w >= 8))
 }
 
-/// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits:
-/// in byte lanes, or in the portable kernels for an average with `i32`
-/// first predictors.
+/// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits.
 pub(super) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) {
     match token() {
-        Some(t) if fits(block) && !matches!(sink, Sink::Average { .. }) => {
-            predict_on(t, block, sink);
-        }
+        Some(t) if fits(block) => predict_on(t, block, sink),
         _ => generic::predict(block, sink),
     }
 }
@@ -286,6 +281,25 @@ fearless_simd::kernel!(
                     },
                 );
             }
+            Sink::Average {
+                pred0,
+                forward,
+                output,
+                stride,
+            } => {
+                let (forward, stride) = (*forward, *stride);
+                strips(
+                    t,
+                    block,
+                    &mut Average {
+                        pred0,
+                        w,
+                        forward,
+                        output,
+                        stride,
+                    },
+                );
+            }
             Sink::AverageNarrow {
                 pred0,
                 forward,
@@ -305,7 +319,7 @@ fearless_simd::kernel!(
                     },
                 );
             }
-            Sink::Average { .. } | Sink::AverageWide { .. } => {}
+            Sink::AverageWide { .. } => {}
         }
     }
 );
@@ -622,6 +636,20 @@ macro_rules! store_pair {
                 };
                 bytes_pair::<$c>(a, b, average(first, values, $forward));
             }
+            (Row::AverageWide(first_a, a), Row::AverageWide(first_b, b)) => {
+                let first = if $c == 8 {
+                    let packed = _mm256_packs_epi32(wide8(t, first_a), wide8(t, first_b));
+                    _mm256_permute4x64_epi64::<0b11_01_10_00>(packed)
+                } else {
+                    let lanes = |row: &[i32]| -> __m128i {
+                        row.first_chunk::<4>().map_or(_mm_setzero_si128(), |lanes| {
+                            i32x4::load_array_ref(t, lanes).into()
+                        })
+                    };
+                    _mm256_castsi128_si256(_mm_packs_epi32(lanes(first_a), lanes(first_b)))
+                };
+                bytes_pair::<$c>(a, b, average(first, values, $forward));
+            }
             _ => {}
         }
     }};
@@ -699,6 +727,7 @@ enum Row<'r> {
     Narrow(&'r mut [i16]),
     Wide(&'r mut [i32]),
     AverageNarrow(&'r [i16], &'r mut [u8]),
+    AverageWide(&'r [i32], &'r mut [u8]),
 }
 
 /// An [`Out`] whose rows are [`Row`]s.
@@ -732,6 +761,7 @@ lane_outs! {
     Prep<'_, i16> => |row| Row::Narrow(row);
     Prep<'_, i32> => |row| Row::Wide(row);
     Average<'_, i16, u8> => |(first, row)| Row::AverageNarrow(first, row);
+    Average<'_, i32, u8> => |(first, row)| Row::AverageWide(first, row);
 }
 
 /// Stores the 16 final-pass values of a strip row.
@@ -767,7 +797,23 @@ fn store16(t: Avx2, row: Row<'_>, values: __m256i, forward: i32) {
                 });
             bytes16(t, row, average(first, values, forward));
         }
+        Row::AverageWide(first, row) => {
+            let packed =
+                _mm256_packs_epi32(wide8(t, first), wide8(t, first.get(8..).unwrap_or(&[])));
+            let first = _mm256_permute4x64_epi64::<0b11_01_10_00>(packed);
+            bytes16(t, row, average(first, values, forward));
+        }
     }
+}
+
+/// The first eight `i32` predictors of `row`, zero past it.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn wide8(t: Avx2, row: &[i32]) -> __m256i {
+    row.first_chunk::<8>()
+        .map_or(_mm256_setzero_si256(), |lanes| {
+            i32x8::load_array_ref(t, lanes).into()
+        })
 }
 
 /// Copies lanes `0..C` of `lanes` into row `a` and the `C` lanes of the

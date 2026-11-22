@@ -35,15 +35,11 @@ fn fits<T>(block: &Block<'_, T>) -> bool {
 
 /// Predicts a filtered 16-bit block and returns `true`, or returns `false`
 /// without writing for a full-sample block, a block the kernels do not
-/// cover or a sink that is not 16-bit samples or `i32` predictors.
+/// cover or an eight-bit compound sink.
 pub(super) fn predict<T: ReconSample>(block: &Block<'_, T>, sink: &mut Sink<'_>) -> bool {
     let filtered = block.horizontal.is_some() || block.vertical.is_some();
-    let words = matches!(
-        sink,
-        Sink::PutWide { .. } | Sink::Prep { .. } | Sink::AverageWide { .. }
-    );
     match T::u16_slice(block.source) {
-        Some(source) if filtered && fits(block) && words => {
+        Some(source) if filtered && fits(block) && !sink.is_narrow() => {
             kernel::predict(&block.with_source(source), sink);
             true
         }

@@ -35,7 +35,7 @@ fn taps(filter: usize, phase: usize) -> Option<&'static Taps> {
     TAPS[filter][phase].as_ref()
 }
 
-/// Every sink the word-lane `predict` takes against the portable kernels;
+/// Every sink of the word-lane `predict` against the portable kernels;
 /// full-pel blocks stay on the portable copy, which is faster.
 fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let (w, h) = (block.w, block.h);
@@ -63,6 +63,18 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
         output
     };
     assert_eq!(words(true), words(false), "put wide {label}");
+    let bytes = |neon: bool| {
+        let mut output = vec![0xa5_u8; stride * h];
+        run(
+            neon,
+            &mut Sink::Put {
+                output: &mut output,
+                stride,
+            },
+        );
+        output
+    };
+    assert_eq!(bytes(true), bytes(false), "put {label}");
     let prep = |neon: bool| {
         let mut output = vec![i32::MIN; stride * h];
         run(
@@ -92,7 +104,17 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
                     max,
                 },
             );
-            wide
+            let mut bytes = vec![0xa5_u8; stride * h];
+            run(
+                neon,
+                &mut Sink::Average {
+                    pred0: &pred0,
+                    forward,
+                    output: &mut bytes,
+                    stride,
+                },
+            );
+            (wide, bytes)
         };
         assert_eq!(average(true), average(false), "average {forward} {label}");
     }
