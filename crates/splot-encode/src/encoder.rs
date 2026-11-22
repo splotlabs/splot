@@ -250,7 +250,9 @@ impl Encoder {
             0 => 8,
             slots => slots,
         };
-        let planner = GopPlanner::new(config.keyint, mini_gop_size).with_ref_slots(slots);
+        let planner = GopPlanner::new(config.keyint, mini_gop_size)
+            .with_ref_slots(slots)
+            .with_intra_only(params.intra_only);
         Ok(Self {
             rate_control,
             stats_sink: None,
