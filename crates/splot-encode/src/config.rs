@@ -126,7 +126,8 @@ pub struct Config {
     /// Frame rate as `(numerator, denominator)` frames per second.
     pub frame_rate: (u32, u32),
     /// What the source declares about its samples: colour, range, chroma
-    /// sample position, sample aspect ratio and timing. Nothing by default.
+    /// sample position, sample aspect ratio, timing and HDR metadata. Nothing
+    /// by default.
     pub content: ContentDescription,
     /// Rate-control mode.
     pub rate_control: RateControlMode,

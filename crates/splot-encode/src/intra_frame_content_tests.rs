@@ -1,19 +1,36 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! The content interpretation OBU (§ 5.15) of a described stream.
+//! The content interpretation OBU (§ 5.15) and HDR metadata OBUs (§ 5.17)
+//! of a described stream.
 
 use super::*;
-use crate::content::{ChromaSamplePosition, ContentDescription};
+use crate::content::{
+    ChromaSamplePosition, ContentDescription, ContentLightLevel, MasteringDisplay,
+};
 use splot_core::annexb::parse_annex_b_obus_partial;
 use splot_core::bitio::BitReader;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
+use splot_core::headers::metadata::{MetadataPayload, parse_metadata_short};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 
-/// BT.2100 PQ at full range, left chroma, a 4:3 sample and 30000/1001 timing.
+/// A BT.2020 mastering display of 1000 to 0.0001 cd/m² with a D65 white.
+const DISPLAY: MasteringDisplay = MasteringDisplay {
+    primaries: [(8500, 39850), (6550, 2300), (35400, 14600)],
+    white_point: (15635, 16450),
+    luminance_max: 10_000_000,
+    luminance_min: 1,
+};
+const LIGHT: ContentLightLevel = ContentLightLevel {
+    max_cll: 1000,
+    max_fall: 400,
+};
+
+/// BT.2100 PQ at full range, left chroma, a 4:3 sample, 30000/1001 timing
+/// and HDR metadata.
 fn described(film_grain: bool) -> Config {
     let mut config = config(72, 40, BitDepth::Ten, 10, 120);
     config.keyint = core::num::NonZeroU32::new(2).unwrap();
@@ -26,7 +43,29 @@ fn described(film_grain: bool) -> Config {
     config.content.chroma_sample_position = Some(ChromaSamplePosition::Left);
     config.content.sample_aspect_ratio = Some((8, 6));
     config.content.timing_info = true;
+    config.content.mastering_display = Some(DISPLAY);
+    config.content.content_light_level = Some(LIGHT);
     config
+}
+
+/// The payloads of the metadata short OBUs of `unit`, with their
+/// `(muh_layer_idc, muh_persistence_idc, metadata_is_suffix)`.
+fn metadata(unit: &[u8]) -> Vec<(MetadataPayload, (u8, u8, bool))> {
+    parse_annex_b_obus_partial(unit)
+        .obus
+        .iter()
+        .filter(|obu| obu.header.obu_type == ObuType::MetadataShort)
+        .map(|obu| {
+            let mut reader = BitReader::new(obu.payload, ByteOffset::new(0));
+            let obu = parse_metadata_short(&mut reader, obu.payload.len()).unwrap();
+            let header = (
+                obu.muh_layer_idc,
+                obu.muh_persistence_idc,
+                obu.metadata_is_suffix,
+            );
+            (obu.unit.unwrap().payload, header)
+        })
+        .collect()
 }
 
 /// The OBU types of `unit` and its content interpretation OBUs.
@@ -46,8 +85,9 @@ fn obus(unit: &[u8]) -> (Vec<ObuType>, Vec<ContentInterpretation>) {
     (types, content)
 }
 
-/// Every key frame carries the same OBU between its sequence header and its
-/// film grain OBU, the inter frames carry none, and the samples do not change.
+/// Every key frame carries the same content interpretation, mastering display
+/// and content light level OBUs between its sequence header and its film
+/// grain OBU, the inter frames carry none, and the samples do not change.
 #[test]
 fn key_frames_carry_the_content_description() {
     for film_grain in [false, true] {
@@ -66,14 +106,38 @@ fn key_frames_carry_the_content_description() {
                 continue;
             }
             assert_eq!(
-                types[..3],
+                types[..5],
                 [
                     ObuType::TemporalDelimiter,
                     ObuType::SequenceHeader,
-                    ObuType::ContentInterpretation
+                    ObuType::ContentInterpretation,
+                    ObuType::MetadataShort,
+                    ObuType::MetadataShort
                 ]
             );
-            assert_eq!([&types[..2], &types[3..]].concat(), plain_types);
+            assert_eq!([&types[..2], &types[5..]].concat(), plain_types);
+            let [
+                (MetadataPayload::HdrMdcv(display), mdcv),
+                (MetadataPayload::HdrCll(light), cll),
+            ] = metadata(&frame.temporal_unit)[..]
+            else {
+                unreachable!("a key frame has a mastering display and a light level OBU");
+            };
+            assert_eq!((mdcv, cll), ((1, 0, false), (1, 0, false)));
+            assert_eq!(display.primary_chromaticity_x, [8500, 6550, 35400]);
+            assert_eq!(display.primary_chromaticity_y, [39850, 2300, 14600]);
+            assert_eq!(
+                (
+                    display.white_point_chromaticity_x,
+                    display.white_point_chromaticity_y
+                ),
+                DISPLAY.white_point
+            );
+            assert_eq!(
+                (display.luminance_max, display.luminance_min),
+                (10_000_000, 1)
+            );
+            assert_eq!((light.max_cll, light.max_fall), (1000, 400));
             assert_eq!(content.len(), 1);
             let content = content[0];
             assert!(content.scan_type_idc.is_progressive_frame());
@@ -117,6 +181,28 @@ fn avm_decodes_a_described_stream_like_splot() {
     assert!(avm == decode(&units.concat()), "AVM output differs");
 }
 
+/// HDR metadata alone, with no content interpretation OBU, still decodes.
+#[test]
+fn hdr_metadata_needs_no_content_interpretation() {
+    let mut config = config(72, 40, BitDepth::Ten, 10, 120);
+    config.content.content_light_level = Some(LIGHT);
+    let frame = code(&config, 3);
+    let (types, _) = obus(&frame.temporal_unit);
+    assert_eq!(
+        types[..3],
+        [
+            ObuType::TemporalDelimiter,
+            ObuType::SequenceHeader,
+            ObuType::MetadataShort
+        ]
+    );
+    assert_same_samples(
+        &decode(&frame.temporal_unit),
+        &recon_bytes(&frame, config.bit_depth),
+        "light level",
+    );
+}
+
 #[test]
 fn rejects_a_description_the_input_cannot_have() {
     let invalid = |change: fn(&mut Config)| {
@@ -138,6 +224,13 @@ fn rejects_a_description_the_input_cannot_have() {
     assert!(invalid(
         |config| config.content.sample_aspect_ratio = Some((4, 0))
     ));
+    assert!(invalid(|config| {
+        config.content.mastering_display = Some(MasteringDisplay {
+            luminance_max: 50000,
+            luminance_min: 50000,
+            ..DISPLAY
+        });
+    }));
     assert!(!invalid(|config| {
         config.chroma = PixelFormat::Yuv422;
         config.content.chroma_sample_position = Some(ChromaSamplePosition::Center);
