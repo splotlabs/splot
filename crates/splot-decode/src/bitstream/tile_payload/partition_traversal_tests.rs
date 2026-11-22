@@ -10,7 +10,7 @@ use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfSelector, TileCdfWorkUnitBoundary,
     tile_cdf_save_policy,
 };
-use super::tree_walk::TileTraversalStorage;
+use super::tree_walk::{TileTraversalStorage, leaf_fn};
 use super::*;
 use crate::bitstream::tile_payload::encode_symbol_sequence;
 use crate::{DecodeLimitError, DecodeLimitThreshold};
@@ -194,7 +194,7 @@ fn run_first_superblock<'payload>(
     cursor.decode_next_superblock_with_publication(
         work_unit,
         &mut mi_sizes,
-        &mut |_, symbols, frontier, _| {
+        &mut leaf_fn(|_, symbols, frontier, _| {
             frontiers.push(CapturedLeaf {
                 frontier: *frontier,
                 symbol_count: symbols.symbol_count(),
@@ -213,7 +213,7 @@ fn run_first_superblock<'payload>(
                 .with_uv(0)
             };
             Ok((leaf, ()))
-        },
+        }),
         &mut |_, ()| {},
     )?;
     Ok((frontiers, cursor.into_output()))

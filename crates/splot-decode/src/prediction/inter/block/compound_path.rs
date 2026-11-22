@@ -81,9 +81,9 @@ pub(in crate::prediction::inter) struct FrameRefFacts {
 }
 
 impl FrameRefFacts {
-    pub(super) fn new<T: ReconSample>(
+    pub(super) fn new(
         core: &FrameHeaderCore,
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
         ref_frame_idx: &[u32],
         num_total_refs: usize,
     ) -> Self {
@@ -97,11 +97,11 @@ impl FrameRefFacts {
         )
     }
 
-    fn from_parts<T: ReconSample>(
+    fn from_parts(
         frame_size: Option<(u32, u32)>,
         switch: bool,
         current_order_hint: u32,
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
         ref_frame_idx: &[u32],
         num_total_refs: usize,
     ) -> Self {
@@ -148,9 +148,9 @@ impl FrameRefFacts {
                 temporal_hint: slot.and_then(raw_hint),
                 bawp_hint: raw_hint(slot.unwrap_or(0)).unwrap_or(0),
                 scalings: slot
-                    .and_then(|slot| reference.slot(slot as u32))
+                    .and_then(|slot| reference.frame_info(slot as u32))
                     .zip(frame)
-                    .map(|(slot, frame)| PlaneScaling::of_reference_planes(slot.info(), frame)),
+                    .map(|(info, frame)| PlaneScaling::of_reference_planes(info, frame)),
             }
         };
         let refs = core::array::from_fn(fact);
@@ -860,9 +860,9 @@ pub(super) const fn compound_deblock_sub_pu_size(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn append_compound_temporal_motion<T: ReconSample>(
+pub(super) fn append_compound_temporal_motion(
     records: &mut Vec<TemporalMotionBlock>,
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     ref_frame_idx: &[u32],
     placed: &PlacedInterBlock,
     motion: Option<&mc::RefinedUnits>,

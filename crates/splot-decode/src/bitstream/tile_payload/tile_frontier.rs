@@ -3,16 +3,14 @@
 
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrParams};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
-use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition_allowed::PartitionFeatureFlags;
 pub(crate) use super::partition_traversal::GeneralIntraPartitionTreeOutput as GeneralIntraMultiblockOutput;
 use super::partition_traversal::{
-    DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, LeafNeighbours,
-    TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
+    DecodedLeafPublication, GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError,
+    LeafDecoder, TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
     TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
     TilePartitionTraversalError, TileTraversalStorage,
 };
@@ -73,20 +71,15 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         })
     }
 
-    pub(crate) fn decode_next_superblock<E, C, F, P>(
+    pub(crate) fn decode_next_superblock<L, P>(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
-        on_leaf: &mut F,
+        on_leaf: &mut L,
         on_published: &mut P,
-    ) -> Result<Option<[usize; 2]>, GeneralIntraMultiblockError<E>>
+    ) -> Result<Option<[usize; 2]>, GeneralIntraMultiblockError<L::Error>>
     where
-        F: FnMut(
-            &mut DecodeTileWorkUnit,
-            &mut SymbolDecoder<'payload>,
-            &DecodeBlockFrontier,
-            LeafNeighbours<'_>,
-        ) -> Result<(GeneralIntraLeafMode, C), E>,
-        P: FnMut(DecodedLeafPublication, C),
+        L: LeafDecoder<'payload>,
+        P: FnMut(DecodedLeafPublication, L::Command),
     {
         self.tree
             .decode_next_superblock_with_publication(

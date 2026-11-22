@@ -435,10 +435,11 @@ fn settled_state(
             .ok()
             .and_then(|index| frames.get(index)?.as_ref())
     };
-    for (slot, (cdfs, motion)) in state
+    let metadata = &mut state.metadata;
+    for (slot, (cdfs, motion)) in metadata
         .ref_frame_cdfs
         .iter_mut()
-        .zip(state.ref_motion_fields.iter_mut())
+        .zip(metadata.ref_motion_fields.iter_mut())
         .enumerate()
     {
         if let Some((_, saved, field, ..)) = settled(slot) {
@@ -446,10 +447,10 @@ fn settled_state(
             motion.clone_from(field);
         }
     }
-    for (slot, (ccso, blocks)) in state
+    for (slot, (ccso, blocks)) in metadata
         .ref_ccso_headers
         .iter_mut()
-        .zip(state.ref_ccso_unit_grids.iter_mut())
+        .zip(metadata.ref_ccso_unit_grids.iter_mut())
         .enumerate()
     {
         if let Some((.., header, grid)) = settled(slot) {
