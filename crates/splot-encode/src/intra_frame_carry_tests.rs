@@ -559,18 +559,20 @@ fn key_frames_cycle_their_long_term_ids() {
     }
 }
 
-/// `(chroma, bit depth, implicit output)` of the open-loop key streams.
-const OPEN_LOOP_CASES: [(PixelFormat, BitDepth, bool); 3] = [
-    (PixelFormat::Yuv420, BitDepth::Eight, false),
-    (PixelFormat::Yuv444, BitDepth::Ten, false),
-    (PixelFormat::Yuv420, BitDepth::Eight, true),
+/// `(chroma, bit depth, implicit output, short refresh)` of the open-loop
+/// key streams.
+const OPEN_LOOP_CASES: [(PixelFormat, BitDepth, bool, bool); 4] = [
+    (PixelFormat::Yuv420, BitDepth::Eight, false, true),
+    (PixelFormat::Yuv444, BitDepth::Ten, false, true),
+    (PixelFormat::Yuv420, BitDepth::Eight, true, true),
+    (PixelFormat::Yuv420, BitDepth::Eight, false, false),
 ];
 
 /// 26 panning frames at preset 6 (mini-GOPs of 8) with a key frame every 12
 /// frames and `open_loop_key = 1` in `mode`: the config, the packets and the
 /// encoder recon in display order.
 fn open_loop_stream(
-    (chroma, bit_depth, implicit): (PixelFormat, BitDepth, bool),
+    (chroma, bit_depth, implicit, short_refresh): (PixelFormat, BitDepth, bool, bool),
     mode: RateControlMode,
     threads: usize,
 ) -> (Config, Vec<Packet>, Vec<u8>) {
@@ -581,6 +583,7 @@ fn open_loop_stream(
     config.preset_overrides = vec![
         ("open_loop_key".to_owned(), "1".to_owned()),
         ("implicit_output".to_owned(), implicit.to_string()),
+        ("short_refresh".to_owned(), short_refresh.to_string()),
     ];
     config.threads = splot_parallel::ThreadCount::from(threads);
     let (packets, expected) = encoder_packets(&config, 26);
@@ -658,7 +661,7 @@ fn rate_controlled_open_loop_key_streams_decode_to_the_encoder_recon() {
         .into_iter()
         .flat_map(|mode| [false, true].map(|implicit| (mode, implicit)));
     each_case(cases, |(mode, implicit)| {
-        let case = (PixelFormat::Yuv420, BitDepth::Eight, implicit);
+        let case = (PixelFormat::Yuv420, BitDepth::Eight, implicit, true);
         let (_, packets, expected) = open_loop_stream(case, mode, 1);
         let units: Vec<u8> = packets
             .iter()
@@ -696,7 +699,7 @@ fn avm_decodes_open_loop_key_streams_from_the_start_and_from_the_key() {
         let (config, packets, expected) = open_loop_stream(case, qp, 1);
         let size = (config.width, config.height);
         let units: Vec<Vec<u8>> = packets.iter().map(|packet| packet.data.clone()).collect();
-        let name = format!("olk{}{}", case.1 as u8, case.2);
+        let name = format!("olk{}{}{}", case.1 as u8, case.2, case.3);
         let avm = avm_decode(&avmdec, &units, size, config.bit_depth, &name);
         assert!(avm == expected, "{case:?}: AVM output differs");
         let start = packets
