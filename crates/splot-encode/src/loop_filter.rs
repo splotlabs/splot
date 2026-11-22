@@ -416,7 +416,6 @@ pub(crate) fn finish_frame(
         })?
         .base_q_idx;
     if qindex == 0 {
-        // § 5.18.5.2 to § 5.18.7.12: a coded-lossless frame codes no loop filter.
         return Ok(FilteredFrame {
             core: pass.core,
             filters: FrameFilterParams::default(),

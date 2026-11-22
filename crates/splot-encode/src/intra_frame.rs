@@ -654,7 +654,7 @@ impl IntraFrameCoder {
         tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;
         tools.0.qm_level = crate::tx_choice::qm_level(&self.preset, qindex, self.bit_depth);
         if qindex == 0 {
-            tools.0.tx_mode = splot_core::headers::frame::TxMode::Only4x4; // § 5.18.8.1 CodedLossless
+            tools.0.tx_mode = splot_core::headers::frame::TxMode::Only4x4;
         }
         #[cfg(test)]
         {
@@ -1768,7 +1768,6 @@ impl SourceResidualCoder<'_> {
         let len = coeffs.len();
         dequant.resize(len, 0);
         if self.lossless {
-            // § 7.14.4 at base_q_idx 0: a level dequantizes to 8 times itself.
             dequant
                 .iter_mut()
                 .zip(coeffs)

@@ -133,7 +133,8 @@ fn round_trip(bits: u32, subsampling: (usize, usize), rate_control: &[&str]) {
                 );
             }
             assert!(
-                measured == expected || (measured - expected).abs() < 1e-3,
+                (measured.is_infinite() && expected.is_infinite())
+                    || (measured - expected).abs() < 1e-3,
                 "frame {index} plane {plane}: decoded psnr {measured} != encoder psnr {expected}"
             );
             assert!(

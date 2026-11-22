@@ -361,7 +361,7 @@ impl Config {
             row.set(name, value)?;
         }
         for (name, value) in &self.preset_overrides {
-            if self.is_lossless() && row.lossless_refuses(name, value) {
+            if self.is_lossless() && PresetParams::lossless_refuses(name, value) {
                 return Err(Error::LosslessWith { what: name.clone() });
             }
             row.set(name, value)?;
@@ -456,7 +456,7 @@ mod tests {
         assert!(config.validate().is_ok() && config.is_lossless());
         let refused = |config: &Config| match config.validate() {
             Err(Error::LosslessWith { what }) => what,
-            other => panic!("{other:?}"),
+            _ => String::new(),
         };
         for (name, value) in [("segmentation", "1"), ("quant_matrices", "2")] {
             let mut explicit = config.clone();
@@ -474,8 +474,10 @@ mod tests {
         config
             .preset_overrides
             .push(("tcq".to_owned(), "1".to_owned()));
-        let row = config.override_preset(config.preset.params()).unwrap();
-        assert!(!row.tcq.at(crate::preset::PresetContext::default()) && row.tpl_delta_q == 0);
+        let row = config.override_preset(config.preset.params());
+        assert!(row.is_ok_and(|row| {
+            !row.tcq.at(crate::preset::PresetContext::default()) && row.tpl_delta_q == 0
+        }));
         config.rate_control = RateControlMode::ConstantQp { qp: 256 };
         assert!(matches!(
             config.validate(),

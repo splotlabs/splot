@@ -865,7 +865,7 @@ impl PresetParams {
     /// Whether a lossless encode refuses the override `name=value`: a
     /// non-zero `segmentation` or `quant_matrices`, which has no lossless
     /// meaning.
-    pub(crate) fn lossless_refuses(&self, name: &str, value: &str) -> bool {
+    pub(crate) fn lossless_refuses(name: &str, value: &str) -> bool {
         matches!(name, "segmentation" | "quant_matrices") && value != "0"
     }
 
