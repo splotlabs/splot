@@ -10,7 +10,7 @@
 //! the instruction-count gates, so this is the only gate that sees it.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
@@ -37,8 +37,9 @@ pub(crate) fn check_binary_size(root: &Path) -> Result<()> {
     if !status.success() {
         bail!("cargo build --release -p splot-cli failed");
     }
-    let binary = root
-        .join("target/release/splot")
+    let binary = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), PathBuf::from)
+        .join("release/splot")
         .with_extension(std::env::consts::EXE_EXTENSION);
     let size = std::fs::metadata(&binary)
         .with_context(|| format!("failed to read {}", binary.display()))?
