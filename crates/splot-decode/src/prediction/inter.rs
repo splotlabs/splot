@@ -16,8 +16,9 @@ use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter, IntraRectBlockSize,
-    PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
+    BitDepth, DecodedFrame, DecodedFrameInfo, InterpolationFilter as ReconInterpolationFilter,
+    IntraRectBlockSize, PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore,
+    ReferenceSlot,
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
@@ -215,13 +216,13 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
 /// initial CDFs pass through unchanged and the segment-id map is empty. They
 /// do not depend on the frame's samples, so a caller may publish them first.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn tip_output_products<T: ReconSample>(
+pub(crate) fn tip_output_products(
     core: &FrameHeaderCore,
     candidate: &DecodePlannedObu,
     offset: ByteOffset,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     geometry: &FrameDecodeGeometry,
     products: &mut FrameProductWriters,
 ) -> Result<(Arc<FrameCdfSubset>, Arc<FrameSegmentIdMap>)> {
@@ -337,7 +338,7 @@ fn segment_id_map_dimensions(core: &FrameHeaderCore) -> Result<(usize, usize)> {
 fn frame_cdf_load(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
 ) -> ResolvedCdfLoad {
     let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
     let current_order_hint =
@@ -373,7 +374,7 @@ fn frame_cdf_load(
 pub(crate) fn resolve_initial_frame_cdfs(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     candidate: Option<&DecodePlannedObu>,
     offset: ByteOffset,
 ) -> Result<Arc<FrameCdfSubset>> {
@@ -430,7 +431,7 @@ fn primary_out_of_range(
 fn resolve_initial_frame_cdfs_reusing(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     candidate: &DecodePlannedObu,
     offset: ByteOffset,
     storage: &mut Option<Arc<FrameCdfSubset>>,
@@ -531,7 +532,7 @@ pub(crate) fn reused_ccso_sources(
 pub(crate) fn entropy_dependencies(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
 ) -> EntropyDependencies {
     let mut cdfs = [None, None];
     if let ResolvedCdfLoad::LoadSlot { primary, blend } = frame_cdf_load(core, sequence, reference)
@@ -566,7 +567,7 @@ pub(crate) fn entropy_dependencies(
 pub(crate) fn reused_ccso_grids(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
 ) -> [Option<CcsoGridHandle>; 3] {
     let mut ccso_grids = [None, None, None];
     if sequence
@@ -600,10 +601,7 @@ pub(crate) fn reused_ccso_grids(
     ccso_grids
 }
 
-fn previous_segment_slot(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<impl ReconSample>,
-) -> Option<usize> {
+fn previous_segment_slot(core: &FrameHeaderCore, reference: &ReferenceMetadata) -> Option<usize> {
     if core.frame_is_intra == Some(true) || core.frame_type == Some(FrameType::Switch) {
         return None;
     }
@@ -634,7 +632,7 @@ fn previous_segment_slot(
 /// reads, which the entropy pass holds in place of the typed references.
 fn previous_segment_handle<'a>(
     core: &FrameHeaderCore,
-    reference: &'a InterReferenceState<impl ReconSample>,
+    reference: &'a ReferenceMetadata,
 ) -> Option<&'a SegmentIdMapHandle> {
     if !core
         .segmentation_params
@@ -1256,7 +1254,7 @@ pub(crate) struct InterResidualBlock {
 /// The reference frames one frame's decode reads: their samples in `store`,
 /// and everything else in [`ReferenceMetadata`], which it dereferences to.
 pub(crate) struct InterReferenceState<T: ReconSample> {
-    pub(crate) store: ReferenceFrameStore<RefFrameSlot<T>>,
+    store: ReferenceFrameStore<RefFrameSlot<T>>,
     pub(crate) metadata: ReferenceMetadata,
 }
 
@@ -1306,6 +1304,9 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_ccso_unit_grids: RefSlots<Option<CcsoGridHandle>>,
     pub(crate) ref_segment_ids: RefSlots<Option<SegmentIdMapHandle>>,
     pub(crate) ref_motion_fields: RefSlots<Option<MotionFieldHandle>>,
+    /// The geometry of each stored frame, which [`InterReferenceState::put`]
+    /// records.
+    ref_frame_info: [Option<DecodedFrameInfo>; ReferenceSlot::MAX_SLOTS],
 }
 
 impl<T: ReconSample> InterReferenceState<T> {
@@ -1329,10 +1330,38 @@ impl<T: ReconSample> InterReferenceState<T> {
             metadata: ReferenceMetadata::default(),
         })
     }
+
+    /// Stores `frame` in `slot` and records its geometry in the metadata.
+    ///
+    /// # Errors
+    /// Returns [`splot_recon::ReconError`] when `slot` is outside the store.
+    pub(crate) fn put(
+        &mut self,
+        slot: ReferenceSlot,
+        frame: RefFrameSlot<T>,
+    ) -> splot_recon::Result<()> {
+        let info = frame.info();
+        self.store.put(slot, frame)?;
+        if let Some(stored) = self.metadata.ref_frame_info.get_mut(slot.index()) {
+            *stored = Some(info);
+        }
+        Ok(())
+    }
+
+    /// The frame stored in `slot`.
+    pub(crate) fn frame(&self, slot: ReferenceSlot) -> Option<&RefFrameSlot<T>> {
+        self.store.get(slot).ok().flatten()
+    }
 }
 
 impl ReferenceMetadata {
+    /// The geometry of the frame stored in `slot`.
+    pub(crate) fn frame_info(&self, slot: u32) -> Option<DecodedFrameInfo> {
+        *self.ref_frame_info.get(slot as usize)?
+    }
+
     fn retire_handles(&mut self) {
+        self.ref_frame_info = Default::default();
         self.lr_frame_filter_taps = None;
         self.ref_frame_cdfs = RefSlots::default();
         self.ref_ccso_headers = RefSlots::default();
@@ -1489,15 +1518,14 @@ impl<T: ReconSample> InterReferenceState<T> {
         let mut slots = RefSlots::default();
         slots.extend_within(
             distinct_reference_slots(named)
-                .filter_map(|slot| self.store.get(slot).ok().flatten())
+                .filter_map(|slot| self.frame(slot))
                 .map(Some),
         );
         PixelReferenceGate { slots }
     }
 
     fn slot(&self, slot: u32) -> Option<&RefFrameSlot<T>> {
-        let slot = ReferenceSlot::new(slot as usize).ok()?;
-        self.store.get(slot).ok().flatten()
+        self.frame(ReferenceSlot::new(slot as usize).ok()?)
     }
 }
 
@@ -1550,7 +1578,7 @@ impl ReferenceMetadata {
 pub(crate) fn parse_inter_frame_activation(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     first_picture_in_tu: bool,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
@@ -1578,7 +1606,7 @@ pub(crate) fn parse_inter_frame_activation(
 pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
     frame_index: Option<usize>,
@@ -1621,7 +1649,7 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
 fn validate_and_resolve_inter_frame_core(
     core: &mut FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
@@ -1646,7 +1674,7 @@ fn validate_and_resolve_inter_frame_core(
 fn parse_sef_or_tip_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
     frame_index: Option<usize>,
@@ -1694,7 +1722,7 @@ fn malformed_frame_header(
 
 fn validate_sef_frame_core(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
@@ -1744,16 +1772,13 @@ fn validate_sef_frame_core(
 /// Whether frame `core` over `reference` has the past/future reference pair
 /// TIP needs (§ 7.12.2) with an inter frame on at least one side (§ 7.9):
 /// the rule the decoder checks.
-pub(crate) fn tip_pair_available(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<impl ReconSample>,
-) -> bool {
+pub(crate) fn tip_pair_available(core: &FrameHeaderCore, reference: &ReferenceMetadata) -> bool {
     required_tip_reference_pair(core, reference, ByteOffset::new(0), None).is_ok()
 }
 
 fn required_tip_reference_pair(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<find_mv_stack::TipReferencePair> {
@@ -1799,7 +1824,7 @@ fn required_tip_reference_pair(
 pub(crate) fn resolve_tip_output_core(
     core: &mut FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
@@ -1811,7 +1836,7 @@ pub(crate) fn resolve_tip_output_core(
 fn infer_tip_output_quantization(
     core: &mut FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
@@ -1900,7 +1925,7 @@ fn validate_tip_output_frame_parse(
 
 pub(crate) fn resolve_ccso_reference_reuse(
     core: &mut FrameHeaderCore,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
@@ -1984,7 +2009,7 @@ fn ccso_reference_slot(
 fn parse_inter_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
     frame_index: Option<usize>,
@@ -2132,7 +2157,7 @@ fn validate_inter_frame_core(core: &FrameHeaderCore, sequence: &SequenceHeader) 
 
 fn validate_ras_reference_ids(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<impl ReconSample>,
+    reference: &ReferenceMetadata,
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {

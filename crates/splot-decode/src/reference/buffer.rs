@@ -346,7 +346,7 @@ impl RuntimeReferenceBuffer {
             let reference_slot = ReferenceSlot::new(i)?;
             ensure_slot_matches_frame(i, slot, frame_index, reference_frame.info())?;
             state.push_slot(slot, frame);
-            state.store.put(reference_slot, reference_frame)?;
+            state.put(reference_slot, reference_frame)?;
         }
         Ok(state)
     }

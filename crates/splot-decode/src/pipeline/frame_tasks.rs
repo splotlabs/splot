@@ -1604,7 +1604,7 @@ mod tests {
         parse_frame_header_core,
     };
     use splot_core::types::ObuType;
-    use splot_recon::{ReferenceFrameStore, ReferenceSlot, SharedFrame};
+    use splot_recon::{ReferenceSlot, SharedFrame};
 
     #[test]
     #[allow(clippy::expect_used)]
@@ -1622,12 +1622,8 @@ mod tests {
         let core = parse_frame_header_core(&mut reader, &input).expect("key core");
         let pinned = RefFrameSlot::<u8>::completed(SharedFrame::new(decoded_frame(8, 8)));
         let mut state = inter::InterReferenceState::<u8>::empty().expect("reference state");
-        state.store = ReferenceFrameStore::with_capacity(1).expect("reference store");
         let slot = ReferenceSlot::new(0).expect("slot");
-        state
-            .store
-            .put(slot, pinned.share())
-            .expect("store reference");
+        state.put(slot, pinned.share()).expect("store reference");
         let mut pools = RowPools::new(1, 1, &DecodeBuffers::new());
         let split = &mut pools.eight.split;
         let workers = Arc::clone(&split.workers);

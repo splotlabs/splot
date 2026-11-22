@@ -166,7 +166,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
     workspace: impl FnOnce(DecodedFrameInfo) -> splot_recon::Result<CurrentFrameWorkspace<T>>,

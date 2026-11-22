@@ -1736,10 +1736,7 @@ mod tests {
         )?;
         let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::<u8>::pending(info)?;
         drop(writer);
-        reference.store = splot_recon::ReferenceFrameStore::with_capacity(1)?;
-        reference
-            .store
-            .put(splot_recon::ReferenceSlot::new(0)?, slot.share())?;
+        reference.put(splot_recon::ReferenceSlot::new(0)?, slot.share())?;
         assert!(!slot.is_sole_handle());
         reference
             .ref_valid
@@ -1773,7 +1770,8 @@ mod tests {
             .as_ref()
             .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
         assert_eq!(Arc::as_ptr(retired), identity);
-        assert!(retired.store.is_empty());
+        assert!(retired.frame(splot_recon::ReferenceSlot::new(0)?).is_none());
+        assert!(retired.frame_info(0).is_none());
         assert!(retired.ref_motion_fields.is_empty());
         assert_eq!(handle.owner_count(), 1);
         assert!(slot.is_sole_handle());

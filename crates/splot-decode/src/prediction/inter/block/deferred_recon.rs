@@ -15,7 +15,7 @@ use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc::{self, WorkspaceSink};
 use super::super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
-    InterResidualBlock, PlacedInterBlock,
+    InterResidualBlock, PlacedInterBlock, ReferenceMetadata,
 };
 use super::compound_path::{FrameRefFacts, append_compound_temporal_motion};
 use super::resolve::{
@@ -300,9 +300,9 @@ impl InterReconCommand {
         })
     }
 
-    fn single_temporal_record<T: ReconSample>(
+    fn single_temporal_record(
         &self,
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
         ref_frame_idx: &[u32],
         mi_rows: usize,
         mi_cols: usize,

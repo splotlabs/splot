@@ -41,7 +41,7 @@ use super::read_mv::{
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
     InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
-    SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
+    ReferenceMetadata, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
     SegmentIdMapHandle, mc,
 };
 use crate::bitstream::tile_payload::{
@@ -323,14 +323,14 @@ pub(crate) struct InterBlockFacts {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn derive_inter_block_setup<T: ReconSample>(
+pub(crate) fn derive_inter_block_setup(
     work_units: &[DecodeTileWorkUnit],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
     facts: InterBlockFacts,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     deferred_motion: bool,
     products: &mut super::FrameProductWriters,
     cdef_grid_values: Vec<Option<usize>>,
@@ -711,12 +711,12 @@ pub(crate) struct TemporalPrelude {
 }
 
 impl TemporalPrelude {
-    fn run<'a, T: ReconSample>(
+    fn run<'a>(
         &self,
         temporal_context: &'a mut TemporalMvContext,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
     ) -> Result<&'a mut TemporalMvContext> {
         frame_temporal_context(
             temporal_context,
@@ -731,12 +731,12 @@ impl TemporalPrelude {
         )
     }
 
-    fn begin_scheduled<T: ReconSample>(
+    fn begin_scheduled(
         &self,
         temporal_context: &mut TemporalMvContext,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
-        reference: &InterReferenceState<T>,
+        reference: &ReferenceMetadata,
     ) -> Result<super::find_mv_stack::TemporalBandPlan> {
         let (metadata, layouts) =
             scheduled_motion_field_inputs(&reference.ref_motion_fields, ref_frame_idx)?;
@@ -815,7 +815,7 @@ fn scheduled_motion_field_inputs(
 /// The driver derives the TIP reference pair once and passes that exact pair to
 /// both the entropy pass and this prelude.
 #[allow(clippy::too_many_arguments)]
-fn frame_temporal_context<'a, T: ReconSample>(
+fn frame_temporal_context<'a>(
     temporal_context: &'a mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,
@@ -823,7 +823,7 @@ fn frame_temporal_context<'a, T: ReconSample>(
     current_order_hint: u32,
     temporal_config: TemporalProjectionConfig,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     expected_tip_pair: Option<TipReferencePair>,
 ) -> Result<&'a mut TemporalMvContext> {
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
@@ -1166,11 +1166,11 @@ pub(super) fn frame_uses_temporal_mvs(core: &FrameHeaderCore) -> bool {
 
 /// Whether the frame orders temporal candidates first: DRL reordering is not
 /// `Always`, temporal MVs are on and every reference lies on one side.
-fn frame_temporal_first<T: ReconSample>(
+fn frame_temporal_first(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
+    reference: &ReferenceMetadata,
     current_order_hint: u32,
     num_total_refs: usize,
 ) -> bool {
