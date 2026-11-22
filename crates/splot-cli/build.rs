@@ -14,9 +14,9 @@ fn main() {
     println!("cargo::rerun-if-changed=no-unwind-tables.ld");
     let var = |name| std::env::var(name).unwrap_or_default();
     if var("CARGO_CFG_TARGET_OS") == "linux" && var("PROFILE") == "release" {
-        println!(
-            "cargo::rustc-link-arg-bin=splot=-Wl,-T,{}/no-unwind-tables.ld",
-            var("CARGO_MANIFEST_DIR")
-        );
+        let script = format!("{}/no-unwind-tables.ld", var("CARGO_MANIFEST_DIR"));
+        for arg in ["-Xlinker", "-T", "-Xlinker", &script] {
+            println!("cargo::rustc-link-arg-bin=splot={arg}");
+        }
     }
 }
