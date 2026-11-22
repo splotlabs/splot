@@ -80,8 +80,7 @@ impl IntraTileSyntax {
     }
 
     /// The block vectors `leaf` may code, `None` when it codes no
-    /// `use_intrabc`: whole-sample vectors of a leaf at least 8x8 whose
-    /// chroma is its own, that § 6.19.7.12 `is_mv_valid` accepts for the
+    /// `use_intrabc`: whole-sample vectors that § 6.19.7.12 `is_mv_valid` accepts for the
     /// global area, with the source in the current or the previous
     /// superblock row, or, with `allow_local_intrabc`, for the local area
     /// in a strict subset of § 6.19.7.12 `check_valid_local_ibc`.
@@ -91,14 +90,30 @@ impl IntraTileSyntax {
         if !self.intrabc_allowed(leaf) {
             return None;
         }
+        let tile = &self.inter.as_ref()?.tile;
+        let geometry = leaf.frontier.chroma_ref_geometry();
+        let chroma = leaf.frontier.has_chroma.then(|| {
+            let chroma_size = geometry.size();
+            let sdp = tile
+                .sequence_header()
+                .partition
+                .is_some_and(|p| p.enable_sdp);
+            ChromaRef {
+                mi: (geometry.row(), geometry.col()),
+                size: (
+                    chroma_size.width_samples().unwrap_or(size.0),
+                    chroma_size.height_samples().unwrap_or(size.1),
+                ),
+                local: !(sdp && tile.is_intra_frame()),
+            }
+        });
         let frame = BvFrame {
             mi: (leaf.row4(), leaf.col4()),
             size,
             tile: self.tile.clone(),
             sb_size: self.sb_size4 * 4,
-            chroma_offset: leaf.frontier.chroma_offset,
+            chroma,
         };
-        let tile = &self.inter.as_ref()?.tile;
         let local = tile
             .frame_header()
             .intrabc
@@ -292,9 +307,19 @@ pub(super) struct BvFrame {
     pub(super) tile: (Range<usize>, Range<usize>),
     /// `Block_Width[SbSize]` (= `Block_Height[SbSize]`) in samples.
     pub(super) sb_size: usize,
-    /// The leaf's chroma is coded at another position (`ChromaMiRow/Col`
-    /// differ from `MiRow/Col`).
-    pub(super) chroma_offset: bool,
+    /// The chroma reference block of a leaf with `HasChroma`.
+    pub(super) chroma: Option<ChromaRef>,
+}
+
+/// The block whose chroma a leaf with `HasChroma` codes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ChromaRef {
+    /// `ChromaMiRow`, `ChromaMiCol`.
+    pub(super) mi: (usize, usize),
+    /// `Block_Width[ChromaMiSize]`, `Block_Height[ChromaMiSize]` in samples.
+    pub(super) size: (usize, usize),
+    /// `!enable_sdp || !FrameIsIntra`: the local area checks this block.
+    pub(super) local: bool,
 }
 
 /// The 64x64 local IntraBC buffers (§ 6.19.7.12 `check_valid_local_ibc`)
@@ -368,22 +393,31 @@ impl LocalArea {
 }
 
 /// Whether the whole-sample block vector `mv` passes § 6.19.7.12
-/// `is_mv_valid` through `check_valid_local_ibc` for a leaf at least 8x8
-/// whose chroma is its own, under a stricter rule: every 4x4 cell of the
-/// source is coded and lies in a buffer of `area`, and neither source
-/// corner lies at or right of and at or below the leaf's top-left sample.
-/// Not used: the `coloY`/`coloX` case (a buffer that shares its
+/// `is_mv_valid` through `check_valid_local_ibc` under a stricter rule:
+/// every 4x4 cell of the checked block (the chroma reference block of a
+/// leaf with `HasChroma` unless SDP codes the intra frame, else the leaf)
+/// moved by `mv` is coded and lies in a buffer of `area`, and neither of
+/// its corners lies at or right of and at or below that block's top-left
+/// sample. Not used: the `coloY`/`coloX` case (a buffer that shares its
 /// `ibc_buffer_index` with the current one), the lower 64x64 regions of a
 /// previous 128x128 superblock, other superblock sizes' older regions, and
 /// sources with an uncoded inner 4x4 cell.
 pub(super) fn local_bv_valid(frame: &BvFrame, area: &LocalArea, mv: [i32; 2]) -> bool {
-    let Some([top, left, bottom, right]) = source_edges(frame, mv) else {
+    if source_edges(frame, mv).is_none() {
         return false;
+    }
+    let (mi, (w, h)) = match frame.chroma {
+        Some(chroma) if chroma.local => (chroma.mi, chroma.size),
+        _ => (frame.mi, frame.size),
     };
-    let (row0, col0) = (frame.mi.0 as i64 * MI_SIZE, frame.mi.1 as i64 * MI_SIZE);
-    if [(left, top), (right - 1, bottom - 1)]
-        .iter()
-        .any(|&(x, y)| x >= col0 && y >= row0)
+    let (row0, col0) = (mi.0 as i64 * MI_SIZE, mi.1 as i64 * MI_SIZE);
+    let (top, left) = (row0 + i64::from(mv[0] >> 3), col0 + i64::from(mv[1] >> 3));
+    let (bottom, right) = (top + h as i64, left + w as i64);
+    if top < 0
+        || left < 0
+        || [(left, top), (right - 1, bottom - 1)]
+            .iter()
+            .any(|&(x, y)| x >= col0 && y >= row0)
     {
         return false;
     }
@@ -391,21 +425,25 @@ pub(super) fn local_bv_valid(frame: &BvFrame, area: &LocalArea, mv: [i32; 2]) ->
     cells(top, bottom).all(|row| cells(left, right).all(|col| area.coded(row, col)))
 }
 
-/// The source `[top, left, bottom, right]` sample edges of the whole-sample
-/// block vector `mv` of a leaf at least 8x8 whose chroma is its own, when
-/// they lie in the tile; `None` otherwise.
+/// The § 6.19.7.12 `[srcTopEdge, srcLeftEdge, srcBottomEdge, srcRightEdge]`
+/// of the whole-sample block vector `mv`: the bottom and right edges of the
+/// moved leaf, the top and left edges of its moved chroma reference block
+/// with `HasChroma`; `None` when they leave the tile.
 fn source_edges(frame: &BvFrame, mv: [i32; 2]) -> Option<[i64; 4]> {
-    if mv[0] & 7 != 0
-        || mv[1] & 7 != 0
-        || frame.size.0 < 8
-        || frame.size.1 < 8
-        || frame.chroma_offset
-    {
+    if mv[0] & 7 != 0 || mv[1] & 7 != 0 {
         return None;
     }
-    let top = frame.mi.0 as i64 * MI_SIZE + i64::from(mv[0] >> 3);
-    let left = frame.mi.1 as i64 * MI_SIZE + i64::from(mv[1] >> 3);
+    let (delta_row, delta_col) = (i64::from(mv[0] >> 3), i64::from(mv[1] >> 3));
+    let top = frame.mi.0 as i64 * MI_SIZE + delta_row;
+    let left = frame.mi.1 as i64 * MI_SIZE + delta_col;
     let (bottom, right) = (top + frame.size.1 as i64, left + frame.size.0 as i64);
+    let (top, left) = match frame.chroma {
+        Some(chroma) => (
+            chroma.mi.0 as i64 * MI_SIZE + delta_row,
+            chroma.mi.1 as i64 * MI_SIZE + delta_col,
+        ),
+        None => (top, left),
+    };
     let (rows, cols) = &frame.tile;
     let inside = top >= rows.start as i64 * MI_SIZE
         && left >= cols.start as i64 * MI_SIZE
@@ -415,37 +453,17 @@ fn source_edges(frame: &BvFrame, mv: [i32; 2]) -> Option<[i64; 4]> {
 }
 
 /// Whether the whole-sample block vector `mv` (`[row, col]` in 1/8 samples)
-/// passes § 6.19.7.12 `is_mv_valid` for a frame with `allow_local_intrabc =
-/// 0` and `allow_global_intrabc = 1`, taking `sb64Residual = 0` (a subset of
-/// the vectors `AllowExtraIBCRange` allows), for a leaf at least 8x8 whose
-/// chroma is its own (so `ChromaMiRow/Col` equal `MiRow/Col`); any vector
-/// of another leaf is refused. The source
-/// must also lie in the current or the previous superblock row, the global
-/// area of the frame header semantics.
+/// passes § 6.19.7.12 `is_mv_valid` for the global area (`allow_global_intrabc
+/// = 1`), taking `sb64Residual = 0` (a subset of the vectors
+/// `AllowExtraIBCRange` allows). The source must also lie in the current or
+/// the previous superblock row, the global area of the frame header
+/// semantics.
 pub(super) fn global_bv_valid(frame: &BvFrame, mv: [i32; 2]) -> bool {
-    if mv[0] & 7 != 0
-        || mv[1] & 7 != 0
-        || frame.size.0 < 8
-        || frame.size.1 < 8
-        || frame.chroma_offset
-    {
+    let Some([src_top, _, src_bottom, src_right]) = source_edges(frame, mv) else {
         return false;
-    }
+    };
     let (mi_row, mi_col) = (frame.mi.0 as i64, frame.mi.1 as i64);
-    let (bw, bh) = (frame.size.0 as i64, frame.size.1 as i64);
-    let (delta_row, delta_col) = (i64::from(mv[0] >> 3), i64::from(mv[1] >> 3));
-    let src_top = mi_row * MI_SIZE + delta_row;
-    let src_left = mi_col * MI_SIZE + delta_col;
-    let src_bottom = src_top + bh;
-    let src_right = src_left + bw;
-    let (rows, cols) = &frame.tile;
-    if src_top < rows.start as i64 * MI_SIZE
-        || src_left < cols.start as i64 * MI_SIZE
-        || src_bottom > rows.end as i64 * MI_SIZE
-        || src_right > cols.end as i64 * MI_SIZE
-    {
-        return false;
-    }
+    let cols = &frame.tile.1;
     let sb_h = frame.sb_size as i64;
     let active_sb_row = mi_row * MI_SIZE / sb_h;
     let active_sb64_col = (mi_col * MI_SIZE) >> 6;
@@ -477,7 +495,23 @@ mod tests {
             size,
             tile: (0..64, 0..160),
             sb_size: 64,
-            chroma_offset: false,
+            chroma: Some(ChromaRef {
+                mi,
+                size,
+                local: true,
+            }),
+        }
+    }
+
+    /// A 4x4 leaf at `mi` that codes the chroma of the 8x8 block at `chroma`.
+    fn offset_leaf(mi: (usize, usize), chroma: (usize, usize)) -> BvFrame {
+        BvFrame {
+            chroma: Some(ChromaRef {
+                mi: chroma,
+                size: (8, 8),
+                local: true,
+            }),
+            ..frame(mi, (4, 4))
         }
     }
 
@@ -496,12 +530,27 @@ mod tests {
         assert!(!global_bv_valid(&leaf, sample(-128, 0)));
         assert!(!global_bv_valid(&leaf, sample(0, -400)));
         assert!(!global_bv_valid(&leaf, [4, -64 * 8 * 5]));
-        assert!(!global_bv_valid(&frame((16, 96), (4, 8)), sample(-64, 0)));
-        let shared = BvFrame {
-            chroma_offset: true,
-            ..leaf
+    }
+
+    /// § 6.19.7.12 `HasChroma`: a chroma-offset leaf takes the top and left
+    /// source edges from its chroma reference block, a leaf without chroma
+    /// from itself.
+    #[test]
+    fn small_leaves_take_the_source_corner_of_their_chroma_block() {
+        let sample = |dy: i32, dx: i32| [dy * 8, dx * 8];
+        let no_chroma = BvFrame {
+            chroma: None,
+            ..frame((17, 97), (4, 4))
         };
-        assert!(!global_bv_valid(&shared, sample(-64, 0)));
+        assert!(global_bv_valid(&no_chroma, sample(-68, -4)));
+        assert!(!global_bv_valid(
+            &offset_leaf((17, 97), (16, 96)),
+            sample(-68, -4)
+        ));
+        assert!(global_bv_valid(
+            &offset_leaf((17, 97), (16, 96)),
+            sample(-64, -4)
+        ));
     }
 
     /// The buffers of a [`LocalArea`] whose coded 4x4 cells `coded` gives,
@@ -544,11 +593,31 @@ mod tests {
         assert!(!local_bv_valid(&leaf, &area, sample(-8, 0)));
         assert!(local_bv_valid(&leaf, &area, sample(-32, 8)));
         assert!(!local_bv_valid(&leaf, &area, [-32 * 8 + 4, 0]));
-        let shared = BvFrame {
-            chroma_offset: true,
-            ..leaf
+    }
+
+    /// The local area checks the moved chroma reference block of a
+    /// chroma-offset leaf: its luma copy at (100, 252) is coded, but the
+    /// 8x8 chroma block at (96, 248) is not.
+    #[test]
+    fn local_vectors_of_chroma_offset_leaves_check_the_chroma_block() {
+        let coded = |row: usize, col: usize| row < 24 || (col < 64 && row != 24);
+        let (area, _) = regions((25, 65), 64, coded, None);
+        let sample = |dy: i32, dx: i32| [dy * 8, dx * 8];
+        let luma_only = BvFrame {
+            chroma: None,
+            ..frame((25, 65), (4, 4))
         };
-        assert!(!local_bv_valid(&shared, &area, sample(-32, 0)));
+        assert!(local_bv_valid(&luma_only, &area, sample(0, -8)));
+        assert!(!local_bv_valid(
+            &offset_leaf((25, 65), (24, 64)),
+            &area,
+            sample(0, -8)
+        ));
+        assert!(local_bv_valid(
+            &offset_leaf((25, 65), (24, 64)),
+            &area,
+            sample(-8, -8)
+        ));
     }
 
     /// § 6.19.7.12 with 128x128 superblocks: a leaf in the top-left region of
