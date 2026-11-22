@@ -63,7 +63,6 @@ struct PublishedCcso {
 pub(crate) struct CcsoGridHandle(Arc<CompletionCell<Option<PublishedCcso>>>);
 
 impl CcsoGridHandle {
-    #[cfg(test)]
     pub(crate) fn settled(product: Option<Arc<CcsoUnitGrid>>) -> Self {
         let spare = product.is_none().then(|| Arc::new(CcsoUnitGrid::spare()));
         Self(Arc::new(CompletionCell::completed(Some(PublishedCcso {

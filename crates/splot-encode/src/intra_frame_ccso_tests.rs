@@ -30,14 +30,24 @@ fn ccso_stream(
 
 /// [`ccso_stream`] at `qp` with `flag` of each frame header.
 fn ccso_stream_with(
+    stream: (usize, PixelFormat, u16),
+    preset: &'static PresetParams,
+    flag: fn(&FrameHeaderCore) -> bool,
+) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>, bool) {
+    ccso_stream_tiles(stream, 1, preset, flag)
+}
+
+/// [`ccso_stream_with`] with `1 << cols_log2` tile columns.
+fn ccso_stream_tiles(
     (threads, chroma, qp): (usize, PixelFormat, u16),
+    cols_log2: u8,
     preset: &'static PresetParams,
     flag: fn(&FrameHeaderCore) -> bool,
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>, bool) {
     let mut config = config(200, 96, BitDepth::Eight, 9, qp);
     config.chroma = chroma;
     config.tiles = TileLayout {
-        cols_log2: 1,
+        cols_log2,
         rows_log2: 0,
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
@@ -266,6 +276,79 @@ fn avm_decodes_ccso_reuse_frames_like_splot() {
     let (units, recon, flags, _) = stream;
     assert!(flags.contains(&true), "{flags:?}");
     let avm = avm_decode(&avmdec, &units, (200, 96), BitDepth::Eight, "ccso-reuse");
+    assert!(avm == recon, "AVM output differs");
+}
+
+/// Preset 9 with CCSO reuse of parameters and `ccso_blk` flags.
+fn with_block_reuse() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        ccso_reuse: 2,
+        ..*Preset::new(9).unwrap().params()
+    }))
+}
+
+/// Whether some plane of `core` codes `sb_reuse_ccso`.
+fn sb_reuses_ccso(core: &FrameHeaderCore) -> bool {
+    core.ccso_params
+        .as_ref()
+        .is_some_and(|params| params.planes.iter().any(|plane| plane.sb_reuse_ccso))
+}
+
+/// `ccso_reuse` 2 on a one-tile pan at qp 140 (`CcsoLumaSizeLog2` 8,
+/// § 6.17.7.8): both inter frames pick `sb_reuse_ccso` by RD, so they load
+/// the saved `ccso_blk` flags of a reference and code none (§ 5.20.10.2), and
+/// the second loads flags the first reused. The stream decodes to the encoder
+/// recon and 1, 2 and 8 threads write the same bytes. With `ccso_reuse` 1, or
+/// two tiles (`CcsoLumaSizeLog2` 7), no frame codes it.
+#[test]
+fn ccso_block_reuse_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let stream = |threads, cols_log2, preset| {
+        ccso_stream_tiles(
+            (threads, PixelFormat::Yuv420, 140),
+            cols_log2,
+            preset,
+            sb_reuses_ccso,
+        )
+    };
+    let (one, recon, flags, _) = stream(1, 0, with_block_reuse());
+    assert!(
+        !flags[0] && flags[1..].iter().all(|&flag| flag),
+        "{flags:?}"
+    );
+    assert_same_samples(&decode(&one.concat()), &recon, "ccso block reuse");
+    for threads in [2, 8] {
+        assert!(
+            stream(threads, 0, with_block_reuse()).0 == one,
+            "{threads} threads"
+        );
+    }
+    for (cols_log2, preset) in [(0, with_reuse()), (1, with_block_reuse())] {
+        let (_, _, off, _) = stream(1, cols_log2, preset);
+        assert!(!off.contains(&true), "{cols_log2}: {off:?}");
+    }
+}
+
+/// AVM decodes frames that reuse CCSO `ccso_blk` flags to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_ccso_block_reuse_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, recon, flags, _) = ccso_stream_tiles(
+        (1, PixelFormat::Yuv420, 140),
+        0,
+        with_block_reuse(),
+        sb_reuses_ccso,
+    );
+    assert!(flags.contains(&true), "{flags:?}");
+    let avm = avm_decode(
+        &avmdec,
+        &units,
+        (200, 96),
+        BitDepth::Eight,
+        "ccso-block-reuse",
+    );
     assert!(avm == recon, "AVM output differs");
 }
 
