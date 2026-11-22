@@ -160,9 +160,22 @@ fn encode_overriding(
         .iter()
         .map(|&(name, value)| (name.to_owned(), value.to_owned()))
         .collect();
+    encode_config(&config, |config, index| {
+        let scene = u32::from(index >= 17);
+        let mut source = frame(config, index, 2 * index as usize, scene);
+        if black_first && index == 0 {
+            let planes = source.planes().clone().map(|plane| vec![16; plane.len()]);
+            source = SourceFrame::new(config, 0, planes).unwrap();
+        }
+        source
+    })
+}
+
+/// The [`FRAMES`] frames `source` makes, through the [`Encoder`] of `config`.
+fn encode_config(config: &Config, source: impl Fn(&Config, u64) -> SourceFrame) -> Stream {
     let (recons, codings) = (Arc::default(), Arc::default());
     let coder = Recording {
-        coder: IntraFrameCoder::new(&config).unwrap(),
+        coder: IntraFrameCoder::new(config).unwrap(),
         bit_depth: config.bit_depth,
         recons: Arc::clone(&recons),
         codings: Arc::clone(&codings),
@@ -173,13 +186,7 @@ fn encode_overriding(
         if index == FRAMES {
             encoder.flush().unwrap();
         } else {
-            let scene = u32::from(index >= 17);
-            let mut source = frame(&config, index, 2 * index as usize, scene);
-            if black_first && index == 0 {
-                let planes = source.planes().clone().map(|plane| vec![16; plane.len()]);
-                source = SourceFrame::new(&config, 0, planes).unwrap();
-            }
-            encoder.send_frame(source).unwrap();
+            encoder.send_frame(source(config, index)).unwrap();
         }
         while let Some(packet) = encoder.receive_packet().unwrap() {
             packets.push(packet);
@@ -788,3 +795,6 @@ fn repeats_bank_their_budget() {
     cbr.update_repeat(100, 0);
     assert_eq!(cbr.vbr.drift, before + 100 - frame_bits);
 }
+
+#[path = "rate_control_padding_tests.rs"]
+mod padding;

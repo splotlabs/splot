@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase as _, i32x8, u32x8};
+use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase as _, i32x8, u8x16, u32x8, u64x2};
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
@@ -127,7 +127,7 @@ impl QmDequant {
     /// coefficients of the block, `None` for a user matrix or a region the
     /// table does not cover.
     #[must_use]
-    pub fn built_in_weights(&self, len: usize) -> Option<&'static [i32]> {
+    pub fn built_in_weights(&self, len: usize) -> Option<&'static [u8]> {
         if self.user.is_some() {
             return None;
         }
@@ -228,12 +228,8 @@ fn dequantize_groups<S: Simd>(
         let Some(qm) = params.qm.as_ref() else {
             return Ok(base);
         };
-        let weights = qm_weights(params, qm, 8 * group, len)?;
-        Ok(qm_weighted_lanes(
-            simd,
-            base,
-            i32x8::load_array(simd, weights),
-        ))
+        let weights = qm_weights(simd, params, qm, 8 * group, len)?;
+        Ok(qm_weighted_lanes(simd, base, weights))
     };
     let (out_groups, out_tail) = out.as_chunks_mut::<8>();
     let (groups, tail) = quant.as_chunks::<8>();
@@ -255,20 +251,28 @@ fn dequantize_groups<S: Simd>(
 /// from raster index `start`, zero past them: a slice of the built-in
 /// `Quantizer_Matrix` row, or the per-coefficient lookup of a user matrix
 /// (and of a built-in row the table does not cover, to report its error).
-fn qm_weights(
+#[inline]
+fn qm_weights<S: Simd>(
+    simd: S,
     params: &DequantBlockParams,
     qm: &QmDequant,
     start: usize,
     len: usize,
-) -> Result<[i32; 8]> {
-    let mut weights = [0i32; 8];
+) -> Result<i32x8<S>> {
     if let Some(row) = qm
         .built_in_weights(start + len)
         .and_then(|row| row.get(start..))
     {
-        weights[..len].copy_from_slice(row); // splot-copy-ok: one weight-row group
-        return Ok(weights);
+        let bytes = row.first_chunk().copied().unwrap_or_else(|| {
+            let mut bytes = [0u8; 8];
+            bytes[..len].copy_from_slice(row); // splot-copy-ok: the short last group
+            bytes
+        });
+        let bytes: u8x16<S> = u64x2::load_array(simd, [u64::from_le_bytes(bytes), 0]).bitcast();
+        let (low, high) = simd.widen_u16x8(simd.widen_u8x16(bytes).0);
+        return Ok(simd.combine_u32x4(low, high).bitcast());
     }
+    let mut weights = [0i32; 8];
     let (tx_width, tx_height) = (params.tx_width, params.tx_height);
     for (index, weight) in (start..).zip(&mut weights[..len]) {
         let (row, col) = (index / tx_width, index % tx_width);
@@ -285,7 +289,7 @@ fn qm_weights(
             })?,
         };
     }
-    Ok(weights)
+    Ok(i32x8::load_array(simd, weights))
 }
 
 /// [`qm_weighted_quantizer`] of eight lanes, `Round2(q * m, 5)` saturating
@@ -436,14 +440,13 @@ pub fn quantization_matrix_weight(index: &QmWeightIndex) -> Result<i32> {
         .qm_offset
         .saturating_add(index.row.saturating_mul(index.tx_width))
         .saturating_add(index.col);
-    plane
-        .get(position)
-        .copied()
-        .ok_or(ReconError::InvalidQuantizerMatrixIndex {
+    plane.get(position).map(|&weight| i32::from(weight)).ok_or(
+        ReconError::InvalidQuantizerMatrixIndex {
             seg_level: index.seg_level,
             qm_offset: index.qm_offset,
             position,
-        })
+        },
+    )
 }
 
 /// AV2 § 7.14.4 step 2 quantization-matrix-weighted quantizer
@@ -769,14 +772,14 @@ mod tests {
             tx_height: 4,
         };
         let m = quantization_matrix_weight(&index).unwrap();
-        assert_eq!(m, QUANTIZER_MATRIX[0][0][0]);
+        assert_eq!(m, i32::from(QUANTIZER_MATRIX[0][0][0]));
         let chroma = QmWeightIndex {
             plane_is_chroma: true,
             ..index
         };
         assert_eq!(
             quantization_matrix_weight(&chroma).unwrap(),
-            QUANTIZER_MATRIX[0][1][0]
+            i32::from(QUANTIZER_MATRIX[0][1][0])
         );
         let off = QM_OFFSET[1] as usize;
         let pos = QmWeightIndex {
@@ -789,7 +792,7 @@ mod tests {
         };
         assert_eq!(
             quantization_matrix_weight(&pos).unwrap(),
-            QUANTIZER_MATRIX[0][0][off + pos.row * pos.tx_width + pos.col]
+            i32::from(QUANTIZER_MATRIX[0][0][off + pos.row * pos.tx_width + pos.col])
         );
     }
 
