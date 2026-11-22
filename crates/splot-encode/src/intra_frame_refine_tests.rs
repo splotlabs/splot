@@ -153,6 +153,21 @@ fn refine_all_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     }
 }
 
+/// In `REFINE_ALL` frames the compound shortlist ranks the optical-flow
+/// prediction of the candidates the decoder refines, the plain average of
+/// the others, and never refines `GLOBAL_GLOBALMV` (§ 5.20.7.6).
+#[test]
+fn refine_all_ranks_only_eligible_compound_candidates_refined() {
+    let mut config = config(72, 40, BitDepth::Eight, 6, 200);
+    config.threads = splot_parallel::ThreadCount::from(1);
+    crate::mode_decision::RANKED_REFINED.set([0; 3]);
+    let coder = IntraFrameCoder::with_preset(&config, with_refine_all()).unwrap();
+    super::carry::planned_stream_of(&config, coder, panning_frame, 200);
+    let [refined, plain, refined_global] = crate::mode_decision::RANKED_REFINED.get();
+    assert!(refined > 0 && plain > 0, "{refined} {plain}");
+    assert_eq!(refined_global, 0);
+}
+
 /// AVM decodes `REFINE_ALL` panning streams like splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
