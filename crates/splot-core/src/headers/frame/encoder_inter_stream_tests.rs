@@ -1821,26 +1821,22 @@ fn open_loop_key_headers_keep_the_other_slots() {
     let bad = |params: InterFrameParams| {
         build_open_loop_key_frame_header(&view, &slots.view(), &params).is_err()
     };
-    for bad_params in [
-        InterFrameParams {
-            show_frame: true,
-            ..params
-        },
-        InterFrameParams {
-            leading: true,
-            ..params
-        },
-        InterFrameParams {
-            refresh_frame_flags: 0,
-            ..params
-        },
-        InterFrameParams {
-            base_q_idx: 0,
-            ..params
-        },
-    ] {
-        assert!(bad(bad_params));
-    }
+    assert!(bad(InterFrameParams {
+        show_frame: true,
+        ..params
+    }));
+    assert!(bad(InterFrameParams {
+        leading: true,
+        ..params
+    }));
+    assert!(bad(InterFrameParams {
+        refresh_frame_flags: 0,
+        ..params
+    }));
+    assert!(bad(InterFrameParams {
+        base_q_idx: 0,
+        ..params
+    }));
     let leading = InterFrameParams {
         leading: true,
         refresh_frame_flags: 0b10,
