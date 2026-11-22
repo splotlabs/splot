@@ -266,6 +266,7 @@ impl Encoder {
             .with_ref_slots(slots)
             .with_intra_only(params.intra_only)
             .with_open_loop_key(params.open_loop_key)
+            .with_switch_frames(params.switch_frames, params.switch_type)
             .with_implicit_output(params.implicit_output)
             .with_sef_repeat(params.sef_repeat);
         Ok(Self {

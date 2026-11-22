@@ -6620,6 +6620,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-SWITCH-FRAMES"
+name = "Encoder switch frames and random access switch frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "7.3.9", "7.4.5", "7.23"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-switch-frames"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::switch_frames and switch_type (2026-11-22, 0 = off in every row, not measured): switch_frames N codes the layer-0 frame of every Nth mini-GOP, other than the one of an open-loop key frame, as a SWITCH_FRAME with restricted_prediction_switch = 0, PRIMARY_REF_NONE, frame_size() and an explicit map. switch_type 0 codes OBU_SWITCH over the default references with one refreshed slot; 1 codes OBU_RAS_FRAME that lists the last closed-loop key frame's long-term id, references only it and refreshes every other slot, and the planner never evicts that key frame. switch_type 1 needs long_term_id_bits > 0 (so not open_loop_key) and keyint <= 256; restricted_prediction_switch = 1 is refused. AVM decodes the streams from the start and from a RAS frame after a hidden copy of the key frame."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::switch_and_ras_headers_parse_back", "crates/splot-encode/src/gop_tests.rs::ras_frames_keep_only_the_key_frame", "crates/splot-encode/src/intra_frame_switch_tests.rs::switch_streams_decode_alike_on_any_thread_count"]
+commands = ["cargo test -p splot-core switch_and_ras --locked", "cargo test -p splot-encode switch --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-SEF-REPEAT"
 name = "Encoder repeats of an input frame as show-existing frames with an explicit order hint"
 category = "encoder"

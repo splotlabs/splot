@@ -464,7 +464,7 @@ fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, 
 
 /// The packets of `frames` panning frames coded through the [`Encoder`] with
 /// `config`, and the encoder recon in display order.
-fn encoder_packets(config: &Config, frames: u32) -> (Vec<Packet>, Vec<u8>) {
+pub(super) fn encoder_packets(config: &Config, frames: u32) -> (Vec<Packet>, Vec<u8>) {
     let recons = Arc::default();
     let coder = Recording {
         coder: IntraFrameCoder::new(config).unwrap(),
@@ -600,7 +600,7 @@ fn open_loop_stream(
 }
 
 /// The OBU types of `packets` in stream order.
-fn obu_types(packets: &[Packet]) -> Vec<splot_core::types::ObuType> {
+pub(super) fn obu_types(packets: &[Packet]) -> Vec<splot_core::types::ObuType> {
     let units: Vec<u8> = packets
         .iter()
         .flat_map(|packet| packet.data.clone())
