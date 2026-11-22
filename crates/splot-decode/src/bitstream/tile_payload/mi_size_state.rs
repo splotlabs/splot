@@ -175,7 +175,7 @@ impl TileMiSizeState {
     }
 
     /// Starts a superblock row: clears the left context lines.
-    pub(crate) fn enter_sb_row(&mut self, _sb_row: usize) {
+    pub(crate) fn enter_sb_row(&mut self) {
         self.left = [[CLEAR_PARTITION_CONTEXT; SB_ROW_SPAN]; PLANE_COUNT];
         self.palettes.clear();
     }

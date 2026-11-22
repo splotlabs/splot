@@ -19,7 +19,7 @@
 //!
 //! It also provides [`tx_class`], the AV2 `get_tx_class` mapping from a
 //! `PlaneTxType` to its [`TransformClass`] (the class then selects the scan via
-//! [`coefficient_scan_order`]).
+//! [`coefficient_scan_slice`]).
 //!
 //! Feature tracking: `RECON-COEFFICIENT-SCAN-ORDER`, `RECON-GET-TX-CLASS`.
 
@@ -179,9 +179,7 @@ const fn scan_dim_index(d: usize) -> Option<usize> {
 /// scanned coefficient.
 ///
 /// The scan is a pure function of `(w, h, class)`, so the 48 permutations are
-/// built once at compile time and every caller borrows one. Callers that only
-/// read the order should prefer this over [`coefficient_scan_order`], which
-/// copies into caller storage.
+/// built once at compile time and every caller borrows one.
 ///
 /// `w` and `h` are the operating dimensions `Min(Tx_Width[txSz], 32)` /
 /// `Min(Tx_Height[txSz], 32)`, each 4, 8, 16, or 32.
@@ -216,7 +214,8 @@ pub fn coefficient_scan_slice(w: usize, h: usize, class: TransformClass) -> Resu
 /// # Errors
 /// Returns [`ReconError::InvalidScanShape`] if `w` / `h` are not each 4/8/16/32,
 /// and [`ReconError::ScanLengthMismatch`] if `out` is not exactly `w * h` long.
-pub fn coefficient_scan_order(
+#[cfg(test)]
+pub(crate) fn coefficient_scan_order(
     w: usize,
     h: usize,
     class: TransformClass,
@@ -244,7 +243,7 @@ pub fn coefficient_scan_order(
 /// The vertical types are `V_DCT` (10), `V_ADST` (12), and `V_FLIPADST` (14); the
 /// horizontal types are `H_DCT` (11), `H_ADST` (13), and `H_FLIPADST` (15)
 /// (`03-symbols.md` `TX_TYPE` values). The result selects the scan in
-/// [`coefficient_scan_order`]. Total over all inputs: the spec's `else` branch
+/// [`coefficient_scan_slice`]. Total over all inputs: the spec's `else` branch
 /// maps any non-directional value to `TX_CLASS_2D`.
 #[must_use]
 pub const fn tx_class(plane_tx_type: usize) -> TransformClass {

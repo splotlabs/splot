@@ -47,10 +47,9 @@ mod sixteen_bit;
 mod tip_overlap;
 use block::Sink;
 pub use cell::{CompoundCells, subpel_compound_cells};
-pub use copy::{
-    blend_compound_average_equal, blend_compound_average_weighted,
-    blend_compound_average_weighted_sample,
-};
+#[cfg(test)]
+pub(crate) use copy::blend_compound_average_equal;
+pub use copy::{blend_compound_average_weighted, blend_compound_average_weighted_sample};
 pub use fullpel_u8::{
     UnscaledPut, subpel_compound_block, subpel_predict_block_strided_into_u8, subpel_put_block,
 };
@@ -556,13 +555,9 @@ const MAX_BLOCK_DIM: usize = 256;
 ///
 /// # Errors
 ///
-/// Returns [`ReconError::ZeroDimension`] for a zero dimension,
-/// [`ReconError::SubpelBlockDimensionUnsupported`] for `w`/`h` above the
-/// 256-sample super-block side, [`ReconError::SubpelNegativeStep`] for a negative
-/// step, [`ReconError::SubpelReferenceBoundsInvalid`] for an inverted clipping
-/// range, and [`ReconError::ArithmeticOverflow`] if the intermediate height
-/// cannot be derived.
-pub fn subpel_predict_block<T: ReconSample>(
+/// Returns the parameter errors of [`subpel_predict_block_into`].
+#[cfg(test)]
+pub(crate) fn subpel_predict_block<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> Result<Vec<u16>> {
@@ -580,8 +575,13 @@ pub fn subpel_predict_block<T: ReconSample>(
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`subpel_predict_block`] and
-/// [`ReconError::BufferLengthMismatch`] when `output` is too short.
+/// Returns [`ReconError::ZeroDimension`] for a zero dimension,
+/// [`ReconError::SubpelBlockDimensionUnsupported`] for `w`/`h` above the
+/// 256-sample super-block side, [`ReconError::SubpelNegativeStep`] for a negative
+/// step, [`ReconError::SubpelReferenceBoundsInvalid`] for an inverted clipping
+/// range, [`ReconError::ArithmeticOverflow`] if the intermediate height
+/// cannot be derived, and [`ReconError::BufferLengthMismatch`] when `output` is
+/// too short.
 pub fn subpel_predict_block_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -664,7 +664,8 @@ fn subpel_output_len(params: &SubpelPredictParams, output_stride: usize) -> Resu
 /// [`ReconError::ZeroDimension`], [`ReconError::SubpelBlockDimensionUnsupported`],
 /// [`ReconError::SubpelNegativeStep`], [`ReconError::SubpelReferenceBoundsInvalid`],
 /// and [`ReconError::ArithmeticOverflow`].
-pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
+#[cfg(test)]
+pub(crate) fn subpel_predict_block_compound_intermediate<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> Result<Vec<i32>> {
@@ -691,7 +692,7 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`subpel_predict_block`],
+/// Returns the parameter errors of [`subpel_predict_block_into`],
 /// [`ReconError::StrideTooSmall`] when `output_stride < params.w`, and
 /// [`ReconError::BufferLengthMismatch`] when `output` cannot hold the strided
 /// prediction rectangle.
@@ -732,7 +733,8 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample, P: Compou
 ///
 /// Returns the same errors as [`subpel_predict_block`] and
 /// [`ReconError::BufferLengthMismatch`] when either block has the wrong length.
-pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
+#[cfg(test)]
+pub(crate) fn subpel_predict_block_compound_average_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     pred0: &[i32],
@@ -830,8 +832,9 @@ fn validate_compound_average<P>(
 ///
 /// # Errors
 ///
-/// Returns the same errors as [`subpel_predict_block_compound_average_into`],
-/// plus [`ReconError::StrideTooSmall`] when `output_stride < params.w`.
+/// Returns the parameter errors of [`subpel_predict_block_into`],
+/// [`ReconError::BufferLengthMismatch`] when `pred0` or `output` cannot hold the
+/// block, and [`ReconError::StrideTooSmall`] when `output_stride < params.w`.
 pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -927,7 +930,7 @@ fn validate_compound_output<O>(
 /// caller then uses the two-call path.
 ///
 /// # Errors
-/// Returns the parameter errors of [`subpel_predict_block`], a sample-type
+/// Returns the parameter errors of [`subpel_predict_block_into`], a sample-type
 /// error when `O` cannot hold the bit depth, and the output-layout errors of
 /// [`subpel_predict_block_compound_average_strided_into`].
 pub fn subpel_predict_block_compound_average_unscaled_strided_into<
@@ -1081,55 +1084,6 @@ pub(super) fn with_compound_pred0<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R
     })
 }
 
-/// The fast compound dispatch of
-/// [`subpel_predict_block_compound_average_fast_validated_strided_into`] for
-/// a cell of two planes that share its parameters (U and V): it writes the
-/// cell of `output`, then of `second`, and returns the number of planes
-/// written. It writes none when that function would decline, when the
-/// `second` views differ from the first in width or readable rows, or when
-/// `O` is neither 8- nor 16-bit storage; the caller predicts the rest.
-///
-/// # Errors
-/// Returns the errors of
-/// [`subpel_predict_block_compound_average_fast_validated_strided_into`] for
-/// either output.
-#[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
-#[inline]
-pub fn subpel_predict_block_compound_average_fast_pair_into<T: ReconSample, O: ReconSample>(
-    reference0: &ReferencePlaneView<'_, T>,
-    params0: &SubpelPredictParams,
-    reference1: &ReferencePlaneView<'_, T>,
-    params1: &SubpelPredictParams,
-    cwp_weight: i16,
-    output: &mut [O],
-    output_stride: usize,
-    (second, second_output, second_stride): ([&ReferencePlaneView<'_, T>; 2], &mut [O], usize),
-) -> Result<usize> {
-    crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
-    let same = |a: &ReferencePlaneView<'_, T>, b: &ReferencePlaneView<'_, T>| {
-        (a.width, a.readable_rows) == (b.width, b.readable_rows)
-    };
-    if !fast_admitted(params0, params1)
-        || !same(reference0, second[0])
-        || !same(reference1, second[1])
-    {
-        return Ok(0);
-    }
-    validate_compound_output(params0, output, output_stride)?;
-    validate_compound_output(params0, second_output, second_stride)?;
-    let params = [params0, params1];
-    let first = compound_average(
-        [reference0, reference1],
-        params,
-        cwp_weight,
-        output,
-        output_stride,
-    );
-    let second = compound_average(second, params, cwp_weight, second_output, second_stride);
-    Ok(usize::from(first) + usize::from(first && second))
-}
-
 /// The COMPOUND_AVERAGE, clipped to `bit_depth`, of one unscaled
 /// `size`-square cell, 4 or 8, from each reference's [`CellPlacement`] into
 /// `output` rows `stride` apart, as
@@ -1139,7 +1093,8 @@ pub fn subpel_predict_block_compound_average_fast_pair_into<T: ReconSample, O: R
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 #[inline]
-pub fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
+#[cfg(test)]
+pub(crate) fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
     interp: InterpolationFilter,
     size: usize,

@@ -7,18 +7,18 @@ use splot_core::bitio::BitReader;
 use std::sync::Arc;
 
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams, RefIdxBuf,
-    SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
+    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus,
+    FrameReferenceStateView, FrameType, QuantizationParams, RefIdxBuf, SefTrailingBits,
+    SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, DecodedFrame, DecodedFrameInfo, InterpolationFilter as ReconInterpolationFilter,
-    IntraRectBlockSize, PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore,
-    ReferenceSlot,
+    BitDepth, CurrentFrameSurface, DecodedFrame, DecodedFrameInfo,
+    InterpolationFilter as ReconInterpolationFilter, IntraRectBlockSize, PlaneId as ReconPlaneId,
+    QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
@@ -779,7 +779,7 @@ impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
     /// [`mc::predict_inter_block`].
     pub(in crate::prediction::inter) fn predict_into(
         &self,
-        sink: &mut mc::WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
         offset: ByteOffset,
@@ -945,7 +945,7 @@ fn compound_is_joint_context_from_order_hints(
 }
 #[allow(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
@@ -1062,7 +1062,7 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut ResidualScratch,
     [u, v]: [&InterResidualBlock; 2],
     residual_coeffs: &[i32],
@@ -1686,7 +1686,6 @@ fn parse_sef_or_tip_frame_core(
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: reference.header_view(),
-        mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut reader, &input).map_err(|error| {
         malformed_frame_header(envelope.offset, frame_index, SPEC_HEADER, error.to_string())
@@ -2033,7 +2032,6 @@ fn parse_inter_frame_core(
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: reference.header_view(),
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map_err(|error| DecodeError::MalformedSource {
         issue: DecodeSourceIssue::frame_header_conformance(

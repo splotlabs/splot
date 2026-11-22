@@ -9,7 +9,9 @@ use splot_recon::{
     predict_intra_ibp_dc_rect_into,
 };
 #[cfg(test)]
-use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
+use splot_recon::{
+    CurrentFrameSurface, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
+};
 
 #[cfg(test)]
 use crate::Result;
@@ -206,7 +208,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
-    sink: &mut crate::prediction::inter::mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
     x: usize,

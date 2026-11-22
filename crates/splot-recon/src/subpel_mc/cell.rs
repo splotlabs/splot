@@ -55,6 +55,7 @@ impl CellSample for u16 {
 /// or 8, of either sample depth whose references share `interp`, from each
 /// reference's [`CellPlacement`]; `false` without writing for any other size
 /// or an empty clip range.
+#[cfg(test)]
 #[inline]
 pub(super) fn compound_at<P: CellSample>(
     references: [&ReferencePlaneView<'_, P>; 2],
@@ -324,7 +325,7 @@ pub(super) type Cell = ([u32; 2], [CellPlacement; 2]);
 
 /// Runs a [`CompoundCells`] program of `size`-square cells into each plane
 /// (U and V share one program), clipped to `bit_depth`. Each cell that
-/// [`super::subpel_compound_cell`] would store from its position and
+/// `subpel_compound_cell` would store from its position and
 /// placements is stored the same way and sets bit `index % 64` of word
 /// `index / 64` of its plane's mask;
 /// every other cell is left unwritten for the caller to predict.

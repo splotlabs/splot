@@ -306,7 +306,7 @@ pub(super) fn metadata_is_suffix(obu: &ObuEnvelope<'_>) -> Option<bool> {
 }
 
 pub(super) fn is_global_hls_prefix_obu(obu: &ObuEnvelope<'_>) -> bool {
-    // TODO(spec: AV2-7.3-OBU-ORDERING): a hard `brt/global-ordering-position`
+    // TODO(spec: AV2-7.3-OBU-ORDERING): diagnose global BRT ordering once § 7.3.8 state exists.
     obu.header.extended_layer_id.is_global()
         && matches!(
             obu.header.obu_type,

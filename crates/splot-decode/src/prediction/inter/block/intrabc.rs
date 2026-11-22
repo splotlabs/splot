@@ -3,7 +3,9 @@
 
 use splot_core::headers::frame::{FrameHeaderCore, IntrabcParams};
 use splot_core::span::ByteOffset;
-use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
+use splot_recon::{
+    BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample,
+};
 
 use crate::bitstream::tile_payload::{DecodeBlockFrontier, FrameQmSegmentScope};
 use crate::filters::wienerns_lr::intrabc_records::{
@@ -199,7 +201,7 @@ impl IntrabcReconCommand {
         }
         if let Some(residual) = self.residual.as_ref() {
             add_inter_residual_to_workspace(
-                &mut mc::WorkspaceSink::Frame(workspace),
+                &mut CurrentFrameSurface::Frame(workspace),
                 residual,
                 residual_blocks,
                 residual_coeffs,

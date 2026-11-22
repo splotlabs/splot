@@ -277,14 +277,13 @@ fn arbitrary_mfh_record(seq: &CoreSeqView, seq_id: SequenceHeaderId) -> MultiFra
 }
 
 proptest! {
-    /// The frame-header core parser must never panic on arbitrary input, in either
-    /// mode, with no modeled sequence state.
+    /// The frame-header core parser must never panic on arbitrary input with no
+    /// modeled sequence state.
     #[test]
     fn parse_frame_header_core_never_panics(
         data in proptest::collection::vec(any::<u8>(), 0..64),
         raw_type in 0u8..=31,
         first_picture in any::<bool>(),
-        core_mode in any::<bool>(),
     ) {
         let obu_type = ObuType::from_raw(raw_type);
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
@@ -294,11 +293,6 @@ proptest! {
             active_sequence: None,
             mfh_record: None,
             reference_state: FrameReferenceStateView::unknown(),
-            mode: if core_mode {
-                FrameHeaderParseMode::Core
-            } else {
-                FrameHeaderParseMode::ActivationPrefix
-            },
         };
         let _ = parse_frame_header_core(&mut reader, &input);
     }

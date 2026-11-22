@@ -846,7 +846,7 @@ impl IntraTileSyntax {
     pub fn begin_superblock(&mut self, root: PartitionNode) {
         self.journal.clear();
         if root.0.c() == self.tile.1.start {
-            self.mi_sizes.enter_sb_row(root.0.r());
+            self.mi_sizes.enter_sb_row();
         }
         self.recon
             .block_decoded

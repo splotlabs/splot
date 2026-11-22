@@ -158,7 +158,7 @@ pub fn uniform_spacing(tile_log2: u8, mis: u32, sb_size: SuperblockSize) -> Tile
     TileSpacing { starts, count: i }
 }
 
-/// Inputs to [`parse_tile_params`] (AV2 v1.0.0 § 5.18.7.3).
+/// Inputs to [`parse_tile_layout`] (AV2 v1.0.0 § 5.18.7.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileParamsInput {
     /// `frameWidth` in luma samples.
@@ -357,23 +357,6 @@ pub struct TileLayout {
     /// reassigned inside the uniform branch — else `Mi_Width_Log2[sbSize]`), the
     /// `sbShift2` of the § 5.18.7.2 caller.
     pub sb_shift2: u32,
-}
-
-/// Parses `tile_params(frameWidth, frameHeight, uniformSbSize, sbSize, isBridge)`
-/// (AV2 v1.0.0 § 5.18.7.3), discarding the superblock start arrays.
-///
-/// Use [`parse_tile_layout`] when the start arrays and `sbShift` are needed (the
-/// frame-level `tile_info()`, § 5.18.7.2).
-///
-/// # Errors
-/// Returns [`Error::Unimplemented`] when `seq_level_idx` is a reserved level index
-/// (no defined scaling factor, so the bit layout is undefined — a non-conformant
-/// stream), or [`Error::InvalidTileParams`] when a non-uniform layout exceeds the
-/// § 6.17.7.2 tile-count limits. Returns descriptor errors or
-/// [`Error::UnexpectedEof`] if the payload ends
-/// mid-field.
-pub fn parse_tile_params(reader: &mut BitReader<'_>, input: TileParamsInput) -> Result<TileParams> {
-    parse_tile_layout(reader, input).map(|layout| layout.params)
 }
 
 /// Parses `tile_params(frameWidth, frameHeight, uniformSbSize, sbSize, isBridge)`
@@ -725,7 +708,7 @@ mod tests {
         bits.bit(1); // uniform_tile_spacing_flag
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_tile_params(&mut reader, input(16, 8)).unwrap();
+        let params = parse_tile_layout(&mut reader, input(16, 8)).unwrap().params;
         assert!(params.uniform_spacing);
         assert_eq!(params.tile_cols, 1);
         assert_eq!(params.tile_rows, 1);
@@ -742,7 +725,7 @@ mod tests {
         bits.bit(0); // uniform_tile_spacing_flag = 0
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_tile_params(&mut reader, input(16, 8)).unwrap();
+        let params = parse_tile_layout(&mut reader, input(16, 8)).unwrap().params;
         assert!(!params.uniform_spacing);
         assert_eq!(params.tile_cols, 1);
         assert_eq!(params.tile_rows, 1);
@@ -757,7 +740,9 @@ mod tests {
         bits.bit(0); // ns(2) width_in_sbs_minus_1 = 0 -> first column 1 sb wide
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_tile_params(&mut reader, input(128, 8)).unwrap();
+        let params = parse_tile_layout(&mut reader, input(128, 8))
+            .unwrap()
+            .params;
         assert!(!params.uniform_spacing);
         assert_eq!(params.sb_cols, 2);
         assert_eq!(params.tile_cols, 2);
@@ -775,11 +760,12 @@ mod tests {
         unit_tile_run(&mut bits, MAX_TILE_ROWS, MAX_TILE_ROWS);
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_tile_params(
+        let params = parse_tile_layout(
             &mut reader,
             unconstrained_input(MAX_TILE_COLS * 64, MAX_TILE_ROWS * 64),
         )
-        .unwrap();
+        .unwrap()
+        .params;
         assert!(!params.uniform_spacing);
         assert_eq!(params.tile_cols, MAX_TILE_COLS);
         assert_eq!(params.tile_rows, MAX_TILE_ROWS);
@@ -793,7 +779,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
-            parse_tile_params(
+            parse_tile_layout(
                 &mut reader,
                 unconstrained_input((MAX_TILE_COLS + 1) * 64, 64),
             ),
@@ -813,7 +799,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
-            parse_tile_params(
+            parse_tile_layout(
                 &mut reader,
                 unconstrained_input(64, (MAX_TILE_ROWS + 1) * 64),
             ),
@@ -833,11 +819,12 @@ mod tests {
         }
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        let params = parse_tile_params(
+        let params = parse_tile_layout(
             &mut reader,
             unconstrained_input((MAX_TILE_COLS + 1) * 64, 64),
         )
-        .unwrap();
+        .unwrap()
+        .params;
         assert!(params.uniform_spacing);
         assert_eq!(params.tile_cols, MAX_TILE_COLS);
         assert_eq!(params.tile_rows, 1);
@@ -850,7 +837,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         assert!(matches!(
-            parse_tile_params(&mut reader, unconstrained_input(MAX_TILE_COLS * 64, 64),),
+            parse_tile_layout(&mut reader, unconstrained_input(MAX_TILE_COLS * 64, 64),),
             Err(Error::UnexpectedEof { .. })
         ));
     }
@@ -940,7 +927,7 @@ mod tests {
         let mut tp = input(16, 8);
         tp.seq_level_idx = LevelIdx::from_bits(22);
         assert!(matches!(
-            parse_tile_params(&mut reader, tp),
+            parse_tile_layout(&mut reader, tp),
             Err(Error::Unimplemented {
                 feature: "AV2-5.18.7.3-TILE-PARAMS"
             })
@@ -956,7 +943,7 @@ mod tests {
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let mut tp = input(16, 8);
         tp.seq_level_idx = LevelIdx::from_bits(31);
-        let params = parse_tile_params(&mut reader, tp).unwrap();
+        let params = parse_tile_layout(&mut reader, tp).unwrap().params;
         assert_eq!(params.tile_cols, 1);
         assert_eq!(params.tile_rows, 1);
     }
@@ -965,7 +952,7 @@ mod tests {
     fn reports_eof_without_panicking() {
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(
-            parse_tile_params(&mut reader, input(16, 8)),
+            parse_tile_layout(&mut reader, input(16, 8)),
             Err(Error::UnexpectedEof { .. })
         ));
     }
@@ -977,14 +964,14 @@ mod tests {
         tp.frame_height = u32::MAX;
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(
-            parse_tile_params(&mut reader, tp),
+            parse_tile_layout(&mut reader, tp),
             Err(Error::UnexpectedEof { .. })
         ));
 
         tp.seq_level_idx = LevelIdx::from_bits(31);
         let mut reader = BitReader::new(&[], ByteOffset::new(0));
         assert!(matches!(
-            parse_tile_params(&mut reader, tp),
+            parse_tile_layout(&mut reader, tp),
             Err(Error::UnexpectedEof { .. })
         ));
     }
@@ -1019,7 +1006,7 @@ mod proptests {
             is_bridge in any::<bool>(),
         ) {
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            let _ = parse_tile_params(&mut reader, TileParamsInput {
+            let _ = parse_tile_layout(&mut reader, TileParamsInput {
                 frame_width,
                 frame_height,
                 uniform_sb_size: sb_size(sb),

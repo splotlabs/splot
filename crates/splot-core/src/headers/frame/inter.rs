@@ -2222,9 +2222,7 @@ mod tests {
     /// `NumTotalRefs == 1`, `ref_frame_idx == [0]` and the parse continued from the right bit.
     #[test]
     fn frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture() {
-        use crate::headers::frame::info::{
-            FrameHeaderParseInput, FrameHeaderParseMode, parse_frame_header_core,
-        };
+        use crate::headers::frame::info::{FrameHeaderParseInput, parse_frame_header_core};
 
         let data = include_bytes!(
             "../../../../../tests/conformance/vectors/valid/syn-key-inter-64x64.ivf"
@@ -2249,7 +2247,6 @@ mod tests {
             active_sequence: Some(&seq_header),
             mfh_record: None,
             reference_state,
-            mode: FrameHeaderParseMode::Core,
         };
         let core = parse_frame_header_core(&mut reader, &input).unwrap();
 
@@ -2279,9 +2276,7 @@ mod tests {
     /// bytes, but a reference state with two valid slots: the gate refuses to guess.
     #[test]
     fn frame_header_core_inter_implicit_map_two_valid_slots_stops_unmodeled() {
-        use crate::headers::frame::info::{
-            FrameHeaderParseInput, FrameHeaderParseMode, parse_frame_header_core,
-        };
+        use crate::headers::frame::info::{FrameHeaderParseInput, parse_frame_header_core};
 
         let data = include_bytes!(
             "../../../../../tests/conformance/vectors/valid/syn-key-inter-64x64.ivf"
@@ -2309,7 +2304,6 @@ mod tests {
             active_sequence: Some(&seq_header),
             mfh_record: None,
             reference_state,
-            mode: FrameHeaderParseMode::Core,
         };
         let core = parse_frame_header_core(&mut reader, &input).unwrap();
         let inter = core.inter.as_ref().unwrap();
@@ -2341,8 +2335,7 @@ mod tests {
     #[test]
     fn frame_header_core_inter_fixture_reaches_inter_header_complete() {
         use crate::headers::frame::info::{
-            FrameHeaderParseInput, FrameHeaderParseMode, FrameHeaderParseStatus,
-            parse_frame_header_core,
+            FrameHeaderParseInput, FrameHeaderParseStatus, parse_frame_header_core,
         };
         use crate::headers::frame::tail::TxMode;
 
@@ -2369,7 +2362,6 @@ mod tests {
             active_sequence: Some(&seq_header),
             mfh_record: None,
             reference_state,
-            mode: FrameHeaderParseMode::Core,
         };
         let core = parse_frame_header_core(&mut reader, &input).unwrap();
 

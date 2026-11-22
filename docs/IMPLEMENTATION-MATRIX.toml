@@ -8762,7 +8762,7 @@ module = "xtask/src/feature_status.rs"
 change_id = "spec-coverage-doc"
 owner = "automation"
 risk = "medium"
-notes = "Reports feature, spec-section and writer coverage from the matrix, with on-demand markdown output. `check-feature-status` validates the matrix and detects drift in committed generated renders."
+notes = "Reports feature, spec-section and writer coverage from the matrix, with on-demand markdown output. `check-feature-status` validates the matrix."
 
 [feature.status]
 mapped = "done"
@@ -21080,7 +21080,7 @@ module = "xtask/src/decoder_support.rs"
 change_id = "decoder-roadmap-matrix-boundary"
 owner = "automation"
 risk = "medium"
-notes = "cargo xtask decoder-support renders decoder support status; check-decoder-support validates the matrix and any committed render as part of cargo xtask ci. These commands do not invoke reference decoders."
+notes = "cargo xtask decoder-support renders decoder support status; check-decoder-support validates the matrix and its local-reference evidence links as part of cargo xtask ci. These commands do not invoke reference decoders."
 
 [feature.status]
 mapped = "done"
@@ -21103,7 +21103,7 @@ tests = [
     "xtask/src/decoder_support.rs::tests::reference_evidence_rejects_local_absolute_paths",
     "xtask/src/decoder_support.rs::tests::rendered_fields_reject_local_absolute_paths",
     "xtask/src/decoder_support.rs::tests::metadata_rejects_local_absolute_paths",
-    "xtask/src/decoder_support.rs::tests::check_decoder_support_detects_drift",
+    "xtask/src/decoder_support.rs::tests::check_decoder_support_accepts_a_valid_matrix",
 ]
 commands = [
     "cargo test -p xtask decoder_support --locked",
@@ -21415,7 +21415,7 @@ module = "xtask/src/decoder_conformance_coverage.rs"
 change_id = "decoder-full-conformance-contract"
 owner = "decoder"
 risk = "medium"
-notes = "decoder-conformance-coverage renders AV2 section-family coverage on demand. Its gate validates support/Feature/diagnostic links, local-reference pointers and any committed render, keeping partial and unsupported runtime coverage explicit without invoking reference decoders."
+notes = "decoder-conformance-coverage renders AV2 section-family coverage on demand. Its gate validates support/Feature/diagnostic links, and local-reference pointers, keeping partial and unsupported runtime coverage explicit without invoking reference decoders."
 
 [feature.status]
 mapped = "done"

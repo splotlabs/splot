@@ -10,8 +10,7 @@ use splot_core::headers::frame::{
     build_key_frame_header,
 };
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
-    parse_frame_header_core,
+    FrameHeaderCore, FrameHeaderParseInput, FrameReferenceStateView, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::span::ByteOffset;
@@ -123,7 +122,6 @@ fn headers(unit: &[u8]) -> (SequenceHeader, FrameHeaderCore) {
             active_sequence: Some(&seq),
             mfh_record: None,
             reference_state: FrameReferenceStateView::unknown(),
-            mode: FrameHeaderParseMode::Core,
         },
     )
     .unwrap();

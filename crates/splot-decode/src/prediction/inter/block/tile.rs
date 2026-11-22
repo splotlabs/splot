@@ -7,7 +7,7 @@
 
 use std::ops::Range;
 
-use splot_recon::{PlaneId, ReconError};
+use splot_recon::{CurrentFrameSurface, PlaneId, ReconError};
 
 use super::*;
 
@@ -635,7 +635,7 @@ impl<'payload> TileParser<'payload> {
         if more {
             return Ok(());
         }
-        let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput { symbols, storage } =
+        let crate::bitstream::tile_payload::GeneralIntraPartitionTreeOutput { symbols, storage } =
             self.walk.finish()?.into_output();
         self.output.traversal = storage;
         finish_tile_symbols(symbols, tile_offset)
@@ -1245,7 +1245,7 @@ fn precompute_recon_row<T: ReconSample>(
     let Some(surface) = ready.surface.as_mut() else {
         return ready;
     };
-    let mut surface = mc::WorkspaceSink::OwnedRect(surface);
+    let mut surface = CurrentFrameSurface::OwnedRect(surface);
     ready.row = precompute_recon_row_on_surface(
         ready.row,
         ready.tile_offset,
@@ -1280,7 +1280,7 @@ fn precompute_recon_row<T: ReconSample>(
 fn precompute_recon_row_on_surface<T: ReconSample>(
     mut row: ReconRow,
     tile_offset: ByteOffset,
-    surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
+    surface: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
     temporal_context: &TemporalMvContext,

@@ -112,8 +112,8 @@ pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
     ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication,
-    GeneralIntraLeafMode, GeneralIntraTreeWalkError, LeafDecoder, LeafNeighbours,
-    TileTraversalStorage,
+    GeneralIntraLeafMode, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError, LeafDecoder,
+    LeafNeighbours, TileTraversalStorage,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -121,8 +121,8 @@ pub(crate) use partition_traversal::{
 #[cfg(test)]
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{
-    GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, GeneralIntraMultiblockOutput,
-    TilePartitionFrontierError, chroma_subsampling,
+    GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, TilePartitionFrontierError,
+    chroma_subsampling,
 };
 
 #[derive(Clone, Debug)]

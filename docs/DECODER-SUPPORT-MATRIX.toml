@@ -73,17 +73,17 @@ notes = "Checks decoder section coverage, support-row links, Feature IDs, diagno
 
 [[row]]
 id = "decoder-status-drift-gate"
-name = "Decoder support drift gate"
+name = "Decoder support matrix gate"
 feature_id = "XTASK-DECODER-SUPPORT-STATUS"
 spec_sections = []
 parser_source = "n/a"
 decode_module = "xtask/src/decoder_support.rs"
 tier = "foundation"
 status = "supported"
-self_contained_tests = ["decoder_support::tests::check_decoder_support_detects_drift", "cargo xtask check-decoder-support"]
+self_contained_tests = ["decoder_support::tests::check_decoder_support_accepts_a_valid_matrix", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Generates docs/DECODER-SUPPORT-STATUS.md on demand and checks any committed render without invoking local reference tools."
+notes = "Generates docs/DECODER-SUPPORT-STATUS.md on demand and validates the matrix without invoking local reference tools."
 
 [[row]]
 id = "local-reference-evidence-manifest"

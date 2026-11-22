@@ -36,7 +36,8 @@ pub struct OptflowScratch {
 /// # Errors
 ///
 /// Returns the errors of [`derive_optflow_mv_deltas_into`].
-pub fn derive_optflow_mv_deltas(
+#[cfg(test)]
+pub(crate) fn derive_optflow_mv_deltas(
     pred0: &[u16],
     pred1: &[u16],
     width: usize,
@@ -391,7 +392,7 @@ fn sample_pair<S: Simd, P: WindowSample>(
 ///
 /// Returns [`ReconError::BufferLengthMismatch`] when either predictor does not
 /// contain the requested 8x8 region, or the same arithmetic errors as
-/// [`derive_optflow_mv_deltas`].
+/// [`derive_optflow_mv_deltas_into`].
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn derive_optflow_mv_delta_8x8_strided_into(

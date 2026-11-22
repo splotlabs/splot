@@ -555,7 +555,8 @@ fn pair_eighths<S: SimdToken>(simd: S, row: &[u16; PAIR_SPAN]) -> [u16x8<S>; 3] 
 /// one lane all come from one plane, so the larger plane range bounds every
 /// tap difference. Returns `false` when `block` is not below
 /// [`CDEF_SEGMENT_BLOCKS`].
-pub fn cdef_filter_block_chroma_pair_segment(
+#[cfg(test)]
+pub(crate) fn cdef_filter_block_chroma_pair_segment(
     segment: &CdefPairSegment,
     block: usize,
     filter: &CdefBlockFilter,
@@ -852,7 +853,8 @@ impl QuadLanes<Avx2> for InLane {
 /// kernel of [`cdef_filter_block_interior_to`]. Returns `false` without
 /// writing when `block` is not below [`CDEF_SEGMENT_BLOCKS`], `out_stride` is
 /// below 8, or `out` cannot hold the block at `out_stride`.
-pub fn cdef_filter_block_segment<T: crate::ReconSample>(
+#[cfg(test)]
+pub(crate) fn cdef_filter_block_segment<T: crate::ReconSample>(
     segment: &CdefLumaSegment,
     block: usize,
     filter: &CdefBlockFilter,
@@ -1210,8 +1212,8 @@ pub type CdefSegmentOutput<'a, T> = (
 
 /// AV2 § 7.18.2 and § 7.18.3 CDEF over the [`CDEF_SEGMENT_BLOCKS`] blocks of
 /// a gathered segment with the unit's `strengths`. Each block takes the
-/// direction and kernel of [`cdef_filter_block_segment`] and
-/// [`cdef_filter_block_chroma_pair_segment`]; a block whose window is flat
+/// direction and kernel of `cdef_filter_block_segment` and
+/// `cdef_filter_block_chroma_pair_segment`; a block whose window is flat
 /// filters to itself, and is written only for the planes `fill_flat` marks
 /// (luma, U, V). Returns `false` when the rows cannot hold the segment.
 #[inline(never)]

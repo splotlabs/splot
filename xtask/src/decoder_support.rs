@@ -24,9 +24,6 @@ use crate::util::{is_valid_feature_id, is_windows_absolute_path, tokenized};
 const MATRIX_PATH: &str = "docs/DECODER-SUPPORT-MATRIX.toml";
 /// Repo-relative path of the optional generated decoder support status document.
 const STATUS_DOC_PATH: &str = "docs/DECODER-SUPPORT-STATUS.md";
-/// Regeneration command printed by the drift check.
-const REGEN_COMMAND: &str =
-    "cargo xtask decoder-support --format markdown --output docs/DECODER-SUPPORT-STATUS.md";
 /// The only decoder support matrix version this tool understands.
 const SUPPORTED_MATRIX_VERSION: u32 = 1;
 /// Allowed support statuses, in report order.
@@ -90,26 +87,13 @@ pub(crate) fn run_decoder_support(
 
 /// Implements `cargo xtask check-decoder-support`.
 pub(crate) fn run_check_decoder_support(root: &Path) -> Result<()> {
-    let status_path = root.join(STATUS_DOC_PATH);
     let matrix = load_matrix(root)?;
     let checked = validate_matrix(matrix)?;
     validate_local_reference_evidence_links(root, &checked)?;
-    if !status_path.exists() {
-        eprintln!(
-            "check-decoder-support: ok ({} row(s); {STATUS_DOC_PATH} is generated on demand)",
-            checked.rows.len()
-        );
-        return Ok(());
-    }
-
-    let expected = render_markdown(&checked);
-    let actual = std::fs::read_to_string(&status_path)
-        .with_context(|| format!("failed to read {}", status_path.display()))?;
-    if actual.trim_end() != expected.trim_end() {
-        bail!("{STATUS_DOC_PATH} is out of date; regenerate with `{REGEN_COMMAND}`");
-    }
-
-    eprintln!("check-decoder-support: ok ({} row(s))", checked.rows.len());
+    eprintln!(
+        "check-decoder-support: ok ({} row(s); {STATUS_DOC_PATH} is generated on demand)",
+        checked.rows.len()
+    );
     Ok(())
 }
 
@@ -845,31 +829,8 @@ mod tests {
     }
 
     #[test]
-    fn check_decoder_support_detects_drift() -> Result<()> {
-        let root = temp_root("decoder-support-drift")?;
-        let docs = root.join("docs");
-        std::fs::create_dir_all(&docs)?;
-        std::fs::write(docs.join("DECODER-SUPPORT-MATRIX.toml"), SAMPLE)?;
-        let expected = render_markdown(&validate_matrix(parse_matrix(SAMPLE)?)?);
-        std::fs::write(docs.join("DECODER-SUPPORT-STATUS.md"), expected)?;
-        std::fs::write(
-            docs.join("LOCAL-REFERENCE-EVIDENCE.toml"),
-            "manifest_version = 1\nlast_reviewed = \"2026-06-13\"\n",
-        )?;
-
-        run_check_decoder_support(&root)?;
-
-        std::fs::write(docs.join("DECODER-SUPPORT-STATUS.md"), "stale\n")?;
-        let err = run_check_decoder_support(&root).expect_err("drift should fail");
-        assert!(err.to_string().contains(REGEN_COMMAND));
-
-        let _ = std::fs::remove_dir_all(&root);
-        Ok(())
-    }
-
-    #[test]
-    fn check_decoder_support_skips_when_generated_status_is_absent() -> Result<()> {
-        let root = temp_root("decoder-support-absent")?;
+    fn check_decoder_support_accepts_a_valid_matrix() -> Result<()> {
+        let root = temp_root("decoder-support-valid")?;
         let docs = root.join("docs");
         std::fs::create_dir_all(&docs)?;
         std::fs::write(docs.join("DECODER-SUPPORT-MATRIX.toml"), SAMPLE)?;

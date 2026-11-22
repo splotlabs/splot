@@ -303,7 +303,7 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         let scope_xlayer = obu.header.extended_layer_id;
-        // TODO(spec: AV2-5.17.7-METADATA-TIMECODE): a group-form LAYER_VALUES timecode
+        // TODO(spec: AV2-5.17.7-METADATA-TIMECODE): key inference per target set, not per carrier.
         let inference_key = (scope_xlayer, obu.header.embedded_layer_id);
         let tu_index = self.cvs.tu_index;
 

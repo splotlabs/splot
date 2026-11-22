@@ -9,8 +9,7 @@ use crate::{DecodeContext, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeCon
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus};
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
-    parse_frame_header_core,
+    FrameHeaderCore, FrameHeaderParseInput, FrameReferenceStateView, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
@@ -197,7 +196,6 @@ fn parsed_frame_header_fixture() -> ParsedFrameHeaderFixture {
         active_sequence: Some(&sequence),
         mfh_record: None,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut frame_reader, &input).unwrap();
 
@@ -218,7 +216,6 @@ fn activation_only_frame_header_core() -> FrameHeaderCore {
         active_sequence: None,
         mfh_record: None,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).unwrap()
 }

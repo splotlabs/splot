@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::pipeline::reconstruct::IntraEdgeAvailability;
+use splot_recon::CurrentFrameSurface;
 
 /// § 7.11.3.1 disables compound chroma prediction in two cases: the § 5.20.4
 /// `sub8x8Inter` mismatch between the block and its chroma reference, and any
@@ -111,7 +112,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     }
     let held = super::super::hold_inter_block_references(lists, reference, placed)?;
     held.predict_into(
-        &mut mc::WorkspaceSink::Frame(workspace),
+        &mut CurrentFrameSurface::Frame(workspace),
         placed,
         rect,
         tile_offset,
@@ -157,7 +158,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            &mut CurrentFrameSurface::Frame(workspace),
             residual,
             residual_blocks,
             residual_coeffs,
@@ -175,7 +176,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
 /// then residual add.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
@@ -210,7 +211,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
 /// every plane from it into `sink`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict_refined_inter_block<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     units: &mut mc::RefinedUnits,
     placed: &PlacedInterBlock,
     (use_refinemv, refinemv_switchable): (bool, bool),

@@ -16,6 +16,7 @@ use super::super::find_mv_stack::{
     WarpParamBank, reference_order_hints, restricted_reference_mask,
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
+use splot_recon::CurrentFrameSurface;
 
 use super::filter_records::InterDeblockLeaf;
 use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
@@ -615,7 +616,7 @@ impl EncoderInterTile {
             return Ok(mvs);
         }
         prediction::reconstruct_pure_inter_block(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            &mut CurrentFrameSurface::Frame(workspace),
             &placed,
             &[],
             &[],
@@ -639,7 +640,7 @@ impl EncoderInterTile {
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
         super::super::add_inter_residual_to_workspace(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            &mut CurrentFrameSurface::Frame(workspace),
             &residual.range(),
             &residual.blocks,
             &residual.coeffs,
@@ -748,7 +749,7 @@ impl EncoderInterTile {
         predict: bool,
     ) -> Result<()> {
         prediction::predict_refined_inter_block(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            &mut CurrentFrameSurface::Frame(workspace),
             units,
             placed,
             (use_refinemv, switchable),
@@ -776,7 +777,7 @@ impl EncoderInterTile {
             .temporal
             .clone()
             .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-        let mut sink = mc::WorkspaceSink::Frame(workspace);
+        let mut sink = CurrentFrameSurface::Frame(workspace);
         let frame = super::tip::TipFramePlan::new(
             sink.info(),
             &temporal,

@@ -9,7 +9,7 @@
 //! the dominant direction (`yDir`) and variance (`var`) of an 8x8 luma block from
 //! the pre-shifted (`>> (BitDepth - 8)`, minus 128) reconstructed samples using the
 //! § 7.18.2 `partial[][]` accumulation and the `Div_Table` cost; the § 7.18.3
-//! `constrain` clamp ([`cdef_constrain`], `#s-7-18-3`); and the § 7.18.3 per-sample
+//! `constrain` clamp (`#s-7-18-3`); and the § 7.18.3 per-sample
 //! primary/secondary tap accumulation ([`cdef_filter_sample`], `#s-7-18-3`), which
 //! combines the center sample, the two primary directional taps, and the four
 //! secondary directional taps (each already fetched and availability-flagged by the
@@ -113,7 +113,8 @@ pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) ->
 
 /// [`cdef_direction_padded`] for a block of a luma segment, as
 /// [`CdefLumaSegment::block`] gives it.
-pub fn cdef_direction_segment(
+#[cfg(test)]
+pub(crate) fn cdef_direction_segment(
     pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
     coeff_shift: u32,
 ) -> (usize, i32) {
@@ -386,7 +387,8 @@ fearless_simd::kernel!(
 /// Returns `0` when `threshold` is `0`; otherwise it signs and clamps `diff` toward
 /// zero by `threshold - (Abs(diff) >> dampingAdj)` where `dampingAdj = Max(0, damping
 /// - FloorLog2(threshold))`.
-pub fn cdef_constrain(diff: i32, threshold: i32, damping: i32) -> i32 {
+#[cfg(test)]
+pub(crate) fn cdef_constrain(diff: i32, threshold: i32, damping: i32) -> i32 {
     if threshold == 0 {
         return 0;
     }
@@ -488,7 +490,7 @@ pub const CDEF_PADDED_AREA: usize = u8::MAX as usize + 97;
 pub const CDEF_UNAVAILABLE: u16 = i16::MAX as u16;
 
 /// Blocks in one row segment of the strip scratch that
-/// [`cdef_filter_block_segment`] and [`cdef_filter_block_chroma_pair_segment`]
+/// `cdef_filter_block_segment` and `cdef_filter_block_chroma_pair_segment`
 /// read: the segment is gathered once for all of its blocks.
 pub const CDEF_SEGMENT_BLOCKS: usize = 4;
 
@@ -1487,9 +1489,10 @@ pub fn cdef_filter_block_chroma_pair(
 mod segment;
 pub use segment::{
     CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths,
-    CdefUnitFilters, cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment,
-    cdef_filter_segment, cdef_publish_chroma_pair,
+    CdefUnitFilters, cdef_filter_segment, cdef_publish_chroma_pair,
 };
+#[cfg(test)]
+pub(crate) use segment::{cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment};
 
 /// The `constrain` dampingAdj, which depends only on the per-call strengths
 /// and is therefore derived once per sample instead of once per tap.

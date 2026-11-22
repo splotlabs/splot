@@ -11,8 +11,7 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film_grain};
 use splot_core::headers::frame::{
     CoreSeqQuantView, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
-    FrameHeaderParseMode, FrameHeaderParseStatus, FrameReferenceStateView, FrameType,
-    parse_frame_header_core,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     ChromaFormatIdc, CroppingWindow, ProfileIdc, SequenceHeader, parse_sequence_header,
@@ -465,7 +464,6 @@ pub(crate) fn parse_frame_core_with_reference(
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: *reference_state,
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map_err(|_| {
         unsupported_at(

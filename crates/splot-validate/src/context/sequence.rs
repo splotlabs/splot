@@ -254,7 +254,7 @@ impl ValidatorContext {
         let xlayer = obu.header.extended_layer_id;
         let fingerprint = payload_fingerprint(obu.payload);
 
-        // TODO(spec: AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT): enforce cross-extended-layer
+        // TODO(spec: AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT): check shared seq_header_id bit-identity.
         let tu_index = self.cvs.tu_index;
         match self.sequence_fingerprints.entry((xlayer, seq_header_id)) {
             Entry::Vacant(slot) => {

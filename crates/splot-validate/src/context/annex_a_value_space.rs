@@ -142,7 +142,7 @@ pub(super) fn frame_annex_a_level_checks(
             );
         }
 
-        // TODO(spec: AV2-A-LEVELS-TIERS): the per-tile constraints in the same Annex A.4
+        // TODO(spec: AV2-A-LEVELS-TIERS): check the Annex A.4 per-tile width and area limits.
     }
 }
 
@@ -154,7 +154,7 @@ pub(super) fn check_ops_level_tier_value_space(
     ops: &OperatingPointSet,
     report: &mut ValidationReport,
 ) {
-    // TODO(spec: AV2-A-LEVELS-TIERS): this checks only the OPS-carried *value space*
+    // TODO(spec: AV2-A-LEVELS-TIERS): also check each ops_level_idx against the Annex A.4 limits.
     for payload in &ops.payloads {
         for entry in &payload.xlayer_entries {
             let Some(ptl) = entry.ptl_info.as_ref() else {

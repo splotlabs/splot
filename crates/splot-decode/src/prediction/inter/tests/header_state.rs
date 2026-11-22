@@ -6,6 +6,7 @@ use crate::reference::buffer::RefSlots;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
+use splot_recon::CurrentFrameSurface;
 
 const BRIDGE_CELU_FIXTURE: &[u8] =
     include_bytes!("../../../../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
@@ -155,7 +156,7 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
     )
     .unwrap();
     let error = super::super::add_inter_residual_to_workspace(
-        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &[],
@@ -185,7 +186,7 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
 
     for (start, end) in [(1, 2), (1, 0)] {
         let error = super::super::add_inter_residual_to_workspace(
-            &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
+            &mut CurrentFrameSurface::Frame(&mut workspace),
             &super::super::InterResidual {
                 block_range: start..end,
             },
@@ -227,7 +228,7 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
     .unwrap();
 
     let error = super::super::add_inter_residual_to_workspace(
-        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &[],
@@ -278,7 +279,7 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
     .unwrap();
 
     let error = super::super::add_inter_residual_to_workspace(
-        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &[],

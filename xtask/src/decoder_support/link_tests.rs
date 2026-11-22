@@ -116,11 +116,6 @@ fn write_linked_decoder_support_root(
     let docs = root.join("docs");
     std::fs::create_dir_all(&docs)?;
     std::fs::write(docs.join("DECODER-SUPPORT-MATRIX.toml"), matrix)?;
-    let expected = match validate_matrix(parse_matrix(matrix)?) {
-        Ok(checked) => render_markdown(&checked),
-        Err(_) => "unused because matrix validation fails\n".to_owned(),
-    };
-    std::fs::write(docs.join("DECODER-SUPPORT-STATUS.md"), expected)?;
     std::fs::write(
         docs.join("IMPLEMENTATION-MATRIX.toml"),
         format!("[[feature]]\nid = \"{LINKED_FEATURE_ID}\"\n"),
