@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 mod ai_slop;
 mod audit_scope;
 mod bd_rate;
+mod binary_size;
 mod comment_density;
 mod concurrency_policy;
 mod conformance;
@@ -293,6 +294,8 @@ enum Task {
     },
     /// Run the networked cargo-deny advisory check (requires `cargo-deny`).
     Audit,
+    /// Build the release `splot` binary and check its size against the target budget.
+    CheckBinarySize,
     /// Compute changed-file scope for the heavy AV2 conformance audit.
     AuditScope {
         /// Git base revision for PR/diff mode.
@@ -456,6 +459,7 @@ fn main() -> Result<()> {
         ),
         Task::Fuzz { time } => run_fuzz(time),
         Task::Audit => run_audit(),
+        Task::CheckBinarySize => binary_size::check_binary_size(&workspace_root()?),
         Task::AuditScope {
             base,
             ledger,
