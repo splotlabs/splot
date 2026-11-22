@@ -21,7 +21,7 @@ use super::super::eight_bit::neon::{Reads, Sums, reads, slide, sums32, token};
 use super::super::rows::{self, Average, Out, Prep, Put, rows_mut, store_pair};
 use super::super::{CellPlacement, ReferencePlaneView};
 use core::arch::aarch64::*;
-use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i16x8, i32x4, u16x8, u64x2};
+use fearless_simd::{Neon, SimdBase, SimdFrom, i16x8, i32x4, u16x8};
 
 /// Both references' samples, the output and its stride of one plane of a
 /// cell program.
@@ -124,17 +124,6 @@ fearless_simd::kernel!(
     fn predict_lanes(t: Neon, block: &Block<'_, u16>, sink: &mut Sink<'_>) {
         let w = block.w;
         match sink {
-            Sink::Put { output, stride } => {
-                shapes(
-                    t,
-                    block,
-                    &mut Put {
-                        output,
-                        stride: *stride,
-                    },
-                    255,
-                );
-            }
             Sink::PutWide {
                 output,
                 stride,
@@ -161,26 +150,6 @@ fearless_simd::kernel!(
                     0,
                 );
             }
-            Sink::Average {
-                pred0,
-                forward,
-                output,
-                stride,
-            } => {
-                let (forward, stride) = (*forward, *stride);
-                shapes(
-                    t,
-                    block,
-                    &mut Average {
-                        pred0,
-                        w,
-                        forward,
-                        output,
-                        stride,
-                    },
-                    255,
-                );
-            }
             Sink::AverageWide {
                 pred0,
                 forward,
@@ -202,7 +171,10 @@ fearless_simd::kernel!(
                     *max,
                 );
             }
-            Sink::PrepNarrow { .. } | Sink::AverageNarrow { .. } => {}
+            Sink::Put { .. }
+            | Sink::Average { .. }
+            | Sink::PrepNarrow { .. }
+            | Sink::AverageNarrow { .. } => {}
         }
     }
 );
@@ -611,7 +583,7 @@ fn blend_cell<const W: usize, const G: usize>(
         if let Some(a) = a
             && (W == 8 || b.is_some())
         {
-            u16::store(t, a, b, vminq_u16(values, max));
+            store_words(t, a, b, vminq_u16(values, max));
         }
     };
     if forward == 8 {
@@ -743,42 +715,22 @@ trait WordOut: Out {
     fn sums(_: Neon, _: Self::Row<'_>, _: Option<Self::Row<'_>>, _: Sums) {}
 }
 
-/// Sample storage of word lanes whose values fit it.
-trait Word: Copy {
-    /// Stores eight samples into row `a`, or lanes `0..4` into `a` and
-    /// `4..8` into `b`.
-    fn store(t: Neon, a: &mut [Self], b: Option<&mut [Self]>, values: uint16x8_t);
-}
-
-impl Word for u8 {
-    #[inline(always)]
-    fn store(t: Neon, a: &mut [u8], b: Option<&mut [u8]>, values: uint16x8_t) {
-        let values = u16x8::simd_from(t, values);
-        let bytes = t.narrow_u16x8(values, values).bitcast::<u64x2<Neon>>()[0].to_le_bytes();
-        match (b, a.first_chunk_mut::<8>()) {
-            (Some(b), _) => store_pair(a, b, bytes),
-            (None, Some(slot)) => *slot = bytes,
-            (None, None) => {}
-        }
+/// Stores eight samples into row `a`, or lanes `0..4` into `a` and `4..8`
+/// into `b`.
+#[inline(always)]
+fn store_words(t: Neon, a: &mut [u16], b: Option<&mut [u16]>, values: uint16x8_t) {
+    let values = u16x8::<Neon>::simd_from(t, values);
+    match (b, a.first_chunk_mut::<8>()) {
+        (Some(b), _) => store_pair(a, b, values.to_array()),
+        (None, Some(slot)) => values.store_array(slot),
+        (None, None) => {}
     }
 }
 
-impl Word for u16 {
+impl WordOut for Put<'_, u16> {
     #[inline(always)]
-    fn store(t: Neon, a: &mut [u16], b: Option<&mut [u16]>, values: uint16x8_t) {
-        let values = u16x8::<Neon>::simd_from(t, values);
-        match (b, a.first_chunk_mut::<8>()) {
-            (Some(b), _) => store_pair(a, b, values.to_array()),
-            (None, Some(slot)) => values.store_array(slot),
-            (None, None) => {}
-        }
-    }
-}
-
-impl<T: Word> WordOut for Put<'_, T> {
-    #[inline(always)]
-    fn words(t: Neon, a: &mut [T], b: Option<&mut [T]>, values: uint16x8_t) {
-        T::store(t, a, b, values);
+    fn words(t: Neon, a: &mut [u16], b: Option<&mut [u16]>, values: uint16x8_t) {
+        store_words(t, a, b, values);
     }
 }
 
@@ -802,9 +754,11 @@ impl WordOut for Prep<'_, i32> {
     }
 }
 
-impl<T: Word> WordOut for Average<'_, i32, T> {
+type AverageRow<'r> = (&'r [i32], &'r mut [u16]);
+
+impl WordOut for Average<'_, i32, u16> {
     #[inline(always)]
-    fn first(t: Neon, (a, _): &(&[i32], &mut [T]), b: Option<&(&[i32], &mut [T])>) -> Sums {
+    fn first(t: Neon, (a, _): &AverageRow<'_>, b: Option<&AverageRow<'_>>) -> Sums {
         let lanes = |lanes: Option<&[i32; 4]>| {
             lanes
                 .map_or(i32x4::splat(t, 0), |lanes| i32x4::load_array_ref(t, lanes))
@@ -817,13 +771,8 @@ impl<T: Word> WordOut for Average<'_, i32, T> {
         (lanes(a.first_chunk()), lanes(high))
     }
     #[inline(always)]
-    fn words(
-        t: Neon,
-        (_, a): (&[i32], &mut [T]),
-        b: Option<(&[i32], &mut [T])>,
-        values: uint16x8_t,
-    ) {
-        T::store(t, a, b.map(|(_, b)| b), values);
+    fn words(t: Neon, (_, a): AverageRow<'_>, b: Option<AverageRow<'_>>, values: uint16x8_t) {
+        store_words(t, a, b.map(|(_, b)| b), values);
     }
 }
 

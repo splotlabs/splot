@@ -84,11 +84,6 @@ impl Sink<'_> {
         matches!(self, Self::Put { .. } | Self::PutWide { .. })
     }
 
-    /// Whether the sink takes `i16` eight-bit compound predictors.
-    pub(super) const fn is_narrow(&self) -> bool {
-        matches!(self, Self::PrepNarrow { .. } | Self::AverageNarrow { .. })
-    }
-
     /// `InterRound1` of the values the sink takes.
     pub(super) const fn inter_round1(&self) -> u32 {
         if self.is_put() {
