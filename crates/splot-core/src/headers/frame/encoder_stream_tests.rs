@@ -193,6 +193,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         mvd_tools: [true, false, true],
         warp: true,
         global_motion: true,
+        num_ref_frames: Some(5),
         explicit_ref_frame_map: true,
         seq_tiles: None,
         short_refresh: true,
@@ -235,6 +236,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);
     assert!(inter.enable_bawp && inter.enable_mv_traj && inter.enable_df_sub_pu);
     assert!(inter.enable_tip_explicit_qp && inter.enable_short_refresh_frame_flags);
+    assert_eq!(inter.num_ref_frames, 5);
     assert!(inter.explicit_ref_frame_map);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
@@ -916,4 +918,36 @@ fn wide_deblocking_offsets_parse_back() {
     let bytes = sequence_header_bits(&p).unwrap();
     let cut = &bytes[..bytes.len() - 2];
     assert!(parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0))).is_err());
+}
+
+/// `num_ref_frames` codes `explicit_num_ref_frames` and
+/// `num_ref_frames_minus_1` (§ 5.4.6): the parsed sequence has 1, 3 or 16
+/// slots, and inter headers code `refresh_frame_flags` in `NumRefFrames` bits
+/// and `frame_to_refresh` in `CeilLog2(NumRefFrames)` bits. 0 and 17 slots are
+/// rejected, and a cut sequence header does not parse.
+#[test]
+fn explicit_slot_counts_reach_the_parsed_sequence() {
+    let stream = |num_ref_frames, short_refresh| EncoderStreamParams {
+        tools: EncoderToolFlags {
+            num_ref_frames,
+            short_refresh,
+            ..EncoderToolFlags::default()
+        },
+        ..params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64)
+    };
+    for slots in [1, 3, 16] {
+        for short in [false, true] {
+            let seq = build_encoder_sequence_header(&stream(Some(slots), short)).unwrap();
+            assert_eq!(seq.inter.unwrap().num_ref_frames, slots);
+            let view = CoreSeqView::from_sequence(&seq).unwrap();
+            assert_eq!(view.num_ref_frames, u32::from(slots));
+            let bytes = sequence_header_bits(&stream(Some(slots), short)).unwrap();
+            let cut = &bytes[..bytes.len() - 1];
+            let parsed = parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0)));
+            assert!(parsed.map_or(true, |header| !header.is_fully_parsed()));
+        }
+    }
+    for slots in [0, 17] {
+        assert!(build_encoder_sequence_header(&stream(Some(slots), false)).is_err());
+    }
 }

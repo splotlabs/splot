@@ -277,6 +277,10 @@ pub struct PresetParams {
     /// § 5.18.2) when the reference the decoder derives is their primary
     /// reference: the same CDFs for 3 fewer header bits.
     pub primary_ref_choose: bool,
+    /// `NumRefFrames` (§ 5.4.6), `0..=16`: `0` keeps the default 8 slots
+    /// without `explicit_num_ref_frames`; `n` codes `n` slots, which the GOP
+    /// planner uses.
+    pub num_ref_frames: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -931,6 +935,23 @@ impl PresetParams {
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
+        check("num_ref_frames", self.num_ref_frames, 0, 16, "")?;
+        for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
+            let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
+                .with_ref_slots(self.num_ref_frames);
+            let fits = self.num_ref_frames == 0
+                || (0..3).all(|_| {
+                    let len = probe.next_len(usize::MAX, true).unwrap_or(1);
+                    probe.plan(len).is_ok()
+                });
+            if !fits {
+                return Err(PresetError::OutOfRange {
+                    field: "num_ref_frames",
+                    value: self.num_ref_frames.into(),
+                    allowed: format!("the slots a mini-GOP of {mini_gop} needs"),
+                });
+            }
+        }
         check("explicit_refs", self.explicit_refs, 0, 8, "")?;
         check("seq_tile_info", self.seq_tile_info, 0, 3, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
@@ -1224,6 +1245,7 @@ preset_table! {
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
+        num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],

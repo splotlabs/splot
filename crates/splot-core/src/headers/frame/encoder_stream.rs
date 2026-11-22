@@ -154,6 +154,9 @@ pub struct EncoderToolFlags {
     /// `enable_global_motion` (§ 5.4.6): each inter frame codes
     /// `use_global_motion`.
     pub global_motion: bool,
+    /// `explicit_num_ref_frames` with `NumRefFrames`, `1..=16` (§ 5.4.6);
+    /// `None` keeps the default 8 slots.
+    pub num_ref_frames: Option<u8>,
     /// `explicit_ref_frame_map` (§ 5.4.6): inter frames code
     /// `frame_explicit_ref_frame_map`.
     pub explicit_ref_frame_map: bool,
@@ -571,7 +574,15 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         w.write_flag(constrain)?; // constrain_drl_reorder
     }
     w.write_flag(tools.explicit_ref_frame_map)?;
-    w.write_flag(false)?; // explicit_num_ref_frames
+    w.write_flag(tools.num_ref_frames.is_some())?; // explicit_num_ref_frames
+    if let Some(slots) = tools.num_ref_frames {
+        if !(1..=16).contains(&slots) {
+            return Err(WriteError::NonCanonicalSequenceValue {
+                what: "num_ref_frames_minus_1",
+            });
+        }
+        w.write_bits(u32::from(slots) - 1, 4)?; // num_ref_frames_minus_1
+    }
     w.write_bits(0, 3)?; // long_term_frame_id_bits
     w.write_ns(tools.max_drl_bits_minus_1, 5)?; // ns(MAX_REF_MV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_drl_bits

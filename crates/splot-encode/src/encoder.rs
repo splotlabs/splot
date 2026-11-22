@@ -246,7 +246,11 @@ impl Encoder {
             }
             _ => params.mini_gop_size,
         };
-        let planner = GopPlanner::new(config.keyint, mini_gop_size);
+        let slots = match params.num_ref_frames {
+            0 => 8,
+            slots => slots,
+        };
+        let planner = GopPlanner::new(config.keyint, mini_gop_size).with_ref_slots(slots);
         Ok(Self {
             rate_control,
             stats_sink: None,
