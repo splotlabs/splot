@@ -240,7 +240,10 @@ pub(crate) fn intrabc_choices(
     leaf: &LeafBlock,
     (small, subpel, morph): (bool, bool, bool),
 ) -> Result<Vec<LeafChoice>> {
-    let (Some(search), Some(vectors)) = (coder.intrabc, syntax.intrabc_vectors(leaf)) else {
+    let Some(search) = coder.intrabc else {
+        return Ok(Vec::new());
+    };
+    let Some(vectors) = syntax.intrabc_vectors(leaf) else {
         return Ok(Vec::new());
     };
     let (w, h) = leaf.dimensions()?;

@@ -842,10 +842,12 @@ impl IntraFrameCoder {
             open_loop.clone(),
         )
         .map_err(coding("motion search"))?;
-        let bv_search = (core.allow_intrabc == Some(true)).then(|| {
-            let (luma, stride, width, height) = padded.luma();
-            BvSearch::new(luma, stride, (width, height))
-        });
+        let inter_intrabc = core.inter.as_ref().and_then(|inter| inter.allow_intrabc);
+        let bv_search =
+            (core.allow_intrabc == Some(true) || inter_intrabc == Some(true)).then(|| {
+                let (luma, stride, width, height) = padded.luma();
+                BvSearch::new(luma, stride, (width, height))
+            });
         let (padded, motion, bv_search) = (&padded, motion.as_ref(), bv_search.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);

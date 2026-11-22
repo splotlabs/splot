@@ -2087,6 +2087,8 @@ mod inter_ist;
 mod inter_tx;
 #[path = "intra_tools_tests.rs"]
 mod intra_tools;
+#[path = "intrabc_inter_tests.rs"]
+mod intrabc_inter;
 #[path = "intra_frame_large_inter_tests.rs"]
 mod large_inter;
 #[path = "intra_frame_lossless_tests.rs"]

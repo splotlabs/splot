@@ -819,7 +819,7 @@ impl GopFrame {
             show_frame: self.show_frame,
             filters: *filters,
             tx: KeyFrameTxParams {
-                allow_intrabc: false,
+                allow_intrabc: !self.intra_only && inter_intrabc(),
                 ..tx
             },
             tiles,
@@ -902,6 +902,24 @@ fn header_error<E: std::error::Error + Send + Sync + 'static>(source: E) -> Erro
         stage: "frame header",
         source: Box::new(source),
     }
+}
+
+/// Whether inter frames code `allow_intrabc`: not yet outside tests.
+#[cfg(not(test))]
+const fn inter_intrabc() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn inter_intrabc() -> bool {
+    INTER_INTRABC.get()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Sets `allow_intrabc` in the inter frames (not `intra_only`) that this
+    /// thread codes.
+    pub(crate) static INTER_INTRABC: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 #[cfg(test)]

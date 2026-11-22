@@ -1631,10 +1631,10 @@ fn codable<T>(result: Result<T>) -> Result<Option<T>> {
 }
 
 impl PartitionSearch for TrialCoder<'_, '_> {
-    /// A tree with an IntraBC leaf replays only without the local area,
-    /// whose vectors depend on what is coded before the leaf.
+    /// A tree with an IntraBC leaf replays only in a frame without the
+    /// local area, whose vectors depend on what is coded before the leaf.
     fn replays(&self, tree: &PartitionTree) -> bool {
-        let replays = !self.preset.intrabc_local
+        let replays = !self.syntax.intrabc_local_area()
             || tree.count_leaves(&|choice: &LeafChoice| choice.intrabc.is_some()) == 0;
         #[cfg(test)]
         SKIPPED_REPLAYS.set(SKIPPED_REPLAYS.get() + usize::from(!replays));
@@ -1850,10 +1850,6 @@ impl TrialCoder<'_, '_> {
                 self.preset.intrabc_morph,
             ),
         )?);
-        #[cfg(test)]
-        if FORCE_INTRABC.get() && candidates.iter().any(|choice| choice.intrabc.is_some()) {
-            candidates.retain(|choice| choice.intrabc.is_some());
-        }
         if inter {
             let inter = self.inter_candidates(&leaf)?;
             #[cfg(test)]
@@ -1869,6 +1865,10 @@ impl TrialCoder<'_, '_> {
                 candidates.clear();
             }
             candidates.extend(inter);
+        }
+        #[cfg(test)]
+        if FORCE_INTRABC.get() && candidates.iter().any(|choice| choice.intrabc.is_some()) {
+            candidates.retain(|choice| choice.intrabc.is_some());
         }
         let candidates = self.mds0(&leaf, candidates)?;
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
