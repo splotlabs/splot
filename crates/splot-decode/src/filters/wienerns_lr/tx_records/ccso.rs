@@ -13,8 +13,8 @@ use crate::error::Result;
 use crate::filters::ccso::CcsoUnitGrid;
 
 use super::{
-    CCSO_PLANES, CCSO_SYMBOL_VALUES, MI_SIZE_LOG2, UnitWindow, read_tx_symbol,
-    selectable_state_error,
+    CCSO_PLANES, CCSO_SYMBOL_VALUES, MI_SIZE_LOG2, UnitWindow, selectable_state_error,
+    symbol_read_error,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,13 +197,12 @@ impl CcsoState {
             let Some(ctx) = self.blk_ctx(plane, unit, tile_col_start) else {
                 continue;
             };
-            let value = read_tx_symbol(
-                work_unit,
-                symbols,
-                TileCdfSelector::CcsoBlk { plane, ctx },
-                tile_offset,
-                "5.20.10.2",
-            )?;
+            let value = work_unit
+                .cdf_mut()
+                .tile_cdfs_mut()
+                .read_block_symbol(TileCdfSelector::CcsoBlk { plane, ctx }, symbols)
+                .map(usize::from)
+                .map_err(|error| symbol_read_error(&error, tile_offset, "5.20.10.2"))?;
             if value >= CCSO_SYMBOL_VALUES {
                 return Err(selectable_state_error());
             }
