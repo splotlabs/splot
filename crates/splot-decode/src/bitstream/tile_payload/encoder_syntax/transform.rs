@@ -370,14 +370,15 @@ impl IntraTileSyntax {
     }
 
     /// The symbols that select `partition` for `leaf`, inverting
-    /// `read_luma_tx_partition_type`; `None` when `leaf` cannot code it.
+    /// `read_luma_tx_partition_type`; `None` when `leaf` cannot code it. A
+    /// lossless inter leaf above `BLOCK_4X4` (index 0) codes only
+    /// `lossless_tx_size = 0` (§ 5.20.6.1).
     fn tx_partition_steps(
         &self,
         leaf: &LeafBlock,
         partition: TxPartition,
     ) -> Result<Option<Steps>> {
         if self.tools.lossless {
-            // § 5.20.6.1: an inter leaf above BLOCK_4X4 (index 0) codes lossless_tx_size 0.
             let mut steps = NO_STEPS;
             let size = leaf.frontier.b_size;
             if self.leaf_is_inter() && size.index() > 0 && !leaf.is_chroma_part() {
@@ -466,7 +467,8 @@ impl IntraTileSyntax {
 
     /// Every type luma block `tx` with `eob` can carry and the symbols that
     /// select it, inverting `read_active_luma_transform_type`; one inferred
-    /// `DCT_DCT` without symbols when `dct_forced`.
+    /// `DCT_DCT` without symbols when `dct_forced`. A lossless block is
+    /// `DCT_DCT`, coded as `lossless_inter_tx_type = 0` when inter (§ 5.20.8.2).
     fn luma_tx_type_options(&mut self, tx: &TransformBlock, eob: usize) -> Result<TxTypeOptions> {
         if tx.plane != 0 {
             return Err(EncoderSyntaxError::Unsupported(
@@ -476,7 +478,6 @@ impl IntraTileSyntax {
         let reduced = self.tools.reduced_tx_set;
         let is_inter = self.leaf_is_inter();
         if self.tools.lossless {
-            // § 5.20.8.2: a lossless inter 4x4 codes lossless_inter_tx_type, 0 for DCT_DCT.
             let mut out = only_type(TxType::DctDct);
             if is_inter {
                 out = TxTypeOptions::filled((TxType::DctDct, NO_STEPS));
