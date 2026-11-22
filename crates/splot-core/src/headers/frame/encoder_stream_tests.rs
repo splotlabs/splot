@@ -111,6 +111,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         disable_cdf_update: index == 2,
                         disable_cross_frame_cdf_init: false,
                         choose_primary_ref_frame: false,
+                        qm_level: [None, Some(0), Some(14)][index],
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -139,6 +140,8 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     assert_eq!(intrabc.allow_local_intrabc, global.map(|_| false));
                     let dq = core.delta_q_params.unwrap();
                     assert_eq!(dq.delta_q_present.then_some(dq.delta_q_res), tx.delta_q_res);
+                    let qm = core.setup_qm_params.unwrap();
+                    assert_eq!(qm.using_qmatrix.then_some(qm.levels[0].qm_y), tx.qm_level);
                     assert_eq!(reparse_core(&core, &view), core);
                 }
             }
@@ -707,6 +710,21 @@ fn rejects_out_of_range_inputs() {
             Err(EncoderHeaderError::InvalidTxParams { .. })
         ));
     }
+    let qm = KeyFrameTxParams {
+        qm_level: Some(16),
+        ..KeyFrameTxParams::default()
+    };
+    assert!(
+        build_key_frame_header(
+            &view,
+            60,
+            0,
+            &FrameFilterParams::default(),
+            qm,
+            UniformTiles::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]

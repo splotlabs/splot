@@ -20,7 +20,8 @@ fn segment_stream(
 }
 
 /// `segmentation = 1` codes a map in every key and inter frame, alone and
-/// over the temporal model's delta-q, at 4:2:0 and 4:4:4 and 8 and 10 bits:
+/// over the temporal model's delta-q with quantizer matrices, at 4:2:0 and
+/// 4:4:4 and 8 and 10 bits:
 /// the stream decodes to the encoder recon with every loop filter coding in
 /// some frame, has the same bytes on 1, 2 and 8 threads, and differs from
 /// the stream without the map.
@@ -28,12 +29,15 @@ fn segment_stream(
 fn segment_maps_decode_to_the_encoder_recon_on_any_thread_count() {
     each_case(
         [
-            (BitDepth::Eight, PixelFormat::Yuv420, 0),
-            (BitDepth::Ten, PixelFormat::Yuv444, 100),
+            (BitDepth::Eight, PixelFormat::Yuv420, 0, "0"),
+            (BitDepth::Ten, PixelFormat::Yuv444, 100, "1"),
         ],
-        |(bit_depth, chroma, strength)| {
+        |(bit_depth, chroma, strength, quant_matrices)| {
             let mut config = config(200, 136, bit_depth, 6, 0);
             config.chroma = chroma;
+            config
+                .preset_overrides
+                .push(("quant_matrices".into(), quant_matrices.into()));
             let name = format!("{bit_depth:?} {chroma:?} {strength}");
             let (units, recon, tools) = segment_stream(config.clone(), strength, 1);
             assert_same_samples(&decode(&units.concat()), &recon, &name);

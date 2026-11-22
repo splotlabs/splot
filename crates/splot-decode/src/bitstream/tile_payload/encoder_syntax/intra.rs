@@ -15,7 +15,7 @@ use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, OutputIndex, PixelFormat,
-    PlaneId, PlaneRect, PlaneSize,
+    PlaneId, PlaneRect, PlaneSize, QmFrameLevels,
 };
 
 use super::super::block_decoded_state::TileBlockDecodedState;
@@ -35,7 +35,9 @@ use super::super::general_intra_block::{
 use super::super::general_intra_block::{
     INTER_FSC_MODE_CONTEXT, allow_fsc_intra, dip_mode_info_allowed, fsc_bsize_group,
 };
-use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
+use super::super::general_intra_residual::{
+    FrameQmScope, LumaTransformTypeContext, intra_chroma_plane_tx_type,
+};
 use super::super::intra_joint_modes::{IntraNeighbours, LumaPalette};
 use super::super::partition_traversal::{
     DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, publish_intra_leaf_state,
@@ -239,6 +241,8 @@ pub(super) struct IntraTools {
     pub(super) tcq: bool,
     /// TCQ blocks code plain levels for a search trial.
     pub(super) scalar_trial: bool,
+    /// The § 7.14.4 quantizer-matrix levels of `using_qmatrix`.
+    pub(super) qm: Option<QmFrameLevels>,
 }
 
 impl IntraTools {
@@ -274,12 +278,6 @@ impl IntraTools {
                         .is_some_and(|info| info.coded_lossless || info.has_lossless_segment),
                 "lossless",
             ),
-            (
-                core.setup_qm_params
-                    .as_ref()
-                    .is_some_and(|qm| qm.using_qmatrix),
-                "quantizer matrices",
-            ),
             (tx_mode == TxMode::Only4x4, "TX_MODE_ONLY_4X4"),
         ];
         if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on) {
@@ -306,6 +304,7 @@ impl IntraTools {
             parity_hiding: lossless.is_some_and(|info| info.allow_parity_hiding),
             tcq: lossless.is_some_and(|info| info.allow_tcq),
             scalar_trial: false,
+            qm: crate::pipeline::frame_engine::intra::build_frame_qm_levels(core),
         })
     }
 }
@@ -914,6 +913,7 @@ impl IntraTileSyntax {
         } = &mut self.recon;
         let leaf = leaf.as_ref().ok_or(NO_LEAF)?;
         let [u_index, v_index] = [leaf.plan_index(u_index)?, leaf.plan_index(v_index)?];
+        let _qm = FrameQmScope::install(self.tools.qm);
         leaf.plan
             .reconstruct_cctx_pair(
                 [(u_index, u_levels, u_eob), (v_index, v_levels, v_eob)],
@@ -1009,6 +1009,7 @@ impl IntraTileSyntax {
             )?,
             _ => None,
         };
+        let _qm = FrameQmScope::install(self.tools.qm);
         leaf.plan
             .reconstruct_unit(
                 leaf.plan_index(index)?,

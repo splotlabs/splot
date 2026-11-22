@@ -126,6 +126,7 @@ impl Case {
                 disable_cdf_update: false,
                 disable_cross_frame_cdf_init: false,
                 choose_primary_ref_frame: false,
+                qm_level: None,
                 segment_alt_q: None,
             },
         }
@@ -814,9 +815,10 @@ fn superblock_qindex_deltas_round_trip() {
 
 /// Random superblock segments of a 4-segment `SEG_LVL_ALT_Q` map, alone and
 /// over random superblock qindex deltas, at 4:2:0 and 4:4:4 and 8 and 10
-/// bits: each block takes § 7.12.2 `get_qindex`, `CurrentQIndex` plus its
-/// segment's data, the facade codes `segment_id` symbols, and the decoder
-/// output equals the facade reconstruction.
+/// bits, the 4:4:4 cases with quantizer matrices: each block takes § 7.12.2
+/// `get_qindex`, `CurrentQIndex` plus its segment's data, the facade codes
+/// `segment_id` symbols, and the decoder output equals the facade
+/// reconstruction.
 #[test]
 fn superblock_segments_round_trip_over_delta_q() {
     for (seed, delta_q_res) in [None, Some(1)].into_iter().enumerate() {
@@ -826,6 +828,7 @@ fn superblock_segments_round_trip_over_delta_q() {
                 case.chroma = chroma;
                 case.tx.delta_q_res = delta_q_res;
                 case.tx.segment_alt_q = Some([-49, -3, 4, 40]);
+                case.tx.qm_level = (chroma == ChromaFormatIdc::Yuv444).then_some(12);
                 assert_round_trip(case, 0x5e9 + seed as u64);
             }
         }
@@ -1512,11 +1515,10 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let frame_cases: [fn(&mut FrameHeaderCore); 4] = [
+    let frame_cases: [fn(&mut FrameHeaderCore); 3] = [
         |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
         |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
         |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,
-        |c| c.setup_qm_params.as_mut().unwrap().using_qmatrix = true,
     ];
     for set in frame_cases {
         let mut core = core.clone();

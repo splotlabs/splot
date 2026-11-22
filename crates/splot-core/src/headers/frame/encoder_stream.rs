@@ -15,10 +15,9 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
     FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, SegmentationParams, TxMode,
-    WienerNsFrameFilterBank,
-    encode_temporal_delimiter_obu, gdf_per_block_is_coded, init_core_from_prefix, parse_core_body,
-    parse_frame_header_prefix,
+    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, SegmentationParams,
+    SetupQmParams, TxMode, WienerNsFrameFilterBank, encode_temporal_delimiter_obu,
+    gdf_per_block_is_coded, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
@@ -33,7 +32,7 @@ use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
     write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_intrabc_params,
     write_inter_segmentation_params, write_lr_params_for_inter, write_obu_payload,
-    write_tile_group_obu,
+    write_setup_qm_params, write_tile_group_obu,
 };
 
 /// The [`SegmentationParams`] of [`KeyFrameTxParams::segment_alt_q`].
@@ -324,9 +323,13 @@ pub struct KeyFrameTxParams {
     /// `PRIMARY_REF_CHOOSE`, so the decoder derives `primary_ref_frame`; a
     /// key frame ignores it.
     pub choose_primary_ref_frame: bool,
+    /// `using_qmatrix = 1` with this § 5.18.6.2 level, `0..=15`, in `qm_y`,
+    /// `qm_u` and `qm_v`; `None` codes `using_qmatrix = 0`.
+    pub qm_level: Option<u8>,
     /// `segmentation_enabled` (§ 5.18.7.1) with segments 0..=3 enabling
     /// `SEG_LVL_ALT_Q` at these data, an updated map and no temporal update;
-    /// `None` codes `segmentation_enabled = 0`.
+    /// `None` codes `segmentation_enabled = 0`. Every segment shares the
+    /// one `qm_level` (`pic_qm_num_minus_1 = 0`).
     pub segment_alt_q: Option<[i16; 4]>,
 }
 
@@ -342,6 +345,7 @@ impl Default for KeyFrameTxParams {
             disable_cdf_update: false,
             disable_cross_frame_cdf_init: false,
             choose_primary_ref_frame: false,
+            qm_level: None,
             segment_alt_q: None,
         }
     }
@@ -786,7 +790,7 @@ pub(super) fn write_film_grain_config(
 }
 
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
-/// segmentation or quantizer matrices, the delta-q and `allow_tcq` of `tx`, parity hiding when
+/// segmentation, the quantizer-matrix level and the delta-q and `allow_tcq` of `tx`, parity hiding when
 /// the sequence enables it and the frame has no TCQ, and the filters of `filters`; an inter
 /// frame codes no CCSO reuse.
 pub(super) fn write_quant_and_filters(
@@ -818,7 +822,20 @@ pub(super) fn write_quant_and_filters(
         (&seq.seg, None),
         coded_map,
     )?;
-    w.write_flag(false)?; // using_qmatrix
+    let chroma = |level| if seq.quant.num_planes > 1 { level } else { 0 };
+    let qm = SetupQmParams {
+        using_qmatrix: tx.qm_level.is_some(),
+        pic_qm_num_minus_1: 0,
+        levels: core::array::from_fn(|i| match tx.qm_level {
+            Some(level) if i == 0 => QmSetLevels {
+                qm_y: level,
+                qm_u: chroma(level),
+                qm_v: chroma(level),
+            },
+            _ => QmSetLevels::default(),
+        }),
+    };
+    write_setup_qm_params(w, &qm, &seq.quant, tx.segment_alt_q.is_some())?;
     if base_q_idx > 0 {
         w.write_flag(tx.delta_q_res.is_some())?; // delta_q_present
     }
