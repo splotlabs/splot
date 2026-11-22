@@ -423,6 +423,83 @@ fn intrabc_stream(
     (units.concat(), recon)
 }
 
+/// Preset 9 with local-area IntraBC on leaves down to 4x4 and SDP off (as
+/// the screen-content rows), and `intrabc_small` as `small` says.
+fn small_intrabc_preset(small: bool) -> &'static PresetParams {
+    let mut preset = PRESETS[9];
+    (preset.intrabc, preset.intrabc_local, preset.intrabc_small) = (true, true, small);
+    preset.sdp = false;
+    preset.min_block_log2 = crate::preset::Levels::all(2);
+    Box::leak(Box::new(preset))
+}
+
+/// [`small_intrabc_preset`] with `intrabc_small` and leaves of at most 8x8.
+fn tiny_intrabc_preset() -> &'static PresetParams {
+    let mut preset = *small_intrabc_preset(true);
+    preset.max_block_log2 = 3;
+    Box::leak(Box::new(preset))
+}
+
+/// With `intrabc_small`, the final passes code IntraBC leaves under 8
+/// samples on a side, and none without it. With leaves of at most 8x8 and
+/// IntraBC the only candidate where it has one, some of them code chroma (chroma-offset
+/// leaves in 4:2:0) and decode to the encoder recon. The streams decode to
+/// the encoder recon in every chroma format and both bit depths, and 1, 2
+/// and 8 threads write the same bytes.
+#[test]
+fn small_intrabc_codes_small_and_chroma_offset_leaves() {
+    let coded = |preset, case| {
+        crate::tile_writer::SMALL_INTRABC.set([0; 2]);
+        let (units, recon) = intrabc_stream(case, preset);
+        (units, recon, crate::tile_writer::SMALL_INTRABC.get())
+    };
+    let case = (1, PixelFormat::Yuv420, BitDepth::Eight);
+    assert_eq!(coded(small_intrabc_preset(false), case).2, [0, 0]);
+    assert!(coded(small_intrabc_preset(true), case).2[0] > 0);
+    crate::mode_decision::FORCE_INTRABC.set(true);
+    let (units, recon, [small, chroma]) = coded(tiny_intrabc_preset(), case);
+    crate::mode_decision::FORCE_INTRABC.set(false);
+    assert!(small > chroma && chroma > 0, "{small} {chroma}");
+    assert_same_samples(&decode(&units), &recon, "forced IntraBC");
+    let preset = small_intrabc_preset(true);
+    each_case(CHROMAS, |chroma| {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let (units, recon, _) = coded(preset, (2, chroma, bit_depth));
+            let name = format!("{chroma:?} {bit_depth:?}");
+            assert_same_samples(&decode(&units), &recon, &name);
+        }
+    });
+    let (one, ..) = coded(preset, (1, PixelFormat::Yuv420, BitDepth::Ten));
+    each_case([2, 8], |threads| {
+        let (bytes, ..) = coded(preset, (threads, PixelFormat::Yuv420, BitDepth::Ten));
+        assert!(bytes == one, "{threads} threads");
+    });
+}
+
+/// AVM decodes key frames with small and chroma-offset IntraBC leaves (leaves
+/// of at most 8x8, IntraBC the only candidate where it has one) to the
+/// encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_small_intrabc_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv422, BitDepth::Ten),
+    ] {
+        crate::mode_decision::FORCE_INTRABC.set(true);
+        let (units, recon) = intrabc_stream((1, chroma, bit_depth), tiny_intrabc_preset());
+        crate::mode_decision::FORCE_INTRABC.set(false);
+        let avm = avm_decode(&avmdec, &[units], (256, 128), bit_depth, "small-intrabc");
+        assert!(
+            avm == recon,
+            "small intrabc {chroma:?} {bit_depth:?}: AVM output differs"
+        );
+    }
+}
+
 /// AVM decodes the IntraBC key frames of repeated text to the encoder recon.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]

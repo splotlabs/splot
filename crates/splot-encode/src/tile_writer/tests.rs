@@ -118,6 +118,7 @@ impl Case {
                 df_par_bits_extra: 0,
                 interintra: false,
                 bawp: false,
+                crop: None,
             },
             max_level: 12,
             chroma: ChromaFormatIdc::Yuv420,

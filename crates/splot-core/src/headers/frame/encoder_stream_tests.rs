@@ -216,6 +216,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         df_par_bits_extra: 1,
         interintra: true,
         bawp: true,
+        crop: None,
     };
     let mut p = params(640, 360, BitDepthIdc::Ten, SuperblockSize::Block64x64);
     p.tools = tools;
@@ -1094,4 +1095,54 @@ fn plane_delta_q_reaches_the_parsed_headers() {
         assert_ne!(key(&y_only, [2, 1, 1]).is_err(), mono);
         assert!(key(&y_only, [64, 0, 0]).is_err());
     }
+}
+
+/// A cropping window codes `seq_cropping_window_present_flag` and its four
+/// offsets (§ 5.4.1); a window that leaves no visible sample, an offset past
+/// the frame or a 4:2:0 left offset inside a chroma sample (§ 6.17.4.4) is
+/// refused; a header cut inside the offsets does not parse.
+#[test]
+fn cropping_window_reaches_the_parsed_header() {
+    let mut p = params(64, 36, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let window = CroppingWindow {
+        left: 2,
+        right: 61,
+        top: 0,
+        bottom: 35,
+    };
+    p.tools.crop = Some(window);
+    let seq = build_encoder_sequence_header(&p).unwrap();
+    assert!(seq.general.seq_cropping_window_present_flag);
+    assert_eq!(seq.general.cropping_window, window);
+    assert_eq!(reparse_sequence(&seq), seq);
+    let bytes = sequence_header_bits(&p).unwrap();
+    let cut = &bytes[..6];
+    assert!(parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0))).is_err());
+    for bad in [
+        CroppingWindow {
+            left: 2,
+            right: 62,
+            ..window
+        },
+        CroppingWindow {
+            bottom: 36,
+            top: 0,
+            ..window
+        },
+        CroppingWindow {
+            top: 18,
+            bottom: 18,
+            ..window
+        },
+        CroppingWindow { left: 1, ..window },
+    ] {
+        p.tools.crop = Some(bad);
+        assert!(matches!(
+            build_encoder_sequence_header(&p),
+            Err(EncoderHeaderError::InvalidCroppingWindow { .. })
+        ));
+    }
+    p.tools.crop = None;
+    let plain = build_encoder_sequence_header(&p).unwrap();
+    assert!(!plain.general.seq_cropping_window_present_flag);
 }

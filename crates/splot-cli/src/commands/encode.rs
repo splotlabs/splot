@@ -14,7 +14,7 @@ use clap::{Args, ValueEnum};
 use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{
-    BitDepth, ChromaSamplePosition, Config, ContentLightLevel, Encoder, FirstPass,
+    BitDepth, ChromaSamplePosition, Config, ContentLightLevel, CroppingWindow, Encoder, FirstPass,
     MasteringDisplay, Preset, RateControlMode, SourceFrame, ThreadCount, TileLayout, Tune,
 };
 
@@ -91,6 +91,13 @@ pub(crate) struct EncodeArgs {
     /// `--stats` PSNR (against the resized source) are at the coded size.
     #[arg(long, value_name = "D")]
     resize_denominator: Option<u8>,
+    /// Cropping window: cut L, R, T and B luma samples off the left, right,
+    /// top and bottom of the coded frame (after --resize-denominator); the
+    /// stream decodes to the rest. L and T fall on a chroma sample (even for
+    /// 4:2:0, L even for 4:2:2). Off by default. The `--stats` PSNR covers the
+    /// full coded frame.
+    #[arg(long, value_name = "L,R,T,B", value_parser = parse_crop)]
+    crop: Option<CroppingWindow>,
     /// Film grain: each key frame codes a grain model fitted to the noise of
     /// its source, and every output frame applies it at decode; off by
     /// default. The encoder does not denoise, so the stats PSNR does not
@@ -169,6 +176,24 @@ fn parse_sar(value: &str) -> Result<(u32, u32), String> {
         .split_once(':')
         .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
         .ok_or_else(|| format!("`{value}` is not W:H"))
+}
+
+/// Parses `--crop L,R,T,B`.
+fn parse_crop(value: &str) -> Result<CroppingWindow, String> {
+    let offsets: Vec<u32> = value
+        .split(',')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("`{value}` is not L,R,T,B"))?;
+    match offsets[..] {
+        [left, right, top, bottom] => Ok(CroppingWindow {
+            left,
+            right,
+            top,
+            bottom,
+        }),
+        _ => Err(format!("`{value}` is not L,R,T,B")),
+    }
 }
 
 /// Parses `--mastering-display G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)`.
@@ -379,6 +404,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.tiles = args.tiles;
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;
+    config.crop = args.crop;
     config.film_grain = args.film_grain;
     config.cbr_padding = args.cbr_padding;
     config.tune = match args.tune {

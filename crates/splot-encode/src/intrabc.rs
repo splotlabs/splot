@@ -69,30 +69,28 @@ impl BvSearch {
     /// closest) whose top-left 8x8 hash matches and that `valid` accepts, then every vector within
     /// [`REFINE`] samples of the best of them that `valid` accepts. A tie
     /// keeps the earlier candidate. `None` without an accepted candidate.
+    /// A block under 8 samples on a side is searched only with `small`,
+    /// through the hash of the 8x8 block that holds its top-left sample.
     pub(crate) fn search(
         &self,
         (luma, stride): (&[u16], usize),
         (x, y, w, h): (usize, usize, usize, usize),
         valid: impl Fn([i32; 2]) -> bool,
+        small: bool,
     ) -> Option<([i32; 2], u64)> {
-        if w < SIDE || h < SIDE || x >= self.columns || y >= self.rows {
+        let (ax, ay) = if w < SIDE || h < SIDE {
+            if !small {
+                return None;
+            }
+            (x & !(SIDE - 1), y & !(SIDE - 1))
+        } else {
+            (x, y)
+        };
+        if ax >= self.columns || ay >= self.rows {
             return None;
         }
-        let dims = BlockDims::new(w, h).ok()?;
-        let block = luma.get(y * stride + x..)?;
-        let cost = |dy: i64, dx: i64| -> Option<([i32; 2], u64)> {
-            let (sy, sx) = (y as i64 + dy, x as i64 + dx);
-            let mv = [i32::try_from(dy * 8).ok()?, i32::try_from(dx * 8).ok()?];
-            if sy < 0 || sx < 0 || !valid(mv) {
-                return None;
-            }
-            let source = luma.get(sy as usize * stride + sx as usize..)?;
-            if source.len() < (h - 1) * stride + w {
-                return None;
-            }
-            Some((mv, kernels().sse(block, stride, source, stride, dims)))
-        };
-        let here = (y * self.columns + x) as u32;
+        let cost = |dy: i64, dx: i64| copy_cost((luma, stride), (x, y, w, h), &valid, (dy, dx));
+        let here = (ay * self.columns + ax) as u32;
         let positions = self.table.get(self.hashes.get(here as usize)?)?;
         let earlier = positions.partition_point(|&at| at < here);
         let mut best: Option<([i32; 2], u64)> = None;
@@ -102,7 +100,7 @@ impl BvSearch {
                 (at as usize / self.columns) as i64,
                 (at as usize % self.columns) as i64,
             );
-            let Some(found) = cost(sy - y as i64, sx - x as i64) else {
+            let Some(found) = cost(sy - ay as i64, sx - ax as i64) else {
                 continue;
             };
             if best.is_none_or(|(_, sse)| found.1 < sse) {
@@ -113,29 +111,62 @@ impl BvSearch {
                 break;
             }
         }
-        let ([row, col], _) = best?;
-        let (row, col) = (i64::from(row / 8), i64::from(col / 8));
-        for dy in -REFINE..=REFINE {
-            for dx in -REFINE..=REFINE {
-                if let Some(found) = cost(row + dy, col + dx)
-                    && best.is_none_or(|(_, sse)| found.1 < sse)
-                {
-                    best = Some(found);
-                }
+        Some(refine(best?, cost))
+    }
+}
+
+/// The vector and squared error of the copy `(dy, dx)` samples away of the
+/// `w x h` luma block at `(x, y)`, `None` when `valid` refuses it or it
+/// leaves `luma`.
+fn copy_cost(
+    (luma, stride): (&[u16], usize),
+    (x, y, w, h): (usize, usize, usize, usize),
+    valid: &impl Fn([i32; 2]) -> bool,
+    (dy, dx): (i64, i64),
+) -> Option<([i32; 2], u64)> {
+    let dims = BlockDims::new(w, h).ok()?;
+    let block = luma.get(y * stride + x..)?;
+    let (sy, sx) = (y as i64 + dy, x as i64 + dx);
+    let mv = [i32::try_from(dy * 8).ok()?, i32::try_from(dx * 8).ok()?];
+    if sy < 0 || sx < 0 || !valid(mv) {
+        return None;
+    }
+    let source = luma.get(sy as usize * stride + sx as usize..)?;
+    if source.len() < (h - 1) * stride + w {
+        return None;
+    }
+    Some((mv, kernels().sse(block, stride, source, stride, dims)))
+}
+
+/// `best` or the lowest-cost vector within [`REFINE`] samples of it.
+fn refine(
+    mut best: ([i32; 2], u64),
+    cost: impl Fn(i64, i64) -> Option<([i32; 2], u64)>,
+) -> ([i32; 2], u64) {
+    let (row, col) = (i64::from(best.0[0] / 8), i64::from(best.0[1] / 8));
+    for dy in -REFINE..=REFINE {
+        for dx in -REFINE..=REFINE {
+            if let Some(found) = cost(row + dy, col + dx)
+                && found.1 < best.1
+            {
+                best = found;
             }
         }
-        best
     }
+    best
 }
 
 /// The IntraBC candidate of `leaf` in a frame whose block hashes `coder`
 /// holds: the [`BvSearch::search`] copy of its luma source among the
-/// vectors the leaf may code, with the `RefMvIdx` whose reference vector it
-/// equals, else the closest one; `None` without one.
+/// vectors the leaf may code (a leaf under 8 samples on a side only with
+/// `small`), with the
+/// `RefMvIdx` whose reference vector it equals, else the closest one;
+/// `None` without one.
 pub(crate) fn intrabc_choice(
     syntax: &mut IntraTileSyntax,
     coder: &SourceResidualCoder<'_>,
     leaf: &LeafBlock,
+    small: bool,
 ) -> Result<Option<LeafChoice>> {
     let (Some(search), Some(vectors)) = (coder.intrabc, syntax.intrabc_vectors(leaf)) else {
         return Ok(None);
@@ -144,7 +175,8 @@ pub(crate) fn intrabc_choice(
     let (luma, stride, ..) = coder.source.luma();
     let valid = |[row, col]: [i32; 2]| vectors.valid(MotionVector { row, col });
     let rect = (leaf.col4() * 4, leaf.row4() * 4, w, h);
-    let Some(([row, col], _)) = search.search((luma, stride), rect, valid) else {
+    let found = search.search((luma, stride), rect, valid, small);
+    let Some(([row, col], _)) = found else {
         return Ok(None);
     };
     let bv = MotionVector { row, col };
@@ -182,7 +214,7 @@ mod tests {
     fn finds_the_exact_earlier_copy() {
         let plane = plane();
         let search = BvSearch::new(&plane, 64, (64, 32));
-        let found = search.search((&plane, 64), (40, 20, 16, 8), |_| true);
+        let found = search.search((&plane, 64), (40, 20, 16, 8), |_| true, false);
         assert_eq!(found, Some(([-16 * 8, -32 * 8], 0)));
     }
 
@@ -192,12 +224,15 @@ mod tests {
     fn falls_back_to_valid_near_copies() {
         let plane = plane();
         let search = BvSearch::new(&plane, 64, (64, 32));
-        let found = search.search((&plane, 64), (40, 20, 16, 8), |mv| mv[0] != -16 * 8);
+        let found = search.search((&plane, 64), (40, 20, 16, 8), |mv| mv[0] != -16 * 8, false);
         assert_eq!(found, Some(([-8 * 8, -16 * 8], 1)));
         assert_eq!(
-            search.search((&plane, 64), (40, 20, 16, 8), |_| false),
+            search.search((&plane, 64), (40, 20, 16, 8), |_| false, false),
             None
         );
-        assert_eq!(search.search((&plane, 64), (40, 20, 4, 8), |_| true), None);
+        assert_eq!(
+            search.search((&plane, 64), (40, 20, 4, 8), |_| true, false),
+            None
+        );
     }
 }

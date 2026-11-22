@@ -267,6 +267,29 @@ pub struct CroppingWindow {
     pub bottom: u32,
 }
 
+impl CroppingWindow {
+    /// Whether the window fits a `width x height` maximum frame of `chroma`
+    /// that every frame codes at that size: each offset is at most the
+    /// dimension minus 1 (§ 6.4.1), `CropWidth` and `CropHeight` are above 0,
+    /// and with chroma `CropLeft` and `CropTop` fall on a chroma sample
+    /// (§ 6.17.4.4).
+    #[must_use]
+    pub fn fits(&self, width: u32, height: u32, chroma: ChromaFormatIdc) -> bool {
+        let (sub_x, sub_y) = match chroma {
+            ChromaFormatIdc::Yuv420 => (1, 1),
+            ChromaFormatIdc::Yuv422 => (1, 0),
+            ChromaFormatIdc::Yuv444 | ChromaFormatIdc::Monochrome => (0, 0),
+        };
+        let fits = |a: u32, b: u32, size: u32, sub: u32| {
+            a < size
+                && b < size
+                && u64::from(a) + u64::from(b) < u64::from(size)
+                && a.trailing_zeros() >= sub
+        };
+        fits(self.left, self.right, width, sub_x) && fits(self.top, self.bottom, height, sub_y)
+    }
+}
+
 /// `SeqMaxMlayerCnt`, derived from `seq_max_mlayer_cnt_minus_1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EmbeddedLayerCount(u8);
