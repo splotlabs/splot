@@ -419,7 +419,6 @@ impl GopPlanner {
             self.place(anchor, last, 0, &mut steps)?;
         }
         if self.open_loop_display.take().is_some() {
-            // The first regular frame keeps only the slots the OLK refreshed (§ 5.18.1).
             for held in &mut self.slots {
                 if held.is_some_and(|held| held.display_index != last) {
                     *held = None;
