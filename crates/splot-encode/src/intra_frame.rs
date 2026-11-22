@@ -680,6 +680,9 @@ impl IntraFrameCoder {
         tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
         tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;
         tools.0.qm_level = crate::tx_choice::qm_level(&self.preset, qindex, self.bit_depth);
+        if qindex == 0 {
+            tools.0.tx_mode = splot_core::headers::frame::TxMode::Only4x4;
+        }
         tools.0.plane_delta_q = self.preset.plane_delta_q();
         tools.0.multi_frame_header = self.multi_frame_header;
         #[cfg(test)]
@@ -1359,6 +1362,8 @@ pub(crate) fn codable_children(
 pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) source: &'a PaddedSource,
     qindex: u32,
+    /// The frame is coded lossless (`base_q_idx = 0`, § 5.18.6.1).
+    lossless: bool,
     pub(crate) bit_depth: BitDepth,
     preset: &'a PresetParams,
     lambda: Lambda,
@@ -1404,6 +1409,7 @@ impl<'a> SourceResidualCoder<'a> {
         Self {
             source,
             qindex,
+            lossless: qindex == 0,
             bit_depth,
             preset,
             lambda,
@@ -1594,7 +1600,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
                 .map_err(kernel)?;
         }
-        let levels = self.quantize(syntax, tx, (&params, &forward), coeffs, dequant);
+        let levels = self.levels(syntax, tx, (&params, &forward), coeffs, dequant);
         self.scratch = scratch;
         Ok(TransformDecision {
             tx_type: tx.tx_type,
@@ -1742,8 +1748,8 @@ impl SourceResidualCoder<'_> {
                 ..*u
             };
             let u_levels =
-                self.quantize(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
-            let v_levels = self.quantize(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
+                self.levels(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
+            let v_levels = self.levels(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
             out.push([u_levels, v_levels, vec![cctx]]);
         }
         Ok(out)
@@ -1778,6 +1784,26 @@ impl SourceResidualCoder<'_> {
         let rate = rate + block_rate(syntax, &mut sink, v, levels[1], u_eob != 0)?;
         let cost = RdCost { distortion, rate };
         Ok(cost.cost(self.lambda))
+    }
+
+    /// The levels of the forward coefficients `coeffs` of `tx`: the
+    /// coefficients themselves in a lossless frame, where § 7.14.4 dequantizes
+    /// a level `l` to `8 * l`, else [`Self::quantize`]. The lossless copy stays
+    /// out of `quantize`, whose lossy code it would slow down.
+    fn levels(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        blocks: (&DequantBlockParams, &ForwardTransform2d),
+        coeffs: &[i32],
+        dequant: &mut Vec<i32>,
+    ) -> core::result::Result<Vec<i32>, TileWriterError> {
+        if !self.lossless {
+            return self.quantize(syntax, tx, blocks, coeffs, dequant);
+        }
+        dequant.clear();
+        dequant.extend(coeffs.iter().map(|&c| c * 8));
+        Ok(coeffs.to_vec())
     }
 
     /// The levels of the forward coefficients `coeffs` of `tx`: TCQ, RDOQ or
@@ -1903,6 +1929,12 @@ impl SourceResidualCoder<'_> {
         )
         .map_err(kernel)?;
         coeffs.resize(forward.coeff_width() * forward.coeff_height(), 0);
+        if self.lossless {
+            let block = <&[i32; 16]>::try_from(residual.as_slice())
+                .map_err(|_| TileWriterError::Shape("a lossless block that is not 4x4"))?;
+            coeffs.copy_from_slice(&crate::kernels::forward_walsh_hadamard_4x4(block));
+            return Ok((params, forward));
+        }
         kernels()
             .forward_transform_2d(&forward, residual, coeffs)
             .map_err(kernel)?;

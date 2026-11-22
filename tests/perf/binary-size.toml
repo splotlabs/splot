@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# Largest allowed file size in bytes of the stripped release `splot` binary
+# (`cargo build --release -p splot-cli --locked`), by `<arch>-<os>`, for
+# `cargo xtask check-binary-size`. A budget sits a little above the measured
+# size, because the C runtime objects differ between hosts. Lower it in the
+# PR that shrinks the binary.
+
+[budget]
+x86_64-linux = 14450000

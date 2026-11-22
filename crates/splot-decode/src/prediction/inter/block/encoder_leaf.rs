@@ -1298,13 +1298,13 @@ impl EncoderInterResidual {
     }
 
     /// Appends one transform block whose row-major adjusted `levels` code `eob`
-    /// coefficients with `tx_type`.
+    /// coefficients with `tx_type`, `Lossless` when `lossless`.
     pub(crate) fn push(
         &mut self,
         (plane, x, y, tx_size): (usize, usize, usize, usize),
         levels: &[i32],
         eob: usize,
-        (tx_type, use_tcq): (usize, bool),
+        (tx_type, use_tcq, lossless): (usize, bool, bool),
         intra_ist: Option<crate::bitstream::tile_payload::IntraIstSyntax>,
     ) -> Result<()> {
         let plane = [ReconPlaneId::Y, ReconPlaneId::U, ReconPlaneId::V]
@@ -1323,7 +1323,7 @@ impl EncoderInterResidual {
             zero_tail: (levels.len() - nonzero) as u16,
             use_tcq,
             intra_ist,
-            ..LumaCoeffBlock::empty(tx_type, false)
+            ..LumaCoeffBlock::empty(tx_type, lossless)
         };
         push_inter_residual_block(
             &mut self.blocks,

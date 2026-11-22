@@ -651,7 +651,7 @@ fn rejects_out_of_range_inter_inputs() {
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
-        Err(EncoderHeaderError::InvalidBaseQIdx { .. })
+        Err(EncoderHeaderError::InvalidTxParams { .. })
     ));
     let no_valid_slot = Slots {
         valid: [false; 8],

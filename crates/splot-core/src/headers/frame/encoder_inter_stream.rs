@@ -15,7 +15,7 @@ use crate::headers::film_grain::{
     FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate,
 };
 use crate::headers::frame::encoder_stream::{
-    MAX_REDUCED_TX_SET, UniformTiles, encoder_mfh_view, obu_header, plane_quantization,
+    UniformTiles, check_tx_params, encoder_mfh_view, obu_header, plane_quantization,
     tile_framing, write_film_grain_config, write_intra_frame_tail, write_mfh_reference,
     write_quant_and_filters, write_uniform_tile_info,
 };
@@ -398,12 +398,7 @@ fn inter_frame_header_bits(
     if tx.allow_intrabc {
         return Err(unsupported("intra block copy in an inter frame"));
     }
-    if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
-        return Err(EncoderHeaderError::InvalidTxParams {
-            tx_mode: tx.tx_mode,
-            reduced_tx_set: tx.reduced_tx_set,
-        });
-    }
+    check_tx_params(params.base_q_idx, tx)?;
     write_quant_and_filters(
         &mut w,
         seq,
@@ -411,7 +406,9 @@ fn inter_frame_header_bits(
         &params.filters,
         (false, lr_refs, primary_ref_frame.map(|_| false)),
     )?;
-    w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
+    if params.base_q_idx > 0 {
+        w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
+    }
     w.write_flag(params.reference_select)?;
     w.write_flag(params.skip_mode_present)?;
     if seq.inter.enable_bawp {

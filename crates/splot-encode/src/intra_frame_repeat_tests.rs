@@ -143,6 +143,28 @@ fn repeats_decode_to_the_frames_they_show_on_any_thread_count() {
     }
 }
 
+/// The repeats of a lossless stream code show-existing frames too, and the
+/// stream decodes to the source of each shown frame.
+#[test]
+fn lossless_repeats_decode_to_the_source() {
+    let config = repeat_config(config(72, 40, BitDepth::Eight, 6, 0), &[]);
+    assert!(config.is_lossless());
+    let (units, _) = repeat_stream(&config, &CONTENT, panning_frame);
+    let displays: Vec<u64> = explicit_hints(&units).iter().map(|&(d, _)| d).collect();
+    assert_eq!(displays, REPEATS);
+    let source: Vec<u8> = CONTENT
+        .iter()
+        .flat_map(|&index| {
+            let frame = panning_frame(&config, index);
+            crate::test_support::raw_bytes(
+                frame.planes().iter().map(Vec::as_slice),
+                BitDepth::Eight,
+            )
+        })
+        .collect();
+    assert_same_samples(&decode(&units.concat()), &source, "lossless");
+}
+
 /// A run of repeats longer than the order-hint window allows codes its frame
 /// 125 again; the stream decodes across the cut, and so do VBR, CBR and
 /// `implicit_output` streams with repeats.

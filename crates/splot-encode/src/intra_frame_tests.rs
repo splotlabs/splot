@@ -2088,6 +2088,8 @@ mod inter_tx;
 mod intra_tools;
 #[path = "intra_frame_large_inter_tests.rs"]
 mod large_inter;
+#[path = "intra_frame_lossless_tests.rs"]
+mod lossless;
 #[path = "intra_frame_mds_tests.rs"]
 mod mds;
 #[path = "intra_frame_mfh_tests.rs"]

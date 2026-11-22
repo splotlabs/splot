@@ -40,6 +40,7 @@ use fearless_simd::{Level, Simd, SimdBase, SimdFrom as _, SimdInt, dispatch, i32
 
 use splot_recon::{
     BitDepth, InverseTransform1dType, InverseTransform2dDim, inverse_transform_1d, transform_shift,
+    transpose4,
 };
 
 use super::KernelError;
@@ -408,6 +409,34 @@ fn forward_lanes<S: Simd, V: SimdInt<S, Element = i32>, const L: usize>(
             ((acc + col_round) >> tx.col_shift).store_slice(&mut out[strip..strip + L]);
         }
     }
+}
+
+/// The lossless forward transform of a row-major 4x4 `residual` into the
+/// `levels` that the § 7.15.2.2 inverse Walsh-Hadamard transform (rows with
+/// shift 3, then columns) maps back to `residual` exactly at `base_q_idx` 0,
+/// where § 7.14.4 dequantizes a level `l` to `8 * l`. Each 1D pass undoes the
+/// lifting steps of the inverse in reverse order.
+pub(crate) fn forward_walsh_hadamard_4x4(residual: &[i32; 16]) -> [i32; 16] {
+    dispatch!(Level::baseline(), simd => walsh_hadamard_kernel(simd, residual))
+}
+
+/// [`forward_walsh_hadamard_4x4`]: the column pass runs on the four row
+/// vectors at once, the row pass on their transpose.
+#[inline]
+fn walsh_hadamard_kernel<S: Simd>(simd: S, residual: &[i32; 16]) -> [i32; 16] {
+    let fwd = |[r0, r1, r2, r3]: [i32x4<S>; 4]| {
+        let (a, d) = (r0 + r1, r3 - r2);
+        let e = (a - d) >> 1;
+        let (s1, s3) = (e - r2, e - r1);
+        [a - s1, s1, d + s3, s3]
+    };
+    let rows = core::array::from_fn(|r| i32x4::from_slice(simd, &residual[4 * r..4 * r + 4]));
+    let out = transpose4(fwd(transpose4(fwd(rows))));
+    let mut levels = [0; 16];
+    for (dst, v) in levels.chunks_exact_mut(4).zip(out) {
+        v.store_slice(dst);
+    }
+    levels
 }
 
 #[cfg(test)]

@@ -680,7 +680,7 @@ fn rejects_out_of_range_inputs() {
             KeyFrameTxParams::default(),
             UniformTiles::default()
         ),
-        Err(EncoderHeaderError::InvalidBaseQIdx { .. })
+        Err(EncoderHeaderError::InvalidTxParams { .. })
     ));
     assert!(matches!(
         build_key_frame_header(
@@ -690,6 +690,7 @@ fn rejects_out_of_range_inputs() {
             &FrameFilterParams::default(),
             KeyFrameTxParams {
                 delta_q_res: Some(1),
+                tx_mode: TxMode::Only4x4,
                 ..KeyFrameTxParams::default()
             },
             UniformTiles::default()
@@ -1095,6 +1096,69 @@ fn plane_delta_q_reaches_the_parsed_headers() {
         let y_only = CoreSeqView::from_sequence(&y_only).unwrap();
         assert_ne!(key(&y_only, [2, 1, 1]).is_err(), mono);
         assert!(key(&y_only, [64, 0, 0]).is_err());
+    }
+}
+
+/// `base_q_idx = 0` with `ONLY_4X4` parses back as `CodedLossless` without
+/// TCQ or parity hiding (§ 5.18.2, § 5.18.8.1); a lossless frame refuses a
+/// segmentation and quantizer matrices.
+#[test]
+fn lossless_key_frame_parses_as_coded_lossless() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        let mut p = params(96, 64, bit_depth, SuperblockSize::Block64x64);
+        p.tools.cdef = true;
+        p.tools.loop_restoration = true;
+        p.tools.ccso = true;
+        let seq = build_encoder_sequence_header(&p).unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let lossless = KeyFrameTxParams {
+            tx_mode: TxMode::Only4x4,
+            ..KeyFrameTxParams::default()
+        };
+        let build = |tx| {
+            build_key_frame_header(
+                &view,
+                0,
+                0,
+                &FrameFilterParams::default(),
+                tx,
+                UniformTiles::default(),
+            )
+        };
+        let core = reparse_core(&build(lossless).unwrap(), &view);
+        let info = core.lossless_info.unwrap();
+        assert!(info.coded_lossless && !info.allow_tcq && !info.allow_parity_hiding);
+        assert_eq!(
+            core.intra_tail.map(|tail| tail.tx_mode),
+            Some(TxMode::Only4x4)
+        );
+        for (tx, what) in [
+            (
+                KeyFrameTxParams {
+                    qm_level: Some(4),
+                    ..lossless
+                },
+                "quantizer matrices",
+            ),
+            (
+                KeyFrameTxParams {
+                    segment_alt_q: Some([0; 4]),
+                    ..lossless
+                },
+                "segmentation",
+            ),
+            (
+                KeyFrameTxParams {
+                    plane_delta_q: [0, -2, 0],
+                    ..lossless
+                },
+                "plane quantizer deltas",
+            ),
+        ] {
+            assert!(
+                matches!(build(tx), Err(EncoderHeaderError::LosslessWith { what: w }) if w == what)
+            );
+        }
     }
 }
 

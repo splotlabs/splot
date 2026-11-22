@@ -1363,7 +1363,7 @@ impl ClassifiedCell for u8 {
 /// The columns of the 4x4 matrix whose rows are `rows`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn transpose4<S: Simd>([r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>; 4] {
+pub fn transpose4<S: Simd>([r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>; 4] {
     let wide = |rows: i32x4<S>| rows.bitcast::<i64x2<S>>();
     let ((ab, ab_high), (cd, cd_high)) = (r0.interleave(r1), r2.interleave(r3));
     let (c0, c1) = wide(ab).interleave(wide(cd));

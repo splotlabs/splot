@@ -489,15 +489,23 @@ pub enum EncoderHeaderError {
         /// The maximum frame height.
         height: u32,
     },
-    /// `base_q_idx` is zero (coded lossless) or does not fit the § 5.18.6.1 field.
-    #[error("base_q_idx {base_q_idx} is outside 1..{limit}")]
+    /// `base_q_idx` does not fit the § 5.18.6.1 field.
+    #[error("base_q_idx {base_q_idx} is outside 0..{limit}")]
     InvalidBaseQIdx {
         /// The rejected value.
         base_q_idx: u32,
         /// One past the largest accepted value.
         limit: u32,
     },
-    /// The transform choices are not codable: `ONLY_4X4` or `reduced_tx_set > 3`.
+    /// A coded-lossless frame (`base_q_idx = 0`, § 5.18.6.1) with a tool that
+    /// makes a segment lossy or that lossless does not use.
+    #[error("a lossless frame cannot code {what}")]
+    LosslessWith {
+        /// The refused tool.
+        what: &'static str,
+    },
+    /// The transform choices are not codable: `ONLY_4X4` in a lossy frame,
+    /// another mode in a lossless frame, or `reduced_tx_set > 3`.
     #[error("transform mode {tx_mode:?} with reduced_tx_set {reduced_tx_set} is not codable")]
     InvalidTxParams {
         /// The rejected transform mode.
@@ -869,12 +877,7 @@ pub(super) fn write_intra_frame_tail(
     filters: &FrameFilterParams,
     tx: KeyFrameTxParams,
 ) -> Result<(), EncoderHeaderError> {
-    if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
-        return Err(EncoderHeaderError::InvalidTxParams {
-            tx_mode: tx.tx_mode,
-            reduced_tx_set: tx.reduced_tx_set,
-        });
-    }
+    check_tx_params(base_q_idx, tx)?;
     if seq.seq_force_screen_content_tools == 2 {
         w.write_flag(true)?; // allow_screen_content_tools
         if seq.seq_force_integer_mv == 2 {
@@ -897,10 +900,29 @@ pub(super) fn write_intra_frame_tail(
         filters,
         (true, LrReferenceFilters::default(), None),
     )?;
-    w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
+    if base_q_idx > 0 {
+        w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
+    }
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
     write_film_grain_config(w, seq, show, tx.grain_seed)?;
     w.align_to_byte();
+    Ok(())
+}
+
+/// Refuses `tx` unless its `tx_mode` is `ONLY_4X4` exactly when `base_q_idx = 0`
+/// (§ 5.18.8.1 `CodedLossless`) and `reduced_tx_set` fits.
+pub(super) fn check_tx_params(
+    base_q_idx: u32,
+    tx: KeyFrameTxParams,
+) -> Result<(), EncoderHeaderError> {
+    if (tx.tx_mode == TxMode::Only4x4) != (base_q_idx == 0)
+        || tx.reduced_tx_set > MAX_REDUCED_TX_SET
+    {
+        return Err(EncoderHeaderError::InvalidTxParams {
+            tx_mode: tx.tx_mode,
+            reduced_tx_set: tx.reduced_tx_set,
+        });
+    }
     Ok(())
 }
 
@@ -970,7 +992,17 @@ pub(super) fn write_quant_and_filters(
         return Err(EncoderHeaderError::TcqNotChosen);
     }
     let q_bits = if seq.quant.bit_depth == 8 { 8 } else { 9 };
-    if base_q_idx == 0 || base_q_idx >= 1 << q_bits {
+    let lossless = base_q_idx == 0;
+    let refused = [
+        (allow_tcq, "allow_tcq"),
+        (tx.segment_alt_q.is_some(), "segmentation"),
+        (tx.qm_level.is_some(), "quantizer matrices"),
+        (tx.plane_delta_q != [0; 3], "plane quantizer deltas"),
+    ];
+    if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on && lossless) {
+        return Err(EncoderHeaderError::LosslessWith { what });
+    }
+    if base_q_idx >= 1 << q_bits {
         return Err(EncoderHeaderError::InvalidBaseQIdx {
             base_q_idx,
             limit: 1 << q_bits,
@@ -1009,11 +1041,11 @@ pub(super) fn write_quant_and_filters(
     if let Some(res) = tx.delta_q_res {
         w.write_bits(u32::from(res), 2)?; // delta_q_res
     }
-    if seq.quant.choose_tcq_per_frame {
+    if seq.quant.choose_tcq_per_frame && !lossless {
         w.write_flag(allow_tcq)?;
     }
     let allow_tcq = allow_tcq || (seq.quant.enable_tcq && !seq.quant.choose_tcq_per_frame);
-    if seq.quant.enable_parity_hiding && !allow_tcq {
+    if seq.quant.enable_parity_hiding && !allow_tcq && !lossless {
         w.write_flag(true)?; // allow_parity_hiding
     }
     let sb_shift = crate::tile::mi_width_log2(seq.tile.seq_sb_size);
@@ -1037,8 +1069,8 @@ pub(super) fn write_quant_and_filters(
         mi_row_starts: &row_starts.0,
     };
     let num_refs = lr_refs.num_ref_frames;
-    write_filter_params(w, seq, filters, (lr_refs, gdf), frame_is_intra)?;
-    if seq.ccso.enable_ccso {
+    write_filter_params(w, seq, filters, (lr_refs, gdf), (frame_is_intra, lossless))?;
+    if seq.ccso.enable_ccso && !lossless {
         let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
         let on = planes.iter().any(|plane| plane.ccso_planes);
         w.write_flag(on)?; // ccso_frame_flag
@@ -1106,7 +1138,7 @@ fn write_filter_params(
     seq: &CoreSeqView,
     filters: &FrameFilterParams,
     (lr_refs, gdf_geometry): (LrReferenceFilters<'_>, GdfGeometry<'_>),
-    frame_is_intra: bool,
+    (frame_is_intra, lossless): (bool, bool),
 ) -> Result<(), WriteError> {
     let num_planes = seq.quant.num_planes;
     let delta = filters.deblocking_delta_q;
@@ -1120,7 +1152,7 @@ fn write_filter_params(
     write_deblocking_filter_params(
         w,
         &deblocking,
-        false,
+        lossless,
         num_planes,
         df_par_bits_minus_2,
         sub_pu_coded,
@@ -1138,7 +1170,7 @@ fn write_filter_params(
         gdf_pic_qc_idx: Some(gdf.qc_idx),
         gdf_pic_scale_idx: Some(gdf.scale_idx),
     });
-    write_gdf_params(w, &gdf, false, &seq.filter, gdf_geometry)?;
+    write_gdf_params(w, &gdf, lossless, &seq.filter, gdf_geometry)?;
     let cdef_on = !filters.cdef_strengths.is_empty();
     let cdef = CdefParams {
         cdef_frame_enable: cdef_on,
@@ -1147,7 +1179,7 @@ fn write_filter_params(
         cdef_on_skip_txfm_frame_enable: cdef_on.then_some(filters.cdef_on_skip),
         strengths: filters.cdef_strengths,
     };
-    write_cdef_params(w, &cdef, false, num_planes, &seq.filter)?;
+    write_cdef_params(w, &cdef, lossless, num_planes, &seq.filter)?;
     let geometry = LrGeometry::new(gdf_geometry.sb_size, seq.chroma_format_idc);
     let chroma = |plane: u8| {
         filters
@@ -1163,7 +1195,7 @@ fn write_filter_params(
         planes: crate::tile::InlineVec::default(),
         loop_restoration_size: default_restoration_size(geometry),
     };
-    if seq.restoration.enable_restoration {
+    if seq.restoration.enable_restoration && !lossless {
         for plane in 0..num_planes {
             let luma = plane == 0 && filters.lr_luma_unit_size.is_some();
             let wiener = if plane == 0 {
@@ -1207,7 +1239,7 @@ fn write_filter_params(
     write_lr_params_for_inter(
         w,
         &lr,
-        (false, num_planes),
+        (lossless, num_planes),
         &seq.restoration,
         geometry,
         lr_refs,
