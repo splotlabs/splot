@@ -576,6 +576,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let LeafChoice {
             modes,
             tx_partition,
+            dpcm,
             ..
         } = choice;
         #[cfg(test)]
@@ -599,14 +600,14 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         #[cfg(test)]
         if self.filters.is_some() {
             let [y, uv] = DPCM_CODED.get();
-            DPCM_CODED.set([
-                y + usize::from(modes.dpcm_y),
-                uv + usize::from(modes.dpcm_uv),
-            ]);
+            DPCM_CODED.set([y + usize::from(dpcm.y), uv + usize::from(dpcm.uv)]);
         }
         if let Some(palette) = &modes.palette {
             self.syntax
                 .set_palette_map(coder.palette_map(leaf, palette)?);
+        }
+        if self.syntax.dpcm_allowed() {
+            self.syntax.set_leaf_dpcm(dpcm);
         }
         let mut blocks = self
             .syntax

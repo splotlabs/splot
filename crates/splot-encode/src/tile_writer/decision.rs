@@ -7,7 +7,7 @@ pub(crate) use splot_decode::encoder_syntax::{
     CompoundMode, CompoundModes, CompoundType, InterMode, InterModes, InterPrediction, IntraMode,
     IntraModes, IntrabcModes, Ist, MotionVector, Partition, TxPartition, TxType,
 };
-use splot_decode::encoder_syntax::{IntraTileSyntax, LeafBlock, Palette, TransformBlock};
+use splot_decode::encoder_syntax::{Dpcm, IntraTileSyntax, LeafBlock, Palette, TransformBlock};
 
 use super::{Result, TileWriterError};
 
@@ -93,6 +93,8 @@ pub(crate) struct LeafChoice {
     pub(crate) inter: Option<InterPrediction>,
     /// `Some` for an IntraBC leaf.
     pub(crate) intrabc: Option<IntrabcModes>,
+    /// The DPCM of an intra leaf of a lossless frame.
+    pub(crate) dpcm: Dpcm,
 }
 
 impl LeafChoice {
@@ -106,6 +108,7 @@ impl LeafChoice {
             tx_partition: TxPartition::None,
             inter: None,
             intrabc: None,
+            dpcm: Dpcm::OFF,
         }
     }
 
