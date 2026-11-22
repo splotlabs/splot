@@ -74,13 +74,14 @@ impl Lanes for u16 {
     }
 }
 
-/// Calls `$f::<P>` for the run-time pair count.
+/// Calls `$f::<P>` for the run-time pair count, an odd count with one more
+/// pair: its taps are zero, and what it weighs is a load of the kernel
+/// whatever its taps, a row below the window, zero past the storage, or a
+/// row of the stage past the window's.
 macro_rules! with_pairs {
     ($pairs:expr, $f:ident::<$($ty:ty),*>($($arg:expr),*)) => {
         match $pairs {
-            1 => $f::<$($ty,)* 1>($($arg),*),
-            2 => $f::<$($ty,)* 2>($($arg),*),
-            3 => $f::<$($ty,)* 3>($($arg),*),
+            1 | 2 => $f::<$($ty,)* 2>($($arg),*),
             _ => $f::<$($ty,)* 4>($($arg),*),
         }
     };
@@ -779,7 +780,7 @@ fn filter_stage<S: Simd, const P: usize>(
         }
         return;
     }
-    let rows = h + 2 * P - 1;
+    let rows = h + taps.span() - 1;
     for col in (0..w).step_by(8) {
         let strip_base = col / 8 * rows * 8;
         let mut r: [i16x8<S>; 7] = core::array::from_fn(|t| {
