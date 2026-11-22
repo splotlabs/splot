@@ -246,7 +246,7 @@ fn leaf_frame_rates(bit_depth: BitDepthIdc, qindex: u32, seed: u64) -> (f64, f64
     };
     let tree = PartitionTree::Leaf(LeafChoice::DC);
     writer
-        .write_superblock(&SuperblockDecision { tree }, &mut coder)
+        .write_superblock(&SuperblockDecision { tree, segment: None }, &mut coder)
         .unwrap();
     let (tile, _) = writer.finish().unwrap();
 

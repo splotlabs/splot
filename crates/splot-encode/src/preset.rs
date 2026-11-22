@@ -192,6 +192,15 @@ pub struct PresetParams {
     /// niklas SSIM-BD -2.70% for PSNR-BD +2.95%; 50 gave -2.75% for +7.61%,
     /// and 200 lost 7% SSIM-BD on paris).
     pub ssim_aq: u8,
+    /// Segmentation (§ 5.18.7.1), `0..=1`: `0` off; `1` codes a source
+    /// activity map of 4 `SEG_LVL_ALT_Q` segments. A superblock's segment is
+    /// the bin of the mean log2 luma variance of its 16x16 blocks against the
+    /// frame mean (`tpl::ssim_lambda_log2` at 100), with edges at -1, 0 and
+    /// +1 octave; segments 0..=3 move the lambda by -0.75, -0.25, +0.25 and
+    /// +0.75 octave and the qindex by -9, -3, +3 and +9 (`tpl::quant_of`),
+    /// clamped to `base_q_idx + ALT_Q >= 1`. Every leaf codes its
+    /// superblock's segment; the qindex adds to the delta-q one (§ 7.12.2).
+    pub segmentation: u8,
     /// Temporal filtering, `0..=8` per frame kind, `0` off; the lookahead
     /// reads it at the normal coefficient level. Key frames: the most later
     /// neighbours that a key frame is filtered from before it is coded; the
@@ -898,6 +907,7 @@ impl PresetParams {
         check("drl_bits", self.drl_bits, 1, 5, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
         check("ssim_aq", self.ssim_aq, 0, 200, "")?;
+        check("segmentation", self.segmentation, 0, 1, "")?;
         check("psy_rd", self.psy_rd, 0, 200, "")?;
         for &frames in self.tf_frames.values() {
             check("tf_frames", frames, 0, 8, "")?;
@@ -1272,6 +1282,7 @@ preset_table! {
         lookahead_frames:      [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        segmentation:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tf_frames:             frames([
                                [4; 11],
                                [0; 11], [0; 11], [0; 11]]),
@@ -1444,6 +1455,7 @@ mod tests {
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.tpl_delta_q <= slow.tpl_delta_q);
             assert!(fast.ssim_aq <= slow.ssim_aq);
+            assert!(fast.segmentation <= slow.segmentation);
             assert!(fast.psy_rd <= slow.psy_rd);
             assert!(at_most(&fast.tf_frames, &slow.tf_frames));
             assert!(fast.compound_candidates <= slow.compound_candidates);
@@ -1687,6 +1699,7 @@ mod tests {
             (&[("tf_frames", "9")], "tf_frames"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("ssim_aq", "201")], "ssim_aq"),
+            (&[("segmentation", "2")], "segmentation"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
             (&[("ccso_candidates", "113")], "ccso_candidates"),
