@@ -320,9 +320,11 @@ fn the_replay_interleaves_out_of_frame_calls_and_owes_the_leaf_chunks() {
     let mut pending = &calls[..];
     let mut replay = IbcLocalReplay::new(false);
     let superblock = ([0, 0], 32, 0);
-    replay
-        .replay_to_leaf(superblock, 1, entry(&blocks), &mut pending)
-        .unwrap();
+    assert!(
+        replay
+            .replay_to_leaf(superblock, 1, entry(&blocks), &mut pending)
+            .is_some()
+    );
     assert!(pending.is_empty());
     assert_eq!(replay.buffers.cur, (1, 0));
     assert_eq!(replay.buffers.stored[0], Some((0, 0)));
@@ -334,9 +336,11 @@ fn the_replay_interleaves_out_of_frame_calls_and_owes_the_leaf_chunks() {
     assert!(replay.coded(0, 20), "out-of-frame cells are coded");
     assert!(!replay.coded(8, 16));
     assert!(replay.coded(31, 31), "the leaf's own cells");
-    replay
-        .finish_superblock(superblock, 2, entry(&blocks), &mut pending)
-        .unwrap();
+    assert!(
+        replay
+            .finish_superblock(superblock, 2, entry(&blocks), &mut pending)
+            .is_some()
+    );
     assert_eq!(replay.buffers.cur, (1, 1), "the 128x64 leaf's second chunk");
     assert_eq!(replay.buffers.stored[2], Some((1, 0)));
 }
@@ -345,9 +349,11 @@ fn the_replay_interleaves_out_of_frame_calls_and_owes_the_leaf_chunks() {
 fn an_extended_sdp_chroma_block_moves_the_current_buffer_back() {
     let blocks = [[8, 0, 16, 8], [16, 0, 16, 8], [8, 0, 16, 16]];
     let mut replay = IbcLocalReplay::new(false);
-    replay
-        .finish_superblock(([0, 0], 32, 0), 3, entry(&blocks), &mut &[][..])
-        .unwrap();
+    assert!(
+        replay
+            .finish_superblock(([0, 0], 32, 0), 3, entry(&blocks), &mut &[][..])
+            .is_some()
+    );
     assert_eq!(replay.buffers.cur, (0, 0));
     assert_eq!(replay.buffers.stored[2], Some((1, 0)));
 }
@@ -355,9 +361,11 @@ fn an_extended_sdp_chroma_block_moves_the_current_buffer_back() {
 #[test]
 fn ibc_coded_outside_the_superblock_is_one_only_to_its_left_in_its_row() {
     let mut replay = IbcLocalReplay::new(false);
-    replay
-        .finish_superblock(([16, 32], 16, 0), 1, entry(&[[16, 32, 4, 4]]), &mut &[][..])
-        .unwrap();
+    assert!(
+        replay
+            .finish_superblock(([16, 32], 16, 0), 1, entry(&[[16, 32, 4, 4]]), &mut &[][..])
+            .is_some()
+    );
     assert!(
         replay.coded(16, 0) && replay.coded(31, 31),
         "left, same row"
@@ -365,14 +373,12 @@ fn ibc_coded_outside_the_superblock_is_one_only_to_its_left_in_its_row() {
     assert!(replay.coded(19, 35) && !replay.coded(20, 32));
     assert!(!replay.coded(16, 48), "right of the superblock");
     assert!(!replay.coded(15, 0) && !replay.coded(32, 0), "other rows");
-    replay
-        .finish_superblock(
-            ([32, 0], 16, 1),
-            2,
-            entry(&[[0; 4], [32, 0, 4, 4]]),
-            &mut &[][..],
-        )
-        .unwrap();
+    let blocks = [[0; 4], [32, 0, 4, 4]];
+    assert!(
+        replay
+            .finish_superblock(([32, 0], 16, 1), 2, entry(&blocks), &mut &[][..])
+            .is_some()
+    );
     assert_eq!(
         replay.buffers,
         IbcBuffers::start_sb_row(32, true),
