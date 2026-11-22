@@ -16,18 +16,23 @@ use super::{
     TxPartition, rule,
 };
 use crate::prediction::inter::MvdCoding;
-use crate::prediction::inter::read_mv::{MV_PRECISION_ONE_PEL, MvReadConfig};
+use crate::prediction::inter::read_mv::{
+    MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig,
+};
 
 /// The block vectors one leaf may code, see
 /// [`IntraTileSyntax::intrabc_vectors`].
 #[derive(Clone, Debug)]
-pub struct IntrabcVectors(BvFrame, Option<LocalArea>);
+pub struct IntrabcVectors(BvFrame, Option<LocalArea>, bool);
 
 impl IntrabcVectors {
     /// Whether the leaf may code the block vector `bv`.
     #[must_use]
     pub fn valid(&self, bv: MotionVector) -> bool {
         let mv = [bv.row, bv.col];
+        if (bv.row | bv.col) & 7 != 0 && (!self.2 || (bv.row | bv.col) & 1 != 0) {
+            return false;
+        }
         self.1
             .as_ref()
             .is_some_and(|area| local_bv_valid(&self.0, area, mv))
@@ -38,7 +43,7 @@ impl IntrabcVectors {
 /// An intra block copy of a leaf (§ 5.20.5.4).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntrabcModes {
-    /// The whole-sample block vector in 1/8 samples.
+    /// The block vector in 1/8 samples: whole or quarter samples.
     pub bv: MotionVector,
     /// `RefMvIdx`, below the length of [`IntraTileSyntax::intrabc_ref_bvs`].
     pub drl: usize,
@@ -80,7 +85,7 @@ impl IntraTileSyntax {
     }
 
     /// The block vectors `leaf` may code, `None` when it codes no
-    /// `use_intrabc`: whole-sample vectors that § 6.19.7.12 `is_mv_valid` accepts for the
+    /// `use_intrabc`: vectors that § 6.19.7.12 `is_mv_valid` accepts for the
     /// global area, with the source in the current or the previous
     /// superblock row, or, with `allow_local_intrabc`, for the local area
     /// in a strict subset of § 6.19.7.12 `check_valid_local_ibc`.
@@ -124,7 +129,8 @@ impl IntraTileSyntax {
                 tile.intrabc_coded_base_col(row, col)
             })
         });
-        Some(IntrabcVectors(frame, area))
+        let quarter = tile.frame_header().force_integer_mv != Some(true);
+        Some(IntrabcVectors(frame, area, quarter))
     }
 
     /// Plans the IntraBC leaf `leaf` of `modes` with the luma transform split
@@ -191,7 +197,8 @@ impl IntraTileSyntax {
 
     /// Writes the § 5.20.5.4 IntraBC syntax of `leaf` under `modes`:
     /// `intrabc_mode`, the `intrabc_drl_mode` bits, `intrabc_precision`
-    /// (whole samples), the vector difference and `morph_pred = 0`.
+    /// (quarter samples for a fractional vector), the vector difference and
+    /// `morph_pred = 0`.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an index or vector `leaf` cannot
@@ -227,21 +234,34 @@ impl IntraTileSyntax {
             }
         }
         if mode == 0 {
-            if !force_integer_mv {
-                self.put(symbols, TileCdfSelector::IntrabcPrecision, 0)?;
+            let [row, col] = [modes.bv.row, modes.bv.col];
+            let quarter = row & 7 != 0 || col & 7 != 0;
+            if quarter && (force_integer_mv || row & 1 != 0 || col & 1 != 0) {
+                return Err(EncoderSyntaxError::Unsupported("this IntraBC vector"));
             }
-            let base = lower_to_whole(reference);
+            if !force_integer_mv {
+                self.put(
+                    symbols,
+                    TileCdfSelector::IntrabcPrecision,
+                    usize::from(quarter),
+                )?;
+            }
+            let (precision, base) = if quarter {
+                (MV_PRECISION_QUARTER_PEL, reference)
+            } else {
+                (MV_PRECISION_ONE_PEL, lower_to_whole(reference))
+            };
             let mvd = MotionVector {
-                row: modes.bv.row - base.row,
-                col: modes.bv.col - base.col,
+                row: row - base.row,
+                col: col - base.col,
             };
             let coding = MvdCoding {
-                precision: MV_PRECISION_ONE_PEL,
+                precision,
                 use_amvd: false,
                 derive_sign: false,
                 derive_threshold: 1,
             };
-            let config = MvReadConfig::intrabc(MV_PRECISION_ONE_PEL);
+            let config = MvReadConfig::intrabc(precision);
             super::mv::write_mvds_with(
                 (&mut self.cdfs, &mut self.journal),
                 (coding, config),
@@ -392,11 +412,11 @@ impl LocalArea {
     }
 }
 
-/// Whether the whole-sample block vector `mv` passes § 6.19.7.12
-/// `is_mv_valid` through `check_valid_local_ibc` under a stricter rule:
-/// every 4x4 cell of the checked block (the chroma reference block of a
-/// leaf with `HasChroma` unless SDP codes the intra frame, else the leaf)
-/// moved by `mv` is coded and lies in a buffer of `area`, and neither of
+/// Whether the block vector `mv` passes § 6.19.7.12 `is_mv_valid`
+/// through `check_valid_local_ibc` under a stricter rule: every 4x4 cell of
+/// the checked block (the chroma reference block of a leaf with `HasChroma`
+/// unless SDP codes the intra frame, else the leaf) moved by `mv`, with its
+/// borders, is coded and lies in a buffer of `area`, and neither of
 /// its corners lies at or right of and at or below that block's top-left
 /// sample. Not used: the `coloY`/`coloX` case (a buffer that shares its
 /// `ibc_buffer_index` with the current one), the lower 64x64 regions of a
@@ -412,7 +432,8 @@ pub(super) fn local_bv_valid(frame: &BvFrame, area: &LocalArea, mv: [i32; 2]) ->
     };
     let (row0, col0) = (mi.0 as i64 * MI_SIZE, mi.1 as i64 * MI_SIZE);
     let (top, left) = (row0 + i64::from(mv[0] >> 3), col0 + i64::from(mv[1] >> 3));
-    let (bottom, right) = (top + h as i64, left + w as i64);
+    let [bottom, right] = borders(mv);
+    let (bottom, right) = (top + h as i64 + bottom, left + w as i64 + right);
     if top < 0
         || left < 0
         || [(left, top), (right - 1, bottom - 1)]
@@ -425,18 +446,25 @@ pub(super) fn local_bv_valid(frame: &BvFrame, area: &LocalArea, mv: [i32; 2]) ->
     cells(top, bottom).all(|row| cells(left, right).all(|col| area.coded(row, col)))
 }
 
+/// The § 6.19.7.12 `[bottomBorder, rightBorder]` of `mv`: one sample below
+/// or right of the block for a fractional row or column.
+fn borders(mv: [i32; 2]) -> [i64; 2] {
+    mv.map(|c| i64::from(c & 7 != 0))
+}
+
 /// The § 6.19.7.12 `[srcTopEdge, srcLeftEdge, srcBottomEdge, srcRightEdge]`
-/// of the whole-sample block vector `mv`: the bottom and right edges of the
-/// moved leaf, the top and left edges of its moved chroma reference block
-/// with `HasChroma`; `None` when they leave the tile.
+/// of the block vector `mv`: the bottom and right edges of the moved leaf
+/// plus their borders, the top and left edges of its moved chroma reference
+/// block with `HasChroma`; `None` when they leave the tile.
 fn source_edges(frame: &BvFrame, mv: [i32; 2]) -> Option<[i64; 4]> {
-    if mv[0] & 7 != 0 || mv[1] & 7 != 0 {
-        return None;
-    }
     let (delta_row, delta_col) = (i64::from(mv[0] >> 3), i64::from(mv[1] >> 3));
     let top = frame.mi.0 as i64 * MI_SIZE + delta_row;
     let left = frame.mi.1 as i64 * MI_SIZE + delta_col;
-    let (bottom, right) = (top + frame.size.1 as i64, left + frame.size.0 as i64);
+    let [bottom, right] = borders(mv);
+    let (bottom, right) = (
+        top + frame.size.1 as i64 + bottom,
+        left + frame.size.0 as i64 + right,
+    );
     let (top, left) = match frame.chroma {
         Some(chroma) => (
             chroma.mi.0 as i64 * MI_SIZE + delta_row,
@@ -452,7 +480,7 @@ fn source_edges(frame: &BvFrame, mv: [i32; 2]) -> Option<[i64; 4]> {
     inside.then_some([top, left, bottom, right])
 }
 
-/// Whether the whole-sample block vector `mv` (`[row, col]` in 1/8 samples)
+/// Whether the block vector `mv` (`[row, col]` in 1/8 samples)
 /// passes § 6.19.7.12 `is_mv_valid` for the global area (`allow_global_intrabc
 /// = 1`), taking `sb64Residual = 0` (a subset of the vectors
 /// `AllowExtraIBCRange` allows). The source must also lie in the current or
@@ -517,7 +545,8 @@ mod tests {
 
     /// § 6.19.7.12 for a 16x8 leaf at (64, 384) of a 640-wide tile of 64x64
     /// superblocks: in its own row the source must end four 64-wide columns
-    /// before the current one; in the row above, before the wavefront.
+    /// before the current one; in the row above, before the wavefront. The
+    /// right border of a fractional column counts.
     #[test]
     fn global_vectors_follow_the_superblock_delay() {
         let leaf = frame((16, 96), (16, 8));
@@ -529,7 +558,19 @@ mod tests {
         assert!(!global_bv_valid(&leaf, sample(-64, 56)));
         assert!(!global_bv_valid(&leaf, sample(-128, 0)));
         assert!(!global_bv_valid(&leaf, sample(0, -400)));
-        assert!(!global_bv_valid(&leaf, [4, -64 * 8 * 5]));
+        assert!(global_bv_valid(&leaf, [0, -272 * 8 - 6]));
+        assert!(!global_bv_valid(&leaf, [0, -272 * 8 + 2]));
+    }
+
+    /// A fractional vector needs `force_integer_mv = 0` and quarter samples.
+    #[test]
+    fn fractional_vectors_need_quarter_samples() {
+        let vectors = |quarter| IntrabcVectors(frame((16, 96), (16, 8)), None, quarter);
+        let col = |col| MotionVector { row: 0, col };
+        assert!(vectors(true).valid(col(-272 * 8 - 6)));
+        assert!(!vectors(false).valid(col(-272 * 8 - 6)));
+        assert!(!vectors(true).valid(col(-272 * 8 - 5)));
+        assert!(vectors(false).valid(col(-272 * 8)));
     }
 
     /// § 6.19.7.12 `HasChroma`: a chroma-offset leaf takes the top and left
@@ -577,7 +618,8 @@ mod tests {
     /// the region at (64, 256) copies from its own coded top half and from
     /// the three regions to its left; the fourth region to the left shares
     /// the current `ibc_buffer_index` (the `coloY` case) and is refused, as
-    /// is a source with an uncoded 4x4 cell.
+    /// is a source with an uncoded 4x4 cell, also in the bottom border of a
+    /// fractional row.
     #[test]
     fn local_vectors_use_the_last_four_regions_of_the_row() {
         let leaf = frame((24, 64), (16, 16));
@@ -592,7 +634,9 @@ mod tests {
         assert!(!global_bv_valid(&leaf, sample(0, -256)));
         assert!(!local_bv_valid(&leaf, &area, sample(-8, 0)));
         assert!(local_bv_valid(&leaf, &area, sample(-32, 8)));
-        assert!(!local_bv_valid(&leaf, &area, [-32 * 8 + 4, 0]));
+        assert!(local_bv_valid(&leaf, &area, [-32 * 8 + 4, 0]));
+        assert!(local_bv_valid(&leaf, &area, sample(-16, 0)));
+        assert!(!local_bv_valid(&leaf, &area, [-16 * 8 + 2, 0]));
     }
 
     /// The local area checks the moved chroma reference block of a
