@@ -123,10 +123,18 @@ fn round_trip(bits: u32, subsampling: (usize, usize), rate_control: &[&str]) {
         for (plane, (w, h)) in sizes.into_iter().enumerate() {
             let span = start..start + w * h;
             start = span.end;
-            let measured = psnr(&frame[span.clone()], &coded[span], bits);
+            let measured = psnr(&frame[span.clone()], &coded[span.clone()], bits);
             let expected = reported[index][plane];
+            if rate_control.contains(&"--lossless") {
+                assert_eq!(
+                    frame[span.clone()],
+                    coded[span.clone()],
+                    "frame {index} plane {plane}"
+                );
+            }
             assert!(
-                (measured - expected).abs() < 1e-3,
+                (measured.is_infinite() && expected.is_infinite())
+                    || (measured - expected).abs() < 1e-3,
                 "frame {index} plane {plane}: decoded psnr {measured} != encoder psnr {expected}"
             );
             assert!(
@@ -481,4 +489,14 @@ fn content_flags_write_a_content_interpretation_obu() {
     for path in [input, ivf] {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// `--lossless` decodes to the source samples at presets 0, 6 and 10 without
+/// `--preset-set`, and in 4:4:4 at 10 bits.
+#[test]
+fn lossless_clips_decode_to_the_source_samples() {
+    for preset in ["0", "6", "10"] {
+        round_trip(8, YUV420, &["--lossless", "--preset", preset]);
+    }
+    round_trip(10, YUV444, &["--lossless", "--preset", "6"]);
 }

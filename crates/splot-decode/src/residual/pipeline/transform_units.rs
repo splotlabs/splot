@@ -32,7 +32,7 @@ impl GeneralIntraResidualPlan {
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
-        qindex: u32,
+        (qindex, lossless): (u32, bool),
         intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
         luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -41,7 +41,7 @@ impl GeneralIntraResidualPlan {
             LumaCoeffBlock {
                 intra_ist,
                 use_tcq,
-                ..LumaCoeffBlock::empty(plane_tx_type, false)
+                ..LumaCoeffBlock::empty(plane_tx_type, lossless)
             },
         )?;
         plane.reconstruct(
@@ -150,6 +150,57 @@ impl GeneralIntraResidualPlan {
             });
         }
         self.planes.splice(0..1, units);
+        Ok(())
+    }
+
+    /// Replaces each plane block of a lossless leaf with the 4x4 units that
+    /// start in the frame, in the raster order of the decoder's lossless
+    /// parse (§ 5.20.6.1 `TxSize = TX_4X4`), none of which fills the block.
+    pub(crate) fn split_lossless_units(
+        &mut self,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let mut units = Vec::with_capacity(self.planes.len());
+        for plane in &self.planes {
+            if plane.lossless_transform_unit_tx_size(Some(true)) != Some(TX_4X4) {
+                units.push(*plane);
+                continue;
+            }
+            for y4 in 0..plane.tx.height4() {
+                for x4 in 0..plane.tx.width4() {
+                    let (x, y) = (plane.x as usize + x4 * 4, plane.y as usize + y4 * 4);
+                    if plane.lossless_unit_starts_in_frame(self.frame, x, y) {
+                        let empty = LumaCoeffBlock::empty(0, false);
+                        let block = PositionedLumaCoeffBlock::new(x, y, TX_4X4, false, empty)?;
+                        units.push(ResidualPlanePlan {
+                            residual_width4: plane.residual_width4,
+                            residual_height4: plane.residual_height4,
+                            ..plane.transform_unit_plan(self.frame, &block)?
+                        });
+                    }
+                }
+            }
+        }
+        self.planes.clear();
+        self.planes.extend(units);
+        Ok(())
+    }
+
+    /// Marks the reconstructed lossless unit `index` of any plane as decoded,
+    /// as the decoder's lossless reconstruction does after each unit.
+    pub(crate) fn publish_lossless_unit(
+        &self,
+        index: usize,
+        block_decoded: &mut TileBlockDecodedState,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let unit = self.unit(index)?;
+        let sb_mask = block_decoded.sb_size4().saturating_sub(1);
+        block_decoded.set_block(
+            unit.plane_id.index(),
+            unit.rect.row4() & sb_mask,
+            unit.rect.col4() & sb_mask,
+            unit.tx.width4(),
+            unit.tx.height4(),
+        );
         Ok(())
     }
 

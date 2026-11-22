@@ -1118,7 +1118,7 @@ pub(crate) fn fsc_bsize_group(block_size: BlockSize) -> usize {
     FSC_BSIZE_GROUPS[block_size.index()]
 }
 
-fn lossless_tx_size_group(block_size: BlockSize) -> usize {
+pub(crate) fn lossless_tx_size_group(block_size: BlockSize) -> usize {
     SIZE_GROUP[block_size.index()] as usize
 }
 

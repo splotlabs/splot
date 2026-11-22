@@ -27,9 +27,12 @@ pub(crate) struct EncodeArgs {
     /// Output IVF file.
     #[arg(short = 'o', long)]
     output: PathBuf,
-    /// Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits.
-    #[arg(long, conflicts_with_all = ["crf", "bitrate"])]
+    /// Constant quantizer (`base_q_idx`) for every frame: 1..=255 at 8 bits, 1..=303 at 10 bits; `--lossless` codes 0.
+    #[arg(long, conflicts_with_all = ["crf", "bitrate"], value_parser = clap::value_parser!(u16).range(1..=303))]
     qp: Option<u16>,
+    /// Lossless: every frame at `base_q_idx` 0, so the decoder output equals the input samples.
+    #[arg(long, conflicts_with_all = ["qp", "crf", "bitrate", "max_bitrate", "film_grain"])]
+    lossless: bool,
     /// Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller; the default mode, at 20.
     #[arg(long, conflicts_with = "bitrate")]
     crf: Option<u8>,
@@ -301,7 +304,8 @@ impl EncodeArgs {
 
     fn rate_control(&self) -> RateControlMode {
         let (buffer_ms, initial_ms) = self.buffer_ms();
-        match (self.qp, self.crf, self.bitrate) {
+        let qp = self.lossless.then_some(0).or(self.qp);
+        match (qp, self.crf, self.bitrate) {
             (_, _, Some(bitrate_kbps)) if self.rc == Some(RcMode::Cbr) => RateControlMode::Cbr {
                 bitrate_kbps,
                 buffer_ms,
