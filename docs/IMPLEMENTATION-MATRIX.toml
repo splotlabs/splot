@@ -22101,3 +22101,35 @@ commands = [
 ]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "ENC-CROP-WINDOW"
+name = "Encoder sequence cropping window"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.1", "5.18.4.4", "6.17.4.4", "7.21.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-crop-window"
+owner = "encoder"
+risk = "low"
+notes = "Config::crop (2026-11-22, None by default; CLI --crop L,R,T,B): the sequence header codes seq_cropping_window_present_flag = 1 and the four offsets in luma samples of the coded frame (after the resize). Every frame codes the maximum size, so CropLeft = L and CropWidth = width - L - R (§ 5.18.4.4); the decoders output CropWidth x CropHeight (§ 7.21.2), and AVM agrees. CroppingWindow::fits refuses an offset past the frame, an empty window and a left or top offset inside a chroma sample (§ 6.17.4.4) with Error::InvalidCrop. The encoder codes and measures the whole frame; the IVF header and --stats PSNR keep the coded size. The VBR first pass codes no window."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::cropping_window_reaches_the_parsed_header", "crates/splot-encode/src/intra_frame_crop_tests.rs::cropped_streams_decode_to_the_window_of_the_recon", "crates/splot-encode/src/intra_frame_crop_tests.rs::windows_that_do_not_fit_the_coded_frame_are_refused", "crates/splot-cli/tests/encode_decode_roundtrip.rs::cropped_clips_decode_to_the_window"]
+commands = ["cargo test -p splot-core cropping_window --locked", "cargo test -p splot-encode crop --locked", "cargo test -p splot-cli --test encode_decode_roundtrip cropped --locked"]
+fixtures = []
+diagnostics = []
