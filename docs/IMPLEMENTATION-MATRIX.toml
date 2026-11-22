@@ -21193,7 +21193,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/cli.rs::encode_rejects_malformed_and_unsupported_y4m_without_writing_output", "crates/splot-cli/tests/help_snapshots.rs::encode_help", "crates/splot-cli/tests/encode_decode_roundtrip.rs::annexb_output_is_the_ivf_payloads_without_the_container"]
+tests = ["crates/splot-cli/tests/cli.rs::encode_rejects_malformed_and_unsupported_y4m_without_writing_output", "crates/splot-cli/tests/help_snapshots.rs::encode_help", "crates/splot-cli/tests/encode_decode_roundtrip.rs::annexb_output_is_the_ivf_payloads_without_the_container", "crates/splot-cli/tests/encode_decode_roundtrip.rs::avm_decodes_annexb_output_like_the_ivf_output"]
 commands = ["cargo test -p splot-cli --test cli encode --locked", "cargo test -p splot-cli --test help_snapshots --locked", "cargo test -p splot-cli --test encode_decode_roundtrip annexb --locked"]
 fixtures = []
 diagnostics = []

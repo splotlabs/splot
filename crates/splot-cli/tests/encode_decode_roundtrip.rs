@@ -214,6 +214,49 @@ fn multi_frame_header_clips_validate_and_decode() {
 /// `--output-format annexb` writes the IVF frame payloads back to back with
 /// no container header; the raw stream validates with `--strict` and decodes
 /// to the frames of the IVF stream.
+/// AVM reads the raw Annex B file (it detects the format; no option) and
+/// decodes it to the frames of the IVF file.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_annexb_output_like_the_ivf_output() {
+    let avmdec = std::env::var_os("SPLOT_AVM_DECODER").expect("set SPLOT_AVM_DECODER");
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let streams = [temp_output("ivf"), temp_output("obu")];
+    let raws = [temp_output("yuv"), temp_output("yuv")];
+    for (stream, format) in streams.iter().zip(["ivf", "annexb"]) {
+        let (input, stream) = (input.to_str().unwrap(), stream.to_str().unwrap());
+        let args = [
+            "encode",
+            input,
+            "-o",
+            stream,
+            "--qp",
+            "90",
+            "--output-format",
+            format,
+        ];
+        let encode = splot(&args);
+        assert!(encode.status.success(), "{encode:?}");
+    }
+    for (stream, raw) in streams.iter().zip(&raws) {
+        let status = std::process::Command::new(&avmdec)
+            .arg("--rawvideo")
+            .arg("-o")
+            .arg(raw)
+            .arg(stream)
+            .status()
+            .unwrap();
+        assert!(status.success(), "avmdec {}", stream.display());
+    }
+    let frames = std::fs::read(&raws[0]).unwrap();
+    assert_eq!(frames.len(), FRAMES * (72 * 24 + 2 * 36 * 12));
+    assert_eq!(std::fs::read(&raws[1]).unwrap(), frames);
+    for path in [&input].into_iter().chain(&streams).chain(&raws) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn annexb_output_is_the_ivf_payloads_without_the_container() {
     let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
