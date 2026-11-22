@@ -294,6 +294,42 @@ fn resized_clips_code_and_decode_at_the_scaled_size() {
     }
 }
 
+/// `--crop 2,5,2,4` codes the 72x24 clip with a cropping window: the IVF
+/// header keeps the coded size, the validated stream decodes to the 65x18
+/// window, and a window larger than the frame or an odd 4:2:0 left offset
+/// is a usage error.
+#[test]
+fn cropped_clips_decode_to_the_window() {
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let raw = temp_output("yuv");
+    let (input_s, ivf_s, raw_s) = (
+        input.to_str().unwrap(),
+        ivf.to_str().unwrap(),
+        raw.to_str().unwrap(),
+    );
+    let encode = splot(&["encode", input_s, "-o", ivf_s, "--crop", "2,5,2,4"]);
+    assert!(encode.status.success(), "{encode:?}");
+    let header = std::fs::read(&ivf).unwrap();
+    assert_eq!(header[12..16], [72, 0, 24, 0]);
+    let validate = splot(&["validate", "--strict", ivf_s]);
+    assert!(validate.status.success(), "{validate:?}");
+    let decode = splot(&["decode", ivf_s, "--output", raw_s, "--output-format", "raw"]);
+    assert!(decode.status.success(), "{decode:?}");
+    assert_eq!(
+        std::fs::read(&raw).unwrap().len(),
+        FRAMES * (65 * 18 + 2 * 33 * 9)
+    );
+    for bad in ["40,40,0,0", "1,2,2,4", "1,2,3"] {
+        let bad = splot(&["encode", input_s, "-o", ivf_s, "--crop", bad]);
+        assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    }
+    for path in [input, ivf, raw] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(8, YUV420, &["--crf", "25"]);
