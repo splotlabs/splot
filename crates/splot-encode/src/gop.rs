@@ -292,7 +292,7 @@ impl GopPlanner {
         } else if show_frame && layer > 0 && display_index + 1 != self.last_display {
             (None, 0)
         } else {
-            let slot = self.refresh_slot()?;
+            let slot = self.refresh_slot(show_frame)?;
             (Some(slot), 1 << slot)
         };
         let ref_slots = (0..self.ref_slots)
@@ -336,8 +336,9 @@ impl GopPlanner {
     }
 
     /// An empty slot, else the slot of the oldest frame no show-existing
-    /// frame waits for, other than the newest frame shown when coded.
-    fn refresh_slot(&self) -> Result<usize> {
+    /// frame waits for, other than the newest frame shown when coded; a shown
+    /// frame, which becomes the newest shown frame, may take that one last.
+    fn refresh_slot(&self, show_frame: bool) -> Result<usize> {
         if let Some(empty) = self.slots[..self.ref_slots]
             .iter()
             .position(Option::is_none)
@@ -354,11 +355,18 @@ impl GopPlanner {
         (0..self.ref_slots)
             .filter_map(|slot| {
                 self.slots[slot]
-                    .filter(|held| !held.awaiting_show && Some(held.display_index) != newest_shown)
-                    .map(|held| (held.display_index, slot))
+                    .filter(|held| !held.awaiting_show)
+                    .map(|held| {
+                        (
+                            Some(held.display_index) == newest_shown,
+                            held.display_index,
+                            slot,
+                        )
+                    })
             })
+            .filter(|&(newest, ..)| show_frame || !newest)
             .min()
-            .map(|(_, slot)| slot)
+            .map(|(.., slot)| slot)
             .ok_or(Error::Unsupported {
                 what: "more hidden frames than reference slots",
             })

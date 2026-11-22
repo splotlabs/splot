@@ -313,7 +313,8 @@ fn primary_reference_is_the_closest_layer_at_or_below_the_frame() {
 }
 
 /// With 3 slots the planner refreshes only slots 0..3 and a key frame
-/// refreshes all three; a mini-GOP of 4 needs more than 1 slot.
+/// refreshes all three; a mini-GOP of 4 needs more than 1 slot, and IPPP
+/// codes over 1 slot.
 #[test]
 fn planners_use_only_their_slots() {
     let keyint = NonZeroU32::new(30).unwrap();
@@ -335,4 +336,11 @@ fn planners_use_only_their_slots() {
     small.plan(len).unwrap();
     let len = small.next_len(usize::MAX, true).unwrap();
     assert!(small.plan(len).is_err());
+    let mut ippp = GopPlanner::new(keyint, 1).with_ref_slots(1);
+    for _ in 0..4 {
+        let len = ippp.next_len(usize::MAX, true).unwrap();
+        assert!(
+            matches!(&ippp.plan(len).unwrap()[..], [GopStep::Code(frame)] if frame.refresh_frame_flags == 1)
+        );
+    }
 }
