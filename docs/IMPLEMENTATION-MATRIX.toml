@@ -6428,6 +6428,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-ONLY"
+name = "Encoder intra-only frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "7.9", "7.20"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-intra-only"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::intra_only (2026-11-22, 0 = off in every row, not measured): value N codes the anchor of every Nth mini-GOP as INTRA_ONLY_FRAME with PRIMARY_REF_NONE, its order hint and one refreshed slot; later frames still reference frames before it, so it is no random access point. A frame whose closest past and future references are both intra codes no TIP (§ 7.9)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::intra_only_headers_keep_the_other_slots", "crates/splot-encode/src/intra_frame_carry_tests.rs::intra_only_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_tip_tests.rs::frames_between_intra_references_code_no_tip"]
+commands = ["cargo test -p splot-core intra_only --locked", "cargo test -p splot-encode intra_only --locked", "cargo test -p splot-encode frames_between_intra_references --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-PALETTE"
 name = "Encoder luma palette"
 category = "encoder"

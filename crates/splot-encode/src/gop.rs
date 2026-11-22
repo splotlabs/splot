@@ -47,9 +47,9 @@ use core::num::NonZeroU32;
 use splot_core::headers::frame::{
     CoreSeqView, EncodedFrameHeader, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
     InterFrameParams, InterpolationFilter, KeyFrameTxParams, REFS_PER_FRAME, TipGlobalMv,
-    UniformTiles, build_inter_frame_header, build_key_frame_header, build_tip_output_frame_header,
-    encode_inter_frame_obu, encode_key_frame_temporal_unit, encode_show_existing_frame_obu,
-    encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
+    UniformTiles, build_inter_frame_header, build_intra_only_frame_header, build_key_frame_header,
+    build_tip_output_frame_header, encode_inter_frame_obu, encode_key_frame_temporal_unit,
+    encode_show_existing_frame_obu, encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
@@ -88,6 +88,10 @@ pub(crate) struct GopFrame {
     pub(crate) primary_slot: Option<u32>,
     /// The frame starts its temporal unit, after the temporal delimiter.
     pub(crate) opens_temporal_unit: bool,
+    /// An inter-type frame coded as `INTRA_ONLY_FRAME` (§ 5.18.2): intra
+    /// blocks, `PRIMARY_REF_NONE`, and the slots it does not refresh keep
+    /// their frames.
+    pub(crate) intra_only: bool,
     /// `implicit_output_frame`: a hidden frame the decoder outputs by order
     /// hint, in a temporal unit of its own (§ 7.3.3, § 7.3.6).
     pub(crate) implicit_output: bool,
@@ -142,6 +146,12 @@ pub(crate) struct GopPlanner {
     after_output: bool,
     /// Display index of the last frame of the mini-GOP being planned.
     last_display: u64,
+    /// Every this many mini-GOPs code their first frame intra-only; `0` never.
+    intra_only: u64,
+    /// Mini-GOPs planned since the start.
+    mini_gops: u64,
+    /// The next layer-0 inter frame is coded intra-only.
+    intra_only_next: bool,
     /// Hidden frames code `implicit_output_frame` in place of a show-existing
     /// frame.
     implicit_output: bool,
@@ -163,7 +173,19 @@ impl GopPlanner {
             cuts: Vec::new(),
             after_output: true,
             last_display: 0,
+            intra_only: 0,
+            mini_gops: 0,
+            intra_only_next: false,
             implicit_output: false,
+        }
+    }
+
+    /// The planner that codes the first frame of every `every`th mini-GOP as
+    /// an intra-only frame; `0` never does.
+    pub(crate) fn with_intra_only(self, every: u8) -> Self {
+        Self {
+            intra_only: u64::from(every),
+            ..self
         }
     }
 
@@ -249,6 +271,9 @@ impl GopPlanner {
             anchor = first;
         }
         if last > anchor {
+            self.mini_gops += 1;
+            self.intra_only_next =
+                self.intra_only > 0 && self.mini_gops.is_multiple_of(self.intra_only);
             self.last_display = last;
             self.place(anchor, last, 0, &mut steps)?;
         }
@@ -329,6 +354,10 @@ impl GopPlanner {
             })
             .min()
             .map(|(_, slot)| slot);
+        let intra_only = frame_type == FrameType::Inter
+            && layer == 0
+            && core::mem::take(&mut self.intra_only_next);
+        let primary_slot = primary_slot.filter(|_| !intra_only);
         if let Some(slot) = slot {
             self.slots[slot] = Some(Slot {
                 display_index,
@@ -348,6 +377,7 @@ impl GopPlanner {
             ref_slots,
             primary_slot,
             opens_temporal_unit: self.after_output,
+            intra_only,
             implicit_output: self.implicit_output && !show_frame,
         };
         self.next_frame += 1;
@@ -539,7 +569,7 @@ impl GopFrame {
             }
             FrameType::Inter => {
                 let params = self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles));
-                inter_header(view, refs, &params)?.core
+                inter_header(view, refs, &params, self.intra_only)?.core
             }
         };
         match core.display_order_hint() {
@@ -596,6 +626,7 @@ impl GopFrame {
             view,
             refs,
             &self.inter_params(qindex, filters, (tx, compound, mv_tools, layout)),
+            self.intra_only,
         )?;
         if header.core != expected {
             return Err(Error::Unsupported {
@@ -721,12 +752,18 @@ impl GopFrame {
 }
 
 /// [`choose_inter_header`] with the parameters of each `reuse_ccso` plane
-/// loaded from its reference, as the decoder loads them (§ 5.18.7.12).
+/// loaded from its reference, as the decoder loads them (§ 5.18.7.12); the
+/// `INTRA_ONLY_FRAME` header of `params` when `intra_only`.
 fn inter_header(
     view: &CoreSeqView,
     refs: &EncoderReferences,
     params: &InterFrameParams,
+    intra_only: bool,
 ) -> Result<EncodedFrameHeader> {
+    if intra_only {
+        return build_intra_only_frame_header(view, &refs.header_view(), params)
+            .map_err(header_error);
+    }
     let mut header = choose_inter_header(view, refs, params).map_err(header_error)?;
     refs.resolve_ccso_reuse(&mut header.core)
         .map_err(header_error)?;

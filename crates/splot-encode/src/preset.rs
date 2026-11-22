@@ -309,6 +309,11 @@ pub struct PresetParams {
     /// without `explicit_num_ref_frames`; `n` codes `n` slots, which the GOP
     /// planner uses.
     pub num_ref_frames: u8,
+    /// `n > 0` codes the first frame of every `n`th mini-GOP as an
+    /// `INTRA_ONLY_FRAME` (§ 5.18.2) that refreshes one slot; the later
+    /// frames may still reference the frames before it. `0` in every row
+    /// (not measured).
+    pub intra_only: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -1294,6 +1299,7 @@ preset_table! {
         long_term_id_bits:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_output:       [false, false, false, false, false, false, false, false, false, false, false],
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],
