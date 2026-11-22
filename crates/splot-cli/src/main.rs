@@ -39,7 +39,7 @@ enum Command {
     /// Decode the currently supported experimental AV2 subset.
     #[command(visible_alias = "dec")]
     Decode(commands::decode::DecodeArgs),
-    /// Encode a Y4M file to an AV2 IVF stream.
+    /// Encode a Y4M file to an AV2 IVF or Annex B stream.
     #[command(visible_alias = "enc")]
     Encode(commands::encode::EncodeArgs),
     /// Describe a validator diagnostic rule id (or list them all).
