@@ -27,8 +27,8 @@ use crate::headers::frame::inter_shared_tail::lr_reference_filters;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
-    FrameHeaderParseStatus, FrameReferenceStateView, IntrabcParams, KeyFrameTxParams, TipFrameMode,
-    TxMode, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, IntrabcParams, KeyFrameTxParams,
+    TipFrameMode, TxMode, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
@@ -135,6 +135,21 @@ pub struct InterFrameParams {
     /// `implicit_output_frame` of a hidden frame (§ 5.18.2): the decoder
     /// outputs it by order hint. Needs `monotonic_output_order_flag = 0`.
     pub implicit_output: bool,
+    /// A leading frame of an open-loop key frame (§ 7.4.4): it codes
+    /// `OBU_LEADING_TILE_GROUP` or `OBU_LEADING_TIP` in place of the regular
+    /// type.
+    pub leading: bool,
+}
+
+impl InterFrameParams {
+    /// The tile-group OBU type of the frame (§ 5.2.1).
+    const fn tile_group_type(&self) -> ObuType {
+        if self.leading {
+            ObuType::LeadingTileGroup
+        } else {
+            ObuType::RegularTileGroup
+        }
+    }
 }
 
 /// `our_ref`, `their_ref` with its `ns` range, and the `PrevGmParams` of each
@@ -273,8 +288,9 @@ fn parse_inter_frame_header(
     let (bytes, bit_len) =
         inter_frame_header_bits(seq, params, map, (lr_refs, &gm), (weight_coded, explicit))?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
-    let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
-    let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
+    let obu_type = params.tile_group_type();
+    let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, obu_type, true);
     let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
     parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
     core.consumed_bits = reader.consumed_bits();
@@ -566,7 +582,7 @@ fn write_global_motion(
 }
 
 /// Builds the `INTRA_ONLY_FRAME` header (§ 5.18.2 `frame_is_inter = 0`) of
-/// `params` in an `OBU_REGULAR_TILE_GROUP`, parsed with `refs`: its
+/// `params` in its tile-group OBU type, parsed with `refs`: its
 /// `order_hint`, `show_frame` and `refresh_frame_flags`, then the key-frame
 /// tail of `base_q_idx`, `tiles`, `filters` and `tx`. An intra frame codes
 /// `PRIMARY_REF_NONE` and no references; the slots it does not refresh keep
@@ -593,19 +609,89 @@ pub fn build_intra_only_frame_header(
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
     write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
+    let obu_type = params.tile_group_type();
+    intra_header_from_head(seq, refs, params, w, (obu_type, FrameType::IntraOnly))
+}
+
+/// Builds the `OBU_OPEN_LOOP_KEY` header (§ 5.18.2) of the hidden key frame
+/// `params`, parsed with `refs`: its `long_term_id_plus_1`, no
+/// `ref_long_term_id`, `implicit_output_frame`, `order_hint` and
+/// `refresh_frame_flags`, then the key-frame tail of `base_q_idx`, `tiles`,
+/// `filters` and `tx`. `immediate_output_frame` is `0` (§ 5.18.2); the slots
+/// that it does not refresh keep their frames for the leading frames.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for a single-picture view, a shown frame, a
+/// leading frame, a `long_term_id_plus_1` or `refresh_frame_flags` the
+/// sequence cannot code, a zero or too-wide `base_q_idx`, `filters` or `tx`
+/// the sequence cannot carry, or bits that do not parse to a complete key
+/// header with `refs`.
+pub fn build_open_loop_key_frame_header(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+) -> Result<EncodedFrameHeader, EncoderHeaderError> {
+    if seq.single_picture_header_flag {
+        return Err(EncoderHeaderError::SinglePictureView);
+    }
+    if params.show_frame || params.leading {
+        return Err(unsupported("a shown or leading open-loop key frame"));
+    }
+    let bits = seq.long_term_frame_id_bits;
+    if params.tx.long_term_id_plus_1 >> bits != 0 {
+        return Err(unsupported("long_term_id_plus_1"));
+    }
+    let mut w = BitWriter::new();
+    write_mfh_reference(&mut w, params.tx.multi_frame_header)?;
+    w.write_bits(params.tx.long_term_id_plus_1, bits)?;
+    if bits != 0 {
+        w.write_bits(0, 3)?; // num_key_ref_frames
+    }
+    write_implicit_output(&mut w, seq, params)?;
+    w.write_flag(false)?; // frame_size_override_flag
+    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
+    w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
+    let flags = params.refresh_frame_flags;
+    if flags == 0 || flags >> seq.num_ref_frames != 0 {
+        return Err(unsupported("refresh_frame_flags of an open-loop key frame"));
+    }
+    if seq.enable_short_refresh_frame_flags {
+        if flags.count_ones() > 1 {
+            return Err(unsupported(
+                "short refresh_frame_flags of more than one slot",
+            ));
+        }
+        w.write_bits(flags.trailing_zeros(), ceil_log2(seq.num_ref_frames))?; // frame_to_refresh
+    } else {
+        w.write_bits(flags, seq.num_ref_frames)?;
+    }
+    let kind = (ObuType::OpenLoopKey, FrameType::Key);
+    intra_header_from_head(seq, refs, params, w, kind)
+}
+
+/// Completes the intra header whose bits up to `refresh_frame_flags` are in
+/// `w` with the key-frame tail of `params`, and parses it with `refs` as a
+/// frame of `obu_type` that must be `frame_type`.
+fn intra_header_from_head(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+    mut w: BitWriter,
+    (obu_type, frame_type): (ObuType, FrameType),
+) -> Result<EncodedFrameHeader, EncoderHeaderError> {
     let output = params.show_frame || params.implicit_output;
     let tail = (params.base_q_idx, params.tiles, output);
     write_intra_frame_tail(&mut w, seq, tail, &params.filters, params.tx)?;
     let bytes = w.into_bytes();
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
-    let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
-    let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
+    let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, obu_type, true);
     let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
     parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
     let bit_len = reader.consumed_bits();
     core.consumed_bits = bit_len;
     if core.status != FrameHeaderParseStatus::IntraHeaderComplete
-        || core.frame_type != Some(crate::headers::frame::FrameType::IntraOnly)
+        || core.frame_type != Some(frame_type)
     {
         return Err(EncoderHeaderError::Incomplete);
     }
@@ -614,7 +700,7 @@ pub fn build_intra_only_frame_header(
     Ok(EncodedFrameHeader { core, bits })
 }
 
-/// Serializes the `OBU_REGULAR_TILE_GROUP` OBUs of `header` that carry the
+/// Serializes the tile-group OBUs of `header`, of its OBU type, that carry the
 /// `tiles` of the frame in `tile_groups` tile groups (see
 /// [`tile_group_ranges`]): the first codes `is_first_tile_group` and the
 /// recorded header bits, each codes its § 5.19 structure and tiles.
@@ -630,7 +716,7 @@ pub fn encode_inter_frame_obu(
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     write_tile_groups(
         &header.core,
-        ObuType::RegularTileGroup,
+        header.core.obu_type,
         (tiles, tile_groups),
         |structure, tiles| {
             let mut payload = BitWriter::new();
@@ -847,8 +933,13 @@ pub fn build_tip_output_frame_header(
     w.write_trailing_bits(8 - bit_len % 8)?;
     let bytes = w.into_bytes();
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
-    let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTip, Some(true))?;
-    let mut core = init_core_from_prefix(&prefix, ObuType::RegularTip, true);
+    let obu_type = if params.leading {
+        ObuType::LeadingTip
+    } else {
+        ObuType::RegularTip
+    };
+    let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, obu_type, true);
     let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
     parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
     core.consumed_bits = reader.consumed_bits();
@@ -867,7 +958,7 @@ pub fn build_tip_output_frame_header(
     Ok(EncodedFrameHeader { core, bits })
 }
 
-/// Serializes the `OBU_REGULAR_TIP` OBU of `header`: the recorded header
+/// Serializes the TIP OBU of `header`, of its OBU type: the recorded header
 /// bits and `trailing_bits()`.
 ///
 /// # Errors
@@ -887,13 +978,14 @@ pub fn encode_tip_output_frame_obu(
     let mut w = BitWriter::new();
     write_annexb_obu(
         &mut w,
-        &obu_header(ObuType::RegularTip),
+        &obu_header(header.core.obu_type),
         &payload.into_bytes(),
     )?;
     Ok(w.into_bytes())
 }
 
-/// Serializes an `OBU_REGULAR_SEF` OBU that shows reference slot
+/// Serializes an `OBU_REGULAR_SEF` OBU, or an `OBU_LEADING_SEF` when
+/// `leading`, that shows reference slot
 /// `frame_to_show_map_idx` (§ 5.18.2) with the `film_grain_config()` of
 /// `grain_seed` (see [`KeyFrameTxParams::grain_seed`]): with
 /// `derive_sef_order_hint = 1`, or with `sef_order_hint` = the low
@@ -909,8 +1001,13 @@ pub fn encode_show_existing_frame_obu(
     frame_to_show_map_idx: u32,
     order_hint: Option<u32>,
     grain_seed: Option<u16>,
-    multi_frame_header: bool,
+    (multi_frame_header, leading): (bool, bool),
 ) -> Result<Vec<u8>, EncoderHeaderError> {
+    let obu_type = if leading {
+        ObuType::LeadingSef
+    } else {
+        ObuType::RegularSef
+    };
     if frame_to_show_map_idx >= seq.num_ref_frames {
         return Err(unsupported("frame_to_show_map_idx"));
     }
@@ -930,8 +1027,8 @@ pub fn encode_show_existing_frame_obu(
     w.write_trailing_bits(8 - w.bit_len() % 8)?;
     let payload = w.into_bytes();
     let mut reader = BitReader::new(&payload, ByteOffset::new(0));
-    let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularSef, Some(true))?;
-    let mut core = init_core_from_prefix(&prefix, ObuType::RegularSef, true);
+    let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, obu_type, true);
     parse_core_body(
         &mut reader,
         &mut core,
@@ -945,7 +1042,7 @@ pub fn encode_show_existing_frame_obu(
         return Err(EncoderHeaderError::Incomplete);
     }
     let mut obu = BitWriter::new();
-    write_annexb_obu(&mut obu, &obu_header(ObuType::RegularSef), &payload)?;
+    write_annexb_obu(&mut obu, &obu_header(obu_type), &payload)?;
     Ok(obu.into_bytes())
 }
 

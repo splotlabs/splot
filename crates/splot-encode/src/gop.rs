@@ -6,7 +6,10 @@
 //! frame header and OBUs each coded frame gives.
 //!
 //! The first frame, every frame `keyint` frames after the last key frame, and
-//! every scene cut the lookahead reports are closed-loop key frames. The frames
+//! every scene cut the lookahead reports are closed-loop key frames; with the
+//! preset's `open_loop_key` every Nth periodic one is an open-loop key frame
+//! (§ 7.4.4) instead: the hidden layer-0 frame of the mini-GOP that ends at it,
+//! whose other frames are leading frames. The frames
 //! between key frames form mini-GOPs of the preset's `mini_gop_size` frames;
 //! the last mini-GOP before a key frame or the end of the input can be
 //! shorter. A mini-GOP codes its last frame first, then the middle frame of
@@ -51,8 +54,9 @@ use splot_core::headers::frame::{
     CoreSeqView, EncodedFrameHeader, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
     FrameTiles, InterFrameParams, InterpolationFilter, KeyFrameTxParams, REFS_PER_FRAME,
     TipGlobalMv, build_inter_frame_header, build_intra_only_frame_header, build_key_frame_header,
-    build_tip_output_frame_header, encode_inter_frame_obu, encode_key_frame_temporal_unit,
-    encode_show_existing_frame_obu, encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
+    build_open_loop_key_frame_header, build_tip_output_frame_header, encode_inter_frame_obu,
+    encode_key_frame_temporal_unit, encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
+    encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
@@ -101,6 +105,12 @@ pub(crate) struct GopFrame {
     /// `implicit_output_frame`: a hidden frame the decoder outputs by order
     /// hint, in a temporal unit of its own (§ 7.3.3, § 7.3.6).
     pub(crate) implicit_output: bool,
+    /// A key frame coded as `OBU_OPEN_LOOP_KEY` (§ 7.4.4): hidden, it
+    /// refreshes one slot and the other slots keep their frames.
+    pub(crate) open_loop: bool,
+    /// A frame of the mini-GOP of an open-loop key frame that precedes it in
+    /// display order, coded with a leading OBU type (§ 7.4.4).
+    pub(crate) leading: bool,
 }
 
 /// One step of the coding order.
@@ -116,6 +126,8 @@ pub(crate) enum GopStep {
         slot: u32,
         display_index: u64,
         order_hint: Option<u32>,
+        /// `OBU_LEADING_SEF`: it outputs a leading frame.
+        leading: bool,
     },
 }
 
@@ -174,6 +186,13 @@ pub(crate) struct GopPlanner {
     repeats: Vec<u64>,
     /// The last repeat [`Self::repeat`] took and the coded frame it repeats.
     last_repeat: Option<(u64, u64)>,
+    /// Every this many periodic key frames are open-loop key frames; `0` never.
+    open_loop_key: u64,
+    /// Periodic key frames planned since the start.
+    periodic_keys: u64,
+    /// The display index of the open-loop key frame of the mini-GOP being
+    /// planned.
+    open_loop_display: Option<u64>,
 }
 
 impl GopPlanner {
@@ -199,7 +218,34 @@ impl GopPlanner {
             sef_repeat: false,
             repeats: Vec::new(),
             last_repeat: None,
+            open_loop_key: 0,
+            periodic_keys: 0,
+            open_loop_display: None,
         }
+    }
+
+    /// The planner that codes every `every`th periodic key frame, `keyint`
+    /// frames after the key frame before it, as an open-loop key frame: the
+    /// hidden layer-0 frame of the mini-GOP that ends at it, whose other
+    /// frames are its leading frames. A scene cut and a key frame with no
+    /// frame before it in its mini-GOP stay closed-loop; `0` never codes one.
+    pub(crate) fn with_open_loop_key(self, every: u8) -> Self {
+        Self {
+            open_loop_key: u64::from(every),
+            ..self
+        }
+    }
+
+    /// Whether the next scheduled key frame is an open-loop key frame: a
+    /// periodic one that no scene cut comes before or at.
+    fn open_loop_next(&self) -> bool {
+        self.open_loop_key > 0
+            && self.scheduled_key > 0
+            && self
+                .cuts
+                .first()
+                .is_none_or(|&cut| cut > self.scheduled_key)
+            && (self.periodic_keys + 1).is_multiple_of(self.open_loop_key)
     }
 
     /// The planner that shows input frames equal to the frame before them
@@ -302,10 +348,15 @@ impl GopPlanner {
             .iter()
             .find(|&&repeat| repeat >= self.next_display)
             .map_or(u64::MAX, |&repeat| repeat - self.next_display);
+        let to_end = if self.open_loop_next() && to_key > 0 {
+            to_key + 1
+        } else {
+            to_key
+        };
         let wanted = if to_key == 0 || to_repeat == 0 {
             1
         } else {
-            to_key.min(to_repeat).min(self.mini_gop_size)
+            to_end.min(to_repeat).min(self.mini_gop_size)
         };
         let wanted = usize::try_from(wanted).unwrap_or(usize::MAX);
         (queued > 0 && (queued >= wanted || ended)).then_some(queued.min(wanted))
@@ -339,23 +390,40 @@ impl GopPlanner {
                 slot,
                 display_index: first,
                 order_hint: Some((first - self.key_display) as u32),
+                leading: false,
             });
             self.after_output = true;
             self.next_display = first + 1;
             return Ok(steps);
         }
         if first == self.next_key() {
+            if first == self.scheduled_key && self.scheduled_key > 0 {
+                self.periodic_keys += 1;
+            }
             self.cuts.retain(|&cut| cut > first);
             self.scheduled_key = first + self.keyint;
             steps.push(self.code(first, FrameType::Key, true, 0)?);
             anchor = first;
+        } else if last == self.scheduled_key && self.open_loop_next() {
+            self.periodic_keys += 1;
+            self.cuts.retain(|&cut| cut > last);
+            self.scheduled_key = last + self.keyint;
+            self.open_loop_display = Some(last);
         }
         if last > anchor {
             self.mini_gops += 1;
-            self.intra_only_next =
-                self.intra_only > 0 && self.mini_gops.is_multiple_of(self.intra_only);
+            self.intra_only_next = self.open_loop_display.is_none()
+                && self.intra_only > 0
+                && self.mini_gops.is_multiple_of(self.intra_only);
             self.last_display = last;
             self.place(anchor, last, 0, &mut steps)?;
+        }
+        if self.open_loop_display.take().is_some() {
+            for held in &mut self.slots {
+                if held.is_some_and(|held| held.display_index != last) {
+                    *held = None;
+                }
+            }
         }
         self.next_display = last + 1;
         Ok(steps)
@@ -367,7 +435,12 @@ impl GopPlanner {
             steps.push(self.code(hi, FrameType::Inter, true, layer)?);
             return Ok(());
         }
-        steps.push(self.code(hi, FrameType::Inter, false, layer)?);
+        let frame_type = if self.open_loop_display == Some(hi) {
+            FrameType::Key
+        } else {
+            FrameType::Inter
+        };
+        steps.push(self.code(hi, frame_type, false, layer)?);
         self.fill(lo, hi, layer + 1, steps)?;
         let (slot, held) = self
             .slots
@@ -387,6 +460,7 @@ impl GopPlanner {
                 slot,
                 display_index: hi,
                 order_hint: None,
+                leading: self.leading(hi),
             });
         }
         self.after_output = true;
@@ -410,7 +484,11 @@ impl GopPlanner {
         show_frame: bool,
         layer: u8,
     ) -> Result<GopStep> {
-        let (slot, refresh_frame_flags) = if frame_type == FrameType::Key {
+        let open_loop = frame_type == FrameType::Key && !show_frame;
+        let (slot, refresh_frame_flags) = if open_loop {
+            let slot = self.refresh_slot(false)?;
+            (Some(slot), 1 << slot)
+        } else if frame_type == FrameType::Key {
             self.slots = [None; MAX_REF_SLOTS];
             self.key_display = display_index;
             (Some(0), (1 << self.ref_slots) - 1)
@@ -438,7 +516,7 @@ impl GopPlanner {
         let intra_only = frame_type == FrameType::Inter
             && layer == 0
             && core::mem::take(&mut self.intra_only_next);
-        let primary_slot = primary_slot.filter(|_| !intra_only);
+        let primary_slot = primary_slot.filter(|_| !intra_only && !open_loop);
         if let Some(slot) = slot {
             self.slots[slot] = Some(Slot {
                 display_index,
@@ -460,10 +538,18 @@ impl GopPlanner {
             opens_temporal_unit: self.after_output,
             intra_only,
             implicit_output: self.implicit_output && !show_frame,
+            open_loop,
+            leading: self.leading(display_index),
         };
         self.next_frame += 1;
         self.after_output = show_frame || self.implicit_output;
         Ok(GopStep::Code(frame))
+    }
+
+    /// Whether `display_index` precedes the open-loop key frame being planned.
+    fn leading(&self, display_index: u64) -> bool {
+        self.open_loop_display
+            .is_some_and(|key| display_index < key)
     }
 
     /// An empty slot, else the slot of the oldest frame no show-existing
@@ -601,18 +687,20 @@ pub(crate) type FrameTools = (
     FrameTiles,
 );
 
-/// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`, with
-/// the explicit `order_hint` when given, and the film grain of `grain_seed`;
-/// with `multi_frame_header` it codes `cur_mfh_id = 1`.
+/// A temporal delimiter and the `OBU_REGULAR_SEF`, or the `OBU_LEADING_SEF`
+/// when `leading`, that outputs `slot`, with the explicit `order_hint` when
+/// given, and the film grain of `grain_seed`; with `multi_frame_header` it
+/// codes `cur_mfh_id = 1`.
 pub(crate) fn show_existing_unit(
     view: &CoreSeqView,
     slot: u32,
     order_hint: Option<u32>,
-    (grain_seed, multi_frame_header): (Option<u16>, bool),
+    (grain_seed, multi_frame_header, leading): (Option<u16>, bool, bool),
 ) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
+    let flags = (multi_frame_header, leading);
     unit.extend(
-        encode_show_existing_frame_obu(view, slot, order_hint, grain_seed, multi_frame_header)
+        encode_show_existing_frame_obu(view, slot, order_hint, grain_seed, flags)
             .map_err(header_error)?,
     );
     Ok(unit)
@@ -649,6 +737,15 @@ impl GopFrame {
         (tx, compound, mv_tools, tiles): FrameTools,
     ) -> Result<FrameHeaderCore> {
         let core = match self.frame_type {
+            FrameType::Key if self.open_loop => {
+                let params = InterFrameParams {
+                    tx,
+                    ..self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles))
+                };
+                build_open_loop_key_frame_header(view, &refs.header_view(), &params)
+                    .map_err(header_error)?
+                    .core
+            }
             FrameType::Key => {
                 build_key_frame_header(view, qindex, self.order_hint, filters, tx, tiles)
                     .map_err(header_error)?
@@ -760,6 +857,7 @@ impl GopFrame {
             show_frame: self.show_frame,
             tip_weight: Some(weight),
             tip_hole_fill: true,
+            leading: self.leading,
             tx: KeyFrameTxParams {
                 grain_seed,
                 plane_delta_q,
@@ -841,6 +939,7 @@ impl GopFrame {
             global_motion_predict,
             explicit_refs,
             implicit_output: self.implicit_output,
+            leading: self.leading,
         }
     }
 }

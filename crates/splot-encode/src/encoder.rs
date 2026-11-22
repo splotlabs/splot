@@ -74,6 +74,9 @@ pub(crate) struct CodedFrame {
     /// The 8x8 cells the intra leaves of the coded trees cover, which later
     /// frames read from their primary reference; `None` without leaves.
     pub(crate) intra_cells: Option<std::sync::Arc<crate::intra_frame::IntraCells>>,
+    /// A key frame whose temporal unit carries a film grain model; the
+    /// frames after it apply grain.
+    pub(crate) film_grain_model: bool,
     /// The `GLOBALMV` and `GLOBAL_GLOBALMV` leaves of the coded trees.
     #[cfg(test)]
     pub(crate) global_leaves: usize,
@@ -87,8 +90,17 @@ pub(crate) trait FrameCoder {
     /// Stores a frame of [`Self::encode_wave`] in the references, in coding order.
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()>;
     /// A temporal delimiter and the show-existing frame that outputs the
-    /// frame in `slot`, with the explicit `order_hint` when given.
-    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>>;
+    /// frame in `slot`, with the explicit `order_hint` when given, as an
+    /// `OBU_LEADING_SEF` when `leading`.
+    fn show_existing_frame(
+        &mut self,
+        slot: u32,
+        order_hint: Option<u32>,
+        leading: bool,
+    ) -> Result<Vec<u8>>;
+    /// Ends the leading frames of an open-loop key frame before the first
+    /// regular frame after them codes (§ 5.18.1); nothing without them.
+    fn end_leading_frames(&mut self) -> Result<()>;
     /// Fits the sequence to `first`, the first frame in display order,
     /// before any frame is coded.
     fn start_sequence(&mut self, _first: &SourceFrame) -> Result<()> {
@@ -253,6 +265,7 @@ impl Encoder {
         let planner = GopPlanner::new(config.keyint, mini_gop_size)
             .with_ref_slots(slots)
             .with_intra_only(params.intra_only)
+            .with_open_loop_key(params.open_loop_key)
             .with_implicit_output(params.implicit_output)
             .with_sef_repeat(params.sef_repeat);
         Ok(Self {
@@ -583,6 +596,9 @@ impl Encoder {
             };
             jobs.push((frame, plan, qp));
         }
+        if jobs.first().is_some_and(|(_, plan, _)| !plan.leading) {
+            self.coder.end_leading_frames()?;
+        }
         let mut coded = jobs.iter().zip(self.coder.encode_wave(&jobs)?);
         for step in wave {
             *position += 1;
@@ -604,8 +620,9 @@ impl Encoder {
                     slot,
                     display_index,
                     order_hint,
+                    leading,
                 } => {
-                    let unit = self.coder.show_existing_frame(slot, order_hint)?;
+                    let unit = self.coder.show_existing_frame(slot, order_hint, leading)?;
                     let bits = unit.len() as u64 * 8;
                     if let Some(buffer) = &mut self.buffer {
                         buffer.add(bits);
