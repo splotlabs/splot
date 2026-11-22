@@ -61,11 +61,17 @@ impl DecodedLeafPublication {
     /// § 5.20.4.1 invokes the § 7.22 motion-field storage only for those leaves.
     pub(crate) fn luma_tree_block(
         self,
-        [r, c]: [usize; 2],
+        origin: [usize; 2],
     ) -> Option<(usize, usize, usize, usize)> {
         if matches!(self.tree_type, PartitionTreeType::ChromaPart) {
             return None;
         }
+        self.tree_block(origin)
+    }
+
+    /// The `decode_block(r, c, subSize)` position and size in 4x4 units of
+    /// the leaf in the superblock at `[r, c]`, in either tree.
+    pub(crate) fn tree_block(self, [r, c]: [usize; 2]) -> Option<(usize, usize, usize, usize)> {
         let [sr, sc] = self.sub_block_origin();
         Some((
             r + sr,

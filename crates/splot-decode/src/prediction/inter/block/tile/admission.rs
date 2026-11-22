@@ -1631,7 +1631,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         geometry
             .tiles
             .iter()
-            .map(|_| TileResolveState::new(&sequence)),
+            .map(|_| TileResolveState::new(&sequence, &core)),
     );
     let mut tiles = core::mem::take(&mut reusable.tiles);
     tiles.clone_from(&geometry.tiles);

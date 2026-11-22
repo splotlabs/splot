@@ -24,29 +24,46 @@ const fn bv(rows: i32, cols: i32) -> [i32; 2] {
 }
 
 fn global(block: &IntrabcMvBlock, mv: [i32; 2]) -> bool {
-    is_mv_valid(block, LocalArea::StateNotAvailable, mv)
+    is_mv_valid(block, None, mv)
+}
+
+/// The tile-edge test of `block` (tile in 4x4 units) for `mv`.
+fn in_tile(block: &IntrabcMvBlock, mv: [i32; 2]) -> bool {
+    let (rows, cols) = &block.tile;
+    let tile = [rows.start, cols.start, rows.end, cols.end].map(|mi| mi * 4);
+    source_within_tile(
+        block.mi,
+        block.size,
+        block.chroma.map(|(mi, _)| mi),
+        tile,
+        mv,
+    )
 }
 
 #[test]
 fn the_source_must_lie_in_the_tile_with_its_sub_sample_border() {
     let mut block = leaf((16, 16), 16, 32, 64);
     block.tile = (8..32, 8..64);
-    block.allow_global_intrabc = false;
-    block.allow_local_intrabc = true;
-    assert!(global(&block, bv(-32, -32)));
-    assert!(!global(&block, bv(-33, -32)), "above the tile");
-    assert!(!global(&block, bv(-32, -33)), "left of the tile");
-    assert!(global(&block, bv(48, 0)));
-    assert!(!global(&block, bv(49, 0)), "below the tile");
-    assert!(!global(&block, [48 * 8 + 1, 0]), "sub-sample bottom border");
-    assert!(global(&block, bv(0, 176)));
-    assert!(!global(&block, [0, 176 * 8 + 4]), "sub-sample right border");
+    assert!(in_tile(&block, bv(-32, -32)));
+    assert!(!in_tile(&block, bv(-33, -32)), "above the tile");
+    assert!(!in_tile(&block, bv(-32, -33)), "left of the tile");
+    assert!(in_tile(&block, bv(48, 0)));
+    assert!(!in_tile(&block, bv(49, 0)), "below the tile");
+    assert!(
+        !in_tile(&block, [48 * 8 + 1, 0]),
+        "sub-sample bottom border"
+    );
+    assert!(in_tile(&block, bv(0, 176)));
+    assert!(
+        !in_tile(&block, [0, 176 * 8 + 4]),
+        "sub-sample right border"
+    );
     block.mi = (17, 17);
     block.size = (4, 4);
     block.chroma = Some(((16, 16), (8, 8)));
-    assert!(global(&block, bv(-32, -32)), "the chroma edges are 32");
+    assert!(in_tile(&block, bv(-32, -32)), "the chroma edges are 32");
     assert!(
-        !global(&block, bv(-32, -33)),
+        !in_tile(&block, bv(-32, -33)),
         "luma left 35, chroma left 31"
     );
 }
@@ -124,7 +141,7 @@ fn local(
         buffers,
         coded,
     };
-    is_mv_valid(block, LocalArea::State(state), mv)
+    is_mv_valid(block, Some(state), mv)
 }
 
 fn local_leaf(mi: (usize, usize), size: usize) -> IntrabcMvBlock {
@@ -221,34 +238,168 @@ fn the_global_area_still_accepts_what_the_local_area_refuses() {
 }
 
 #[test]
-fn without_the_local_area_state_the_local_area_accepts() {
+fn without_the_local_area_state_only_the_global_area_accepts() {
     let mut block = leaf((16, 32), 16, 32, 64);
-    let mv = bv(0, -128);
-    assert!(!global(&block, mv));
-    block.allow_local_intrabc = true;
+    let mv = bv(-64, -64);
     assert!(global(&block, mv));
-    assert!(
-        !global(&block, bv(-65, -128)),
-        "the tile-edge test still runs"
-    );
+    block.allow_local_intrabc = true;
+    block.allow_global_intrabc = false;
+    assert!(!global(&block, mv));
 }
 
 #[test]
 fn the_offset_vector_moves_the_source_by_whole_samples() {
-    let mut block = leaf((4, 12), 16, 16, 64);
-    block.allow_local_intrabc = true;
+    let block = local_leaf((4, 12), 16);
+    let buffers = IbcBuffers::start_sb_row(0, true);
+    let all = |_: usize, _: usize| true;
+    let state = || {
+        Some(LocalAreaState {
+            sdp_intra: false,
+            buffers: &buffers,
+            coded: &all,
+        })
+    };
     let mv = [-128, -160];
-    assert!(is_mv_valid(&block, LocalArea::StateNotAvailable, mv));
-    assert!(!is_offset_mv_valid(
-        &block,
-        LocalArea::StateNotAvailable,
-        mv,
-        (-1, -1)
-    ));
-    assert!(is_offset_mv_valid(
-        &block,
-        LocalArea::StateNotAvailable,
-        [-120, -160],
-        (-1, -1)
-    ));
+    assert!(is_mv_valid(&block, state(), mv));
+    assert!(!is_offset_mv_valid(&block, state(), mv, (-1, -1)));
+    assert!(is_offset_mv_valid(&block, state(), [-120, -160], (-1, -1)));
+}
+
+#[test]
+fn chunk_updates_follow_the_raster_and_the_residual_group_orders() {
+    let raster: Vec<_> = chunk_origins([0, 0], [64, 32], ChunkOrder::Raster).collect();
+    let grouped: Vec<_> = chunk_origins([0, 0], [64, 32], ChunkOrder::Grouped).collect();
+    let at = |cells: &[(usize, usize)]| -> Vec<[usize; 2]> {
+        cells.iter().map(|&(y, x)| [y * 16, x * 16]).collect()
+    };
+    assert_eq!(
+        raster,
+        at(&[
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (1, 0),
+            (1, 1),
+            (1, 2),
+            (1, 3)
+        ])
+    );
+    assert_eq!(
+        grouped,
+        at(&[
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (0, 2),
+            (0, 3),
+            (1, 2),
+            (1, 3)
+        ])
+    );
+    assert_eq!(
+        chunk_origins([4, 8], [8, 4], ChunkOrder::Grouped).collect::<Vec<_>>(),
+        [[4, 8]]
+    );
+}
+
+/// The `[r, c, w4, h4]` of entry `index` of `blocks`.
+fn entry(blocks: &[[usize; 4]]) -> impl Fn(usize) -> Option<[usize; 4]> + '_ {
+    |index| blocks.get(index).copied()
+}
+
+#[test]
+fn the_replay_interleaves_out_of_frame_calls_and_owes_the_leaf_chunks() {
+    let blocks = [[0, 0, 16, 16], [16, 0, 32, 16]];
+    let calls = [OutOfFrameCall {
+        entry: 1,
+        origin: [0, 16],
+        size4: [8, 8],
+    }];
+    let mut pending = &calls[..];
+    let mut replay = IbcLocalReplay::new(false);
+    let superblock = ([0, 0], 32, 0);
+    replay
+        .replay_to_leaf(superblock, 1, entry(&blocks), &mut pending)
+        .unwrap();
+    assert!(pending.is_empty());
+    assert_eq!(replay.buffers.cur, (1, 0));
+    assert_eq!(replay.buffers.stored[0], Some((0, 0)));
+    assert_eq!(
+        replay.buffers.stored[1],
+        Some((0, 1)),
+        "the out-of-frame call"
+    );
+    assert!(replay.coded(0, 20), "out-of-frame cells are coded");
+    assert!(!replay.coded(8, 16));
+    assert!(replay.coded(31, 31), "the leaf's own cells");
+    replay
+        .finish_superblock(superblock, 2, entry(&blocks), &mut pending)
+        .unwrap();
+    assert_eq!(replay.buffers.cur, (1, 1), "the 128x64 leaf's second chunk");
+    assert_eq!(replay.buffers.stored[2], Some((1, 0)));
+}
+
+#[test]
+fn an_extended_sdp_chroma_block_moves_the_current_buffer_back() {
+    let blocks = [[8, 0, 16, 8], [16, 0, 16, 8], [8, 0, 16, 16]];
+    let mut replay = IbcLocalReplay::new(false);
+    replay
+        .finish_superblock(([0, 0], 32, 0), 3, entry(&blocks), &mut &[][..])
+        .unwrap();
+    assert_eq!(replay.buffers.cur, (0, 0));
+    assert_eq!(replay.buffers.stored[2], Some((1, 0)));
+}
+
+#[test]
+fn ibc_coded_outside_the_superblock_is_one_only_to_its_left_in_its_row() {
+    let mut replay = IbcLocalReplay::new(false);
+    replay
+        .finish_superblock(([16, 32], 16, 0), 1, entry(&[[16, 32, 4, 4]]), &mut &[][..])
+        .unwrap();
+    assert!(
+        replay.coded(16, 0) && replay.coded(31, 31),
+        "left, same row"
+    );
+    assert!(replay.coded(19, 35) && !replay.coded(20, 32));
+    assert!(!replay.coded(16, 48), "right of the superblock");
+    assert!(!replay.coded(15, 0) && !replay.coded(32, 0), "other rows");
+    replay
+        .finish_superblock(
+            ([32, 0], 16, 1),
+            2,
+            entry(&[[0; 4], [32, 0, 4, 4]]),
+            &mut &[][..],
+        )
+        .unwrap();
+    assert_eq!(
+        replay.buffers,
+        IbcBuffers::start_sb_row(32, true),
+        "a new row resets"
+    );
+}
+
+#[test]
+fn the_buffer_test_refuses_sources_right_of_the_superblock_or_in_earlier_rows() {
+    let all = |_: usize, _: usize| true;
+    let mut buffers = IbcBuffers::start_sb_row(0, true);
+    buffers.update(0, 0);
+    buffers.update(0, 16);
+    let block = local_leaf((4, 16), 8);
+    assert!(
+        local(&block, false, &buffers, &all, bv(-16, -64)),
+        "region 0"
+    );
+    assert!(
+        !local(&block, false, &buffers, &all, bv(-16, 80)),
+        "region 2, right of the current superblock"
+    );
+    let mut lower = IbcBuffers::start_sb_row(16, true);
+    lower.update(16, 16);
+    let block = local_leaf((20, 16), 8);
+    assert!(
+        !local(&block, false, &lower, &all, bv(-32, 0)),
+        "the superblock row above"
+    );
 }

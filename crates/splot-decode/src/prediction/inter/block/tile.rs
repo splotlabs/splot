@@ -25,6 +25,8 @@ enum ParserStep<Row> {
 
 use super::super::MotionFieldHandle;
 use super::temporal::MotionFieldUnits;
+use crate::filters::wienerns_lr::intrabc_mv_valid::{IbcLocalReplay, OutOfFrameCall};
+use crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc;
 use crate::prediction::TileGridConstructionError;
 use crate::tile::block_context::{ChromaSampling, FrameTileCtx};
 use parking_lot::Mutex;
@@ -446,12 +448,15 @@ impl<'payload> TileParser<'payload> {
             residual_coeffs,
             entries,
             slots,
+            out_of_frame,
             residual_blocks,
             temporal,
             residual_planes,
             filter_records,
             ..
         } = buffers;
+        let mut out_of_frame = out_of_frame;
+        out_of_frame.clear();
         let mut recon_row = ReconRow {
             ordinal: self.numbering.map_or(self.parser_ordinal, |numbering| {
                 numbering.ordinal(self.parser_ordinal)
@@ -461,6 +466,7 @@ impl<'payload> TileParser<'payload> {
             residual_coeffs,
             entries,
             slots,
+            out_of_frame,
             residual_blocks,
             temporal,
             residual_planes,
@@ -536,28 +542,12 @@ impl<'payload> TileParser<'payload> {
             arena: &mut row.residual_planes,
         };
         let mut on_published = |_: DecodedLeafPublication, ()| {};
+        let keep_out_of_frame = frame_allows_intrabc(context.core);
         loop {
             let first = block_context.entries.len();
-            let mut decode_leaf = |work_unit: &mut DecodeTileWorkUnit,
-                                   symbols: &mut SymbolDecoder<'_>,
-                                   frontier: &DecodeBlockFrontier,
-                                   neighbours: crate::bitstream::tile_payload::LeafNeighbours<
-                '_,
-            >| {
-                #[cfg(test)]
-                crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_leaf(
-                    frontier,
-                    &neighbours,
-                    block_context.sink.mv_grid,
-                    context.params.sb_h4,
-                    context.core.frame_is_intra == Some(true),
-                );
-                if frontier.bru_active() {
-                    decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)
-                } else {
-                    super::bru::decode_bru_leaf(work_unit, symbols, frontier, &mut block_context)
-                }
-                .map(|leaf| (leaf, ()))
+            let mut decode_leaf = InterLeafDecoder {
+                block: &mut block_context,
+                out_of_frame: keep_out_of_frame.then_some(&mut row.out_of_frame),
             };
             let origin = walk.next_origin();
             let next = walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published);
@@ -612,6 +602,60 @@ impl<'payload> TileParser<'payload> {
     }
 }
 
+/// The leaf decoder of one superblock walk. It keeps the walk's out-of-frame
+/// calls when the IntraBC local-area replay needs them.
+struct InterLeafDecoder<'c, 'a> {
+    block: &'c mut super::BlockDecodeContext<'a>,
+    out_of_frame: Option<&'c mut Vec<OutOfFrameCall>>,
+}
+
+impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload, (), crate::DecodeError>
+    for InterLeafDecoder<'_, '_>
+{
+    fn decode_leaf(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'payload>,
+        frontier: &DecodeBlockFrontier,
+        neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
+    ) -> Result<(GeneralIntraLeafMode, ())> {
+        #[cfg(test)]
+        crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_leaf(
+            frontier,
+            &neighbours,
+            self.block.sink.mv_grid,
+            self.block.sink.params.sb_h4,
+            self.block.sink.core.frame_is_intra == Some(true),
+        );
+        if frontier.bru_active() {
+            decode_block(work_unit, symbols, frontier, self.block, neighbours)
+        } else {
+            super::bru::decode_bru_leaf(work_unit, symbols, frontier, self.block)
+        }
+        .map(|leaf| (leaf, ()))
+    }
+
+    #[cold]
+    fn out_of_frame(
+        &mut self,
+        origin: [usize; 2],
+        b_size: crate::bitstream::tile_payload::BlockSize,
+    ) {
+        let (Some(calls), Ok(w4), Ok(h4)) = (
+            self.out_of_frame.as_deref_mut(),
+            b_size.num_4x4_wide(),
+            b_size.num_4x4_high(),
+        ) else {
+            return;
+        };
+        calls.push(OutOfFrameCall {
+            entry: self.block.entries.len(),
+            origin,
+            size4: [w4, h4],
+        });
+    }
+}
+
 fn finish_tile_symbols(symbols: SymbolDecoder<'_>, tile_offset: ByteOffset) -> Result<()> {
     symbols
         .exit_symbol()
@@ -624,10 +668,13 @@ fn finish_tile_symbols(symbols: SymbolDecoder<'_>, tile_offset: ByteOffset) -> R
 struct TileResolveState {
     ref_mv_bank: Option<super::super::find_mv_stack::RefMvBank>,
     warp_param_bank: super::super::find_mv_stack::WarpParamBank,
+    /// The § 6.19.7.12 local-area state of a frame with `allow_local_intrabc` 1.
+    ibc_local: Option<IbcLocalReplay>,
 }
 
 impl TileResolveState {
-    fn new(sequence: &SequenceHeader) -> Self {
+    fn new(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Self {
+        let intra = core.frame_is_intra == Some(true);
         Self {
             ref_mv_bank: sequence
                 .inter
@@ -635,6 +682,13 @@ impl TileResolveState {
                 .is_some_and(|inter| inter.enable_refmvbank)
                 .then(super::super::find_mv_stack::RefMvBank::new),
             warp_param_bank: super::super::find_mv_stack::WarpParamBank::new(),
+            ibc_local: (frame_allows_intrabc(core)
+                && core.intrabc.and_then(|p| p.allow_local_intrabc) != Some(false))
+            .then(|| {
+                IbcLocalReplay::new(
+                    intra && sequence.partition.as_ref().is_some_and(|p| p.enable_sdp),
+                )
+            }),
         }
     }
 
@@ -670,6 +724,7 @@ impl TileResolveState {
                 mi_rows: context.params.mi_rows,
                 mi_cols: context.params.mi_cols,
             },
+            self.ibc_local.as_mut(),
         )?;
         if grid.window_violated() {
             return Err(invalid_inter_tile_scheduling_state());
@@ -850,6 +905,9 @@ pub(super) struct ReconRow {
     pub(super) entries: Vec<ReconRowEntry>,
     /// The non-intra leaves' records and commands, which entries index.
     pub(super) slots: Vec<LeafSlot>,
+    /// The walk's out-of-frame partition calls, kept only for the IntraBC
+    /// local-area replay.
+    pub(super) out_of_frame: Vec<OutOfFrameCall>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
@@ -974,6 +1032,7 @@ pub(crate) struct ReconRowBuffers {
     pub(super) entries: Vec<ReconRowEntry>,
     /// The non-intra leaves' records and commands, which entries index.
     pub(super) slots: Vec<LeafSlot>,
+    pub(super) out_of_frame: Vec<OutOfFrameCall>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
@@ -1687,6 +1746,7 @@ impl ParseProgress {
             residual_coeffs,
             entries,
             slots,
+            out_of_frame,
             residual_blocks,
             temporal,
             residual_planes,
@@ -1699,6 +1759,7 @@ impl ParseProgress {
                 residual_coeffs,
                 entries,
                 slots,
+                out_of_frame,
                 residual_blocks,
                 temporal,
                 residual_planes,
@@ -2154,7 +2215,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             parse_state,
             NeighbourGridMode::MotionAndEdges,
         )?;
-        let mut resolve_state = TileResolveState::new(sequence);
+        let mut resolve_state = TileResolveState::new(sequence, core);
         let mut commit = TileCommit::direct(
             ordered,
             workspace,

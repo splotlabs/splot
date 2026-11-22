@@ -31,6 +31,7 @@ use super::warp::{
 };
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::filters::wienerns_lr::intrabc_mv_valid::IbcLocalReplay;
 
 impl LeafSlot {
     /// The neighbour flags the parser published for this leaf.
@@ -83,14 +84,20 @@ pub(super) fn pending_intrabc_leaf(
 ///
 /// Each entry owns its resolve record, so record and command pairing cannot
 /// skew while a row is parsed, admitted, resolved, or recycled.
+///
+/// `ibc_local` is the tile's § 6.19.7.12 local-area state when the frame has
+/// `allow_local_intrabc` 1. It is replayed lazily: at each IntraBC leaf and
+/// at the end of each superblock, so the other leaves cost nothing.
 pub(super) fn resolve_parsed_leaves(
     row: &mut ReconRow,
     state: &mut MvResolutionState<'_>,
+    mut ibc_local: Option<&mut IbcLocalReplay>,
 ) -> Result<()> {
     let sb_h4 = state.sb_h4;
     let is_intra = state.core.frame_is_intra == Some(true);
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, is_intra);
     debug_assert_eq!(intrabc_sb_h4, sb_h4);
+    let mut out_of_frame = row.out_of_frame.as_slice();
     for superblock in &row.superblocks {
         let [r, c] = superblock.origin;
         if let Some(bank) = state.ref_mv_bank.as_mut() {
@@ -101,9 +108,19 @@ pub(super) fn resolve_parsed_leaves(
             .reset_for_leaf(state.grid, r, c, sb_h4);
         let entries = row
             .entries
-            .get_mut(superblock.entries.clone())
+            .get(superblock.entries.clone())
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        for entry in entries {
+        let block_at = |index: usize| {
+            let (r, c, w4, h4) = row
+                .entries
+                .get(index)?
+                .publication
+                .tree_block(superblock.origin)?;
+            Some([r, c, w4, h4])
+        };
+        let replayed = (superblock.origin, intrabc_sb_h4, superblock.entries.start);
+        let mut walk = entries.iter();
+        while let Some(entry) = walk.next() {
             if let EntryState::Intra(_) = entry.state {
                 if let Some((mi_row, mi_col, n4w, n4h)) =
                     entry.publication.luma_tree_block(superblock.origin)
@@ -125,15 +142,29 @@ pub(super) fn resolve_parsed_leaves(
                     else {
                         return Err(invalid_inter_tile_scheduling_state());
                     };
+                    if let Some(ibc) = ibc_local.as_deref_mut() {
+                        let index = superblock.entries.end - walk.len() - 1;
+                        ibc.replay_to_leaf(replayed, index, block_at, &mut out_of_frame)
+                            .ok_or_else(invalid_inter_tile_scheduling_state)?;
+                    }
                     *slot = LeafSlot::Intrabc(resolve_pending_intrabc(
                         block,
                         state,
-                        intrabc_sb_h4,
-                        superblock.allow_extra_ibc_range,
+                        (intrabc_sb_h4, superblock.allow_extra_ibc_range),
+                        ibc_local.as_deref(),
                     )?);
                 }
                 LeafSlot::Inter(_) | LeafSlot::Intrabc(_) | LeafSlot::Spent => {}
             }
+        }
+        if let Some(ibc) = ibc_local.as_deref_mut() {
+            ibc.finish_superblock(
+                replayed,
+                superblock.entries.end,
+                block_at,
+                &mut out_of_frame,
+            )
+            .ok_or_else(invalid_inter_tile_scheduling_state)?;
         }
     }
     Ok(())
@@ -146,8 +177,8 @@ pub(super) fn effective_intrabc_sb_h4(sb_h4: usize, frame_is_intra: bool) -> usi
 fn resolve_pending_intrabc(
     pending: PendingIntrabcBlock,
     state: &mut MvResolutionState<'_>,
-    sb_h4: usize,
-    allow_extra_ibc_range: bool,
+    (sb_h4, allow_extra_ibc_range): (usize, bool),
+    ibc_local: Option<&IbcLocalReplay>,
 ) -> Result<intrabc::IntrabcReconCommand> {
     use crate::filters::wienerns_lr::intrabc_records::resolve_pending_intrabc_info;
     use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
@@ -233,6 +264,7 @@ fn resolve_pending_intrabc(
         (sb_h4, allow_extra_ibc_range),
         info,
         state.tile_offset,
+        ibc_local,
     )?;
     let command = intrabc::IntrabcReconCommand::new(
         prediction,

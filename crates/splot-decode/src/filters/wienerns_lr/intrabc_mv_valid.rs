@@ -35,10 +35,6 @@ pub(crate) struct IbcBuffers {
     stored: [Option<(usize, usize)>; IBC_NUM_BUFFERS],
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the leaf-order local-area state is not wired yet")
-)]
 impl IbcBuffers {
     /// The § 5.20.2.1 reset before the superblock row at `mi_row`, with
     /// `sb64` for `SbSize == BLOCK_64X64`.
@@ -82,18 +78,212 @@ pub(crate) struct LocalAreaState<'a> {
     pub(crate) coded: &'a dyn Fn(usize, usize) -> bool,
 }
 
-/// What `check_valid_local_ibc` reads, if the caller has it.
-#[derive(Clone, Copy)]
-pub(crate) enum LocalArea<'a> {
-    /// The leaf-order `IBCCoded` and IBC buffer state are not tracked yet:
-    /// `check_valid_local_ibc` then accepts, so `is_mv_valid` accepts every
-    /// vector that passes the tile-edge test while `allow_local_intrabc` is 1.
-    StateNotAvailable,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the leaf-order local-area state is not wired yet")
-    )]
-    State(LocalAreaState<'a>),
+/// What `check_valid_local_ibc` reads; `None` refuses every local source.
+pub(crate) type LocalArea<'a> = Option<LocalAreaState<'a>>;
+
+/// One § 5.20.3.1 `decode_partition` call that returns at once because it
+/// lies outside the frame, in the walk order of a unit's entries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OutOfFrameCall {
+    /// The number of the unit's entries that the walk stored before the call.
+    pub(crate) entry: usize,
+    /// `[r, c]` in 4x4 units.
+    pub(crate) origin: [usize; 2],
+    /// `Num_4x4_Blocks_Wide[ bSize ]`, `Num_4x4_Blocks_High[ bSize ]`.
+    pub(crate) size4: [usize; 2],
+}
+
+/// The order of the `update_ibc_buffers` calls of one block's 64x64 chunks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChunkOrder {
+    /// § 5.20.3.1, outside the frame: rows of chunks.
+    Raster,
+    /// § 5.20.7.23 `residual()`: 2x2 groups of chunks.
+    Grouped,
+}
+
+/// The leaf-order local-area state of one tile: § 5.20.4.1 IBC buffers and
+/// `IBCCoded` of the current superblock.
+///
+/// Only the current superblock needs `IBCCoded`: § 5.20.2.1 clears every
+/// buffer at each superblock row, so a point outside the current superblock
+/// row fails the buffer test of `check_valid_local_ibc`; the earlier
+/// superblocks of the row are fully coded; `coloY`/`coloX` lie in the current
+/// buffer.
+#[derive(Clone, Debug)]
+pub(crate) struct IbcLocalReplay {
+    /// `enable_sdp && FrameIsIntra`.
+    sdp_intra: bool,
+    buffers: IbcBuffers,
+    /// The origin and side (4x4 units) of the current superblock.
+    sb: Option<([usize; 2], usize)>,
+    /// The next entry of the unit to replay.
+    next: usize,
+    /// Whether entry `next` waits only for its `residual()` chunk updates.
+    chunks_owed: bool,
+    /// `IBCCoded` of the current superblock: bit `x` of row `y`.
+    coded: [u64; 64],
+}
+
+impl IbcLocalReplay {
+    pub(crate) const fn new(sdp_intra: bool) -> Self {
+        Self {
+            sdp_intra,
+            buffers: IbcBuffers {
+                sb64: false,
+                cur: (0, 0),
+                stored: [None; IBC_NUM_BUFFERS],
+            },
+            sb: None,
+            next: 0,
+            chunks_owed: false,
+            coded: [0; 64],
+        }
+    }
+
+    /// Replays the superblock at `origin` (side `sb4`, first entry `first`)
+    /// in walk order through entry `leaf`, and of that entry only its
+    /// `update_ibc_buffers(r, c)` and `IBCCoded` writes: the state that
+    /// § 6.19.7.12 `is_mv_valid` of that leaf reads. `block` gives an entry's
+    /// `[r, c, w4, h4]`; `calls` holds the unit's out-of-frame calls not yet
+    /// replayed.
+    #[inline(never)]
+    pub(crate) fn replay_to_leaf(
+        &mut self,
+        superblock: ([usize; 2], usize, usize),
+        leaf: usize,
+        block: impl Fn(usize) -> Option<[usize; 4]>,
+        calls: &mut &[OutOfFrameCall],
+    ) -> Option<()> {
+        self.replay_before(superblock, leaf, &block, calls)?;
+        let [r, c, w4, h4] = block(leaf)?;
+        self.code([r, c], [w4, h4])?;
+        self.chunks_owed = true;
+        Some(())
+    }
+
+    /// Replays the rest of the superblock, whose entries end before `end`,
+    /// with the out-of-frame calls after its last entry.
+    #[inline(never)]
+    pub(crate) fn finish_superblock(
+        &mut self,
+        superblock: ([usize; 2], usize, usize),
+        end: usize,
+        block: impl Fn(usize) -> Option<[usize; 4]>,
+        calls: &mut &[OutOfFrameCall],
+    ) -> Option<()> {
+        self.replay_before(superblock, end, &block, calls)
+    }
+
+    /// Replays every call before entry `stop` that is not replayed yet.
+    fn replay_before(
+        &mut self,
+        (origin, sb4, first): ([usize; 2], usize, usize),
+        stop: usize,
+        block: &impl Fn(usize) -> Option<[usize; 4]>,
+        calls: &mut &[OutOfFrameCall],
+    ) -> Option<()> {
+        if self.sb != Some((origin, sb4)) {
+            if self.sb.is_none_or(|(at, _)| at[0] != origin[0]) {
+                self.buffers = IbcBuffers::start_sb_row(origin[0], sb4 == 16);
+            }
+            self.sb = Some((origin, sb4));
+            self.next = first;
+            self.chunks_owed = false;
+            self.coded = [0; 64];
+        }
+        if self.chunks_owed {
+            let [r, c, w4, h4] = block(self.next)?;
+            self.update_chunks([r, c], [w4, h4], ChunkOrder::Grouped);
+            self.next += 1;
+            self.chunks_owed = false;
+        }
+        while self.next < stop {
+            self.out_of_frame_through(self.next, calls)?;
+            let [r, c, w4, h4] = block(self.next)?;
+            self.code([r, c], [w4, h4])?;
+            self.update_chunks([r, c], [w4, h4], ChunkOrder::Grouped);
+            self.next += 1;
+        }
+        self.out_of_frame_through(stop, calls)
+    }
+
+    /// Replays the out-of-frame calls that the walk made before it stored
+    /// entry `entry`.
+    fn out_of_frame_through(&mut self, entry: usize, calls: &mut &[OutOfFrameCall]) -> Option<()> {
+        while let Some((call, rest)) = calls.split_first()
+            && call.entry <= entry
+        {
+            self.code(call.origin, call.size4)?;
+            self.update_chunks(call.origin, call.size4, ChunkOrder::Raster);
+            *calls = rest;
+        }
+        Some(())
+    }
+
+    /// `update_ibc_buffers(r, c)` and `IBCCoded = 1` over the block.
+    fn code(&mut self, [r, c]: [usize; 2], [w4, h4]: [usize; 2]) -> Option<()> {
+        self.buffers.update(r, c);
+        let ([r0, c0], sb4) = self.sb?;
+        let (y, x) = (r.checked_sub(r0)?, c.checked_sub(c0)?);
+        if y + h4 > sb4 || x + w4 > sb4 {
+            return None;
+        }
+        let bits = u64::MAX.checked_shr(64 - w4 as u32).unwrap_or(0) << x;
+        for row in self.coded.get_mut(y..y + h4)? {
+            *row |= bits;
+        }
+        Some(())
+    }
+
+    /// The `update_ibc_buffers` calls of the block's 64x64 chunks after the
+    /// first, which [`Self::code`] made.
+    fn update_chunks(&mut self, origin: [usize; 2], size4: [usize; 2], order: ChunkOrder) {
+        if size4[0] <= 16 && size4[1] <= 16 {
+            return;
+        }
+        for [r, c] in chunk_origins(origin, size4, order) {
+            self.buffers.update(r, c);
+        }
+    }
+
+    /// `IBCCoded[row][col]` wherever `check_valid_local_ibc` depends on it:
+    /// the current superblock, and the coded superblocks left of it in its
+    /// row.
+    fn coded(&self, row: usize, col: usize) -> bool {
+        let Some(([r0, c0], sb4)) = self.sb else {
+            return false;
+        };
+        if row < r0 || row >= r0 + sb4 {
+            return false;
+        }
+        if col < c0 {
+            return true;
+        }
+        let x = col - c0;
+        x < sb4 && self.coded[row - r0] >> x & 1 == 1
+    }
+}
+
+/// The `[miRowChunk, miColChunk]` of each 64x64 chunk of the block at
+/// `[r, c]` of `[w4, h4]` 4x4 units, in `order`.
+fn chunk_origins(
+    [r, c]: [usize; 2],
+    [w4, h4]: [usize; 2],
+    order: ChunkOrder,
+) -> impl Iterator<Item = [usize; 2]> {
+    let (wide, high) = ((w4 >> 4).max(1), (h4 >> 4).max(1));
+    let step = match order {
+        ChunkOrder::Grouped => 2,
+        ChunkOrder::Raster => wide.max(high),
+    };
+    (0..high).step_by(step).flat_map(move |start_y| {
+        (0..wide).step_by(step).flat_map(move |start_x| {
+            (start_y..high.min(start_y + step)).flat_map(move |y| {
+                (start_x..wide.min(start_x + step)).map(move |x| [r + (y << 4), c + (x << 4)])
+            })
+        })
+    })
 }
 
 /// The block and frame facts that § 6.19.7.12 `is_mv_valid` reads, in luma
@@ -200,8 +390,8 @@ fn is_mv_valid_wide(block: &IntrabcMvBlock, local: LocalArea<'_>, mv: [i64; 2]) 
     }
     if block.allow_local_intrabc {
         let valid = match local {
-            LocalArea::StateNotAvailable => true,
-            LocalArea::State(state) => {
+            None => false,
+            Some(state) => {
                 let chroma = block.chroma.filter(|_| !state.sdp_intra);
                 let ((row, col), (w, h)) = chroma.unwrap_or((block.mi, block.size));
                 let top = row as i64 * MI_SIZE + delta_row;
@@ -276,11 +466,9 @@ fn check_valid_local_ibc(state: &LocalAreaState<'_>, act: (i64, i64), x: i64, y:
 /// Checks the block vector of the IntraBC leaf at `frontier` of `n4w x n4h`
 /// 4x4 units in superblocks of `sb_h4` 4x4 rows with `AllowExtraIBCRange`:
 /// § 6.19.7.12 `is_mv_valid` and, with `morph_pred`, § 6.19.5.4
-/// `is_offset_mv_valid(-1, -1)`. The caller has already run the tile-edge
-/// test ([`source_within_tile`]) on the block vector: while the local area
-/// accepts ([`LocalArea::StateNotAvailable`]), nothing else is left to check
-/// for a block without `morph_pred`.
-#[inline]
+/// `is_offset_mv_valid(-1, -1)`. `local` is the leaf-order state of the
+/// frame's local area, present whenever `allow_local_intrabc` is 1.
+#[inline(never)]
 pub(crate) fn check_intrabc_block_vector(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
@@ -288,30 +476,7 @@ pub(crate) fn check_intrabc_block_vector(
     (sb_h4, allow_extra_ibc_range): (usize, bool),
     info: IntrabcInfo,
     tile_offset: ByteOffset,
-) -> Result<()> {
-    let params = core.intrabc;
-    let allow_local_intrabc = params.and_then(|p| p.allow_local_intrabc) != Some(false);
-    if allow_local_intrabc && !info.morph_pred {
-        return Ok(());
-    }
-    check_intrabc_block_vector_slow(
-        core,
-        frontier,
-        (n4w, n4h),
-        (sb_h4, allow_extra_ibc_range),
-        info,
-        tile_offset,
-    )
-}
-
-#[inline(never)]
-fn check_intrabc_block_vector_slow(
-    core: &FrameHeaderCore,
-    frontier: &DecodeBlockFrontier,
-    (n4w, n4h): (usize, usize),
-    (sb_h4, allow_extra_ibc_range): (usize, bool),
-    info: IntrabcInfo,
-    tile_offset: ByteOffset,
+    local: Option<&IbcLocalReplay>,
 ) -> Result<()> {
     let tile_info = core.tile_info.as_ref().ok_or_else(selectable_state_error)?;
     let rows = tile_interval_for_block(&tile_info.mi_row_starts, frontier.r, n4h)?;
@@ -336,8 +501,16 @@ fn check_intrabc_block_vector_slow(
         allow_global_intrabc: params.and_then(|p| p.allow_global_intrabc) == Some(true),
         allow_extra_ibc_range,
     };
+    if block.allow_local_intrabc && local.is_none() {
+        return Err(selectable_state_error());
+    }
+    let coded = |row, col| local.is_some_and(|replay| replay.coded(row, col));
+    let local = local.map(|replay| LocalAreaState {
+        sdp_intra: replay.sdp_intra,
+        buffers: &replay.buffers,
+        coded: &coded,
+    });
     let mv = [info.block_mv.row, info.block_mv.col];
-    let local = LocalArea::StateNotAvailable;
     if !is_mv_valid(&block, local, mv) {
         return Err(intrabc_invalid_block_vector_error(tile_offset));
     }

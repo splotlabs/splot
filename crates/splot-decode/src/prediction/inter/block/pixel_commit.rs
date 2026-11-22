@@ -63,6 +63,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mut residual_coeffs,
             mut entries,
             mut slots,
+            mut out_of_frame,
             mut residual_blocks,
             mut temporal,
             mut residual_planes,
@@ -204,6 +205,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         superblocks.clear();
         entries.clear();
         slots.clear();
+        out_of_frame.clear();
         residual_blocks.clear();
         residual_coeffs.clear();
         temporal.clear();
@@ -213,6 +215,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             residual_coeffs,
             entries,
             slots,
+            out_of_frame,
             residual_blocks,
             temporal,
             residual_planes,
