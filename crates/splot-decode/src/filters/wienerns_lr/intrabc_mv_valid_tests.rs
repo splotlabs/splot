@@ -444,7 +444,7 @@ fn random_tree(
         .filter(|&(p, _)| p != PartitionType::None)
         .collect();
     let frame = partition_test_frame(15);
-    let children = (next(seed) % 3 != 0 && !splits.is_empty())
+    let children = (!next(seed).is_multiple_of(3) && !splits.is_empty())
         .then(|| splits[next(seed) % splits.len()])
         .and_then(|(p, sub)| child_calls(call, call.own_chroma_ref(), p, sub, &frame, false).ok());
     let Some(children) = children else {
@@ -459,7 +459,12 @@ fn random_tree(
 #[test]
 fn the_superblock_summary_matches_the_leaf_replay() {
     let mut seed = 0x2545_f491_4f6c_dd1d;
-    for (sb4, size) in [(16, 12), (32, 15), (64, 18)] {
+    let sizes: Vec<_> = [(16, 12), (32, 15), (64, 18)]
+        .into_iter()
+        .filter_map(|(sb4, index)| Some((sb4, BlockSize::new(index).ok()?)))
+        .collect();
+    assert_eq!(sizes.len(), 3);
+    for (sb4, size) in sizes {
         for _ in 0..400 {
             let mi = [
                 1 + next(&mut seed) % (2 * sb4),
@@ -467,7 +472,7 @@ fn the_superblock_summary_matches_the_leaf_replay() {
             ];
             let mut blocks = vec![[0, 0, sb4, sb4]];
             let mut calls = Vec::new();
-            let root = TilePartitionCall::root(0, sb4, BlockSize::new(size).unwrap(), true);
+            let root = TilePartitionCall::root(0, sb4, size, true);
             random_tree(&mut seed, root, mi, (&mut blocks, &mut calls));
             let superblock = ([0, sb4], sb4, 1);
             let mut replay = IbcLocalReplay::new(false);
