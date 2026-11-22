@@ -388,3 +388,28 @@ fn ccso_search_classes_match_the_decoder_output() {
         }
     }
 }
+
+/// With `lr_chroma_unit_sizes` 4 and the test hook that keeps the largest
+/// chroma unit size whose U or V plane still restores, the 352x288 case codes
+/// chroma units above the size derived from luma and decodes to the encoder
+/// recon; AVM decodes it alike when `SPLOT_AVM_DECODER` is set.
+#[test]
+fn large_chroma_lr_units_decode_to_the_encoder_recon() {
+    let case = CASES[4];
+    super::wienerns::FORCE_LARGE_CHROMA.with(|force| force.set(true));
+    let (config, coded) = code_with(case, 4, &[("lr_chroma_unit_sizes", "4")]);
+    super::wienerns::FORCE_LARGE_CHROMA.with(|force| force.set(false));
+    let lr = headers(&coded.temporal_unit).1.lr_params.unwrap();
+    assert!(
+        lr.uses_lr && lr.loop_restoration_size[1] > 32,
+        "{:?}",
+        lr.loop_restoration_size
+    );
+    let recon = raw_bytes(coded.recon.iter().map(Vec::as_slice), config.bit_depth);
+    assert_same_samples(&decode(&coded.temporal_unit), &recon, "large chroma units");
+    if let Some(avmdec) = avm_decoder() {
+        let units = [coded.temporal_unit.clone()];
+        let avm = avm_decode(&avmdec, &units, (case.0, case.1), case.2, "chroma-lr");
+        assert!(avm == recon, "AVM output differs");
+    }
+}

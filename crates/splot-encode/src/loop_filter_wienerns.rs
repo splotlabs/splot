@@ -53,8 +53,28 @@ const CHROMA_SHORT: usize = 6;
 const LUMA_RADIUS: usize = 4;
 const CHROMA_RADIUS: usize = 2;
 
+#[cfg(test)]
+thread_local! {
+    /// Test hook: the chroma search keeps the largest unit size whose U or V
+    /// plane still restores, whatever its cost.
+    pub(super) static FORCE_LARGE_CHROMA: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Whether [`FORCE_LARGE_CHROMA`] is set on this thread.
+fn force_large_chroma() -> bool {
+    #[cfg(test)]
+    {
+        FORCE_LARGE_CHROMA.with(core::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 /// One frame-level choice: its cost relative to restoration off, its filter
 /// parameters and the type of each restoring unit.
+#[derive(Clone)]
 struct Choice {
     cost: i128,
     params: FrameFilterParams,
@@ -329,27 +349,41 @@ impl Search<'_> {
             }
         }
         if preset.wiener_ns_chroma > 0 && off.plane(PlaneId::U).is_some() {
-            best = self.chroma(best, &off, preset, off_bits)?;
+            let format = off.info().pixel_format();
+            let shift = format.subsampling_x().max(format.subsampling_y());
+            let luma_size = best.params.lr_luma_unit_size.unwrap_or(64);
+            let size = (luma_size >> shift).max(64 >> format.subsampling_y());
+            let base = best.clone();
+            best = self.chroma(base.clone(), &off, (preset, off_bits), size)?;
+            for size in (1..preset.lr_chroma_unit_sizes)
+                .map(|k| size << k)
+                .filter(|&size| size <= 512 >> shift)
+            {
+                let trial = self.chroma(base.clone(), &off, (preset, off_bits), size)?;
+                let restores = trial.params.lr_chroma_wiener_ns != [None; 2];
+                if trial.cost < best.cost || force_large_chroma() && restores {
+                    best = trial;
+                }
+            }
         }
         Ok((best.params, best.lr_on, best.cost))
     }
 
     /// `best` with the cheapest Wiener-NS filter of U and then of V, each
     /// against keeping the plane off; every other unit keeps its type. The
-    /// chroma units are the luma units at chroma scale, but at least the
-    /// stripe height, and must not cross a tile edge (§ 6.17.7.7).
+    /// chroma units are `chroma_size` (by default the luma units at chroma
+    /// scale, but at least the stripe height) and must not cross a tile edge
+    /// (§ 6.17.7.7).
     fn chroma(
         &self,
         mut best: Choice,
         off: &DecodedFrame<u16>,
-        preset: &PresetParams,
-        off_bits: u64,
+        (preset, off_bits): (&PresetParams, u64),
+        chroma_size: u32,
     ) -> Result<Choice> {
         let format = off.info().pixel_format();
         let shift = format.subsampling_x().max(format.subsampling_y());
         let original = best.params;
-        let luma_size = best.params.lr_luma_unit_size.unwrap_or(64);
-        let chroma_size = (luma_size >> shift).max(64 >> format.subsampling_y());
         if !units_fit_tiles(&self.header(&best.params)?, chroma_size << shift) {
             return Ok(best);
         }

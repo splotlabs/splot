@@ -18,7 +18,8 @@ use crate::headers::frame::encoder_stream::{
     MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_film_grain_config,
     write_quant_and_filters, write_uniform_tile_info,
 };
-use crate::headers::frame::global_motion::{REFS_PER_FRAME, default_base_prediction};
+use crate::headers::frame::get_ref_frames::get_relative_dist;
+use crate::headers::frame::global_motion::{DEFAULT_WARP_PARAMS, REFS_PER_FRAME, base_prediction};
 use crate::headers::frame::info::build_inter_seq_view;
 use crate::headers::frame::inter::tip_weight_coded;
 use crate::headers::frame::inter_shared_tail::lr_reference_filters;
@@ -119,6 +120,17 @@ pub struct InterFrameParams {
     /// NumTotalRefs`; `None` codes `IDENTITY`, and all `None` codes
     /// `use_global_motion = 0`. Needs `enable_global_motion`.
     pub global_motion: [Option<[i32; 6]>; REFS_PER_FRAME],
+    /// Codes the `our_ref` and `their_ref` (§ 5.18.9.1) of the fewest
+    /// `global_motion_params()` bits instead of `our_ref = NumTotalRefs`.
+    pub global_motion_predict: bool,
+}
+
+/// `our_ref`, `their_ref` with its `ns` range, and the `PrevGmParams` of each
+/// reference (§ 5.18.9.1) of one `global_motion_params()` coding.
+struct GmBase {
+    our_ref: u32,
+    their_ref: Option<(u32, u32)>,
+    predictions: Vec<Option<[i32; 6]>>,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -225,16 +237,8 @@ fn parse_inter_frame_header(
         u32::from(params.opfl_refine_type),
     )
     .unwrap_or(true);
-    let gm_predictions: Vec<Option<[i32; 6]>> = ref_frame_idx
-        .iter()
-        .take(map.1 as usize)
-        .map(|&slot| {
-            let hint = refs.ref_order_hint?.get(slot as usize).copied()?;
-            default_base_prediction(params.order_hint, hint)
-        })
-        .collect();
-    let (bytes, bit_len) =
-        inter_frame_header_bits(seq, params, map, (lr_refs, &gm_predictions), weight_coded)?;
+    let gm = cheapest_gm_base(seq, refs, params, map.1, ref_frame_idx)?;
+    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map, (lr_refs, &gm), weight_coded)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -259,7 +263,7 @@ fn inter_frame_header_bits(
     seq: &CoreSeqView,
     params: &InterFrameParams,
     (primary_ref_frame, num_total_refs): (Option<u32>, u32),
-    (lr_refs, gm_predictions): (LrReferenceFilters<'_>, &[Option<[i32; 6]>]),
+    (lr_refs, gm): (LrReferenceFilters<'_>, &GmBase),
     weight_coded: bool,
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
@@ -387,22 +391,102 @@ fn inter_frame_header_bits(
         w.write_flag(true)?; // allow_warpmv_mode
     }
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
-    write_global_motion(&mut w, seq, params, (num_total_refs, gm_predictions))?;
+    write_global_motion(&mut w, seq, params, (num_total_refs, gm))?;
     write_film_grain_config(&mut w, seq, params.show_frame, tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.align_to_byte();
     Ok((w.into_bytes(), bit_len))
 }
 
+/// The [`GmBase`] of the fewest `global_motion_params()` bits over the
+/// references `ref_frame_idx` of the § 7.23 state `refs`: `our_ref =
+/// NumTotalRefs`, and with `global_motion_predict` also each `our_ref` and
+/// `their_ref` that § 6.17.9.1 allows. Ties keep the earlier base.
+fn cheapest_gm_base(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+    num_total_refs: u32,
+    ref_frame_idx: &[u32],
+) -> Result<GmBase, EncoderHeaderError> {
+    let slots = &ref_frame_idx[..ref_frame_idx.len().min(num_total_refs as usize)];
+    let hint = |slot: u32| refs.ref_order_hint?.get(slot as usize).copied();
+    let predict = |base: ([i32; 6], i32)| -> Vec<Option<[i32; 6]>> {
+        slots
+            .iter()
+            .map(|&slot| base_prediction(params.order_hint, hint(slot)?, base))
+            .collect()
+    };
+    let default = GmBase {
+        our_ref: num_total_refs,
+        their_ref: None,
+        predictions: predict((DEFAULT_WARP_PARAMS, 1)),
+    };
+    if !params.global_motion_predict || params.global_motion.iter().all(Option::is_none) {
+        return Ok(default);
+    }
+    let mut bases = vec![default];
+    for (our_ref, &slot) in (0u32..).zip(slots) {
+        let Some(our_hint) = hint(slot).and_then(|h| i32::try_from(h).ok()) else {
+            continue;
+        };
+        let index = slot as usize;
+        let saved = refs.ref_num_total_refs.and_then(|counts| counts.get(index));
+        let Some(&count @ 0..=7) = saved else {
+            continue;
+        };
+        if count == 0 {
+            bases.push(GmBase {
+                our_ref,
+                their_ref: None,
+                predictions: predict((DEFAULT_WARP_PARAMS, 1)),
+            });
+            continue;
+        }
+        let saved_hints = refs
+            .saved_global_motion_order_hints
+            .and_then(|h| h.get(index));
+        let saved_params = refs.saved_global_motion_params.and_then(|p| p.get(index));
+        let (Some(saved_hints), Some(saved_params)) = (saved_hints, saved_params) else {
+            continue;
+        };
+        for their_ref in 0..count {
+            let their = their_ref as usize;
+            let Ok(saved_hint) = i32::try_from(saved_hints[their]) else {
+                continue;
+            };
+            bases.push(GmBase {
+                our_ref,
+                their_ref: Some((their_ref, count)),
+                predictions: predict((
+                    saved_params[their],
+                    get_relative_dist(our_hint, saved_hint),
+                )),
+            });
+        }
+    }
+    let mut best: Option<(u64, GmBase)> = None;
+    for base in bases {
+        let mut w = BitWriter::new();
+        write_global_motion(&mut w, seq, params, (num_total_refs, &base))?;
+        if best.as_ref().is_none_or(|(bits, _)| w.bit_len() < *bits) {
+            best = Some((w.bit_len(), base));
+        }
+    }
+    best.map(|(_, base)| base)
+        .ok_or(EncoderHeaderError::Incomplete)
+}
+
 /// Writes `global_motion_params()` (§ 5.18.9.1) of `params` over a map of
-/// `num_total_refs` references whose `PrevGmParams` are `predictions`, `None`
-/// for a reference that reads no model.
+/// `num_total_refs` references with the base `gm`, whose `predictions` are
+/// `None` for a reference that reads no model.
 fn write_global_motion(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     params: &InterFrameParams,
-    (num_total_refs, predictions): (u32, &[Option<[i32; 6]>]),
+    (num_total_refs, gm): (u32, &GmBase),
 ) -> Result<(), EncoderHeaderError> {
+    let predictions = &gm.predictions;
     let used = params.global_motion.iter().any(Option::is_some);
     if !seq.inter.enable_global_motion {
         return if used {
@@ -415,7 +499,10 @@ fn write_global_motion(
     if !used {
         return Ok(());
     }
-    w.write_ns(num_total_refs, num_total_refs + 1)?; // our_ref
+    w.write_ns(gm.our_ref, num_total_refs + 1)?; // our_ref
+    if let Some((their_ref, count)) = gm.their_ref {
+        w.write_ns(their_ref, count)?;
+    }
     for (index, &model) in params.global_motion.iter().enumerate() {
         let Some(&Some(prev)) = predictions.get(index) else {
             if model.is_some() {
