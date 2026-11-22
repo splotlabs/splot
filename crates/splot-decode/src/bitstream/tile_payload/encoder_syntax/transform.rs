@@ -170,7 +170,48 @@ impl IntraTileSyntax {
         if self.planned_fsc() && !self.leaf_is_inter() {
             return Ok(only_type(TxType::Idtx));
         }
+        if self.tools.lossless && tx.plane == 0 {
+            return self.lossless_tx_type_options();
+        }
         self.luma_tx_type_options(tx, eob)
+    }
+
+    /// The luma types of a lossless block: `DCT_DCT`, coded as
+    /// `lossless_inter_tx_type = 0` when inter (§ 5.20.8.2). Kept out of line
+    /// so the lossy type search keeps its code.
+    #[cold]
+    #[inline(never)]
+    fn lossless_tx_type_options(&self) -> Result<TxTypeOptions> {
+        if !self.leaf_is_inter() {
+            return Ok(only_type(TxType::DctDct));
+        }
+        let mut out = TxTypeOptions::filled((TxType::DctDct, NO_STEPS));
+        let step = (TileCdfSelector::LosslessInterTxType, 0);
+        push_new_type(&mut out, TxType::DctDct, inline_steps(&[step])?)?;
+        Ok(out)
+    }
+
+    /// The [`Self::tx_partition_steps`] of a lossless `leaf`: a lossless inter
+    /// leaf above `BLOCK_4X4` (index 0) codes only `lossless_tx_size = 0`
+    /// (§ 5.20.6.1). Kept out of line so the lossy partition search keeps its
+    /// code.
+    #[cold]
+    #[inline(never)]
+    fn lossless_tx_partition_steps(
+        &self,
+        leaf: &LeafBlock,
+        partition: TxPartition,
+    ) -> Option<Steps> {
+        let mut steps = NO_STEPS;
+        let size = leaf.frontier.b_size;
+        if self.leaf_is_inter() && size.index() > 0 && !leaf.is_chroma_part() {
+            let selector = TileCdfSelector::LosslessTxSize {
+                size_group: super::super::general_intra_block::lossless_tx_size_group(size),
+                is_inter: 1,
+            };
+            steps[0] = Some((selector, 0));
+        }
+        (partition == TxPartition::None).then_some(steps)
     }
 
     /// The luma types `tx` of the planned leaf can code when its `eob` is above
@@ -370,25 +411,14 @@ impl IntraTileSyntax {
     }
 
     /// The symbols that select `partition` for `leaf`, inverting
-    /// `read_luma_tx_partition_type`; `None` when `leaf` cannot code it. A
-    /// lossless inter leaf above `BLOCK_4X4` (index 0) codes only
-    /// `lossless_tx_size = 0` (§ 5.20.6.1).
+    /// `read_luma_tx_partition_type`; `None` when `leaf` cannot code it.
     fn tx_partition_steps(
         &self,
         leaf: &LeafBlock,
         partition: TxPartition,
     ) -> Result<Option<Steps>> {
         if self.tools.lossless {
-            let mut steps = NO_STEPS;
-            let size = leaf.frontier.b_size;
-            if self.leaf_is_inter() && size.index() > 0 && !leaf.is_chroma_part() {
-                let selector = TileCdfSelector::LosslessTxSize {
-                    size_group: super::super::general_intra_block::lossless_tx_size_group(size),
-                    is_inter: 1,
-                };
-                steps[0] = Some((selector, 0));
-            }
-            return Ok((partition == TxPartition::None).then_some(steps));
+            return Ok(self.lossless_tx_partition_steps(leaf, partition));
         }
         let Some((context, (allow_horz, allow_vert))) = self.partition_context(leaf)? else {
             return Ok((partition == TxPartition::None).then_some(NO_STEPS));
@@ -467,8 +497,7 @@ impl IntraTileSyntax {
 
     /// Every type luma block `tx` with `eob` can carry and the symbols that
     /// select it, inverting `read_active_luma_transform_type`; one inferred
-    /// `DCT_DCT` without symbols when `dct_forced`. A lossless block is
-    /// `DCT_DCT`, coded as `lossless_inter_tx_type = 0` when inter (§ 5.20.8.2).
+    /// `DCT_DCT` without symbols when `dct_forced`.
     fn luma_tx_type_options(&mut self, tx: &TransformBlock, eob: usize) -> Result<TxTypeOptions> {
         if tx.plane != 0 {
             return Err(EncoderSyntaxError::Unsupported(
@@ -477,15 +506,6 @@ impl IntraTileSyntax {
         }
         let reduced = self.tools.reduced_tx_set;
         let is_inter = self.leaf_is_inter();
-        if self.tools.lossless {
-            let mut out = only_type(TxType::DctDct);
-            if is_inter {
-                out = TxTypeOptions::filled((TxType::DctDct, NO_STEPS));
-                let step = (TileCdfSelector::LosslessInterTxType, 0);
-                push_new_type(&mut out, TxType::DctDct, inline_steps(&[step])?)?;
-            }
-            return Ok(out);
-        }
         let tx_set = transform_set_from_flags(reduced, false, 0, tx.tx_size, is_inter)
             .map_err(rule("transform set"))?;
         if dct_forced(is_inter, 0, eob, false, reduced, tx_set) {
