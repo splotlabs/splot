@@ -207,6 +207,7 @@ fn estimated_stream(
     config.preset_overrides = vec![
         ("global_motion".to_owned(), level.to_string()),
         ("global_motion_predict".to_owned(), predict.to_string()),
+        ("short_refresh".to_owned(), "false".to_owned()),
     ];
     config.threads = splot_parallel::ThreadCount::from(threads);
     let (recons, global_frames) = (Arc::default(), Arc::default());

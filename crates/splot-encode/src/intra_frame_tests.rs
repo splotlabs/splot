@@ -683,6 +683,7 @@ fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
                 dip: true,
                 dip_trials: trials,
+                short_refresh: false,
                 ..*Preset::new(6).unwrap().params()
             }));
             let mut config = config.clone();
