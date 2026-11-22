@@ -45,7 +45,7 @@ fn sb256_stream(case: Sb256Case, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
     let mut config = config(width, height, bit_depth, 9, 140);
     config.chroma = chroma;
     config.keyint = core::num::NonZeroU32::new(3).unwrap();
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2,
         rows_log2,
     };

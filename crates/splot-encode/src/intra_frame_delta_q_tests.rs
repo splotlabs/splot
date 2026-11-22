@@ -28,7 +28,7 @@ pub(super) fn offsets(config: &Config, seed: usize) -> Vec<(i16, i16)> {
 /// some frame. Returns the units, the encoder recon and whether each frame
 /// codes `delta_q_present`.
 fn delta_q_stream(mut config: Config, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>) {
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };

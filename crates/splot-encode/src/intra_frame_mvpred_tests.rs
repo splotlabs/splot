@@ -215,7 +215,7 @@ fn deep_drl_streams_decode_alike_on_any_thread_count() {
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 100);
         assert!(config.preset.params().drl_bits > 1);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 1,
         };
@@ -291,7 +291,7 @@ fn switchable_filter_streams_match_on_any_thread_count() {
     }));
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 100);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 1,
         };
@@ -314,7 +314,7 @@ fn mvd_tool_streams_match_on_any_thread_count() {
     }));
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 140);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 1,
         };
@@ -331,7 +331,7 @@ fn mvd_tool_streams_match_on_any_thread_count() {
 /// `overrides` on `threads` threads: its temporal units and the encoder recon.
 fn panning_stream(threads: usize, overrides: &[(&str, &str)]) -> (Vec<Vec<u8>>, Vec<u8>) {
     let mut config = config(136, 72, BitDepth::Eight, 6, 100);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 1,
     };
@@ -415,7 +415,7 @@ fn sequence_flag_streams_decode_alike_on_any_thread_count() {
         let preset: &'static PresetParams = Box::leak(Box::new(preset));
         let stream = |threads: usize| {
             let mut config = config(136, 72, BitDepth::Eight, 6, 150);
-            config.tiles = TileLayout {
+            config.tiles = TileLayout::Uniform {
                 cols_log2: 1,
                 rows_log2: 0,
             };

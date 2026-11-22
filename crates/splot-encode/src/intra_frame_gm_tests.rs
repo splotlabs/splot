@@ -103,7 +103,7 @@ fn global_motion_streams_decode_to_the_encoder_recon() {
 fn global_motion_streams_match_on_any_thread_count() {
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 180);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 0,
         };

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use splot_recon::BitDepth;
 
 use super::*;
-use crate::config::{Config, RateControlMode};
+use crate::config::{Config, RateControlMode, TileLayout};
 use crate::encoder::{CodedFrame, Encoder, FrameCoder};
 use crate::error::Result;
 use crate::frame::SourceFrame;
@@ -307,7 +307,10 @@ fn rate_controlled_streams_do_not_depend_on_the_thread_count() {
             let mut config = Config::new(144, 32);
             config.preset = Preset::new(9).unwrap();
             config.rate_control = *mode;
-            config.tiles.cols_log2 = 1;
+            config.tiles = TileLayout::Uniform {
+                cols_log2: 1,
+                rows_log2: 0,
+            };
             config.threads = splot_parallel::ThreadCount::from(threads);
             let mut encoder = Encoder::new(config.clone()).unwrap();
             let mut bytes = Vec::new();

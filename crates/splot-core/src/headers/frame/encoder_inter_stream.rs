@@ -16,8 +16,8 @@ use crate::headers::film_grain::{
 };
 use crate::headers::frame::encoder_stream::{
     UniformTiles, check_tx_params, encoder_mfh_view, obu_header, plane_quantization, tile_framing,
-    write_film_grain_config, write_intra_frame_tail, write_mfh_reference, write_quant_and_filters,
-    write_uniform_tile_info,
+    write_encoder_tile_info, write_film_grain_config, write_intra_frame_tail, write_mfh_reference,
+    write_quant_and_filters,
 };
 use crate::headers::frame::get_ref_frames::get_relative_dist;
 use crate::headers::frame::global_motion::{DEFAULT_WARP_PARAMS, REFS_PER_FRAME, base_prediction};
@@ -829,7 +829,7 @@ pub fn build_tip_output_frame_header(
         w.write_flag(params.tip_deblocking)?; // allow_df_sub_pu
         if params.tip_deblocking {
             w.write_flag(true)?; // apply_deblocking_filter_tip
-            write_uniform_tile_info(&mut w, seq, params.tiles, false)?;
+            write_encoder_tile_info(&mut w, seq, params.tiles, false)?;
         }
     }
     let output = params.show_frame || params.implicit_output;

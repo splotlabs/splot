@@ -584,6 +584,35 @@ fn tile_group_clips_validate_and_decode() {
     let _ = std::fs::remove_file(input);
 }
 
+/// `--tile-widths 1` codes a non-uniform 2-tile layout in 2 tile groups
+/// that validates with `--strict` and decodes; with `--tiles 2x1` it is
+/// refused.
+#[test]
+fn explicit_tile_clips_validate_and_decode() {
+    round_trip(
+        8,
+        YUV420,
+        &[
+            "--qp",
+            "90",
+            "--preset",
+            "10",
+            "--tile-widths",
+            "1",
+            "--tile-groups",
+            "2",
+        ],
+    );
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let (input_s, ivf_s) = (input.to_str().unwrap(), ivf.to_str().unwrap());
+    let args = ["encode", input_s, "-o", ivf_s, "--tiles", "2x1"];
+    let bad = splot(&[&args[..], &["--tile-widths", "1"]].concat());
+    assert!(!bad.status.success(), "{bad:?}");
+    let _ = std::fs::remove_file(input);
+}
+
 /// The content flags and the Y4M `A` tag reach the stream: every key frame
 /// has a content interpretation OBU and the two HDR metadata OBUs, and the
 /// clip still validates and decodes. `splot inspect` may name a metadata

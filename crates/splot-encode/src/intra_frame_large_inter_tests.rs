@@ -185,7 +185,7 @@ fn large_inter_streams_decode_to_the_encoder_recon() {
         let mut config = config(if tiled { 264 } else { 136 }, 136, bit_depth, 6, 110);
         config.chroma = chroma;
         if tiled {
-            config.tiles = TileLayout {
+            config.tiles = TileLayout::Uniform {
                 cols_log2: 1,
                 rows_log2: 0,
             };
@@ -202,7 +202,7 @@ fn large_inter_streams_decode_to_the_encoder_recon() {
 fn large_inter_streams_match_on_any_thread_count() {
     let stream = |threads: usize| {
         let mut config = config(264, 136, BitDepth::Eight, 6, 110);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 0,
         };

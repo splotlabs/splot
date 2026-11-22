@@ -19,7 +19,7 @@ fn grouped_stream(
 ) -> (Vec<Vec<u8>>, Vec<u8>) {
     let mut config = config(72, 72, bit_depth, 7, 150);
     config.chroma = chroma;
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 1,
     };
@@ -31,7 +31,7 @@ fn grouped_stream(
 /// The tile group OBUs of each tiled frame of `stream`: a group with
 /// `is_first_tile_group = 1` opens a frame, and each later group codes
 /// `is_first_tile_group = 0` and `frame_header_present_flag = 0`.
-fn groups_per_frame(stream: &[u8]) -> Vec<usize> {
+pub(super) fn groups_per_frame(stream: &[u8]) -> Vec<usize> {
     let mut counts = Vec::new();
     for obu in parse_annex_b_obus_partial(stream).obus {
         if !matches!(

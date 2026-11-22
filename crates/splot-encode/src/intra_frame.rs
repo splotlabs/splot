@@ -14,6 +14,7 @@ use splot_core::headers::frame::{
     encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
+use splot_core::tile::{MAX_TILE_COLS, TileStarts};
 use splot_decode::encoder_syntax::{
     CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, ParityHiding,
     Partition, PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
@@ -26,7 +27,7 @@ use splot_recon::{
 };
 
 use crate::cfl_filter::cfl_ds_filter;
-use crate::config::Config;
+use crate::config::{Config, TileLayout};
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
@@ -208,6 +209,66 @@ fn intra_leaves(
     }
 }
 
+/// The frame tile layout of `config` and `preset` over the frames of the
+/// sequence of `params` and `view`:
+/// an explicit layout gets the start of each listed size, and one more
+/// column or row when the sizes end inside the frame.
+fn frame_tiles(
+    config: &Config,
+    preset: &PresetParams,
+    (params, view): (&EncoderStreamParams, &CoreSeqView),
+) -> Result<UniformTiles> {
+    let refused = |reason| Error::InvalidTiles {
+        tiles: config.tiles.clone(),
+        reason,
+    };
+    let base = UniformTiles {
+        middle_cdf_update_tile: preset.cdf_update_tile == 1,
+        reuse_tile_info: preset.seq_tile_info < 3,
+        ..UniformTiles::default()
+    };
+    let tiles = match &config.tiles {
+        &TileLayout::Uniform {
+            cols_log2,
+            rows_log2,
+        } => UniformTiles {
+            cols_log2,
+            rows_log2,
+            ..base
+        },
+        TileLayout::Explicit { widths, heights } => {
+            let sb = 4 * splot_core::tile::num_4x4_blocks_wide(params.sb_size);
+            let axis = |sizes: &[u32], frame: u32| {
+                let sbs = frame.next_multiple_of(8).div_ceil(sb);
+                let mut starts = TileStarts::default();
+                let mut start = 0u32;
+                for &size in core::iter::once(&0).chain(sizes) {
+                    start = start.saturating_add(size);
+                    if start < sbs {
+                        if starts.len() == MAX_TILE_COLS as usize {
+                            return Err(refused("more than 64 tile columns or rows"));
+                        }
+                        starts
+                            .push(start)
+                            .ok_or(refused("more than 64 tile columns or rows"))?;
+                    } else if start > sbs {
+                        return Err(refused("tiles beyond the frame edge"));
+                    }
+                }
+                Ok(starts)
+            };
+            UniformTiles {
+                explicit: Some([axis(widths, params.width)?, axis(heights, params.height)?]),
+                ..base
+            }
+        }
+    };
+    tiles
+        .check(view)
+        .map_err(|_| refused("a layout that tile_params() does not code (§ 5.18.7.3)"))?;
+    Ok(tiles)
+}
+
 impl IntraFrameCoder {
     /// A coder of `config`. Preset overrides apply to the preset row and to
     /// its screen-content row.
@@ -298,11 +359,17 @@ impl IntraFrameCoder {
                 implicit_output: preset.implicit_output,
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
-                seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
-                    cols_log2: config.tiles.cols_log2,
-                    rows_log2: config.tiles.rows_log2,
-                    allow_tile_info_change: preset.seq_tile_info > 1,
-                }),
+                seq_tiles: match config.tiles {
+                    TileLayout::Uniform {
+                        cols_log2,
+                        rows_log2,
+                    } if preset.seq_tile_info > 0 => Some(SeqTiles {
+                        cols_log2,
+                        rows_log2,
+                        allow_tile_info_change: preset.seq_tile_info > 1,
+                    }),
+                    _ => None,
+                },
                 short_refresh: preset.short_refresh,
                 plane_delta_q: preset.plane_delta_q(),
                 tcq: preset.tcq.values().contains(&true),
@@ -311,6 +378,7 @@ impl IntraFrameCoder {
             },
         };
         let (sequence, view, references) = sequence_state(&params)?;
+        let tiles = frame_tiles(config, preset, (&params, &view))?;
         let mfh_obu = if config.multi_frame_header {
             encode_multi_frame_header_obu().map_err(coding("multi-frame header"))?
         } else {
@@ -329,13 +397,7 @@ impl IntraFrameCoder {
             screen: (preset.screen_detect && core::ptr::eq(preset, config.preset.params()))
                 .then(|| *config.preset.screen_params()),
             tile_groups: config.tile_groups.get(),
-            tiles: UniformTiles {
-                cols_log2: config.tiles.cols_log2,
-                rows_log2: config.tiles.rows_log2,
-                middle_cdf_update_tile: preset.cdf_update_tile == 1,
-                reuse_tile_info: preset.seq_tile_info < 3,
-                ..UniformTiles::default()
-            },
+            tiles,
             pool: (config.threads.resolve().get() > 1)
                 .then(|| WorkerPool::new(config.threads))
                 .transpose()

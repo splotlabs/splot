@@ -52,7 +52,7 @@ fn pan_stream(
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<FrameLr>) {
     let mut config = config(200, 96, BitDepth::Ten, 6, 190);
     config.chroma = chroma;
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };

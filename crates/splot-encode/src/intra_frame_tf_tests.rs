@@ -122,7 +122,7 @@ fn tf_stream_of(
     make: &dyn Fn(&Config, u32) -> SourceFrame,
 ) -> Stream {
     config.threads = splot_parallel::ThreadCount::from(threads);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };

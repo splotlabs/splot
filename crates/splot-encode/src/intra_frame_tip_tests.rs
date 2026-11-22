@@ -73,7 +73,7 @@ fn tip_frames_reach_the_headers_and_the_decoder() {
 fn tip_streams_match_on_any_thread_count() {
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 110);
-        config.tiles = TileLayout {
+        config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 0,
         };
@@ -708,7 +708,7 @@ fn with_hole_fill() -> &'static PresetParams {
 /// 2x1 tiles.
 fn hole_fill_stream(threads: usize) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
     let mut config = config(136, 72, BitDepth::Eight, 6, 250);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -781,7 +781,7 @@ fn tip_bawp_stream(
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
@@ -881,7 +881,7 @@ fn tip_output_options_stream(
     forced: Option<(TipGlobalMv, Option<InterpolationFilter>, bool)>,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
     let mut config = config(136, 72, BitDepth::Eight, 6, 250);
-    config.tiles = TileLayout {
+    config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 0,
     };
