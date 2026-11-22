@@ -348,6 +348,11 @@ pub struct PresetParams {
     /// The SDP chroma tree search, `0..=1`: `0` searches only the merges of
     /// the luma tree, `1` every partition the chroma node allows (§ 5.20.3.2).
     pub sdp_chroma_search: u8,
+    /// Extended SDP (`enable_extended_sdp`, § 5.20.3.1) with `sdp`, `0..=2`:
+    /// an inter-frame node may code an `INTRA_REGION`, an intra luma tree and
+    /// one chroma block. `1` tries the region where the shared tree of the
+    /// same partition chose intra leaves only, `2` at every eligible node.
+    pub extended_sdp: u8,
     /// CCSO `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` triples the
     /// filter search tries per plane, `0..=112`: the first 8 of a fixed
     /// ladder, then every other triple of § 5.18.7.12; `0` disables CCSO in
@@ -891,6 +896,7 @@ impl PresetParams {
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("sdp_chroma_search", self.sdp_chroma_search, 0, 1, "")?;
+        check("extended_sdp", self.extended_sdp, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
@@ -1113,6 +1119,7 @@ preset_table! {
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         sdp_chroma_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        extended_sdp:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     intra {
         intra_modes:           frames_sd([
@@ -1385,6 +1392,7 @@ mod tests {
             assert!(at_most(&slow.leaf_reuse, &fast.leaf_reuse));
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.sdp_chroma_search <= slow.sdp_chroma_search);
+            assert!(fast.extended_sdp <= slow.extended_sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);
@@ -1680,6 +1688,7 @@ mod tests {
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("interintra_search", "2")], "interintra_search"),
             (&[("sdp_chroma_search", "2")], "sdp_chroma_search"),
+            (&[("extended_sdp", "3")], "extended_sdp"),
             (&[("warp_interintra", "3")], "warp_interintra"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),

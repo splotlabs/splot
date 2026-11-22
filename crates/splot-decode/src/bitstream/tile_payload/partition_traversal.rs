@@ -46,10 +46,13 @@ pub(crate) use tree_walk::{
     decode_block_part, is_intra_sdp_shared_root, partition_allowed_input, partition_context_inputs,
     updated_chroma_offset,
 };
+pub(crate) use tree_walk::{
+    INTRA_REGION, MIXED_REGION, extended_sdp_chroma_call, intra_region_context,
+    should_read_extended_sdp_region_type,
+};
 #[cfg(test)]
 use tree_walk::{
-    INTRA_REGION, MIXED_REGION, partition_cdf_plane, read_extended_sdp_region_type,
-    read_frontier_partition_decision, should_read_extended_sdp_region_type,
+    partition_cdf_plane, read_extended_sdp_region_type, read_frontier_partition_decision,
 };
 
 pub(crate) const BLOCK_8X32: usize = 21;
@@ -349,7 +352,7 @@ impl TilePartitionCall {
         self.with_flag(CALL_CFL_ALLOWED_IN_SDP, cfl_allowed_in_sdp)
     }
 
-    const fn with_intra_region(self, intra_region: bool) -> Self {
+    pub(crate) const fn with_intra_region(self, intra_region: bool) -> Self {
         self.with_flag(CALL_INTRA_REGION, intra_region)
     }
 

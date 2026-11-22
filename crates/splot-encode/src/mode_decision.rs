@@ -1714,6 +1714,29 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         Ok(sink.bits)
     }
 
+    fn region_rate(
+        &mut self,
+        node: PartitionNode,
+        partition: Partition,
+        intra: bool,
+    ) -> Result<Option<Bits>> {
+        if !self.syntax.codes_region_type(node, partition)? {
+            return Ok(None);
+        }
+        let mut sink = RateSink::adapting();
+        self.syntax
+            .write_region_type(node, partition, intra, &mut sink)?;
+        Ok(Some(sink.bits))
+    }
+
+    fn region_children(
+        &self,
+        node: PartitionNode,
+        partition: Partition,
+    ) -> Result<(Vec<PartitionNode>, PartitionNode)> {
+        Ok(self.syntax.region_children(node, partition)?)
+    }
+
     fn save(
         &mut self,
         node: PartitionNode,

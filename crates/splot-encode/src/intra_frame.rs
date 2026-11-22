@@ -191,6 +191,11 @@ fn intra_leaves(
             out.push((node.col4() * 4, node.row4() * 4, w, h));
             Ok(())
         }
+        (PartitionTree::Region { .. }, _) => {
+            let (w, h) = node.dimensions()?;
+            out.push((node.col4() * 4, node.row4() * 4, w, h));
+            Ok(())
+        }
         (PartitionTree::Leaf(_), _) => Ok(()),
     }
 }
@@ -259,6 +264,7 @@ impl IntraFrameCoder {
                 screen_content: preset.palette || preset.integer_mv,
                 dip: preset.dip,
                 sdp: preset.sdp,
+                extended_sdp: preset.sdp && preset.extended_sdp > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(preset.cdf_avg_across_tiles),

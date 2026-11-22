@@ -237,7 +237,7 @@ fn collect_sdp<'a>(tree: &'a PartitionTree, out: &mut Vec<(&'a PartitionTree, &'
                 collect_sdp(child, out);
             }
         }
-        PartitionTree::Leaf(_) => {}
+        PartitionTree::Leaf(_) | PartitionTree::Region { .. } => {}
     }
 }
 

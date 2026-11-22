@@ -1762,16 +1762,26 @@ fn search_frame_counting(
     source: &SourceFrame,
     bit_depth: BitDepth,
 ) -> (Vec<PartitionTree>, [usize; 2]) {
+    search_frame_at(coder, plan, source, (bit_depth, 90))
+}
+
+/// [`search_frame_counting`] at `qindex`.
+fn search_frame_at(
+    coder: &IntraFrameCoder,
+    plan: &GopFrame,
+    source: &SourceFrame,
+    (bit_depth, qindex): (BitDepth, u16),
+) -> (Vec<PartitionTree>, [usize; 2]) {
     let core = plan
         .header(
             &coder.view,
             &coder.references,
-            90,
+            u32::from(qindex),
             &FrameFilterParams::default(),
             crate::gop::frame_tools(
                 (&coder.preset, crate::preset::PresetContext::default()),
                 coder.tiles,
-                90,
+                u32::from(qindex),
             ),
         )
         .unwrap();
@@ -1779,7 +1789,7 @@ fn search_frame_counting(
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
     let sb = writer.syntax().superblock_size4() * 4;
     let padded = PaddedSource::new(source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
-    let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
+    let lambda = Lambda::from_qindex(qindex.into(), bit_depth).unwrap();
     let motion = MotionSearch::new(
         writer.syntax(),
         &padded,
@@ -1788,8 +1798,9 @@ fn search_frame_counting(
         Vec::new(),
     )
     .unwrap();
-    let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
-    residual.context = coder.preset_context(plan, 90);
+    let mut residual =
+        SourceResidualCoder::new(&padded, u32::from(qindex), bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(plan, u32::from(qindex));
     let (luma, stride, width, height) = padded.luma();
     let bv_search = crate::intrabc::BvSearch::new(luma, stride, (width, height));
     residual.intrabc = (core.allow_intrabc == Some(true)).then_some(&bv_search);
@@ -1894,13 +1905,7 @@ fn b_frame_search_picks_compound_and_skip_mode_leaves() {
 
 /// The leaves of `tree` that `keep` accepts.
 fn leaves(tree: &PartitionTree, keep: impl Fn(&LeafChoice) -> bool + Copy) -> usize {
-    match tree {
-        PartitionTree::Leaf(choice) => usize::from(keep(choice)),
-        PartitionTree::Split { children, .. } => {
-            children.iter().map(|child| leaves(child, keep)).sum()
-        }
-        PartitionTree::Sdp { luma, chroma } => leaves(luma, keep) + leaves(chroma, keep),
-    }
+    tree.count_leaves(&keep)
 }
 
 /// `(width, height, bit depth, preset, qp, (cols_log2, rows_log2))`: 2x1, 1x2,
@@ -2053,6 +2058,8 @@ mod compound;
 mod content;
 #[path = "intra_frame_delta_q_tests.rs"]
 mod delta_q;
+#[path = "intra_frame_ext_sdp_tests.rs"]
+mod ext_sdp;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
 #[path = "intra_frame_gm_tests.rs"]
