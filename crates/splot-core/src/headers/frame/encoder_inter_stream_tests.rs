@@ -1525,3 +1525,74 @@ fn explicit_reference_maps_code_the_first_default_references() {
             .unwrap();
     assert_eq!(tip.core.inter.unwrap().explicit_ref_frame_map, Some(false));
 }
+
+#[test]
+fn intra_only_headers_keep_the_other_slots() {
+    for sb in [SuperblockSize::Block64x64, SuperblockSize::Block256x256] {
+        let seq = sequence(200, 136, BitDepthIdc::Eight, sb);
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let slots = Slots::after_key(200, 136, 4);
+        for (show_frame, refresh_frame_flags, filters) in [
+            (true, 0b10, FrameFilterParams::default()),
+            (false, 0b1000_0000, filters(sb)),
+        ] {
+            let params = InterFrameParams {
+                base_q_idx: 90,
+                order_hint: 6,
+                refresh_frame_flags,
+                show_frame,
+                filters,
+                ..InterFrameParams::default()
+            };
+            let header = build_intra_only_frame_header(&view, &slots.view(), &params).unwrap();
+            let core = &header.core;
+            assert_eq!(core.frame_type, Some(FrameType::IntraOnly));
+            assert_eq!(core.frame_is_intra, Some(true));
+            assert_eq!(core.refresh_frame_flags, Some(refresh_frame_flags));
+            assert_eq!(core.display_order_hint(), Some(6));
+            assert_eq!(core.immediate_output_frame, Some(show_frame));
+            assert!(core.inter.is_none());
+            assert_eq!(header.bits.num_frame_header_bits(), core.consumed_bits);
+            let bytes = encode_inter_frame_obu(&header, &[&[0x5a; 3]]).unwrap();
+            assert!(!bytes.is_empty());
+            let mut w = BitWriter::new();
+            for index in 0..header.bits.num_frame_header_bits() {
+                w.write_flag(header.bits.bit(index).unwrap()).unwrap();
+            }
+            let full = w.into_bytes();
+            for len in 0..core.consumed_bits.div_ceil(8) as usize {
+                let mut cut = BitReader::new(&full[..len], ByteOffset::new(0));
+                let parsed =
+                    parse_frame_header_prefix(&mut cut, ObuType::RegularTileGroup, Some(true))
+                        .and_then(|prefix| {
+                            let mut cut_core =
+                                init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
+                            parse_core_body(&mut cut, &mut cut_core, &view, None, &slots.view())?;
+                            Ok(cut_core.status)
+                        });
+                let complete = FrameHeaderParseStatus::IntraHeaderComplete;
+                assert!(parsed.map_or(true, |s| s != complete), "cut at {len}");
+            }
+        }
+        let bad = |params: InterFrameParams| {
+            build_intra_only_frame_header(&view, &slots.view(), &params).is_err()
+        };
+        let base = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 6,
+            refresh_frame_flags: 0b10,
+            ..InterFrameParams::default()
+        };
+        assert!(bad(InterFrameParams {
+            base_q_idx: 0,
+            ..base
+        }));
+        assert!(bad(InterFrameParams {
+            tx: KeyFrameTxParams {
+                tx_mode: TxMode::Only4x4,
+                ..KeyFrameTxParams::default()
+            },
+            ..base
+        }));
+    }
+}

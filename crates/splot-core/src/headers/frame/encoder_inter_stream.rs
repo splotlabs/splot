@@ -16,7 +16,7 @@ use crate::headers::film_grain::{
 };
 use crate::headers::frame::encoder_stream::{
     MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_film_grain_config,
-    write_quant_and_filters, write_uniform_tile_info,
+    write_intra_frame_tail, write_quant_and_filters, write_uniform_tile_info,
 };
 use crate::headers::frame::get_ref_frames::get_relative_dist;
 use crate::headers::frame::global_motion::{DEFAULT_WARP_PARAMS, REFS_PER_FRAME, base_prediction};
@@ -550,6 +550,56 @@ fn write_global_motion(
         }
     }
     Ok(())
+}
+
+/// Builds the `INTRA_ONLY_FRAME` header (§ 5.18.2 `frame_is_inter = 0`) of
+/// `params` in an `OBU_REGULAR_TILE_GROUP`, parsed with `refs`: its
+/// `order_hint`, `show_frame` and `refresh_frame_flags`, then the key-frame
+/// tail of `base_q_idx`, `tiles`, `filters` and `tx`. An intra frame codes
+/// `PRIMARY_REF_NONE` and no references; the slots it does not refresh keep
+/// their frames for later frames.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for a single-picture view, a zero or
+/// too-wide `base_q_idx`, `filters` or `tx` the sequence cannot carry, or bits
+/// that do not parse to a complete intra header with `refs`.
+pub fn build_intra_only_frame_header(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+) -> Result<EncodedFrameHeader, EncoderHeaderError> {
+    if seq.single_picture_header_flag {
+        return Err(EncoderHeaderError::SinglePictureView);
+    }
+    let mut w = BitWriter::new();
+    w.write_uvlc(0)?; // cur_mfh_id
+    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    w.write_flag(false)?; // frame_is_inter
+    w.write_flag(params.show_frame)?; // immediate_output_frame
+    if !params.show_frame && !seq.monotonic_output_order_flag {
+        w.write_flag(false)?; // implicit_output_frame
+    }
+    w.write_flag(false)?; // frame_size_override_flag
+    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
+    w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
+    write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
+    let tail = (params.base_q_idx, params.tiles, params.show_frame);
+    write_intra_frame_tail(&mut w, seq, tail, &params.filters, params.tx)?;
+    let bytes = w.into_bytes();
+    let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+    let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
+    parse_core_body(&mut reader, &mut core, seq, None, refs)?;
+    let bit_len = reader.consumed_bits();
+    core.consumed_bits = bit_len;
+    if core.status != FrameHeaderParseStatus::IntraHeaderComplete
+        || core.frame_type != Some(crate::headers::frame::FrameType::IntraOnly)
+    {
+        return Err(EncoderHeaderError::Incomplete);
+    }
+    let bits =
+        RecordedFrameHeaderBits::record(&mut BitReader::new(&bytes, ByteOffset::new(0)), bit_len)?;
+    Ok(EncodedFrameHeader { core, bits })
 }
 
 /// Serializes the `OBU_REGULAR_TILE_GROUP` OBU of `header` whose one tile group
