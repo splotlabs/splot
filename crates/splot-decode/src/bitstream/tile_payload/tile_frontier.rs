@@ -111,6 +111,11 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         self.tree.bru_mode()
     }
 
+    /// The § 5.20.3.1 `AllowExtraIBCRange` of the last superblock decoded.
+    pub(crate) const fn allow_extra_ibc_range(&self) -> bool {
+        self.tree.allow_extra_ibc_range()
+    }
+
     /// Whether the next superblock starts a new superblock row.
     pub(crate) const fn at_row_start(&self) -> bool {
         self.tree.at_row_start()
