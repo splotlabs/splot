@@ -1201,7 +1201,7 @@ impl TrialCoder<'_, '_> {
     ) -> Result<CompoundModes> {
         let mut variants = vec![trial];
         if self.preset.opfl || self.preset.refinemv {
-            let (reads_optflow, _) = self.syntax.compound_refinements(leaf, trial)?;
+            let (reads_optflow, ..) = self.syntax.compound_refinements(leaf, trial)?;
             if reads_optflow {
                 variants.push(CompoundModes {
                     optflow: true,

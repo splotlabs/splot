@@ -1317,12 +1317,12 @@ fn random_modes(
                 return LeafChoice::inter(InterPrediction::Compound(local));
             }
             let mut side = Rng(rng.0.rotate_left(17));
-            let (reads_optflow, _) = syntax.compound_refinements(leaf, modes).unwrap();
+            let (reads_optflow, ..) = syntax.compound_refinements(leaf, modes).unwrap();
             let modes = CompoundModes {
                 optflow: reads_optflow && side.below(4) != 0,
                 ..modes
             };
-            let (_, reads_refinemv) = syntax.compound_refinements(leaf, modes).unwrap();
+            let (_, reads_refinemv, _) = syntax.compound_refinements(leaf, modes).unwrap();
             let modes = CompoundModes {
                 refinemv: reads_refinemv && side.below(4) != 0,
                 ..modes
