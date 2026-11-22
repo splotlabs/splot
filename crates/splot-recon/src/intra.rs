@@ -532,7 +532,6 @@ fn average_lanes<S: Simd, P: IntraLaneSample>(simd: S, primary: &mut [P], second
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

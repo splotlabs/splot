@@ -14,7 +14,7 @@
 //! than a translational vector. The model goes to the coded lattice as
 //! `ROTZOOM` `gm_params`.
 
-#![allow(
+#![expect(
     clippy::many_single_char_names,
     reason = "model terms and point coordinates keep their geometric names"
 )]
@@ -267,7 +267,6 @@ fn quantize([a, c, tx, ty]: Model) -> Option<[i32; 6]> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

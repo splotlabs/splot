@@ -3,8 +3,6 @@
 
 //! Tile parse, reconstruction-state, and production-path determinism tests.
 
-#![allow(clippy::expect_used)]
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::symbol_encoder::SymbolEncoder;

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::intra_dc_math::round2_u32;
 use crate::math::round2_i32;

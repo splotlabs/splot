@@ -3,7 +3,7 @@
 
 //! AV2 § 5.20.3.1 `decode_partition` child-call expansion.
 
-#![allow(
+#![expect(
     clippy::inline_always,
     reason = "measured: the decoder walk recurses through each child push"
 )]

@@ -3,8 +3,6 @@
 
 //! What [`super::NeighbourMvGrid`] records for one leaf's motion.
 
-#![allow(clippy::unwrap_used)]
-
 use super::super::MvBlockContext;
 use super::{CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, MotionVector, warp_sub_mv_at};
 use super::{

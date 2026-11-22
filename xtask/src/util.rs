@@ -66,7 +66,6 @@ pub(crate) fn is_windows_absolute_path(token: &str) -> bool {
 /// Creates a fresh, uniquely named scratch directory under the system temp
 /// directory for tests, removing any stale directory with the same name first.
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 pub(crate) fn temp_root(name: &str) -> anyhow::Result<std::path::PathBuf> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -281,7 +281,6 @@ fn lower_hex_digit(nibble: u8) -> &'static str {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, PlaneRect, PlaneSize};

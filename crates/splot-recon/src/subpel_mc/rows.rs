@@ -5,7 +5,7 @@
 //! window rows and output rows validated once, then handed out as whole
 //! rows, so no load or store of a row checks its index.
 
-#![allow(clippy::inline_always, reason = "measured strip-kernel row helpers")]
+#![expect(clippy::inline_always, reason = "measured strip-kernel row helpers")]
 
 use super::block::Block;
 use core::num::NonZeroU32;

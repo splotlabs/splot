@@ -64,7 +64,7 @@ pub(crate) fn new_general_intra_workspace<T: ReconSample>(
     Ok(CurrentFrameWorkspace::<T>::new(info, T::default())?)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -144,7 +144,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -210,7 +210,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: CoeffBlock<'_>,
@@ -297,7 +297,7 @@ pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
     Ok(prediction)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -334,7 +334,7 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
 /// coded residual there, so no staging buffer is copied into the frame.
 ///
 /// Returns `false` without predicting when the block overhangs the frame edge.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn predict_intra_in_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -376,7 +376,7 @@ pub(crate) fn predict_intra_in_frame<T: ReconSample>(
 
 /// [`predict_intra_in_frame`], or for a block it declines, `predict` into a
 /// staging buffer that [`write_intra_prediction_block`] commits.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn predict_intra_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -435,7 +435,7 @@ pub(crate) fn predict_intra_block<T: ReconSample>(
 /// reconstructs write-through, straight into the frame rows, and only a block
 /// [`reconstruct_general_intra_coeff_block_rect_into_frame`] declines falls back
 /// to reconstructing through a staging buffer and copying that into the frame.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn commit_intra_prediction<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,

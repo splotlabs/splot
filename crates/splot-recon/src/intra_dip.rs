@@ -275,7 +275,7 @@ static DIP_ROW_WEIGHTS: [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_M
 
 const DIP_FEATURE_PAIRS: usize = DIP_FEATURE_COUNT.div_ceil(2);
 
-#[allow(
+#[expect(
     clippy::large_stack_arrays,
     reason = "evaluated only at compile time for a static"
 )]
@@ -445,7 +445,6 @@ static DIP_POINT_INDEX: [[[u8; 32]; 4]; 2] = {
     table
 };
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -453,11 +452,7 @@ mod tests {
         IntraRectBlockSize::new(log2_width, log2_height).unwrap()
     }
 
-    #[allow(
-        clippy::many_single_char_names,
-        clippy::needless_range_loop,
-        reason = "the § 7.13.2.4-6 names and loops"
-    )]
+    #[expect(clippy::many_single_char_names, reason = "the § 7.13.2.4-6 names")]
     fn spec_dip(
         (w, h, max): (usize, usize, i32),
         (mode, transpose): (usize, bool),

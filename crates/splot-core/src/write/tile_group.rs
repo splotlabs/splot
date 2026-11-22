@@ -333,7 +333,7 @@ fn check_tile_group_payload_encodable(
 ///   scratch buffer, so the caller's `writer` is untouched on any failure. The payload writer's
 ///   [`WriteError::WriterNotByteAligned`] guard cannot trip here: step 3's `byte_alignment()` leaves
 ///   the scratch byte-aligned before the payload step.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn write_tile_group_obu(
     writer: &mut BitWriter,
     core: &FrameHeaderCore,
@@ -443,7 +443,7 @@ pub fn write_tile_group_obu(
 ///   structure) or the payload check (defective / mismatched framing). The payload writer's
 ///   [`WriteError::WriterNotByteAligned`] guard cannot trip here: step 4's `byte_alignment()` leaves
 ///   the scratch byte-aligned before the payload step.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn write_tile_group_continuation_obu(
     writer: &mut BitWriter,
     recorded: Option<&RecordedFrameHeaderBits>,

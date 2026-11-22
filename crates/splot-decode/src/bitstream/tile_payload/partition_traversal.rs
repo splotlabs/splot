@@ -113,7 +113,7 @@ pub(crate) struct TilePartitionFrameFacts {
 }
 
 impl TilePartitionFrameFacts {
-    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -246,7 +246,7 @@ impl TilePartitionCall {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) const fn child(
         r: usize,
         c: usize,
@@ -379,7 +379,7 @@ impl TilePartitionCall {
     }
 }
 
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionBounds {
     mi_row_start: usize,

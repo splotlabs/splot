@@ -387,7 +387,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
     /// `edges` sets, of a stripe with a carry and three CDEF block rows, gets
     /// only the rows the first and the last block row read: [`Self::lower`]
     /// views the last ones.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn copy_window(
         &mut self,
         frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
@@ -551,7 +551,7 @@ fn window_bounds(
 enum StripeOwner<T: ReconSample> {
     Owned(Vec<T>),
     Direct(
-        #[allow(dead_code, reason = "keeps the leased stripe region alive")] DirectPlaneTarget<T>,
+        #[expect(dead_code, reason = "keeps the leased stripe region alive")] DirectPlaneTarget<T>,
     ),
 }
 

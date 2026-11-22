@@ -85,7 +85,7 @@ const fn build_vertical_scan() -> [u16; MAX_SCAN_LEN] {
     out
 }
 
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 const fn build_horizontal_scan() -> [u16; SCAN_TABLE_LEN] {
     let mut out = [0u16; SCAN_TABLE_LEN];
     let mut wi = 0;
@@ -111,7 +111,7 @@ const fn build_horizontal_scan() -> [u16; SCAN_TABLE_LEN] {
     out
 }
 
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 const fn build_two_d_scan() -> [u16; SCAN_TABLE_LEN] {
     let mut out = [0u16; SCAN_TABLE_LEN];
     let mut wi = 0;
@@ -255,7 +255,6 @@ pub const fn tx_class(plane_tx_type: usize) -> TransformClass {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -332,7 +331,7 @@ mod tests {
 
     /// The § 5.20.7.30 walk written straight from the spec text, independent of
     /// the compile-time tables it checks.
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names)]
     fn reference_scan(w: usize, h: usize, class: TransformClass) -> Vec<u16> {
         let mut out = vec![0u16; w * h];
         match class {

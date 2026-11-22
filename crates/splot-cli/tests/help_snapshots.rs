@@ -4,7 +4,7 @@
 //! Snapshots of validate, inspect, encode and explain help (CONF-CLI-SNAPSHOT-COVERAGE).
 //! Top-level help is excluded because decoder wording changes independently.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 use std::process::Command;
 

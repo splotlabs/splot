@@ -130,7 +130,7 @@ impl TemporalMotionBand {
             .min(self.layout.height8)
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "TMVP projection reads one row at a time"
     )]
@@ -142,7 +142,7 @@ impl TemporalMotionBand {
         self.cells.cells().get(start..end)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     pub(crate) fn record_blocks(&mut self, blocks: &[TemporalMotionBlock]) -> crate::Result<()> {
         if blocks.is_empty() {

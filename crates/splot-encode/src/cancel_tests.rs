@@ -3,8 +3,6 @@
 
 //! [`CancelToken`] through the [`Encoder`], at 8 and 10 bits.
 
-#![allow(clippy::unwrap_used)]
-
 use std::sync::atomic::AtomicUsize;
 
 use super::*;

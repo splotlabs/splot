@@ -624,7 +624,6 @@ pub fn reuse_tile_params(input: ReuseTileParamsInput<'_>) -> ReuseTileParams {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

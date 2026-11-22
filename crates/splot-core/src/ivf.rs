@@ -532,7 +532,6 @@ pub(crate) fn short_frame_header(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

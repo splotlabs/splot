@@ -209,10 +209,6 @@ fn col_dct<const M: usize, const H: usize, const G: usize>(
 /// over the first `M / 2` (`EE + EO`, then `EE - EO` reversed), which
 /// combine with the odd-row sums `O` as in [`col_dct`]. `even` and `odd`
 /// are the [`quads`] of the kernel.
-#[allow(
-    clippy::needless_range_loop,
-    reason = "the group index also places the outputs"
-)]
 #[inline]
 #[target_feature(enable = "neon")]
 fn col_dct2<const M: usize, const Q: usize, const GE: usize, const GO: usize>(

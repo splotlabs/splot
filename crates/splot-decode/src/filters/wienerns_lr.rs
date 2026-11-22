@@ -374,7 +374,7 @@ fn derive_wienerns_lr_skip_grid(
     WienerNsLrTxSkipGrid::new(rows, cols, values)
 }
 
-#[allow(clippy::inline_always, reason = "one call per transform record")]
+#[expect(clippy::inline_always, reason = "one call per transform record")]
 #[inline(always)]
 fn write_wienerns_lr_tx_skip_record(
     rows: usize,
@@ -413,7 +413,7 @@ fn write_wienerns_lr_tx_skip_record(
 
 /// Writes `value` over `N` slots from `start` in each of `count` rows `cols`
 /// apart.
-#[allow(clippy::inline_always, reason = "one fixed-width run per row")]
+#[expect(clippy::inline_always, reason = "one fixed-width run per row")]
 #[inline(always)]
 fn write_tx_skip_rows<const N: usize>(
     values: &mut [u8],
@@ -444,7 +444,7 @@ fn write_tx_skip_rows<const N: usize>(
 
 /// Writes `value` over the unwritten `slots`, failing on a slot another
 /// record wrote differently.
-#[allow(clippy::inline_always, reason = "one call per transform record row")]
+#[expect(clippy::inline_always, reason = "one call per transform record row")]
 #[inline(always)]
 fn write_tx_skip_slots(slots: &mut [u8], value: u8, populated: &mut usize) -> ReconResult<()> {
     if mi_run_is(slots, WIENERNS_LR_TX_SKIP_UNWRITTEN) {

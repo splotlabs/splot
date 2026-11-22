@@ -434,7 +434,6 @@ fn shifted_bound(value: usize, shift: u8, context: &'static str) -> Result<isize
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};

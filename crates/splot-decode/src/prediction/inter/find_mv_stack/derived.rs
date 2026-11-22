@@ -270,7 +270,7 @@ impl<'a> DerivedMvState<'a> {
 
     /// Records a candidate on another reference; [`Self::fill`] derives it
     /// only when the stack still has room, which most blocks never reach.
-    #[allow(clippy::inline_always, reason = "measured: once per stack probe")]
+    #[expect(clippy::inline_always, reason = "measured: once per stack probe")]
     #[inline(always)]
     pub(super) fn add_spatial(
         &mut self,
@@ -470,7 +470,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::unwrap_used)]
     fn deferred_derivation_matches_eager_past_the_pending_capacity() {
         use super::super::temporal::TipReferencePair;
         use super::super::{BlockPrecisionRecord, NeighbourMvGrid};

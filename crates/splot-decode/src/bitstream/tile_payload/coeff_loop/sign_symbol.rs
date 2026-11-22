@@ -103,7 +103,7 @@ pub(crate) enum CoeffSignReadError {
     },
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "per-coefficient decode helper; the encoder facade is a second caller"
 )]
@@ -118,7 +118,7 @@ pub(crate) fn derive_nonzero_coeff_sign_input(
     }
 }
 
-#[allow(clippy::inline_always, reason = "see derive_nonzero_coeff_sign_input")]
+#[expect(clippy::inline_always, reason = "see derive_nonzero_coeff_sign_input")]
 #[inline(always)]
 fn derive_coeff_sign_source(
     entry: CoeffScanEntry,
@@ -154,7 +154,7 @@ fn derive_coeff_sign_source(
     CoeffSignReadSource::SignBit
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: per-coefficient sign and quant step"
 )]

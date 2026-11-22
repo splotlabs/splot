@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::super::max_level::coeff_is_low_frequency;
 use super::*;
 

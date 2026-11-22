@@ -37,7 +37,7 @@ struct IntrabcChromaPrediction {
 }
 
 impl IntrabcReconPrediction {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn derive(
         core: &FrameHeaderCore,
         frontier: &DecodeBlockFrontier,

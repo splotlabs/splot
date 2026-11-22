@@ -3,8 +3,6 @@
 
 //! IBP angular blend regression tests against offline AVM reference samples.
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 
 fn rect(log2_width: u8, log2_height: u8) -> IntraRectBlockSize {

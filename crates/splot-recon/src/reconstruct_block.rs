@@ -88,7 +88,7 @@ pub fn reconstruct_transform_block_residual<T: ReconSample>(
 /// # Errors
 /// Propagates the first failing primitive: dequantization, secondary transform,
 /// primary inverse transform, or residual addition.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn reconstruct_transform_block_residual_with_secondary<T: ReconSample>(
     prediction: &[T],
     quant: &[i32],
@@ -133,7 +133,6 @@ pub fn dequantize_with_secondary(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{BitDepth, PlaneId, QuantizerDeltas, ReconError, ac_quantizer, dc_quantizer};

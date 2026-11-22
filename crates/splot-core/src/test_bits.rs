@@ -7,8 +7,6 @@
 //! same `Bits` writer; this is the single canonical copy they share. Test-only:
 //! the module is `#[cfg(test)]` and carries no runtime cost.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 /// MSB-first bit writer: push bits, then pack them into bytes.
 #[derive(Clone, Default)]
 pub(crate) struct Bits {

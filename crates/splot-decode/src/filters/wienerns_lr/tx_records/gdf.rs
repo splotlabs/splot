@@ -125,7 +125,7 @@ impl GdfState {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[expect(clippy::inline_always, reason = "measured: a per-leaf guard")]
     #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
@@ -159,7 +159,7 @@ impl GdfState {
 
     /// The `(row, col)` of the GDF unit whose `use_gdf` the block at
     /// `frontier` codes (§ 5.20.10.3), if any.
-    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[expect(clippy::inline_always, reason = "measured: a per-leaf guard")]
     #[inline(always)]
     pub(crate) fn unit_for(&self, frontier: &DecodeBlockFrontier) -> Option<(usize, usize)> {
         let sb_mask = self.sb_size4.wrapping_sub(1);

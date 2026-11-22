@@ -166,8 +166,8 @@ impl ValidatorContext {
     ///    declares no sequence header (`Provided(ExternalHlsSet::new())`, or one
     ///    declaring only operating point sets) cannot supply an active header, so it does
     ///    not suppress (precedent: [`ValidatorContext::validate_active_sequence_limits`]).
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::option_option)]
+    #[expect(clippy::too_many_arguments)]
+    #[expect(clippy::option_option)]
     pub(super) fn check_single_active_sequence_header(
         &self,
         obu: &ObuEnvelope<'_>,

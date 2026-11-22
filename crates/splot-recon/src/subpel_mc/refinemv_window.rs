@@ -243,7 +243,7 @@ impl Plan {
 
     /// The storage offset of the source row of window row `i` from that of
     /// row `i - 1`: one row down inside the clip bounds, else the same row.
-    #[allow(clippy::inline_always, reason = "per window row")]
+    #[expect(clippy::inline_always, reason = "per window row")]
     #[inline(always)]
     pub(super) fn next_row(&self, row: u32, i: usize) -> u32 {
         let [y0, first, last] = self.rows;
@@ -253,7 +253,7 @@ impl Plan {
 
     /// The storage offset of the load of `tap` of `group` in the source
     /// row at `row`.
-    #[allow(clippy::inline_always, reason = "per window row")]
+    #[expect(clippy::inline_always, reason = "per window row")]
     #[inline(always)]
     pub(super) fn at(&self, row: u32, group: usize, tap: usize) -> u32 {
         row.wrapping_add_signed(self.loads[group][tap])
@@ -262,7 +262,7 @@ impl Plan {
 
 /// The `N` samples of `source` from `at`, or zeros when they leave it: a
 /// `u32` start ends one compare from the storage end.
-#[allow(clippy::inline_always, reason = "per window row")]
+#[expect(clippy::inline_always, reason = "per window row")]
 #[inline(always)]
 pub(super) fn lanes_at<T, const N: usize>(source: &[T], at: u32) -> Option<&[T; N]> {
     let at = at as usize;
@@ -521,7 +521,7 @@ pub(super) mod generic {
     /// Blends the horizontal rows of `plan` vertically into the `h` output
     /// rows of `groups` eight-sample groups, filtering each distinct source
     /// row once.
-    #[allow(clippy::inline_always, reason = "per refine-MV window")]
+    #[expect(clippy::inline_always, reason = "per refine-MV window")]
     #[inline(always)]
     fn rows<S: Simd, P: WindowSample>(
         plan: &Plan,

@@ -9,7 +9,7 @@
 //! reach the gated lines, and instrumented encoding takes minutes.
 
 #![cfg(not(coverage))]
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
 use common::{splot, temp_input, temp_output};

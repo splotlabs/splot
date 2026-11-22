@@ -558,7 +558,6 @@ fn parse_ops_mlayer_info(reader: &mut BitReader<'_>) -> Result<OpsMlayerInfo> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

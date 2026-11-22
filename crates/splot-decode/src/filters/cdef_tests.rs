@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::filters::source::DeblockedWindow;
 use crate::filters::source::StripeInitialization::CopyAll;
@@ -44,7 +42,7 @@ impl CdefTapOffsets {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn gather_taps<T: ReconSample>(
     snap: FramePlane<'_, T>,
     offsets: &CdefTapOffsets,

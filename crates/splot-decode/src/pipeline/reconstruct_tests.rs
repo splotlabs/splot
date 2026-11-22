@@ -3,8 +3,6 @@
 
 //! Unit tests for general intra block reconstruction ([`super`]).
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext,

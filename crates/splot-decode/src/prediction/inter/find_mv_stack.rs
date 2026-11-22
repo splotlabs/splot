@@ -294,7 +294,7 @@ pub(crate) fn mode_ctx_from_neighbours(
 }
 
 /// The § 7.11.2 `NewMvContext` of [`mode_ctx_from_neighbours`].
-#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[expect(clippy::inline_always, reason = "measured: per-leaf mode context")]
 #[inline(always)]
 pub(crate) fn new_mv_ctx_from_neighbours(
     block: &MvBlockContext,
@@ -314,7 +314,7 @@ pub(crate) fn new_mv_ctx_from_neighbours(
 
 /// The § 7.11.2 warp outputs of [`mode_ctx_from_neighbours`]; its
 /// `new_mv_context` is left 0.
-#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[expect(clippy::inline_always, reason = "measured: per-leaf mode context")]
 #[inline(always)]
 pub(crate) fn warp_ctx_from_neighbours(
     grid: &NeighbourMvGrid,
@@ -591,7 +591,7 @@ pub(crate) const fn ref_count_ctx(counts: u32, num_total_refs: usize, ref_idx: u
     (this >= next) as usize + (this > next) as usize
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: per-leaf neighbour contexts"
 )]
@@ -1033,7 +1033,7 @@ impl RefMvBank {
         self.update_unit_budget(mi_row, mi_col, n4w, n4h, sb_size4);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn update_for_block(
         &mut self,
         ref_frame0: i8,
@@ -1289,7 +1289,7 @@ fn bank_ring_update<T: Copy>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn find_mv_stack(
     grid: &NeighbourMvGrid,
@@ -1316,7 +1316,7 @@ pub(crate) fn find_mv_stack(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn find_mv_stack_with_temporal(
     grid: &NeighbourMvGrid,
@@ -1350,7 +1350,7 @@ pub(crate) fn find_mv_stack_with_temporal(
 /// The § 7.12.2 stack up to index `need`, which is all a caller may read: the
 /// bank, derived and extra candidates only append after the sort, so they are
 /// skipped once the spatial and temporal scans alone reach `need`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn find_mv_stack_upto(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -1803,7 +1803,7 @@ fn visit_mv_stack_column<'g>(
     }
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     clippy::too_many_arguments,
     reason = "measured: keeps the stack state in registers across probes"

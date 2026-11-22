@@ -7,10 +7,8 @@
 //! warp-delta parameter reads.
 
 use super::super::find_mv_stack::reduce_warp_model;
-#[allow(clippy::wildcard_imports)]
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_warp_inter_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -264,7 +262,7 @@ struct WarpNewmvTail {
     mvd: MotionVector,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_warp_newmv_tail(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -347,7 +345,7 @@ pub(crate) fn mvd_sign_derivation_block_scope_allowed(
         }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn read_warp_extend_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -384,7 +382,7 @@ pub(crate) fn read_warp_extend_syntax(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn read_warp_newmv_delta_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

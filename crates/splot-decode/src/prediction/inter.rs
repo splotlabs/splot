@@ -80,7 +80,7 @@ fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn walk_inter_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
@@ -193,7 +193,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
@@ -218,7 +218,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
 /// The entropy products of a TIP output frame, which parses no blocks: the
 /// initial CDFs pass through unchanged and the segment-id map is empty. They
 /// do not depend on the frame's samples, so a caller may publish them first.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn tip_output_products(
     core: &FrameHeaderCore,
     candidate: &DecodePlannedObu,
@@ -261,7 +261,7 @@ pub(crate) fn reconstruct_tip_output<T: ReconSample>(
     block::tip::reconstruct_output(scratch, planes, sequence, core, reference, geometry, offset)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_bridge_frame<T: ReconSample>(
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
@@ -946,7 +946,7 @@ fn compound_is_joint_context_from_order_hints(
     let one_restricted = first_order_hint.is_restricted() != second_order_hint.is_restricted();
     usize::from(same_side || first_dist != second_dist || one_restricted)
 }
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     residual: &InterResidual,
@@ -1062,7 +1062,7 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
     v.plane == ReconPlaneId::V && u.x == v.x && u.y == v.y && u.tx_size == v.tx_size
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,

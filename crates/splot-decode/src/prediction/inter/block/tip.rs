@@ -696,7 +696,7 @@ fn batch_candidates(
 /// `RefineMvs`), and every other unit the § 7.11.3 candidate it was built
 /// with. A compound block goes through the plane pass of [`mc::predict_tip_units`];
 /// a single-reference block (§ 7.13.3.1 weight 16) puts each unit.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn predict_block<T: ReconSample>(
     scratch: &mut TipReconstructScratch,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
@@ -903,7 +903,7 @@ impl<T: ReconSample> TipOutputStages<T> {
     ///
     /// # Errors
     /// Returns the header, projection or workspace diagnostic.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn init(
         spares: &TipSpares,
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,

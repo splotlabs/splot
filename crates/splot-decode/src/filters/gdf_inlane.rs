@@ -79,7 +79,7 @@ impl SlotParams {
 }
 
 impl RowPairs<Avx2> for InLane {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn rows<W: WindowRows, R: RowSink>(
         self,
@@ -234,7 +234,6 @@ const _: () = {
 
 /// Subtracts from `sums` the combs `pair` of `COMB_PAIRS` slot `slot` times
 /// their weights in each `SYM_PAIRS` entry of the slot.
-#[allow(clippy::inline_always)]
 #[inline(always)]
 fn accumulate(
     simd: Avx2,
@@ -261,7 +260,6 @@ fn accumulate(
 pub(super) struct InLane;
 
 kernel!(
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn unpack_pairs(t: Avx2, a: i16x16<Avx2>, b: i16x16<Avx2>) -> [i16x16<Avx2>; 2] {
         use core::arch::x86_64::{_mm256_unpackhi_epi16, _mm256_unpacklo_epi16};
@@ -274,7 +272,6 @@ kernel!(
 
 kernel!(
     /// Saturating the sums to i16 preserves every clipped, rounded digit.
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn packed_digits(t: Avx2, low: i32x8<Avx2>, high: i32x8<Avx2>, scale: i16) -> i16x16<Avx2> {
         use core::arch::x86_64::{
@@ -290,7 +287,6 @@ kernel!(
 );
 
 kernel!(
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn lane_range(_t: Avx2, low: u16x16<Avx2>, high: u16x16<Avx2>) -> u16 {
         use core::arch::x86_64::{
@@ -313,7 +309,6 @@ kernel!(
 );
 
 kernel!(
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn unpack_blocks(t: Avx2, blocks: i32x8<Avx2>) -> [i32x8<Avx2>; 2] {
         use core::arch::x86_64::{_mm256_unpackhi_epi32, _mm256_unpacklo_epi32};
@@ -339,7 +334,7 @@ const COMB_BIAS: i32 = 65536 - COMB_OFFSET as i32;
 type Centers<S> = (u16x16<S>, u16x16<S>);
 
 /// The samples of `row` from column `col`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn samples<S: Simd>(simd: S, row: &[u16; 28], col: usize) -> u16x16<S> {
     u16x16::from_slice(simd, &row[col..col + 16])
@@ -347,7 +342,7 @@ fn samples<S: Simd>(simd: S, row: &[u16; 28], col: usize) -> u16x16<S> {
 
 /// The offset negated differences `center - tap` of tap `TAP` for row
 /// `ROW`: the tap's two mirrored reads.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn tap_diffs<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
     simd: S,
@@ -376,7 +371,7 @@ fn tap_diffs<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
 /// `above` and `below`, each clipped to its offset tap bounds: the
 /// saturating add clips the comb's upper end at 512 and the max its lower
 /// end at -511.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn clipped_sum<S: Simd>(
     simd: S,
@@ -398,7 +393,7 @@ fn clipped_sum<S: Simd>(
 /// `a` and `b` with the lanes where `select` (all ones or zero per lane) is
 /// set exchanged: two xors of one masked difference, four operations where
 /// two AVX2 blends are six micro-ops.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn swap<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: u16x16<S>) -> (u16x16<S>, u16x16<S>) {
     let moved = (a ^ b) & select;
@@ -409,7 +404,7 @@ fn swap<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: u16x16<S>) -> (u16x16<S>, u
 /// the clips: `center2` is the centre doubled less [`COMB_BIAS`]. It equals
 /// the clipped comb when no tap read differs from the centre by more than the
 /// tap's bound or by more than [`LINEAR_RANGE`].
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn linear_comb<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
     simd: S,
@@ -439,7 +434,7 @@ type Masks<S> = (u16x16<S>, u16x16<S>);
 /// select between the same two diff pairs. `select` is the class mask that
 /// sends `K`'s lanes to `T` (`transposed`, or `mirrored` when `K`'s transpose
 /// is itself and its mirror is `T`).
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn paired_combs<
     S: Simd,
@@ -476,7 +471,7 @@ fn paired_combs<
 /// The clipped sums of the tap cycle `A`, `B`, `C`, `D`, whose four combs
 /// select among the same four diff pairs: mirroring swaps `A`/`B` and
 /// `C`/`D`, transposing swaps the pairs.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn cycle_combs<
     S: Simd,
@@ -522,7 +517,7 @@ fn cycle_combs<
 type Sums = [[i32x8<Avx2>; 2]; 3];
 
 /// The § 7.20.5 error index `pos` of the biased `gdfIdx` sums `sums`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn error_index(simd: Avx2, sums: Sums, params: &GdfSymParams) -> [u16; 16] {
     let scale = params.scale;
@@ -617,7 +612,7 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool, const SWAP_TRA
 /// samples, reading class-0 weights and moving each lane's taps by its
 /// class. A window with `tap_range` 0 adds zero at every tap, so its sums
 /// stay at the bias.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn slot_rows_with<W: WindowRows, R: RowSink>(
     simd: Avx2,

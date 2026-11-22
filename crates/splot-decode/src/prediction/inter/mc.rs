@@ -68,7 +68,6 @@ pub(super) const fn optflow_unit_size(luma_w: usize, luma_h: usize) -> usize {
     if luma_w <= 8 && luma_h <= 8 { 4 } else { 8 }
 }
 
-#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct McBlockRect {
     pub(crate) luma_x: usize,
@@ -645,7 +644,7 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn predict_plane<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
@@ -696,7 +695,7 @@ fn predict_plane<T: ReconSample>(
     Ok(sink.write_rect(plane, target, &staged, params.w)?)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn plane_prediction<T: ReconSample>(
     info: DecodedFrameInfo,
@@ -725,7 +724,7 @@ pub(crate) fn plane_prediction<T: ReconSample>(
     Ok((view, rect, params))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn predict_warp_plane<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
@@ -876,7 +875,7 @@ fn predict_warp_plane<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn predict_compound_plane_output<T: ReconSample>(
     info: DecodedFrameInfo,
     block: &CompoundMcBlock<'_, T>,
@@ -1198,7 +1197,7 @@ struct TranslationalCompoundPlane<'a, T: ReconSample> {
     params: [SubpelPredictParams; 2],
 }
 
-#[allow(clippy::inline_always, reason = "per-plane result copy")]
+#[expect(clippy::inline_always, reason = "per-plane result copy")]
 #[inline(always)]
 fn compound_subpel_plane<'a, T: ReconSample>(
     block: &CompoundMcBlock<'a, T>,
@@ -1326,7 +1325,7 @@ fn compound_warp_plane_prediction<T: ReconSample>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn compound_ref_intermediate<T: ReconSample>(
     info: DecodedFrameInfo,
     reference: ReferenceSamples<'_, T>,
@@ -1434,7 +1433,7 @@ fn compound_ref_intermediate<T: ReconSample>(
     Ok(scaling)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn write_compound_section(
     dst: &mut [i32],
     dst_w: usize,
@@ -1535,7 +1534,7 @@ fn ext_warp_units<E>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn ext_warp_unit_bounds(
     rect: McBlockRect,
     plane: PlaneId,

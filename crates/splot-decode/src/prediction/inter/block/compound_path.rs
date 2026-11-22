@@ -339,7 +339,7 @@ pub(super) fn read_reference_mode(
     read_row(symbols, row_at(cdfs.block_rows_mut().comp_mode(), ctx)) != 0
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn decode_compound_inter_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -859,7 +859,7 @@ pub(super) const fn compound_deblock_sub_pu_size(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn append_compound_temporal_motion(
     records: &mut Vec<TemporalMotionBlock>,
     reference: &ReferenceMetadata,
@@ -1062,7 +1062,7 @@ pub(super) fn decode_skip_mode_inter_block(
 
 /// The § 5.20.7.10 `skip_mode_frames` reference pair of a skip-mode block
 /// whose neighbours give `neighbour_ctx`; the encoder facade calls it too.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "keeps the parse path of the parent with the facade as second caller"
 )]
@@ -1204,7 +1204,6 @@ pub(super) fn select_near_near_candidates(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn compound_all_opfl_reachable(
     opfl_refine_type: u32,
     facts: &FrameRefFacts,
@@ -1248,7 +1247,6 @@ fn compound_opfl_reference_allowed(
     Ok((d0 <= 0) ^ (d1 <= 0))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn compound_refinemv_reachable(
     enable_refinemv: bool,
     opfl_refine_type: u32,

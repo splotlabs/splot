@@ -517,7 +517,6 @@ pub fn read_obu_header(input: &[u8], start: ByteOffset) -> Result<ObuHeader> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

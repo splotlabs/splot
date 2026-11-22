@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
@@ -139,7 +137,7 @@ fn encode_luma_mode_path(path: LumaModeEofPath) -> Vec<u8> {
     encoder.finish().unwrap().into_bytes()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_general_intra_luma_block_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -163,7 +161,7 @@ fn decode_general_intra_luma_block_mode(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_general_intra_block_modes(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,

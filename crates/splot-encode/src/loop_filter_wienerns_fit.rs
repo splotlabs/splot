@@ -353,7 +353,6 @@ fn bank_bits(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::super::{CHROMA_COEFFS, LUMA_COEFFS};
     use super::*;

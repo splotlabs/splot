@@ -574,11 +574,9 @@ impl Default for SymbolEncoder {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "symbol_encoder_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "symbol_encoder_proptests.rs"]
 mod proptests;

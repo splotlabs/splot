@@ -37,7 +37,7 @@ pub(super) fn cctx_allowed(plane: &ResidualPlanePlan, frame: FrameTileCtx) -> bo
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -178,7 +178,7 @@ fn reconstruct_cfl_pair<T: ReconSample>(
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,

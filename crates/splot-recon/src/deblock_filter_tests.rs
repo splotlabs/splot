@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::math::round2;
 use splot_core::tables::conversion::Q_FIRST;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn params(
     boundary: usize,
     q_thr: i32,
@@ -359,7 +357,7 @@ fn choice(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn reference_choice(
     s: &[u16],
     t: &[u16],

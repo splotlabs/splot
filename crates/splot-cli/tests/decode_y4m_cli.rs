@@ -3,7 +3,7 @@
 
 //! End-to-end `splot decode` Y4M output tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 mod common;
 use common::{
@@ -495,7 +495,7 @@ exec "$1" decode --output-format y4m "$2" -o "$out"
     assert_eq!(std::fs::read(&output).unwrap(), expected_minimal_y4m());
     let names = read_dir_names(&dir);
     assert!(names.contains(&"selected-output-name.txt".to_string()));
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    #[expect(clippy::case_sensitive_file_extension_comparisons)]
     let tmp_count = names.iter().filter(|name| name.ends_with(".tmp")).count();
     assert_eq!(tmp_count, 1);
 }

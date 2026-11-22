@@ -229,7 +229,7 @@ fn reclaim_unowned_frames(
 /// While it fails, collects the oldest in-flight frame and reclaims what that
 /// releases, so a deep pipeline shrinks to the limit instead of failing. The
 /// error stands once nothing is in flight and every pool work has finished.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn admit_within_reference_store(
     mut check: impl FnMut(u64) -> Result<()>,
     options: &DecodeOptions,
@@ -463,7 +463,6 @@ macro_rules! with_sample {
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_key_frame(
     bytes: &[u8],
     options: &DecodeOptions,
@@ -517,7 +516,7 @@ fn empty_key_reference<T: splot_recon::ReconSample>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_key_frame_with_effects(
     rows: Option<&splot_parallel::RowScheduler>,
     pools: &mut frame_tasks::RowPools,
@@ -650,7 +649,6 @@ pub(crate) fn row_scheduler(
 /// A filter-phase failure outranks the frame loop's own error: serial decode
 /// would have run that frame's filters before reaching the later error, so the
 /// lowest-indexed collected failure is the one the caller sees.
-#[allow(clippy::too_many_arguments)]
 fn drive_frames(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
@@ -701,7 +699,7 @@ fn share_sequence(
     Arc::clone(cached.get_or_insert_with(|| Arc::new(sequence.clone())))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn push_split_inter<T: SplitSample>(
     pools: &mut frame_tasks::RowPools,
     rows: &splot_parallel::RowScheduler,
@@ -768,7 +766,7 @@ fn push_split_inter<T: SplitSample>(
     Ok((slot, core, publications, motion))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_frames_in_order(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
@@ -1830,31 +1828,22 @@ pub(crate) mod general_intra;
 pub(crate) mod reconstruct;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_d135_tests;
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_d157_tests;
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_horizontal_tests;
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_lossless_d113_tests;
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_lossless_d157_tests;
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_lossless_hfollow_tests;
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_lossless_sdp_d113_tests;
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_lossless_smooth_tests;
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_tests;
 
 #[derive(Clone, Copy)]
@@ -1862,7 +1851,7 @@ pub(crate) enum TileFactsKind {
     Intra,
     Inter,
 }
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn derive_tile_plan_with<'payload>(
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'payload>,

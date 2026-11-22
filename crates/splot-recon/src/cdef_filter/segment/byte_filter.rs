@@ -20,7 +20,7 @@ impl<S: SimdToken> CdefConstrainWide<S> {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
     fn apply_diff<Q: QuadLanes<S>>(self, simd: S, quads: Q, diff: i8x32<S>) -> i8x32<S> {
         let magnitude = diff.abs().bitcast::<u8x32<S>>();
@@ -31,7 +31,7 @@ impl<S: SimdToken> CdefConstrainWide<S> {
     /// `constrain(tap - center)` on `u8` samples as the tap clipped to
     /// `center -/+ clip` minus the centre: the clip is below 128, so the
     /// wrapping difference is exact.
-    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
     fn apply(self, tap: u8x32<S>, center: u8x32<S>) -> i8x32<S> {
         let magnitude = tap.saturating_sub(center) | center.saturating_sub(tap);
@@ -280,7 +280,6 @@ pub(super) fn cdef_filter_rows_wide8<
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     /// Rounds a single tap family's byte sum with its remaining weight.
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     pub(super) fn round_single_avx2(t: Avx2, taps: i8x32<Avx2>, scale: i16) -> i8x32<Avx2> {
         use core::arch::x86_64::{

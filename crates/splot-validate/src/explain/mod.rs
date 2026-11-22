@@ -73,7 +73,6 @@ pub fn did_you_mean(rule_id: &str) -> Vec<&'static str> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

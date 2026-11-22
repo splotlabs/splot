@@ -8,8 +8,6 @@
 //! the writer round-trip tests exercise the same canonical inputs without
 //! duplicating the literal field-by-field fixtures.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use proptest::prelude::*;
 
 use crate::headers::frame::{CoreSeqQuantView, CoreSeqTileView, GdfGeometry, SegmentationParams};

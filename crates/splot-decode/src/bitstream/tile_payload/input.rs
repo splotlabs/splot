@@ -58,7 +58,6 @@ pub(crate) struct FrameCandidateCoeffFacts {
 }
 
 impl FrameCandidateCoeffFacts {
-    #[allow(clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
         enable_fsc: bool,
@@ -221,7 +220,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) const fn new_for_test(
         obu_type: ObuType,
         frame_is_intra: bool,
@@ -326,7 +325,6 @@ pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
 }
 
 impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(crate) const fn new(
         candidate: &'facts DecodePlannedObu,

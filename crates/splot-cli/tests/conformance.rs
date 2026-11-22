@@ -5,7 +5,7 @@
 //! Checks expected diagnostics and rejects unlisted vectors. AVM is only the
 //! local vector generator; this test needs no external decoder or network.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ struct VectorEntry {
     /// Path to the committed vector, relative to `tests/conformance/`.
     path: String,
     /// Human-readable note (unused by the runner, present for documentation).
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     description: String,
     /// Expected validation outcome.
     expect: Expect,

@@ -538,7 +538,7 @@ fn padded_row<T>(rows: PaddedRows<'_, T>, row_index: usize, padded_width: usize)
 /// Filters output `rows` whose full tap windows are known in range; row `r`
 /// lands at `(r - rows.start) * output_stride` in `output`.
 #[inline]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn filter_padded_luma_rows_in_range<T: ReconSample>(
     output: &mut [T],
     output_stride: usize,
@@ -637,7 +637,7 @@ fn for_each_luma_segment(
 /// subclass segments once per 4x4 cell row instead of once per row.
 ///
 /// `cast` views each source row as the SIMD lane source type.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput>(
     output: &mut [O],
     output_stride: usize,
@@ -742,7 +742,7 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
 /// four cells, 16 columns at a time from column `x`, with each cell's class
 /// weights; returns the columns done. Sample-subclass layouts are left to
 /// the segment filter.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
     output: &mut [O],
     output_stride: usize,
@@ -829,7 +829,7 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
 
 /// The [`CELL_REACH`] columns from `x` of up to [`LUMA_WINDOW_ROWS`]` + 3`
 /// window rows; unused trailing slots repeat the first row.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: an outlined call per lane group costs more than the window"
 )]
@@ -1249,7 +1249,7 @@ fn coeffs_for_sample<'a>(
 }
 
 #[cfg(test)]
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 fn filter_sample<T, F>(
     coeffs: &[i16; WIENER_NS_LUMA_COEFFS],
     c: usize,

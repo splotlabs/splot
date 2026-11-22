@@ -113,7 +113,7 @@ type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8
 /// columns. With `REUSE`, carried columns 8..12 become columns 0..4. An 8-bit
 /// horizontal value is at most `16 * 255`, so its vertical blend plus the
 /// rounding bias stays below `2^16` in `u16` lanes.
-#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[expect(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
 fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
     simd: S,
@@ -149,7 +149,7 @@ fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
 }
 
 /// Eight samples from `col` as `u16` lanes.
-#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[expect(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
 fn sample_lanes<S: Simd, T: ReconSample>(simd: S, line: &[T], col: usize) -> u16x8<S> {
     if let Some(lanes) = T::u16_slice(line).and_then(|line| line.get(col..)?.first_chunk::<8>()) {
@@ -167,7 +167,7 @@ fn sample_lanes<S: Simd, T: ReconSample>(simd: S, line: &[T], col: usize) -> u16
 /// Runs the rows of [`bilinear_12x12_block`] in one pass: `horizontal`
 /// filters eight columns of one source line and `vertical` blends two such
 /// results.
-#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[expect(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
 fn bilinear_12x12_rows<S: Simd, T: ReconSample, const REUSE: bool>(
     (window, ref_stride, output, stride, columns): Block12x12<'_, T>,
@@ -195,7 +195,6 @@ fn bilinear_12x12_rows<S: Simd, T: ReconSample, const REUSE: bool>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::super::tests::full_pel_params;
     use super::*;

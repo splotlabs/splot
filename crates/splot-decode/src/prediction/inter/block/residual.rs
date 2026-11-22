@@ -6,7 +6,6 @@
 //!
 //! Feature tracking: `DECODE-INTER-RESIDUAL-DCT`.
 
-#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::bitstream::tile_payload::LumaTxPartition;
 use crate::filters::wienerns_lr::tx_records::{
@@ -112,7 +111,7 @@ impl InterLumaTxTypeMap {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn read_inter_residual(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -293,7 +292,7 @@ fn inter_luma_tx_records_are_selectable(selectable_tx_partitions: bool, lossless
     selectable_tx_partitions && !lossless
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_inter_residual_luma_chunk(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -368,7 +367,7 @@ fn read_inter_residual_luma_chunk(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_inter_residual_chroma_group(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -695,7 +694,7 @@ fn residual_allocation_error() -> crate::error::DecodeError {
     inter_allocation!("inter residual transform-block list")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_inter_residual_plane(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,

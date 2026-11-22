@@ -125,7 +125,7 @@ cdf_rows! {
 }
 
 impl MvCdfRows {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -199,7 +199,7 @@ impl MvCdfRows {
 
     /// The trusted read of the row of `selector`; `None` for a shell-class
     /// precision without a row.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]

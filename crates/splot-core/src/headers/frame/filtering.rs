@@ -641,7 +641,6 @@ fn read_cdef_strength(reader: &mut BitReader<'_>) -> Result<(u8, u8)> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

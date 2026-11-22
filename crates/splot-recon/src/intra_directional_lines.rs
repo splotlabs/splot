@@ -174,7 +174,7 @@ impl LineSample for u16 {
         baseline_simd!(simd => small_lanes_u16(simd, lanes, filter, max, last))
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: one call per line was the line cost"
     )]
@@ -220,7 +220,7 @@ impl<P: LineSample> PaddedEdge<P> {
 
     /// Filters `out.len()` samples from the window at `first`: `out[j] =
     /// Clip1(Round2(Σ taps[t] * edge[first + j + t], 7))`.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: one call per line was the line cost"
     )]
@@ -258,7 +258,7 @@ const LINE_BIAS: u16 = 48;
 /// The portable 8-bit line kernel in wrapping `u16` lanes: the biased sum is
 /// exact, so `(sum >> 7) - 48` is the signed `Round2`, clipped by the
 /// saturating subtract and the minimum.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: a call per line was the line cost"
 )]
@@ -287,7 +287,7 @@ fn line_lanes<S: Simd>(simd: S, window: &[u8], taps: [i8; 4], out: &mut [u8]) {
 /// the whole chunks, then the last `N` samples once more (overlapping, so the
 /// same values), or for a line shorter than `N` one chunk by two overlapping
 /// power-of-two stores, so no store is ever partial.
-#[allow(clippy::inline_always, reason = "keeps every store a fixed-size one")]
+#[expect(clippy::inline_always, reason = "keeps every store a fixed-size one")]
 #[inline(always)]
 fn store_chunks<P: Copy, const N: usize>(out: &mut [P], mut lanes: impl FnMut(usize) -> [P; N]) {
     let len = out.len();
@@ -321,7 +321,6 @@ fn window_chunk<P: Copy + Default, const N: usize>(window: &[P], at: usize) -> [
 
 /// Stores the first `out.len()` (`1..N`) of `lanes` as two overlapping copies
 /// of the largest power of two that fits.
-#[allow(clippy::inline_always, reason = "keeps every store a fixed-size one")]
 #[inline(always)]
 fn store_short<P: Copy, const N: usize>(out: &mut [P], lanes: &[P; N]) {
     fn pair<P: Copy, const W: usize>(out: &mut [P], lanes: &[P]) {
@@ -351,7 +350,7 @@ fn store_short<P: Copy, const N: usize>(out: &mut [P], lanes: &[P; N]) {
 /// multiply-adds of the interleaved windows `(edge[j], edge[j + 1])` and
 /// `(edge[j + 2], edge[j + 3])` with the tap pairs, in `i32` sums. Callers
 /// validate the edge samples to the bit depth, so each fits an `i16` lane.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: a call per line was the line cost"
 )]
@@ -429,7 +428,7 @@ fn small_lanes_u16<S: Simd>(
 /// shift) + b * shift, 5)` of the windows at taps 1 and 2. Callers validate the
 /// edge samples to the bit depth (at most 10 bits), so each weighted sum fits
 /// `u16` lanes.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: a call per line was the line cost"
 )]
@@ -572,7 +571,7 @@ pub(super) fn is_small_one_sided(size: IntraRectBlockSize, branch: DirectionalAn
 /// [`write_one_sided`] for a block that [`is_small_one_sided`]: four 4-sample
 /// or two 8-sample lines per sixteen lanes, read from a small padded copy of
 /// `edge` after `front` zero samples, with no per-line kernel call.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn write_one_sided_small<P: LineSample>(
     size: IntraRectBlockSize,
     branch: DirectionalAngleBranch,
@@ -744,7 +743,7 @@ pub(super) fn is_small_middle(size: IntraRectBlockSize) -> bool {
 /// candidate from its row's line and left candidate from its column's line,
 /// each line copied whole into sixteen-lane groups from the first lane it
 /// owns, then one select per lane by the row's left run.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn write_middle_small<P: LineSample>(
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
@@ -944,7 +943,7 @@ fn middle_small<P: LineSample, const W: usize, const H: usize>(
 
 /// Writes a zone-1 (`rows`) or zone-3 prediction whose `line(i)` gives row or
 /// column `i`, filling each line past its active samples with `last`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn write_one_sided<P: LineSample>(
     size: IntraRectBlockSize,
     branch: DirectionalAngleBranch,
@@ -1132,7 +1131,7 @@ fn middle_line(idx: i32, front: i32) -> Result<(usize, u16)> {
 /// `above_front` map a tap-0 base to its padded window start, and
 /// `above_last`/`left_last` bound each run's active samples as in the lane
 /// writers (`None` when the run has no clamped tail).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn write_middle<P: LineSample>(
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,

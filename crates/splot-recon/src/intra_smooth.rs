@@ -345,7 +345,7 @@ fn frame_edges<'a, T: ReconSample>(
 /// Writes the § 7.13.2.13 prediction of a block from `LeftCol[0..h)` in
 /// `left`, `AboveRow[0..w)` in `above`, and `[AboveRow[w], LeftCol[h]]`, for
 /// samples of at most [`MAX_LANE_SAMPLE`].
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: the call costs more than its body saves"
 )]
@@ -965,7 +965,6 @@ fn validate_sample<T: ReconSample>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

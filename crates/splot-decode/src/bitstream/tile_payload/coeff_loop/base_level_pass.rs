@@ -42,7 +42,7 @@ impl CoeffBaseFirstPassSummary {
         (self.packed & SUMMARY_TCQ_MASK) as usize
     }
 
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient update")]
     #[inline(always)]
     pub(crate) fn update_after_level<const TCQ: bool, const PH: bool>(
         &mut self,

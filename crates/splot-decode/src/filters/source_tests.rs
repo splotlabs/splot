@@ -3,8 +3,6 @@
 
 //! Selection and retention policies for the filter-source buffer caches.
 
-#![allow(clippy::expect_used)]
-
 use super::StripeInitialization::CopyAll;
 use super::{DeblockedWindow, FramePlane, StripePlane, take_stripe_sample_buffer, window_bounds};
 use splot_recon::{

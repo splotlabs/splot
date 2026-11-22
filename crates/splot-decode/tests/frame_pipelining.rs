@@ -7,7 +7,7 @@
 //! parse, reconstruction, and filter path, so all configurations must produce
 //! identical bytes and diagnostics.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used)]
 
 use core::num::NonZeroU64;
 use parking_lot::{Condvar, Mutex};

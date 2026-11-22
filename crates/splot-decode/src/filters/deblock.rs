@@ -220,7 +220,7 @@ const PASS_0_LEAD_MI_ROWS: usize = 4;
 impl FrameDeblock {
     /// Takes ownership of detached deblock records; the first advance lays
     /// the frame's mode-info grids out from them.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn prepare_owned(
         mut records: OwnedDeblockRecords,
         mi_rows: usize,
@@ -562,7 +562,7 @@ impl FrameDeblock {
 impl FrameDeblock {
     /// Builds a plan over copies of borrowed records, for tests that keep
     /// their records.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         blocks: &[DeblockBlock],
         chroma_blocks: &[DeblockBlock],
@@ -841,7 +841,7 @@ impl StrengthCache {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn get(&self, qindex: u32) -> (i32, i32) {
         let calculate = || {
@@ -943,7 +943,7 @@ impl PlanePass {
         })
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn edge_context(self, row: usize, col: usize, tile_edge: bool) -> EdgeContext {
         EdgeContext {
@@ -974,7 +974,7 @@ struct EdgeContext {
     tile_edge: bool,
 }
 
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn sub_pu_dimension(info: &DeblockBlock, pass: usize, sub_x: usize, sub_y: usize) -> usize {
     if let Some(size) = info.sub_pu_size {
@@ -993,7 +993,7 @@ fn sub_pu_dimension(info: &DeblockBlock, pass: usize, sub_x: usize, sub_y: usize
         .unwrap_or(1)
 }
 
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn sub_pu_base(
     info: &DeblockBlock,
@@ -1124,7 +1124,7 @@ const MAX_WIDTHS: [[[(u8, u8); 65]; 2]; 2] = {
 
 /// Derives § 7.17.2 `applyFilter`, `filterSize`, `qThr` and `side` from the
 /// two records of one edge.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn edge_decision<const PASS: usize>(
     curr: &DeblockBlock,
@@ -1235,7 +1235,7 @@ fn edge_strengths(
 /// transform and prediction bases match, so the edge filters only where the
 /// sub-PU base changes along the pass: on a multiple of the sub-PU size past
 /// the prediction base, which is never the block edge.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn same_record_decision<const PASS: usize>(
     record: &DeblockBlock,
@@ -1276,7 +1276,7 @@ fn same_record_decision<const PASS: usize>(
 /// The plane sub-PU size of `record` along the pass when plane position `at`
 /// lies on one of its sub-PU boundaries past the prediction base, the only
 /// place an edge inside one record filters.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn on_sub_pu_edge<const PASS: usize>(
     record: &DeblockBlock,

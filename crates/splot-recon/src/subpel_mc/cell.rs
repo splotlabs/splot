@@ -77,7 +77,7 @@ pub(super) fn compound_at<P: CellSample>(
 /// The COMPOUND_AVERAGE `(a * f + b * (16 - f) + 8) >> 4` of two
 /// full-sample `N`-square windows, `N` 4 or 8, read from `origins` of their
 /// `(samples, stride)` sources, into `output`; `forward` lies in `0..=16`.
-#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[expect(clippy::inline_always, reason = "full-sample compound cell hot path")]
 #[inline(always)]
 fn fullpel_cell<S: Simd, const N: usize>(
     simd: S,
@@ -146,7 +146,7 @@ fn fullpel_cell<S: Simd, const N: usize>(
 }
 
 /// [`fullpel_cell`] of 16-bit windows, clipped to `max`.
-#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[expect(clippy::inline_always, reason = "full-sample compound cell hot path")]
 #[inline(always)]
 fn fullpel_cell_u16<S: Simd, const N: usize>(
     simd: S,

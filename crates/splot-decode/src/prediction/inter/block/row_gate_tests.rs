@@ -4,8 +4,6 @@
 //! Bound-derivation, admission and settle-classification tests for
 //! [`super::RowReferenceGate`].
 
-#![allow(clippy::expect_used)]
-
 use splot_recon::{
     BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize, SubpelPredictParams,
 };

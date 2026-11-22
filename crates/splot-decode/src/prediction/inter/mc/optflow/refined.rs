@@ -797,7 +797,6 @@ fn predict_cell<T: ReconSample, O: CompoundAverageOutput>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 

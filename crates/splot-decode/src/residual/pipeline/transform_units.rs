@@ -21,7 +21,7 @@ impl GeneralIntraResidualPlan {
     /// Reconstructs planned transform block `index` from its row-major adjusted
     /// `quant` and `eob`, through the decoder's own kernel dispatch; a palette
     /// luma block predicts from its row-major `palette_map`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn reconstruct_unit<T: ReconSample>(
         &self,
         index: usize,
@@ -60,7 +60,7 @@ impl GeneralIntraResidualPlan {
     /// Reconstructs the planned chroma blocks `u` and `v` of one position from
     /// their row-major adjusted `quant` and `eob`, with cross-chroma transform
     /// `cctx_type`, through the decoder's paired reconstruction.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn reconstruct_cctx_pair<T: ReconSample>(
         &self,
         [u, v]: [(usize, &[i32], usize); 2],

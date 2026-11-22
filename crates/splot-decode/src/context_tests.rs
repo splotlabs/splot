@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use super::*;
 use crate::test_support::MINIMAL_FIXTURE;
 use splot_parallel::ThreadCount;

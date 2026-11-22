@@ -833,7 +833,6 @@ fn padded_tap<'a, S>(
 
 /// Filters every output row in 16-lane groups, finishing each row's last
 /// few samples with the scalar kernel.
-#[allow(clippy::too_many_arguments)]
 fn filter_chroma_padded_simd<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
@@ -844,7 +843,6 @@ fn filter_chroma_padded_simd<O: ChromaOutputSample, T: ReconSample + LumaSimdSou
     crate::lr_madd::lr_simd!(simd => filter_chroma_rows(simd, output, params, chroma, luma_ds, max_sample));
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline]
 fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
     simd: S,
@@ -1002,7 +1000,6 @@ fn filter_chroma_block<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
 /// vector, the last 8 columns overlapping the first when the width is not 8.
 /// Returns `false`, having written nothing, when a window is short.
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::too_many_arguments)]
 fn filter_chroma_narrow<O: ChromaOutputSample, S: avx2::Sample>(
     token: fearless_simd::Avx2,
     output: &mut [O],
@@ -1354,7 +1351,7 @@ impl LumaDsCache {
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn filter_chroma_sample<T, C, L>(
     params: &WienerNsChromaFilter<'_>,
     context: &ChromaFilterContext,
@@ -1542,7 +1539,6 @@ fn scale_coord(value: isize, shift: u8, context: &'static str) -> Result<isize> 
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
 #[path = "wienerns_chroma_filter_tests.rs"]
 mod tests;
 
@@ -1741,7 +1737,6 @@ mod neon {
         Some(group)
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     fn rows<const LUMA: bool>(
@@ -1897,7 +1892,6 @@ mod neon {
 
     /// [`rows`] over `u8` chroma: each tap one 16-byte load widened to two
     /// `i16` vectors, each group narrowed to bytes.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     fn byte_rows<const LUMA: bool>(

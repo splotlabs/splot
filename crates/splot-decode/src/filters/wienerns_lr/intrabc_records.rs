@@ -1182,6 +1182,5 @@ pub(crate) fn max_bvp_drl_bits_minus_1(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[path = "intrabc_records_tests.rs"]
 mod tests;

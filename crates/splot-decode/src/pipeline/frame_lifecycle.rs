@@ -147,7 +147,6 @@ impl PipelineFrame {
 
 #[cfg(test)]
 impl PipelineDecodedFrame {
-    #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
         match self {
             Self::Eight(frame) => frame,
@@ -558,7 +557,6 @@ pub(super) fn ensure_intra_header_complete(
 
 #[cfg(test)]
 mod sequence_profile_tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
     use crate::DecodeSourceIssueKind;

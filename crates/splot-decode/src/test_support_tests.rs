@@ -7,8 +7,6 @@
 //! minimal fixture; this module hosts the helper they share byte-for-byte to
 //! avoid drift between the three test modules.
 
-#![allow(clippy::unwrap_used)]
-
 use std::sync::Arc;
 
 use splot_recon::{

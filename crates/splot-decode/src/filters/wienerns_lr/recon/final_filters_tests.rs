@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::super::{FilledWindow, OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::DeblockedWindow;
@@ -1577,7 +1575,6 @@ fn checked_extent_boundaries_and_other_domains_do_not_merge() {
 }
 
 /// Resolves the `width` x `height` block at `(x, y)` with radius `(1, 1)`.
-#[allow(clippy::too_many_arguments)]
 fn resolve_rows<'a>(
     storage: &'a mut Vec<u8>,
     curr: FramePlane<'a, u8>,

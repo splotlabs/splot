@@ -8,8 +8,6 @@
 //! `SPLOT_PRINT_NEIGHBOUR_DIGESTS=1 cargo test -p splot-decode neighbour_state -- --nocapture`
 //! prints the current digests instead of checking them.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use core::cell::RefCell;
 use core::fmt::{Debug, Write};
 use core::ops::Range;

@@ -3,8 +3,6 @@
 
 //! Unit tests for general intra transform-block coefficient decode helpers.
 
-#![allow(clippy::unwrap_used)]
-
 use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
@@ -690,7 +688,6 @@ fn partitioned_luma_transform_records_skip_units_starting_outside_frame() {
     assert_eq!(visible, vec![(320, 64), (320, 96)]);
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
 fn frame_facts(
     enable_intra_ist: bool,
     enable_chroma_dctonly: bool,
@@ -808,7 +805,7 @@ fn ensure_with_test_payload_and_policy(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn ensure_with_test_payload_fsc_and_policy(
     facts: TileCoeffFrameFacts,
     plane: usize,

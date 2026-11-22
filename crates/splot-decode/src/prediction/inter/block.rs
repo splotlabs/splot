@@ -322,7 +322,7 @@ pub(crate) struct InterBlockFacts {
     pub(crate) residual_use_ddt: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn derive_inter_block_setup(
     work_units: &[DecodeTileWorkUnit],
     sequence: &SequenceHeader,
@@ -525,7 +525,7 @@ fn finish_frame_cdfs(
     products.cdf_output()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn decode_inter_blocks<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
@@ -814,7 +814,7 @@ fn scheduled_motion_field_inputs(
 ///
 /// The driver derives the TIP reference pair once and passes that exact pair to
 /// both the entropy pass and this prelude.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn frame_temporal_context<'a>(
     temporal_context: &'a mut TemporalMvContext,
     core: &FrameHeaderCore,
@@ -861,7 +861,7 @@ fn derived_tip_reference_pair(
 
 pub(super) use crate::tile::frame_superblock_h4;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_segment_id(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -918,7 +918,7 @@ fn read_segment_id(
 }
 
 /// [`read_enabled_segment_id`], zero without a call when segmentation is off.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     clippy::inline_always,
     reason = "measured: per block"
@@ -961,7 +961,7 @@ fn read_inter_segment_id(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
 fn read_enabled_segment_id(
     work_unit: &mut DecodeTileWorkUnit,
@@ -1235,7 +1235,6 @@ pub(super) struct InterLeafSink<'a> {
 }
 
 /// Decodes one leaf and stores its record as the row's next entry.
-#[allow(clippy::too_many_arguments)]
 fn decode_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -2009,7 +2008,7 @@ const fn parsed_inter_block(
 /// The part every inter leaf shares once its mode info is read: the residual,
 /// the filter, IntraBC and neighbour-flag records, then the leaf's command,
 /// written once into its row slot.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn finish_inter_leaf(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,

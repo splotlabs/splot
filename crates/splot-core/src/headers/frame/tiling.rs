@@ -369,7 +369,6 @@ pub(crate) fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

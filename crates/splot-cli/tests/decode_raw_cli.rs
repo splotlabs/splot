@@ -3,7 +3,7 @@
 
 //! End-to-end `splot decode` raw output tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 mod common;
 use common::{

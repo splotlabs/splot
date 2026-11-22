@@ -515,7 +515,7 @@ impl InterReconCommand {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn reconstruct_ordered<T: ReconSample>(
         &mut self,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
@@ -584,7 +584,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn reconstruct(
         &mut self,
         command: &mut InterReconCommand,
@@ -608,7 +608,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn clipped_rect_is_inside_band(
     x: usize,
     y: usize,
@@ -645,7 +645,6 @@ fn clipped_rect_is_inside_band(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
 
     use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
     use splot_recon::{

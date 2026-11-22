@@ -835,7 +835,6 @@ impl Drop for RowScheduler {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::WatermarkCell;
     use core::num::NonZeroUsize;

@@ -122,7 +122,7 @@ pub(crate) fn cdef_direction_segment(
 }
 
 /// The eight pre-shifted rows of the block at row 2, column 2 of `pad`.
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     simd: S,
@@ -141,7 +141,7 @@ fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 fn cdef_direction_strided<const STRIDE: usize, const AREA: usize>(
     pad: &[u16; AREA],
@@ -188,7 +188,7 @@ const fn cdef_cost_weights(len: usize, lane: usize) -> [[i32; 8]; 2] {
 /// the last three ending one or five lanes up. Every cost weighs entry `n`
 /// like entry `len - 1 - n`, so the reversed order of partials 3 and 4 does
 /// not change it.
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 fn cdef_direction_rows<S: SimdToken>(simd: S, rows: [i16x8<S>; 8]) -> (usize, i32) {
     let zero = i16x8::splat(simd, 0);
@@ -289,7 +289,6 @@ fearless_simd::kernel!(
     /// 3 (reversed) above. A partial's entries spill past lane 7 into a second
     /// register, which is reversed so that each entry meets its equal-weight
     /// mirror in one multiply-add.
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn cdef_direction_avx2(_t: Avx2, rows: [i16x8<Avx2>; 8]) -> (usize, i32) {
         use core::arch::x86_64::{
@@ -617,7 +616,7 @@ const CDEF_PAIR_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
 );
 
 /// Two consecutive 8-lane rows of one tap view as one 16-lane vector.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_row_pair<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
     simd: S,
@@ -633,7 +632,7 @@ fn cdef_row_pair<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
 }
 
 /// [`cdef_row_pair`] as `i16` lanes.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_row_pair_i16<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
     simd: S,
@@ -645,21 +644,21 @@ fn cdef_row_pair_i16<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
 
 /// `i8` lanes widened to `i16`, through the lower half of a doubled vector,
 /// which AVX2 widens in one instruction.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn widen_i8<S: SimdToken>(simd: S, lanes: i8x16<S>) -> i16x16<S> {
     simd.widen_i8x32(simd.combine_i8x16(lanes, lanes)).0
 }
 
 /// [`widen_i8`] for `u8` lanes.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn widen_u8<S: SimdToken>(simd: S, lanes: u8x16<S>) -> u16x16<S> {
     simd.widen_u8x32(simd.combine_u8x16(lanes, lanes)).0
 }
 
 /// `i16` lanes narrowed to `i8` with saturation.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn narrow_i16<S: SimdToken>(simd: S, lanes: i16x16<S>) -> i8x16<S> {
     let (low, high) = simd.split_i16x16(lanes);
@@ -667,7 +666,7 @@ fn narrow_i16<S: SimdToken>(simd: S, lanes: i16x16<S>) -> i8x16<S> {
 }
 
 /// `(8 + sum - (sum < 0)) >> 4`, the § 7.18.3 rounding of a tap sum.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_round<S: SimdToken>(sum: i16x16<S>) -> i16x16<S> {
     (sum + 8 + (sum >> 15)) >> 4
@@ -675,7 +674,7 @@ fn cdef_round<S: SimdToken>(sum: i16x16<S>) -> i16x16<S> {
 
 /// Writes the two 8-lane rows of `filtered` to rows `row` and `row + 1` of
 /// `out`, `W` samples each; the second only when it is below `h`.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_store_row_pair<S: SimdToken, const W: usize, T: ReconSample>(
     filtered: u16x16<S>,
@@ -704,7 +703,7 @@ fn cdef_store_row_pair<S: SimdToken, const W: usize, T: ReconSample>(
 }
 
 /// [`cdef_store_row_pair`] of the row pair `lanes`.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_store_rows<const W: usize, E: Copy>(
     lanes: [E; 16],
@@ -748,7 +747,7 @@ impl<S: SimdToken> CdefConstrain<S> {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
     fn apply(self, diff: i16x16<S>) -> i16x16<S> {
         let clip = self
@@ -770,7 +769,7 @@ type CdefTapViews<'a, E, const SPAN: usize> =
 /// `pad` that starts at its displacement from the block's first sample. The
 /// scratch leaves room for a view from any byte start, so the compiler knows
 /// that the view is in bounds.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_tap_views<
     'a,
@@ -832,7 +831,7 @@ type CdefRowsArgs<'a, const AREA: usize, T> = (
 /// rows the layout holds; rows at or past `h` are computed and discarded.
 /// With `HAS_UNAVAILABLE`, taps equal to [`CDEF_UNAVAILABLE`] leave the max
 /// unchanged and constrain to zero.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows<
     S: SimdToken,
@@ -919,7 +918,7 @@ impl<S: SimdToken> CdefConstrain8<S> {
 
     /// `constrain(tap - center)` as `sign * min(|diff|, clip)`, which is the
     /// clamp to `[-clip, clip]` that [`CdefConstrain::apply`] computes.
-    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
     fn apply(self, tap: u8x16<S>, center: u8x16<S>) -> i8x16<S> {
         let diff = tap.max(center) - tap.min(center);
@@ -930,7 +929,7 @@ impl<S: SimdToken> CdefConstrain8<S> {
 
     /// `constrain(diff)` on a tap difference in `i8` lanes; the wrapping
     /// `abs` read as `u8` is `|diff|` also for `-128`.
-    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
     fn apply_diff(self, diff: i8x16<S>) -> i8x16<S> {
         let magnitude = diff.abs().bitcast::<u8x16<S>>();
@@ -958,7 +957,7 @@ fn cdef_u8_lanes_fit(filter: &CdefBlockFilter) -> bool {
 /// so a tap's constrain is one vector operation per step instead of two.
 /// § 7.18.3 reads only tap differences and clamps to tap values, so the
 /// result moved back by `base` is the same as the `i16` kernel's.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows_8bit<
     S: SimdToken,
@@ -1031,7 +1030,7 @@ fn cdef_filter_rows_8bit<
     Some(())
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_output_row<const W: usize, E>(
     out: &mut [E],
@@ -1057,7 +1056,7 @@ macro_rules! cdef_by_families {
 /// Copies a block's centre samples, the output of a block with no active
 /// tap family; into `u8` storage, `W <= 8` centre samples narrow as one
 /// zero-padded lane group, and a sample above 255 fails the copy.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_copy_centre_rows<
     S: SimdToken,
@@ -1112,7 +1111,7 @@ fn cdef_i8_diffs_fit(filter: &CdefBlockFilter) -> bool {
 /// difference constrains to zero like the true one, the rounded sum moves
 /// the centre by less than 128, and the `min`/`max` clamp reads the
 /// differences, so the result is the same as the `i16` kernel's.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows_diff8<
     S: SimdToken,
@@ -1221,7 +1220,7 @@ fn shr_or_zero(value: i32, shift: i32) -> i32 {
 /// the difference itself, so the weighted sum is the weighted sum of the
 /// (clipped) taps minus the centre times the active weight, 12 per tap
 /// family.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows_clamped<
     S: SimdToken,
@@ -1289,7 +1288,6 @@ fn cdef_filter_rows_clamped<
 
 /// Dispatches [`cdef_filter_rows`] on which tap families are active; with
 /// neither, the block is its centre samples.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_block_rows<
     S: SimdToken,
@@ -1560,7 +1558,6 @@ mod tests {
     }
 
     /// § 7.18.2 as written, one sample at a time.
-    #[allow(clippy::needless_range_loop)]
     fn spec_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
         let mut partial = [[0i32; 15]; 8];
         for i in 0..8 {

@@ -11,7 +11,7 @@
 //! before it in the register ring of [`rows`], so each new row costs one
 //! shift and one blend. A CPU without AVX2 declines to [`super::generic`].
 
-#![allow(clippy::inline_always, reason = "measured word-lane row helpers")]
+#![expect(clippy::inline_always, reason = "measured word-lane row helpers")]
 
 use super::super::block::{Block, Sink, Taps};
 use super::super::rows::{self, Average, Out, Prep, Put, store_pair};

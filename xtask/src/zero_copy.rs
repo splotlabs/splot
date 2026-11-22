@@ -570,7 +570,6 @@ fn collect_source_lines(root: &Path) -> Result<Vec<ZcSourceLine>> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
 

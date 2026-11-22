@@ -134,7 +134,7 @@ impl Block<'_> {
         (symbols, nonzero_len, result)
     }
 
-    #[allow(clippy::inline_always, reason = "measured: one body per update mode")]
+    #[expect(clippy::inline_always, reason = "measured: one body per update mode")]
     #[inline(always)]
     fn decode_levels<const UPD: bool>(
         &self,

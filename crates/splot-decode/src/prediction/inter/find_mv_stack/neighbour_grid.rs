@@ -304,7 +304,7 @@ impl ProbedLeaf<'_> {
     }
 
     /// The list's § 7.12.2.2 sub-MV at the probed position.
-    #[allow(clippy::inline_always, reason = "measured: every stack probe")]
+    #[expect(clippy::inline_always, reason = "measured: every stack probe")]
     #[inline(always)]
     pub(super) fn sub_mv(&self, list: usize) -> MotionVector {
         if self.leaf.model_bits & (LeafRecord::SPLAT0 << list) == 0 {
@@ -629,7 +629,7 @@ impl NeighbourMvGrid {
 
     /// The flags at the four § 7.12.2.6 immediate probes of a block: the
     /// left-bottom, above-right, left-top and above-left.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: per-block neighbour contexts"
     )]
@@ -873,7 +873,7 @@ impl NeighbourMvGrid {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn record_block(
         &mut self,
         r: usize,
@@ -911,7 +911,7 @@ impl NeighbourMvGrid {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn record_warp_block(
         &mut self,
         r: usize,
@@ -949,7 +949,7 @@ impl NeighbourMvGrid {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn record_block_with_warp(
         &mut self,
         r: usize,
@@ -1006,7 +1006,7 @@ impl NeighbourMvGrid {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn record_tip_block(
         &mut self,
         r: usize,
@@ -1042,7 +1042,7 @@ impl NeighbourMvGrid {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn record_compound_block(
         &mut self,
         r: usize,
@@ -1332,14 +1332,14 @@ impl NeighbourMvGrid {
         Some(start..end)
     }
 
-    #[allow(clippy::inline_always, reason = "measured: every neighbour probe")]
+    #[expect(clippy::inline_always, reason = "measured: every neighbour probe")]
     #[inline(always)]
     fn index(&self, r: i32, c: i32) -> Option<usize> {
         self.index_at(r as isize as usize, c as isize as usize)
     }
 
     /// [`Self::index`] of a position whose negative coordinates wrapped.
-    #[allow(clippy::inline_always, reason = "measured: every neighbour probe")]
+    #[expect(clippy::inline_always, reason = "measured: every neighbour probe")]
     #[inline(always)]
     fn index_at(&self, r: usize, c: usize) -> Option<usize> {
         let (lo, hi, bias) = self.readable;
@@ -1379,7 +1379,7 @@ impl NeighbourMvGrid {
 
     /// [`Self::flags_at`] of each position, negative coordinates wrapped, with
     /// the grid layout read once for all of them.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: per-block neighbour contexts"
     )]
@@ -1407,7 +1407,7 @@ impl NeighbourMvGrid {
     /// is not a candidate. That is what keeps the decode-order candidates (the
     /// § 7.12 bottom-left probe above all) out of the stack once the flags run
     /// ahead of resolution.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: probes read a few cell fields"
     )]
@@ -1445,7 +1445,7 @@ impl NeighbourMvGrid {
     }
 
     /// The resolved leaf covering `(r, c)`, `None` like [`Self::get`].
-    #[allow(clippy::inline_always, reason = "measured: every stack probe")]
+    #[expect(clippy::inline_always, reason = "measured: every stack probe")]
     #[inline(always)]
     pub(super) fn probe(&self, r: i32, c: i32) -> Option<ProbedLeaf<'_>> {
         let leaf = self.leaf_at(r, c)?;

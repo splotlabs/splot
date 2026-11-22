@@ -357,7 +357,7 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn apply_bawp_plane<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: ReferenceSamples<'_, T>,

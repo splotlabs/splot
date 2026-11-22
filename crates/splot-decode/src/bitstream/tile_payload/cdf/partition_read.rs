@@ -23,7 +23,7 @@ impl TileCdfSubset {
     /// Reads a binary § 5.20.3.2 partition flag through the trusted read of
     /// its decoder-owned row; any other selector takes
     /// [`Self::read_partition_entry_symbol`].
-    #[allow(clippy::inline_always, reason = "the selector folds into the row read")]
+    #[expect(clippy::inline_always, reason = "the selector folds into the row read")]
     #[inline(always)]
     pub(crate) fn read_partition_flag(
         &mut self,
@@ -64,7 +64,7 @@ impl TileCdfSubset {
         Ok(self.read_partition_entry_symbol(selector, symbols)?.get() != 0)
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]

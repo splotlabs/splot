@@ -495,7 +495,7 @@ fn check_delta_q_params_encodable(dq: DeltaQParams, base_q_idx: u32) -> WriteRes
 ///   segment's stored level triple matches no `levels[..qmNum]` set; if a lossless segment's
 ///   triple is not `[15, 15, 15]`; or if `allow_tcq` / `allow_parity_hiding` disagree with
 ///   their inferred (gated-off) values.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn write_lossless_info(
     writer: &mut BitWriter,
     info: &LosslessInfo,

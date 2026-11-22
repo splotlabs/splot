@@ -148,7 +148,7 @@ impl UnitWindow {
         self.rows.checked_mul(self.cols)
     }
 
-    #[allow(clippy::inline_always, reason = "measured: per-leaf guards read it")]
+    #[expect(clippy::inline_always, reason = "measured: per-leaf guards read it")]
     #[inline(always)]
     fn index(self, row: usize, col: usize) -> Option<usize> {
         crate::tile::local_grid_index(
@@ -208,7 +208,6 @@ pub(crate) enum SelectableTransformRecordError {
     },
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn selectable_transform_record_error(
     _error: SelectableTransformRecordError,
 ) -> crate::error::DecodeError {
@@ -271,7 +270,7 @@ impl DeltaQState {
         self.current_q_index = self.base_q_index;
     }
 
-    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[expect(clippy::inline_always, reason = "measured: a per-leaf guard")]
     #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,
@@ -387,7 +386,7 @@ impl CdefState {
 
     /// Reads the block's CDEF unit index unless the unit already has one, which
     /// only an earlier read of the same frame's parameters can have set.
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         clippy::inline_always,
         reason = "measured: a per-leaf guard"
@@ -423,7 +422,7 @@ impl CdefState {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[inline(never)]
     fn read_unit(
         &mut self,
@@ -545,7 +544,7 @@ impl CdefState {
         Ok(())
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: the read_for_block guard reads it"
     )]
@@ -555,7 +554,7 @@ impl CdefState {
         Ok(self.values[index])
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: the read_for_block guard reads it"
     )]
@@ -637,7 +636,6 @@ pub(crate) fn inter_luma_transforms(
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_tx_partition_symbols(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -748,16 +746,13 @@ fn table_usize(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 #[path = "tx_records_cdef_tests.rs"]
 mod cdef_tests;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[path = "tx_records_grid_tests.rs"]
 mod grid_tests;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 #[path = "tx_records_delta_q_tests.rs"]
 mod delta_q_tests;

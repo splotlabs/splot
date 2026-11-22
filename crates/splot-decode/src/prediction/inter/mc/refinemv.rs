@@ -65,7 +65,7 @@ pub(super) fn scaled_area_bounds(
 /// [`scaled_area_bounds`] of an unscaled reference, from the area's
 /// 1/16-sample origin: the unscaled start is `((pos << 4) + mv_offset) << 6
 /// | 32`, so its integer sample is the 1/16 position shifted down by four.
-#[allow(clippy::inline_always, reason = "called per unit and grid cell")]
+#[expect(clippy::inline_always, reason = "called per unit and grid cell")]
 #[inline(always)]
 pub(super) fn unscaled_area_bounds(
     [x16, y16]: [i32; 2],
@@ -804,7 +804,6 @@ fn search_tip_refinemv_offset(
 
 /// Returns `limit` early once a partial sum reaches it: later rows only add, so
 /// such a sum already loses the strict comparison.
-#[allow(clippy::inline_always, reason = "25 calls per refined TIP unit")]
 #[inline(always)]
 fn tip_refinemv_sad(
     pred0: &[u16; TIP_PREDICTION_AREA],
@@ -913,7 +912,6 @@ fn sad_row_lanes<'a, S: Simd, const W: usize>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
 
     use super::*;
 

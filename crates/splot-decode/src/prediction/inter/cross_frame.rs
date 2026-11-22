@@ -14,7 +14,7 @@ pub(crate) enum ResolvedCdfLoad {
     OutOfRangePrimary { index: u8, reference_count: usize },
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn resolve_cdf_load(
     signal_primary_ref_frame: Option<bool>,
     primary_ref_frame: Option<u8>,
@@ -92,7 +92,7 @@ pub(crate) fn resolve_cdf_load(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn choose_primary_secondary_ref_frame(
     signal_primary_ref_frame: Option<bool>,
     primary_ref_frame: Option<u8>,

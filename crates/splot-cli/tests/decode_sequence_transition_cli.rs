@@ -3,7 +3,7 @@
 
 //! End-to-end sequence-transition decode tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 mod common;
 use common::{splot, temp_path};

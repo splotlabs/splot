@@ -203,7 +203,6 @@ pub(crate) fn use_per_block_mv_precision(
         && !effective_force_integer_mv(core)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn read_block_mv_precision_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -276,7 +275,6 @@ pub(super) fn lowered_pred_mv(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
     use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};

@@ -437,10 +437,6 @@ const DENSE: u8 = 2;
 /// writes pair `q` at `scratch[q * N..][..N]` and returns the written pairs.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "rows a and b of a column pair, as in § 7.15.4.1"
-)]
 fn row_pass<const N: usize, const H: usize, const KIND: u8>(
     t: Avx2,
     rows: Staged<'_, N>,
@@ -482,7 +478,7 @@ fn row_pass<const N: usize, const H: usize, const KIND: u8>(
 /// prefix.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     reason = "rows a and b of a column pair, as in § 7.15.4.1"
 )]
@@ -632,14 +628,6 @@ fn row8_pairs<const KIND: u8>(t: Avx2, x: __m256i, k: &[u32], round: Round) -> _
 /// kernel rows up to the last non-zero input pair of either.
 #[inline]
 #[target_feature(enable = "avx2")]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "rows a and b of a column pair, as in § 7.15.4.1"
-)]
-#[allow(
-    clippy::needless_range_loop,
-    reason = "indexed accumulators of both rows stay in registers"
-)]
 fn row_wide<const N: usize, const H: usize>(
     t: Avx2,
     rows: Staged<'_, N>,
@@ -809,7 +797,7 @@ impl Rows8<'_> {
 /// columns, each row on its four input pairs.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     reason = "rows a and b of a column pair, as in § 7.15.4.1"
 )]
@@ -1075,7 +1063,7 @@ fn used_pairs(mask: u32, len: usize) -> usize {
 /// `k`.
 #[inline]
 #[target_feature(enable = "avx2")]
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     reason = "even half e, odd inputs v, kernel k and odd sum o, as in § 7.15.2.1"
 )]
@@ -1145,10 +1133,6 @@ fn dense_rows<const M: usize, const HM: usize, const W: usize, const OUT: u8, co
 /// Each output row is summed with its inputs in registers and put at once.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "kernel k, column chunk c and output rows a and b, as in § 7.15.4.1"
-)]
 fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, const OUT: u8>(
     t: Avx2,
     (k, scale): (&[[u32; M]; HM], i32),
@@ -1619,7 +1603,7 @@ impl<'a, const W: usize> Rows<'a, W> {
 /// order.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     reason = "rows a and b of a column pair, as in § 7.15.4.1"
 )]

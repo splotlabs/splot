@@ -93,7 +93,7 @@ struct Strengths<'a> {
 
 impl Strengths<'_> {
     /// `qThr` and `side` of the current, then the previous, side's lanes.
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn of<S: Simd>(&mut self, simd: S, curr: u16x16<S>, prev: u16x16<S>) -> [u16x16<S>; 4] {
         let last = u16x16::splat(simd, self.last.0);
@@ -131,7 +131,7 @@ impl Strengths<'_> {
 /// !skip`), and either side's strengths are both nonzero; its size is
 /// § 7.17.4 `filterSize` clipped by `control`, its widths § 7.17.3, and its
 /// thresholds the § 7.17.2 combination of both sides'.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn decide_lanes<S: Simd, const PLANE: usize, const PASS: usize>(
     simd: S,
@@ -815,7 +815,7 @@ pub(super) fn edge_at<const PLANE: usize, const PASS: usize>(
     edge_at_blocks::<PLANE, PASS>(blocks, ctx, geometry, strengths)
 }
 
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn edge_at_blocks<const PLANE: usize, const PASS: usize>(
     (curr, prev): (&DeblockBlock, &DeblockBlock),

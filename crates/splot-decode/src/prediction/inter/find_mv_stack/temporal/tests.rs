@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::super::warp_sub_mv_at;
 use super::tip_field::TIP_AVERAGE_WEIGHTS;
 use super::*;
 use splot_parallel::{ThreadCount, WorkerPool};
 
 /// Whole-field projection of one source, for direct unit tests.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn project_whole_temporal_motion_field(
     source: &TemporalMotionField,
     source_order_hint: u32,

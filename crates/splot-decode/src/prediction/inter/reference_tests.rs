@@ -10,8 +10,6 @@
 //! and a read past the watermark is refused instead of substituting a clamped
 //! row.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-
 use parking_lot::MutexGuard;
 
 use splot_core::span::ByteOffset;

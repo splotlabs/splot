@@ -75,7 +75,7 @@ pub(crate) trait MvSymbols {
 }
 
 impl MvSymbols for SymbolDecoder<'_> {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -499,7 +499,7 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i32, tile_offset: ByteOffset) -> 
     i32::try_from(result).map_err(|_| mv_overflow(tile_offset))
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "constant selectors fold into a direct row read"
 )]

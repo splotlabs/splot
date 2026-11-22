@@ -130,7 +130,7 @@ pub struct FilmGrainModel {
 /// validator) fall back to `(false, false)`; `subX` / `subY` are not used by
 /// `film_grain_model()` itself, so the fallback only affects the preserved summary.
 pub(crate) const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
-    #[allow(clippy::match_same_arms)]
+    #[expect(clippy::match_same_arms)]
     match chroma_idc {
         CHROMA_FORMAT_420 | CHROMA_FORMAT_400 => (true, true),
         CHROMA_FORMAT_422 => (true, false),
@@ -315,7 +315,6 @@ fn parse_film_grain_model(reader: &mut BitReader<'_>, monochrome: bool) -> Resul
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

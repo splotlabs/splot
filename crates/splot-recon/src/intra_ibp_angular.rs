@@ -205,7 +205,6 @@ fn blend_rows_lanes<O: IntraLaneSample>(
 /// [`blend_rows_lanes`] for rows of at most `W` samples. Rows of at most 16
 /// samples read their weights straight from the table (no column shift); wider
 /// rows expand each distinct weight row into `W`-wide scratch once.
-#[allow(clippy::too_many_arguments)]
 #[inline]
 fn blend_rows<S: Simd, O: IntraLaneSample, const W: usize>(
     simd: S,
