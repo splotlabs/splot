@@ -1253,8 +1253,32 @@ pub(crate) struct InterResidualBlock {
     pub(crate) cctx_pair_delta: i16,
     pub(crate) coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
 }
+/// The reference frames one frame's decode reads: their samples in `store`,
+/// and everything else in [`ReferenceMetadata`], which it dereferences to.
 pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) store: ReferenceFrameStore<RefFrameSlot<T>>,
+    pub(crate) metadata: ReferenceMetadata,
+}
+
+impl<T: ReconSample> core::ops::Deref for InterReferenceState<T> {
+    type Target = ReferenceMetadata;
+
+    fn deref(&self) -> &ReferenceMetadata {
+        &self.metadata
+    }
+}
+
+impl<T: ReconSample> core::ops::DerefMut for InterReferenceState<T> {
+    fn deref_mut(&mut self) -> &mut ReferenceMetadata {
+        &mut self.metadata
+    }
+}
+
+/// What a frame's decode reads of its reference frames apart from their
+/// samples. It names no sample type, so its readers compile once for every
+/// bit depth.
+#[derive(Default)]
+pub(crate) struct ReferenceMetadata {
     pub(crate) ref_valid: RefSlots<bool>,
     pub(crate) ref_order_hint: RefSlots<u32>,
     pub(crate) ref_order_hint_lsbs: RefSlots<u32>,
@@ -1287,12 +1311,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
 impl<T: ReconSample> InterReferenceState<T> {
     pub(crate) fn retire_handles(&mut self) {
         self.store.clear();
-        self.lr_frame_filter_taps = None;
-        self.ref_frame_cdfs = RefSlots::default();
-        self.ref_ccso_headers = RefSlots::default();
-        self.ref_ccso_unit_grids = RefSlots::default();
-        self.ref_segment_ids = RefSlots::default();
-        self.ref_motion_fields = RefSlots::default();
+        self.metadata.retire_handles();
     }
 
     /// Builds a reference-free state over a minimal empty store.
@@ -1302,6 +1321,24 @@ impl<T: ReconSample> InterReferenceState<T> {
     /// rejected.
     pub(crate) fn empty() -> splot_recon::Result<Self> {
         Self::with_slot_count(1)
+    }
+
+    pub(crate) fn with_slot_count(num: usize) -> splot_recon::Result<Self> {
+        Ok(Self {
+            store: ReferenceFrameStore::with_capacity(num)?,
+            metadata: ReferenceMetadata::default(),
+        })
+    }
+}
+
+impl ReferenceMetadata {
+    fn retire_handles(&mut self) {
+        self.lr_frame_filter_taps = None;
+        self.ref_frame_cdfs = RefSlots::default();
+        self.ref_ccso_headers = RefSlots::default();
+        self.ref_ccso_unit_grids = RefSlots::default();
+        self.ref_segment_ids = RefSlots::default();
+        self.ref_motion_fields = RefSlots::default();
     }
 
     /// Shares the selected reference slots' published § 7.9 motion fields.
@@ -1341,36 +1378,6 @@ impl<T: ReconSample> InterReferenceState<T> {
             return Err(DecodeReferenceStateError::MissingMotionFieldPublication.into());
         }
         Ok(resolved)
-    }
-
-    pub(crate) fn with_slot_count(num: usize) -> splot_recon::Result<Self> {
-        Ok(Self {
-            store: ReferenceFrameStore::with_capacity(num)?,
-            ref_valid: RefSlots::default(),
-            ref_order_hint: RefSlots::default(),
-            ref_order_hint_lsbs: RefSlots::default(),
-            ref_implicit_output_frame: RefSlots::default(),
-            ref_immediate_output_frame: RefSlots::default(),
-            ref_frame_width: RefSlots::default(),
-            ref_frame_height: RefSlots::default(),
-            ref_base_q_idx: RefSlots::default(),
-            ref_counter: RefSlots::default(),
-            ref_chroma_ac_deltas: RefSlots::default(),
-            ref_is_inter: RefSlots::default(),
-            ref_is_intra_frame: RefSlots::default(),
-            ref_long_term_id: RefSlots::default(),
-            ref_num_total_refs: RefSlots::default(),
-            saved_global_motion_order_hints: RefSlots::default(),
-            saved_global_motion_params: RefSlots::default(),
-            lr_frame_filter_class_counts: RefSlots::default(),
-            lr_frame_filter_taps: None,
-            allowed_frames: None,
-            ref_frame_cdfs: RefSlots::default(),
-            ref_ccso_headers: RefSlots::default(),
-            ref_ccso_unit_grids: RefSlots::default(),
-            ref_segment_ids: RefSlots::default(),
-            ref_motion_fields: RefSlots::default(),
-        })
     }
 }
 
@@ -1453,7 +1460,7 @@ fn distinct_reference_slots(
     })
 }
 
-impl<T: ReconSample> InterReferenceState<T> {
+impl ReferenceMetadata {
     /// Shares each distinct motion-field product named by a reference map.
     pub(crate) fn motion_dependencies(
         &self,
@@ -1468,7 +1475,9 @@ impl<T: ReconSample> InterReferenceState<T> {
         );
         dependencies
     }
+}
 
+impl<T: ReconSample> InterReferenceState<T> {
     /// Gates on the stored frames the named reference slots resolve to.
     ///
     /// Slots without a stored frame are left out: reading one is already a
@@ -1490,7 +1499,9 @@ impl<T: ReconSample> InterReferenceState<T> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;
         self.store.get(slot).ok().flatten()
     }
+}
 
+impl ReferenceMetadata {
     fn cdfs_for_slot(&self, slot: u32) -> Result<Arc<FrameCdfSubset>> {
         let slot = usize::try_from(slot).unwrap_or(usize::MAX);
         self.ref_frame_cdfs
