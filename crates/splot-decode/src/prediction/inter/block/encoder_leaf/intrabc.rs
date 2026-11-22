@@ -50,6 +50,7 @@ impl EncoderInterTile {
             SequencePartitionConfig::seq_sb_size,
         );
         let sb_h4 = frame_superblock_h4(sb_size, true);
+        let tile_start = (rows.start, cols.start);
         let mut grid = NeighbourMvGrid::default();
         grid.reset_for_tile(
             rows.clone(),
@@ -79,7 +80,7 @@ impl EncoderInterTile {
             max_drl_bits_minus_1: 0,
             drl_reorder: sequence_drl_reorder(sequence),
             compound_tools: (false, false),
-            tile_start: (0, 0),
+            tile_start,
             blend_tools: (false, false),
             interp_switchable: false,
             num_same_ref_compound: 0,
@@ -227,23 +228,31 @@ impl EncoderInterTile {
     }
 
     /// Predicts the leaf at `frontier` by intra block copy with the block
-    /// vector `mv` from the reconstruction in `workspace` (§ 7.11.4).
+    /// vector `mv` from the reconstruction in `workspace` (§ 7.11.4), with
+    /// the § 7.13.3.26 morphological prediction of its luma when `morph`.
     pub(crate) fn predict_intrabc(
         &mut self,
         frontier: &DecodeBlockFrontier,
         mv: Mv,
+        morph: bool,
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
         let (n4w, n4h) = block_size4(frontier)?;
         let info = IntrabcInfo {
-            morph_pred: false,
+            morph_pred: morph,
             block_mv: mv.into(),
         };
+        let avail = super::super::tile_neighbour_availability(
+            frontier.r,
+            frontier.c,
+            self.tile_start.0,
+            self.tile_start.1,
+        );
         let subsampling = chroma_subsampling(self.chroma);
         let prediction = super::super::intrabc::IntrabcReconPrediction::derive(
             &self.core,
             frontier,
-            (false, false),
+            avail,
             n4w,
             n4h,
             info,
@@ -261,13 +270,14 @@ impl EncoderInterTile {
         .reconstruct(&[], &[], workspace)
     }
 
-    /// Publishes a coded IntraBC leaf with block vector `mv` and `skip_txfm =
-    /// skip`: its flags, its IntraBC facts, then its motion.
+    /// Publishes a coded IntraBC leaf with block vector `mv`, `morph_pred =
+    /// morph` and `skip_txfm = skip`: its flags, its IntraBC facts, then its
+    /// motion.
     pub(crate) fn publish_intrabc(
         &mut self,
         frontier: &DecodeBlockFrontier,
         mv: Mv,
-        skip: bool,
+        (morph, skip): (bool, bool),
     ) -> Result<()> {
         let block = self.block(frontier, (INTRABC_REF_FRAME, None))?;
         self.grid.record_flags(
@@ -287,7 +297,8 @@ impl EncoderInterTile {
         let prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
             use_intrabc: true,
             skip_flag: skip,
-        });
+        })
+        .with_morph_pred(morph);
         self.record_intrabc_prelude(frontier, prelude)?;
         self.reset_banks(&block);
         self.grid.record_motion(
