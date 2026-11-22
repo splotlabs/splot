@@ -40,6 +40,7 @@ use fearless_simd::{Level, Simd, SimdBase, SimdFrom as _, SimdInt, dispatch, i32
 
 use splot_recon::{
     BitDepth, InverseTransform1dType, InverseTransform2dDim, inverse_transform_1d, transform_shift,
+    transpose4,
 };
 
 use super::KernelError;
@@ -416,22 +417,24 @@ fn forward_lanes<S: Simd, V: SimdInt<S, Element = i32>, const L: usize>(
 /// where § 7.14.4 dequantizes a level `l` to `8 * l`. Each 1D pass undoes the
 /// lifting steps of the inverse in reverse order.
 pub(crate) fn forward_walsh_hadamard_4x4(residual: &[i32; 16]) -> [i32; 16] {
-    let fwd = |[r0, r1, r2, r3]: [i32; 4]| {
+    dispatch!(Level::baseline(), simd => walsh_hadamard_kernel(simd, residual))
+}
+
+/// [`forward_walsh_hadamard_4x4`]: the column pass runs on the four row
+/// vectors at once, the row pass on their transpose.
+#[inline]
+fn walsh_hadamard_kernel<S: Simd>(simd: S, residual: &[i32; 16]) -> [i32; 16] {
+    let fwd = |[r0, r1, r2, r3]: [i32x4<S>; 4]| {
         let (a, d) = (r0 + r1, r3 - r2);
         let e = (a - d) >> 1;
         let (s1, s3) = (e - r2, e - r1);
         [a - s1, s1, d + s3, s3]
     };
-    let mut mid = [0; 16];
-    for col in 0..4 {
-        let out = fwd(core::array::from_fn(|row| residual[row * 4 + col]));
-        for (row, value) in out.into_iter().enumerate() {
-            mid[row * 4 + col] = value;
-        }
-    }
+    let rows = core::array::from_fn(|r| i32x4::from_slice(simd, &residual[4 * r..4 * r + 4]));
+    let out = transpose4(fwd(transpose4(fwd(rows))));
     let mut levels = [0; 16];
-    for (row, chunk) in levels.chunks_exact_mut(4).enumerate() {
-        chunk.copy_from_slice(&fwd(core::array::from_fn(|col| mid[row * 4 + col])));
+    for (dst, v) in levels.chunks_exact_mut(4).zip(out) {
+        v.store_slice(dst);
     }
     levels
 }
