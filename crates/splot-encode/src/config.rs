@@ -51,7 +51,7 @@ pub enum RateControlMode {
     /// Every frame uses the same `base_q_idx`.
     ConstantQp {
         /// The frame-header `base_q_idx`, `1..=255` at 8 bits and `1..=303` at
-        /// 10 bits (`MaxQ`, § 6.4.1 Table 6.3).
+        /// 10 bits (`MaxQ`, § 6.4.1 Table 6.3); `0` codes every frame lossless.
         qp: u16,
     },
     /// Constant quality with lookahead offsets; see [`crate::Crf`].
@@ -222,8 +222,21 @@ impl Config {
     /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
-    /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`] or [`Error::Preset`].
+    /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`]
+    /// or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
+        let lossless_refused = [
+            (self.film_grain, "film grain"),
+            (self.resize_denominator.is_some(), "resize"),
+        ];
+        if let Some(&(_, what)) = lossless_refused
+            .iter()
+            .find(|&&(on, _)| on && self.is_lossless())
+        {
+            return Err(Error::LosslessWith {
+                what: what.to_owned(),
+            });
+        }
         self.override_preset(self.preset.params())?;
         self.override_preset(self.preset.screen_params())?;
         let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
@@ -251,7 +264,7 @@ impl Config {
             return Err(Error::InvalidTiles { tiles: self.tiles });
         }
         match self.rate_control {
-            RateControlMode::ConstantQp { qp } if qp == 0 || qp > max_qindex(self.bit_depth) => {
+            RateControlMode::ConstantQp { qp } if qp > max_qindex(self.bit_depth) => {
                 Err(Error::InvalidQp {
                     qp,
                     max: max_qindex(self.bit_depth),
@@ -348,10 +361,22 @@ impl Config {
             row.set(name, value)?;
         }
         for (name, value) in &self.preset_overrides {
+            if self.is_lossless() && row.lossless_refuses(name, value) {
+                return Err(Error::LosslessWith { what: name.clone() });
+            }
             row.set(name, value)?;
+        }
+        if self.is_lossless() {
+            row.set_lossless();
         }
         row.validate()?;
         Ok(row)
+    }
+
+    /// Whether every frame is coded lossless: `ConstantQp` at `qp` 0.
+    #[must_use]
+    pub const fn is_lossless(&self) -> bool {
+        matches!(self.rate_control, RateControlMode::ConstantQp { qp: 0 })
     }
 
     /// Returns the Y, U and V plane sizes of one frame; monochrome has Y alone.
@@ -428,10 +453,29 @@ mod tests {
         ));
         config = Config::new(64, 64);
         config.rate_control = RateControlMode::ConstantQp { qp: 0 };
-        assert!(matches!(
-            config.validate(),
-            Err(Error::InvalidQp { qp: 0, .. })
-        ));
+        assert!(config.validate().is_ok() && config.is_lossless());
+        let refused = |config: &Config| match config.validate() {
+            Err(Error::LosslessWith { what }) => what,
+            other => panic!("{other:?}"),
+        };
+        for (name, value) in [("segmentation", "1"), ("quant_matrices", "2")] {
+            let mut explicit = config.clone();
+            explicit
+                .preset_overrides
+                .push((name.to_owned(), value.to_owned()));
+            assert_eq!(refused(&explicit), name);
+        }
+        let mut grain = config.clone();
+        grain.film_grain = true;
+        assert_eq!(refused(&grain), "film grain");
+        let mut resized = config.clone();
+        resized.resize_denominator = Some(12);
+        assert_eq!(refused(&resized), "resize");
+        config
+            .preset_overrides
+            .push(("tcq".to_owned(), "1".to_owned()));
+        let row = config.override_preset(config.preset.params()).unwrap();
+        assert!(!row.tcq.at(crate::preset::PresetContext::default()) && row.tpl_delta_q == 0);
         config.rate_control = RateControlMode::ConstantQp { qp: 256 };
         assert!(matches!(
             config.validate(),

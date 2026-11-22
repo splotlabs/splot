@@ -415,6 +415,17 @@ pub(crate) fn finish_frame(
             what: "a frame without quantization params",
         })?
         .base_q_idx;
+    if qindex == 0 {
+        // § 5.18.5.2 to § 5.18.7.12: a coded-lossless frame codes no loop filter.
+        return Ok(FilteredFrame {
+            core: pass.core,
+            filters: FrameFilterParams::default(),
+            tiles: bytes,
+            cdfs,
+            recon,
+            ccso_blocks: Vec::new(),
+        });
+    }
     let search = Search {
         seq,
         header,

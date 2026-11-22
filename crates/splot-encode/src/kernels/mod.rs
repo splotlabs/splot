@@ -33,7 +33,7 @@ pub(crate) mod wiener;
 
 use fearless_simd::{Bytes as _, Simd, SimdBase as _, SimdCombine as _, SimdWiden as _};
 use fearless_simd::{i32x8, u16x8, u32x8};
-pub(crate) use forward_transform::ForwardTransform2d;
+pub(crate) use forward_transform::{ForwardTransform2d, forward_walsh_hadamard_4x4};
 pub(crate) use quantize::Quantizer;
 use splot_recon::SecondaryTransformLayout;
 

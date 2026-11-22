@@ -653,6 +653,9 @@ impl IntraFrameCoder {
         tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
         tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;
         tools.0.qm_level = crate::tx_choice::qm_level(&self.preset, qindex, self.bit_depth);
+        if qindex == 0 {
+            tools.0.tx_mode = splot_core::headers::frame::TxMode::Only4x4; // § 5.18.8.1 CodedLossless
+        }
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
@@ -1328,6 +1331,8 @@ pub(crate) fn codable_children(
 pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) source: &'a PaddedSource,
     qindex: u32,
+    /// The frame is coded lossless (`base_q_idx = 0`, § 5.18.6.1).
+    lossless: bool,
     pub(crate) bit_depth: BitDepth,
     preset: &'a PresetParams,
     lambda: Lambda,
@@ -1373,6 +1378,7 @@ impl<'a> SourceResidualCoder<'a> {
         Self {
             source,
             qindex,
+            lossless: qindex == 0,
             bit_depth,
             preset,
             lambda,
@@ -1761,6 +1767,14 @@ impl SourceResidualCoder<'_> {
     ) -> core::result::Result<Vec<i32>, TileWriterError> {
         let len = coeffs.len();
         dequant.resize(len, 0);
+        if self.lossless {
+            // § 7.14.4 at base_q_idx 0: a level dequantizes to 8 times itself.
+            dequant
+                .iter_mut()
+                .zip(coeffs)
+                .for_each(|(dq, &c)| *dq = c * 8);
+            return Ok(coeffs.to_vec());
+        }
         let use_tcq = syntax.uses_tcq(tx);
         let mut levels = vec![0; len];
         let (block, lambda_q8) = self.rdoq_block(tx, params, forward)?;
@@ -1871,6 +1885,12 @@ impl SourceResidualCoder<'_> {
         )
         .map_err(kernel)?;
         coeffs.resize(forward.coeff_width() * forward.coeff_height(), 0);
+        if self.lossless {
+            let block = <&[i32; 16]>::try_from(residual.as_slice())
+                .map_err(|_| TileWriterError::Shape("a lossless block that is not 4x4"))?;
+            coeffs.copy_from_slice(&crate::kernels::forward_walsh_hadamard_4x4(block));
+            return Ok((params, forward));
+        }
         kernels()
             .forward_transform_2d(&forward, residual, coeffs)
             .map_err(kernel)?;

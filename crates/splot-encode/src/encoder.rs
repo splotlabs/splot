@@ -706,10 +706,10 @@ impl Encoder {
             .ok_or(Error::Unsupported {
                 what: "a frame outside its lookahead window",
             })?;
-        let qindex = self
-            .rate_control
-            .frame_qp(&plan)
-            .clamp(1, max_qindex(self.config.bit_depth));
+        let qindex = self.rate_control.frame_qp(&plan).clamp(
+            u16::from(!self.config.is_lossless()),
+            max_qindex(self.config.bit_depth),
+        );
         self.last_qindex = Some(qindex);
         Ok(qindex)
     }

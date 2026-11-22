@@ -410,6 +410,32 @@ fn forward_lanes<S: Simd, V: SimdInt<S, Element = i32>, const L: usize>(
     }
 }
 
+/// The lossless forward transform of a row-major 4x4 `residual` into the
+/// `levels` that the § 7.15.2.2 inverse Walsh-Hadamard transform (rows with
+/// shift 3, then columns) maps back to `residual` exactly at `base_q_idx` 0,
+/// where § 7.14.4 dequantizes a level `l` to `8 * l`. Each 1D pass undoes the
+/// lifting steps of the inverse in reverse order.
+pub(crate) fn forward_walsh_hadamard_4x4(residual: &[i32; 16]) -> [i32; 16] {
+    let fwd = |[r0, r1, r2, r3]: [i32; 4]| {
+        let (a, d) = (r0 + r1, r3 - r2);
+        let e = (a - d) >> 1;
+        let (s1, s3) = (e - r2, e - r1);
+        [a - s1, s1, d + s3, s3]
+    };
+    let mut mid = [0; 16];
+    for col in 0..4 {
+        let out = fwd(core::array::from_fn(|row| residual[row * 4 + col]));
+        for (row, value) in out.into_iter().enumerate() {
+            mid[row * 4 + col] = value;
+        }
+    }
+    let mut levels = [0; 16];
+    for (row, chunk) in levels.chunks_exact_mut(4).enumerate() {
+        chunk.copy_from_slice(&fwd(core::array::from_fn(|col| mid[row * 4 + col])));
+    }
+    levels
+}
+
 #[cfg(test)]
 #[path = "forward_transform_tests.rs"]
 mod tests;

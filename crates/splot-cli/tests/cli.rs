@@ -735,6 +735,10 @@ fn encode_rejects_conflicting_rate_control_flags() {
     let input = temp_input("y4m", b"YUV4MPEG2 W16 H16 F30:1\n");
     for (flags, expected) in [
         (&["--qp", "10", "--crf", "20"][..], "cannot be used with"),
+        (&["--lossless", "--crf", "20"], "cannot be used with"),
+        (&["--lossless", "--bitrate", "100"], "cannot be used with"),
+        (&["--lossless", "--qp", "10"], "cannot be used with"),
+        (&["--lossless", "--film-grain"], "cannot be used with"),
         (&["--crf", "20", "--bitrate", "100"], "cannot be used with"),
         (&["--rc", "cbr"], "--bitrate <BITRATE>"),
         (&["--two-pass"], "--bitrate <BITRATE>"),
