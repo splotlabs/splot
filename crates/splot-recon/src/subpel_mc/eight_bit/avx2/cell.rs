@@ -174,12 +174,12 @@ fn groups<const W: usize, const G: usize, const PUT: bool>(
     horizontal: Option<&Taps>,
     vertical: Option<&Taps>,
 ) -> Option<[__m256i; G]> {
-    let pairs = vertical.map_or(0, |taps| taps.count);
+    let (pairs, rows) = vertical.map_or((0, 0), |taps| (taps.count, taps.even));
     let last = reads.base as usize + (W + 2 * pairs) * reads.stride as usize;
-    if !clamped && !pairs.is_multiple_of(2) && last + 16 > source.len() {
+    if !clamped && rows != pairs && last + 16 > source.len() {
         return None;
     }
-    let key = 5 * even_pairs(horizontal) + pairs.next_multiple_of(2);
+    let key = 5 * even_pairs(horizontal) + rows;
     let taps = [horizontal.unwrap_or(&SKIPPED), vertical.unwrap_or(&SKIPPED)];
     match (W, PUT) {
         (8, false) => by_key!(key, 8, false, clamped, predict(t, source, reads, taps)),

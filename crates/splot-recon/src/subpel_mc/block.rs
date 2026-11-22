@@ -199,6 +199,13 @@ impl Sink<'_> {
 pub(super) struct Taps {
     pub(super) start: usize,
     pub(super) count: usize,
+    /// `count`, an odd one with one more pair, whose taps are zero: the
+    /// pairs an AVX2 kernel runs the pass with.
+    #[cfg_attr(
+        not(target_arch = "x86_64"),
+        allow(dead_code, reason = "read by the AVX2 kernels")
+    )]
+    pub(super) even: usize,
     #[cfg_attr(
         not(any(target_arch = "aarch64", target_arch = "x86_64")),
         allow(dead_code, reason = "read by the NEON and AVX2 kernels")
@@ -259,6 +266,7 @@ pub(super) static TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
             table[filter][phase] = Some(Taps {
                 start,
                 count: taps / 2,
+                even: (taps / 2).next_multiple_of(2),
                 dot,
                 words,
                 full,
@@ -333,9 +341,11 @@ impl<'a, T> Block<'a, T> {
     /// `None` when the storage does not hold them.
     #[cfg(target_arch = "x86_64")]
     pub(super) fn even_rows(&self) -> Option<usize> {
-        let pairs = self.vertical.map_or(0, |taps| taps.count);
-        let held = || self.start(self.h + 2 * pairs) + reach(self.w) <= self.source.len();
-        (pairs.is_multiple_of(2) || held()).then(|| pairs.next_multiple_of(2))
+        let Some(taps) = self.vertical else {
+            return Some(0);
+        };
+        let last = self.start(self.h + 2 * taps.count);
+        (taps.even == taps.count || last + reach(self.w) <= self.source.len()).then_some(taps.even)
     }
 }
 
@@ -506,10 +516,10 @@ impl Window {
             return None;
         }
         let origin = self.row as usize * stride + self.column as usize;
-        let odd = self
+        let pad = self
             .vertical
-            .is_some_and(|taps| !taps.count.is_multiple_of(2));
-        let rows = self.rows + if odd { PAD_ROWS } else { 0 };
+            .map_or(0, |taps| (taps.even - taps.count) * PAD_ROWS);
+        let rows = self.rows + pad;
         let end = origin + rows.checked_sub(1)? * stride + reach(self.w);
         (end <= len).then_some(origin)
     }

@@ -18,7 +18,7 @@ use super::super::ReferencePlaneView;
 use super::super::block::{Block, Sink, Taps, Window};
 use super::super::cell::{Cell, Plane, Written};
 use super::super::rows::{self, Average, Out, Prep, Put};
-use super::{generic, pairs};
+use super::generic;
 use core::arch::x86_64::*;
 use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x8, i16x16, i32x8, u8x16, u8x32, u16x16};
 
@@ -215,7 +215,7 @@ impl RowStart for u32 {
 #[allow(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
 pub(in crate::subpel_mc) fn even_pairs(taps: Option<&Taps>) -> usize {
-    pairs(taps).next_multiple_of(2)
+    taps.map_or(0, |taps| taps.even)
 }
 
 /// Calls `$call!(H, V)` for the shape key `5 * H + V` of a kernel whose
@@ -857,6 +857,7 @@ fn load16(t: Avx2, bytes: &[u8; 16]) -> __m128i {
 static SKIPPED: Taps = Taps {
     start: 0,
     count: 0,
+    even: 0,
     dot: [0; 8],
     words: [0; 4],
     full: [0; 4],

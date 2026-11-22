@@ -46,7 +46,7 @@ pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
 /// so the pair of a horizontal pass reads nothing more; that of a vertical
 /// pass weighs two rows below the window ([`Block::even_rows`]).
 pub(super) fn even_pairs(taps: &Taps) -> usize {
-    taps.count.next_multiple_of(2)
+    taps.even
 }
 
 /// Calls `$f::<W, P, _>` for 4-column pairs or 8-column strips and the
