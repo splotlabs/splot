@@ -344,3 +344,27 @@ fn planners_use_only_their_slots() {
         );
     }
 }
+
+/// The fewest slots each mini-GOP size plans over: 1 slot for size 1, 2 for
+/// 2, 3 for 4 and 4 for 8; one slot less fails.
+#[test]
+fn mini_gops_plan_over_their_fewest_slots() {
+    let fits = |slots: u8, mini_gop: u8| {
+        let mut planner =
+            GopPlanner::new(NonZeroU32::new(30).unwrap(), mini_gop).with_ref_slots(slots);
+        (0..4).all(|_| {
+            let len = planner.next_len(usize::MAX, true).unwrap_or(1);
+            planner.plan(len).is_ok()
+        })
+    };
+    for (slots, mini_gop) in [(1, 1), (2, 2), (3, 4), (4, 8)] {
+        assert!(fits(slots, mini_gop), "{slots} slots, mini-GOP {mini_gop}");
+        if slots > 1 {
+            assert!(
+                !fits(slots - 1, mini_gop),
+                "{} slots, mini-GOP {mini_gop}",
+                slots - 1
+            );
+        }
+    }
+}
