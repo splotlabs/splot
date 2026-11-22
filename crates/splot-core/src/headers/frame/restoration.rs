@@ -333,7 +333,7 @@ pub fn parse_lr_params(
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
 /// ends mid-field before a modeled read completes.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn parse_lr_params_for_inter(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
@@ -822,7 +822,6 @@ fn read_tu(reader: &mut BitReader<'_>, mx: u32) -> Result<u32> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

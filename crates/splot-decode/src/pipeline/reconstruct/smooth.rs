@@ -18,7 +18,7 @@ use crate::bitstream::tile_payload::{
 
 const SMOOTH_EDGE_CAPACITY: usize = 65;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -82,7 +82,7 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
 /// Reconstructs a smooth block whose edges the frame stores straight into
 /// the frame; `false` when [`CurrentFrameWorkspace::predict_intra_smooth_in_frame`]
 /// declines it.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -116,7 +116,7 @@ pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -296,7 +296,7 @@ fn smooth_prediction_edges<T: ReconSample>(
 
 /// Fills the `[left, above]` edges in place, so that no edge array moves
 /// after its sample stores.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn build_smooth_edges<T: ReconSample>(
     left_neighbour: Option<&[T]>,
     above_neighbour: Option<&[T]>,

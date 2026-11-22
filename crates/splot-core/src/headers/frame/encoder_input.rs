@@ -610,7 +610,6 @@ pub fn encode_padding_obu(bytes: usize) -> Result<Vec<u8>, WriteError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::annexb::parse_annex_b_obus_partial;

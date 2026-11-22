@@ -116,7 +116,7 @@ impl Default for DecodeOptions {
 }
 
 /// Caller-provided resource limits for decode planning and runtime.
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLimits {
     max_input_bytes: DecodeLimitThreshold,

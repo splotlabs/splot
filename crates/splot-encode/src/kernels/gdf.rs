@@ -116,7 +116,6 @@ fn scale_sse_kernel<S: Simd>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use proptest::prelude::*;
 

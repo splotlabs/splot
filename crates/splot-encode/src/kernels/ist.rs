@@ -97,7 +97,6 @@ pub(crate) fn forward_simd(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use proptest::prelude::*;
     use splot_recon::{

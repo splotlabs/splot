@@ -339,7 +339,7 @@ fn bru_inactive_runs<D: ReconSample>(
     Ok(saved)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[cfg(test)]
 fn ccso_plane<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -595,7 +595,7 @@ fn ccso_edge_span<D: ReconSample, L: ReconSample>(
 const CCSO_LANES: usize = 16;
 
 /// The first lanes of `samples`, widened to `u16`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn load_lanes<S: Simd, D: ReconSample>(simd: S, samples: &[D]) -> Option<u16x16<S>> {
     if let Some(bytes) = D::u8_slice(samples) {
@@ -609,7 +609,7 @@ fn load_lanes<S: Simd, D: ReconSample>(simd: S, samples: &[D]) -> Option<u16x16<
 }
 
 /// Stores `lanes`, which fit `D`, into the first lanes of `samples`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn store_lanes<S: Simd, D: ReconSample>(lanes: u16x16<S>, samples: &mut [D]) {
     if let Some(bytes) = D::u8_slice_mut(samples).and_then(|bytes| bytes.get_mut(..CCSO_LANES)) {
@@ -624,7 +624,7 @@ fn store_lanes<S: Simd, D: ReconSample>(lanes: u16x16<S>, samples: &mut [D]) {
 
 /// Loads a vector of luma from the start of `row`; with `SUB_X == 1` it
 /// keeps the even columns, the luma a 2:1 chroma row samples.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn ccso_luma<S: Simd, V: SimdBase<S>, const SUB_X: usize>(
     simd: S,
@@ -681,7 +681,7 @@ type CcsoRowArgs<'a, D, L> = (
 /// After the whole chunks, one more chunk ends at the last column whose taps
 /// stay in range. It overlaps the filtered columns, and only its lanes past
 /// them, which start at or after `first`, take the new samples.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
     simd: S,
@@ -974,7 +974,7 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
 
 /// The offsets that `index` picks from the first `blocks` 16-entry blocks
 /// of `tables`; an index below 80 compares the same signed or unsigned.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn ccso_lookup<S: Simd, V: SimdInt<S, Element = u8, ByteVector = V>>(
     tables: &[V; CCSO_LUT_LEN / 16],
@@ -996,7 +996,7 @@ fn ccso_lookup<S: Simd, V: SimdInt<S, Element = u8, ByteVector = V>>(
 /// Filters the 32-column chunks of `chunks` with a `BLOCKS`-block offset
 /// table, fixed per instance so the loop does not branch on it, and returns
 /// the columns it filtered.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn ccso_wide_chunks<'a, S: Simd, D: ReconSample, L: ReconSample, const BLOCKS: usize>(
     chunks: impl Iterator<Item = (((&'a [L], &'a [L]), &'a [L]), &'a mut [D; 2 * CCSO_LANES])>,
@@ -1035,7 +1035,7 @@ const CCSO_LANE_INDEX: [u16; CCSO_LANES] = {
 /// one load inside the range and a lane slide that repeats the edge
 /// sample, stored in `staged` with its used samples in place. `None` for any
 /// other chunk.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn edge_taps<'a, S: Simd, L: ReconSample, const SUB_X: usize>(
     simd: S,

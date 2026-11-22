@@ -401,7 +401,7 @@ fn inter_tile_grid_error(
 }
 
 impl<'payload> TileParser<'payload> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -760,10 +760,6 @@ pub(super) enum EntryState {
 }
 
 /// A non-intra leaf's parse output or its resolved reconstruction command.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "nearly every slot is an inter command; boxing it costs an allocation per leaf"
-)]
 pub(super) enum LeafSlot {
     PendingInter(deferred_recon::PendingInterCommand),
     PendingIntrabc(PendingIntrabcBlock),
@@ -1217,14 +1213,10 @@ fn poison_reused_surface<T: ReconSample>(surface: &mut splot_recon::OwnedFrameRe
 }
 
 #[cfg(not(debug_assertions))]
-#[expect(
-    clippy::inline_always,
-    reason = "empty in release; inlining removes the call the poison check costs"
-)]
 #[inline(always)]
 fn poison_reused_surface<T: ReconSample>(_surface: &mut splot_recon::OwnedFrameRect<T>) {}
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn precompute_recon_row<T: ReconSample>(
     mut ready: ReadyReconRow<T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
@@ -1276,7 +1268,7 @@ fn precompute_recon_row<T: ReconSample>(
 /// entry precomputed past a skipped one would land writes that overlap it
 /// (mixed-region chroma residual) before it instead of after, reading
 /// prepublish samples as its residual base.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn precompute_recon_row_on_surface<T: ReconSample>(
     mut row: ReconRow,
     tile_offset: ByteOffset,
@@ -1899,7 +1891,7 @@ pub(crate) fn publish_tile_geometry(
 
 impl<'payload> TileParser<'payload> {
     /// Opens tile `index` of a scheduled frame of `tiles` tiles.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn scheduled(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -2106,7 +2098,7 @@ pub(crate) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn decode_tiles<T: ReconSample>(
     scratch: TileDecodeScratch<T>,
     frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,

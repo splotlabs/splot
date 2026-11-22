@@ -241,7 +241,7 @@ impl ValidatorContext {
     /// padding is position-free. Frame-bearing OBUs are dispatched by the caller (see
     /// [`Self::observe_frame_bearing_obu`]) so their facts and OrderHintBits come from a single
     /// shared parse + resolution; if one reaches here it is treated as transparent padding.
-    #[allow(clippy::match_same_arms)]
+    #[expect(clippy::match_same_arms)]
     pub(super) fn celu_role_for(obu: &ObuEnvelope<'_>) -> CeluRole {
         match obu.header.obu_type {
             ObuType::Padding => CeluRole::Padding,

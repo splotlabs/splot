@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used, clippy::panic)]
-
 use super::*;
 use crate::prediction::inter::mv_scaling::derive_plane_scaling;
 use splot_recon::{

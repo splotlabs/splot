@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use splot_core::headers::frame::GmType;
 
 use super::tests::{decode_fixture, frame_hashes, parse_inter_core_for_validation};

@@ -528,7 +528,7 @@ impl TemporalMotionField {
     }
 }
 
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn visit_temporal_block_cells(
     block: TemporalMotionBlock,
@@ -562,7 +562,7 @@ fn visit_temporal_block_cells(
 }
 
 /// The 8x8 field rows and columns a block covers, `None` when it covers none.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn temporal_block_cells8(
     block: &TemporalMotionBlock,
@@ -593,7 +593,7 @@ impl CellMvWalk {
     }
 }
 
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn temporal_cell_from_mvs(
     block: &TemporalMotionBlock,
@@ -744,7 +744,7 @@ impl TemporalMotionBlock {
         fits
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         mi_row: usize,
         mi_col: usize,
@@ -799,7 +799,7 @@ impl TemporalBlockMotion {
         }
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     /// The walks over cell row `i8` of a block at `(mi_row, mi_col)`.
     fn cell_walks(self, mi_row: usize, mi_col: usize, i8: usize) -> [CellMvWalk; 2] {
@@ -1372,7 +1372,7 @@ impl TemporalMvContext {
         Some(context)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn refresh_from_references(
         &mut self,
         mi_dimensions: (usize, usize),
@@ -1495,7 +1495,7 @@ impl TemporalMvContext {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn begin_banded_refresh(
         &mut self,
         target_layout: MotionFieldLayout,
@@ -2113,7 +2113,7 @@ struct TemporalProjectionSource {
 }
 
 impl TemporalProjectionSource {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         source: &TemporalMotionFieldMetadata,
         layout: MotionFieldLayout,

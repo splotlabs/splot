@@ -539,7 +539,7 @@ impl GridRows {
 }
 
 impl OwnedTrajectoryBand {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn new(
         width8: usize,
         height8: usize,
@@ -726,7 +726,7 @@ impl TrajectoryBand<'_> {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured trajectory hot path")]
+    #[expect(clippy::inline_always, reason = "measured trajectory hot path")]
     #[inline(always)]
     fn set_position(&mut self, reference: usize, at: Position, phase: usize, position: Position) {
         if let Some(slot) = self
@@ -848,7 +848,7 @@ impl TrajectoryBand<'_> {
     /// is tested against a trajectory's window.
     /// A vector that moves less than one 8x8 cell on both axes keeps the
     /// trajectory's stored sample position.
-    #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
+    #[expect(clippy::inline_always, reason = "measured trajectory scan walk")]
     #[inline(always)]
     pub(super) fn extend_trajectories(
         &mut self,
@@ -899,7 +899,7 @@ impl TrajectoryBand<'_> {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn observe_projection(
         &mut self,
         source: usize,
@@ -954,7 +954,7 @@ impl TrajectoryBand<'_> {
     /// `source_slot` is the scanned cell's record for `source`, and `end_slot`
     /// the trajectory end's record for `end` when the end lies inside the
     /// position's window; `end_mv` is evaluated only for a recorded observation.
-    #[allow(clippy::too_many_arguments, clippy::inline_always)]
+    #[expect(clippy::too_many_arguments, clippy::inline_always)]
     #[inline(always)]
     pub(super) fn observe_projection_at(
         &mut self,
@@ -1016,7 +1016,6 @@ fn average(value: i32, count: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 

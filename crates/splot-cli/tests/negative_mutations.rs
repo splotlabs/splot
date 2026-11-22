@@ -31,7 +31,7 @@
 //! runs the in-process validator, so it gates under `cargo test` (hence under
 //! `cargo xtask ci`).
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

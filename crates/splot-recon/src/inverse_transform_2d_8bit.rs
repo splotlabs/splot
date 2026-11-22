@@ -919,7 +919,7 @@ fn transform<S: Simd, const RESIDUAL: bool>(
 
 /// The row pass of `row` over a `w`-wide block into `out`, every coded row
 /// written.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 row-pass hot path"
 )]
@@ -1112,7 +1112,7 @@ fn any<S: Simd>(simd: S, v: i32x4<S>) -> bool {
 /// kernel[j][i]`: the even inputs sum `E` and the odd inputs `O` over the
 /// first `N / 2` outputs, and output `N - 1 - i` is `E - O` where output `i`
 /// is `E + O`. `REV` reverses the outputs (`FDDT`).
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 row-pass hot path"
 )]
@@ -1227,7 +1227,7 @@ trait Lanes<S: Simd>: SimdInt<S, Element = i32> {
 }
 
 impl<S: Simd> Lanes<S> for i32x4<S> {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the column outputs in registers"
     )]
@@ -1248,7 +1248,7 @@ impl<S: Simd> Lanes<S> for i32x4<S> {
 }
 
 impl<S: Simd> Lanes<S> for i32x8<S> {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the column outputs in registers"
     )]
@@ -1325,7 +1325,7 @@ fn col_dispatch<S: Simd, V: Lanes<S>, const RESIDUAL: bool>(
 /// takes one multiply-add per input row. Below 32, the input height is fixed
 /// at `M`, or `M / 2` if every coded row fits. `SPLIT` and `REV` are as in
 /// [`row_pass`], over the rows.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 column-pass hot path"
 )]

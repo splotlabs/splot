@@ -29,7 +29,6 @@ use super::tile::{EntryState, LeafSlot, ReconRow};
 use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
 };
-#[allow(clippy::wildcard_imports)]
 use super::*;
 
 impl LeafSlot {
@@ -589,7 +588,7 @@ impl ResolvedInterBlock {
 
 /// The § 7.12 motion of a single-reference block; the encoder facade calls
 /// it too.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "keeps the resolve path of the parent with the facade as second caller"
 )]
@@ -850,7 +849,7 @@ fn resolve_compound(
 /// The § 7.12 motion of a compound or skip-mode block, before the warp bank
 /// update; the encoder facade calls it too, so its vectors are the ones the
 /// decoder resolves.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "keeps the resolve path of the parent with the facade as second caller"
 )]
@@ -1059,7 +1058,7 @@ pub(super) fn near_near_mvs(
 }
 
 /// AV2 § 7.12.2 compound predictors combined with the parsed MVD pair.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "keeps the resolve path of the parent with the facade as second caller"
 )]

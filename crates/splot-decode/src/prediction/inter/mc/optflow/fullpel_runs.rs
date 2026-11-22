@@ -16,7 +16,7 @@ use super::*;
 /// the cell's offset, so when the first cell reads inside its bounds and the
 /// whole run reads inside the plane, no cell clamps a column. Rows clamp
 /// identically.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
 pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
     prediction: &CompoundSubpelPlane<'_, T>,
@@ -145,7 +145,6 @@ struct ClipArea {
 /// area's bounds. Along any other axis the areas are the first one moved by
 /// whole areas, so when the first area's reach lies inside its bounds and the
 /// rectangle's reach inside the plane, no cell's clip moves a sample there.
-#[allow(clippy::too_many_arguments)]
 fn fullpel_rect_params<T: ReconSample>(
     prediction: &CompoundSubpelPlane<'_, T>,
     cell: MotionCell,
@@ -257,7 +256,6 @@ fn fullpel_rect_params<T: ReconSample>(
 
 /// The parameters that predict a grid of equal cells with equal refine-MV
 /// candidates as one block; see [`fullpel_rect_params`].
-#[allow(clippy::too_many_arguments)]
 pub(super) fn uniform_fullpel_params<T: ReconSample>(
     prediction: &CompoundSubpelPlane<'_, T>,
     cells: &[MotionCell],

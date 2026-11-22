@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use splot_recon::{DecodedFrameInfo, OutputIndex, PlaneRect, PlaneSize};
 
 use super::*;
@@ -92,7 +90,6 @@ macro_rules! with_luma {
     }};
 }
 
-#[allow(clippy::too_many_arguments)]
 fn q3<T: ReconSample>(
     frame: &CurrentFrameWorkspace<T>,
     filter: u8,
@@ -108,7 +105,6 @@ fn q3<T: ReconSample>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cfl_block(
     x: usize,
     y: usize,
@@ -130,7 +126,6 @@ fn cfl_block(
 }
 
 /// The luma edges, `lumaAvg` and luma AC of a block.
-#[allow(clippy::too_many_arguments)]
 fn analyse<T: ReconSample>(
     frame: &CurrentFrameWorkspace<T>,
     block: CflBlock,
@@ -496,7 +491,6 @@ fn cfl_luma_sample_uses_422_and_444_filters() {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn mhccp_geometry<T: ReconSample>(
     frame: &CurrentFrameWorkspace<T>,
     x: usize,
@@ -789,7 +783,6 @@ fn cfl_predict_blocks_match_scalar_at_extremes() {
 }
 
 /// [`CflLuma::q3_run`] over chroma row `y - 1` with the 4:2:0 filter `F`.
-#[allow(clippy::too_many_arguments)]
 fn specialised_run<const F: usize>(
     frame: &CurrentFrameWorkspace<u16>,
     y: usize,
@@ -1296,11 +1289,7 @@ fn mhccp_420_u8_reference_luma_matches_q3_runs() {
 /// The § 7.13.6 MHCCP prediction of one plane sample by sample: `CflRef`
 /// from the per-sample [`q3`] and the frame, the § 7.13.7 edge samples in
 /// spec order for the shared solve, then the § 7.13.6 sample formula.
-#[allow(
-    clippy::many_single_char_names,
-    clippy::needless_range_loop,
-    reason = "the spec's names and loops"
-)]
+#[expect(clippy::many_single_char_names, reason = "the spec's names")]
 fn spec_mhccp<T: ReconSample>(
     frame: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,

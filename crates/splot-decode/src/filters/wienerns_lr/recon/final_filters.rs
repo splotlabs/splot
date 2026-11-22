@@ -418,7 +418,6 @@ fn lr_blocks_near_rows(
 /// `start_y..end_y` that no block of `blocks` writes whole, or returns `None`
 /// on bad geometry or when `gap` does. Blocks out of column order can add
 /// gaps that a block does write, never drop one.
-#[allow(clippy::too_many_arguments)]
 fn for_each_lr_gap(
     blocks: &[WienerNsLrSourceBlock],
     plane: PlaneId,
@@ -575,7 +574,7 @@ struct LrWindowGeometry {
 }
 
 impl LrWindowGeometry {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new<T: ReconSample>(
         plane: PlaneId,
         curr_plane: FramePlane<'_, T>,
@@ -734,7 +733,7 @@ struct LrSourceRows<'a, T> {
 }
 
 impl<'a, T: ReconSample> LrSourceRows<'a, T> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn resolve(
         scratch: &'a mut Vec<T>,
         plane: PlaneId,
@@ -1161,7 +1160,7 @@ impl StripeChain<'_> {
         Ok(frame)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn compute_pc_wiener_block<T: ReconSample>(
         &self,
         block: &WienerNsLrSourceBlock,
@@ -1267,7 +1266,7 @@ impl StripeChain<'_> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn compute_chroma_lr_block<T: ReconSample>(
         &self,
         plane_id: PlaneId,
@@ -1404,7 +1403,7 @@ impl StripeChain<'_> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn compute_luma_lr_block<T: ReconSample>(
         &self,
         block: &WienerNsLrSourceBlock,
@@ -1518,7 +1517,6 @@ impl StripeChain<'_> {
         self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, output_stride)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn preserve_lossless_lr_samples<T: ReconSample>(
         &self,
         plane_id: PlaneId,
@@ -1572,7 +1570,6 @@ impl StripeChain<'_> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn luma_lr_cell_subclasses<'a, T: ReconSample>(
         &self,
         block: &WienerNsLrSourceBlock,

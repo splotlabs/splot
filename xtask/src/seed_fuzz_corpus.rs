@@ -374,7 +374,6 @@ fn list_files_recursive(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) -> Result
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::util::temp_root;

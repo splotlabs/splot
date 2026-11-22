@@ -239,7 +239,6 @@ fn rebase_leb128_error(error: Error, base_offset: ByteOffset) -> Error {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::obu::PayloadStatus;

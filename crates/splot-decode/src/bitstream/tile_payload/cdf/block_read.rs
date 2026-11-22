@@ -17,7 +17,7 @@ pub(crate) enum BlockSymbolTraceReadError {
 }
 
 impl TileCdfSubset {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -36,7 +36,7 @@ impl TileCdfSubset {
 
     /// [`Self::read_block_symbol_trace`] with the inter mode-info rows read
     /// through [`read_row`], so a constant selector reads a fixed-arity row.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -137,7 +137,7 @@ impl TileCdfSubset {
 }
 
 /// A trusted read of a decoder-owned row in the tile's update mode.
-#[allow(clippy::inline_always, reason = "measured: per-block symbol read")]
+#[expect(clippy::inline_always, reason = "measured: per-block symbol read")]
 #[inline(always)]
 pub(crate) fn read_row<const L: usize>(
     symbols: &mut SymbolDecoder<'_>,
@@ -148,7 +148,7 @@ pub(crate) fn read_row<const L: usize>(
 
 /// `rows[ctx]` with the context clamped into the array: every context the
 /// decoder derives is in range, so the clamp only keeps the read panic-free.
-#[allow(clippy::inline_always, reason = "measured: per-symbol row")]
+#[expect(clippy::inline_always, reason = "measured: per-symbol row")]
 #[inline(always)]
 pub(crate) fn row_at<T, const C: usize>(rows: &mut [T; C], ctx: usize) -> &mut T {
     &mut rows[ctx.min(C - 1)]

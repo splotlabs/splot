@@ -469,7 +469,6 @@ pub(super) fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
     use crate::pipeline::FrameCdfSubset;

@@ -19,7 +19,7 @@ use super::bytes_per_sample;
 
 const SPEC_SECTION: &str = "7.1";
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(super) fn decode_tile_boundary_error(
     error: FrameCandidateTileBoundaryError,
     offset: ByteOffset,

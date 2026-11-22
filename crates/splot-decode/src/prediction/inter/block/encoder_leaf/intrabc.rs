@@ -15,7 +15,6 @@ use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
 };
 use crate::prediction::inter::find_mv_stack::NeighbourMotionValues;
 
-#[allow(clippy::wildcard_imports)]
 use super::*;
 
 /// The § 8.3.2 contexts of one IntraBC leaf: `use_intrabc`, `skip_txfm` and

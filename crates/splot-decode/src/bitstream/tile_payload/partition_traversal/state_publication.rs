@@ -92,11 +92,7 @@ impl DecodedLeafPublication {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::inline_always,
-    reason = "measured: one call per decoded leaf"
-)]
+#[expect(clippy::inline_always, reason = "measured: one call per decoded leaf")]
 #[inline(always)]
 pub(crate) fn publish_intra_leaf_state<E>(
     frame: &TilePartitionFrameFacts,
@@ -155,7 +151,6 @@ pub(crate) fn publish_intra_leaf_state<E>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 

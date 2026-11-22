@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use splot_core::headers::frame::GmType;
 
 use super::super::super::find_mv_stack::NeighbourMvGrid;

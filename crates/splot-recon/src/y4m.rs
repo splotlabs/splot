@@ -357,7 +357,6 @@ impl<W: Write> Y4mWriter<W> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{DecodedFrameInfo, FramePlanes, OutputIndex, Plane, PlaneRect};

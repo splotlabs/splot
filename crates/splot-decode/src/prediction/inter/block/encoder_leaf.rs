@@ -26,7 +26,6 @@ use super::resolve::{
     single_mode_mv, single_mv_stack, warp_motion,
 };
 use super::temporal::temporal_motion_block;
-#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::encoder_syntax::SingleMvs;
 

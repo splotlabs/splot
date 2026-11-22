@@ -78,7 +78,7 @@ pub(crate) fn derive_optflow_mv_deltas(
 /// [`ReconError::BufferLengthMismatch`] when `stride` is below `width` or a
 /// prediction ends before the block's last sample, or the arithmetic errors
 /// of the solve.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn derive_optflow_mv_deltas_into<'a, P: WindowSample>(
     preds: [&[P]; 2],
     starts: [usize; 2],
@@ -229,7 +229,7 @@ const LAST_LANE: [u8; 16] = [
 /// registers. The `tmp` rows two above and two below the current row stay
 /// in a five-row window; `pDiff` is derived again from the current row's
 /// samples. An 8-wide unit fills the low eight lanes.
-#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn tile_sums<S: Simd, P: WindowSample, const W: usize, const H: usize>(
     simd: S,
@@ -278,7 +278,7 @@ fn tile_sums<S: Simd, P: WindowSample, const W: usize, const H: usize>(
 /// The § 7.13.3.11 horizontal gradients of one row of a gradient unit `W`
 /// samples wide: the taps past the unit's first and last samples repeat
 /// them, and those two lanes double their taps (round by 6 bits, not 7).
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn horizontal_gradient<S: Simd, const W: usize>(row: i16x16<S>) -> i16x16<S> {
     let simd = row.simd;
@@ -304,7 +304,7 @@ fn horizontal_gradient<S: Simd, const W: usize>(row: i16x16<S>) -> i16x16<S> {
 /// The sums of one 8x8 gradient unit as [`tile_sums`] derives them, with the
 /// rows in pairs for [`rows_8x8_sums`]: the whole unit, or with `quarters`
 /// its four 4x4 units in raster order.
-#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn tile_8x8<S: Simd, P: WindowSample>(
     simd: S,
@@ -343,7 +343,7 @@ fn tile_8x8<S: Simd, P: WindowSample>(
 /// Sixteen samples of `pred` from `at`, clipped to `max` (§ 7.13.3.10
 /// `Clip1`). An `at` past the end, which validation rules out, reads the
 /// last samples instead, so that the loads need no per-row bounds branch.
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn sample_row<S: Simd, P: WindowSample>(simd: S, pred: &[P], at: usize, max: u16) -> u16x16<S> {
     let at = at.min(pred.len().saturating_sub(16));
@@ -360,7 +360,7 @@ fn sample_row<S: Simd, P: WindowSample>(simd: S, pred: &[P], at: usize, max: u16
 
 /// The eight samples of `pred` at each of `at` in the low and high eight
 /// lanes, as [`sample_row`] reads them.
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn sample_pair<S: Simd, P: WindowSample>(
     simd: S,
@@ -394,7 +394,6 @@ fn sample_pair<S: Simd, P: WindowSample>(
 /// contain the requested 8x8 region, or the same arithmetic errors as
 /// [`derive_optflow_mv_deltas_into`].
 #[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
 pub fn derive_optflow_mv_delta_8x8_strided_into(
     pred0: &[u16],
     start0: usize,
@@ -639,7 +638,7 @@ pub fn optflow_unit_8x8_u16(
 /// `weighted` within `±4092` and `difference` within `±1023` before the
 /// `Round2Signed`. Rows of samples past the bit depth are discarded by the
 /// caller's range check or clipped first, so wrapped values never reach a solve.
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn weighted_difference_row<S: Simd, V: SimdInt<S, Element = i16>>(
     left: V,
@@ -686,7 +685,7 @@ fn reduce_distances(distances: [i32; 2]) -> [i32; 2] {
 /// `|d| <= 2`, so any two of its values lie within 768 of each other and
 /// both `42 * Δ` and `5 * Δ` fit `i16` lanes; only their difference needs
 /// the separate sign.
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn gradient_16<S: Simd>(
     near: [i16x16<S>; 2],
@@ -702,7 +701,7 @@ fn gradient_16<S: Simd>(
 
 /// `(magnitude + 64) >> 7` with the `edges` lanes, whose taps are doubled,
 /// rounded by 6 bits instead.
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn edge_round<S: Simd>(magnitude: u16x16<S>, edges: u64) -> u16x16<S> {
     mask16x16::from_bitmask(magnitude.simd, edges)
@@ -790,7 +789,7 @@ fn rows_8x8_sums<S: Simd>(
 }
 
 /// The unit sums of a whole 8x8 unit from the lane sums of its halves.
-#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn whole_8x8<S: Simd>([top, bottom]: [[i32x8<S>; 5]; 2]) -> [i32; 5] {
     let sums = core::array::from_fn(|sum| (top[sum] + bottom[sum]).reduce_sum());
@@ -802,7 +801,7 @@ fn whole_8x8<S: Simd>([top, bottom]: [[i32x8<S>; 5]; 2]) -> [i32; 5] {
 /// high four, the 8x8 units left and right in a gradient unit: adjacent
 /// products summed (`pmaddwd`) on x86_64, each half widened into its own
 /// lanes (`smlal`) on 128-bit targets.
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn accumulate_unit_sums<S: Simd>(
     sums: &mut [i32x8<S>; 5],
@@ -831,7 +830,7 @@ fn accumulate_unit_sums<S: Simd>(
 }
 
 /// The sums of columns 0..4 and 4..8 in the lanes [`rows_8x8_sums`] fills.
-#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn column_halves<S: Simd>(lanes: i32x8<S>) -> [i32; 2] {
     let (first, second) = lanes.split();
@@ -943,7 +942,6 @@ fn msb(value: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 

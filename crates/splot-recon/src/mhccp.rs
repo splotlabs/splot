@@ -241,7 +241,7 @@ fn solve_mhccp<const N: usize>(
 
 /// Step `I` of [`solve_mhccp`]: scales pivot row `I` and eliminates it from
 /// the rows below.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "constant loop bounds unroll each step"
 )]
@@ -431,7 +431,7 @@ struct PlaneLanes<S: Simd> {
 
 impl<S: Simd> PlaneLanes<S> {
     /// Writes eight § 7.13.6 samples from their shared luma terms.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the parameter lanes in registers"
     )]
@@ -485,7 +485,7 @@ fn adapt_lanes<S: Simd>(simd: S, param: i32x8<S>, bits: i32, v: i32x8<S>) -> i32
 
 /// [`MhccpPredictor::predict_planes`] in 8-lane groups, two rows each for
 /// a 4-wide block: each group's `vec[0]` and `vec[1]` serve every plane.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 fn predict_rows<S: Simd, P: PredictedSample, const N: usize, const WIDE: bool>(
     simd: S,

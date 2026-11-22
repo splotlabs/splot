@@ -284,7 +284,7 @@ fn write_atlas_or_reserved_3bits(
 }
 
 /// Writes `lcr_aggregate_info()` (AV2 v1.0.0 § 5.8.3).
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(clippy::trivially_copy_pass_by_ref)]
 fn write_lcr_aggregate_info(scratch: &mut BitWriter, agg: &LcrAggregateInfo) -> WriteResult<()> {
     scratch.write_bits_u8(agg.config_idc, 6)?;
     scratch.write_bits_u8(agg.aggregate_level_idx, AGG_F5)?;

@@ -21,11 +21,7 @@ pub(super) trait CompoundAverageOutput: ReconSample {
         output_stride: usize,
     ) -> splot_recon::Result<()>;
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::inline_always,
-        reason = "per-cell grid hot path"
-    )]
+    #[expect(clippy::inline_always, reason = "per-cell grid hot path")]
     #[inline(always)]
     fn predict_fast<T: ReconSample>(
         reference0: &ReferencePlaneView<'_, T>,
@@ -202,7 +198,7 @@ fn subblock_reference_area_size(
     (plane != PlaneId::Y || (width == 8 && height == 8)).then_some((width, height))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn tip_optflow_motion_cell_strided(
     pred0: &[u16],
     start0: usize,
@@ -576,7 +572,7 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
 /// whether its weights are uniform: each start is its 1/16-sample position,
 /// and each refine-MV area starts at the candidate's integer sample (as in
 /// `unscaled_area_bounds`).
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn unscaled_cell_placements<T: ReconSample>(
     prediction: &CompoundSubpelPlane<'_, T>,
@@ -602,7 +598,7 @@ fn unscaled_cell_placements<T: ReconSample>(
 
 /// Whether both placed `width` x `height` cells lie inside the frame, so
 /// that § 7.13.3.15 weighs them uniformly.
-#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell grid hot path")]
 #[inline(always)]
 fn placements_inside(
     placements: &[CellPlacement; 2],
@@ -621,7 +617,7 @@ fn placements_inside(
 
 /// The unscaled 1/1024-sample start of a prescaled MV from a cell's
 /// 1/16-sample origin.
-#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell grid hot path")]
 #[inline(always)]
 fn unscaled_cell_start(
     [x16, y16]: [i32; 2],
@@ -639,7 +635,7 @@ type CellUnit = ([i32; 2], [usize; 2], (u32, u32));
 
 /// One reference's placement of [`unscaled_cell_placements`] for the cell at
 /// 1/16-sample `[x16, y16]`.
-#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell grid hot path")]
 #[inline(always)]
 fn unscaled_cell_placement(
     scaling: &PlaneScaling,
@@ -661,7 +657,7 @@ fn unscaled_cell_placement(
 }
 
 /// The unscaled parameters of a [`CellPlacement`].
-#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell grid hot path")]
 #[inline(always)]
 fn unscaled_cell_params(
     ([start_x, start_y], [first_x, first_y, last_x, last_y]): CellPlacement,
@@ -707,7 +703,7 @@ struct GridBlock<'a, 'b, T: ReconSample> {
 }
 
 /// Predicts one grid cell from `views` into `output`.
-#[allow(clippy::inline_always, reason = "per-cell motion-grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell motion-grid hot path")]
 #[inline(always)]
 fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
     views: &[ReferencePlaneView<'_, T>; 2],
@@ -792,7 +788,6 @@ mod run_tests;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::super::blend::blend_nonuniform_implicit_mask;
     use super::*;

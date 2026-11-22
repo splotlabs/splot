@@ -342,7 +342,6 @@ pub(super) fn projection_queue(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::super::TemporalMotionField;
     use super::*;

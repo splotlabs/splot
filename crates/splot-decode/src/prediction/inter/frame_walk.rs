@@ -158,7 +158,7 @@ impl FrameDecodeGeometry {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn derive_inter_walk_prologue<'payload>(
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'payload>,

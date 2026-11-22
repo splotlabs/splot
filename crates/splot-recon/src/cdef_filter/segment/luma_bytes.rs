@@ -31,7 +31,7 @@ pub(super) fn gather_luma_bytes(
     baseline_simd!(simd => gather_luma_bytes_with(simd, Reduced, samples, width, stride, bytes, origin))
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn gather_luma_bytes_with<S: SimdToken, R: LaneBounds<S>>(
     simd: S,
@@ -73,7 +73,7 @@ fn gather_luma_bytes_with<S: SimdToken, R: LaneBounds<S>>(
 }
 
 /// The § 7.18.2 luma direction inputs from bytes already offset by 128.
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 pub(super) fn direction_byte_rows<S: SimdToken>(
     simd: S,

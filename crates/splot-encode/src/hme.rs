@@ -394,7 +394,6 @@ fn scan(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use splot_parallel::ThreadCount;
     use splot_recon::BitDepth;

@@ -884,7 +884,7 @@ fn fill_chroma_white_noise(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn apply_chroma_ar(
     model: &FilmGrainModel,
     luma: &[i32],
@@ -1016,7 +1016,7 @@ fn stripe_row_slice(stripe: &[i16], stripe_width: usize, row: usize, width: usiz
     &stripe[row * stripe_width..row * stripe_width + width]
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn fill_stripe(
     stripe: &mut Stripe,
     luma_num: usize,
@@ -1061,7 +1061,7 @@ fn fill_stripe(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn fill_stripe_plane(
     stripe: &mut Stripe,
     plane: usize,
@@ -1243,5 +1243,4 @@ impl GrainRng {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests;

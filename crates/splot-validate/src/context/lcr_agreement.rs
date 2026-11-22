@@ -469,7 +469,7 @@ impl ValidatorContext {
     /// header fires once). `field` distinguishes the several sub-fields of a shared rule
     /// (the four `lcr/msdo-aggregate-mismatch` arms, each disagreeing `sub_xlayer_id`) so
     /// two distinct disagreements are not collapsed into one.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn push_lcr_agreement(
         &mut self,
         rule_id: &'static str,

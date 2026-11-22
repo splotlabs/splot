@@ -21,7 +21,7 @@ pub(super) type LumaToken = fearless_simd::Avx2;
 pub(super) type LumaToken = fearless_simd::Neon;
 
 /// The [`LumaToken`] of this machine, if it has one.
-#[allow(clippy::inline_always, reason = "a token read in hot CfL paths")]
+#[expect(clippy::inline_always, reason = "a token read in hot CfL paths")]
 #[inline(always)]
 pub(super) fn luma_token() -> Option<LumaToken> {
     #[cfg(target_arch = "x86_64")]
@@ -58,7 +58,7 @@ pub(super) struct Luma420Block {
 impl Luma420Block {
     /// Whether every load of a block of `height` rows below any
     /// [`Self::above`] row stays inside `len` samples.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: out of line it costs more than its body"
     )]

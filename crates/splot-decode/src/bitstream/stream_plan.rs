@@ -57,7 +57,7 @@ impl<'a> DecodeStreamInput<'a> {
 }
 
 /// The decoded layer selection; the planner selects only the base layer.
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLayerSelection {
     temporal_layer_id: TemporalLayerId,
@@ -1337,5 +1337,4 @@ fn core_error_offset(error: &splot_core::Error) -> Option<ByteOffset> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;

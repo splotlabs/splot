@@ -41,7 +41,7 @@ pub(crate) const MIN_FRAME_DIMENSION: u32 = 16;
 /// `FrameWidth <= MaxHSize` and `FrameHeight <= MaxVSize` (Annex A.4, mirror lines
 /// 619-620). It is modeled as one field, [`LevelLimits::max_h_v_size`], to make the
 /// shared column explicit and rule out a transposition.
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LevelLimits {
     /// `MaxPicSize` in luma samples (Annex A.4 Table A.8, mirror lines 330-379).
@@ -303,7 +303,6 @@ pub(crate) fn is_defined_max_interop(interop: u8) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

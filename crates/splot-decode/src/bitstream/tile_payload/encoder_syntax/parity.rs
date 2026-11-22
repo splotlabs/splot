@@ -79,7 +79,6 @@ impl ParityHiding {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::super::super::coeff_loop::sign_symbol::{
         CoeffSignReadSource, derive_nonzero_coeff_sign_input,

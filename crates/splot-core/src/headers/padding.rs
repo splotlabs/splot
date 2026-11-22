@@ -89,7 +89,6 @@ pub fn parse_padding_obu(payload: &[u8], payload_offset: ByteOffset) -> Result<P
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

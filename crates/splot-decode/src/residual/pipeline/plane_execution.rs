@@ -133,7 +133,7 @@ impl ResidualPlaneArena {
     }
 
     /// Reads each planned plane into the arena in syntax order.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn parse(
         &mut self,
         block_ctx: BlockCtx,
@@ -216,7 +216,7 @@ impl ResidualPlanePlan {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn parse(
         &self,
         frame: FrameTileCtx,
@@ -333,7 +333,7 @@ impl ResidualPlanePlan {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[inline(never)]
     fn parse_lossless_transform_units(
         &self,
@@ -407,7 +407,7 @@ impl ResidualPlanePlan {
         )?))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[inline(never)]
     fn parse_partitioned_luma(
         &self,
@@ -507,7 +507,7 @@ impl ResidualPlanePlan {
 }
 
 impl ParsedGeneralIntraResidual {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<T: ReconSample>(
         &self,
         arena: &mut ResidualPlaneArena,
@@ -637,7 +637,7 @@ impl ParsedResidualPlane {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn reconstruct<T: ReconSample>(
         &self,
         frame: FrameTileCtx,
@@ -729,7 +729,7 @@ impl ParsedResidualPlane {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn reconstruct_chroma_pair<T: ReconSample>(
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -763,7 +763,7 @@ fn reconstruct_chroma_pair<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn reconstruct_deferred_planes<T: ReconSample>(
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,

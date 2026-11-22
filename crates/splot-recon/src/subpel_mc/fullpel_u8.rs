@@ -162,7 +162,7 @@ pub fn subpel_compound_block<T: ReconSample>(
 
 /// The windows and clip bounds of both references of a compound part, which
 /// share its rectangle, as [`UnscaledPut::window`].
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 fn windows(
     interp: InterpolationFilter,
@@ -174,7 +174,7 @@ fn windows(
 
 /// [`compound_windows`] of the U and V views, which share `windows`, into
 /// their outputs: filtered eight-bit pairs read in place in one pair call.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 fn compound_pair<T: ReconSample>(
     [u, v]: [Views<'_, '_, T>; 2],
@@ -219,7 +219,7 @@ fn compound_pair<T: ReconSample>(
 
 /// [`put_window`] of two views of one geometry, U and V, into their
 /// outputs: eight-bit planes read in place in one pair call.
-#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[expect(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
 fn put_pair<T: ReconSample>(
     window: &block::Window,
@@ -253,7 +253,7 @@ fn put_pair<T: ReconSample>(
 /// The `Clip1` single-reference prediction of `window` read from `view`
 /// within `bounds` into `output`; `false` without writing for an empty clip
 /// range or storage that is neither 8- nor 16-bit.
-#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[expect(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
 fn put_window<T: ReconSample>(
     window: &block::Window,

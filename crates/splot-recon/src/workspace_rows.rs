@@ -668,7 +668,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
     /// The block of `target` at `(x, y)`, or `None` when it overhangs plane
     /// storage or its above row lies outside a band.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: the intra glue folds into its caller"
     )]
@@ -701,7 +701,6 @@ impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::reconstruct::reconstruct_add_residual;

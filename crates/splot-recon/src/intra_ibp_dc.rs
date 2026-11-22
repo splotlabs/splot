@@ -250,7 +250,7 @@ fn ibp_dc_block<S: Simd, P: IntraLaneSample>(
 /// DC value, above-zone rows blend with the above edge at the row's weight
 /// from the zone's first column, and left-zone rows blend their first `W / 4`
 /// columns with the row's left sample at the column weights.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: an outlined call costs more than the rows of a small block"
 )]
@@ -384,7 +384,6 @@ pub(crate) fn blend_ibp_lanes<S: Simd>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::intra::predict_intra_dc_rect_value;
@@ -404,7 +403,6 @@ mod tests {
 
     /// The § 7.13.2.10 DC value, then the § 7.13.2.12 above and left zones
     /// sample by sample.
-    #[allow(clippy::needless_range_loop, reason = "the § 7.13.2.12 loops")]
     fn spec_ibp_dc(
         bit_depth: BitDepth,
         size: IntraRectBlockSize,

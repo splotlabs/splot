@@ -382,7 +382,6 @@ impl ByteLaneOutput for u16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::super::WIENER_NS_CONFIG_Y_PAIRS;
     use super::*;
@@ -712,7 +711,7 @@ mod avx2 {
         }
     );
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn filter_cell_rows<O: ByteLaneOutput>(
         t: Avx2,
         luma: &EightBitLuma,

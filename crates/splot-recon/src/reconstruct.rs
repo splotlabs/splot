@@ -317,13 +317,13 @@ fn add_residual_u16_tail<S: Simd>(
 /// `Clip1(prediction + residual)` over `u8` storage, sixteen, eight, then
 /// four lanes at a time, for `0 <= max <= 255`; `prediction` is `out` itself
 /// when `None`.
-#[allow(clippy::inline_always, reason = "per-row residual add hot path")]
+#[expect(clippy::inline_always, reason = "per-row residual add hot path")]
 #[inline(always)]
 fn add_residual_u8(prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]) {
     baseline_simd!(simd => add_residual_u8_lanes(simd, prediction, residual, max, out));
 }
 
-#[allow(clippy::inline_always, reason = "per-row residual add hot path")]
+#[expect(clippy::inline_always, reason = "per-row residual add hot path")]
 #[inline(always)]
 fn add_residual_u8_lanes<S: Simd>(
     simd: S,
@@ -581,7 +581,6 @@ fn add_residual_lanes<S: Simd, const LANES: usize>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

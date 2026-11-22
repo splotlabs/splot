@@ -8,7 +8,7 @@
 //! AVM oracle hash at every pool width in [`THREAD_LEGS`], ensuring output is
 //! independent of worker count. CI gate, no AVM, no network.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

@@ -314,7 +314,7 @@ impl CdefBlockLookup<'_> {
     /// The context of the 8x8 block at `(r, c)`, given its 64x64 unit's
     /// strength set (`None` when the unit's strength index is out of range)
     /// and the MI span of its tile row.
-    #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF per-block hot path")]
     #[inline(always)]
     fn at(
         &self,
@@ -347,7 +347,7 @@ impl CdefBlockLookup<'_> {
 
     /// The planes § 7.18.1 filters in the 8x8 block at `(r, c)`, or `None`
     /// when it filters none of them.
-    #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF per-block hot path")]
     #[inline(always)]
     fn block_planes(&self, r: usize, c: usize) -> Result<Option<CdefSegmentBlock>, CdefError> {
         if let Some(skip_grid) = self.skip_grid
@@ -550,7 +550,7 @@ fn copy_unfiltered_blocks<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     deblocked: DeblockedPlanes<'a, T>,
@@ -587,7 +587,7 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
     deblocked: DeblockedPlanes<'a, T>,
     strengths: Option<&[CdefFrameParams]>,
@@ -952,7 +952,7 @@ pub(crate) fn holds_value<S: ReconSample>(samples: &[S], value: u16) -> Option<b
 /// The bitwise or of `diff` over every 16-sample chunk of `samples`, or
 /// `None` when it is shorter than 16; the last chunk overlaps the one
 /// before it.
-#[allow(clippy::inline_always, reason = "measured CDEF and LR flat checks")]
+#[expect(clippy::inline_always, reason = "measured CDEF and LR flat checks")]
 #[inline(always)]
 fn chunks_repeat<T, V: core::ops::BitOr<Output = V>>(
     samples: &[T],
@@ -1236,7 +1236,7 @@ struct CdefBlockCtx {
     fill_flat: [bool; 3],
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn compute_cdef_block<S: ReconSample>(
     ctx: &CdefBlockCtx,
     pad: &mut [u16; CDEF_PADDED_AREA],
@@ -1391,7 +1391,7 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
 /// Writes one interior chroma pair from its gathered interleaved taps in
 /// `pad`: when both planes are `flat`, the flat values of the planes `fill`
 /// marks, else the output of `filter_pair`.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: out of line it slowed 8-bit CDEF"
 )]
@@ -1463,7 +1463,7 @@ fn gather_chroma_pair<T: ReconSample>(
 
 /// [`gather_chroma_pair`] with one `u` and one `v` row zipped per vector:
 /// `u8` rows byte-interleaved then widened, `u16` rows interleaved as they are.
-#[allow(clippy::inline_always, reason = "one dispatch per pair block")]
+#[expect(clippy::inline_always, reason = "one dispatch per pair block")]
 #[inline(always)]
 fn gather_chroma_pair_lanes<S: Simd, T: ReconSample>(
     simd: S,
@@ -1584,7 +1584,7 @@ fn gather_interior_pad<S: ReconSample>(
 
 /// [`gather_interior_rows`] for the block sizes CDEF filters, or `None` for
 /// any other size.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn gather_interior_window<T: ReconSample>(
     samples: &[T],
     width: usize,
@@ -1651,7 +1651,7 @@ fn gather_interior_rows<
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn gather_boundary_pad<S: ReconSample>(
     snap: FramePlane<'_, S>,
     pad: &mut [u16; CDEF_PADDED_AREA],
@@ -1691,7 +1691,7 @@ fn gather_boundary_pad<S: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn filter_pad_into<T: ReconSample>(
     filtered: &mut StripePlane<T>,
     pad: &[u16; CDEF_PADDED_AREA],

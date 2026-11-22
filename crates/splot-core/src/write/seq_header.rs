@@ -596,7 +596,6 @@ fn check_tlayer_canonical_when_present(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
@@ -1152,7 +1151,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod proptests {
     use super::*;
     use crate::bitio::BitReader;
@@ -1164,7 +1162,7 @@ mod proptests {
     /// Builds a parser-reachable general-header byte fixture from primitive choices,
     /// honoring every §5.4.1 gate so the parser accepts it (and so the writer never
     /// rejects the parsed model).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn build_general_fixture(
         single_picture: bool,
         seq_header_id: u32,

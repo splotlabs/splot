@@ -38,7 +38,7 @@ pub(crate) enum FrameSetup<'a, T: ReconSample> {
 ///
 /// Returns the walk's own diagnostic when the header, tile plan, or block walk
 /// fails.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn walk_frame<T: ReconSample>(
     scratch: &mut inter::InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,

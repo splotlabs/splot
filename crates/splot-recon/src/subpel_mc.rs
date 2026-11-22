@@ -972,7 +972,6 @@ pub fn subpel_predict_block_compound_average_unscaled_strided_into<
 /// [`ReconError::BufferLengthMismatch`] when the output rectangle does not fit
 /// the supplied storage.
 #[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     T: ReconSample,
@@ -1003,7 +1002,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
 /// The COMPOUND_AVERAGE of an admitted pair into `output`; `false`, having
 /// written nothing, when the references are neither 8- nor 16-bit storage of
 /// one depth or `O` is neither 8- nor 16-bit storage.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 fn compound_average<T: ReconSample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
@@ -1019,7 +1018,7 @@ fn compound_average<T: ReconSample, O: ReconSample>(
 }
 
 /// [`compound_average`] of two windows of one shape within `bounds`.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 fn compound_windows<T: ReconSample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
@@ -1091,7 +1090,6 @@ pub(super) fn with_compound_pred0<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R
 /// stores it; `false` without writing for a cell outside the register-cell
 /// subset or an output that cannot hold it.
 #[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
 #[inline]
 #[cfg(test)]
 pub(crate) fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
@@ -1138,7 +1136,7 @@ pub(crate) fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
 
 /// Whether both blocks have one unscaled shape in `1..=MAX_BLOCK_DIM`, one
 /// bit depth, uninverted clipping ranges and a last column that fits.
-#[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
+#[expect(clippy::inline_always, reason = "measured TIP compound hot path")]
 #[inline(always)]
 fn fast_admitted(params0: &SubpelPredictParams, params1: &SubpelPredictParams) -> bool {
     let unscaled = |params: &SubpelPredictParams| {
@@ -1168,7 +1166,7 @@ fn fast_admitted(params0: &SubpelPredictParams, params1: &SubpelPredictParams) -
 /// convert the clipped coordinates to indices directly. A view has at least
 /// one column and one readable row, so `max` then `min` is that clamp
 /// without the panic path of `i32::clamp`.
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[expect(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
 fn plane_bounded<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
@@ -1215,7 +1213,7 @@ fn with_subpel_intermediate<R>(len: usize, f: impl FnOnce(&mut [i16]) -> R) -> R
     })
 }
 
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
     let SubpelPredictParams {
@@ -1279,5 +1277,4 @@ fn scaled_position(start: i32, step: i32, index: usize) -> i32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests;

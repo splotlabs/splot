@@ -704,7 +704,6 @@ fn general_intra_residual_plan_error(error: ResidualPlanError) -> DecodeError {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn general_intra_residual_error(
     error: GeneralIntraResidualError,
     offset: ByteOffset,
@@ -826,7 +825,6 @@ fn general_intra_coeff_error(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
 fn general_intra_block_mode_error(
     error: GeneralIntraBlockModeError,
     offset: ByteOffset,

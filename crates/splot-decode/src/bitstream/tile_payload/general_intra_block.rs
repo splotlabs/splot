@@ -448,7 +448,7 @@ pub(crate) enum GeneralIntraBlockModeError {
     InvalidCflMhDirection { direction: u8 },
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_general_intra_luma_block_mode_with_fsc_context(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -533,7 +533,7 @@ fn decode_general_intra_luma_block_mode_with_fsc_context(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -606,7 +606,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_general_intra_palette_y_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -655,7 +655,7 @@ fn read_general_intra_palette_y_mode(
     Ok(None)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_general_intra_dip_mode_info(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -776,7 +776,7 @@ fn read_palette_colors_y(
     Ok(colors)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_chroma_block_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -1140,7 +1140,7 @@ pub(crate) const fn cfl_alpha_v_ctx(sign_u: u8, sign_v: u8) -> usize {
     ((sign_v - 1) * 3 + sign_u) as usize
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "constant selectors fold into a direct row read"
 )]

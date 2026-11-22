@@ -1155,7 +1155,7 @@ impl SegmentationParamsView {
 
 /// One `(qm_y[i], qm_u[i], qm_v[i])` level set for `--json` (AV2 § 5.18.6.2).
 #[derive(Serialize)]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 struct QmSetLevelsView {
     qm_y: u8,
     qm_u: u8,
@@ -1253,7 +1253,7 @@ impl DeblockingFilterParamsView {
 /// Parsed `gdf_params()` for `--json` (AV2 § 5.18.7.9). The per-frame fields are
 /// omitted when GDF is not frame-enabled.
 #[derive(Serialize)]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 struct GdfParamsView {
     gdf_frame_enable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1277,7 +1277,7 @@ impl GdfParamsView {
 
 /// One CDEF strength set for `--json` (AV2 § 5.18.7.10).
 #[derive(Serialize)]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 struct CdefStrengthSetView {
     y_pri_strength: u8,
     y_sec_strength: u8,
@@ -1431,7 +1431,7 @@ impl LrParamsView {
 /// One plane's parsed `ccso_params()` state for `--json` (AV2 § 5.18.7.12).
 #[derive(Serialize)]
 // Field names are the AV2 § 5.18.7.12 syntax-element names and the stable `--json` key contract.
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 struct CcsoPlaneParamsView {
     ccso_planes: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

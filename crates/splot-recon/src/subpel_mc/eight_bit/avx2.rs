@@ -24,7 +24,7 @@ use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x8, i16x16, i32x4, i32x8, u8x16
 mod cell;
 
 /// The AVX2 token, when the compiled baseline has AVX2.
-#[allow(clippy::inline_always, reason = "one check per kernel call")]
+#[expect(clippy::inline_always, reason = "one check per kernel call")]
 #[inline(always)]
 fn token() -> Option<Avx2> {
     fearless_simd::Level::baseline().as_avx2()
@@ -183,7 +183,7 @@ pub(in crate::subpel_mc) trait RowStart:
 }
 
 impl RowStart for usize {
-    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[expect(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
     fn row_mut<const N: usize>(self, output: &mut [u8]) -> Option<&mut [u8; N]> {
         output.get_mut(self..)?.first_chunk_mut::<N>()
@@ -191,7 +191,7 @@ impl RowStart for usize {
 }
 
 impl RowStart for u32 {
-    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[expect(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
     fn row_mut<const N: usize>(self, output: &mut [u8]) -> Option<&mut [u8; N]> {
         let at = self as usize;
@@ -413,12 +413,12 @@ impl<O: Out> Out for Cols<'_, O> {
         = O::Rows<'r>
     where
         Self: 'r;
-    #[allow(clippy::inline_always, reason = "measured strip-kernel row helper")]
+    #[expect(clippy::inline_always, reason = "measured strip-kernel row helper")]
     #[inline(always)]
     fn forward(&self) -> i32 {
         self.0.forward()
     }
-    #[allow(clippy::inline_always, reason = "measured strip-kernel row helper")]
+    #[expect(clippy::inline_always, reason = "measured strip-kernel row helper")]
     #[inline(always)]
     fn rows(&mut self, _: usize, _: usize, n: usize) -> Option<(Self::Rows<'_>, Self::Row<'_>)> {
         self.0.rows(self.1, 8, n)
@@ -426,7 +426,7 @@ impl<O: Out> Out for Cols<'_, O> {
 }
 
 impl<O: LaneOut> LaneOut for Cols<'_, O> {
-    #[allow(clippy::inline_always, reason = "measured strip-kernel row helper")]
+    #[expect(clippy::inline_always, reason = "measured strip-kernel row helper")]
     #[inline(always)]
     fn row<'r>(row: Self::Row<'r>) -> Row<'r>
     where
@@ -733,7 +733,6 @@ macro_rules! lane_outs {
     ($($out:ty => |$row:pat_param| $value:expr;)*) => {
         $(
             impl LaneOut for $out {
-                #[allow(clippy::inline_always, reason = "measured strip-kernel row helper")]
                 #[inline(always)]
                 fn row<'r>($row: Self::Row<'r>) -> Row<'r>
                 where
@@ -809,7 +808,7 @@ fn wide8(t: Avx2, row: &[i32]) -> __m256i {
 
 /// Copies lanes `0..C` of `lanes` into row `a` and the `C` lanes of the
 /// second row (from 8 for 8 columns, else from 4) into row `b`.
-#[allow(clippy::inline_always, reason = "measured strip-kernel row helper")]
+#[expect(clippy::inline_always, reason = "measured strip-kernel row helper")]
 #[inline(always)]
 fn copy_pair<const C: usize, T: Copy>(a: &mut [T], b: &mut [T], lanes: &[T]) {
     let offset = if C == 8 { 8 } else { 4 };

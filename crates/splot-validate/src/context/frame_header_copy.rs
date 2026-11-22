@@ -74,7 +74,7 @@ pub(super) fn check_frame_header_copy(
     let start_bit = u64::from(reader.bit_offset().get());
 
     let copy_outcome = parse_frame_header_copy(&mut reader, &recorded.header_bits);
-    #[allow(clippy::match_same_arms)]
+    #[expect(clippy::match_same_arms)]
     match copy_outcome {
         FrameHeaderCopyOutcome::Matches => {}
         FrameHeaderCopyOutcome::Mismatch { mismatch_bit } => {

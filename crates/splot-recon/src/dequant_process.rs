@@ -205,7 +205,7 @@ pub fn dequantize_block(
 /// weighted by its quantization-matrix row under `useQm` — the values the
 /// per-coefficient [`dequant_coefficient`] writes, in the same slots. A last
 /// group shorter than eight loads zero-padded and stores only its own lanes.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured § 7.14.4 dequantization hot path"
 )]
@@ -309,7 +309,7 @@ fn qm_weighted_lanes<S: Simd>(simd: S, q: u32x8<S>, m: i32x8<S>) -> u32x8<S> {
 
 /// [`dequant_coefficient`] of eight lanes with per-lane quantizers `q2`, a
 /// power-of-two `dq_denom` of `1 << denom_shift` and the clamp bound.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured § 7.14.4 dequantization hot path"
 )]
@@ -460,7 +460,6 @@ pub fn qm_weighted_quantizer(q: u32, m: i32) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use splot_tables::tables::quantizer::QM_OFFSET;
 

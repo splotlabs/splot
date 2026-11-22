@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::test_support::yuv420_workspace;
 use splot_core::headers::frame::CcsoOffsets;
@@ -117,7 +115,7 @@ fn ref_luma_offset(
     curr[sy * w + sx]
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn reference_filtered_sample(
     pre: u8,
     curr: &[u16],

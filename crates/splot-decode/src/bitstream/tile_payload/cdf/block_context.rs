@@ -530,7 +530,6 @@ pub(crate) fn txb_skip_ctx_luma(
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
 pub(crate) const fn v_txb_skip_ctx(
     above_nonzero: bool,
     left_nonzero: bool,

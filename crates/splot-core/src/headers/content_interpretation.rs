@@ -412,7 +412,6 @@ pub fn parse_content_interpretation(reader: &mut BitReader<'_>) -> Result<Conten
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;

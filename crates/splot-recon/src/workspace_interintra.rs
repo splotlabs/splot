@@ -373,7 +373,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] when geometry is invalid, the wedge index is
     /// outside the AVM codebook, or the target rows are not stored.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn blend_wedge_interintra_rect(
         &mut self,
         plane: PlaneId,
@@ -444,7 +444,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         self.blend_interintra(rect, size.width(), intra, masks)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn blend_wedge_interintra_rect(
         &mut self,
         rect: crate::PlaneRect,
@@ -808,7 +808,6 @@ fn bawp_scale<S: Simd, const N: usize>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
@@ -845,7 +844,7 @@ mod tests {
 
     /// One § 7.13.3.27 wedge weight of a luma plane sample, or of a chroma
     /// sample as § 7.13.3.30 subsamples it by `(sub_x, sub_y)`, sample by sample.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn wedge_mask_plane_sample(
         lw: usize,
         lh: usize,

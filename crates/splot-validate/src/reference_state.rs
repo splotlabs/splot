@@ -31,7 +31,7 @@ pub(crate) const NUM_REF_FRAMES: usize = 16;
 /// Only the reference-state subset required for later frame-header parsing and conformance
 /// checks is modeled; reconstruction-only state remains in the decoder runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub(crate) enum SlotState {
     /// The slot's state is not known to the validator: it was never established in this
     /// modeled run, or a frame whose refresh mask could not be parsed may have written
@@ -386,7 +386,7 @@ impl ReferenceStateTracker {
     /// a proven-valid non-long-term slot (the spec's `-1`). Returns `None` when the slot is
     /// `Unknown` or `ProvenInvalid` — the long-term id is then undecidable, so a dependent
     /// judgment must drop to silence (the Unknown invariant).
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     pub(crate) fn slot_long_term_id(
         &self,
         xlayer: ExtendedLayerId,
@@ -525,7 +525,6 @@ pub(crate) fn is_key_or_switch(frame_type: FrameType) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use proptest::prelude::*;

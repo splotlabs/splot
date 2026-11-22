@@ -41,11 +41,7 @@ pub(super) fn full_pel_params(
 /// An independent in-test re-trace of the AV2 § 7.13.3.18 two-pass
 /// convolution, used as the property-test oracle. The
 /// explicit `for t in 0..8` tap loops mirror the spec pseudocode index variable.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::needless_range_loop,
-    clippy::many_single_char_names
-)]
+#[expect(clippy::many_single_char_names)]
 fn reference_subpel_values(
     samples: &[u16],
     ref_w: usize,

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use super::MotionMode;
 use super::*;
 use crate::prediction::inter::read_mv::MV_PRECISION_ONE_PEL;
@@ -19,7 +17,7 @@ impl NeighbourMvGrid {
         Self::new_for_tile(0..mi_rows, 0..mi_cols).ok()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn record_block_with_newmv_lists(
         &mut self,
         r: usize,

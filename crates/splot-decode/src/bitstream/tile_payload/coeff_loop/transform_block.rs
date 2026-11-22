@@ -246,7 +246,7 @@ static GRID_EXTENTS: [[u16; GRID_SCAN_LEN]; 3] = {
 };
 
 /// One past the largest raster position the scan can reach at this EOB.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: out of line it costs 30 instructions per block"
 )]
@@ -279,7 +279,7 @@ pub(super) fn grid_scan(
     Ok(scans.get(start..start + eob).unwrap_or_default())
 }
 
-#[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+#[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
 #[inline(always)]
 fn half_capped(mag: u32, cap: usize) -> usize {
     usize::from(HALF_CAPPED[cap & 15][mag as usize & 31])
@@ -372,7 +372,6 @@ struct BlockSummary {
     quant_end: usize,
 }
 
-#[allow(clippy::inline_always, reason = "measured: one body per tool set")]
 #[inline(always)]
 fn dispatch(input: &CoeffTransformBlockInput<'_>) -> RunFn {
     use TransformClass::{Horizontal, TwoD, Vertical};
@@ -489,7 +488,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
 }
 
 /// Reads the `coeff_base_eob` symbol of context `ctx` (§ 8.3.2).
-#[allow(clippy::inline_always, reason = "measured: per-block symbol read")]
+#[expect(clippy::inline_always, reason = "measured: per-block symbol read")]
 #[inline(always)]
 fn read_eob_base<const LUMA: bool>(
     symbols: &mut SymbolDecoder<'_>,
@@ -505,7 +504,7 @@ fn read_eob_base<const LUMA: bool>(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
+#[expect(clippy::inline_always, reason = "measured: per-coefficient index")]
 #[inline(always)]
 pub(super) const fn entry_grid(entry: u32) -> usize {
     entry as usize & LEVEL_WORDS_MASK
@@ -516,7 +515,7 @@ pub(super) const fn entry_pos(entry: u32) -> usize {
     (((entry >> 11) & 0x3fc) | (entry & 3)) as usize
 }
 
-#[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
+#[expect(clippy::inline_always, reason = "measured: per-coefficient index")]
 #[inline(always)]
 const fn ctx_class_of(entry: u32) -> usize {
     (entry >> CTX_CLASS_SHIFT) as usize & 3
@@ -548,7 +547,7 @@ const NONZERO_LIST: usize = 1024;
 
 impl LevelPass<'_, '_> {
     /// The sum of the grid words at `offsets` from `grid`.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn sum(&self, grid: usize, offsets: &[usize]) -> u32 {
         offsets
@@ -560,7 +559,7 @@ impl LevelPass<'_, '_> {
     /// The clamped `coeff_base` neighbour sum (§ 8.3.2): `NEAR5` and `FAR5`
     /// cap the first two and the remaining `Sig_Ref_Diff_Offset` entries at
     /// 5 instead of 3.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn base_mag<const CLASS: usize, const LUMA: bool, const NEAR5: bool, const FAR5: bool>(
         &self,
@@ -584,7 +583,7 @@ impl LevelPass<'_, '_> {
 
     /// The `coeff_br` context (§ 8.3.2); `lf_bump` is whether the context
     /// takes the low-frequency offset of 7.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn br_ctx<const CLASS: usize, const LUMA: bool>(&self, grid: usize, lf_bump: bool) -> usize {
         let count = if LUMA || CLASS == 0 { 3 } else { 2 };
@@ -597,7 +596,7 @@ impl LevelPass<'_, '_> {
     }
 
     /// Adds `coeff_br` when the base symbol saturates.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: per-coefficient symbol read"
     )]
@@ -631,7 +630,7 @@ impl LevelPass<'_, '_> {
             }
     }
 
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn uv_ctx<const CLASS: usize>(&self, mag: u32) -> usize {
         half_capped(mag, 3)
@@ -644,7 +643,7 @@ impl LevelPass<'_, '_> {
 
     /// Reads a low-frequency base symbol; `DC` is whether the position is
     /// scan index 0.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: per-coefficient symbol read"
     )]
@@ -690,7 +689,7 @@ impl LevelPass<'_, '_> {
     }
 
     /// Reads one high-frequency base symbol.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: per-coefficient symbol read"
     )]
@@ -717,7 +716,7 @@ impl LevelPass<'_, '_> {
     }
 
     /// Records a decoded level and advances the TCQ and parity state.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient update")]
     #[inline(always)]
     fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32, ac: bool) {
         let nonzero = level != 0;
@@ -773,7 +772,7 @@ impl LevelPass<'_, '_> {
     /// reverse scan order: the high-frequency indices, the low-frequency
     /// indices above 0 (a scan prefix, see [`lf_scan_end`]), and DC, so each
     /// phase reads one row family with its context arithmetic folded.
-    #[allow(clippy::inline_always, reason = "measured: one loop per tool set")]
+    #[expect(clippy::inline_always, reason = "measured: one loop per tool set")]
     #[inline(always)]
     fn levels_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         &mut self,
@@ -825,7 +824,7 @@ struct SignFacts {
 /// again, reads each one's sign and Golomb remainder, writes its `Quant`
 /// entry and clears the level grid behind it. A zero level's grid word is
 /// already zero.
-#[allow(clippy::inline_always, reason = "measured: one loop per tool set")]
+#[expect(clippy::inline_always, reason = "measured: one loop per tool set")]
 #[inline(always)]
 fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     cdfs: &mut TileCdfSubset,

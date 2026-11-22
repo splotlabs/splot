@@ -182,7 +182,7 @@ pub(crate) enum UnitEdgeRole {
     IbpSecondary,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn unit_edge_filter<T: ReconSample>(
     ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
@@ -197,7 +197,7 @@ pub(crate) fn unit_edge_filter<T: ReconSample>(
     unit_edge_filter_for_plane(ctx, workspace, PlaneId::Y, p_angle, role, edges, x, y, w, h)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn unit_edge_filter_for_plane<T: ReconSample>(
     ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
@@ -227,7 +227,7 @@ pub(crate) fn unit_edge_filter_for_plane<T: ReconSample>(
     assemble_unit_edge_filter(workspace, plane_id, &spec, x, y, w, h)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn unit_middle_edge_filters<T: ReconSample>(
     ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,

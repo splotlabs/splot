@@ -206,7 +206,7 @@ fn validate_manifest(root: &Path, manifest: &Manifest) -> Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn validate_evidence(
     root: &Path,
     tracked: Option<&TrackedPaths>,
@@ -855,5 +855,4 @@ fn is_hex(value: &str, len: usize) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;

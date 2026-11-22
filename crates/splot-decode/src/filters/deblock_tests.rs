@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::grid::DeblockGridStorage;
 use super::*;
 use crate::filters::source::DeblockedWindow;
@@ -107,7 +105,7 @@ pub(super) fn source_from_workspace<T: ReconSample>(
     frontier_rows(core::mem::replace(workspace, replacement)).1
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn deblock_through_live_source<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     blocks: &[DeblockBlock],
@@ -931,7 +929,6 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
 
 #[test]
 fn batched_passes_match_every_edge_alone_in_spec_order() {
-    #[allow(clippy::too_many_arguments)]
     let block = |r: usize, c: usize, n4w, n4h, tx: u8, pu: (usize, usize), sub_pu, skip, qindex| {
         DeblockBlock {
             r: r as u16,
@@ -976,7 +973,6 @@ fn batched_passes_match_every_edge_alone_in_spec_order() {
 
 #[test]
 fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
-    #[allow(clippy::too_many_arguments)]
     let block = |r: usize, c: usize, n4w, n4h, tx: u8, pu: (usize, usize), sub_pu, skip, qindex| {
         DeblockBlock {
             r: r as u16,

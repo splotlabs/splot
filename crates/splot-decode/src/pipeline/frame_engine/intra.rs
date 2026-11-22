@@ -26,7 +26,7 @@ use crate::prediction::inter::{
 };
 use crate::{DecodeOptions, DecodePlannedObu, Result};
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn walk_intra_frame<T: ReconSample>(
     scratch: &mut crate::prediction::inter::InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,

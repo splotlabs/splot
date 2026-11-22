@@ -15,11 +15,6 @@
 //! model is kept only where it beats both the zero model and the best
 //! translation, which blocks code as vectors without parameter bits.
 
-#![allow(
-    clippy::many_single_char_names,
-    reason = "model terms and point coordinates keep their geometric names"
-)]
-
 use splot_core::write::BitWriter;
 use splot_core::write::global_motion::write_global_param;
 use splot_recon::{
@@ -404,7 +399,6 @@ fn param_bits(params: &[i32; 6]) -> Option<u64> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

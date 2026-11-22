@@ -3,8 +3,6 @@
 
 //! The committed C header must match what cbindgen generates from the crate.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 #[test]
 fn the_committed_header_matches_the_rust_api() {
     let crate_dir = env!("CARGO_MANIFEST_DIR");

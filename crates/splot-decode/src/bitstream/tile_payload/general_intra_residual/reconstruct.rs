@@ -119,7 +119,7 @@ pub(crate) fn resolve_secondary_inverse_transform(
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T: ReconSample>(
     block: CoeffBlock<'_>,
     prediction: &[T],
@@ -178,7 +178,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
 /// write reproduces, or a caller bit depth other than the frame's, whose
 /// out-of-range samples only the buffered write can reject — leaving the caller
 /// to reconstruct it through the staging buffer.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -269,7 +269,7 @@ const fn reconstruct_error(source: splot_recon::ReconError) -> GeneralIntraResid
 
 /// The fused transform and add of an intra block (see
 /// [`fused_residual_setup`]).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn fused_intra_setup(
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -299,7 +299,7 @@ fn fused_intra_setup(
 /// The fused transform and add of a block without a secondary transform,
 /// with its flat dequantization; `None` sends the block down the general
 /// path, which also reports a block of the wrong length.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 fn fused_residual_setup(
     block: CoeffBlock<'_>,
@@ -407,7 +407,7 @@ fn dq_denom(pels: usize, use_tcq: bool, plane_tx_type: usize) -> u32 {
 
 /// Adds an intra block's residual onto the prediction already written into
 /// the frame rows, the destination inter residuals are added into as well.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -484,7 +484,7 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 fn intra_residual_setup(
     block: CoeffBlock<'_>,
@@ -549,7 +549,7 @@ fn intra_residual<'s>(
     Ok(residual)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut super::ResidualScratch,
@@ -700,7 +700,7 @@ fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError
     Ok(1usize << log2_dim)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub(super) fn reconstruct_block_setup(
     prediction_len: usize,
@@ -782,7 +782,6 @@ pub(super) fn dequantize_coeff_block(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use splot_recon::inverse_transform_2d_outer;

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::super::tests::frame_for;
 use super::*;
 use splot_recon::{BitDepth, DecodedFrame, PixelFormat};

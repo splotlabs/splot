@@ -808,7 +808,6 @@ fn divide_by_64<S: Simd>(value: Lanes<S>) -> Lanes<S> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::super::{
         CompressedTemporalMv, MAX_FRAME_DISTANCE, MAX_SORTED_REFS, MotionFieldLayout,

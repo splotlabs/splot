@@ -339,7 +339,6 @@ impl ReconSample for u16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -266,7 +266,7 @@ pub(crate) fn is_active(
     gdf_config(core, block_grid, bit_depth, reference).map(|config| config.is_some())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn apply_stripe<T: ReconSample>(
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, T>,
@@ -298,7 +298,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
 /// `GDF_ERROR_BASE + err`: the stripe runs with `GdfPixScale = 1 << (12 -
 /// BitDepth)`, so the rounding keeps `err` exact, and a sample range wide
 /// enough that no `err` clips.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn error_stripe(
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, u16>,
@@ -1219,7 +1219,7 @@ fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn gdf_sample(
     base_luma: &[u16],
     source: &GdfSource<'_>,
@@ -1262,7 +1262,7 @@ fn gdf_sample(
 }
 
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
@@ -1283,7 +1283,7 @@ fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample_with_error<const SCALE: i32, const ERROR_LEN: usize>(
     base: i32,
@@ -1391,7 +1391,6 @@ mod wide_tests;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::{
         ClassScratch, GDF_COORDS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
         GdfReferenceContext, GdfSource, GdfSourceRow, LoopRestorationSource, RESTRICTED_ORDER_HINT,

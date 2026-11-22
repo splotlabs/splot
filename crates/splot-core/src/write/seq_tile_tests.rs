@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 mod tests {
     use super::*;
     use crate::bitio::BitReader;

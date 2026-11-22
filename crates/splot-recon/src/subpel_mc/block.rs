@@ -71,7 +71,7 @@ pub(super) enum Sink<'a> {
 }
 
 /// The COMPOUND_AVERAGE `Round2(f * p0 + (16 - f) * p1, 4 + InterPostRound)`.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 pub(super) fn blend(pred0: i32, pred1: i32, forward: i32, max: i32) -> i32 {
     let post_round = 2 * FILTER_BITS - (INTER_ROUND0 + INTER_ROUND1_COMPOUND);
@@ -326,7 +326,7 @@ impl<'a, T> Block<'a, T> {
     }
 
     /// The source index of column 0 of window row `row`.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn start(&self, row: usize) -> usize {
         self.origin + row * self.stride
@@ -390,7 +390,6 @@ macro_rules! retained {
                 })
             }
 
-            #[allow(clippy::inline_always, reason = "border window copy")]
             #[inline(always)]
             fn bytes<S: Simd, const PADDED: bool>(
                 simd: S,
@@ -407,7 +406,6 @@ macro_rules! retained {
                 PADDED.then(|| $lanes::load_array(simd, lanes).bitcast())
             }
 
-            #[allow(clippy::inline_always, reason = "border window copy")]
             #[inline(always)]
             fn put_bytes<S: Simd>(samples: &mut [Self], at: usize, bytes: u8x16<S>) {
                 if let Some(slot) = samples
@@ -442,7 +440,7 @@ pub(super) type Geometry = [usize; 4];
 
 impl Window {
     /// The window of a block of `interp` from 1/1024-sample `[x, y]`.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn new(interp: InterpolationFilter, w: usize, h: usize, [x, y]: [i32; 2]) -> Self {
         let filters = [interp.pass_index(w as u32), interp.pass_index(h as u32)];
@@ -450,7 +448,7 @@ impl Window {
     }
 
     /// [`Self::new`] of the `Subpel_Filters` rows of each pass.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn of_filters(filters: [usize; 2], w: usize, h: usize, [x, y]: [i32; 2]) -> Self {
         let pass = |filter: usize, size: usize, start: i32| {
@@ -479,7 +477,7 @@ impl Window {
     /// The source index of the window origin in a plane of `geometry` when
     /// the window lies inside `[firstX, firstY, lastX, lastY]` clamped to the
     /// plane and its last row has [`reach`] samples of storage.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn origin(
         &self,
@@ -499,7 +497,7 @@ impl Window {
     }
 
     /// The block of this window read in place from `source`.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn block<'a, T>(
         &self,
@@ -550,7 +548,7 @@ impl Window {
     /// window columns gathers every row's clipped samples from one load of
     /// that row, zero-padded past a plane narrower than 16 bytes, through
     /// one byte index vector.
-    #[allow(clippy::inline_always, reason = "border window copy")]
+    #[expect(clippy::inline_always, reason = "border window copy")]
     #[inline(always)]
     fn emulate_chunks<S: Simd, T: Sample, const PADDED: bool>(
         &self,
@@ -597,7 +595,7 @@ impl Window {
     /// The `C` chunks `(source column, window column, byte indices)` of
     /// [`Self::emulate_chunks`] of every window row: the rows above
     /// `first_y` and below `last_y` store the gather of that row.
-    #[allow(clippy::inline_always, reason = "border window copy")]
+    #[expect(clippy::inline_always, reason = "border window copy")]
     #[inline(always)]
     fn copy_rows<S: Simd, T: Sample, const C: usize, const PADDED: bool>(
         &self,
@@ -642,7 +640,7 @@ impl Window {
 /// Runs `f` on the block of `window` read in place from `view`, else on a
 /// copy in retained storage `slot`; `None` without running it when the clip
 /// range of `bounds` is empty.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 pub(super) fn with_block<T: Sample, R>(
     window: &Window,
@@ -749,7 +747,7 @@ pub(super) fn kernels<T: Sample>(
 /// Whether a `w x h` block whose passes have `horizontal` and `vertical`
 /// taps is a register cell: 8x8, or 4x4 with at most two tap pairs in each
 /// pass.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 pub(super) fn is_cell(
     w: usize,
@@ -765,7 +763,7 @@ pub(super) fn is_cell(
 /// `windows` read from `references` within their `bounds` into `output`;
 /// `false` without writing when a clip range is empty or the output samples
 /// are neither 8- nor 16-bit.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 pub(super) fn compound<T: Sample, O: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
@@ -856,7 +854,7 @@ fn clamped_cell<T: Sample, O: ReconSample>(
 }
 
 /// [`compound`] of two blocks read in place.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 fn compound_blocks<T: Sample, O: ReconSample>(
     blocks: [&Block<'_, T>; 2],

@@ -25,7 +25,7 @@ pub(crate) struct IbpSecondary {
     pub num4_far: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,

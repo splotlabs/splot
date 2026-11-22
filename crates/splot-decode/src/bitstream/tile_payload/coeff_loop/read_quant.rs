@@ -105,7 +105,7 @@ impl CoeffReadQuantState {
         (owned, read)
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: merges the owned decoder into the cold remainder read"
     )]

@@ -497,7 +497,6 @@ fn judge(rows: &[Row], accepts: &[Accept]) -> Vec<Line> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{Accept, Row, Verdict, judge, parse_accept, parse_inscount, spread_pct};
 

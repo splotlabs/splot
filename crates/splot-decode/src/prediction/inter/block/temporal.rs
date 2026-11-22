@@ -19,7 +19,7 @@ fn temporal_ref_order_hint(
         .copied()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn temporal_motion_block(
     reference: &ReferenceMetadata,
     ref_frame_idx: &[u32],
@@ -264,7 +264,6 @@ impl MotionFieldUnits {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
 
     use super::*;
 

@@ -331,7 +331,7 @@ struct CurrentFrameResidualTarget<'surface, T: ReconSample> {
 
 impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
     /// Adds one residual row, which spans at least the clipped target width.
-    #[allow(clippy::inline_always, reason = "per-row residual add hot path")]
+    #[expect(clippy::inline_always, reason = "per-row residual add hot path")]
     #[inline(always)]
     fn add_row(&mut self, row: usize, residual: &[i32]) -> Result<()> {
         let target_start = self.base + row * self.stride;
@@ -1810,7 +1810,7 @@ fn copy_into_rect<T, S>(
 /// power-of-two pieces that fold into inline vector loads and stores; any copy
 /// loop here would be recognized by LLVM and re-lowered to a library call.
 /// Rows at or above 512 bytes keep the tuned library memcpy, where it wins.
-#[allow(clippy::inline_always, reason = "measured row-copy hot path")]
+#[expect(clippy::inline_always, reason = "measured row-copy hot path")]
 #[inline(always)]
 fn copy_row_samples<T: ReconSample>(dst: &mut [T], src: &[T]) {
     debug_assert_eq!(dst.len(), src.len(), "rect row copy length mismatch");

@@ -639,7 +639,6 @@ const fn is_valid_side(side: usize) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::coefficient_scan::coefficient_scan_order;
@@ -678,7 +677,7 @@ mod tests {
         }
     }
 
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names)]
     fn reference(dequant: &mut [i32], p: &SecondaryInverseTransform) {
         let large = p.w >= 8 && p.h >= 8;
         let (kernel_width, scan_bwl, scan_w) = if large {

@@ -26,7 +26,7 @@ use crate::Result;
 use crate::bitstream::tile_payload::TileBlockDecodedState;
 
 /// Commits one parsed row into the frame, in tile order.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn replay_recon_row<T: ReconSample>(
     mut row: ReconRow,
     tile_offset: splot_core::span::ByteOffset,

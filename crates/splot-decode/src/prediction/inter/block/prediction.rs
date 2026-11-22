@@ -81,7 +81,7 @@ pub(super) fn placed_inter_block_at<B>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -174,7 +174,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
 /// Reconstructs one deferable inter block (no interintra, no BAWP, no
 /// current-frame reads, no refined motion) into `sink`: motion compensation,
 /// then residual add.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     placed: &PlacedInterBlock,
@@ -209,7 +209,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
 /// refine-MV, § 7.13.3.8 optical flow) in one pass: the luma motion of every
 /// unit into `units`, then `records` from it (§ 7.22), then with `predict`
 /// every plane from it into `sink`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn predict_refined_inter_block<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     units: &mut mc::RefinedUnits,

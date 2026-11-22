@@ -120,7 +120,6 @@ fn required_edge<T: ReconSample>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

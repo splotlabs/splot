@@ -3,7 +3,7 @@
 
 //! Golden JSON snapshots for committed OBU fixtures (CONF-INSPECT-SNAPSHOTS).
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 use std::path::Path;
 use std::process::Command;

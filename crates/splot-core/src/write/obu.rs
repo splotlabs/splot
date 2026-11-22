@@ -179,7 +179,6 @@ pub fn write_annexb_obu(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::annexb::parse_annex_b_obus_partial;
@@ -390,7 +389,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod proptests {
     use super::*;
     use crate::annexb::parse_annex_b_obus_partial;

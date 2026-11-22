@@ -5,7 +5,7 @@
 //! Hashes and manifest shape are checked by xtask; this test checks diagnostics
 //! and rejects unlisted fixtures.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

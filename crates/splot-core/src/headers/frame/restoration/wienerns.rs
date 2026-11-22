@@ -681,7 +681,6 @@ fn translated_pc_wiener(match_index: usize, j: usize) -> i16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use crate::span::ByteOffset;
 

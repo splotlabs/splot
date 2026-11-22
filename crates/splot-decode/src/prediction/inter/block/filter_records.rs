@@ -7,7 +7,6 @@ use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 
 use super::tile::TileFilterRecords;
-#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::bitstream::tile_payload::ChromaRefGeometry;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
@@ -326,7 +325,7 @@ impl InterDeblockLeaf {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn record_skipped_chroma_deblock_geometry(
     chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     chroma_ref_row: usize,
@@ -377,7 +376,6 @@ fn record_skipped_chroma_deblock_geometry(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 

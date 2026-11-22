@@ -92,7 +92,7 @@ impl Reads {
 /// every read is inside the clip bounds, else the § 7.13.3.18 `Clip3`
 /// reads; `None` for another window, an empty clip range, a clamped row
 /// that cannot load 16 samples or storage of `2^32` samples or more.
-#[allow(clippy::inline_always, reason = "in-place reads of every cell")]
+#[expect(clippy::inline_always, reason = "in-place reads of every cell")]
 #[inline(always)]
 fn reads<const W: usize>(
     t: Avx2,
@@ -464,7 +464,7 @@ fn run_program<const W: usize, const G: usize>(
 /// The 16-byte loads of window rows `0..16` of a cell of `rows` rows read
 /// by `reads`, rows past the window repeating its last: in place one
 /// bounds check per window, clamped one per row.
-#[allow(clippy::inline_always, reason = "one bounds check per window")]
+#[expect(clippy::inline_always, reason = "one bounds check per window")]
 #[inline(always)]
 fn rows_of<'a, const C: bool>(
     source: &'a [u8],

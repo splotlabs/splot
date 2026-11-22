@@ -31,7 +31,7 @@ pub(super) const WINDOW_ROWS: usize = 2 * TAP_REACH + 2;
 /// The source rows a row pair reads, each `len` samples from column `origin.0 - TAP_REACH`.
 /// Inlined so callers see that every row has length `len`.
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 pub(super) fn source_rows<'a>(
     source: &GdfSource<'a>,
@@ -90,7 +90,7 @@ trait WindowRows {
 }
 
 impl WindowRows for Window<'_> {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn row(&self, index: usize) -> &[u16; 28] {
         self.get(index).copied().unwrap_or(&[0; 28])
@@ -101,7 +101,7 @@ impl WindowRows for Window<'_> {
 struct TiledWindow<'a>(&'a [u16; TILE_SPAN]);
 
 impl WindowRows for TiledWindow<'_> {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn row(&self, index: usize) -> &[u16; 28] {
         self.0
@@ -227,7 +227,7 @@ static GDF_INTER_ERROR_I8: [[[i8; 1024]; 6]; 5] = {
 
 /// The § 7.20.5 `err` of `block`'s table at each error index of `pos`, as
 /// bytes: a byte lookup inserts straight from the table.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn errors(block: &GdfBlock, pos: &[u16; 16]) -> [i8; 16] {
     let table = error_table(block).unwrap_or_default();
@@ -366,7 +366,7 @@ trait RowPairs<S: Simd>: Copy {
 struct Rough;
 
 impl<S: Simd> RowPairs<S> for Rough {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn rows<W: WindowRows, R: RowSink>(
         self,
@@ -459,7 +459,7 @@ fn rough_half<S: Simd, W: WindowRows, const HALF: usize, const CLIP: bool, const
 
 /// The § 7.20.5 error indices of 8 samples from their [`rough_half`] sums,
 /// which hold sums 0 and 1 exchanged where `odd` is set.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn rough_index<S: Simd>(
     simd: S,
@@ -555,7 +555,7 @@ fn rough_rows<S: Simd, W: WindowRows, R: RowSink>(
 
 /// Adds to the samples of `output` the § 7.20.5 residual of the error
 /// indices `pos`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn add_residual<S: Simd, O: GdfSample>(
     simd: S,
@@ -569,7 +569,7 @@ fn add_residual<S: Simd, O: GdfSample>(
 }
 
 /// The § 7.20.5 residuals of the `err` lanes `error`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn residuals<S: Simd>(error: i16x16<S>, block: &GdfBlock) -> i16x16<S> {
     let scaled = error * block.pix_scale as i16;
@@ -582,7 +582,7 @@ fn residuals<S: Simd>(error: i16x16<S>, block: &GdfBlock) -> i16x16<S> {
 }
 
 /// Adds `residual` to `output`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn apply_residuals<S: Simd, O: GdfSample>(
     simd: S,
@@ -608,13 +608,13 @@ pub(super) trait GdfSample: Copy + Default {
 }
 
 impl GdfSample for u16 {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S> {
         u16x16::from_slice(simd, samples).bitcast()
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn store<S: Simd>(_simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]) {
         lanes.bitcast::<u16x16<S>>().store_slice(samples);
@@ -631,14 +631,14 @@ impl GdfSample for u16 {
 }
 
 impl GdfSample for u8 {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S> {
         let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
         simd.combine_u16x8(low, high).bitcast()
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn store<S: Simd>(simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]) {
         let (low, high) = simd.split_u16x16(lanes.bitcast());
@@ -666,7 +666,7 @@ impl GdfSample for u8 {
 /// Filters in place a row pair of 16 samples whose class changes every two
 /// samples. A window with `tap_range` 0 adds zero at every tap, so its sums
 /// stay at the bias.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn sym_rows_with<S: Simd, W: WindowRows, R: RowSink>(
     simd: S,
@@ -708,7 +708,7 @@ trait RowSink {
 
 /// Adds the residuals to the pair's two output rows at once.
 impl<O: GdfSample> RowSink for [&mut [O; 16]; 2] {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn row<S: Simd>(&mut self, simd: S, row: usize, pos: &[u16; 16], block: &GdfBlock) {
         if let Some(output) = self.get_mut(row) {
@@ -716,7 +716,6 @@ impl<O: GdfSample> RowSink for [&mut [O; 16]; 2] {
         }
     }
 
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn keep<S: Simd>(&mut self, _simd: S) {}
 }
@@ -730,7 +729,7 @@ impl<O: GdfSample> RowSink for [&mut [O; 16]; 2] {
 struct ErrorRows<'a>([&'a mut [i8; 16]; 2], &'a [i8; 1 << 16]);
 
 impl RowSink for ErrorRows<'_> {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn row<S: Simd>(&mut self, _simd: S, row: usize, pos: &[u16; 16], _block: &GdfBlock) {
         if let Some(errors) = self.0.get_mut(row) {
@@ -740,7 +739,7 @@ impl RowSink for ErrorRows<'_> {
         }
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn keep<S: Simd>(&mut self, simd: S) {
         for errors in &mut self.0 {
@@ -828,7 +827,7 @@ pub(super) trait SourceLanes: Copy + Default {
 }
 
 impl SourceLanes for u8 {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
@@ -837,7 +836,7 @@ impl SourceLanes for u8 {
 }
 
 impl SourceLanes for u16 {
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         u16x16::from_slice(simd, samples)
@@ -850,7 +849,7 @@ pub(super) fn copy_shifted<T: SourceLanes>(src: &[T], dst: &mut [u16], shift: u3
     baseline_simd!(simd => copy_shifted_with(simd, src, dst, shift))
 }
 
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn copy_shifted_with<S: Simd, T: SourceLanes>(
     simd: S,
@@ -913,7 +912,7 @@ impl ClassScratch {
 
 /// The four § 7.20.5 `grad` directions of the 16 columns from column 1 of
 /// the row `rows[1]`, `rows[0]` above it and `rows[2]` below it.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn gradients<S: Simd>(simd: S, rows: [&[u16; 18]; 3]) -> [i16x16<S>; 4] {
     let load = |row: &[u16; 18], offset: usize| -> i16x16<S> {
@@ -970,7 +969,6 @@ fn padded_gradients<S: Simd>(
 
 /// For the final gradient chunk only the lanes within the staged tap
 /// halo are used. The fixed stride leaves room to load the whole chunk.
-#[allow(clippy::inline_always)]
 #[inline(always)]
 fn tiled_gradient_sources(rows: &[[u16; TILE_STRIDE]; 4]) -> impl Iterator<Item = [&[u16; 18]; 4]> {
     const START: usize = TAP_REACH - 2;
@@ -981,7 +979,7 @@ fn tiled_gradient_sources(rows: &[[u16; TILE_STRIDE]; 4]) -> impl Iterator<Item 
     a.zip(b.zip(c.zip(d))).map(|(a, (b, (c, d)))| [a, b, c, d])
 }
 
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn pair_gradients<S: Simd>(simd: S, chunks: [&[u16; 18]; 4]) -> [i16x16<S>; 4] {
     let [a, b, c, d] = chunks;
@@ -990,7 +988,7 @@ fn pair_gradients<S: Simd>(simd: S, chunks: [&[u16; 18]; 4]) -> [i16x16<S>; 4] {
     core::array::from_fn(|i| first[i] + second[i])
 }
 
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn store_gradients<S: Simd>(grad: [i16x16<S>; 4], out: &mut GradChunk) {
     for (dir, out) in grad.into_iter().zip(out) {
@@ -999,7 +997,7 @@ fn store_gradients<S: Simd>(grad: [i16x16<S>; 4], out: &mut GradChunk) {
 }
 
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn pair_sum<S: Simd>(simd: S, current: &GradChunk, previous: &GradChunk) -> [i16x16<S>; 4] {
     core::array::from_fn(|d| {
@@ -1049,7 +1047,7 @@ fn classify_tiled_gradient_row<S: Simd>(
 /// also moves `strength >> 4` to the upper half. `tables` holds the clip
 /// bounds and the weights of directions 0 and 1, then of 2 and 3, in
 /// alternating lanes.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn classify_chunk<S: Simd>(
     simd: S,
@@ -1131,7 +1129,7 @@ pub(super) fn filter_run<O: GdfSample>(
     crate::baseline_simd!(simd => filter_run_with(simd, Rough, source, block, output, scratch))
 }
 
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
     simd: S,
@@ -1255,7 +1253,7 @@ pub(super) fn band_classes(
 }
 
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn band_classes_with<S: Simd>(
     simd: S,

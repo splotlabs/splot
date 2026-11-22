@@ -194,7 +194,7 @@ fn walsh_hadamard_4x4<S: Simd>(simd: S, dequant: &[i32], residual: &mut [i32]) {
 /// The § 7.15.2.2 butterfly with input `[src[0], src[1], src[2], src[3]]`
 /// one vector each, each input clamped to the § 7.14.4 dequant range
 /// `±2^17` and shifted down by `shift` first.
-#[allow(clippy::many_single_char_names, reason = "the § 7.15.2.2 names")]
+#[expect(clippy::many_single_char_names, reason = "the § 7.15.2.2 names")]
 #[inline]
 fn walsh_hadamard_lanes<S: Simd>(simd: S, src: [i32x4<S>; 4], shift: u32) -> [i32x4<S>; 4] {
     let bound = 1 << 17;
@@ -232,7 +232,6 @@ fn transpose_4x4<S: Simd>(simd: S, [r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::inverse_transform::{

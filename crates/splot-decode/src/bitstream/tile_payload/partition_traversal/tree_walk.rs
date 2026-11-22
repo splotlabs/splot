@@ -81,7 +81,7 @@ pub(crate) fn decode_block_frontier(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured: once per leaf")]
+#[expect(clippy::inline_always, reason = "measured: once per leaf")]
 #[inline(always)]
 pub(crate) fn decode_block_part(
     call: TilePartitionCall,
@@ -530,7 +530,7 @@ where
 
 /// Hands `sink` the children of `call` in syntax order and returns the
 /// extended-SDP chroma block decoded after its luma tree.
-#[allow(
+#[expect(
     clippy::inline_always,
     clippy::too_many_arguments,
     reason = "measured: the decoder walk recurses through each push"
@@ -577,7 +577,7 @@ impl TreeWalker<'_> {
 
     /// Reads the § 5.20.3.2 partition of `call`, then the `CflAllowedInSdp`
     /// state it sets.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: keeps the call in registers"
     )]
@@ -736,7 +736,6 @@ pub(crate) fn is_intra_sdp_shared_root(
 
 #[cfg(test)]
 mod row_cursor_tests {
-    #![allow(clippy::unwrap_used)]
 
     const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
 
@@ -1143,7 +1142,7 @@ pub(crate) fn extended_sdp_allowed_for_child(
 
 /// Reads the § 5.20.3.1 `region_type` of `call` when it codes one and
 /// applies it; returns whether the call starts an extended-SDP luma tree.
-#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[expect(clippy::inline_always, reason = "measured: once per partition node")]
 #[inline(always)]
 pub(super) fn read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
@@ -1184,7 +1183,7 @@ fn read_region_type(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[expect(clippy::inline_always, reason = "measured: once per partition node")]
 #[inline(always)]
 pub(crate) fn should_read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
@@ -1262,7 +1261,7 @@ pub(crate) struct SdpPartitionState {
 }
 
 impl SdpPartitionState {
-    #[allow(clippy::inline_always, reason = "measured: once per partition node")]
+    #[expect(clippy::inline_always, reason = "measured: once per partition node")]
     #[inline(always)]
     pub(crate) fn record_partition(
         &mut self,
@@ -1344,7 +1343,7 @@ impl SdpPartitionState {
     }
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: the decoder walk recurses through each push"
 )]

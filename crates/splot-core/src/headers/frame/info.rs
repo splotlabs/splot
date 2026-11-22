@@ -1665,7 +1665,6 @@ fn read_refresh_frame_flags(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
 #[cfg(test)]

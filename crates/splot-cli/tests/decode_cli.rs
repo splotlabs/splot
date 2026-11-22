@@ -3,7 +3,7 @@
 
 //! End-to-end `splot decode` CLI contract tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
 use std::process::Output;

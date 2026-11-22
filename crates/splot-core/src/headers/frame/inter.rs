@@ -591,7 +591,6 @@ fn read_inter_refresh_frame_flags(
 /// Parses the `!FrameIsIntra` reference-control region (AV2 § 5.18.2 mirror :4577-5181),
 /// setting `control` and the terminal [`InterStop`]. Stops before any read whose
 /// width / presence depends on a derivation this phase cannot perform.
-#[allow(clippy::too_many_lines)]
 fn parse_inter_reference_region(
     reader: &mut BitReader<'_>,
     seq: &InterSeqView,
@@ -1046,7 +1045,6 @@ fn derive_implicit_ref_map(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

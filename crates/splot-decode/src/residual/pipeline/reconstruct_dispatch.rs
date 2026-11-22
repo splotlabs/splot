@@ -191,7 +191,7 @@ impl ResidualPlanePlan {
         frame.neighbours_from_block_decoded(self.rect, self.tx, self.plane_id, block_decoded)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn reconstruct<T: ReconSample>(
         &self,
         frame: FrameTileCtx,
