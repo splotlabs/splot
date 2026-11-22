@@ -231,17 +231,17 @@ fn refine_quarter(
 /// holds: the [`BvSearch::search`] copy of its luma source among the
 /// vectors the leaf may code (a leaf under 8 samples on a side only with
 /// `small`), refined to quarter samples with `subpel` ([`refine_quarter`]),
-/// with the
-/// `RefMvIdx` whose reference vector it equals, else the closest one;
-/// `None` without one.
-pub(crate) fn intrabc_choice(
+/// with the `RefMvIdx` whose reference vector it equals, else the closest
+/// one, and with `morph` where the frame codes `morph_pred` also its twin
+/// with `morph_pred = 1`; none without a copy.
+pub(crate) fn intrabc_choices(
     syntax: &mut IntraTileSyntax,
     coder: &SourceResidualCoder<'_>,
     leaf: &LeafBlock,
-    (small, subpel): (bool, bool),
-) -> Result<Option<LeafChoice>> {
+    (small, subpel, morph): (bool, bool, bool),
+) -> Result<Vec<LeafChoice>> {
     let (Some(search), Some(vectors)) = (coder.intrabc, syntax.intrabc_vectors(leaf)) else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let (w, h) = leaf.dimensions()?;
     let (luma, stride, _, height) = coder.source.luma();
@@ -253,7 +253,7 @@ pub(crate) fn intrabc_choice(
         found = Some(refine_quarter(plane, rect, valid, best));
     }
     let Some(([row, col], _)) = found else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     #[cfg(test)]
     let [row, col] = quarter_moved([row, col], valid);
@@ -264,11 +264,26 @@ pub(crate) fn intrabc_choice(
     let drl = (0..refs.len())
         .min_by_key(|&i| distance(&refs[i]))
         .unwrap_or(0);
-    Ok(Some(LeafChoice::intrabc(IntrabcModes { bv, drl })))
+    let morphs: &[bool] = if morph && syntax.intrabc_morph_coded() && vectors.morph_valid(bv) {
+        #[cfg(test)]
+        if FORCE_MORPH.get() {
+            return Ok(vec![LeafChoice::intrabc(IntrabcModes { bv, drl, morph })]);
+        }
+        &[false, true]
+    } else {
+        &[false]
+    };
+    Ok(morphs
+        .iter()
+        .map(|&morph| LeafChoice::intrabc(IntrabcModes { bv, drl, morph }))
+        .collect())
 }
 
 #[cfg(test)]
 thread_local! {
+    /// Keeps only the `morph_pred = 1` twin of each IntraBC candidate on
+    /// this thread.
+    pub(crate) static FORCE_MORPH: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
     /// Moves each IntraBC vector on this thread by a quarter sample where a
     /// moved vector is valid.
     pub(crate) static QUARTER_BV: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };

@@ -524,6 +524,12 @@ pub struct PresetParams {
     /// `intrabc_precision = 1` for a fractional vector. Off in every row,
     /// the screen-content rows too: not measured.
     pub intrabc_subpel: bool,
+    /// With `intrabc`, each IntraBC candidate of a key-frame leaf gets a
+    /// twin with `morph_pred = 1`, the § 7.13.3.26 brightness-adapted luma
+    /// copy, and the leaf's RD trial picks one. Needs `bawp`, whose
+    /// `enable_bawp` lets frames code `morph_pred`. Off in every row, the
+    /// screen-content rows too: not measured.
+    pub intrabc_morph: bool,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -986,6 +992,13 @@ impl PresetParams {
             }
         };
         check("max_block_log2", self.max_block_log2, 2, 8, "")?;
+        if self.intrabc_morph && !self.bawp {
+            return Err(PresetError::OutOfRange {
+                field: "intrabc_morph",
+                value: 1,
+                allowed: "0 without bawp (morph_pred needs enable_bawp)".to_owned(),
+            });
+        }
         if self.sb256_min_height < 64 {
             return Err(PresetError::OutOfRange {
                 field: "sb256_min_height",
@@ -1432,6 +1445,7 @@ preset_table! {
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
         intrabc_subpel:        [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_morph:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
@@ -1888,6 +1902,7 @@ mod tests {
             (&[("warp", "3")], "warp"),
             (&[("global_motion", "3")], "global_motion"),
             (&[("compound_types", "4")], "compound_types"),
+            (&[("intrabc_morph", "1"), ("bawp", "0")], "intrabc_morph"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

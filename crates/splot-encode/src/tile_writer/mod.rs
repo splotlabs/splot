@@ -337,6 +337,8 @@ thread_local! {
     /// IntraBC leaves of the final passes on this thread with a fractional
     /// block vector.
     pub(crate) static QUARTER_INTRABC: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// IntraBC leaves of the final passes on this thread with `morph_pred = 1`.
+    pub(crate) static MORPH_INTRABC: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Intra leaves of the final passes on this thread that code a DIP
     /// prediction that only the wider DIP search offers.
     pub(crate) static DIP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -729,6 +731,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         #[cfg(test)]
         if self.filters.is_some() && (modes.bv.row | modes.bv.col) & 7 != 0 {
             QUARTER_INTRABC.set(QUARTER_INTRABC.get() + 1);
+        }
+        #[cfg(test)]
+        if self.filters.is_some() && modes.morph {
+            MORPH_INTRABC.set(MORPH_INTRABC.get() + 1);
         }
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
         self.syntax.write_use_intrabc(leaf, Some(skip), self.sink)?;
