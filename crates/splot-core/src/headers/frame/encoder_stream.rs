@@ -15,10 +15,10 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
     FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, QuantizationParams,
-    SegmentationParams, SetupQmParams, TxMode, WienerNsFrameFilterBank,
-    encode_temporal_delimiter_obu, gdf_per_block_is_coded, init_core_from_prefix, parse_core_body,
-    parse_frame_header_prefix,
+    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, MfhDeblockingView, MfhFrameView,
+    QmSetLevels, QuantizationParams, SegmentationParams, SetupQmParams, TxMode,
+    WienerNsFrameFilterBank, encode_temporal_delimiter_obu, gdf_per_block_is_coded,
+    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, CroppingWindow, SequenceHeader, SuperblockSize,
@@ -363,6 +363,11 @@ pub struct KeyFrameTxParams {
     /// `None` codes `segmentation_enabled = 0`. Every segment shares the
     /// one `qm_level` (`pic_qm_num_minus_1 = 0`).
     pub segment_alt_q: Option<[i16; 4]>,
+    /// `cur_mfh_id = 1` (§ 5.18.2): the frame loads its sequence header from
+    /// the multi-frame header of
+    /// [`encode_multi_frame_header_obu`](crate::headers::frame::encode_multi_frame_header_obu);
+    /// `false` codes `cur_mfh_id = 0`.
+    pub multi_frame_header: bool,
 }
 
 impl Default for KeyFrameTxParams {
@@ -382,8 +387,43 @@ impl Default for KeyFrameTxParams {
             qm_level: None,
             plane_delta_q: [0; 3],
             segment_alt_q: None,
+            multi_frame_header: false,
         }
     }
+}
+
+/// Writes `cur_mfh_id` (§ 5.18.2): `1` with `multi_frame_header`, else `0`
+/// followed by `seq_header_id_in_frame_header = 0`.
+pub(crate) fn write_mfh_reference(
+    w: &mut BitWriter,
+    multi_frame_header: bool,
+) -> Result<(), WriteError> {
+    w.write_uvlc(u32::from(multi_frame_header))?; // cur_mfh_id
+    if !multi_frame_header {
+        w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    }
+    Ok(())
+}
+
+/// The § 5.18.2 state of the multi-frame header of
+/// [`encode_multi_frame_header_obu`](crate::headers::frame::encode_multi_frame_header_obu),
+/// which codes no frame size, deblocking update or segmentation (§ 5.7);
+/// `None` for a frame with `cur_mfh_id = 0`.
+pub(crate) const fn encoder_mfh_view(
+    seq: &CoreSeqView,
+    multi_frame_header: bool,
+) -> Option<MfhFrameView> {
+    if !multi_frame_header {
+        return None;
+    }
+    Some(MfhFrameView {
+        default_dims: (seq.max_frame_width, seq.max_frame_height),
+        seg: None,
+        deblocking: MfhDeblockingView {
+            mfh_deblocking_filter_update: false,
+            mfh_apply_deblocking_filter: [false; 4],
+        },
+    })
 }
 
 /// The uniform tile layout of a sequence with `seq_tile_info_present_flag`
@@ -790,7 +830,7 @@ pub fn build_key_frame_header(
         &mut reader,
         &mut core,
         seq,
-        None,
+        encoder_mfh_view(seq, tx.multi_frame_header).as_ref(),
         &FrameReferenceStateView::unknown(),
     )?;
     core.consumed_bits = reader.consumed_bits();
@@ -812,8 +852,7 @@ fn key_frame_header_bits(
     }
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     let mut w = BitWriter::new();
-    w.write_uvlc(0)?; // cur_mfh_id
-    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    write_mfh_reference(&mut w, tx.multi_frame_header)?;
     if tx.long_term_id_plus_1 >> seq.long_term_frame_id_bits != 0 {
         return Err(WriteError::NonCanonicalFrameHeader {
             what: "long_term_id_plus_1",
@@ -1360,7 +1399,7 @@ pub fn encode_key_frame_temporal_unit(
                 &mut payload,
                 core,
                 &view,
-                None,
+                encoder_mfh_view(&view, !core.cur_mfh_id.is_zero()).as_ref(),
                 true,
                 structure,
                 &tile_framing(core, tiles),

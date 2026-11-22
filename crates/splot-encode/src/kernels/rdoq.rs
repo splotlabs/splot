@@ -60,7 +60,7 @@ pub(crate) struct RdoqBlock {
     /// The coded type: its class picks the scan and the contexts.
     pub(crate) tx_type: TxType,
     /// The § 7.14.4 quantizer-matrix weight of each raster coefficient.
-    pub(crate) qm: Option<&'static [i32]>,
+    pub(crate) qm: Option<&'static [u8]>,
 }
 
 impl RdoqBlock {
@@ -68,7 +68,7 @@ impl RdoqBlock {
     pub(crate) fn q2(&self, pos: usize) -> u32 {
         let q = if pos == 0 { self.dc_q2 } else { self.ac_q2 };
         match self.qm.and_then(|weights| weights.get(pos)) {
-            Some(&m) => qm_weighted_quantizer(q, m),
+            Some(&m) => qm_weighted_quantizer(q, i32::from(m)),
             None => q,
         }
     }

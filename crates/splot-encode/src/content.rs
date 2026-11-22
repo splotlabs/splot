@@ -140,9 +140,10 @@ impl ContentDescription {
     }
 
     /// The Annex B OBUs of a progressive stream at `frame_rate`, in the order
-    /// of § 7.3.3: the content interpretation OBU, then the mastering display
-    /// and content light level metadata OBUs. Empty when nothing is described.
-    pub(crate) fn obus(&self, frame_rate: (u32, u32)) -> Result<Vec<u8>> {
+    /// of § 7.3.3: the content interpretation OBU, the multi-frame header
+    /// OBUs `mfh`, then the mastering display and content light level
+    /// metadata OBUs. Empty when nothing is described and `mfh` is empty.
+    pub(crate) fn obus(&self, frame_rate: (u32, u32), mfh: &[u8]) -> Result<Vec<u8>> {
         let code_points = (
             self.color_primaries,
             self.transfer_characteristics,
@@ -172,6 +173,7 @@ impl ContentDescription {
             obus = encode_content_interpretation_obu(&content)
                 .map_err(crate::intra_frame::coding("content interpretation"))?;
         }
+        obus.extend_from_slice(mfh);
         if let Some(display) = self.mastering_display {
             let [(gx, gy), (bx, by), (rx, ry)] = display.primaries;
             let obu = encode_hdr_mdcv_obu(MetadataHdrMdcv {

@@ -41,10 +41,10 @@ fn quantizer(
 
 /// A [`quantizer`] weighted by random § 7.14.4 matrix weights in the
 /// built-in range `30..=242`, and the weights.
-fn weighted() -> impl Strategy<Value = ((Quantizer, u32, u32, u32, BitDepth), Vec<i32>)> {
+fn weighted() -> impl Strategy<Value = ((Quantizer, u32, u32, u32, BitDepth), Vec<u8>)> {
     (
         quantizer(0u32..=128),
-        proptest::collection::vec(30i32..=242, 1024),
+        proptest::collection::vec(30u8..=242, 1024),
     )
         .prop_map(|((q, dc, ac, denom, bd), weights)| {
             let q = q.with_weights(Some(&weights)).unwrap();
@@ -144,7 +144,7 @@ proptest! {
         };
         prop_assert_eq!(error(&SimdKernels), error(&ScalarKernels));
         for (i, (&level, &dq)) in levels.iter().zip(&dequant).enumerate() {
-            let q2 = qm_weighted_quantizer(if i == 0 { dc } else { ac }, weights[i]);
+            let q2 = qm_weighted_quantizer(if i == 0 { dc } else { ac }, i32::from(weights[i]));
             prop_assert_eq!(dq, dequant_coefficient(level, q2, denom, bd));
         }
     }

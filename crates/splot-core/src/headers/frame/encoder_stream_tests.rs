@@ -116,6 +116,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         plane_delta_q: [0; 3],
                         long_term_id_plus_1: 0,
                         segment_alt_q: [None, Some([-9, -3, 3, 9]), None][index],
+                        multi_frame_header: false,
                     };
                     let core = build_key_frame_header(
                         &view,

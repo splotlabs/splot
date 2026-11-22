@@ -400,7 +400,7 @@ fn tile_group_ranges_split_the_tiles_evenly() {
 fn show_existing_frame_obu_parses_complete() {
     let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let obu = encode_show_existing_frame_obu(&view, 5, None, None).unwrap();
+    let obu = encode_show_existing_frame_obu(&view, 5, None, None, false).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -424,7 +424,59 @@ fn show_existing_frame_obu_parses_complete() {
     );
     assert_eq!(core.frame_to_show_map_idx, Some(5));
     assert_eq!(core.order_hint, Some(7));
-    assert!(encode_show_existing_frame_obu(&view, 8, None, None).is_err());
+    assert!(encode_show_existing_frame_obu(&view, 8, None, None, false).is_err());
+}
+
+/// The multi-frame header OBU parses to `mfh_id 1` of sequence header 0 with
+/// no frame size, deblocking update or segmentation (§ 5.7), and its
+/// truncated payload is an EOF error. Key and show-existing frames that
+/// refer to it code `cur_mfh_id = 1` without `seq_header_id_in_frame_header`
+/// (§ 5.18.2).
+#[test]
+fn multi_frame_header_obu_and_references_parse_back() {
+    let obu = encode_multi_frame_header_obu().unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    assert!(parsed.error.is_none());
+    assert_eq!(parsed.obus.len(), 1);
+    assert_eq!(parsed.obus[0].header.obu_type, ObuType::MultiFrameHeader);
+    let payload = parsed.obus[0].payload;
+    let mfh =
+        crate::hls::parse_multi_frame_header(&mut BitReader::new(payload, ByteOffset::new(0)))
+            .unwrap();
+    assert_eq!((mfh.mfh_id(), mfh.mfh_seq_header_id), (1, 0));
+    assert!(mfh.mfh_frame_size.is_none());
+    assert!(!mfh.mfh_deblocking_filter_update && !mfh.mfh_seg_info_present_flag);
+    let short = &payload[..payload.len() - 1];
+    assert!(
+        crate::hls::parse_multi_frame_header(&mut BitReader::new(short, ByteOffset::new(0)))
+            .is_err()
+    );
+    let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    for multi_frame_header in [false, true] {
+        let tx = KeyFrameTxParams {
+            multi_frame_header,
+            ..KeyFrameTxParams::default()
+        };
+        let core = crate::headers::frame::build_key_frame_header(
+            &view,
+            90,
+            0,
+            &FrameFilterParams::default(),
+            tx,
+            UniformTiles::default(),
+        )
+        .unwrap();
+        assert_eq!(core.cur_mfh_id.get(), u32::from(multi_frame_header));
+        assert_eq!(
+            core.seq_header_id_in_frame_header.is_none(),
+            multi_frame_header
+        );
+        let sef = encode_show_existing_frame_obu(&view, 5, None, None, multi_frame_header).unwrap();
+        let sef = parse_annex_b_obus_partial(&sef).obus[0].payload;
+        let mut reader = BitReader::new(sef, ByteOffset::new(0));
+        assert_eq!(reader.read_uvlc().unwrap(), u32::from(multi_frame_header));
+    }
 }
 
 /// An explicit `sef_order_hint` codes `derive_sef_order_hint = 0` and its
@@ -443,7 +495,7 @@ fn show_existing_frame_obu_codes_an_explicit_order_hint() {
         reference_state: slots.view(),
         mode: FrameHeaderParseMode::Core,
     };
-    let obu = encode_show_existing_frame_obu(&view, 5, Some(9 + 256), None).unwrap();
+    let obu = encode_show_existing_frame_obu(&view, 5, Some(9 + 256), None, false).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     let payload = parsed.obus[0].payload;
     let core =
@@ -495,12 +547,12 @@ fn film_grain_headers_code_the_seed_and_the_model() {
         (grain.apply_grain, grain.fgm_id, grain.grain_seed),
         (true, Some(0), Some(0xa5c3))
     );
-    let sef = encode_show_existing_frame_obu(&view, 2, None, Some(0x0f0f)).unwrap();
+    let sef = encode_show_existing_frame_obu(&view, 2, None, Some(0x0f0f), false).unwrap();
     assert!(parse_annex_b_obus_partial(&sef).error.is_none());
     params.tools.film_grain = false;
     let plain =
         CoreSeqView::from_sequence(&build_encoder_sequence_header(&params).unwrap()).unwrap();
-    assert!(encode_show_existing_frame_obu(&plain, 2, None, Some(1)).is_err());
+    assert!(encode_show_existing_frame_obu(&plain, 2, None, Some(1), false).is_err());
     assert!(
         crate::headers::frame::build_key_frame_header(
             &plain,

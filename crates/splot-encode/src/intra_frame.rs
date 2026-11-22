@@ -10,7 +10,8 @@ use std::sync::Arc;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
     GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv, UniformTiles,
-    build_encoder_sequence_header, encode_film_grain_obu, encoder_film_grain_model,
+    build_encoder_sequence_header, encode_film_grain_obu, encode_multi_frame_header_obu,
+    encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -75,6 +76,8 @@ pub(crate) struct IntraFrameCoder {
     /// The content interpretation and HDR metadata OBUs of every key frame;
     /// empty for none.
     content_obus: Vec<u8>,
+    /// [`crate::Config::multi_frame_header`].
+    multi_frame_header: bool,
     tiles: UniformTiles,
     /// [`crate::Config::tile_groups`].
     tile_groups: u32,
@@ -308,10 +311,16 @@ impl IntraFrameCoder {
             },
         };
         let (sequence, view, references) = sequence_state(&params)?;
+        let mfh_obu = if config.multi_frame_header {
+            encode_multi_frame_header_obu().map_err(coding("multi-frame header"))?
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             params,
             references,
-            content_obus: config.content.obus(config.frame_rate)?,
+            content_obus: config.content.obus(config.frame_rate, &mfh_obu)?,
+            multi_frame_header: config.multi_frame_header,
             sequence,
             view,
             bit_depth: config.bit_depth,
@@ -410,7 +419,12 @@ impl FrameCoder for IntraFrameCoder {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
         });
-        let unit = gop::show_existing_unit(&self.view, slot, order_hint, seed)?;
+        let unit = gop::show_existing_unit(
+            &self.view,
+            slot,
+            order_hint,
+            (seed, self.multi_frame_header),
+        )?;
         self.references
             .show_existing(slot, order_hint.is_none())
             .map_err(coding("show-existing frame"))?;
@@ -673,6 +687,7 @@ impl IntraFrameCoder {
             tools.0.tx_mode = splot_core::headers::frame::TxMode::Only4x4;
         }
         tools.0.plane_delta_q = self.preset.plane_delta_q();
+        tools.0.multi_frame_header = self.multi_frame_header;
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
@@ -1023,6 +1038,7 @@ impl IntraFrameCoder {
                 &self.references,
                 ref_frame_idx,
                 (weight, grain_seed, self.preset.plane_delta_q()),
+                self.multi_frame_header,
                 (qindex, mv, filter, deblocking),
             )?;
             let (core, frame) = self
