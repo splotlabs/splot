@@ -127,6 +127,12 @@ impl EncoderInterTile {
         &self.sequence
     }
 
+    /// The base column of the coded block that covers the 4x4 cell at `row`,
+    /// `col` of an intra frame's IntraBC state; `None` for an uncoded cell.
+    pub(crate) fn intrabc_coded_base_col(&self, row: usize, col: usize) -> Option<usize> {
+        self.intrabc.as_ref()?.block_base_col_at(row, col)
+    }
+
     /// Whether the tile is the IntraBC state of an intra frame.
     pub(crate) const fn is_intra_frame(&self) -> bool {
         self.intrabc.is_some()
