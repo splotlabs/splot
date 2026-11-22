@@ -825,7 +825,11 @@ fn parse_user_data_unregistered(
     })
 }
 
-fn parse_banding_hints(reader: &mut BitReader<'_>) -> Result<MetadataBandingHints> {
+/// Parses `metadata_banding_hints()` (AV2 v1.0.0 § 5.17.8) from `reader`.
+///
+/// # Errors
+/// Returns an error when the payload ends early.
+pub fn parse_banding_hints(reader: &mut BitReader<'_>) -> Result<MetadataBandingHints> {
     let coding_banding_present_flag = reader.read_flag()?;
     let source_banding_present_flag = reader.read_flag()?;
     let hints = if coding_banding_present_flag {

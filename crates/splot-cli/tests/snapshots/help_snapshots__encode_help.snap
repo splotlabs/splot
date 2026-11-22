@@ -88,6 +88,14 @@ Options:
           ITU-T T.35 file: byte 0 is the country code, byte 1 the extension byte when the code is 0xFF, then the payload (at least one byte, the terminal provider code first). Every key frame carries it unchanged in a T.35 metadata OBU
       --user-data-unregistered <FILE>
           Unregistered user data file: a 16-byte UUID, then the payload. Every key frame carries it unchanged in a user data metadata OBU
+      --timecode
+          Every output frame carries a full timecode metadata OBU, counted from 00:00:00 frame 0 at the input frame rate, without dropped counts
+      --temporal-point-info
+          Every output frame carries a temporal point info metadata OBU: its presentation time in frames since the last key frame. Needs `--timing-info`
+      --scan-type-info
+          Every output frame carries a scan type metadata OBU: a progressive frame, not a duplicate. Every key frame then writes a content interpretation OBU
+      --banding-hints <FILE>
+          Banding hints file: the bytes of one metadata_banding_hints() (AV2 § 5.17.8), padded to a byte. Every output frame carries it in a banding hints metadata OBU. The encoder does not detect banding
       --keyint <KEYINT>
           Distance between key frames, in frames [default: 120]
       --stats

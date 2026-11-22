@@ -58,7 +58,8 @@ pub mod y4m;
 pub use cancel::CancelToken;
 pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode, TileLayout, Tune};
 pub use content::{
-    ChromaSamplePosition, ContentDescription, ContentLightLevel, KeyFrameMetadata, MasteringDisplay,
+    ChromaSamplePosition, ContentDescription, ContentLightLevel, FrameMetadata, KeyFrameMetadata,
+    MasteringDisplay,
 };
 pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};

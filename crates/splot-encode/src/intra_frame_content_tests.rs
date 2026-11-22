@@ -350,3 +350,193 @@ fn rejects_a_metadata_payload_its_syntax_cannot_carry() {
     }
     assert!(refused(&icc, &[0xB5, 0], &uuid[..15]));
 }
+
+/// `metadata_banding_hints()` of one component with a band width of 9 and a
+/// step of 4, padded to two bytes.
+const BANDING: [u8; 2] = [0xA8, 0xA6];
+
+/// A 30000/1001 stream with timing info, a key frame every eighth frame,
+/// the preset `overrides` and, with `metadata`, every per-frame metadata.
+fn with_frame_metadata(overrides: &[&str], metadata: bool) -> Config {
+    let mut config = config(72, 40, BitDepth::Eight, 10, 120);
+    config.keyint = core::num::NonZeroU32::new(8).unwrap();
+    config.frame_rate = (30000, 1001);
+    config.content.timing_info = true;
+    config.preset_overrides = overrides
+        .iter()
+        .map(|field| ((*field).to_owned(), "true".to_owned()))
+        .collect();
+    if metadata {
+        let frame = &mut config.frame_metadata;
+        frame.timecode = true;
+        frame.temporal_point_info = true;
+        frame.scan_type = true;
+        frame.banding_hints = Some(BANDING.to_vec());
+    }
+    config
+}
+
+/// The per-frame metadata of `units` in stream order, one entry per
+/// timecode: `(display index, presentation time, followed by a key frame)`.
+fn frame_metadata(units: &[Vec<u8>]) -> Vec<(u64, u32, bool)> {
+    let mut entries = Vec::new();
+    for unit in units {
+        let parsed = parse_annex_b_obus_partial(unit);
+        for (index, obu) in parsed.obus.iter().enumerate() {
+            if obu.header.obu_type != ObuType::MetadataShort {
+                continue;
+            }
+            let mut reader = BitReader::new(obu.payload, ByteOffset::new(0));
+            let short = parse_metadata_short(&mut reader, obu.payload.len()).unwrap();
+            let Some(MetadataPayload::Timecode(timecode)) = short.unit.map(|unit| unit.payload)
+            else {
+                continue;
+            };
+            assert_eq!(short.muh_persistence_idc, 2);
+            let [tpi, scan, banding] = &parsed.obus[index + 1..index + 4] else {
+                unreachable!("four metadata OBUs per output frame");
+            };
+            let tpi = parse_metadata_short(
+                &mut BitReader::new(tpi.payload, ByteOffset::new(0)),
+                tpi.payload.len(),
+            )
+            .unwrap();
+            let Some(MetadataPayload::TemporalPointInfo(point)) = tpi.unit.map(|unit| unit.payload)
+            else {
+                unreachable!("temporal point info follows the timecode");
+            };
+            assert_eq!(scan.payload, [0x12, 8, 0b0000_0010, 0x80]);
+            assert_eq!(
+                banding.payload,
+                [&[0x12, 6][..], &BANDING, &[0x80]].concat()
+            );
+            let frame = parsed.obus[index + 4..]
+                .iter()
+                .map(|obu| obu.header.obu_type)
+                .find(|&kind| kind != ObuType::MetadataShort && kind != ObuType::FilmGrain)
+                .unwrap();
+            assert!(
+                matches!(
+                    frame,
+                    ObuType::ClosedLoopKey
+                        | ObuType::RegularTileGroup
+                        | ObuType::RegularSef
+                        | ObuType::RegularTip
+                ),
+                "{frame:?}"
+            );
+            let seconds = u64::from(timecode.seconds_value.unwrap());
+            assert_eq!(timecode.minutes_value, Some(0));
+            entries.push((
+                seconds * 30 + u64::from(timecode.n_frames),
+                point.frame_presentation_time,
+                frame == ObuType::ClosedLoopKey,
+            ));
+        }
+    }
+    entries
+}
+
+/// The temporal units of `frames` input frames through the [`Encoder`], in
+/// coding order; with `repeats` every input frame comes twice.
+fn encoded_units(config: &Config, frames: u32, repeats: bool) -> Vec<Vec<u8>> {
+    let mut encoder = Encoder::new(config.clone()).unwrap();
+    let mut units = Vec::new();
+    for index in (0..frames).map(Some).chain([None]) {
+        match index {
+            Some(index) => {
+                let seed = if repeats { index / 2 } else { index };
+                encoder.send_frame(synthetic_frame(config, seed)).unwrap();
+            }
+            None => encoder.flush().unwrap(),
+        }
+        while let Some(packet) = encoder.receive_packet().unwrap() {
+            units.push(packet.data);
+        }
+    }
+    units
+}
+
+/// Every output frame, coded, implicit or shown again, carries one timecode,
+/// temporal point info, scan type and banding hints OBU in front of its
+/// frame OBU; the timecodes count every display index once; the
+/// presentation time counts from the last key frame; key frames write a
+/// progressive content interpretation OBU; the samples do not change, and
+/// the stream is the same on 1 and 8 threads.
+#[test]
+fn output_frames_carry_the_frame_metadata() {
+    for overrides in [&[][..], &["implicit_output"], &["sef_repeat"]] {
+        let repeats = overrides == ["sef_repeat"];
+        let config = with_frame_metadata(overrides, true);
+        let units = encoded_units(&config, 34, repeats);
+        let plain_units = encoded_units(&with_frame_metadata(overrides, false), 34, repeats);
+        let mut entries = frame_metadata(&units);
+        entries.sort_unstable();
+        let indices: Vec<u64> = entries.iter().map(|entry| entry.0).collect();
+        assert_eq!(indices, (0..34).collect::<Vec<_>>(), "{overrides:?}");
+        let mut key = 0;
+        for &(index, time, is_key) in &entries {
+            if is_key {
+                key = index;
+            }
+            assert_eq!(u64::from(time), index - key, "{overrides:?} frame {index}");
+        }
+        let shown_again = units
+            .iter()
+            .flat_map(|unit| obus(unit).0)
+            .filter(|&kind| kind == ObuType::RegularSef)
+            .count();
+        assert_eq!(
+            shown_again > 0,
+            overrides != ["implicit_output"],
+            "{overrides:?}"
+        );
+        let keys = entries.iter().filter(|entry| entry.2).count();
+        let content = units.iter().map(|unit| obus(unit).1.len()).sum::<usize>();
+        assert_eq!(content, keys);
+        assert_same_samples(
+            &decode(&units.concat()),
+            &decode(&plain_units.concat()),
+            "frame metadata",
+        );
+        if overrides.is_empty() {
+            let mut threaded = config.clone();
+            threaded.threads = splot_parallel::ThreadCount::from(8);
+            assert_eq!(encoded_units(&threaded, 34, false), units);
+        }
+    }
+}
+
+#[test]
+fn avm_decodes_a_stream_with_frame_metadata_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let config = with_frame_metadata(&["implicit_output"], true);
+    let units = encoded_units(&config, 18, false);
+    let avm = avm_decode(&avmdec, &units, (72, 40), BitDepth::Eight, "frame-metadata");
+    assert!(avm == decode(&units.concat()), "AVM output differs");
+}
+
+#[test]
+fn rejects_frame_metadata_the_stream_cannot_carry() {
+    let refused = |change: fn(&mut Config)| {
+        let mut config = with_frame_metadata(&[], true);
+        change(&mut config);
+        matches!(config.validate(), Err(Error::InvalidMetadata { .. }))
+    };
+    assert!(!refused(|_| {}));
+    assert!(refused(|config| config.content.timing_info = false));
+    assert!(!refused(|config| {
+        config.content.timing_info = false;
+        config.frame_metadata.temporal_point_info = false;
+    }));
+    assert!(refused(|config| config.frame_rate = (513, 1)));
+    assert!(!refused(|config| config.frame_rate = (512, 1)));
+    assert!(refused(
+        |config| config.frame_metadata.banding_hints = Some(vec![0xA8])
+    ));
+    assert!(refused(|config| {
+        config.frame_metadata.banding_hints = Some(vec![0xA8, 0xA6, 0]);
+    }));
+}

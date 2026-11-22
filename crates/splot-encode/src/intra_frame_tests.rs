@@ -868,8 +868,13 @@ impl FrameCoder for Recording {
         self.coder.commit(frame)
     }
 
-    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>> {
-        self.coder.show_existing_frame(slot, order_hint)
+    fn show_existing_frame(
+        &mut self,
+        slot: u32,
+        order_hint: Option<u32>,
+        metadata: &[u8],
+    ) -> Result<Vec<u8>> {
+        self.coder.show_existing_frame(slot, order_hint, metadata)
     }
 
     fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
@@ -992,7 +997,7 @@ fn order_hints_wrap_and_decode_to_the_encoder_recon() {
                     coded.temporal_unit
                 }
                 crate::gop::GopStep::ShowExisting { slot, .. } => {
-                    coder.show_existing_frame(slot, None).unwrap()
+                    coder.show_existing_frame(slot, None, &[]).unwrap()
                 }
             };
             units.push(unit);

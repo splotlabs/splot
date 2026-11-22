@@ -86,9 +86,15 @@ pub(crate) trait FrameCoder {
     fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>>;
     /// Stores a frame of [`Self::encode_wave`] in the references, in coding order.
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()>;
-    /// A temporal delimiter and the show-existing frame that outputs the
-    /// frame in `slot`, with the explicit `order_hint` when given.
-    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>>;
+    /// A temporal delimiter, the prefix `metadata` OBUs and the
+    /// show-existing frame that outputs the frame in `slot`, with the
+    /// explicit `order_hint` when given.
+    fn show_existing_frame(
+        &mut self,
+        slot: u32,
+        order_hint: Option<u32>,
+        metadata: &[u8],
+    ) -> Result<Vec<u8>>;
     /// Fits the sequence to `first`, the first frame in display order,
     /// before any frame is coded.
     fn start_sequence(&mut self, _first: &SourceFrame) -> Result<()> {
@@ -155,6 +161,9 @@ pub struct Encoder {
     /// The last frame of the last coded mini-GOP, the past reference that the
     /// lookahead's motion search of the next window reads.
     last_coded: Option<SourceFrame>,
+    /// The display index of the last coded key frame, the random access
+    /// point that per-frame metadata counts from.
+    key_display: u64,
     planner: GopPlanner,
     lookahead: Lookahead,
     lookahead_frames: usize,
@@ -260,6 +269,7 @@ impl Encoder {
             stats_sink: None,
             pending: VecDeque::new(),
             last_coded: None,
+            key_display: 0,
             planner,
             lookahead,
             lookahead_frames: usize::from(params.lookahead_frames),
@@ -598,6 +608,9 @@ impl Encoder {
                     let frame = source(plan.display_index)?;
                     stats.push(self.commit(frame, &plan, qp, &mut coded)?);
                     frame_types[(plan.display_index - first) as usize] = coded.frame_type;
+                    if coded.frame_type == FrameType::Key {
+                        self.key_display = plan.display_index;
+                    }
                     data.extend(coded.temporal_unit);
                 }
                 GopStep::ShowExisting {
@@ -605,7 +618,18 @@ impl Encoder {
                     display_index,
                     order_hint,
                 } => {
-                    let unit = self.coder.show_existing_frame(slot, order_hint)?;
+                    let metadata = self.config.frame_metadata.obus(
+                        display_index,
+                        display_index
+                            .checked_sub(self.key_display)
+                            .ok_or(Error::Unsupported {
+                                what: "a show-existing frame before its key frame",
+                            })? as u32,
+                        self.config.frame_rate,
+                    )?;
+                    let unit = self
+                        .coder
+                        .show_existing_frame(slot, order_hint, &metadata)?;
                     let bits = unit.len() as u64 * 8;
                     if let Some(buffer) = &mut self.buffer {
                         buffer.add(bits);

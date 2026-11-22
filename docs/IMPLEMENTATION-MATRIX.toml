@@ -4864,6 +4864,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FRAME-METADATA"
+name = "Encoder timecode, temporal point info, scan type and banding hints metadata"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.17.2", "5.17.7", "5.17.8", "5.17.10", "5.17.11", "6.16.3", "6.16.7", "6.16.8", "6.16.10", "6.16.11", "7.3.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/content.rs"
+change_id = "encoder-frame-metadata"
+owner = "encoder"
+risk = "low"
+notes = "Config::frame_metadata writes, in front of every output frame (coded, implicit output or show-existing), prefix metadata short OBUs with NO_PERSISTENCE: a full timecode with counting_type 0 from the display index and the frame rate, frame_presentation_time as the frames since the last key frame (needs timing info), a progressive non-duplicate scan type (key frames then write a content interpretation OBU), and banding hints passed through from a file (no detector). splot encode takes --timecode, --temporal-point-info, --scan-type-info and --banding-hints."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_content_tests.rs::output_frames_carry_the_frame_metadata", "crates/splot-encode/src/intra_frame_content_tests.rs::avm_decodes_a_stream_with_frame_metadata_like_splot", "crates/splot-encode/src/intra_frame_content_tests.rs::rejects_frame_metadata_the_stream_cannot_carry", "crates/splot-cli/tests/encode_decode_roundtrip.rs::frame_metadata_flags_write_metadata_obus"]
+commands = ["cargo test -p splot-encode frame_metadata", "cargo test -p splot-cli --test encode_decode_roundtrip frame_metadata_flags"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MINIMAL-INTRA-IVF"
 name = "Encoder minimal-intra IVF temporal-unit assembler"
 category = "encoder"

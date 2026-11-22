@@ -585,7 +585,7 @@ fn film_grain_headers_code_the_seed_and_the_model() {
 }
 
 /// Metadata OBUs parse back as prefix short OBUs with `LAYER_GLOBAL` and
-/// `GLOBAL_PERSISTENCE` and carry their payload bytes; a cut fixed-size OBU
+/// their persistence and carry their payload bytes; a cut fixed-size OBU
 /// does not parse, and a payload that its type does not select is refused.
 #[test]
 fn metadata_obus_parse_back() {
@@ -642,7 +642,9 @@ fn metadata_obus_parse_back() {
             5,
         ),
     ] {
-        let obu = encode_metadata_obu(metadata_type, payload.clone(), passthrough).unwrap();
+        let persistence = u8::from(passthrough.is_empty()) * 2;
+        let obu =
+            encode_metadata_obu(metadata_type, payload.clone(), passthrough, persistence).unwrap();
         let parsed = parse_annex_b_obus_partial(&obu);
         assert!(parsed.error.is_none());
         let [envelope] = &parsed.obus[..] else {
@@ -654,7 +656,10 @@ fn metadata_obus_parse_back() {
         };
         let short = parse(envelope.payload).unwrap();
         assert!(!short.metadata_is_suffix && !short.muh_cancel_flag);
-        assert_eq!((short.muh_layer_idc, short.muh_persistence_idc), (1, 0));
+        assert_eq!(
+            (short.muh_layer_idc, short.muh_persistence_idc),
+            (1, persistence)
+        );
         let parsed_unit = short.unit.unwrap();
         assert_eq!(
             (parsed_unit.payload, parsed_unit.payload_size),
@@ -666,13 +671,20 @@ fn metadata_obus_parse_back() {
         assert!(cut.is_err() || !passthrough.is_empty());
     }
     assert!(
-        encode_metadata_obu(MetadataType::HdrCll, MetadataPayload::HdrMdcv(display), &[]).is_err()
+        encode_metadata_obu(
+            MetadataType::HdrCll,
+            MetadataPayload::HdrMdcv(display),
+            &[],
+            0
+        )
+        .is_err()
     );
     assert!(
         encode_metadata_obu(
             MetadataType::IccProfile,
             MetadataPayload::IccProfile(icc),
-            &[1]
+            &[1],
+            0
         )
         .is_err()
     );

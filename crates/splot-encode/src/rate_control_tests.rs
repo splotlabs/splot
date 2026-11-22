@@ -114,8 +114,13 @@ impl FrameCoder for Recording {
         self.coder.commit(frame)
     }
 
-    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>> {
-        self.coder.show_existing_frame(slot, order_hint)
+    fn show_existing_frame(
+        &mut self,
+        slot: u32,
+        order_hint: Option<u32>,
+        metadata: &[u8],
+    ) -> Result<Vec<u8>> {
+        self.coder.show_existing_frame(slot, order_hint, metadata)
     }
 }
 
