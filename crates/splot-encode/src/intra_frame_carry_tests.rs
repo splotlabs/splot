@@ -254,3 +254,39 @@ fn chosen_primary_references_keep_the_recon_on_any_thread_count() {
         assert!(stream(choose, threads).0 == one, "{threads} threads");
     }
 }
+
+/// With `explicit_refs` the sequence codes `explicit_ref_frame_map`: at `1`
+/// inter frames keep the default map, above it they code an explicit map of
+/// at most `explicit_refs - 1` references. The mini-GOP streams decode to the
+/// encoder recon with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn explicit_reference_map_streams_decode_alike_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let mut most = 0;
+    for explicit_refs in [1, 2, 3, 8] {
+        let stream = |threads: usize| {
+            let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                explicit_refs,
+                ..base
+            }));
+            let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+            planned_stream_of(&config, coder, panning_frame, 150)
+        };
+        let (units, expected, cores, coder) = stream(1);
+        assert!(coder.sequence.inter.unwrap().explicit_ref_frame_map);
+        for inter in cores.iter().filter_map(|core| core.inter.as_ref()) {
+            let refs = inter.num_total_refs.unwrap();
+            assert_eq!(inter.explicit_ref_frame_map, Some(explicit_refs > 1));
+            assert!(explicit_refs == 1 || refs < u32::from(explicit_refs));
+            most = most.max(refs);
+        }
+        let name = format!("explicit_refs {explicit_refs}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+    assert!(most > 2, "no frame with more than two references");
+}

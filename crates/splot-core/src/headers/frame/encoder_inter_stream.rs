@@ -123,6 +123,10 @@ pub struct InterFrameParams {
     /// Codes the `our_ref` and `their_ref` (§ 5.18.9.1) of the fewest
     /// `global_motion_params()` bits instead of `our_ref = NumTotalRefs`.
     pub global_motion_predict: bool,
+    /// `frame_explicit_ref_frame_map = 1` (§ 5.18.2) with `num_total_refs`
+    /// the smaller of this and the default count, over the first references
+    /// of the default map. Needs `explicit_ref_frame_map`.
+    pub explicit_refs: Option<u8>,
 }
 
 /// `our_ref`, `their_ref` with its `ns` range, and the `PrevGmParams` of each
@@ -182,29 +186,48 @@ pub fn build_inter_frame_header(
         },
         ..*params
     };
-    let header = parse_inter_frame_header(seq, refs, &plain, (None, 0), &[])?;
+    let header = parse_inter_frame_header(
+        seq,
+        refs,
+        &InterFrameParams {
+            explicit_refs: None,
+            ..plain
+        },
+        (None, 0),
+        &[],
+    )?;
     let inter = header
         .core
         .inter
         .as_ref()
         .ok_or(EncoderHeaderError::Incomplete)?;
+    let mut num_total_refs = inter.num_total_refs.unwrap_or(0);
+    if let Some(limit) = params.explicit_refs {
+        if !seq.inter.explicit_ref_frame_map || limit == 0 {
+            return Err(unsupported(
+                "an explicit reference map the sequence does not allow",
+            ));
+        }
+        num_total_refs = num_total_refs.min(u32::from(limit));
+    }
+    let ref_frame_idx =
+        &inter.ref_frame_idx[..inter.ref_frame_idx.len().min(num_total_refs as usize)];
     let position = params.primary_slot.and_then(|slot| {
-        let position = inter
-            .ref_frame_idx
+        let position = ref_frame_idx
             .iter()
             .zip(inter.order_hints.iter())
             .position(|(&index, &hint)| index == slot && hint != u32::MAX)?;
         u32::try_from(position).ok()
     });
     if position.is_none()
+        && params.explicit_refs.is_none()
         && !params.use_ref_frame_mvs
         && params.filters == plain.filters
         && params.global_motion == plain.global_motion
     {
         return Ok(header);
     }
-    let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    let ref_frame_idx = inter.ref_frame_idx.clone();
+    let ref_frame_idx = ref_frame_idx.to_vec();
     parse_inter_frame_header(
         seq,
         refs,
@@ -238,7 +261,9 @@ fn parse_inter_frame_header(
     )
     .unwrap_or(true);
     let gm = cheapest_gm_base(seq, refs, params, map.1, ref_frame_idx)?;
-    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map, (lr_refs, &gm), weight_coded)?;
+    let explicit = params.explicit_refs.map(|_| ref_frame_idx);
+    let (bytes, bit_len) =
+        inter_frame_header_bits(seq, params, map, (lr_refs, &gm), (weight_coded, explicit))?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -264,7 +289,7 @@ fn inter_frame_header_bits(
     params: &InterFrameParams,
     (primary_ref_frame, num_total_refs): (Option<u32>, u32),
     (lr_refs, gm): (LrReferenceFilters<'_>, &GmBase),
-    weight_coded: bool,
+    (weight_coded, explicit): (bool, Option<&[u32]>),
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
@@ -290,6 +315,7 @@ fn inter_frame_header_bits(
         return Err(unsupported("forced screen content tools"));
     }
     write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
+    write_explicit_ref_map(&mut w, seq, explicit)?;
     if params.use_ref_frame_mvs && !seq.inter.enable_ref_frame_mvs {
         return Err(unsupported(
             "use_ref_frame_mvs without enable_ref_frame_mvs",
@@ -646,6 +672,7 @@ pub fn build_tip_output_frame_header(
     w.write_flag(true)?; // signal_primary_ref_frame
     w.write_bits(PRIMARY_REF_NONE, 3)?; // primary_ref_frame
     write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
+    write_explicit_ref_map(&mut w, seq, None)?;
     w.write_flag(true)?; // use_ref_frame_mvs
     if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
@@ -964,6 +991,26 @@ fn write_refresh_frame_flags(
     w.write_flag(flags != 0)?; // has_refresh_frame_flags
     if flags != 0 {
         w.write_bits(flags.trailing_zeros(), ceil_log2(seq.num_ref_frames))?; // frame_to_refresh
+    }
+    Ok(())
+}
+
+/// `frame_explicit_ref_frame_map` of a sequence with `explicit_ref_frame_map`,
+/// then for an `explicit` map its `num_total_refs` and `ref_frame_idx`
+/// (§ 5.18.2).
+fn write_explicit_ref_map(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    explicit: Option<&[u32]>,
+) -> Result<(), EncoderHeaderError> {
+    if seq.inter.explicit_ref_frame_map {
+        w.write_flag(explicit.is_some())?; // frame_explicit_ref_frame_map
+    }
+    if let Some(map) = explicit {
+        w.write_bits(u32::try_from(map.len()).unwrap_or(u32::MAX), 3)?; // num_total_refs
+        for &index in map {
+            w.write_bits(index, ceil_log2(seq.num_ref_frames))?; // ref_frame_idx
+        }
     }
     Ok(())
 }
