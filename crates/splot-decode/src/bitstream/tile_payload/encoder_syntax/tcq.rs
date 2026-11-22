@@ -72,6 +72,19 @@ impl IntraTileSyntax {
         self.tools.enable_inter_ddt && self.leaf_is_inter() && !self.leaf_uses_intrabc()
     }
 
+    /// The § 7.14.4 quantizer-matrix levels of a frame with `using_qmatrix`,
+    /// for [`super::recon_params`].
+    #[must_use]
+    pub const fn quant_matrices(&self) -> Option<splot_recon::QmFrameLevels> {
+        self.tools.qm
+    }
+
+    /// The § 7.14.2 plane quantizer deltas of the frame, for [`super::recon_params`].
+    #[must_use]
+    pub const fn quantizer_deltas(&self) -> splot_recon::QuantizerDeltas {
+        self.tools.deltas
+    }
+
     /// Prices a search trial of a TCQ frame with plain levels: until set back,
     /// no block [`Self::uses_tcq`]. A trial coded so must not reach the bitstream.
     pub const fn set_scalar_trial(&mut self, on: bool) {

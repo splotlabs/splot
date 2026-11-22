@@ -13,7 +13,7 @@ use splot_decode::encoder_syntax::{
     CoeffLevels, IntraTileSyntax, TransformBlock, TxType, recon_params, tcq_index, tcq_next_state,
     tcq_quantizer,
 };
-use splot_recon::{BitDepth, PlaneId, dequant_coefficient};
+use splot_recon::{BitDepth, PlaneId, QuantizerDeltas, dequant_coefficient};
 
 use super::super::rdoq::{BIT, CoeffRates, LevelContext, base_levels, golomb_bits};
 use super::super::{EncoderKernels, ScalarKernels, SimdKernels};
@@ -155,7 +155,7 @@ fn tcq_doubles_dq_denom_for_luma_2d_only() {
                     plane,
                     (log2, log2),
                     (block.tx_type, tcq, false),
-                    BitDepth::Eight,
+                    (BitDepth::Eight, None, syntax.quantizer_deltas()),
                 )
                 .unwrap()
                 .0
@@ -331,7 +331,7 @@ fn trellis_is_optimal_on_small_blocks() {
             PlaneId::Y,
             (log2, log2),
             (TxType::DctDct, true, false),
-            bit_depth,
+            (bit_depth, None, QuantizerDeltas::default()),
         )
         .unwrap();
         let b = RdoqBlock {
@@ -343,6 +343,7 @@ fn trellis_is_optimal_on_small_blocks() {
             log2_height: log2,
             plane: 0,
             tx_type: TxType::DctDct,
+            qm: None,
         };
         let scan = CoeffLevels::new(1 << log2, 1 << log2, TxType::DctDct)
             .unwrap()
@@ -401,6 +402,7 @@ fn candidates_bracket_the_coefficient() {
         log2_height: 2,
         plane: 0,
         tx_type: TxType::DctDct,
+        qm: None,
     };
     for coeff in -2000..2000 {
         let cand = candidates(&b, 1, coeff);

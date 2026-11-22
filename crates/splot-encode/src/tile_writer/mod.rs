@@ -202,6 +202,9 @@ impl KeyFrameTileWriter {
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
         self.syntax.begin_superblock(root);
+        if let Some(segment) = decision.segment {
+            self.syntax.set_superblock_segment(segment)?;
+        }
         if write {
             if self.syntax.sdp_roots(root).is_none() {
                 self.filters
@@ -305,6 +308,10 @@ thread_local! {
         const { core::cell::Cell::new([0; 7]) };
 }
 
+/// A DIP prediction at a leaf position and size (tests only).
+#[cfg(test)]
+pub(crate) type DipLeaf = ((usize, usize, usize), splot_decode::encoder_syntax::Dip);
+
 #[cfg(test)]
 thread_local! {
     /// Compound leaves of the final passes on this thread: same-reference
@@ -323,6 +330,14 @@ thread_local! {
     /// Leaves of the final passes on this thread that code explicit CFL
     /// alphas with alpha 0 in one plane.
     pub(crate) static CFL_ZERO_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Intra leaves of the final passes on this thread that code a DIP
+    /// prediction that only the wider DIP search offers.
+    pub(crate) static DIP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// The DIP predictions that only the wider DIP search offers (a rank
+    /// below the best SATD, or a best that loses to the angular SATD), by
+    /// leaf position and size.
+    pub(crate) static DIP_NEW: core::cell::RefCell<std::collections::HashSet<DipLeaf>> =
+        core::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 #[cfg(test)]
@@ -441,10 +456,11 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 return Ok(());
             }
             (PartitionTree::Leaf(_), None) => Partition::None,
-            (PartitionTree::Split { kind, .. }, None) => *kind,
+            (PartitionTree::Split { kind, .. } | PartitionTree::Region { kind, .. }, None) => *kind,
             _ => return Err(TileWriterError::Shape("SDP tree at a shared node or none")),
         };
         self.write_partition(node, partition)?;
+        self.write_region_type(node, tree)?;
         match tree {
             PartitionTree::Leaf(choice) => {
                 let leaf = self.syntax.leaf(node)?;
@@ -460,8 +476,38 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 }
                 Ok(())
             }
+            PartitionTree::Region { kind, luma, chroma } => {
+                let (calls, chroma_node) = self.syntax.region_children(node, *kind)?;
+                if calls.len() != luma.len() {
+                    return Err(TileWriterError::Shape("child count"));
+                }
+                for (call, child) in calls.into_iter().zip(luma) {
+                    self.write_node(call, child, coder)?;
+                }
+                let leaf = self.syntax.leaf(chroma_node)?;
+                self.write_leaf(&leaf, *chroma, coder, 0..3).map(drop)
+            }
             PartitionTree::Sdp { .. } => Err(TileWriterError::Shape("SDP tree")),
         }
+    }
+
+    /// The `region_type` of a non-`NONE` `tree` at `node` that codes one
+    /// (§ 5.20.3.1): `INTRA_REGION` for a region, else `MIXED_REGION`.
+    pub(crate) fn write_region_type(
+        &mut self,
+        node: PartitionNode,
+        tree: &PartitionTree,
+    ) -> Result<()> {
+        let (kind, intra) = match tree {
+            PartitionTree::Split { kind, .. } => (*kind, false),
+            PartitionTree::Region { kind, .. } => (*kind, true),
+            _ => return Ok(()),
+        };
+        if intra || self.syntax.codes_region_type(node, kind)? {
+            self.syntax
+                .write_region_type(node, kind, intra, self.sink)?;
+        }
+        Ok(())
     }
 
     /// The § 5.20.3.2 `read_partition` symbols that select `partition`.
@@ -486,8 +532,9 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
     /// Codes the blocks of `planes` of `leaf` under `choice`, then writes the
     /// leaf syntax in order: `is_inter`, `cdef_idx`, the modes, the palette
     /// color map, the luma transform partition, and the coefficients of
-    /// `planes`. Only a pass over all planes publishes the leaf. An inter leaf codes every plane. Returns
-    /// the leaf's transform blocks.
+    /// `planes`. Only a pass over all planes publishes the leaf. An inter leaf codes every plane. An
+    /// IntraBC leaf whose vector is not valid here (a memoized subtree recoded before its
+    /// local-area source is coded) codes [`LeafChoice::DC`]. Returns the leaf's transform blocks.
     pub(crate) fn write_leaf(
         &mut self,
         leaf: &LeafBlock,
@@ -508,6 +555,9 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         if let Some(modes) = choice.intrabc {
+            if !self.syntax.intrabc_bv_valid(leaf, modes.bv) {
+                return self.write_leaf(leaf, LeafChoice::DC, coder, planes);
+            }
             return self.write_intrabc_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         let LeafChoice {
@@ -522,6 +572,16 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                     if alpha_u == 0 || alpha_v == 0)
         {
             CFL_ZERO_CODED.set(CFL_ZERO_CODED.get() + 1);
+        }
+        #[cfg(test)]
+        if self.filters.is_some()
+            && modes.dip.is_some_and(|dip| {
+                DIP_NEW.with_borrow(|set| {
+                    set.contains(&((leaf.row4(), leaf.col4(), leaf.block_size()), dip))
+                })
+            })
+        {
+            DIP_CODED.set(DIP_CODED.get() + 1);
         }
         if let Some(palette) = &modes.palette {
             self.syntax
@@ -581,6 +641,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         PREDICTIONS.set([prediction, v_prediction]);
         self.syntax.write_is_inter(leaf, false, self.sink)?;
         self.syntax.write_use_intrabc(leaf, None, self.sink)?;
+        self.syntax.write_segment_id(leaf, false, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_leaf_syntax(self.syntax, self.sink, leaf, false)?;
         }
@@ -619,6 +680,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
         self.syntax.write_is_inter(leaf, true, self.sink)?;
         self.syntax.write_skip_txfm(leaf, skip, self.sink)?;
+        self.syntax.write_segment_id(leaf, skip, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_leaf_syntax(self.syntax, self.sink, leaf, skip)?;
         }
@@ -652,6 +714,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let mut blocks = self.syntax.plan_intrabc_leaf(leaf, modes, tx_partition)?;
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
         self.syntax.write_use_intrabc(leaf, Some(skip), self.sink)?;
+        self.syntax.write_segment_id(leaf, skip, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_leaf_syntax(self.syntax, self.sink, leaf, skip)?;
         }

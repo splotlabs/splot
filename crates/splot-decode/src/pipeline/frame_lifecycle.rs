@@ -74,6 +74,8 @@ pub(crate) struct PipelineFrame {
     pub(crate) output_effects: super::output_effects::FrameOutputEffects,
     pub(crate) frame_cdfs: inter::FrameCdfHandle,
     pub(crate) motion_field: inter::MotionFieldHandle,
+    /// The frame's header: CCSO reads it, and a picture takes its frame type
+    /// from it. Every decoded frame has one.
     pub(crate) ccso_header: Option<std::sync::Arc<FrameHeaderCore>>,
     pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
@@ -548,6 +550,7 @@ pub(crate) fn frame_ref_update_from_core(
         delta_q_u_ac: quantization.delta_q_u_ac,
         delta_q_v_ac: quantization.delta_q_v_ac,
         is_inter,
+        is_intra_frame: matches!(core.frame_type, Some(FrameType::Key | FrameType::IntraOnly)),
         num_total_refs,
         saved_order_hints,
         saved_gm_params,

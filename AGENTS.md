@@ -27,6 +27,10 @@ the real flow, stop at the first rung that holds: existing code, standard
 library, native platform feature, installed dependency, one-line fix, or the
 minimum new code that works.
 
+The rungs choose how to build the right design; they do not justify a hack,
+workaround or patch in place of it. Aim for the best solution, even when it is
+a larger restructure, and state the effort of each option as information.
+
 Lazy rules:
 
 - No abstractions that were not explicitly requested.
@@ -128,6 +132,17 @@ Generated status markdown is not committed; render it on demand.
 - `unsafe_code = "forbid"` workspace-wide, except the reviewed blocks in
   `splot-decode`, the `splot-recon` plane allocator and the `splot-capi` C ABI
   (`deny` plus module `allow`).
+
+## Rust and C Decoder API
+
+`splot-capi` mirrors the streaming decoder (`Decoder`, `DecoderSettings`,
+`Picture`) in dav1d/dav2d shape: open, send, get, flush, drain, close and
+plain structs; no demuxing or file access.
+
+- A PR that changes public API on those types makes the same change in
+  `splot-capi` (`splot.h`, an `abi.rs` test), or says why a C host does not
+  need it. When unsure, leave out what dav2d does not expose.
+- New struct fields take reserved space; sizes and existing offsets stay.
 
 ## AV2 and Diagnostics
 

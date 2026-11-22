@@ -36,9 +36,9 @@
 //! frame's own: the closest layer, then an inter frame over the key frame,
 //! then the closest in display order, then the lower slot.
 //!
-//! Encoder policy, fixed for now: the sequence sets
-//! `monotonic_output_order_flag`, so a hidden frame is shown by a
-//! show-existing frame with `derive_sef_order_hint = 1`; motion vectors are
+//! Encoder policy: a hidden frame is shown by a show-existing frame with
+//! `derive_sef_order_hint = 1`, or with the preset's `implicit_output` codes
+//! `implicit_output_frame` in a temporal unit of its own; motion vectors are
 //! eighth-pel when the preset refines to eighth samples at the frame's
 //! quantizer, else quarter-pel.
 
@@ -47,9 +47,9 @@ use core::num::NonZeroU32;
 use splot_core::headers::frame::{
     CoreSeqView, EncodedFrameHeader, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
     InterFrameParams, InterpolationFilter, KeyFrameTxParams, REFS_PER_FRAME, TipGlobalMv,
-    UniformTiles, build_inter_frame_header, build_key_frame_header, build_tip_output_frame_header,
-    encode_inter_frame_obu, encode_key_frame_temporal_unit, encode_show_existing_frame_obu,
-    encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
+    UniformTiles, build_inter_frame_header, build_intra_only_frame_header, build_key_frame_header,
+    build_tip_output_frame_header, encode_inter_frame_obu, encode_key_frame_temporal_unit,
+    encode_show_existing_frame_obu, encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
@@ -58,8 +58,10 @@ use crate::error::{Error, Result};
 use crate::preset::{PresetContext, PresetParams};
 use crate::rate_control::FrameType;
 
-/// `NumRefFrames` of the encoder's sequence header (`explicit_num_ref_frames = 0`).
-const REF_SLOTS: usize = 8;
+/// `NUM_REF_FRAMES` (§ 3): the most slots a sequence can code.
+const MAX_REF_SLOTS: usize = 16;
+/// `NumRefFrames` of a sequence with `explicit_num_ref_frames = 0`.
+const DEFAULT_REF_SLOTS: usize = 8;
 
 /// The plan of one coded frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +88,13 @@ pub(crate) struct GopFrame {
     pub(crate) primary_slot: Option<u32>,
     /// The frame starts its temporal unit, after the temporal delimiter.
     pub(crate) opens_temporal_unit: bool,
+    /// An inter-type frame coded as `INTRA_ONLY_FRAME` (§ 5.18.2): intra
+    /// blocks, `PRIMARY_REF_NONE`, and the slots it does not refresh keep
+    /// their frames.
+    pub(crate) intra_only: bool,
+    /// `implicit_output_frame`: a hidden frame the decoder outputs by order
+    /// hint, in a temporal unit of its own (§ 7.3.3, § 7.3.6).
+    pub(crate) implicit_output: bool,
 }
 
 /// One step of the coding order.
@@ -103,7 +112,9 @@ impl GopStep {
     /// the temporal unit.
     pub(crate) fn output(&self) -> Option<u64> {
         match *self {
-            Self::Code(frame) => frame.show_frame.then_some(frame.display_index),
+            Self::Code(frame) => {
+                (frame.show_frame || frame.implicit_output).then_some(frame.display_index)
+            }
             Self::ShowExisting { display_index, .. } => Some(display_index),
         }
     }
@@ -122,7 +133,9 @@ struct Slot {
 pub(crate) struct GopPlanner {
     keyint: u64,
     mini_gop_size: u64,
-    slots: [Option<Slot>; REF_SLOTS],
+    slots: [Option<Slot>; MAX_REF_SLOTS],
+    /// `NumRefFrames`: the first slots the planner uses.
+    ref_slots: usize,
     next_display: u64,
     next_frame: u64,
     key_display: u64,
@@ -133,6 +146,15 @@ pub(crate) struct GopPlanner {
     after_output: bool,
     /// Display index of the last frame of the mini-GOP being planned.
     last_display: u64,
+    /// Every this many mini-GOPs code their first frame intra-only; `0` never.
+    intra_only: u64,
+    /// Mini-GOPs planned since the start.
+    mini_gops: u64,
+    /// The next layer-0 inter frame is coded intra-only.
+    intra_only_next: bool,
+    /// Hidden frames code `implicit_output_frame` in place of a show-existing
+    /// frame.
+    implicit_output: bool,
 }
 
 impl GopPlanner {
@@ -142,7 +164,8 @@ impl GopPlanner {
         Self {
             keyint: u64::from(keyint.get()),
             mini_gop_size: u64::from(mini_gop_size.max(1)),
-            slots: [None; REF_SLOTS],
+            slots: [None; MAX_REF_SLOTS],
+            ref_slots: DEFAULT_REF_SLOTS,
             next_display: 0,
             next_frame: 0,
             key_display: 0,
@@ -150,6 +173,35 @@ impl GopPlanner {
             cuts: Vec::new(),
             after_output: true,
             last_display: 0,
+            intra_only: 0,
+            mini_gops: 0,
+            intra_only_next: false,
+            implicit_output: false,
+        }
+    }
+
+    /// The planner that codes the first frame of every `every`th mini-GOP as
+    /// an intra-only frame; `0` never does.
+    pub(crate) fn with_intra_only(self, every: u8) -> Self {
+        Self {
+            intra_only: u64::from(every),
+            ..self
+        }
+    }
+
+    /// The planner whose hidden frames code `implicit_output_frame`.
+    pub(crate) fn with_implicit_output(self, implicit_output: bool) -> Self {
+        Self {
+            implicit_output,
+            ..self
+        }
+    }
+
+    /// The planner over `NumRefFrames = slots`, `1..=16`.
+    pub(crate) fn with_ref_slots(self, slots: u8) -> Self {
+        Self {
+            ref_slots: usize::from(slots).clamp(1, MAX_REF_SLOTS),
+            ..self
         }
     }
 
@@ -219,6 +271,9 @@ impl GopPlanner {
             anchor = first;
         }
         if last > anchor {
+            self.mini_gops += 1;
+            self.intra_only_next =
+                self.intra_only > 0 && self.mini_gops.is_multiple_of(self.intra_only);
             self.last_display = last;
             self.place(anchor, last, 0, &mut steps)?;
         }
@@ -247,10 +302,12 @@ impl GopPlanner {
                 what: "a show-existing frame of an evicted frame",
             })?;
         held.awaiting_show = false;
-        steps.push(GopStep::ShowExisting {
-            slot,
-            display_index: hi,
-        });
+        if !self.implicit_output {
+            steps.push(GopStep::ShowExisting {
+                slot,
+                display_index: hi,
+            });
+        }
         self.after_output = true;
         Ok(())
     }
@@ -273,19 +330,19 @@ impl GopPlanner {
         layer: u8,
     ) -> Result<GopStep> {
         let (slot, refresh_frame_flags) = if frame_type == FrameType::Key {
-            self.slots = [None; REF_SLOTS];
+            self.slots = [None; MAX_REF_SLOTS];
             self.key_display = display_index;
-            (Some(0), (1 << REF_SLOTS) - 1)
+            (Some(0), (1 << self.ref_slots) - 1)
         } else if show_frame && layer > 0 && display_index + 1 != self.last_display {
             (None, 0)
         } else {
-            let slot = self.refresh_slot()?;
+            let slot = self.refresh_slot(show_frame)?;
             (Some(slot), 1 << slot)
         };
-        let ref_slots = (0..REF_SLOTS)
+        let ref_slots = (0..self.ref_slots)
             .filter(|&slot| self.slots[slot].is_some())
             .fold(0, |mask, slot| mask | 1 << slot);
-        let primary_slot = (0..REF_SLOTS)
+        let primary_slot = (0..self.ref_slots)
             .filter_map(|slot| {
                 self.slots[slot]
                     .filter(|held| held.layer <= layer)
@@ -297,6 +354,10 @@ impl GopPlanner {
             })
             .min()
             .map(|(_, slot)| slot);
+        let intra_only = frame_type == FrameType::Inter
+            && layer == 0
+            && core::mem::take(&mut self.intra_only_next);
+        let primary_slot = primary_slot.filter(|_| !intra_only);
         if let Some(slot) = slot {
             self.slots[slot] = Some(Slot {
                 display_index,
@@ -316,16 +377,22 @@ impl GopPlanner {
             ref_slots,
             primary_slot,
             opens_temporal_unit: self.after_output,
+            intra_only,
+            implicit_output: self.implicit_output && !show_frame,
         };
         self.next_frame += 1;
-        self.after_output = show_frame;
+        self.after_output = show_frame || self.implicit_output;
         Ok(GopStep::Code(frame))
     }
 
     /// An empty slot, else the slot of the oldest frame no show-existing
-    /// frame waits for, other than the newest frame shown when coded.
-    fn refresh_slot(&self) -> Result<usize> {
-        if let Some(empty) = self.slots.iter().position(Option::is_none) {
+    /// frame waits for, other than the newest frame shown when coded; a shown
+    /// frame, which becomes the newest shown frame, may take that one last.
+    fn refresh_slot(&self, show_frame: bool) -> Result<usize> {
+        if let Some(empty) = self.slots[..self.ref_slots]
+            .iter()
+            .position(Option::is_none)
+        {
             return Ok(empty);
         }
         let newest_shown = self
@@ -335,14 +402,21 @@ impl GopPlanner {
             .filter(|held| held.shown)
             .map(|held| held.display_index)
             .max();
-        (0..REF_SLOTS)
+        (0..self.ref_slots)
             .filter_map(|slot| {
                 self.slots[slot]
-                    .filter(|held| !held.awaiting_show && Some(held.display_index) != newest_shown)
-                    .map(|held| (held.display_index, slot))
+                    .filter(|held| !held.awaiting_show)
+                    .map(|held| {
+                        (
+                            Some(held.display_index) == newest_shown,
+                            held.display_index,
+                            slot,
+                        )
+                    })
             })
+            .filter(|&(newest, ..)| show_frame || !newest)
             .min()
-            .map(|(_, slot)| slot)
+            .map(|(.., slot)| slot)
             .ok_or(Error::Unsupported {
                 what: "more hidden frames than reference slots",
             })
@@ -401,6 +475,8 @@ pub(crate) fn frame_tools(
             },
             preset.warp > 0,
             [None; REFS_PER_FRAME],
+            preset.global_motion_predict,
+            preset.explicit_refs.checked_sub(1).filter(|&refs| refs > 0),
         ),
         tiles,
     )
@@ -424,7 +500,8 @@ const TIP_EQUAL_WEIGHT: u8 = 0;
 
 /// `(tx, compound, (high_precision_mv, use_ref_frame_mvs,
 /// switchable_interp_filter, tip_weight, force_integer_mv,
-/// opfl_refine_type, warp, global_motion), tiles)` of [`frame_tools`].
+/// opfl_refine_type, warp, global_motion, global_motion_predict,
+/// explicit_refs), tiles)` of [`frame_tools`].
 pub(crate) type FrameTools = (
     KeyFrameTxParams,
     bool,
@@ -437,6 +514,8 @@ pub(crate) type FrameTools = (
         u8,
         bool,
         [Option<[i32; 6]>; REFS_PER_FRAME],
+        bool,
+        Option<u8>,
     ),
     UniformTiles,
 );
@@ -486,15 +565,13 @@ impl GopFrame {
         let core = match self.frame_type {
             FrameType::Key => {
                 build_key_frame_header(view, qindex, self.order_hint, filters, tx, tiles)
+                    .map_err(header_error)?
             }
-            FrameType::Inter => inter_header(
-                view,
-                refs,
-                &self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles)),
-            )
-            .map(|header| header.core),
-        }
-        .map_err(header_error)?;
+            FrameType::Inter => {
+                let params = self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles));
+                inter_header(view, refs, &params, self.intra_only)?.core
+            }
+        };
         match core.display_order_hint() {
             Some(derived) if derived == self.order_hint => Ok(core),
             derived => Err(Error::OrderHintMismatch {
@@ -549,8 +626,8 @@ impl GopFrame {
             view,
             refs,
             &self.inter_params(qindex, filters, (tx, compound, mv_tools, layout)),
-        )
-        .map_err(header_error)?;
+            self.intra_only,
+        )?;
         if header.core != expected {
             return Err(Error::Unsupported {
                 what: "an inter frame header that changed after coding",
@@ -566,7 +643,8 @@ impl GopFrame {
     }
 
     /// The header and OBUs of the frame as a `TIP_FRAME_AS_OUTPUT` frame with
-    /// `tip_global_wtd_index` `weight` and the film grain of `grain_seed` over
+    /// `tip_global_wtd_index` `weight`, the film grain of `grain_seed` and the
+    /// chroma of the plane quantizer deltas `plane_delta_q` over
     /// the reference map `ref_frame_idx` references, after a temporal
     /// delimiter when the frame opens its temporal unit; `tip` is its
     /// `(qindex, TipGlobalMv, TipInterpFilter, TIP deblocking)`, the qindex
@@ -576,7 +654,7 @@ impl GopFrame {
         view: &CoreSeqView,
         refs: &EncoderReferences,
         ref_frame_idx: &[u32],
-        (weight, grain_seed): (u8, Option<u16>),
+        (weight, grain_seed, plane_delta_q): (u8, Option<u16>, [i8; 3]),
         (qindex, mv, filter, deblocking): TipOutputChoice,
     ) -> Result<(FrameHeaderCore, Vec<u8>)> {
         let params = InterFrameParams {
@@ -591,6 +669,7 @@ impl GopFrame {
             tip_hole_fill: true,
             tx: KeyFrameTxParams {
                 grain_seed,
+                plane_delta_q,
                 ..KeyFrameTxParams::default()
             },
             ..InterFrameParams::default()
@@ -633,6 +712,8 @@ impl GopFrame {
                 opfl_refine_type,
                 warp,
                 global_motion,
+                global_motion_predict,
+                explicit_refs,
             ),
             tiles,
         ): FrameTools,
@@ -663,15 +744,37 @@ impl GopFrame {
             opfl_refine_type,
             warp,
             global_motion,
+            global_motion_predict,
+            explicit_refs,
+            implicit_output: self.implicit_output,
         }
     }
+}
+
+/// [`choose_inter_header`] with the parameters of each `reuse_ccso` plane
+/// loaded from its reference, as the decoder loads them (§ 5.18.7.12); the
+/// `INTRA_ONLY_FRAME` header of `params` when `intra_only`.
+fn inter_header(
+    view: &CoreSeqView,
+    refs: &EncoderReferences,
+    params: &InterFrameParams,
+    intra_only: bool,
+) -> Result<EncodedFrameHeader> {
+    if intra_only {
+        return build_intra_only_frame_header(view, &refs.header_view(), params)
+            .map_err(header_error);
+    }
+    let mut header = choose_inter_header(view, refs, params).map_err(header_error)?;
+    refs.resolve_ccso_reuse(&mut header.core)
+        .map_err(header_error)?;
+    Ok(header)
 }
 
 /// The inter header of `params` with an explicit `primary_ref_frame`; with
 /// `choose_primary_ref_frame` the `PRIMARY_REF_CHOOSE` header instead when
 /// the reference the decoder derives (§ 5.18.2) is the explicit one, which
 /// keeps the CDFs and every `DerivedPrimaryRefFrame` use.
-fn inter_header(
+fn choose_inter_header(
     view: &CoreSeqView,
     refs: &EncoderReferences,
     params: &InterFrameParams,

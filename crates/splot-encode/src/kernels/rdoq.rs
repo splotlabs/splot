@@ -29,7 +29,7 @@ use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEV
 use splot_decode::encoder_syntax::{
     CoeffLevels, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE, TxType, type_scan,
 };
-use splot_recon::{BitDepth, dequant_coefficient};
+use splot_recon::{BitDepth, dequant_coefficient, qm_weighted_quantizer};
 
 use super::{EncoderKernels, KernelError, Quantizer};
 
@@ -59,6 +59,34 @@ pub(crate) struct RdoqBlock {
     pub(crate) plane: usize,
     /// The coded type: its class picks the scan and the contexts.
     pub(crate) tx_type: TxType,
+    /// The § 7.14.4 quantizer-matrix weight of each raster coefficient.
+    pub(crate) qm: Option<&'static [i32]>,
+}
+
+impl RdoqBlock {
+    /// The § 7.14.4 `q2` of raster coefficient `pos`.
+    pub(crate) fn q2(&self, pos: usize) -> u32 {
+        let q = if pos == 0 { self.dc_q2 } else { self.ac_q2 };
+        match self.qm.and_then(|weights| weights.get(pos)) {
+            Some(&m) => qm_weighted_quantizer(q, m),
+            None => q,
+        }
+    }
+
+    /// The [`Quantizer`] of this block with deadzone `rounding_q8`.
+    ///
+    /// # Errors
+    /// Returns the [`Quantizer::new`] and [`Quantizer::with_weights`] errors.
+    pub(crate) fn quantizer(&self, rounding_q8: u32) -> Result<Quantizer, KernelError> {
+        Quantizer::new(
+            self.dc_q2,
+            self.ac_q2,
+            self.dq_denom,
+            self.bit_depth,
+            rounding_q8,
+        )?
+        .with_weights(self.qm)
+    }
 }
 
 /// The context of one coefficient level, as the writer derives it.
@@ -247,15 +275,7 @@ fn rdoq_in<R: CoeffRates + ?Sized>(
             actual: coeffs.len(),
         });
     }
-    let quantizer = |rounding_q8| {
-        Quantizer::new(
-            block.dc_q2,
-            block.ac_q2,
-            block.dq_denom,
-            block.bit_depth,
-            rounding_q8,
-        )
-    };
+    let quantizer = |rounding_q8| block.quantizer(rounding_q8);
     kernels.quantize(&quantizer(128)?, coeffs, levels, dequant)?;
     let scan = walk.scan;
     let eob = scan
@@ -400,7 +420,7 @@ pub(crate) fn parity_moves<R: CoeffRates + ?Sized>(
                     walk.hr_level_avg,
                 )
             });
-        let q2 = if pos == 0 { block.dc_q2 } else { block.ac_q2 };
+        let q2 = block.q2(pos);
         let sign = if levels[pos] < 0 || (levels[pos] == 0 && coeffs[pos] < 0) {
             -1
         } else {
@@ -437,7 +457,7 @@ pub(crate) fn parity_moves<R: CoeffRates + ?Sized>(
 /// Makes `levels` and their reconstruction `dequant` keep the rule `holds`
 /// (the facade's `ParityHiding::holds`): when they hide a parity the scan
 /// index 0 level does not have, applies the first move of `moves` in `J`
-/// order after which the rule holds.
+/// order after which the rule holds; returns the `J` change of that move.
 ///
 /// # Errors
 /// Returns the error of `holds`, and [`KernelError::HiddenParity`] when no
@@ -446,16 +466,16 @@ pub(crate) fn hide_parity<E: From<KernelError>>(
     holds: impl Fn(&[i32]) -> Result<bool, E>,
     mut moves: Vec<ParityMove>,
     (levels, dequant): (&mut [i32], &mut [i32]),
-) -> Result<(), E> {
+) -> Result<i128, E> {
     if holds(levels)? {
-        return Ok(());
+        return Ok(0);
     }
     while let Some(best) = (0..moves.len()).min_by_key(|&i| moves[i]) {
         let ParityMove {
+            delta,
             pos,
             level,
             dequant: dq,
-            ..
         } = moves.swap_remove(best);
         if pos >= levels.len().min(dequant.len()) {
             continue;
@@ -463,7 +483,7 @@ pub(crate) fn hide_parity<E: From<KernelError>>(
         let kept = core::mem::replace(&mut levels[pos], level);
         if holds(levels)? {
             dequant[pos] = dq;
-            return Ok(());
+            return Ok(delta);
         }
         levels[pos] = kept;
     }

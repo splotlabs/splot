@@ -201,7 +201,9 @@ fn leaves<F: Fn(Rect) -> RdCost>(
                 leaves(coder, child, tree, out);
             }
         }
-        PartitionTree::Sdp { .. } => unreachable!("the synthetic coder has no SDP node"),
+        PartitionTree::Sdp { .. } | PartitionTree::Region { .. } => {
+            unreachable!("the synthetic coder has no SDP node")
+        }
     }
 }
 

@@ -33,9 +33,9 @@ use crate::tpl;
 #[non_exhaustive]
 pub struct Packet {
     /// One AV2 Annex B temporal unit: the hidden frames coded since the last
-    /// packet and one output, a shown frame or a show-existing frame.
+    /// packet and one output: a shown, implicit-output or show-existing frame.
     pub data: Vec<u8>,
-    /// Presentation timestamp of the output frame.
+    /// Presentation timestamp of the output frame; not monotonic with implicit output.
     pub pts: u64,
     /// Frame type of the output frame.
     pub frame_type: FrameType,
@@ -43,6 +43,16 @@ pub struct Packet {
     /// empty when the unit only shows an earlier hidden frame.
     pub stats: Vec<FrameStats>,
 }
+
+/// The header, filtered reconstruction, initial CDFs, final tile CDFs and
+/// `ccso_blk` flags of a coded frame.
+pub(crate) type CodedReference = (
+    FrameHeaderCore,
+    DecodedFrame<u16>,
+    FrameStart,
+    Vec<TileEnd>,
+    Vec<Vec<u8>>,
+);
 
 /// The output of a [`FrameCoder`] for one frame.
 pub(crate) struct CodedFrame {
@@ -53,9 +63,8 @@ pub(crate) struct CodedFrame {
     pub(crate) recon: [Vec<u16>; 3],
     /// The frame type the coder used, which can differ from the planned one.
     pub(crate) frame_type: FrameType,
-    /// The header, filtered reconstruction, initial CDFs and final tile CDFs
-    /// that [`FrameCoder::commit`] stores.
-    pub(crate) reference: Option<(FrameHeaderCore, DecodedFrame<u16>, FrameStart, Vec<TileEnd>)>,
+    /// What [`FrameCoder::commit`] stores.
+    pub(crate) reference: Option<CodedReference>,
     /// The header of a `TIP_FRAME_AS_OUTPUT` frame, which
     /// [`FrameCoder::commit`] records in place of `reference`.
     pub(crate) tip_output: Option<FrameHeaderCore>,
@@ -237,7 +246,14 @@ impl Encoder {
             }
             _ => params.mini_gop_size,
         };
-        let planner = GopPlanner::new(config.keyint, mini_gop_size);
+        let slots = match params.num_ref_frames {
+            0 => 8,
+            slots => slots,
+        };
+        let planner = GopPlanner::new(config.keyint, mini_gop_size)
+            .with_ref_slots(slots)
+            .with_intra_only(params.intra_only)
+            .with_implicit_output(params.implicit_output);
         Ok(Self {
             rate_control,
             stats_sink: None,

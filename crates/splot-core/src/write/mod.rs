@@ -61,7 +61,7 @@ pub use frame_restoration::{
     LrReferenceFilters, write_ccso_params, write_ccso_plane_params, write_lr_params,
     write_lr_params_for_inter,
 };
-pub use frame_segmentation::write_segmentation_params;
+pub use frame_segmentation::{write_inter_segmentation_params, write_segmentation_params};
 pub use frame_tail::{write_film_grain_config, write_intra_tail, write_tx_mode};
 pub use frame_tiling::write_tile_info;
 pub use layer_config_record::write_layer_config_record;

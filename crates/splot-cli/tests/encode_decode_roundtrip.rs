@@ -160,6 +160,42 @@ fn chroma_422_and_444_clips_encode_validate_and_decode_to_the_encoder_stats() {
 
 /// `--low-delay` is the `mini_gop_size=1`, `bitrate_mini_gop_size=1` and
 /// `lookahead_frames=1` overrides: every frame is coded and shown in input order.
+/// With `implicit_output` the IVF holds one frame per input frame, in coding
+/// order with non-monotonic pts, and `splot decode` returns every frame in
+/// input order.
+#[test]
+fn implicit_output_clips_decode_in_input_order() {
+    let flags = ["--qp", "90", "--preset-set", "implicit_output=true"];
+    round_trip(8, YUV420, &flags);
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let mut args = vec![
+        "encode",
+        input.to_str().unwrap(),
+        "-o",
+        ivf.to_str().unwrap(),
+    ];
+    args.extend(["--keyint", "4"]);
+    args.extend(flags);
+    assert!(splot(&args).status.success());
+    let bytes = std::fs::read(&ivf).unwrap();
+    let (mut at, mut pts) = (32, Vec::new());
+    while at + 12 <= bytes.len() {
+        let size = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        pts.push(u64::from_le_bytes(
+            bytes[at + 4..at + 12].try_into().unwrap(),
+        ));
+        at += 12 + size;
+    }
+    assert!(!pts.is_sorted(), "{pts:?}");
+    pts.sort_unstable();
+    assert_eq!(pts, (0..FRAMES as u64).collect::<Vec<_>>());
+    for path in [input, ivf] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn low_delay_clips_code_every_frame_in_input_order() {
     round_trip(8, YUV420, &["--qp", "90", "--low-delay"]);

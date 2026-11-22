@@ -9,19 +9,19 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    GrainScaling, InterpolationFilter, TipGlobalMv, UniformTiles, build_encoder_sequence_header,
-    encode_film_grain_obu, encoder_film_grain_model,
+    GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv, UniformTiles,
+    build_encoder_sequence_header, encode_film_grain_obu, encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, Partition,
-    PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
+    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, ParityHiding,
+    Partition, PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
 };
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
 use splot_recon::{
-    BitDepth, DecodedFrame, DequantBlockParams, PixelFormat, PlaneId, PlaneSize,
-    secondary_transform_layout,
+    BitDepth, DecodedFrame, DequantBlockParams, PixelFormat, PlaneId, PlaneSize, QmFrameLevels,
+    QuantizerDeltas, secondary_transform_layout,
 };
 
 use crate::cfl_filter::cfl_ds_filter;
@@ -32,7 +32,7 @@ use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
 use crate::grain;
 use crate::intrabc::BvSearch;
-use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
+use crate::kernels::rdoq::{CoeffRates, RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
@@ -92,10 +92,12 @@ pub(crate) struct IntraFrameCoder {
     /// The last committed key frame coded a film grain model, which the
     /// output frames after it apply.
     grain_active: bool,
+    /// Key frames committed so far; their long-term ids cycle over it.
+    key_frames: u32,
     /// Which temporal layers code warped motion, from the committed frames.
     warp_gate: crate::warp::WarpGate,
     /// The intra superblocks of the frame in each reference slot.
-    slot_intra: [Option<Arc<IntraCells>>; 8],
+    slot_intra: [Option<Arc<IntraCells>>; 16],
     /// Stops the frames of a cancelled encoder.
     pub(crate) cancel: crate::cancel::CancelToken,
     /// Counts the searched superblocks of the encoder's frames.
@@ -192,6 +194,11 @@ fn intra_leaves(
             out.push((node.col4() * 4, node.row4() * 4, w, h));
             Ok(())
         }
+        (PartitionTree::Region { .. }, _) => {
+            let (w, h) = node.dimensions()?;
+            out.push((node.col4() * 4, node.row4() * 4, w, h));
+            Ok(())
+        }
         (PartitionTree::Leaf(_), _) => Ok(()),
     }
 }
@@ -260,6 +267,7 @@ impl IntraFrameCoder {
                 screen_content: preset.palette || preset.integer_mv,
                 dip: preset.dip,
                 sdp: preset.sdp,
+                extended_sdp: preset.sdp && preset.extended_sdp > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(preset.cdf_avg_across_tiles),
@@ -279,6 +287,17 @@ impl IntraFrameCoder {
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
+                long_term_frame_id_bits: preset.long_term_id_bits,
+                implicit_output: preset.implicit_output,
+                num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
+                explicit_ref_frame_map: preset.explicit_refs > 0,
+                seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
+                    cols_log2: config.tiles.cols_log2,
+                    rows_log2: config.tiles.rows_log2,
+                    allow_tile_info_change: preset.seq_tile_info > 1,
+                }),
+                short_refresh: preset.short_refresh,
+                plane_delta_q: preset.plane_delta_q(),
                 tcq: preset.tcq.values().contains(&true),
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
@@ -300,6 +319,7 @@ impl IntraFrameCoder {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
                 middle_cdf_update_tile: preset.cdf_update_tile == 1,
+                reuse_tile_info: preset.seq_tile_info < 3,
                 ..UniformTiles::default()
             },
             pool: (config.threads.resolve().get() > 1)
@@ -313,6 +333,7 @@ impl IntraFrameCoder {
             open_loop: crate::lookahead::OpenLoopMotion::new(),
             shown_existing: 0,
             grain_active: false,
+            key_frames: 0,
             warp_gate: crate::warp::WarpGate::default(),
             slot_intra: Default::default(),
             cancel: crate::cancel::CancelToken::default(),
@@ -358,9 +379,10 @@ impl FrameCoder for IntraFrameCoder {
                 .update_tip_output(&core)
                 .map_err(coding("TIP output update"));
         }
-        let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
-            what: "a frame committed twice",
-        })?;
+        let (core, recon, initial, cdfs, ccso_blocks) =
+            frame.reference.take().ok_or(Error::Unsupported {
+                what: "a frame committed twice",
+            })?;
         let refreshed = core.refresh_frame_flags.unwrap_or(u32::MAX);
         for (slot, intra) in self.slot_intra.iter_mut().enumerate() {
             if refreshed >> slot & 1 == 1 {
@@ -368,12 +390,13 @@ impl FrameCoder for IntraFrameCoder {
             }
         }
         if frame.frame_type == FrameType::Key {
+            self.key_frames = self.key_frames.wrapping_add(1);
             self.grain_active = core
                 .intra_tail
                 .is_some_and(|tail| tail.film_grain.apply_grain);
         }
         self.references
-            .update(&core, recon, &initial, &cdfs)
+            .update(&core, recon, &initial, &cdfs, &ccso_blocks)
             .map_err(coding("reference update"))
     }
 
@@ -444,13 +467,7 @@ impl IntraFrameCoder {
         if costs.is_none() && self.preset.ssim_aq == 0 {
             return Vec::new();
         }
-        let sb = match self.view.frame_sb_size(plan.frame_type == FrameType::Key) {
-            SuperblockSize::Block64x64 => 64,
-            SuperblockSize::Block128x128 => 128,
-            SuperblockSize::Block256x256 => 256,
-        };
-        let (width, height) = (self.params.width as usize, self.params.height as usize);
-        let grid = (width.div_ceil(sb), height.div_ceil(sb), sb);
+        let grid = self.superblock_grid(plan);
         let mut quant = costs.map_or_else(
             || vec![(0, 0); grid.0 * grid.1],
             |costs| {
@@ -480,6 +497,43 @@ impl IntraFrameCoder {
             return Vec::new();
         }
         quant
+    }
+
+    /// The `(columns, rows, luma side)` of the superblocks of `plan`.
+    fn superblock_grid(&self, plan: &GopFrame) -> (usize, usize, usize) {
+        let sb = match self.view.frame_sb_size(plan.frame_type == FrameType::Key) {
+            SuperblockSize::Block64x64 => 64,
+            SuperblockSize::Block128x128 => 128,
+            SuperblockSize::Block256x256 => 256,
+        };
+        let (width, height) = (self.params.width as usize, self.params.height as usize);
+        (width.div_ceil(sb), height.div_ceil(sb), sb)
+    }
+
+    /// The source-activity segment of each superblock of `plan` in raster
+    /// order and the `SEG_LVL_ALT_Q` data of each segment at `qindex`, clamped
+    /// to `qindex + data >= 1` so no segment is lossless; `None` with
+    /// [`crate::preset::PresetParams::segmentation`] `0`.
+    fn segment_map(
+        &self,
+        plan: &GopFrame,
+        source: &SourceFrame,
+        qindex: u32,
+    ) -> Option<(Vec<u8>, [i16; 4])> {
+        if self.preset.segmentation == 0 {
+            return None;
+        }
+        let size = source.plane_sizes()[0];
+        let map = tpl::ssim_lambda_log2(
+            &source.planes()[0],
+            (size.width(), size.height()),
+            self.bit_depth,
+            self.superblock_grid(plan),
+            100,
+        );
+        let floor = 1 - qindex as i16;
+        let alt_q = tpl::SEGMENT_LAMBDA_LOG2.map(|log2| tpl::quant_of(log2).0.max(floor));
+        Some((map.into_iter().map(tpl::activity_segment).collect(), alt_q))
     }
 
     /// The `tip_global_wtd_index` whose TIP prediction of `source` has the
@@ -567,7 +621,8 @@ impl IntraFrameCoder {
         } else {
             (self.grain_active, Vec::new())
         };
-        let seed = (grain_on && plan.show_frame).then(|| gop::coded_grain_seed(plan.frame_index));
+        let output = plan.show_frame || plan.implicit_output;
+        let seed = (grain_on && output).then(|| gop::coded_grain_seed(plan.frame_index));
         Ok((seed, obu))
     }
 
@@ -601,14 +656,21 @@ impl IntraFrameCoder {
         let context = self.preset_context(plan, qindex);
         let mut tools = gop::frame_tools((&self.preset, context), self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
+        let ids = (1u32 << self.preset.long_term_id_bits) - 1;
+        if plan.frame_type == FrameType::Key && ids > 0 {
+            tools.0.long_term_id_plus_1 = 1 + self.key_frames % ids;
+        }
         tools.0.disable_cdf_update = self.preset.disable_cdf_update;
         tools.0.disable_cross_frame_cdf_init = self.preset.primary_default_cdfs;
         tools.0.choose_primary_ref_frame = self.preset.primary_ref_choose;
+        tools.0.qm_level = crate::tx_choice::qm_level(&self.preset, qindex, self.bit_depth);
+        tools.0.plane_delta_q = self.preset.plane_delta_q();
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
         }
-        if plan.frame_type == FrameType::Inter && !self.global_models.is_empty() {
+        if plan.frame_type == FrameType::Inter && !plan.intra_only && !self.global_models.is_empty()
+        {
             let probe = plan.header(
                 &self.view,
                 &self.references,
@@ -626,6 +688,9 @@ impl IntraFrameCoder {
         }
         tools.2.6 &= self.warp_gate.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
+        let segments = self.segment_map(plan, source, qindex);
+        tools.0.segment_alt_q = segments.as_ref().map(|&(_, alt_q)| alt_q);
+        let segments = segments.map_or(Vec::new(), |(map, _)| map);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         let key_obus = if plan.frame_type == FrameType::Key {
             [self.content_obus.as_slice(), &grain_obu].concat()
@@ -697,9 +762,12 @@ impl IntraFrameCoder {
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
         let superblocks = sb_cols * mi_rows.div_ceil(sb / 4);
-        if !sb_quant.is_empty() && sb_quant.len() != superblocks {
+        if [sb_quant.len(), segments.len()]
+            .iter()
+            .any(|&len| len != 0 && len != superblocks)
+        {
             return Err(Error::Unsupported {
-                what: "superblock offsets that do not cover the superblock grid",
+                what: "superblock offsets or segments that do not cover the superblock grid",
             });
         }
         let publishes = self.preset.ref_intra_margin != u8::MAX;
@@ -725,30 +793,46 @@ impl IntraFrameCoder {
                 what: "a search past its tile",
             })?;
             let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
-            let (lambda, target) = match sb_quant.get(index) {
-                Some(&(offset, lambda_log2)) => {
-                    let mut target = qindex.saturating_add_signed(i32::from(offset));
-                    if wavefront {
-                        let step = 1 << self.preset.delta_q_res;
-                        let max_q = splot_recon::max_quantizer_index(bit_depth);
-                        target =
-                            target.clamp(1 + (qindex - 1) % step, max_q - (max_q - qindex) % step);
+            let segment = segments.get(index).copied();
+            let (lambda, target) = match (sb_quant.get(index), segment) {
+                (None, None) => (lambda, None),
+                (sb, segment) => {
+                    let (offset, mut lambda_log2) = sb.map_or((0, 0), |&(o, l)| (o, i32::from(l)));
+                    let mut block_qindex = qindex;
+                    let mut target = None;
+                    if sb.is_some() {
+                        let mut want = qindex.saturating_add_signed(i32::from(offset));
+                        if wavefront {
+                            let step = 1 << self.preset.delta_q_res;
+                            let max_q = splot_recon::max_quantizer_index(bit_depth);
+                            want = want
+                                .clamp(1 + (qindex - 1) % step, max_q - (max_q - qindex) % step);
+                        }
+                        block_qindex = writer
+                            .set_superblock_qindex(want)
+                            .map_err(coding("delta-q"))?;
+                        target = Some(block_qindex);
                     }
-                    let sb_qindex = writer
-                        .set_superblock_qindex(target)
-                        .map_err(coding("delta-q"))?;
-                    let applied = 2 * (sb_qindex as i32 - qindex as i32);
+                    if let Some(segment) = segment {
+                        block_qindex = writer
+                            .syntax_mut()
+                            .set_superblock_segment(segment)
+                            .map_err(coding("segment"))?;
+                        lambda_log2 += tpl::SEGMENT_LAMBDA_LOG2
+                            .get(usize::from(segment))
+                            .map_or(0, |&log2| log2);
+                    }
+                    let applied = 2 * (block_qindex as i32 - qindex as i32);
                     let clip_slack = (1 << self.preset.delta_q_res) + 1;
                     let per_octave = tpl::QINDEX_PER_IMPORTANCE_OCTAVE as i32;
-                    let lambda_log2 = i32::from(lambda_log2).clamp(
+                    let lambda_log2 = lambda_log2.clamp(
                         (applied - clip_slack) * 128 / per_octave,
                         (applied + clip_slack) * 128 / per_octave,
                     );
                     let lambda = lambda.scaled(lambda_log2);
-                    coder.set_quantizer(sb_qindex, lambda);
-                    (lambda, Some(sb_qindex))
+                    coder.set_quantizer(block_qindex, lambda);
+                    (lambda, target)
                 }
-                None => (lambda, None),
             };
             let tree = writer
                 .search_superblock(|syntax, root| {
@@ -773,7 +857,7 @@ impl IntraFrameCoder {
                     .extend(leaves);
             }
             self.progress.superblock(superblocks);
-            Ok((SuperblockDecision { tree }, target))
+            Ok((SuperblockDecision { tree, segment }, target))
         };
         let new_coder = || {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
@@ -837,6 +921,7 @@ impl IntraFrameCoder {
             tiles,
             cdfs,
             recon,
+            ccso_blocks,
         } = finish_frame(
             &self.sequence,
             &header,
@@ -862,7 +947,7 @@ impl IntraFrameCoder {
             temporal_unit,
             recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
-            reference: Some((core, recon, initial, cdfs)),
+            reference: Some((core, recon, initial, cdfs, ccso_blocks)),
             tip_output: None,
             intra_cells,
             warp: (plan.frame_type == crate::rate_control::FrameType::Inter).then_some(
@@ -929,7 +1014,7 @@ impl IntraFrameCoder {
                 &self.view,
                 &self.references,
                 ref_frame_idx,
-                (weight, grain_seed),
+                (weight, grain_seed, self.preset.plane_delta_q()),
                 (qindex, mv, filter, deblocking),
             )?;
             let (core, frame) = self
@@ -1332,7 +1417,7 @@ thread_local! {
     /// the one that leaves V the least energy (tests only).
     pub(crate) static CCTX_LATER_ROTATIONS: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
-    /// Intra luma blocks outside mode trials whose RD-chosen IST kernel is
+    /// Luma blocks outside mode trials whose RD-chosen IST kernel is
     /// not the one that keeps the most energy (tests only).
     pub(crate) static IST_RD_OTHER: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
@@ -1366,7 +1451,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             (false, true) => u8::from(self.preset.inter_ist && !self.trial),
             (false, false) => self.preset.ist_sets,
         };
-        let ist_probe = if inter { 4 } else { 2 };
+        let (ist_probe, ist_rd) = if inter {
+            (4, self.preset.inter_ist_rd)
+        } else {
+            (2, self.preset.intra_ist_rd)
+        };
         let mut best: Option<(u128, TransformDecision)> = None;
         let keep = match self.preset.tx_type_model_keep {
             0 => count,
@@ -1399,7 +1488,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 return Ok(decision);
             }
             let mut trials = vec![decision];
-            if ist && !inter && self.preset.intra_ist_rd {
+            if ist && ist_rd {
                 for ist in Self::ist_kernels(syntax, &tx, ist_sets)? {
                     trials.push(self.code(syntax, &TransformBlock { ist, ..tx }, prediction)?);
                 }
@@ -1428,7 +1517,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
         #[cfg(test)]
-        if !self.trial && !inter && self.preset.intra_ist_rd && decision.ist != Ist::OFF {
+        if !self.trial && ist_rd && decision.ist != Ist::OFF {
             let plain = TransformBlock {
                 tx_type: decision.tx_type,
                 ..*tx
@@ -1479,7 +1568,9 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         syntax.set_scalar_trial(self.candidate || self.trial || self.scalar);
         let use_tcq = syntax.uses_tcq(tx);
         let ddt = syntax.uses_ddt();
-        let (params, forward) = self.forward(tx, (use_tcq, ddt), prediction, residual, coeffs)?;
+        let qm = (syntax.quant_matrices(), syntax.quantizer_deltas());
+        let (params, forward) =
+            self.forward(tx, (use_tcq, ddt, qm), prediction, residual, coeffs)?;
         if let Some(secondary) = syntax.secondary_transform(tx)? {
             kernels()
                 .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
@@ -1591,7 +1682,8 @@ impl SourceResidualCoder<'_> {
         [residual, plain_u, dequant]: &mut [Vec<i32>; 3],
         [u_coeffs, v_coeffs]: &mut [Vec<i32>; 2],
     ) -> core::result::Result<Vec<[Vec<i32>; 3]>, TileWriterError> {
-        let ddt = (false, syntax.uses_ddt());
+        let quant = (syntax.quant_matrices(), syntax.quantizer_deltas());
+        let ddt = (false, syntax.uses_ddt(), quant);
         let (u_params, u_forward) = self.forward(u, ddt, u_prediction, residual, u_coeffs)?;
         let (v_params, v_forward) = self.forward(v, ddt, v_prediction, residual, v_coeffs)?;
         let [uu, vv, uv] = kernels().cctx_stats(u_coeffs, v_coeffs);
@@ -1681,24 +1773,11 @@ impl SourceResidualCoder<'_> {
         coeffs: &[i32],
         dequant: &mut Vec<i32>,
     ) -> core::result::Result<Vec<i32>, TileWriterError> {
-        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let len = coeffs.len();
         dequant.resize(len, 0);
         let use_tcq = syntax.uses_tcq(tx);
         let mut levels = vec![0; len];
-        let block = RdoqBlock {
-            dc_q2: params.dc_quant,
-            ac_q2: params.ac_quant,
-            dq_denom: params.dq_denom,
-            bit_depth: self.bit_depth,
-            log2_width: forward.coeff_width().ilog2(),
-            log2_height: forward.coeff_height().ilog2(),
-            plane: tx.plane,
-            tx_type: tx.tx_type,
-        };
-        let lambda_q8 = self
-            .lambda
-            .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
+        let (block, lambda_q8) = self.rdoq_block(tx, params, forward)?;
         let parity = syntax.parity_hiding(tx);
         let (rows, trellis) = &mut self.rates;
         let fsc = syntax.uses_fsc(tx);
@@ -1728,28 +1807,50 @@ impl SourceResidualCoder<'_> {
             )
             .map_err(kernel)?;
         } else {
-            let quantizer = Quantizer::new(
-                params.dc_quant,
-                params.ac_quant,
-                params.dq_denom,
-                self.bit_depth,
-                DEADZONE_ROUNDING_Q8,
-            )
-            .map_err(kernel)?;
+            let quantizer = block.quantizer(DEADZONE_ROUNDING_Q8).map_err(kernel)?;
             kernels()
                 .quantize(&quantizer, coeffs, &mut levels, dequant)
                 .map_err(kernel)?;
         }
-        if let Some(parity) = parity {
-            let holds = |levels: &[i32]| parity.holds(levels).map_err(TileWriterError::from);
-            if !holds(&levels)? {
-                let rates = (!self.candidate && !self.trial).then_some(&mut rates);
-                let moves =
-                    parity_moves(&block, coeffs, rates, lambda_q8, &levels).map_err(kernel)?;
-                hide_parity(holds, moves, (&mut levels, dequant))?;
-            }
-        }
+        let rates = (!self.candidate && !self.trial).then_some(&mut rates);
+        hide(
+            parity,
+            (&block, coeffs, lambda_q8),
+            rates,
+            (&mut levels, dequant),
+        )?;
         Ok(levels)
+    }
+
+    /// The RDOQ view of `tx` and its coefficient lambda.
+    fn rdoq_block(
+        &self,
+        tx: &TransformBlock,
+        params: &DequantBlockParams,
+        forward: &ForwardTransform2d,
+    ) -> core::result::Result<(RdoqBlock, u64), TileWriterError> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        let block = RdoqBlock {
+            dc_q2: params.dc_quant,
+            ac_q2: params.ac_quant,
+            dq_denom: params.dq_denom,
+            bit_depth: self.bit_depth,
+            log2_width: forward.coeff_width().ilog2(),
+            log2_height: forward.coeff_height().ilog2(),
+            plane: tx.plane,
+            tx_type: tx.tx_type,
+            qm: match &params.qm {
+                Some(qm) => Some(
+                    qm.built_in_weights(params.tx_width * params.tx_height)
+                        .ok_or(TileWriterError::Unsupported("user quantizer matrices"))?,
+                ),
+                None => None,
+            },
+        };
+        let lambda_q8 = self
+            .lambda
+            .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
+        Ok((block, lambda_q8))
     }
 
     /// The source residual of `tx` over `prediction` and its primary forward
@@ -1757,7 +1858,7 @@ impl SourceResidualCoder<'_> {
     fn forward(
         &self,
         tx: &TransformBlock,
-        (use_tcq, use_ddt): (bool, bool),
+        (use_tcq, use_ddt, (qm, deltas)): (bool, bool, (Option<QmFrameLevels>, QuantizerDeltas)),
         prediction: &[u16],
         residual: &mut Vec<i32>,
         coeffs: &mut Vec<i32>,
@@ -1773,7 +1874,7 @@ impl SourceResidualCoder<'_> {
             plane_id(tx.plane)?,
             (log2_w, log2_h),
             (tx.tx_type, use_tcq, use_ddt),
-            self.bit_depth,
+            (self.bit_depth, qm, deltas),
         )?;
         let forward = ForwardTransform2d::new(
             log2_w,
@@ -1850,21 +1951,30 @@ impl SourceResidualCoder<'_> {
         [residual, coeffs, dequant]: &mut [Vec<i32>; 3],
         levels: &mut Vec<i32>,
     ) -> core::result::Result<Option<u128>, TileWriterError> {
-        let (params, _) =
-            self.forward(tx, (false, syntax.uses_ddt()), prediction, residual, coeffs)?;
-        let quantizer = Quantizer::new(
-            params.dc_quant,
-            params.ac_quant,
-            params.dq_denom,
-            self.bit_depth,
-            DEADZONE_ROUNDING_Q8,
-        )
-        .map_err(kernel)?;
+        let (params, forward) = self.forward(
+            tx,
+            (
+                false,
+                syntax.uses_ddt(),
+                (syntax.quant_matrices(), syntax.quantizer_deltas()),
+            ),
+            prediction,
+            residual,
+            coeffs,
+        )?;
+        let (block, lambda_q8) = self.rdoq_block(tx, &params, &forward)?;
+        let quantizer = block.quantizer(DEADZONE_ROUNDING_Q8).map_err(kernel)?;
         levels.resize(coeffs.len(), 0);
         dequant.resize(coeffs.len(), 0);
         let (_, error) = kernels()
             .quantize_error(&quantizer, coeffs, levels, dequant)
             .map_err(kernel)?;
+        let moved = hide(
+            syntax.parity_hiding(tx),
+            (&block, coeffs, lambda_q8),
+            None::<&mut CdfCoeffRates>,
+            (levels, dequant),
+        )?;
         let eob = eob(tx, levels)?;
         if eob > 0
             && syntax
@@ -1877,13 +1987,8 @@ impl SourceResidualCoder<'_> {
         if rate == Bits::IMPOSSIBLE {
             return Ok(None);
         }
-        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
-        let lambda_q8 = self
-            .lambda
-            .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
-        Ok(Some(
-            (u128::from(error) << 16) + u128::from(lambda_q8) * u128::from(rate.0),
-        ))
+        let error = u128::try_from((i128::from(error) << 16) + moved).unwrap_or(0);
+        Ok(Some(error + u128::from(lambda_q8) * u128::from(rate.0)))
     }
 
     /// Every secondary transform of the first `sets` sets that `tx` can code.
@@ -1921,7 +2026,11 @@ impl SourceResidualCoder<'_> {
         let [residual, coeffs, work] = &mut scratch;
         let found = self.forward(
             tx,
-            (syntax.uses_tcq(tx), syntax.uses_ddt()),
+            (
+                syntax.uses_tcq(tx),
+                syntax.uses_ddt(),
+                (syntax.quant_matrices(), syntax.quantizer_deltas()),
+            ),
             prediction,
             residual,
             coeffs,
@@ -1987,6 +2096,26 @@ impl SourceResidualCoder<'_> {
         };
         Ok(Some(cost.cost(self.lambda)))
     }
+}
+
+/// Moves one level of `levels` (and its `dequant`) so that the block keeps
+/// the § 5.20.7.27 hidden parity `parity`; `rates` ranks the moves, else only
+/// the scan index 0 level moves. Returns the `J` change of the move.
+fn hide<R: CoeffRates>(
+    parity: Option<ParityHiding>,
+    (block, coeffs, lambda_q8): (&RdoqBlock, &[i32], u64),
+    rates: Option<&mut R>,
+    (levels, dequant): (&mut [i32], &mut [i32]),
+) -> core::result::Result<i128, TileWriterError> {
+    let Some(parity) = parity else {
+        return Ok(0);
+    };
+    let holds = |levels: &[i32]| parity.holds(levels).map_err(TileWriterError::from);
+    if holds(levels)? {
+        return Ok(0);
+    }
+    let moves = parity_moves(block, coeffs, rates, lambda_q8, levels).map_err(kernel)?;
+    hide_parity(holds, moves, (levels, dequant))
 }
 
 fn plane_id(plane: usize) -> core::result::Result<PlaneId, TileWriterError> {

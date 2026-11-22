@@ -192,6 +192,15 @@ pub struct PresetParams {
     /// niklas SSIM-BD -2.70% for PSNR-BD +2.95%; 50 gave -2.75% for +7.61%,
     /// and 200 lost 7% SSIM-BD on paris).
     pub ssim_aq: u8,
+    /// Segmentation (§ 5.18.7.1), `0..=1`: `0` off; `1` codes a source
+    /// activity map of 4 `SEG_LVL_ALT_Q` segments. A superblock's segment is
+    /// the bin of the mean log2 luma variance of its 16x16 blocks against the
+    /// frame mean (`tpl::ssim_lambda_log2` at 100), with edges at -1, 0 and
+    /// +1 octave; segments 0..=3 move the lambda by -0.75, -0.25, +0.25 and
+    /// +0.75 octave and the qindex by -9, -3, +3 and +9 (`tpl::quant_of`),
+    /// clamped to `base_q_idx + ALT_Q >= 1`. Every leaf codes its
+    /// superblock's segment; the qindex adds to the delta-q one (§ 7.12.2).
+    pub segmentation: u8,
     /// Temporal filtering, `0..=8` per frame kind, `0` off; the lookahead
     /// reads it at the normal coefficient level. Key frames: the most later
     /// neighbours that a key frame is filtered from before it is coded; the
@@ -221,6 +230,17 @@ pub struct PresetParams {
     /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
     /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
     pub delta_q_res: u8,
+    /// `DeltaQYDc` of every frame (§ 5.18.6.1), `-64..=63`; non-zero codes
+    /// `equal_ac_dc_q = 0` with `y_dc_delta_q_enabled` (§ 5.4.8). `0` in
+    /// every row (not measured).
+    pub y_dc_delta_q: i8,
+    /// `DeltaQUDc = DeltaQUAc` of every frame, `-64..=63`; non-zero codes the
+    /// chroma delta enables. `0` in every row (not measured).
+    pub u_delta_q: i8,
+    /// `DeltaQVDc = DeltaQVAc` of every frame, `-64..=63`; a value other
+    /// than `u_delta_q` codes `separate_uv_delta_q` and `diff_uv_delta`.
+    /// `0` in every row (not measured).
+    pub v_delta_q: i8,
     /// Compound candidates of an inter leaf that get a full RD trial, best
     /// prediction SATD first; skip-mode candidates are tried besides them.
     /// `0` codes neither compound nor skip-mode blocks. At least `1` in every
@@ -277,6 +297,42 @@ pub struct PresetParams {
     /// § 5.18.2) when the reference the decoder derives is their primary
     /// reference: the same CDFs for 3 fewer header bits.
     pub primary_ref_choose: bool,
+    /// `long_term_frame_id_bits` (§ 5.4.6), `0..=7`: key frames code
+    /// `long_term_id_plus_1` in this many bits, the ids cycling over the key
+    /// frames.
+    pub long_term_id_bits: u8,
+    /// Hidden frames code `implicit_output_frame = 1` in a sequence with
+    /// `monotonic_output_order_flag = 0` (§ 5.4.1, § 5.18.2), in place of
+    /// show-existing frames.
+    pub implicit_output: bool,
+    /// `NumRefFrames` (§ 5.4.6), `0..=16`: `0` keeps the default 8 slots
+    /// without `explicit_num_ref_frames`; `n` codes `n` slots, which the GOP
+    /// planner uses.
+    pub num_ref_frames: u8,
+    /// `n > 0` codes the first frame of every `n`th mini-GOP as an
+    /// `INTRA_ONLY_FRAME` (§ 5.18.2) that refreshes one slot; the later
+    /// frames may still reference the frames before it. `0` in every row
+    /// (not measured).
+    pub intra_only: u8,
+    /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
+    /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
+    /// `n` above `1` makes inter frames code their map with at most `n - 1`
+    /// references, the first of the default map.
+    pub explicit_refs: u8,
+    /// Sequence tile info (§ 5.4.2), `0..=3`: `0` off; `1` the sequence codes
+    /// the tile layout and frames reuse it (`allow_tile_info_change = 0`); `2`
+    /// frames code `reuse_tile_info = 1`; `3` frames code `reuse_tile_info = 0`
+    /// and their own tile info.
+    pub seq_tile_info: u8,
+    /// `enable_short_refresh_frame_flags`: inter frames code the one slot
+    /// they refresh, or none, in `frame_to_refresh` (§ 5.18.2).
+    pub short_refresh: bool,
+    /// Quantizer matrices (`using_qmatrix`, § 5.18.6.2), `0..=3`: `0` off; each
+    /// other value fixes the level band `[min, max]` of `tx_choice::qm_level`
+    /// (`1` `[10, 14]`, `2` `[5, 9]`, `3` `[0, 14]`), and the frame level rises
+    /// linearly with `base_q_idx` over it: a higher level is a flatter matrix,
+    /// so a coarse quantizer keeps more of its high frequencies.
+    pub quant_matrices: u8,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -339,12 +395,31 @@ pub struct PresetParams {
     pub ref_intra_refresh: u8,
     /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
     /// intra frame searches its luma tree on luma alone, then a chroma tree
-    /// that only merges luma leaves. On in every row: intra frames gain luma
+    /// of `sdp_chroma_search`. On in every row: intra frames gain luma
     /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
     pub sdp: bool,
-    /// CCSO classifications the filter search tries per plane; `0` disables
-    /// CCSO in the sequence.
+    /// The SDP chroma tree search, `0..=1`: `0` searches only the merges of
+    /// the luma tree, `1` every partition the chroma node allows (§ 5.20.3.2).
+    pub sdp_chroma_search: u8,
+    /// Extended SDP (`enable_extended_sdp`, § 5.20.3.1) with `sdp`, `0..=2`:
+    /// an inter-frame node may code an `INTRA_REGION`, an intra luma tree and
+    /// one chroma block. `1` tries the region where the shared tree of the
+    /// same partition chose intra leaves only, `2` at every eligible node.
+    pub extended_sdp: u8,
+    /// CCSO `(ccso_ext_filter, ccso_scale_idx, ccso_quant_idx)` triples the
+    /// filter search tries per plane, `0..=112`: the first 8 of a fixed
+    /// ladder, then every other triple of § 5.18.7.12; `0` disables CCSO in
+    /// the sequence.
     pub ccso_candidates: u8,
+    /// The largest `ccso_max_band_log2` of CCSO band offsets only
+    /// (§ 5.18.7.12), `3..=6`: above `3` the search also tries 16, 32 and up
+    /// to 64 bands from 64-band statistics of each unit.
+    pub ccso_bo_band_log2: u8,
+    /// CCSO reuse in inter frames (§ 5.18.7.12), `0..=2`: `1` also prices
+    /// `reuse_ccso` of each reference's saved parameters per plane, with
+    /// `ccso_blk` coded per unit; `2` also `sb_reuse_ccso` of the saved
+    /// `ccso_blk` flags, with those parameters or fresh ones.
+    pub ccso_reuse: u8,
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
@@ -352,6 +427,11 @@ pub struct PresetParams {
     /// `1..=4`: the superblock size, then each larger size of § 5.18.7.11 up
     /// to 512 whose units do not cross a tile edge; the lowest RD cost wins.
     pub lr_unit_sizes: u8,
+    /// Chroma loop-restoration unit sizes the Wiener-NS chroma search tries,
+    /// `1..=4`: the size derived from the luma units, then each larger size
+    /// of § 5.18.7.11 up to 512 at chroma scale whose units do not cross a
+    /// tile edge; the lowest RD cost wins.
+    pub lr_chroma_unit_sizes: u8,
     /// The most CDEF strength sets a frame codes, `1..=8`.
     pub cdef_strengths: u8,
     /// CDEF `(pri, sec)` strength pairs the search tries, `0..=64`: `0`
@@ -417,6 +497,10 @@ pub struct PresetParams {
     /// its luma that the block hashes find. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
     pub intrabc: bool,
+    /// With `intrabc`, key frames also code `allow_local_intrabc = 1`, and
+    /// the copy may come from the local area (§ 6.19.7.12). Off in every
+    /// row, the screen-content rows too: not measured.
+    pub intrabc_local: bool,
     /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
     /// and a whole-sample motion search. Off in every row: it pays only on
     /// screen content, whose preset rows turn it on.
@@ -431,6 +515,9 @@ pub struct PresetParams {
     /// beats the best angular SATD; off disables `enable_dip`. Off in every
     /// row: the `use_dip` flag cost offsets its wins (2026-10-25).
     pub dip: bool,
+    /// DIP predictions by SATD that get an RD trial: `1` gives the best one
+    /// a trial when it beats the best angular SATD; more drop that gate.
+    pub dip_trials: u8,
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
@@ -469,6 +556,9 @@ pub struct PresetParams {
     /// (2026-10-25): every such block with `eob > 3` then pays a
     /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
     pub inter_ist: bool,
+    /// With `inter_ist`, an inter luma block gives an RD trial to every
+    /// kernel in place of the one that keeps the most energy.
+    pub inter_ist_rd: bool,
     /// TIP (`enable_tip`), `0..=2`: `1` inter frames with reference MVs and
     /// a TIP reference pair code `TIP_FRAME_AS_REF` with equal weights, and
     /// inter leaves also try the TIP `NEARMV` candidates; `2` also picks the
@@ -535,6 +625,10 @@ pub struct PresetParams {
     /// (2026-10-30): at `1` p6 measured paris +0.01%, niklas +0.00%, park_joy
     /// +0.49%; the lookahead vectors are too coarse.
     pub global_motion: u8,
+    /// With `global_motion`, inter frames code the `our_ref` and `their_ref`
+    /// (§ 5.18.9.1) of the fewest parameter bits; off, `our_ref =
+    /// NumTotalRefs` predicts every model from the identity.
+    pub global_motion_predict: bool,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
     /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows that search
@@ -792,6 +886,11 @@ pub enum PresetError {
 }
 
 impl PresetParams {
+    /// `[y_dc_delta_q, u_delta_q, v_delta_q]`, the plane quantizer deltas of every frame.
+    pub(crate) const fn plane_delta_q(&self) -> [i8; 3] {
+        [self.y_dc_delta_q, self.u_delta_q, self.v_delta_q]
+    }
+
     /// Checks the ranges the encoder supports, per field and across fields;
     /// every [`PRESETS`] row passes, a row with overrides may not.
     ///
@@ -852,6 +951,7 @@ impl PresetParams {
         check("drl_bits", self.drl_bits, 1, 5, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
         check("ssim_aq", self.ssim_aq, 0, 200, "")?;
+        check("segmentation", self.segmentation, 0, 1, "")?;
         check("psy_rd", self.psy_rd, 0, 200, "")?;
         for &frames in self.tf_frames.values() {
             check("tf_frames", frames, 0, 8, "")?;
@@ -859,10 +959,16 @@ impl PresetParams {
         check("delta_q_res", self.delta_q_res, 0, 3, "")?;
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
+        check("sdp_chroma_search", self.sdp_chroma_search, 0, 1, "")?;
+        check("extended_sdp", self.extended_sdp, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
+        check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
+        check("ccso_bo_band_log2", self.ccso_bo_band_log2, 3, 6, "")?;
+        check("ccso_reuse", self.ccso_reuse, 0, 2, "")?;
         check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
+        check("lr_chroma_unit_sizes", self.lr_chroma_unit_sizes, 1, 4, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
         check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
@@ -872,8 +978,29 @@ impl PresetParams {
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
+        check("long_term_id_bits", self.long_term_id_bits, 0, 7, "")?;
+        check("num_ref_frames", self.num_ref_frames, 0, 16, "")?;
+        for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
+            let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
+                .with_ref_slots(self.num_ref_frames);
+            let fits = self.num_ref_frames == 0
+                || (0..3).all(|_| {
+                    let len = probe.next_len(usize::MAX, true).unwrap_or(1);
+                    probe.plan(len).is_ok()
+                });
+            if !fits {
+                return Err(PresetError::OutOfRange {
+                    field: "num_ref_frames",
+                    value: self.num_ref_frames.into(),
+                    allowed: format!("the slots a mini-GOP of {mini_gop} needs"),
+                });
+            }
+        }
+        check("explicit_refs", self.explicit_refs, 0, 8, "")?;
+        check("seq_tile_info", self.seq_tile_info, 0, 3, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check("tip_output_search", self.tip_output_search, 0, 2, "")?;
+        check("quant_matrices", self.quant_matrices, 0, 3, "")?;
         check(
             "tip_refinemv",
             u8::from(self.tip_refinemv),
@@ -911,6 +1038,13 @@ impl FieldValue for u8 {
     const EXPECTED: &'static str = "an integer in 0..=255";
     fn parse(value: &str) -> Option<Self> {
         value.parse().ok()
+    }
+}
+
+impl FieldValue for i8 {
+    const EXPECTED: &'static str = "an integer in -64..=63 (su(7), § 5.18.6.3)";
+    fn parse(value: &str) -> Option<Self> {
+        value.parse().ok().filter(|v| (-64..=63).contains(v))
     }
 }
 
@@ -1076,6 +1210,8 @@ preset_table! {
         ref_intra_margin:      [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        sdp_chroma_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        extended_sdp:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     intra {
         intra_modes:           frames_sd([
@@ -1092,6 +1228,7 @@ preset_table! {
         cfl_zero_alpha:        [false, false, false, false, false, false, false, false, false, false, false],
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
         dip:                   [false, false, false, false, false, false, false, false, false, false, false],
+        dip_trials:            [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     transform {
         full_trials:           [    6,     6,     6,     4,     0,     0,     0,     0,     0,     0,     0],
@@ -1114,6 +1251,7 @@ preset_table! {
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
         cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
+        inter_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     inter {
@@ -1158,6 +1296,14 @@ preset_table! {
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
+        long_term_id_bits:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        implicit_output:       [false, false, false, false, false, false, false, false, false, false, false],
+        num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        short_refresh:         [false, false, false, false, false, false, false, false, false, false, false],
+        quant_matrices:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tip_output_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -1169,6 +1315,7 @@ preset_table! {
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        global_motion_predict: [false, false, false, false, false, false, false, false, false, false, false],
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
@@ -1180,8 +1327,11 @@ preset_table! {
     filters {
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
         ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
+        ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
+        ccso_reuse:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         lr_unit_sizes:         [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        lr_chroma_unit_sizes:  [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
@@ -1199,6 +1349,7 @@ preset_table! {
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
@@ -1207,6 +1358,7 @@ preset_table! {
         lookahead_frames:      [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        segmentation:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tf_frames:             frames([
                                [4; 11],
                                [0; 11], [0; 11], [0; 11]]),
@@ -1215,6 +1367,9 @@ preset_table! {
                                [4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0],
                                [0; 11], [0; 11], [0; 11]]),
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        y_dc_delta_q:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        u_delta_q:             [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        v_delta_q:             [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     mode_decision {
         psy_rd:                [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -1340,6 +1495,8 @@ mod tests {
             assert!(at_most(&slow.breakout_area, &fast.breakout_area));
             assert!(at_most(&slow.leaf_reuse, &fast.leaf_reuse));
             assert!(fast.sdp <= slow.sdp);
+            assert!(fast.sdp_chroma_search <= slow.sdp_chroma_search);
+            assert!(fast.extended_sdp <= slow.extended_sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);
@@ -1377,6 +1534,7 @@ mod tests {
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.tpl_delta_q <= slow.tpl_delta_q);
             assert!(fast.ssim_aq <= slow.ssim_aq);
+            assert!(fast.segmentation <= slow.segmentation);
             assert!(fast.psy_rd <= slow.psy_rd);
             assert!(at_most(&fast.tf_frames, &slow.tf_frames));
             assert!(fast.compound_candidates <= slow.compound_candidates);
@@ -1422,15 +1580,18 @@ mod tests {
             assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.cfl_zero_alpha <= slow.cfl_zero_alpha);
             assert!(fast.dip <= slow.dip);
+            assert!(fast.dip_trials <= slow.dip_trials);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.gdf_candidates <= slow.gdf_candidates);
             assert!(fast.cdef_strengths <= slow.cdef_strengths);
             assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
+            assert!(fast.inter_ist_rd <= slow.inter_ist_rd);
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
             assert!(fast.global_motion <= slow.global_motion);
+            assert!(fast.global_motion_predict <= slow.global_motion_predict);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
@@ -1617,9 +1778,14 @@ mod tests {
             (&[("tf_frames", "9")], "tf_frames"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("ssim_aq", "201")], "ssim_aq"),
+            (&[("segmentation", "2")], "segmentation"),
             (&[("psy_rd", "201")], "psy_rd"),
             (&[("cdef_strengths", "0")], "cdef_strengths"),
+            (&[("ccso_candidates", "113")], "ccso_candidates"),
+            (&[("ccso_bo_band_log2", "7")], "ccso_bo_band_log2"),
+            (&[("ccso_reuse", "3")], "ccso_reuse"),
             (&[("lr_unit_sizes", "0")], "lr_unit_sizes"),
+            (&[("lr_chroma_unit_sizes", "5")], "lr_chroma_unit_sizes"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
             (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),
@@ -1627,12 +1793,15 @@ mod tests {
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("interintra_search", "2")], "interintra_search"),
+            (&[("sdp_chroma_search", "2")], "sdp_chroma_search"),
+            (&[("extended_sdp", "3")], "extended_sdp"),
             (&[("warp_interintra", "3")], "warp_interintra"),
             (&[("bawp_search", "3")], "bawp_search"),
             (&[("tip", "3")], "tip"),
             (&[("cdf_update_tile", "2")], "cdf_update_tile"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("tip_output_search", "3")], "tip_output_search"),
+            (&[("quant_matrices", "4")], "quant_matrices"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),
             (&[("global_motion", "3")], "global_motion"),

@@ -203,6 +203,48 @@ fn the_new_fields_keep_the_struct_layouts() {
         offset_of!(SplotPicture, internal),
         offset_of!(SplotPicture, has_film_grain) + 4 * size_of::<usize>()
     );
+    assert_eq!(
+        offset_of!(SplotPicture, frame_type),
+        offset_of!(SplotPicture, has_film_grain) + 1
+    );
+}
+
+/// Sends every unit and takes pictures with `splot_wait_picture` only, then
+/// flushes and decodes the stream again on the same decoder.
+#[test]
+fn wait_picture_needs_no_more_input_and_flush_starts_again() {
+    let expected = batch_raw(FIXTURES[0], false);
+    let units = units(FIXTURES[0]);
+    let mut settings = core::mem::MaybeUninit::<SplotSettings>::uninit();
+    let mut decoder = ptr::null_mut();
+    unsafe {
+        splot_default_settings(settings.as_mut_ptr());
+        assert_eq!(splot_open(&raw mut decoder, settings.as_ptr()), SPLOT_OK);
+        for pass in 0..2 {
+            let mut raw = Vec::new();
+            let mut types = Vec::new();
+            for unit in &units {
+                assert_eq!(
+                    splot_send_data(decoder, unit.as_ptr(), unit.len(), ptr::null()),
+                    SPLOT_OK
+                );
+                let mut picture = core::mem::zeroed::<SplotPicture>();
+                while splot_wait_picture(decoder, &raw mut picture) == SPLOT_OK {
+                    append(&picture, &mut raw);
+                    types.push(picture.frame_type);
+                    splot_picture_unref(&raw mut picture);
+                }
+            }
+            assert!(raw == expected, "pass {pass}");
+            assert_eq!(types[0], SplotFrameType::Key as u8);
+            assert!(!types[1..].contains(&(SplotFrameType::None as u8)));
+            let mut idle = core::mem::zeroed::<SplotPicture>();
+            assert_eq!(splot_wait_picture(decoder, &raw mut idle), SPLOT_EAGAIN);
+            splot_drain(decoder);
+            splot_flush(decoder);
+        }
+        splot_close(&raw mut decoder);
+    }
 }
 
 #[test]
@@ -245,6 +287,11 @@ fn null_and_bad_arguments_are_refused() {
             splot_get_picture(ptr::null_mut(), ptr::null_mut()),
             SPLOT_EINVAL
         );
+        assert_eq!(
+            splot_wait_picture(ptr::null_mut(), ptr::null_mut()),
+            SPLOT_EINVAL
+        );
+        splot_flush(ptr::null_mut());
         splot_drain(ptr::null_mut());
         splot_picture_unref(ptr::null_mut());
         splot_close(ptr::null_mut());

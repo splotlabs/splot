@@ -32,6 +32,8 @@ pub(crate) const INTRA_MODES: [IntraMode; 13] = [
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SuperblockDecision {
     pub(crate) tree: PartitionTree,
+    /// The segment its leaves code in a frame with segmentation.
+    pub(crate) segment: Option<u8>,
 }
 
 /// One `decode_partition` call: a coded leaf or a split into child calls.
@@ -51,6 +53,14 @@ pub(crate) enum PartitionTree {
         luma: Box<PartitionTree>,
         chroma: Box<PartitionTree>,
     },
+    /// A node of an inter frame with `enable_extended_sdp` that codes
+    /// `region_type = INTRA_REGION` after `kind`: its `LUMA_PART` child trees,
+    /// then its one `CHROMA_PART` block (§ 5.20.3.1).
+    Region {
+        kind: Partition,
+        luma: Vec<PartitionTree>,
+        chroma: LeafChoice,
+    },
 }
 
 impl PartitionTree {
@@ -62,6 +72,12 @@ impl PartitionTree {
                 children.iter().map(|child| child.count_leaves(keep)).sum()
             }
             Self::Sdp { luma, chroma } => luma.count_leaves(keep) + chroma.count_leaves(keep),
+            Self::Region { luma, chroma, .. } => {
+                luma.iter()
+                    .map(|child| child.count_leaves(keep))
+                    .sum::<usize>()
+                    + usize::from(keep(chroma))
+            }
         }
     }
 }

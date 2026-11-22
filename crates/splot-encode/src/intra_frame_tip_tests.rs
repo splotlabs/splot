@@ -157,6 +157,68 @@ fn a_frame_without_a_tip_pair_codes_tip_disabled() {
     assert_same_samples(&decode(&units.concat()), &expected, "no TIP pair");
 }
 
+/// A frame between the key frame and an intra-only anchor has no inter frame
+/// as its closest past or future reference, so it codes no TIP (§ 7.9) and
+/// the stream decodes to the encoder recon.
+#[test]
+fn frames_between_intra_references_code_no_tip() {
+    let config = config(128, 128, BitDepth::Eight, 6, 110);
+    let mut coder = IntraFrameCoder::with_preset(&config, with_tip(2)).unwrap();
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, 4).with_intra_only(1);
+    let mut steps = planner.plan(1).unwrap();
+    steps.extend(planner.plan(4).unwrap());
+    let mut plans = steps.into_iter().filter_map(|step| match step {
+        crate::gop::GopStep::Code(plan) => Some(plan),
+        crate::gop::GopStep::ShowExisting { .. } => None,
+    });
+    let mut units = Vec::new();
+    let mut expected = Vec::new();
+    for (plan, index) in plans.by_ref().zip([0, 4]) {
+        assert_eq!(plan.intra_only, index == 4);
+        let coded = coder
+            .encode_frame(&panning_frame(&config, index), &plan, 110)
+            .unwrap();
+        if plan.show_frame {
+            expected.extend(recon_bytes(&coded, config.bit_depth));
+        }
+        units.push(coded.temporal_unit);
+    }
+    let middle = plans.next().unwrap();
+    let tools = crate::gop::frame_tools(
+        (&coder.preset, crate::preset::PresetContext::default()),
+        coder.tiles,
+        110,
+    );
+    let core = middle
+        .header(
+            &coder.view,
+            &coder.references,
+            110,
+            &FrameFilterParams::default(),
+            tools,
+        )
+        .unwrap();
+    assert_eq!(
+        core.inter.as_ref().unwrap().tip_frame_mode,
+        Some(TipFrameMode::AsRef)
+    );
+    assert!(!coder.references.tip_pair_available(&core));
+    let mut coded = coder
+        .code_frame(&panning_frame(&config, 2), &middle, 110, &[])
+        .unwrap();
+    let core = coded.reference.as_ref().unwrap().0.clone();
+    assert_eq!(
+        core.inter.as_ref().unwrap().tip_frame_mode,
+        Some(TipFrameMode::Disabled)
+    );
+    coder.commit(&mut coded).unwrap();
+    if middle.show_frame {
+        expected.extend(recon_bytes(&coded, config.bit_depth));
+    }
+    units.push(coded.temporal_unit);
+    assert_same_samples(&decode(&units.concat()), &expected, "intra pair");
+}
+
 /// The weight search picks a weight that leans to the past reference when
 /// the frame repeats the past reference, a weight that leans the other way
 /// when it repeats the future reference, and the stream decodes to the
@@ -893,4 +955,50 @@ fn avm_decodes_tip_output_options_like_splot() {
     let (units, expected, ..) = tip_output_options_stream(2, 0, Some(forced));
     let avm = avm_decode(&avmdec, &[units], (136, 72), BitDepth::Eight, "tip-options");
     assert!(avm == expected, "AVM output differs");
+}
+
+/// With `short_refresh` the sequence codes `enable_short_refresh_frame_flags`;
+/// inter and TIP output frames code the one slot they refresh, or none, and
+/// the mini-GOP stream is shorter than without it, decodes to the encoder
+/// recon, and has the same bytes on 1, 2 and 8 threads.
+#[test]
+fn short_refresh_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let stream = |short_refresh: bool, threads: usize| {
+        let mut config = config(72, 40, BitDepth::Eight, 6, 250);
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let params = Box::leak(Box::new(PresetParams {
+            short_refresh,
+            ..*with_tip_output(1, 200)
+        }));
+        let coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+        super::carry::planned_stream_of(&config, coder, panning_frame, 250)
+    };
+    let (units, expected, cores, coder) = stream(true, 1);
+    assert!(
+        coder
+            .sequence
+            .inter
+            .unwrap()
+            .enable_short_refresh_frame_flags
+    );
+    let refreshed: Vec<u32> = cores
+        .iter()
+        .filter(|core| core.frame_type != Some(splot_core::headers::frame::FrameType::Key))
+        .map(|core| core.refresh_frame_flags.unwrap().count_ones())
+        .collect();
+    assert!(
+        refreshed.contains(&0) && refreshed.contains(&1),
+        "{refreshed:?}"
+    );
+    assert!(refreshed.iter().all(|&slots| slots <= 1));
+    assert!(
+        cores
+            .iter()
+            .any(|core| core.obu_type == splot_core::types::ObuType::RegularTip)
+    );
+    assert_same_samples(&decode(&units), &expected, "short refresh");
+    assert!(units.len() < stream(false, 1).0.len());
+    for threads in [2, 8] {
+        assert!(stream(true, threads).0 == units, "{threads} threads");
+    }
 }

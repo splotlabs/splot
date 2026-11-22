@@ -4,9 +4,10 @@
 //! Cross-frame CDF carry (§ 5.18.2 `set_primary_ref_frame_and_ctx`, § 7.23).
 
 use super::*;
+use crate::Packet;
 use crate::gop::{GopPlanner, GopStep};
 use crate::preset::PresetParams;
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, FrameType as CoreFrameType};
 
 /// `PRIMARY_REF_NONE` (§ 3).
 const PRIMARY_REF_NONE: u8 = 7;
@@ -30,7 +31,8 @@ pub(super) fn planned_stream_of(
     qp: u16,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
     let mini_gop = coder.preset.mini_gop_size.min(4);
-    let mut planner = GopPlanner::new(config.keyint, mini_gop);
+    let mut planner =
+        GopPlanner::new(config.keyint, mini_gop).with_intra_only(coder.preset.intra_only);
     let (mut units, mut recons, mut cores) = (Vec::new(), BTreeMap::new(), Vec::new());
     let mut queued = 9;
     while let Some(len) = planner.next_len(queued, true) {
@@ -252,5 +254,300 @@ fn chosen_primary_references_keep_the_recon_on_any_thread_count() {
     assert_same_samples(&decode(&one), &expected, "chosen primary");
     for threads in [2, 8] {
         assert!(stream(choose, threads).0 == one, "{threads} threads");
+    }
+}
+
+/// With `seq_tile_info` the sequence codes the 2x2 layout and every frame
+/// reuses it (1, 2) or codes `reuse_tile_info = 0` and its own (3); with 256x256
+/// superblocks the intra frames reuse it over 128x128 superblocks. The
+/// streams decode to the encoder recon with the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn sequence_tile_info_streams_decode_alike_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let large = PresetParams {
+        max_block_log2: 8,
+        sb256_min_height: 0,
+        ..base
+    };
+    for (mode, params) in [(1, base), (2, base), (3, base), (1, large)] {
+        let stream = |threads: usize| {
+            let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                seq_tile_info: mode,
+                ..params
+            }));
+            let mut config = config(136, 136, BitDepth::Eight, 6, 150);
+            config.tiles = TileLayout {
+                cols_log2: 1,
+                rows_log2: 1,
+            };
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+            planned_stream_of(&config, coder, panning_frame, 150)
+        };
+        let (units, expected, cores, coder) = stream(1);
+        let tile = coder.sequence.tile.unwrap();
+        assert!(tile.seq_tile_info_present_flag);
+        assert_eq!(tile.allow_tile_info_change, Some(mode > 1));
+        let name = format!("mode {mode} sb {}", params.max_block_log2);
+        for core in &cores {
+            let info = core.tile_info.as_ref().unwrap();
+            assert_eq!(info.reuse_tile_info, mode < 3, "{name}");
+            let tiles = if params.max_block_log2 == 8 { 1 } else { 4 };
+            assert_eq!(info.tile_cols * info.tile_rows, tiles, "{name}");
+        }
+        assert_same_samples(&decode(&units), &expected, &name);
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+}
+
+/// With `explicit_refs` the sequence codes `explicit_ref_frame_map`: at `1`
+/// inter frames keep the default map, above it they code an explicit map of
+/// at most `explicit_refs - 1` references. The mini-GOP streams decode to the
+/// encoder recon with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn explicit_reference_map_streams_decode_alike_on_any_thread_count() {
+    let base = *Preset::new(6).unwrap().params();
+    let mut most = 0;
+    for explicit_refs in [1, 2, 3, 8] {
+        let stream = |threads: usize| {
+            let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                explicit_refs,
+                ..base
+            }));
+            let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+            planned_stream_of(&config, coder, panning_frame, 150)
+        };
+        let (units, expected, cores, coder) = stream(1);
+        assert!(coder.sequence.inter.unwrap().explicit_ref_frame_map);
+        for inter in cores.iter().filter_map(|core| core.inter.as_ref()) {
+            let refs = inter.num_total_refs.unwrap();
+            assert_eq!(inter.explicit_ref_frame_map, Some(explicit_refs > 1));
+            assert!(explicit_refs == 1 || refs < u32::from(explicit_refs));
+            most = most.max(refs);
+        }
+        let name = format!("explicit_refs {explicit_refs}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+    assert!(most > 2, "no frame with more than two references");
+}
+
+/// With `num_ref_frames` the sequence codes that many slots and the mini-GOP
+/// of 8 plans over them: streams of 4, 5 and 16 slots decode to the encoder
+/// recon with the same bytes on 1, 2 and 8 threads. Too few slots for the
+/// mini-GOP fail validation.
+#[test]
+fn explicit_slot_count_streams_decode_alike_on_any_thread_count() {
+    let stream = |slots: u8, threads: usize| {
+        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        config.preset_overrides = vec![("num_ref_frames".to_owned(), slots.to_string())];
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        encode_frames(&config, (0..20).map(|index| panning_frame(&config, index)))
+    };
+    for slots in [4, 5, 16] {
+        let (units, expected) = stream(slots, 1);
+        let units = units.concat();
+        assert_same_samples(&decode(&units), &expected, &format!("{slots} slots"));
+        for threads in [2, 8] {
+            assert!(
+                stream(slots, threads).0.concat() == units,
+                "{slots}: {threads} threads"
+            );
+        }
+    }
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.preset_overrides = vec![("num_ref_frames".to_owned(), "2".to_owned())];
+    assert!(config.validate().is_err());
+}
+
+/// With `intra_only = 1` the first frame of each mini-GOP is an intra-only
+/// frame (§ 5.18.2) that refreshes one slot, and a frame coded after it
+/// still references a frame from before it. The 4:2:0 and 4:4:4 streams
+/// decode to the encoder recon with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn intra_only_streams_decode_alike_on_any_thread_count() {
+    for chroma in [PixelFormat::Yuv420, PixelFormat::Yuv444] {
+        let (units, expected, cores) = intra_only_stream(chroma, 1);
+        let intra: Vec<_> = cores
+            .iter()
+            .enumerate()
+            .filter(|(_, core)| core.frame_type == Some(CoreFrameType::IntraOnly))
+            .collect();
+        assert!(
+            intra.len() >= 2,
+            "{chroma:?}: {} intra-only frames",
+            intra.len()
+        );
+        for (index, core) in intra {
+            assert_eq!(core.refresh_frame_flags.map(u32::count_ones), Some(1));
+            assert!(core.inter.is_none());
+            let hint = core.display_order_hint().unwrap();
+            let older = cores[index + 1..]
+                .iter()
+                .filter_map(|later| later.inter.as_ref())
+                .any(|inter| inter.order_hints.iter().any(|&h| h < hint));
+            assert!(older, "{chroma:?}: no reference across the frame at {hint}");
+        }
+        assert_same_samples(&decode(&units), &expected, &format!("{chroma:?}"));
+        for threads in [2, 8] {
+            let other = intra_only_stream(chroma, threads).0;
+            assert!(other == units, "{chroma:?}: {threads} threads");
+        }
+    }
+}
+
+/// A panning mini-GOP stream in `chroma` with `intra_only = 1` on `threads`
+/// threads: its units, the encoder recon and the frame headers.
+fn intra_only_stream(
+    chroma: PixelFormat,
+    threads: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>) {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        intra_only: 1,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.chroma = chroma;
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (units, expected, cores, _) = planned_stream_of(&config, coder, panning_frame, 150);
+    (units, expected, cores)
+}
+
+/// CRF and VBR streams with intra-only frames decode to the encoder recon.
+#[test]
+fn rate_controlled_intra_only_streams_decode_to_the_encoder_recon() {
+    for mode in [
+        RateControlMode::Crf { crf: 32 },
+        RateControlMode::Vbr { bitrate_kbps: 200 },
+    ] {
+        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        config.rate_control = mode;
+        config.preset_overrides = vec![("intra_only".to_owned(), "1".to_owned())];
+        let (units, expected) =
+            encode_frames(&config, (0..20).map(|index| panning_frame(&config, index)));
+        assert_same_samples(&decode(&units.concat()), &expected, &format!("{mode:?}"));
+    }
+}
+
+/// AVM decodes intra-only streams like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_intra_only_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for chroma in [PixelFormat::Yuv420, PixelFormat::Yuv444] {
+        let (units, expected, _) = intra_only_stream(chroma, 1);
+        let name = format!("intraonly{chroma:?}");
+        let avm = avm_decode(&avmdec, &[units], (72, 40), BitDepth::Eight, &name);
+        assert!(avm == expected, "{chroma:?}: AVM output differs");
+    }
+}
+
+/// The packets of `frames` panning frames coded through the [`Encoder`] with
+/// `implicit_output` on `threads`, and the encoder recon in display order.
+fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, Vec<u8>) {
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.preset_overrides = vec![("implicit_output".to_owned(), "true".to_owned())];
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let recons = Arc::default();
+    let coder = Recording {
+        coder: IntraFrameCoder::new(&config).unwrap(),
+        bit_depth: config.bit_depth,
+        recons: Arc::clone(&recons),
+    };
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
+    let mut packets = Vec::new();
+    for index in (0..frames).map(Some).chain([None]) {
+        match index {
+            Some(index) => encoder.send_frame(panning_frame(&config, index)).unwrap(),
+            None => encoder.flush().unwrap(),
+        }
+        while let Some(packet) = encoder.receive_packet().unwrap() {
+            packets.push(packet);
+        }
+    }
+    let expected = recons.lock().unwrap().values().flatten().copied().collect();
+    (config, packets, expected)
+}
+
+/// With `implicit_output` a stream of 11 frames, which ends inside its second
+/// mini-GOP of 8, codes one temporal unit per frame and no show-existing
+/// frame; the packets come in coding order, so their pts is not monotonic,
+/// and cover every input frame once. `splot decode` outputs every frame, in
+/// display order, equal to the encoder recon (§ 7.21.3, the § 7.21.5 flush
+/// at the end), and the bytes are the same on 1, 2 and 8 threads.
+#[test]
+fn implicit_output_streams_decode_in_display_order() {
+    let (_, packets, expected) = implicit_output_stream(11, 1);
+    let mut pts: Vec<u64> = packets.iter().map(|packet| packet.pts).collect();
+    assert!(!pts.is_sorted(), "{pts:?}");
+    pts.sort_unstable();
+    assert_eq!(pts, (0..11).collect::<Vec<_>>());
+    assert!(packets.iter().all(|packet| packet.stats.len() == 1));
+    let units: Vec<u8> = packets
+        .iter()
+        .flat_map(|packet| packet.data.clone())
+        .collect();
+    assert_same_samples(&decode(&units), &expected, "implicit output");
+    for threads in [2, 8] {
+        let other: Vec<u8> = implicit_output_stream(11, threads)
+            .1
+            .iter()
+            .flat_map(|packet| packet.data.clone())
+            .collect();
+        assert!(other == units, "{threads} threads");
+    }
+}
+
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_implicit_output_streams_in_display_order() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (config, packets, expected) = implicit_output_stream(11, 1);
+    let units: Vec<Vec<u8>> = packets.into_iter().map(|packet| packet.data).collect();
+    let size = (config.width, config.height);
+    let avm = avm_decode(&avmdec, &units, size, config.bit_depth, "implicit");
+    assert!(avm == expected, "AVM output differs");
+}
+
+/// With `long_term_id_bits` 2 the sequence codes 2 bits and the key frames of
+/// a stream with a key frame every 2 frames take the long-term ids 0, 1, 2,
+/// 0, 1 (§ 5.18.2); the stream decodes to the encoder recon with the same bytes
+/// on 1, 2 and 8 threads.
+#[test]
+fn key_frames_cycle_their_long_term_ids() {
+    let stream = |threads: usize| {
+        let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            long_term_id_bits: 2,
+            ..*Preset::new(6).unwrap().params()
+        }));
+        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        config.keyint = core::num::NonZeroU32::new(2).unwrap();
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        planned_stream_of(&config, coder, panning_frame, 150)
+    };
+    let (units, expected, cores, coder) = stream(1);
+    assert_eq!(coder.sequence.inter.unwrap().long_term_frame_id_bits, 2);
+    let ids: Vec<Option<i32>> = cores
+        .iter()
+        .filter(|core| core.frame_type == Some(splot_core::headers::frame::FrameType::Key))
+        .map(|core| core.long_term_id)
+        .collect();
+    assert_eq!(ids, [Some(0), Some(1), Some(2), Some(0), Some(1)]);
+    assert_same_samples(&decode(&units), &expected, "long-term ids");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == units, "{threads} threads");
     }
 }

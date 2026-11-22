@@ -15,7 +15,8 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
     FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, TxMode, WienerNsFrameFilterBank,
+    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, QuantizationParams,
+    SegmentationParams, SetupQmParams, TxMode, WienerNsFrameFilterBank,
     encode_temporal_delimiter_obu, gdf_per_block_is_coded, init_core_from_prefix, parse_core_body,
     parse_frame_header_prefix,
 };
@@ -24,14 +25,38 @@ use crate::headers::sequence::{
 };
 use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
 use crate::obu::{ObuHeader, ParsedObu};
+use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use crate::span::ByteOffset;
 use crate::tile::TileSpacing;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
-    write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_intrabc_params,
-    write_lr_params_for_inter, write_obu_payload, write_tile_group_obu,
+    write_cdef_params, write_deblocking_filter_params, write_gdf_params,
+    write_inter_segmentation_params, write_intrabc_params, write_lr_params_for_inter,
+    write_obu_payload, write_quantization_params, write_setup_qm_params, write_tile_group_obu,
 };
+
+/// The [`SegmentationParams`] of [`KeyFrameTxParams::segment_alt_q`].
+fn segmentation_params(alt_q: Option<[i16; 4]>) -> SegmentationParams {
+    let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+    if let Some(alt_q) = alt_q {
+        for (segment, data) in features.iter_mut().zip(alt_q) {
+            segment[0] = SegmentFeature {
+                enabled: true,
+                data: i32::from(data),
+            };
+        }
+    }
+    SegmentationParams {
+        segmentation_enabled: alt_q.is_some(),
+        reuse_seg_info: false,
+        features,
+        segmentation_update_map: alt_q.is_some(),
+        segmentation_temporal_update: false,
+        seg_id_pre_skip: false,
+        last_active_seg_id: if alt_q.is_some() { 3 } else { 0 },
+    }
+}
 
 /// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
 const UNCONSTRAINED_LEVEL_IDX: u32 = 31;
@@ -154,6 +179,29 @@ pub struct EncoderToolFlags {
     /// `enable_global_motion` (§ 5.4.6): each inter frame codes
     /// `use_global_motion`.
     pub global_motion: bool,
+    /// `long_term_frame_id_bits`, `0..=7` (§ 5.4.6): key frames code
+    /// `long_term_id_plus_1` in this many bits.
+    pub long_term_frame_id_bits: u8,
+    /// `monotonic_output_order_flag = 0` (§ 5.4.1): hidden frames code
+    /// `implicit_output_frame`.
+    pub implicit_output: bool,
+    /// `explicit_num_ref_frames` with `NumRefFrames`, `1..=16` (§ 5.4.6);
+    /// `None` keeps the default 8 slots.
+    pub num_ref_frames: Option<u8>,
+    /// `explicit_ref_frame_map` (§ 5.4.6): inter frames code
+    /// `frame_explicit_ref_frame_map`.
+    pub explicit_ref_frame_map: bool,
+    /// `seq_tile_info_present_flag` (§ 5.4.2): the sequence codes this
+    /// uniform layout, which frames reuse (§ 5.18.7.2).
+    pub seq_tiles: Option<SeqTiles>,
+    /// The plane quantizer deltas `[DeltaQYDc, DeltaQU*, DeltaQV*]` frames may
+    /// code (§ 5.4.8): a non-zero luma value codes `equal_ac_dc_q = 0` with
+    /// `y_dc_delta_q_enabled`, a non-zero chroma value codes the chroma
+    /// enables, and `u != v` codes `separate_uv_delta_q`.
+    pub plane_delta_q: [i8; 3],
+    /// `enable_short_refresh_frame_flags` (§ 5.4.6): inter frames code
+    /// `has_refresh_frame_flags` and `frame_to_refresh`.
+    pub short_refresh: bool,
     /// `enable_masked_compound` (§ 5.4.6): compound blocks may code a wedge
     /// or difference-weighted mask (§ 5.20.7.16).
     pub masked_compound: bool,
@@ -228,8 +276,10 @@ pub struct FrameFilterParams {
     /// The `RESTORE_WIENER_NONSEP` frame filters of U and V; `None` codes
     /// `RESTORE_NONE`. `switchable` must be `false`.
     pub lr_chroma_wiener_ns: [Option<FrameWienerNs>; 2],
-    /// `ccso_params()` of each plane (§ 5.18.7.12) without reuse; the frame
-    /// codes `ccso_frame_flag = 1` when a plane sets `ccso_planes`.
+    /// `ccso_params()` of each plane (§ 5.18.7.12); the frame codes
+    /// `ccso_frame_flag = 1` when a plane sets `ccso_planes`. An inter frame
+    /// codes `reuse_ccso`, `sb_reuse_ccso` and `ccso_ref_idx` of each plane and
+    /// skips the parameters of a `reuse_ccso` plane.
     pub ccso: [CcsoPlaneParams; 3],
     /// `gdf_params()` (§ 5.18.7.9) of a frame with `gdf_frame_enable = 1`;
     /// `None` codes `gdf_frame_enable = 0` when the sequence enables GDF.
@@ -271,9 +321,11 @@ pub struct KeyFrameTxParams {
     pub allow_tcq: bool,
     /// `delta_q_res` of a frame that codes `delta_q_present` (§ 5.18.7.8), `0..=3`.
     pub delta_q_res: Option<u8>,
-    /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1` and
-    /// `allow_local_intrabc = 0` (§ 5.18.3.4); an inter frame refuses it.
+    /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1`
+    /// (§ 5.18.3.4); an inter frame refuses it.
     pub allow_intrabc: bool,
+    /// With `allow_intrabc`, `allow_local_intrabc` (else 0).
+    pub allow_local_intrabc: bool,
     /// `grain_seed` of an output frame of a sequence with
     /// `film_grain_params_present`, which codes `apply_grain = 1` with
     /// `fgm_id = 0` (§ 5.18.10.1); `None` codes `apply_grain = 0`.
@@ -288,6 +340,21 @@ pub struct KeyFrameTxParams {
     /// `PRIMARY_REF_CHOOSE`, so the decoder derives `primary_ref_frame`; a
     /// key frame ignores it.
     pub choose_primary_ref_frame: bool,
+    /// `long_term_id_plus_1` of a key frame (§ 5.18.2), below
+    /// `1 << long_term_frame_id_bits`; `0` gives it no long-term id.
+    pub long_term_id_plus_1: u32,
+    /// `using_qmatrix = 1` with this § 5.18.6.2 level, `0..=15`, in `qm_y`,
+    /// `qm_u` and `qm_v`; `None` codes `using_qmatrix = 0`.
+    pub qm_level: Option<u8>,
+    /// `[DeltaQYDc, DeltaQUDc = DeltaQUAc, DeltaQVDc = DeltaQVAc]` (§ 5.18.6.1),
+    /// each in the `su(7)` range; the sequence [`EncoderToolFlags::plane_delta_q`]
+    /// must enable each non-zero value.
+    pub plane_delta_q: [i8; 3],
+    /// `segmentation_enabled` (§ 5.18.7.1) with segments 0..=3 enabling
+    /// `SEG_LVL_ALT_Q` at these data, an updated map and no temporal update;
+    /// `None` codes `segmentation_enabled = 0`. Every segment shares the
+    /// one `qm_level` (`pic_qm_num_minus_1 = 0`).
+    pub segment_alt_q: Option<[i16; 4]>,
 }
 
 impl Default for KeyFrameTxParams {
@@ -298,12 +365,29 @@ impl Default for KeyFrameTxParams {
             allow_tcq: false,
             delta_q_res: None,
             allow_intrabc: false,
+            allow_local_intrabc: false,
             grain_seed: None,
             disable_cdf_update: false,
             disable_cross_frame_cdf_init: false,
             choose_primary_ref_frame: false,
+            long_term_id_plus_1: 0,
+            qm_level: None,
+            plane_delta_q: [0; 3],
+            segment_alt_q: None,
         }
     }
+}
+
+/// The uniform tile layout of a sequence with `seq_tile_info_present_flag`
+/// (§ 5.4.2).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SeqTiles {
+    /// `TileColsLog2` before the cap at `maxLog2TileCols`.
+    pub cols_log2: u8,
+    /// `TileRowsLog2` before the cap at `maxLog2TileRows`.
+    pub rows_log2: u8,
+    /// `allow_tile_info_change`: frames code `reuse_tile_info`.
+    pub allow_tile_info_change: bool,
 }
 
 /// The uniform tile layout of the encoder frame headers (§ 5.18.7.3).
@@ -320,6 +404,9 @@ pub struct UniformTiles {
     /// `context_update_tile_id = TileCols * TileRows / 2` (§ 5.18.7.2), the
     /// middle tile, instead of `0` in a frame that codes it.
     pub middle_cdf_update_tile: bool,
+    /// `reuse_tile_info` of a frame that codes it (`allow_tile_info_change`
+    /// and an eligible sequence layout, § 5.18.7.2).
+    pub reuse_tile_info: bool,
 }
 
 impl Default for UniformTiles {
@@ -329,6 +416,7 @@ impl Default for UniformTiles {
             rows_log2: 0,
             size_bytes: 4,
             middle_cdf_update_tile: false,
+            reuse_tile_info: true,
         }
     }
 }
@@ -424,7 +512,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(false)?; // still_picture
     w.write_bits(0, 2)?; // max_tlayer_id
     w.write_bits(0, 3)?; // max_mlayer_id
-    w.write_flag(true)?; // monotonic_output_order_flag
+    w.write_flag(!tools.implicit_output)?; // monotonic_output_order_flag
     w.write_bits(width_bits - 1, 4)?;
     w.write_bits(height_bits - 1, 4)?;
     w.write_bits(params.width - 1, width_bits)?;
@@ -493,7 +581,13 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(false)?; // cdef_on_skip_txfm_disabled
     w.write_bits(DF_PAR_BITS_MINUS_2 + u32::from(tools.df_par_bits_extra), 2)?;
 
-    w.write_flag(false)?; // seq_tile_info_present_flag
+    w.write_flag(tools.seq_tiles.is_some())?; // seq_tile_info_present_flag
+    if let Some(tiles) = tools.seq_tiles {
+        w.write_flag(tiles.allow_tile_info_change)?;
+        let sb = params.sb_size;
+        let log2 = (tiles.cols_log2, tiles.rows_log2);
+        write_uniform_tile_params(&mut w, (params.width, params.height), [sb, sb], log2)?;
+    }
     w.write_flag(tools.film_grain)?; // film_grain_params_present
     w.align_to_byte();
     Ok(w.into_bytes())
@@ -533,9 +627,22 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     if let Some(constrain) = tools.drl_reorder {
         w.write_flag(constrain)?; // constrain_drl_reorder
     }
-    w.write_flag(false)?; // explicit_ref_frame_map
-    w.write_flag(false)?; // explicit_num_ref_frames
-    w.write_bits(0, 3)?; // long_term_frame_id_bits
+    w.write_flag(tools.explicit_ref_frame_map)?;
+    w.write_flag(tools.num_ref_frames.is_some())?; // explicit_num_ref_frames
+    if let Some(slots) = tools.num_ref_frames {
+        if !(1..=16).contains(&slots) {
+            return Err(WriteError::NonCanonicalSequenceValue {
+                what: "num_ref_frames_minus_1",
+            });
+        }
+        w.write_bits(u32::from(slots) - 1, 4)?; // num_ref_frames_minus_1
+    }
+    if tools.long_term_frame_id_bits > 7 {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "long_term_frame_id_bits",
+        });
+    }
+    w.write_bits(u32::from(tools.long_term_frame_id_bits), 3)?;
     w.write_ns(tools.max_drl_bits_minus_1, 5)?; // ns(MAX_REF_MV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_drl_bits
     w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
@@ -564,10 +671,11 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         w.write_flag(flag)?; // adaptive_mvd, mvd_sign_derive, flex_mvres
     }
     w.write_flag(tools.global_motion)?; // enable_global_motion
-    w.write_flag(false) // enable_short_refresh_frame_flags
+    w.write_flag(tools.short_refresh) // enable_short_refresh_frame_flags
 }
 
-/// § 5.4.8 with zero quantizer offsets.
+/// § 5.4.8 with zero `Base*DeltaQ` and the frame delta enables of
+/// [`EncoderToolFlags::plane_delta_q`].
 fn write_transform_quant_entropy_config(
     w: &mut BitWriter,
     tools: EncoderToolFlags,
@@ -596,13 +704,23 @@ fn write_transform_quant_entropy_config(
     if let Some(across_tiles) = tools.avg_cdf {
         w.write_flag(across_tiles)?; // avg_cdf_type
     }
+    let [y, u, v] = tools.plane_delta_q.map(|delta| delta != 0);
+    let uv = !monochrome && (u || v);
     if !monochrome {
-        w.write_flag(false)?; // separate_uv_delta_q
+        w.write_flag(tools.plane_delta_q[1] != tools.plane_delta_q[2])?; // separate_uv_delta_q
     }
-    w.write_flag(true)?; // equal_ac_dc_q
+    w.write_flag(!y)?; // equal_ac_dc_q
+    if y {
+        w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_y_dc_delta_q
+        w.write_flag(true)?; // y_dc_delta_q_enabled
+    }
     if !monochrome {
+        if y {
+            w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_uv_dc_delta_q
+            w.write_flag(uv)?; // uv_dc_delta_q_enabled
+        }
         w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_uv_ac_delta_q
-        w.write_flag(false)?; // uv_ac_delta_q_enabled
+        w.write_flag(uv)?; // uv_ac_delta_q_enabled
     }
     Ok(())
 }
@@ -654,20 +772,40 @@ fn key_frame_header_bits(
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
     }
+    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
+    let mut w = BitWriter::new();
+    w.write_uvlc(0)?; // cur_mfh_id
+    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    if tx.long_term_id_plus_1 >> seq.long_term_frame_id_bits != 0 {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "long_term_id_plus_1",
+        }
+        .into());
+    }
+    w.write_bits(tx.long_term_id_plus_1, seq.long_term_frame_id_bits)?;
+    w.write_flag(true)?; // immediate_output_frame
+    w.write_flag(false)?; // frame_size_override_flag
+    w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
+    write_intra_frame_tail(&mut w, seq, (base_q_idx, tiles, true), filters, tx)?;
+    Ok(w.into_bytes())
+}
+
+/// § 5.18.2 of an intra frame from `screen_content_params()` to
+/// `film_grain_config()`: the `base_q_idx`, `tiles`, `filters` and `tx` of a
+/// frame with `immediate_output_frame` `show`, then the byte alignment.
+pub(super) fn write_intra_frame_tail(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    (base_q_idx, tiles, show): (u32, UniformTiles, bool),
+    filters: &FrameFilterParams,
+    tx: KeyFrameTxParams,
+) -> Result<(), EncoderHeaderError> {
     if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
         return Err(EncoderHeaderError::InvalidTxParams {
             tx_mode: tx.tx_mode,
             reduced_tx_set: tx.reduced_tx_set,
         });
     }
-    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
-    let mut w = BitWriter::new();
-    w.write_uvlc(0)?; // cur_mfh_id
-    w.write_uvlc(0)?; // seq_header_id_in_frame_header
-    w.write_bits(0, seq.long_term_frame_id_bits)?; // long_term_id_plus_1
-    w.write_flag(true)?; // immediate_output_frame
-    w.write_flag(false)?; // frame_size_override_flag
-    w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
     if seq.seq_force_screen_content_tools == 2 {
         w.write_flag(true)?; // allow_screen_content_tools
         if seq.seq_force_integer_mv == 2 {
@@ -677,24 +815,24 @@ fn key_frame_header_bits(
     let intrabc = IntrabcParams {
         allow_intrabc: tx.allow_intrabc,
         allow_global_intrabc: tx.allow_intrabc.then_some(true),
-        allow_local_intrabc: tx.allow_intrabc.then_some(false),
+        allow_local_intrabc: tx.allow_intrabc.then_some(tx.allow_local_intrabc),
         change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
         max_bvp_drl_bits_minus_1: None,
     };
-    write_intrabc_params(&mut w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
+    write_intrabc_params(w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
     w.write_flag(tx.disable_cdf_update)?;
     write_quant_and_filters(
-        &mut w,
+        w,
         seq,
         (base_q_idx, tiles, tx),
         filters,
-        (true, LrReferenceFilters::default()),
+        (true, LrReferenceFilters::default(), None),
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
-    write_film_grain_config(&mut w, seq, true, tx.grain_seed)?;
+    write_film_grain_config(w, seq, show, tx.grain_seed)?;
     w.align_to_byte();
-    Ok(w.into_bytes())
+    Ok(())
 }
 
 /// § 5.18.10.1 `film_grain_config()` of a frame with `immediate_output_frame`
@@ -722,8 +860,30 @@ pub(super) fn write_film_grain_config(
     Ok(())
 }
 
+/// The § 5.18.6.1 model of `base_q_idx` with the plane deltas of `tx`: chroma
+/// codes one value for DC and AC, and V differs from U only with
+/// `separate_uv_delta_q`.
+pub(super) fn plane_quantization(
+    seq: &CoreSeqView,
+    base_q_idx: u32,
+    tx: KeyFrameTxParams,
+) -> QuantizationParams {
+    let chroma = seq.quant.num_planes > 1;
+    let [y, u, v] = tx.plane_delta_q.map(i32::from);
+    let [u, v] = if chroma { [u, v] } else { [0, 0] };
+    QuantizationParams {
+        base_q_idx,
+        delta_q_y_dc: y,
+        delta_q_u_dc: u,
+        delta_q_u_ac: u,
+        delta_q_v_dc: v,
+        delta_q_v_ac: v,
+        diff_uv_delta: chroma && seq.quant.separate_uv_delta_q && u != v,
+    }
+}
+
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
-/// segmentation or quantizer matrices, the delta-q and `allow_tcq` of `tx`, parity hiding when
+/// segmentation, the quantizer-matrix level and the delta-q and `allow_tcq` of `tx`, parity hiding when
 /// the sequence enables it and the frame has no TCQ, and the filters of `filters`; an inter
 /// frame codes no CCSO reuse.
 pub(super) fn write_quant_and_filters(
@@ -731,7 +891,7 @@ pub(super) fn write_quant_and_filters(
     seq: &CoreSeqView,
     (base_q_idx, tiles, tx): (u32, UniformTiles, KeyFrameTxParams),
     filters: &FrameFilterParams,
-    (frame_is_intra, lr_refs): (bool, LrReferenceFilters<'_>),
+    (frame_is_intra, lr_refs, coded_map): (bool, LrReferenceFilters<'_>, Option<bool>),
 ) -> Result<(), EncoderHeaderError> {
     let allow_tcq = tx.allow_tcq;
     if tx.delta_q_res.is_some() && base_q_idx == 0 {
@@ -748,9 +908,32 @@ pub(super) fn write_quant_and_filters(
         });
     }
     let spacing = write_uniform_tile_info(w, seq, tiles, frame_is_intra)?;
-    w.write_bits(base_q_idx, q_bits)?;
-    w.write_flag(false)?; // segmentation_enabled
-    w.write_flag(false)?; // using_qmatrix
+    write_quantization_params(
+        w,
+        &plane_quantization(seq, base_q_idx, tx),
+        &seq.quant,
+        false,
+    )?;
+    write_inter_segmentation_params(
+        w,
+        &segmentation_params(tx.segment_alt_q),
+        (&seq.seg, None),
+        coded_map,
+    )?;
+    let chroma = |level| if seq.quant.num_planes > 1 { level } else { 0 };
+    let qm = SetupQmParams {
+        using_qmatrix: tx.qm_level.is_some(),
+        pic_qm_num_minus_1: 0,
+        levels: core::array::from_fn(|i| match tx.qm_level {
+            Some(level) if i == 0 => QmSetLevels {
+                qm_y: level,
+                qm_u: chroma(level),
+                qm_v: chroma(level),
+            },
+            _ => QmSetLevels::default(),
+        }),
+    };
+    write_setup_qm_params(w, &qm, &seq.quant, tx.segment_alt_q.is_some())?;
     if base_q_idx > 0 {
         w.write_flag(tx.delta_q_res.is_some())?; // delta_q_present
     }
@@ -784,6 +967,7 @@ pub(super) fn write_quant_and_filters(
         mi_col_starts: &col_starts.0,
         mi_row_starts: &row_starts.0,
     };
+    let num_refs = lr_refs.num_ref_frames;
     write_filter_params(w, seq, filters, (lr_refs, gdf), frame_is_intra)?;
     if seq.ccso.enable_ccso {
         let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
@@ -792,12 +976,54 @@ pub(super) fn write_quant_and_filters(
         for plane in planes.iter().filter(|_| on) {
             w.write_flag(plane.ccso_planes)?;
             if plane.ccso_planes {
-                if !frame_is_intra {
-                    w.write_flag(false)?; // reuse_ccso
-                    w.write_flag(false)?; // sb_reuse_ccso
+                write_ccso_reuse(w, plane, frame_is_intra, num_refs)?;
+                if !plane.reuse_ccso {
+                    let coded = CcsoPlaneParams {
+                        reuse_ccso: false,
+                        sb_reuse_ccso: false,
+                        ccso_ref_idx: None,
+                        ..*plane
+                    };
+                    write_ccso_plane_params(w, &coded)?;
                 }
-                write_ccso_plane_params(w, plane)?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// `reuse_ccso`, `sb_reuse_ccso` and `ccso_ref_idx` of an enabled plane of an
+/// inter frame over `num_refs` references (§ 5.18.7.12); an intra frame codes
+/// none and refuses them.
+fn write_ccso_reuse(
+    w: &mut BitWriter,
+    plane: &CcsoPlaneParams,
+    frame_is_intra: bool,
+    num_refs: u32,
+) -> Result<(), EncoderHeaderError> {
+    let reuses = plane.reuse_ccso || plane.sb_reuse_ccso;
+    if frame_is_intra {
+        return if reuses || plane.ccso_ref_idx.is_some() {
+            Err(WriteError::NonCanonicalFrameHeader {
+                what: "CCSO reuse in an intra frame",
+            }
+            .into())
+        } else {
+            Ok(())
+        };
+    }
+    w.write_flag(plane.reuse_ccso)?;
+    w.write_flag(plane.sb_reuse_ccso)?;
+    if reuses {
+        let index = plane.ccso_ref_idx.unwrap_or(0);
+        if index >= num_refs.max(1) {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "ccso_ref_idx outside the references",
+            }
+            .into());
+        }
+        if num_refs > 1 {
+            w.write_bits(index, crate::headers::frame::size::ceil_log2(num_refs))?;
         }
     }
     Ok(())
@@ -920,49 +1146,34 @@ fn write_filter_params(
 }
 
 /// § 5.18.7.2 `tile_info()` with § 5.18.7.3 uniform spacing at level 31, where
-/// `minLog2TileCols` and `minLog2Tiles` are `0`: `tiles` capped at `maxLog2TileCols`
-/// and `maxLog2TileRows`, then `context_update_tile_id` and `tiles.size_bytes`
-/// when the frame has more than one tile.
+/// `minLog2TileCols` and `minLog2Tiles` are `0`: `reuse_tile_info` when the
+/// sequence layout is eligible and may change; a frame that reuses the
+/// sequence layout codes it in place of `tiles`, any other frame codes `tiles`
+/// capped at `maxLog2TileCols` and `maxLog2TileRows`; then
+/// `context_update_tile_id` and `tiles.size_bytes` when the frame has more
+/// than one tile.
 pub(super) fn write_uniform_tile_info(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     tiles: UniformTiles,
     frame_is_intra: bool,
 ) -> Result<[TileSpacing; 2], WriteError> {
-    let sb_log2 = crate::tile::mi_width_log2(seq.tile.frame_sb_size(frame_is_intra));
-    let mis = |frame: u32| 2 * frame.div_ceil(8);
-    let axis = |w: &mut BitWriter,
-                log2: u8,
-                mis: u32,
-                max_tiles: u32|
-     -> Result<TileSpacing, WriteError> {
-        let max = crate::tile::tile_log2(1, mis.div_ceil(1 << sb_log2).min(max_tiles));
-        let log2 = log2.min(max);
-        for _ in 0..log2 {
-            w.write_flag(true)?; // increment_tile_*_log2
+    let size = (seq.max_frame_width, seq.max_frame_height);
+    let sb_sizes = [seq.tile.seq_sb_size, seq.tile.frame_sb_size(frame_is_intra)];
+    let log2 = (tiles.cols_log2, tiles.rows_log2);
+    let [cols, rows] = match reused_tile_layout(seq, sb_sizes[1]) {
+        Some(layout) => {
+            if seq.tile.allow_tile_info_change {
+                w.write_flag(tiles.reuse_tile_info)?;
+            }
+            if seq.tile.allow_tile_info_change && !tiles.reuse_tile_info {
+                write_uniform_tile_params(w, size, sb_sizes, log2)?
+            } else {
+                layout
+            }
         }
-        if log2 < max {
-            w.write_flag(false)?;
-        }
-        Ok(crate::tile::uniform_spacing(
-            log2,
-            mis,
-            seq.tile.seq_sb_size,
-        ))
+        None => write_uniform_tile_params(w, size, sb_sizes, log2)?,
     };
-    w.write_flag(true)?; // uniform_tile_spacing_flag
-    let cols = axis(
-        w,
-        tiles.cols_log2,
-        mis(seq.max_frame_width),
-        crate::tile::MAX_TILE_COLS,
-    )?;
-    let rows = axis(
-        w,
-        tiles.rows_log2,
-        mis(seq.max_frame_height),
-        crate::tile::MAX_TILE_ROWS,
-    )?;
     if cols.count > 1 || rows.count > 1 {
         if !seq.tile.enable_avg_cdf || seq.tile.avg_cdf_type == 0 {
             let bits =
@@ -982,6 +1193,61 @@ pub(super) fn write_uniform_tile_info(
         }
         w.write_bits(u32::from(tiles.size_bytes) - 1, 2)?;
     }
+    Ok([cols, rows])
+}
+
+/// The § 5.18.7.4 `reuse_tile_params()` layout of the uniform sequence tiles
+/// when a frame of superblock size `sb_size` is eligible to reuse them
+/// (§ 5.18.7.2), else `None`.
+fn reused_tile_layout(seq: &CoreSeqView, sb_size: SuperblockSize) -> Option<[TileSpacing; 2]> {
+    let params = seq
+        .tile
+        .seq_tile_params
+        .filter(|_| seq.tile.seq_tile_info_present_flag)?;
+    let sb_log2 = crate::tile::mi_width_log2(sb_size);
+    let mis = |frame: u32| 2 * frame.div_ceil(8);
+    let sbs = |frame: u32| mis(frame).div_ceil(1 << sb_log2);
+    let eligible = params.uniform_spacing
+        && super::tiling::uniform_eligible(params.tile_rows_log2, sbs(seq.max_frame_height))
+        && super::tiling::uniform_eligible(params.tile_cols_log2, sbs(seq.max_frame_width));
+    eligible.then(|| {
+        [
+            (params.tile_cols_log2, seq.max_frame_width),
+            (params.tile_rows_log2, seq.max_frame_height),
+        ]
+        .map(|(log2, frame)| crate::tile::uniform_spacing(log2, mis(frame), seq.tile.seq_sb_size))
+    })
+}
+
+/// The § 5.18.7.3 `tile_params()` bits of a uniform layout of `log2` tiles
+/// (capped at `maxLog2TileCols` and `maxLog2TileRows`) over `width` x `height`
+/// with `uniformSbSize` and `sbSize`; returns the column and row spacing.
+fn write_uniform_tile_params(
+    w: &mut BitWriter,
+    (width, height): (u32, u32),
+    [uniform_sb_size, sb_size]: [SuperblockSize; 2],
+    (cols_log2, rows_log2): (u8, u8),
+) -> Result<[TileSpacing; 2], WriteError> {
+    let sb_log2 = crate::tile::mi_width_log2(sb_size);
+    let mis = |frame: u32| 2 * frame.div_ceil(8);
+    let axis = |w: &mut BitWriter,
+                log2: u8,
+                mis: u32,
+                max_tiles: u32|
+     -> Result<TileSpacing, WriteError> {
+        let max = crate::tile::tile_log2(1, mis.div_ceil(1 << sb_log2).min(max_tiles));
+        let log2 = log2.min(max);
+        for _ in 0..log2 {
+            w.write_flag(true)?; // increment_tile_*_log2
+        }
+        if log2 < max {
+            w.write_flag(false)?;
+        }
+        Ok(crate::tile::uniform_spacing(log2, mis, uniform_sb_size))
+    };
+    w.write_flag(true)?; // uniform_tile_spacing_flag
+    let cols = axis(w, cols_log2, mis(width), crate::tile::MAX_TILE_COLS)?;
+    let rows = axis(w, rows_log2, mis(height), crate::tile::MAX_TILE_ROWS)?;
     Ok([cols, rows])
 }
 

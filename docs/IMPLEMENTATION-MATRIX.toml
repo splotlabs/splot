@@ -4712,10 +4712,10 @@ spec_sections = ["5.4", "5.2.2", "5.2.3", "B.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-core"
 module = "crates/splot-core/src/headers/frame/encoder_input.rs"
-change_id = "encoder-sequence-header-obu"
+change_id = "enc-long-term-ids"
 owner = "encoder"
 risk = "low"
-notes = "build_minimal_intra_sequence_header constructs the canonical minimal intra sequence model; encode_minimal_intra_sequence_header_obu writes its body, extension/trailing bits, and Annex B framing. Byte-exact conformance-vector comparison protects the complete OBU and its agreement with minimal frame-header construction. The encoder does not use it: it writes the sequence header of build_encoder_sequence_header."
+notes = "PresetParams::long_term_id_bits (2026-11-22, 0 in every row): the sequence codes long_term_frame_id_bits (§ 5.4.6) and key frames code long_term_id_plus_1, the ids cycling over the key frames (§ 5.18.2); num_key_ref_frames needs RAS or OLK frames. build_minimal_intra_sequence_header constructs the canonical minimal intra sequence model; encode_minimal_intra_sequence_header_obu writes its body, extension/trailing bits, and Annex B framing. Byte-exact conformance-vector comparison protects the complete OBU and its agreement with minimal frame-header construction. The encoder does not use it: it writes the sequence header of build_encoder_sequence_header."
 
 [feature.status]
 mapped = "done"
@@ -4730,8 +4730,8 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_sequence_header_obu_matches_conformance_vector"]
-commands = ["cargo test -p splot-core encoder_input"]
+tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::key_frames_cycle_their_long_term_ids", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::key_frames_code_their_long_term_ids", "crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_minimal_intra_sequence_header_obu_matches_conformance_vector"]
+commands = ["cargo test -p splot-core key_frames_code_their_long_term_ids --locked", "cargo test -p splot-encode key_frames_cycle_their_long_term_ids --locked", "cargo test -p splot-core encoder_input"]
 fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
 diagnostics = []
 
@@ -4936,10 +4936,10 @@ spec_sections = ["5.18.2", "5.18.3.3", "5.18.3.4", "5.18.5.1", "5.18.8.1", "5.18
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/gop.rs"
-change_id = "encoder-m3-inter-headers"
+change_id = "enc-implicit-output"
 owner = "encoder"
 risk = "medium"
-notes = "The frame keyint frames after the last key frame and every scene cut (ENC-SCENE-CUT) are closed-loop key frames; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Blocks are intra, single-reference inter (ENC-INTER-SINGLE-REF), compound or skip mode (ENC-INTER-COMPOUND). Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Encoder policy: monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP. encode stays partial: no frame size override or reference scaling, switchable interpolation filter, CDF inheritance from a reference frame, intra block copy, segmentation, delta-q, global motion or TIP frames."
+notes = "PresetParams::implicit_output (2026-11-22, off in every row): the sequence codes monotonic_output_order_flag = 0 and every hidden frame codes implicit_output_frame = 1 in a temporal unit of its own (§ 7.3.3, § 7.3.6), with its film grain, in place of a show-existing frame; packets keep coding order, so Packet::pts is not monotonic. PresetParams::explicit_refs (2026-11-22, 0 in every row): 1 sets explicit_ref_frame_map and frames code frame_explicit_ref_frame_map = 0; n > 1 makes inter frames code num_total_refs and ref_frame_idx for the first n - 1 references of the default map (§ 5.4.6, § 5.18.2). PresetParams::short_refresh (2026-11-22, off in every row): the sequence codes enable_short_refresh_frame_flags and inter and TIP output frames code has_refresh_frame_flags and the frame_to_refresh of their one slot (§ 5.18.2). The frame keyint frames after the last key frame and every scene cut (ENC-SCENE-CUT) are closed-loop key frames; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Blocks are intra, single-reference inter (ENC-INTER-SINGLE-REF), compound or skip mode (ENC-INTER-COMPOUND). Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Default encoder policy (implicit_output off): monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP. encode stays partial: no frame size override or reference scaling, switchable interpolation filter, CDF inheritance from a reference frame, intra block copy, segmentation, delta-q, global motion or TIP frames."
 
 [feature.status]
 mapped = "done"
@@ -4954,7 +4954,7 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_coded_frames_like_splot", "crates/splot-encode/src/gop_tests.rs::plans_ippp_with_key_frames_every_keyint", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::implicit_output_streams_decode_in_display_order", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::hidden_frames_code_implicit_output", "crates/splot-cli/tests/encode_decode_roundtrip.rs::implicit_output_clips_decode_in_input_order", "crates/splot-encode/src/intra_frame_carry_tests.rs::explicit_reference_map_streams_decode_alike_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::explicit_reference_maps_code_the_first_default_references", "crates/splot-encode/src/intra_frame_tip_tests.rs::short_refresh_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_coded_frames_like_splot", "crates/splot-encode/src/gop_tests.rs::plans_ippp_with_key_frames_every_keyint", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-core encoder_inter_stream --locked", "cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -4968,10 +4968,10 @@ spec_sections = ["5.18.2", "6.17.2", "7.3.3", "7.3.4", "7.3.6", "7.7", "7.21", "
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/gop.rs"
-change_id = "encoder-m3-mini-gop"
+change_id = "enc-num-ref-frames"
 owner = "encoder"
 risk = "medium"
-notes = "GopPlanner splits the frames between key frames into mini-GOPs of the preset's mini_gop_size (1 = IPPP, 2, 4 or 8; the last one before a key frame or the stream end is shorter). A mini-GOP codes its last frame first, then the middle frame of each open span; a frame coded before earlier display frames is hidden and an OBU_REGULAR_SEF outputs it later. Key frames refresh all slots; other frames refresh an empty slot, else the oldest frame no show-existing frame waits for, so the § 7.7 implicit map finds the closest past and future frames. Each Packet is one temporal unit in coding order: the hidden frames since the last output plus one shown frame or show-existing frame, with the pts of the output frame and the stats of each coded frame; IVF frames carry one packet each. Frames shown when coded above layer 0 are non-reference frames (refresh_frame_flags = 0), except the last leaf of each mini-GOP: § 5.18.2 get_disp_order_hint counts only shown references, so that leaf keeps a shown reference within 128 order hints of every frame. See ENC-FRAME-WAVES. encode stays partial: the mini-GOP size is fixed per preset (at most 8) and does not adapt to the content, and the reference map is implicit (no explicit_ref_frame_map or long-term frames)."
+notes = "PresetParams::num_ref_frames (2026-11-22, 0 in every row): n in 1..=16 codes explicit_num_ref_frames with NumRefFrames = n (§ 5.4.6) and the GOP planner refreshes only those slots; a mini-GOP that needs more slots fails when the encoder starts. GopPlanner splits the frames between key frames into mini-GOPs of the preset's mini_gop_size (1 = IPPP, 2, 4 or 8; the last one before a key frame or the stream end is shorter). A mini-GOP codes its last frame first, then the middle frame of each open span; a frame coded before earlier display frames is hidden and an OBU_REGULAR_SEF outputs it later. Key frames refresh all slots; other frames refresh an empty slot, else the oldest frame no show-existing frame waits for, so the § 7.7 implicit map finds the closest past and future frames. Each Packet is one temporal unit in coding order: the hidden frames since the last output plus one shown frame or show-existing frame, with the pts of the output frame and the stats of each coded frame; IVF frames carry one packet each. Frames shown when coded above layer 0 are non-reference frames (refresh_frame_flags = 0), except the last leaf of each mini-GOP: § 5.18.2 get_disp_order_hint counts only shown references, so that leaf keeps a shown reference within 128 order hints of every frame. See ENC-FRAME-WAVES. encode stays partial: the mini-GOP size is fixed per preset (at most 8) and does not adapt to the content, and the reference map is implicit (no explicit_ref_frame_map or long-term frames)."
 
 [feature.status]
 mapped = "done"
@@ -4986,7 +4986,7 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/gop_tests.rs::plans_a_hierarchical_mini_gop_and_a_short_last_one", "crates/splot-encode/src/encoder_tests.rs::packs_hidden_frames_into_the_next_output_unit", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::explicit_slot_count_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/gop_tests.rs::planners_use_only_their_slots", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::explicit_slot_counts_reach_the_parsed_sequence", "crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/gop_tests.rs::plans_a_hierarchical_mini_gop_and_a_short_last_one", "crates/splot-encode/src/encoder_tests.rs::packs_hidden_frames_into_the_next_output_unit", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
@@ -5286,10 +5286,10 @@ spec_sections = ["5.18.7.2", "5.18.7.3", "5.19", "5.20"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/intra_frame.rs"
-change_id = "encoder-m5-tiles"
+change_id = "enc-seq-tile-info"
 owner = "encoder"
 risk = "medium"
-notes = "Config::tiles (CLI --tiles COLSxROWS) sets uniform TileColsLog2 and TileRowsLog2 (splot-core UniformTiles, capped at maxLog2TileCols/Rows, context_update_tile_id = 0, TileSizeBytes the smallest of 1..=4 that fits the tile sizes). Each tile owns its own encoder_syntax facade, search state and rate sink; the tiles of a frame are coded on the encoder's WorkerPool and joined in tile order, so the tile count, never the thread count, shapes the stream. Rate points, niklas 720p, 5 frames, preset 8, base_q_idx 85..190, luma: BD-rate +1.3/+2.5/+3.7% at 2/4/8 tiles against 1 tile; at 8 threads 8 tiles encode 4.5x faster than 1 tile."
+notes = "PresetParams::seq_tile_info (2026-11-22, 0 in every row): 1 codes the uniform tile layout in the sequence (seq_tile_info_present_flag, § 5.4.2) and frames reuse it, 2 also sets allow_tile_info_change and frames code reuse_tile_info = 1, 3 frames code reuse_tile_info = 0 and their own layout (§ 5.18.7.2, § 5.18.7.4). Config::tiles (CLI --tiles COLSxROWS) sets uniform TileColsLog2 and TileRowsLog2 (splot-core UniformTiles, capped at maxLog2TileCols/Rows, context_update_tile_id = 0, TileSizeBytes the smallest of 1..=4 that fits the tile sizes). Each tile owns its own encoder_syntax facade, search state and rate sink; the tiles of a frame are coded on the encoder's WorkerPool and joined in tile order, so the tile count, never the thread count, shapes the stream. Rate points, niklas 720p, 5 frames, preset 8, base_q_idx 85..190, luma: BD-rate +1.3/+2.5/+3.7% at 2/4/8 tiles against 1 tile; at 8 threads 8 tiles encode 4.5x faster than 1 tile."
 
 [feature.status]
 mapped = "done"
@@ -5304,7 +5304,7 @@ avm_diff = "done"
 perf = "done"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_tests.rs::multi_tile_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_tests.rs::multi_tile_output_does_not_depend_on_the_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_multi_tile_frames_like_splot"]
+tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::sequence_tile_info_streams_decode_alike_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::sequence_tile_info_is_reused_or_coded_per_frame", "crates/splot-encode/src/intra_frame_tests.rs::multi_tile_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_tests.rs::multi_tile_output_does_not_depend_on_the_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_multi_tile_frames_like_splot"]
 commands = ["cargo test -p splot-encode multi_tile --locked"]
 fixtures = []
 diagnostics = []
@@ -5510,10 +5510,10 @@ spec_sections = ["5.18.2", "5.20.7.27", "5.20.7.28", "8.3.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/kernels/rdoq.rs"
-change_id = "enc-parity-hiding"
+change_id = "enc-parity-model"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::rdoq_every_type (on with rdoq, presets 0-6) lets RDOQ take the scan, contexts and sign rows of IDTX and 1D types instead of the deadzone, outside mode trials. PresetParams::parity_hiding sets enable_parity_hiding, and every frame then codes allow_parity_hiding = 1; it is off in every row because its BD-rate per CPU does not beat the next slower row. The encoder_syntax facade publishes the decoder rule (ParityHiding::sum_abs1 and holds run the decoder first coefficient pass) and the hidden-level coding (CoeffLevels::hides, max_level, the PH base row and the isHidden sign group). After the quantizer, a block that hides the other parity moves the one level by one with the lowest J delta: the exact distortion and the rate of that level symbols in the writer contexts from the live CDFs. Mode trials move only the scan index 0 level."
+notes = "2026-11-22: the transform-type model (tx_type_model_keep) hides the parity of its deadzone levels like the quantizer, so parity_hiding no longer fails a frame at p6. PresetParams::rdoq_every_type (on with rdoq, presets 0-6) lets RDOQ take the scan, contexts and sign rows of IDTX and 1D types instead of the deadzone, outside mode trials. PresetParams::parity_hiding sets enable_parity_hiding, and every frame without TCQ then codes allow_parity_hiding = 1 (a TCQ frame infers 0, § 5.18.2); it is off in every row because its BD-rate per CPU does not beat the next slower row. The encoder_syntax facade publishes the decoder rule (ParityHiding::sum_abs1 and holds run the decoder first coefficient pass) and the hidden-level coding (CoeffLevels::hides, max_level, the PH base row and the isHidden sign group). After the quantizer, a block that hides the other parity moves the one level by one with the lowest J delta: the exact distortion and the rate of that level symbols in the writer contexts from the live CDFs. Mode trials move only the scan index 0 level."
 
 [feature.status]
 mapped = "done"
@@ -5528,7 +5528,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/tile_writer/tests.rs::parity_hiding_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::facade_parity_rule_is_the_spec_rule", "crates/splot-encode/src/kernels/rdoq_tests.rs::parity_fixup_keeps_the_rule", "crates/splot-encode/src/kernels/rdoq_tests.rs::simd_matches_scalar", "crates/splot-encode/src/intra_frame_tests.rs::parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops"]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::parity_hiding_codes_the_frames_without_tcq", "crates/splot-encode/src/tile_writer/tests.rs::parity_hiding_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::facade_parity_rule_is_the_spec_rule", "crates/splot-encode/src/kernels/rdoq_tests.rs::parity_fixup_keeps_the_rule", "crates/splot-encode/src/kernels/rdoq_tests.rs::simd_matches_scalar", "crates/splot-encode/src/intra_frame_tests.rs::parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops"]
 commands = ["cargo test -p splot-encode parity --locked", "cargo test -p splot-encode decode_to_the_encoder_recon --locked"]
 fixtures = []
 diagnostics = []
@@ -5562,6 +5562,70 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/kernels/tcq_tests.rs::trellis_is_optimal_on_small_blocks", "crates/splot-encode/src/kernels/tcq_tests.rs::trellis_assumptions_are_the_decoder_rules", "crates/splot-encode/src/kernels/tcq_tests.rs::simd_step_matches_scalar", "crates/splot-encode/src/kernels/tcq_tests.rs::tcq_doubles_dq_denom_for_luma_2d_only", "crates/splot-encode/src/tile_writer/tests.rs::tcq_levels_round_trip", "crates/splot-encode/src/intra_frame_tests.rs::tcq_streams_decode_to_the_encoder_recon_on_any_thread_count"]
 commands = ["cargo test -p splot-encode tcq --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-QUANT-MATRIX"
+name = "Encoder quantizer matrices"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "5.18.6.2", "7.14.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/tx_choice.rs"
+change_id = "enc-quant-matrices"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::quant_matrices (2026-11-22, 0 = off in every row): values 1, 2 and 3 fix the level band [10, 14], [5, 9] and [0, 14]; every frame codes using_qmatrix = 1 with qm_y = qm_u = qm_v = min + base_q_idx * (max - min + 1) / (MaxQ + 1), so the matrix gets flatter as the quantizer gets coarser. The encoder_syntax facade resolves useQm and segLvl with the decoder's own rule (recon_params takes IntraTileSyntax::quant_matrices) and reconstructs under the frame levels; the deadzone quantizer, RDOQ and TCQ use q2 = Round2(q * m, 5) of each coefficient with the built-in Quantizer_Matrix weights from splot-tables. Not done: user matrices in the quantizer matrix OBU (AV2-5.4.11-USER-QM), per-segment levels (every segment of ENC-SEGMENTATION shares the frame level, pic_qm_num_minus_1 = 0)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_qm_tests.rs::qm_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_qm_tests.rs::facade_resolves_the_matrix_level_of_each_block", "crates/splot-encode/src/intra_frame_qm_tests.rs::qm_level_rises_with_qindex_inside_its_band", "crates/splot-encode/src/intra_frame_qm_tests.rs::avm_decodes_qm_streams_like_splot", "crates/splot-encode/src/kernels/quantize_tests.rs::weighted_simd_matches_scalar_and_the_decoder", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs"]
+commands = ["cargo test -p splot-encode qm --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_qm -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SEGMENTATION"
+name = "Encoder source-activity segmentation"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.7.1", "5.20.5.7", "5.20.5.8", "5.20.7.2", "7.12.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-segmentation"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::segmentation (2026-11-22, 0 = off in every row): value 1 codes segmentation_enabled with 4 SEG_LVL_ALT_Q segments in every frame, segmentation_update_map = 1 and no temporal update. A superblock's segment is the bin of the mean log2 luma variance of its 16x16 blocks against the frame mean (edges -1, 0, +1 octave); segments 0..=3 take ALT_Q -9, -3, +3, +9 and lambda moves of -0.75, -0.25, +0.25, +0.75 octave, with base_q_idx + ALT_Q >= 1. The block qindex is the § 7.12.2 get_qindex on top of the delta-q CurrentQIndex. The encoder_syntax facade writes segment_id against the decoder's prediction (a skipped leaf takes the prediction) and keeps the segment ids in snapshots and superblock edges. Not done: SEG_LVL_SKIP, SEG_LVL_GLOBALMV, temporal update, enable_ext_seg, per-segment quantizer-matrix levels, a searched map."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_segmentation_tests.rs::segment_maps_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tile_writer/tests.rs::superblock_segments_round_trip_over_delta_q", "crates/splot-core/src/write/frame_segmentation_tests.rs::coded_map_flags_follow_the_feature_data"]
+commands = ["cargo test -p splot-encode segment --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_segment_maps -- --ignored"]
 fixtures = []
 diagnostics = []
 
@@ -5766,10 +5830,10 @@ spec_sections = ["5.4.8", "5.20.8.2", "7.15.3", "7.15.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/intra_frame.rs"
-change_id = "enc-inter-ist-ddt"
+change_id = "enc-inter-ist-rd"
 owner = "encoder"
 risk = "medium"
-notes = "Implemented, off in every row (pinned by preset::tests::inter_ist_and_ddt_placement). PresetParams::inter_ist (enable_inter_ist): in a leaf's final trial a DCT_DCT inter luma block of at least 16x16 ranks the three inter secondary kernels by kept energy and gives the best one an RD trial; the facade codes sec_tx_type in the inter CDF rows without most_probable_stx_set, resolves the inter kernel and carries sec_tx_type into the inter residual reconstruction. PresetParams::inter_ddt (enable_inter_ddt) makes inter ADST and FDST sides of length 8 or 16 use the DDT kernels through recon_params and the inter residual add; 2026-10-25 measurements: DDT is BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%); inter IST vs main c3b195964 gives p6 park_joy -0.06% at 1.004x CPU, paris +0.34% at 1.011x, p0 park_joy +0.26%, niklas p6 -0.00% at 1.011x (p6 mean +0.09%), every DCT_DCT inter block of at least 16x16 with eob > 3 pays a sec_tx_type symbol; revisit with a cheaper signalling decision in B3. The forward DDT matrices and forward_ist kernels are the existing SIMD kernels with scalar twins. Off writes the old stream byte-identically."
+notes = "PresetParams::inter_ist_rd (2026-11-21, off in every row): with inter_ist, an inter luma block gives an RD trial to every inter kernel in place of the one that keeps the most energy. Implemented, off in every row (pinned by preset::tests::inter_ist_and_ddt_placement). PresetParams::inter_ist (enable_inter_ist): in a leaf's final trial a DCT_DCT inter luma block of at least 16x16 ranks the three inter secondary kernels by kept energy and gives the best one an RD trial; the facade codes sec_tx_type in the inter CDF rows without most_probable_stx_set, resolves the inter kernel and carries sec_tx_type into the inter residual reconstruction. PresetParams::inter_ddt (enable_inter_ddt) makes inter ADST and FDST sides of length 8 or 16 use the DDT kernels through recon_params and the inter residual add; 2026-10-25 measurements: DDT is BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%); inter IST vs main c3b195964 gives p6 park_joy -0.06% at 1.004x CPU, paris +0.34% at 1.011x, p0 park_joy +0.26%, niklas p6 -0.00% at 1.011x (p6 mean +0.09%), every DCT_DCT inter block of at least 16x16 with eob > 3 pays a sec_tx_type symbol; revisit with a cheaper signalling decision in B3. The forward DDT matrices and forward_ist kernels are the existing SIMD kernels with scalar twins. Off writes the old stream byte-identically."
 
 [feature.status]
 mapped = "done"
@@ -5784,7 +5848,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_luma_blocks_code_ist_as_the_decoder_reads_it", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_and_ddt_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::ddt_follows_the_planned_leaf", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
+tests = ["crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_luma_blocks_code_ist_as_the_decoder_reads_it", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_and_ddt_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::ddt_follows_the_planned_leaf", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
 commands = ["cargo test -p splot-encode inter_ist --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes_inter_frames -- --ignored"]
 fixtures = []
 diagnostics = []
@@ -5894,10 +5958,10 @@ spec_sections = ["5.18.7.12", "5.20.10.2", "7.19"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/loop_filter_ccso.rs"
-change_id = "enc-ccso"
+change_id = "enc-ccso-sb-reuse"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::ccso_candidates (0 disables enable_ccso): after CDEF, one statistics pass per (ccso_ext_filter, ccso_scale_idx, ccso_quant_idx) candidate classifies every sample on the deblocked luma and sums source minus CDEF output per class and CCSO unit, one CCSO unit row per worker-pool job. Band and edge-classifier variants are sums of these classes; each class takes the offset index with the least squared error plus tu(7) rate, each unit turns on with the exact ccso_blk rate of the adapting CDF, and a plane codes CCSO when the total RD beats off. The encoder_syntax facade exposes CcsoGrid, CcsoBlockMap (the decoder's CcsoState), the decoder's taps and offset table, and apply_loop_filters runs the decoder's CCSO. Off writes the old stream byte-identically."
+notes = "PresetParams::ccso_candidates (0 disables enable_ccso): after CDEF, one statistics pass per (ccso_ext_filter, ccso_scale_idx, ccso_quant_idx) candidate classifies every sample on the deblocked luma and sums source minus CDEF output per class and CCSO unit, one CCSO unit row per worker-pool job. Band and edge-classifier variants are sums of these classes; each class takes the offset index with the least squared error plus tu(7) rate, each unit turns on with the exact ccso_blk rate of the adapting CDF, and a plane codes CCSO when the total RD beats off. The encoder_syntax facade exposes CcsoGrid, CcsoBlockMap (the decoder's CcsoState), the decoder's taps and offset table, and apply_loop_filters runs the decoder's CCSO. Off writes the old stream byte-identically. Change enc-ccso-ranges (2026-11-21), each row keeps its value until its p0 table passes: PresetParams::ccso_candidates now counts up to 112 triples, the first 8 of the fixed ladder and then every other (ccso_ext_filter 0..=6, ccso_scale_idx 0..=3, ccso_quant_idx 0..=3) of § 5.18.7.12, and band offsets are tried at every scale; PresetParams::ccso_bo_band_log2 (3..=6, 3 in every row) lets band offsets reach ccso_max_band_log2 6 from 64-band unit statistics (the statistics kernel takes the class count as a const generic). Change enc-ccso-reuse (2026-11-22, 0 in every row until its p0 table passes): PresetParams::ccso_reuse 1 also prices reuse_ccso of each reference's saved plane per inter plane (fixed parameters and offsets, ccso_blk per unit, 3 header bits plus ccso_ref_idx); the encoder header writer codes reuse_ccso, sb_reuse_ccso and ccso_ref_idx; the encoder_syntax facade keeps each frame's header for the § 7.23 saved CCSO parameters (EncoderReferences::ccso_params) and loads reused planes with the decoder's resolve_ccso_reference_reuse. Change enc-ccso-sb-reuse (2026-11-22, 0 in every row until its p0 table passes): ccso_reuse 2 also prices sb_reuse_ccso with the saved ccso_blk flags of a reference, with its saved parameters or with every fresh variant refit on those flags; the flags cost no bits. EncoderReferences::update takes the frame's ccso_blk flags and keeps them as the § 7.23 CcsoBlks of each slot (copied into the reference state like the saved headers), EncoderReferences::ccso_saved_blocks returns them only under the § 6.17.7.8 block-reuse requirements (same frame size, CcsoLumaSizeLog2 8 in both frames), and CcsoBlockMap codes no ccso_blk for a sb_reuse_ccso plane. No decoder behaviour changes."
 
 [feature.status]
 mapped = "done"
@@ -5912,7 +5976,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/loop_filter_tests.rs::ccso_search_classes_match_the_decoder_output", "crates/splot-encode/src/loop_filter_tests.rs::filtered_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::avm_decodes_ccso_frames_like_splot", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/kernels/ccso.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::filter_params_reach_the_parsed_header", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
+tests = ["crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_block_reuse_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::avm_decodes_ccso_block_reuse_frames_like_splot", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_reuse_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::facade_saves_the_ccso_parameters_of_each_slot", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::ccso_reuse_planes_parse_back_and_cut_headers_fail", "crates/splot-encode/src/intra_frame_ccso_tests.rs::full_ccso_ladder_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::wide_band_offsets_decode_to_the_encoder_recon", "crates/splot-encode/src/loop_filter_tests.rs::ccso_search_classes_match_the_decoder_output", "crates/splot-encode/src/loop_filter_tests.rs::filtered_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::avm_decodes_ccso_frames_like_splot", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/kernels/ccso.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::filter_params_reach_the_parsed_header", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
 commands = ["cargo test -p splot-encode ccso --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []
@@ -6053,10 +6117,10 @@ spec_sections = ["5.20.7.9", "6.19.7.8", "7.13.2.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/mode_decision.rs"
-change_id = "enc-dip-off"
+change_id = "enc-dip-trials"
 owner = "encoder"
 risk = "medium"
-notes = "Implemented, OFF in every preset (2026-10-25); revisit in B3 with a search that prices use_dip on more than the final trial. PresetParams::dip (off disables enable_dip): the DIP mode and transpose with the lowest luma SATD get one RD trial when that SATD beats the best angular SATD. The encoder_syntax facade takes IntraModes::dip, writes use_dip, dip_transpose and dip_mode after the chroma mode, and predicts and publishes DIP leaves through the decoder. On at p2 against main: paris +0.03% (0.99x CPU), park_joy -0.01% (0.99x); p0 park_joy -0.09% (1.01x); the use_dip flag cost offsets the wins. Off writes the old stream byte-identically."
+notes = "PresetParams::dip_trials (2026-11-21, 1 in every row = the old gated single trial): more than 1 gives RD trials to that many DIP predictions by SATD, without the angular SATD gate. Implemented, OFF in every preset (2026-10-25); revisit in B3 with a search that prices use_dip on more than the final trial. PresetParams::dip (off disables enable_dip): the DIP mode and transpose with the lowest luma SATD get one RD trial when that SATD beats the best angular SATD. The encoder_syntax facade takes IntraModes::dip, writes use_dip, dip_transpose and dip_mode after the chroma mode, and predicts and publishes DIP leaves through the decoder. On at p2 against main: paris +0.03% (0.99x CPU), park_joy -0.01% (0.99x); p0 park_joy -0.09% (1.01x); the use_dip flag cost offsets the wins. Off writes the old stream byte-identically."
 
 [feature.status]
 mapped = "done"
@@ -6071,7 +6135,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_dip_mode_round_trips", "crates/splot-encode/src/intra_tools_tests.rs::dip_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_dip_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_dip_frames_like_splot"]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tile_writer/tests.rs::every_dip_mode_round_trips", "crates/splot-encode/src/intra_tools_tests.rs::dip_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_dip_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_dip_frames_like_splot"]
 commands = ["cargo test -p splot-encode dip --locked"]
 fixtures = []
 diagnostics = []
@@ -6213,10 +6277,10 @@ spec_sections = ["5.4.10", "5.18.7.11", "5.20.10.6", "7.20.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/loop_filter_wienerns.rs"
-change_id = "enc-chroma-lr"
+change_id = "enc-lr-chroma-sizes"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::wiener_ns_chroma bank fits per chroma plane: after the luma restoration choice, each chroma unit keeps the 18-coefficient normal equations of its chroma tap pairs and its 12 luma cross taps, which read the decoder's § 7.20.3 get_luma_sample plane (splot-recon wiener_ns_chroma_luma_plane). U and then V take a one-class RESTORE_WIENER_NONSEP bank per wiener_ns_length subset, with and without wiener_ns_uv_sym, refined like luma; a temporal bank of the primary reference is tried first. Each unit takes none or Wiener-NS with the exact use_wiener_ns rate (the CDF is shared with luma, so the walk covers every plane in coding order), and a plane codes the bank when the total RD beats off. The sequence keeps lr_tools_uv_present = 0, which already enables chroma Wiener-NS. Off writes the luma-only stream byte-identically."
+notes = "PresetParams::wiener_ns_chroma bank fits per chroma plane: after the luma restoration choice, each chroma unit keeps the 18-coefficient normal equations of its chroma tap pairs and its 12 luma cross taps, which read the decoder's § 7.20.3 get_luma_sample plane (splot-recon wiener_ns_chroma_luma_plane). U and then V take a one-class RESTORE_WIENER_NONSEP bank per wiener_ns_length subset, with and without wiener_ns_uv_sym, refined like luma; a temporal bank of the primary reference is tried first. Each unit takes none or Wiener-NS with the exact use_wiener_ns rate (the CDF is shared with luma, so the walk covers every plane in coding order), and a plane codes the bank when the total RD beats off. The sequence keeps lr_tools_uv_present = 0, which already enables chroma Wiener-NS. Off writes the luma-only stream byte-identically. Change enc-lr-chroma-sizes (2026-11-21, 1 in every row until its p0 table passes): PresetParams::lr_chroma_unit_sizes (1..=4) also runs the chroma Wiener-NS search at each larger chroma LoopRestorationSize of § 5.18.7.11 (twice the size derived from luma and up, at most 512 at chroma scale) whose units do not cross a tile edge, and keeps the lowest RD cost."
 
 [feature.status]
 mapped = "done"
@@ -6231,7 +6295,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/loop_filter_wienerns_fit.rs::tests::chroma_groups_pair_the_luma_taps", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::chroma_wiener_ns_banks_reach_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
+tests = ["crates/splot-encode/src/loop_filter_tests.rs::large_chroma_lr_units_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/loop_filter_wienerns_fit.rs::tests::chroma_groups_pair_the_luma_taps", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::chroma_wiener_ns_banks_reach_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
 commands = ["cargo test -p splot-encode wiener --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []
@@ -6343,7 +6407,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "enc-lookahead-window"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::tpl_delta_q (strength in percent) drives superblock qindex and lambda from the block-level temporal model (ENC-LOOKAHEAD-TPL): the propagation over the coded mini-GOP plus one frame, with each inter cost raised by the modelled quantization noise of a reference coded at the last frame qindex (recrf; 50% of uniform noise of the § 7.14.2 step), gives every lookahead block (16x16 luma, 32x32 above 1920x1088) an importance (intra + received) / intra. A superblock's log2 beta is the mean over its blocks of log2 importance less that of the frame sums, whose qindex offset CRF, VBR and CBR add to the frame; under constant qindex, which adds no frame offset, less the mean over the frame's superblocks (2026-11-20: the frame-sum form there raised the mean superblock qindex of referenced frames by 5-8, and so made lookahead_frames 16 lose to 8; centring measured --qp paris p3 -2.72%, niklas p3 -3.72%, paris p6 -1.96%; centring in CRF too lost 0.46-0.67% on paris and park_joy); its lambda is the frame lambda times 2^(-log2 beta * strength / 100), and its qindex offset is 12 qindex per octave of the same value, both bounded by 32 qindex; a qindex clipped to 1..=MaxQ bounds the lambda change to the applied offset. Frames whose offsets all snap to 0 at the delta_q_res step code delta_q_present = 0 and keep the frame lambda. The frame writes delta_q_present with delta_q_res = PresetParams::delta_q_res; before each superblock's search the encoder asks splot_decode::encoder_syntax for the codable CurrentQIndex nearest base_q_idx plus the offset (IntraTileSyntax::set_superblock_qindex, the decoder's own clip and delta_q_res rule), and that superblock's search, quantizer and RD trials use it with the scaled lambda; motion search keeps the frame lambda. The facade writes delta_q_abs, its escape bits and its sign after ccso_blk on the first leaf that reads them, keeps the previous CurrentQIndex for a superblock-sized skipped leaf, and dequantizes and records deblocking levels (LumaQIndex, § 7.17.5) with the block qindex. AV2 has no per-block loop-filter delta syntax: deblocking follows delta-q through LumaQIndex (§ 7.17.6), checked by encoder recon == splot decode == avmdec on delta-q streams with every loop filter on. Placement (2026-10-31, CRF 22/30/37/45, vs main 9fc3b4b90): strength 100 and delta_q_res 1 in every row; p6 niklas f30 Y -0.90%, paris f30 -2.02%, park_joy f10 (the clip has 10 frames; 8 CRF points) -0.88%, mean -1.27%; p10 paris -1.13%, park_joy -0.46%; CPU 0.97-1.01x; per-frame PSNR spread lower than off. Zero-mean SB offsets per frame measured worse (2026-10-31: park -0.91%, paris -0.94%). The A9 target of -4% on niklas is not met: the clip gives 30 frames for the model and the lookahead model is a SATD model of a 2x downscaled source. delta_q_res 2 lost 0.8% on park_joy p6. Segmentation and quantizer matrices stay refused."
+notes = "PresetParams::tpl_delta_q (strength in percent) drives superblock qindex and lambda from the block-level temporal model (ENC-LOOKAHEAD-TPL): the propagation over the coded mini-GOP plus one frame, with each inter cost raised by the modelled quantization noise of a reference coded at the last frame qindex (recrf; 50% of uniform noise of the § 7.14.2 step), gives every lookahead block (16x16 luma, 32x32 above 1920x1088) an importance (intra + received) / intra. A superblock's log2 beta is the mean over its blocks of log2 importance less that of the frame sums, whose qindex offset CRF, VBR and CBR add to the frame; under constant qindex, which adds no frame offset, less the mean over the frame's superblocks (2026-11-20: the frame-sum form there raised the mean superblock qindex of referenced frames by 5-8, and so made lookahead_frames 16 lose to 8; centring measured --qp paris p3 -2.72%, niklas p3 -3.72%, paris p6 -1.96%; centring in CRF too lost 0.46-0.67% on paris and park_joy); its lambda is the frame lambda times 2^(-log2 beta * strength / 100), and its qindex offset is 12 qindex per octave of the same value, both bounded by 32 qindex; a qindex clipped to 1..=MaxQ bounds the lambda change to the applied offset. Frames whose offsets all snap to 0 at the delta_q_res step code delta_q_present = 0 and keep the frame lambda. The frame writes delta_q_present with delta_q_res = PresetParams::delta_q_res; before each superblock's search the encoder asks splot_decode::encoder_syntax for the codable CurrentQIndex nearest base_q_idx plus the offset (IntraTileSyntax::set_superblock_qindex, the decoder's own clip and delta_q_res rule), and that superblock's search, quantizer and RD trials use it with the scaled lambda; motion search keeps the frame lambda. The facade writes delta_q_abs, its escape bits and its sign after ccso_blk on the first leaf that reads them, keeps the previous CurrentQIndex for a superblock-sized skipped leaf, and dequantizes and records deblocking levels (LumaQIndex, § 7.17.5) with the block qindex. AV2 has no per-block loop-filter delta syntax: deblocking follows delta-q through LumaQIndex (§ 7.17.6), checked by encoder recon == splot decode == avmdec on delta-q streams with every loop filter on. Placement (2026-10-31, CRF 22/30/37/45, vs main 9fc3b4b90): strength 100 and delta_q_res 1 in every row; p6 niklas f30 Y -0.90%, paris f30 -2.02%, park_joy f10 (the clip has 10 frames; 8 CRF points) -0.88%, mean -1.27%; p10 paris -1.13%, park_joy -0.46%; CPU 0.97-1.01x; per-frame PSNR spread lower than off. Zero-mean SB offsets per frame measured worse (2026-10-31: park -0.91%, paris -0.94%). The A9 target of -4% on niklas is not met: the clip gives 30 frames for the model and the lookahead model is a SATD model of a 2x downscaled source. delta_q_res 2 lost 0.8% on park_joy p6. Segmentation stays refused; quantizer matrices are ENC-QUANT-MATRIX."
 
 [feature.status]
 mapped = "done"
@@ -6360,6 +6424,70 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_delta_q_tests.rs::superblock_offsets_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::empty_offsets_code_no_delta_q", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::avm_decodes_delta_q_frames_like_splot", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tpl.rs::tests::superblocks_follow_the_importance_of_their_blocks", "crates/splot-encode/src/tpl.rs::tests::recon_noise_grows_with_qindex_and_shrinks_with_the_block", "crates/splot-encode/src/kernels/tpl.rs::tests::simd_matches_scalar", "crates/splot-encode/src/rd/tests.rs::lambda_scaling_follows_powers_of_two", "crates/splot-encode/src/tile_writer/tests.rs::superblock_sized_skipped_leaf_keeps_current_qindex", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_deltas_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_needs_delta_q_present", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
 commands = ["cargo test -p splot-encode delta_q --locked", "cargo test -p splot-encode superblock_qindex --locked", "cargo test -p splot-encode tpl --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-PLANE-DELTA-Q"
+name = "Encoder plane quantizer deltas"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.8", "5.18.6.1", "5.18.6.3", "7.14.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-plane-delta-q"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::y_dc_delta_q, u_delta_q and v_delta_q (2026-11-22, -64..=63, 0 in every row, not measured): a non-zero luma value codes equal_ac_dc_q = 0 with y_dc_delta_q_enabled, a non-zero chroma value codes the chroma delta enables, and u != v codes separate_uv_delta_q (§ 5.4.8, Base*DeltaQ stay 0). Every key and inter frame codes DeltaQYDc, DeltaQU* and DeltaQV* (§ 5.18.6.1; chroma DC equals AC, diff_uv_delta when u != v); TIP output frames with enable_tip_explicit_qp code the chroma AC deltas. The facade reconstructs with the frame deltas (recon_params takes them), so RDOQ and TCQ quantize with the per-plane DC and AC steps. The RD lambda of every plane still comes from the luma AC step (pass 2)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::plane_delta_q_reaches_the_parsed_headers", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::plane_delta_q_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::avm_decodes_plane_delta_q_streams_like_splot"]
+commands = ["cargo test -p splot-core plane_delta_q --locked", "cargo test -p splot-encode plane_delta_q --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTRA-ONLY"
+name = "Encoder intra-only frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "7.9", "7.20"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-intra-only"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::intra_only (2026-11-22, 0 = off in every row, not measured): value N codes the anchor of every Nth mini-GOP as INTRA_ONLY_FRAME with PRIMARY_REF_NONE, its order hint and one refreshed slot; later frames still reference frames before it, so it is no random access point. A frame whose closest past and future references are both intra codes no TIP (§ 7.9)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::intra_only_headers_keep_the_other_slots", "crates/splot-encode/src/intra_frame_carry_tests.rs::intra_only_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_tip_tests.rs::frames_between_intra_references_code_no_tip"]
+commands = ["cargo test -p splot-core intra_only --locked", "cargo test -p splot-encode intra_only --locked", "cargo test -p splot-encode frames_between_intra_references --locked"]
 fixtures = []
 diagnostics = []
 
@@ -6407,7 +6535,7 @@ module = "crates/splot-encode/src/intrabc.rs"
 change_id = "enc-intrabc"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::intrabc, OFF in every PRESETS row and ON in SCREEN_PRESETS (ENC-SCREEN-DETECT). Key frames code allow_intrabc = 1 with allow_global_intrabc = 1 and allow_local_intrabc = 0; inter frames code 0. Each leaf of at most 64x64 (other than 64x64) and at least 8x8 gets an RD trial of the copy that the frame's 8x8 block hash table finds: up to 32 accepted earlier positions with the leaf's top-left hash (of the 1024 closest), then a +-4 whole-sample refinement, with the RefMvIdx of the nearest reference vector. The row_hashes and column_hashes kernels have std::simd forms and scalar twins. The facade gives EncoderInterTile an intra-frame mode (neighbour grid, reference MV bank and the decoder's IntraBC prelude state, all covered by snapshots and the debug WholeState check), writes use_intrabc, skip_txfm, intrabc_mode, the BVP DRL bits, intrabc_precision, the vector difference (IntraBC MV context) and morph_pred = 0, checks § 6.19.7.12 is_mv_valid for the global area (plus the current or previous superblock row), predicts through the decoder's IntraBC copy and codes the residual on the inter paths. With allow_intrabc = 0 every intra frame codes byte-identically. Against main c4a1cf3 (detected sequences, f10 unless noted): screendata p6 intra Y -42.72% (1.48x CPU), p6 inter Y -31.29% (0.97x), p10 intra Y -22.43% (1.24x), p0 intra f3 Y -46.83% (1.01x); desktop_credits p6 intra Y -0.38% (1.03x), inter Y -0.34% (1.03x)."
+notes = "PresetParams::intrabc, OFF in every PRESETS row and ON in SCREEN_PRESETS (ENC-SCREEN-DETECT). Key frames code allow_intrabc = 1 with allow_global_intrabc = 1 and allow_local_intrabc = PresetParams::intrabc_local (OFF in every row, the screen rows too); inter frames code 0. The local area is a strict subset of § 6.19.7.12 check_valid_local_ibc: every source 4x4 cell coded, in the leaf's 64x64 region, the 3 regions to its left (64x64 superblocks) or the top regions of the current and previous 128x128 superblock whose buffer no newer region replaced; the colo case is not used. A memoized subtree whose local source is not coded yet codes the leaf as DC_PRED. Each leaf of at most 64x64 (other than 64x64) and at least 8x8 gets an RD trial of the copy that the frame's 8x8 block hash table finds: up to 32 accepted earlier positions with the leaf's top-left hash (of the 1024 closest), then a +-4 whole-sample refinement, with the RefMvIdx of the nearest reference vector. The row_hashes and column_hashes kernels have std::simd forms and scalar twins. The facade gives EncoderInterTile an intra-frame mode (neighbour grid, reference MV bank and the decoder's IntraBC prelude state, all covered by snapshots and the debug WholeState check), writes use_intrabc, skip_txfm, intrabc_mode, the BVP DRL bits, intrabc_precision, the vector difference (IntraBC MV context) and morph_pred = 0, checks § 6.19.7.12 is_mv_valid for the global area (plus the current or previous superblock row), predicts through the decoder's IntraBC copy and codes the residual on the inter paths. With allow_intrabc = 0 every intra frame codes byte-identically. Against main c4a1cf3 (detected sequences, f10 unless noted): screendata p6 intra Y -42.72% (1.48x CPU), p6 inter Y -31.29% (0.97x), p10 intra Y -22.43% (1.24x), p0 intra f3 Y -46.83% (1.01x); desktop_credits p6 intra Y -0.38% (1.03x), inter Y -0.34% (1.03x)."
 
 [feature.status]
 mapped = "done"
@@ -6422,7 +6550,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_tools_tests.rs::screen_streams_code_intrabc_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_intrabc_frames_like_splot", "crates/splot-encode/src/intrabc.rs::finds_the_exact_earlier_copy", "crates/splot-encode/src/kernels/hash.rs::row_hashes_simd_match_scalar", "crates/splot-decode/src/bitstream/tile_payload/encoder_syntax/intrabc.rs::global_vectors_follow_the_superblock_delay", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
+tests = ["crates/splot-encode/src/intra_tools_tests.rs::screen_streams_code_intrabc_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_intrabc_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::local_intrabc_codes_copies_in_the_first_superblock_row", "crates/splot-encode/src/intra_tools_tests.rs::local_intrabc_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_local_intrabc_frames_like_splot", "crates/splot-decode/src/bitstream/tile_payload/encoder_syntax/intrabc.rs::local_vectors_use_the_last_four_regions_of_the_row", "crates/splot-decode/src/bitstream/tile_payload/encoder_syntax/intrabc.rs::local_regions_of_128_superblocks_follow_the_buffer_index", "crates/splot-encode/src/intrabc.rs::finds_the_exact_earlier_copy", "crates/splot-encode/src/kernels/hash.rs::row_hashes_simd_match_scalar", "crates/splot-decode/src/bitstream/tile_payload/encoder_syntax/intrabc.rs::global_vectors_follow_the_superblock_delay", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
 commands = ["cargo test -p splot-encode intrabc --locked", "cargo test -p splot-decode intrabc --locked"]
 fixtures = []
 diagnostics = []
@@ -6468,10 +6596,10 @@ spec_sections = ["5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/rd/partition.rs"
-change_id = "enc-sdp-search"
+change_id = "enc-extended-sdp"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::sdp (on in every row) sets enable_sdp. Facade: the encoder_syntax facade gives the LUMA_PART and CHROMA_PART roots of each 64x64 SHARED_PART node of an intra frame (sdp_roots); partition_options, write_partition and children run the decoder's SdpPartitionState (ChromaFollowsLuma, LumaPartitions, CflAllowedInSdp); a CHROMA_PART leaf codes its chroma mode over the collocated luma mode and its chroma residual alone, and the facade refuses luma-only syntax there. The tile writer codes PartitionTree::Sdp with the read_lr units of each tree at a 64x64 superblock. Search: an SDP node searches its luma tree on luma alone, then a chroma tree whose nodes try NONE and the luma partition of the same node only, so chroma merges luma leaves and never splits deeper (a chroma tree that follows luma exactly measured +0.9..+1.5% Y). Against main 96caf9438 (2026-10-26), intra Y/YUV(6:1:1) at CPU ratio: p0 paris -0.42/-0.66 0.87x, park_joy -0.42/-0.29 0.85x; p6 paris -0.68/-0.38 0.75x, park_joy -0.48/+0.02 0.76x, niklas -1.30/-2.17 0.76x; p10 paris -0.36/+0.21 0.66x, park_joy -0.50/+0.26 0.69x, niklas -1.44/-1.13 0.62x; inter p6 paris -0.47/+0.11 0.98x, park_joy -0.46/+0.10 1.01x, niklas -0.53/-0.63 0.99x. RD trials over every chroma candidate instead of the intra_modes shortlist stay out, below the ladder (2026-10-26: paris p10 intra -0.58/-0.40 at 0.82x, park_joy p10 -0.76/+0.05 at 0.85x). SCREEN_PRESETS turn SDP off: desktop_credits p6 Y +0.34% intra, +2.30% inter (screendata -0.24%, -0.91%)."
+notes = "PresetParams::sdp (on in every row) sets enable_sdp. Facade: the encoder_syntax facade gives the LUMA_PART and CHROMA_PART roots of each 64x64 SHARED_PART node of an intra frame (sdp_roots); partition_options, write_partition and children run the decoder's SdpPartitionState (ChromaFollowsLuma, LumaPartitions, CflAllowedInSdp); a CHROMA_PART leaf codes its chroma mode over the collocated luma mode and its chroma residual alone, and the facade refuses luma-only syntax there. The tile writer codes PartitionTree::Sdp with the read_lr units of each tree at a 64x64 superblock. Search: an SDP node searches its luma tree on luma alone, then a chroma tree whose nodes try NONE and the luma partition of the same node only, so chroma merges luma leaves and never splits deeper (a chroma tree that follows luma exactly measured +0.9..+1.5% Y); PresetParams::sdp_chroma_search 1 (0 in every row) lets each chroma node try every partition the facade allows. PresetParams::extended_sdp (0 in every row) sets enable_extended_sdp: an eligible inter-frame node (§ 5.20.3.1: not the superblock, 8..64 per side, HORZ, VERT, HORZ_3 or VERT_3) codes region_type, and the search tries an INTRA_REGION (an intra LUMA_PART tree and one CHROMA_PART block) where the shared tree chose intra leaves only (1) or at every such node (2); the facade writes region_type with the decoder's eligibility test, context and chroma call. Against main 96caf9438 (2026-10-26), intra Y/YUV(6:1:1) at CPU ratio: p0 paris -0.42/-0.66 0.87x, park_joy -0.42/-0.29 0.85x; p6 paris -0.68/-0.38 0.75x, park_joy -0.48/+0.02 0.76x, niklas -1.30/-2.17 0.76x; p10 paris -0.36/+0.21 0.66x, park_joy -0.50/+0.26 0.69x, niklas -1.44/-1.13 0.62x; inter p6 paris -0.47/+0.11 0.98x, park_joy -0.46/+0.10 1.01x, niklas -0.53/-0.63 0.99x. RD trials over every chroma candidate instead of the intra_modes shortlist stay out, below the ladder (2026-10-26: paris p10 intra -0.58/-0.40 at 0.82x, park_joy p10 -0.76/+0.05 at 0.85x). SCREEN_PRESETS turn SDP off: desktop_credits p6 Y +0.34% intra, +2.30% inter (screendata -0.24%, -0.91%)."
 
 [feature.status]
 mapped = "done"
@@ -6486,8 +6614,8 @@ avm_diff = "done"
 perf = "pending"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/sdp_tests.rs::sdp_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/sdp_tests.rs::sdp_search_codes_chroma_trees_that_merge_luma_nodes", "crates/splot-encode/src/sdp_tests.rs::avm_decodes_sdp_streams_like_splot", "crates/splot-encode/src/tile_writer/tests.rs::sdp_key_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/tile_writer/tests.rs::sdp_chroma_tree_follows_the_luma_tree_rules", "crates/splot-encode/src/tile_writer/tests.rs::rejects_sdp_tree_mismatches", "crates/splot-encode/src/tile_writer/tests.rs::sdp_chroma_leaves_refuse_luma_only_syntax", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot"]
-commands = ["cargo test -p splot-encode sdp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_random_key_frames --locked -- --ignored", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_sdp_streams --locked -- --ignored"]
+tests = ["crates/splot-encode/src/sdp_tests.rs::sdp_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/sdp_tests.rs::sdp_search_codes_chroma_trees_that_merge_luma_nodes", "crates/splot-encode/src/sdp_tests.rs::free_sdp_chroma_trees_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_ext_sdp_tests.rs::extended_sdp_regions_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_ext_sdp_tests.rs::the_facade_codes_region_type_where_the_decoder_reads_it", "crates/splot-encode/src/intra_frame_ext_sdp_tests.rs::avm_decodes_extended_sdp_streams_like_splot", "crates/splot-encode/src/sdp_tests.rs::avm_decodes_sdp_streams_like_splot", "crates/splot-encode/src/tile_writer/tests.rs::sdp_key_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/tile_writer/tests.rs::sdp_chroma_tree_follows_the_luma_tree_rules", "crates/splot-encode/src/tile_writer/tests.rs::rejects_sdp_tree_mismatches", "crates/splot-encode/src/tile_writer/tests.rs::sdp_chroma_leaves_refuse_luma_only_syntax", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot"]
+commands = ["cargo test -p splot-encode sdp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_random_key_frames --locked -- --ignored", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_sdp_streams --locked -- --ignored", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_extended_sdp_streams --locked -- --ignored"]
 fixtures = []
 diagnostics = []
 
@@ -6724,10 +6852,10 @@ spec_sections = ["5.4.6", "5.18.9.1", "5.18.9.2", "5.18.9.3", "5.18.9.4", "5.18.
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/global_motion.rs"
-change_id = "enc-global-motion-estimator"
+change_id = "enc-gm-their-ref"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::global_motion 1 enables enable_global_motion; inter frames write global_motion_params() with our_ref = NumTotalRefs, each ROTZOOM gm_params coded by the inverse of read_global_param (sub-exponential difference from the scale_warp_model prediction). The encoder_syntax facade codes frames with global motion and reference frame motion vectors, derives GLOBALMV and GLOBAL_GLOBALMV models with the frame's force_integer_mv, and stores the GLOBALMV model and the model of each global GLOBAL_GLOBALMV list in the § 7.22 motion records as the decoder does. The estimator fits a translation or rotation-zoom by RANSAC to the lookahead 8x8 vectors of each frame against its nearest past and future coded frames. A model is kept when at least half of the pairs fit it within 1.5 samples and its zoom and rotation move a frame corner by at least 1 sample. Off in every preset row (2026-10-30): against main ace5c5be0, global_motion = 1, f10, p6 paris Y +0.01%, niklas 720p +0.00%, park_joy (8 qps) +0.49%; the full-sample lookahead vectors are too coarse for models that beat NEWMV, and niklas has no global motion (no model fits). Misses the A8 park_joy -3% target. global_motion = 2 (global_motion_search.rs, off in every row) refines each textured lookahead vector to a quarter sample on the source luma with the 8-tap filter, fits ROTZOOM and AFFINE (the two non-identity GmType values) by RANSAC within 1 sample and least squares, descends on the coded gm_params lattice against the luma SAD of the decoder's block warp (§ 7.13.3.19) plus lambda times the exact parameter bits, and keeps a model only where it beats the zero model and the best translation; it estimates against every coded frame whose source the lookahead holds."
+notes = "PresetParams::global_motion 1 enables enable_global_motion; inter frames write global_motion_params() with our_ref = NumTotalRefs, or with PresetParams::global_motion_predict (off in every row) the our_ref and their_ref of the fewest parameter bits, each ROTZOOM gm_params coded by the inverse of read_global_param (sub-exponential difference from the scale_warp_model prediction). The encoder_syntax facade codes frames with global motion and reference frame motion vectors, derives GLOBALMV and GLOBAL_GLOBALMV models with the frame's force_integer_mv, and stores the GLOBALMV model and the model of each global GLOBAL_GLOBALMV list in the § 7.22 motion records as the decoder does. The estimator fits a translation or rotation-zoom by RANSAC to the lookahead 8x8 vectors of each frame against its nearest past and future coded frames. A model is kept when at least half of the pairs fit it within 1.5 samples and its zoom and rotation move a frame corner by at least 1 sample. Off in every preset row (2026-10-30): against main ace5c5be0, global_motion = 1, f10, p6 paris Y +0.01%, niklas 720p +0.00%, park_joy (8 qps) +0.49%; the full-sample lookahead vectors are too coarse for models that beat NEWMV, and niklas has no global motion (no model fits). Misses the A8 park_joy -3% target. global_motion = 2 (global_motion_search.rs, off in every row) refines each textured lookahead vector to a quarter sample on the source luma with the 8-tap filter, fits ROTZOOM and AFFINE (the two non-identity GmType values) by RANSAC within 1 sample and least squares, descends on the coded gm_params lattice against the luma SAD of the decoder's block warp (§ 7.13.3.19) plus lambda times the exact parameter bits, and keeps a model only where it beats the zero model and the best translation; it estimates against every coded frame whose source the lookahead holds."
 
 [feature.status]
 mapped = "done"
@@ -6742,7 +6870,7 @@ avm_diff = "done"
 perf = "pending"
 
 [feature.proof]
-tests = ["crates/splot-core/src/write/global_motion.rs::tests::global_params_round_trip_through_the_reader", "crates/splot-core/src/write/global_motion.rs::tests::rejects_values_the_reader_cannot_produce", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::global_motion_models_round_trip_through_the_parser", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_motion_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_motion_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_gm_tests.rs::the_encoder_estimates_and_codes_global_motion", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_global_leaves_store_the_model_of_each_global_list", "crates/splot-encode/src/intra_frame_gm_tests.rs::avm_decodes_global_motion_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/global_motion.rs::tests::ransac_recovers_a_rotation_zoom_among_outliers", "crates/splot-encode/src/global_motion.rs::tests::ransac_refuses_noise_and_the_identity"]
+tests = ["crates/splot-core/src/write/global_motion.rs::tests::global_params_round_trip_through_the_reader", "crates/splot-core/src/write/global_motion.rs::tests::rejects_values_the_reader_cannot_produce", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::global_motion_models_round_trip_through_the_parser", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::global_motion_predict_codes_their_ref_and_the_same_models", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_motion_predict_changes_only_the_parameter_bits", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_motion_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_motion_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_gm_tests.rs::the_encoder_estimates_and_codes_global_motion", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_global_leaves_store_the_model_of_each_global_list", "crates/splot-encode/src/intra_frame_gm_tests.rs::avm_decodes_global_motion_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/global_motion.rs::tests::ransac_recovers_a_rotation_zoom_among_outliers", "crates/splot-encode/src/global_motion.rs::tests::ransac_refuses_noise_and_the_identity"]
 commands = ["cargo test -p splot-core global_motion --locked", "cargo test -p splot-encode global_motion --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_global_motion --locked -- --ignored"]
 fixtures = []
 diagnostics = []
@@ -14140,7 +14268,7 @@ module = "crates/splot-decode/src/decoder.rs"
 change_id = "decode-streaming-api"
 owner = "decoder"
 risk = "medium"
-notes = "Decoder takes one temporal unit per send_data call and returns pictures in display order from get_picture, with drain at end of stream. Each picture carries the DataProps (pts, duration, user data) of the unit that coded or showed it. DecoderSettings::skip_film_grain leaves the film grain of § 7.21.7 out of the pictures; a picture reports has_film_grain and apply_film_grain adds the grain later. The decode loop reads temporal units forward through UnitSource; the batch decode_* entry points use the same loop through a forward-only reader. The decode loop runs on the decoder's own worker pool."
+notes = "Decoder takes one temporal unit per send_data call and returns pictures in display order from get_picture, with drain at end of stream. Each picture carries the DataProps (pts, duration, user data) of the unit that coded or showed it. DecoderSettings::skip_film_grain leaves the film grain of § 7.21.7 out of the pictures; a picture reports has_film_grain and apply_film_grain adds the grain later. wait_picture waits for the pictures of the units the decoder holds and returns none once it is idle; flush drops the session and starts a new one on the same threads and storage, also after an error. A picture reports frame_type. The decode loop reads temporal units forward through UnitSource; the batch decode_* entry points use the same loop through a forward-only reader. The decode loop runs on the decoder's own worker pool."
 
 [feature.status]
 mapped = "done"
@@ -14214,7 +14342,7 @@ module = "crates/splot-capi/src/lib.rs"
 change_id = "capi-decoder-abi"
 owner = "decoder"
 risk = "medium"
-notes = "dav1d-shaped C API over Decoder (splot_open, splot_send_data, splot_get_picture, splot_apply_grain, splot_drain, splot_picture_unref, splot_close) in a cdylib and staticlib (splot_capi; cargo-c installs it as libsplot with splot.pc). Picture plane pointers point into the decoder's shared storage. include/splot.h is generated by cbindgen and checked for drift; cargo-c metadata installs splot.pc and the header. xtask ci builds and runs examples/decode.c against the shared library."
+notes = "dav1d-shaped C API over Decoder (splot_open, splot_send_data, splot_get_picture, splot_wait_picture, splot_apply_grain, splot_drain, splot_flush, splot_picture_unref, splot_close) in a cdylib and staticlib (splot_capi; cargo-c installs it as libsplot with splot.pc). Picture plane pointers point into the decoder's shared storage. include/splot.h is generated by cbindgen and checked for drift; cargo-c metadata installs splot.pc and the header. xtask ci builds and runs examples/decode.c against the shared library."
 
 [feature.status]
 mapped = "done"
@@ -17868,7 +17996,7 @@ id = "DECODE-INTER-TIP-REFERENCE"
 name = "TIP reference block runtime"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.9.5", "7.9.8", "7.10.2", "7.12.2.10", "7.12.2.15", "7.12.2.18", "7.13.3", "7.22", "8.3.2", "9.3"]
+spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.9.5", "7.9.8", "7.10.1", "7.10.2", "7.12.2.10", "7.12.2.15", "7.12.2.18", "7.13.3", "7.22", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
@@ -17877,6 +18005,7 @@ sources = [
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-3",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-5",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-10-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-10-2",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-10",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-15",
@@ -17891,7 +18020,7 @@ module = "crates/splot-decode/src/prediction/inter/block.rs"
 change_id = "decode-inter-tip-reference"
 owner = "decoder"
 risk = "medium"
-notes = "TIP-as-reference uses dedicated mode/DRL syntax, projected temporal motion, sharp interpolation and the shared compound prediction/residual paths. Projection retains reference hints, sizes and temporal ordering, samples and stores on the signaled projection grid, and enforces TMVP bounds. TIP-coded spatial neighbours contribute through their underlying reference pair; each compound neighbour contributes once to the bounded derived stack. Reconstruction retains output motion fields and supports projected-motion hole filling. TIP-as-reference full-stream conformance remains partial."
+notes = "TIP-as-reference uses dedicated mode/DRL syntax, projected temporal motion, sharp interpolation and the shared compound prediction/residual paths. Projection retains reference hints, sizes and temporal ordering, samples and stores on the signaled projection grid, and enforces TMVP bounds. TIP-coded spatial neighbours contribute through their underlying reference pair; each compound neighbour contributes once to the bounded derived stack. Reconstruction retains output motion fields and supports projected-motion hole filling. TIP-as-reference full-stream conformance remains partial. The § 7.10.1 header check rejects TIP when both ClosestPast and ClosestFuture hold a key or intra-only frame (per-slot is_intra_frame saved at refresh, § 7.9 is_ref_motion_field_eligible_by_frame_type)."
 
 [feature.status]
 mapped = "done"
@@ -17906,7 +18035,7 @@ avm_diff = "partial"
 perf = "not-applicable"
 
 [feature.proof]
-tests = [
+tests = ["crates/splot-decode/tests/frame_pipelining.rs::tip_without_an_inter_closest_reference_is_rejected_at_every_width", 
     "crates/splot-decode/src/prediction/inter/block/syntax.rs::tests::skip_and_tip_drl_idx_use_dedicated_cdf_banks",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::tip_neighbour_matches_its_underlying_compound_reference_pair",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_projects_tip_neighbour_to_its_reference_pair",
@@ -17928,7 +18057,7 @@ commands = [
     "cargo xtask check-duplication",
     "cargo xtask check-feature-status",
 ]
-fixtures = [
+fixtures = ["tests/conformance/vectors/invalid/syn-tip-intra-pair-72x40.ivf", 
     "crates/splot-decode/src/prediction/inter/block.rs",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs",
     "crates/splot-decode/src/prediction/inter/block/syntax.rs",
@@ -21200,7 +21329,7 @@ module = "crates/splot-core/src/stream_reader.rs"
 change_id = "streaming-validator-input"
 owner = "core"
 risk = "low"
-notes = "TemporalUnitReader<R: Read> provides forward-only bounded container reads: Annex B returns one framed OBU and IVF one frame payload, each with its absolute offset. It reuses existing framing parsers and handles fragmented reads. The configurable per-unit cap defaults to 256 MiB; over-cap input returns ReaderError::UnitTooLarge. splot-core remains independent of splot-decode."
+notes = "TemporalUnitReader<R: Read> provides forward-only bounded container reads: Annex B returns one framed OBU and IVF one frame payload, each with its absolute offset. next_temporal_unit groups Annex B OBUs from one temporal delimiter up to the next and yields an IVF frame as one unit; each unit carries a UnitPosition, and seek on a Read + Seek source resumes at one, so a list of positions is a seek index. is_random_access_point tells whether a temporal unit opens with a temporal delimiter and has a sequence header before a closed-loop key, open-loop key or RAS first frame. It reuses existing framing parsers and handles fragmented reads. The configurable per-unit cap defaults to 256 MiB; over-cap input returns ReaderError::UnitTooLarge. splot-core remains independent of splot-decode."
 
 [feature.status]
 mapped = "done"

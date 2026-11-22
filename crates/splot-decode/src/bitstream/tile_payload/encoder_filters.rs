@@ -199,8 +199,9 @@ impl CcsoBlockMap {
     /// An empty map for tile `tile` of the frame `core` coded with `seq`.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] for missing frame facts, a tile the
-    /// frame does not have, or CCSO block reuse.
+    /// Returns [`EncoderSyntaxError`] for missing frame facts or a tile the
+    /// frame does not have. A plane with `sb_reuse_ccso` codes no `ccso_blk`
+    /// ([`Self::ctx`] is `None`).
     pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore, tile: usize) -> Result<Self> {
         let frame = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
         let (rows, cols) = tile_ranges(core, tile)?;
@@ -213,10 +214,7 @@ impl CcsoBlockMap {
             ByteOffset::new(0),
             Default::default(),
         )
-        .and_then(|mut state| {
-            state.load_reused_blocks([None; 3])?;
-            state.try_for_tile(rows, cols, None)
-        })
+        .and_then(|state| state.try_for_tile(rows, cols, None))
         .map_err(rule("CCSO state"))?;
         Ok(Self {
             state,
@@ -708,7 +706,7 @@ pub fn apply_loop_filters(
 
 /// The decoder's CCSO grid of the frame `core` with `blocks`, or `None` when
 /// the frame codes no CCSO.
-fn ccso_unit_grid(
+pub(super) fn ccso_unit_grid(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,
     blocks: &[Vec<u8>],

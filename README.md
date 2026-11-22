@@ -154,8 +154,8 @@ fn show(decoder: &mut Decoder) -> splot_decode::Result<()> {
 ```
 
 **C.** The decoder has a stable C ABI with zero-copy pictures:
-`splot_open`, `splot_send_data`, `splot_get_picture`, `splot_drain`,
-`splot_close`. The header is
+`splot_open`, `splot_send_data`, `splot_get_picture`, `splot_wait_picture`,
+`splot_flush`, `splot_drain`, `splot_close`. The header is
 [`crates/splot-capi/include/splot.h`](./crates/splot-capi/include/splot.h), and
 [`examples/decode.c`](./crates/splot-capi/examples/decode.c) is a complete IVF
 decoder in about 100 lines.

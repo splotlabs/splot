@@ -28,8 +28,23 @@ pub(crate) fn key_frame_tx_params(
         },
         reduced_tx_set: if preset.tx_type_depth == 0 { 2 } else { 0 },
         allow_intrabc: preset.intrabc,
+        allow_local_intrabc: preset.intrabc_local,
         ..KeyFrameTxParams::default()
     }
+}
+
+/// The § 5.18.6.2 level `qm_y = qm_u = qm_v` of a frame at `qindex`:
+/// `min + qindex * (max - min + 1) / (MaxQ + 1)` over the band of
+/// [`PresetParams::quant_matrices`]; `None` codes `using_qmatrix = 0`.
+pub(crate) fn qm_level(preset: &PresetParams, qindex: u32, bit_depth: BitDepth) -> Option<u8> {
+    let (min, max) = match preset.quant_matrices {
+        1 => (10, 14),
+        2 => (5, 9),
+        3 => (0, 14),
+        _ => return None,
+    };
+    let range = u32::from(crate::rate_control::max_qindex(bit_depth)) + 1;
+    Some(min + (qindex.min(range - 1) * u32::from(max - min + 1) / range) as u8)
 }
 
 /// The number of offered luma types `preset` tries: `2 * tx_type_depth + 1`.
@@ -75,7 +90,11 @@ pub(crate) fn reconstruct(
         [PlaneId::Y, PlaneId::U, PlaneId::V][tx.plane.min(2)],
         (log2_w, log2_h),
         (tx.tx_type, tcq, syntax.uses_ddt()),
-        bit_depth,
+        (
+            bit_depth,
+            syntax.quant_matrices(),
+            syntax.quantizer_deltas(),
+        ),
     )?;
     dequant.clear();
     dequant.resize(1 << (adj_w + adj_h), 0);

@@ -18,8 +18,8 @@ use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
-    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, coefficient_scan_slice,
-    tx_class,
+    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QmFrameLevels, QuantizerDeltas,
+    coefficient_scan_slice, tx_class,
 };
 
 use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
@@ -40,7 +40,9 @@ use super::coeff_loop::{TX_GEOMETRY, eob_context};
 use super::coeff_state::{
     CoeffContextUpdate, LevelGrid, TileCoeffContextState, TransformCoeffBlockState,
 };
-use super::general_intra_residual::{block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx};
+use super::general_intra_residual::{
+    ZERO_QUANTIZER_DELTAS, block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx,
+};
 use super::intra_joint_modes::TileIntraFactsState;
 use super::mi_size_state::TileMiSizeState;
 pub use super::partition::PartitionType as Partition;
@@ -67,7 +69,9 @@ mod intrabc;
 mod mv;
 mod palette;
 mod parity;
+mod region;
 mod rollback;
+mod segment;
 mod tcq;
 mod transform;
 mod warp;
@@ -613,14 +617,16 @@ pub fn dct_recon_params(
         plane,
         (log2_width, log2_height),
         (TxType::DctDct, false, false),
-        bit_depth,
+        (bit_depth, None, ZERO_QUANTIZER_DELTAS),
     )
 }
 
 /// The decoder's dequantization and inverse-transform parameters of a
 /// `(log2 width, log2 height)` block of type `tx_type`, whose levels are TCQ
 /// levels when `use_tcq` ([`IntraTileSyntax::uses_tcq`]) and whose kernels are
-/// DDT kernels when `use_ddt` ([`IntraTileSyntax::uses_ddt`]).
+/// DDT kernels when `use_ddt` ([`IntraTileSyntax::uses_ddt`]), in a frame
+/// with the quantizer matrices `qm` ([`IntraTileSyntax::quant_matrices`]) and
+/// the plane deltas `deltas` ([`IntraTileSyntax::quantizer_deltas`]).
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Rule`] for an invalid shape.
@@ -629,14 +635,14 @@ pub fn recon_params(
     plane: PlaneId,
     (log2_width, log2_height): (u32, u32),
     (tx_type, use_tcq, use_ddt): (TxType, bool, bool),
-    bit_depth: BitDepth,
+    (bit_depth, qm, deltas): (BitDepth, Option<QmFrameLevels>, QuantizerDeltas),
 ) -> Result<(DequantBlockParams, InverseTransform2dOuter)> {
     block_recon_params(
         qindex,
         plane,
         (log2_width, log2_height),
         (tx_type as usize, use_tcq, use_ddt),
-        bit_depth,
+        (bit_depth, qm, deltas),
     )
     .map_err(rule("recon parameters"))
 }
@@ -702,6 +708,7 @@ pub struct IntraTileSyntax {
     sdp: SdpPartitionState,
     tile: (Range<usize>, Range<usize>),
     delta_q: delta_q::DeltaQ,
+    segments: Option<segment::Segments>,
     /// The planned leaf may code CCTX.
     cctx_leaf: bool,
     /// The planned intra leaf codes `fsc_mode`.
@@ -769,6 +776,7 @@ impl IntraTileSyntax {
             (base_q_idx, tools.bit_depth),
         )?;
         let delta_q = delta_q::DeltaQ::new(core, base_q_idx, tools.bit_depth);
+        let segments = segment::Segments::new(seq, core, (rows.clone(), cols.clone()), base_q_idx)?;
         let mut coeff = TileCoeffContextState::default();
         coeff
             .reset_for_tile_chroma(rows.clone(), cols.clone(), chroma)
@@ -792,6 +800,7 @@ impl IntraTileSyntax {
             sdp: SdpPartitionState::default(),
             tile: (rows, cols),
             delta_q,
+            segments,
             cctx_leaf: false,
             fsc_leaf: false,
             palette_map: Vec::new(),

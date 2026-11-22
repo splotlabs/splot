@@ -216,7 +216,7 @@ fn gdf_skips_frames_with_a_lossless_segment() {
         info.has_lossless_segment = true;
     }
     assert!(super::gdf::has_lossless_segment(&core));
-    let (_, recon, _, _) = coded.reference.unwrap();
+    let (_, recon, ..) = coded.reference.unwrap();
     let refs = splot_decode::encoder_syntax::EncoderReferences::new(&seq).unwrap();
     let flags = splot_decode::encoder_syntax::GdfFlags {
         blocks: &[],
@@ -310,7 +310,7 @@ fn ccso_search_classes_match_the_decoder_output() {
     let coded = coded.pop().unwrap();
     let (seq, _) = headers(&coded.temporal_unit);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let (_, recon, start, _) = coded.reference.unwrap();
+    let (_, recon, start, ..) = coded.reference.unwrap();
     let cases = [
         ccso_plane((false, 2, false), (1, 0, 3), |k| ((k * 5 + 3) % 8) as u8),
         ccso_plane((false, 5, true), (0, 1, 1), |k| (7 - k % 8) as u8),
@@ -347,6 +347,8 @@ fn ccso_search_classes_match_the_decoder_output() {
             source: &source,
             lambda: Lambda::from_qindex(u32::from(qp), config.bit_depth).unwrap(),
             pool: None,
+            reuse: None,
+            reuse_blocks: false,
         };
         let max = config.bit_depth.max_sample();
         for plane in 0..3 {
@@ -385,5 +387,30 @@ fn ccso_search_classes_match_the_decoder_output() {
             );
             assert!(moved >= 2, "case {index} plane {plane}: {sums:?}");
         }
+    }
+}
+
+/// With `lr_chroma_unit_sizes` 4 and the test hook that keeps the largest
+/// chroma unit size whose U or V plane still restores, the 352x288 case codes
+/// chroma units above the size derived from luma and decodes to the encoder
+/// recon; AVM decodes it alike when `SPLOT_AVM_DECODER` is set.
+#[test]
+fn large_chroma_lr_units_decode_to_the_encoder_recon() {
+    let case = CASES[4];
+    super::wienerns::FORCE_LARGE_CHROMA.with(|force| force.set(true));
+    let (config, coded) = code_with(case, 4, &[("lr_chroma_unit_sizes", "4")]);
+    super::wienerns::FORCE_LARGE_CHROMA.with(|force| force.set(false));
+    let lr = headers(&coded.temporal_unit).1.lr_params.unwrap();
+    assert!(
+        lr.uses_lr && lr.loop_restoration_size[1] > 32,
+        "{:?}",
+        lr.loop_restoration_size
+    );
+    let recon = raw_bytes(coded.recon.iter().map(Vec::as_slice), config.bit_depth);
+    assert_same_samples(&decode(&coded.temporal_unit), &recon, "large chroma units");
+    if let Some(avmdec) = avm_decoder() {
+        let units = [coded.temporal_unit.clone()];
+        let avm = avm_decode(&avmdec, &units, (case.0, case.1), case.2, "chroma-lr");
+        assert!(avm == recon, "AVM output differs");
     }
 }

@@ -29,6 +29,32 @@ use splot_decode::encoder_syntax::{
     JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
 };
 
+/// Smooth curved surfaces (quadratic in x and y, a slow ripple) that the
+/// learned DIP predictors model better than the angular modes.
+fn smooth_frame(config: &Config, seed: u32) -> SourceFrame {
+    let max = config.bit_depth.max_sample() as f64;
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
+        let (w, h) = (size.width() as f64, size.height() as f64);
+        (0..size.height())
+            .flat_map(|y| (0..size.width()).map(move |x| (x as f64, y as f64)))
+            .map(|(x, y)| {
+                let (u, v) = (x / w - 0.5, y / h - 0.5);
+                let phase = f64::from(seed % 7) * 0.4 + plane as f64;
+                let value = 0.5
+                    + 0.6 * u * v
+                    + 0.25 * (u * u - v * v)
+                    + 0.08 * (7.0 * (u + v) + phase).sin();
+                (value.clamp(0.0, 1.0) * max) as u16
+            })
+            .collect()
+    });
+    SourceFrame::new(config, u64::from(seed), planes).unwrap()
+}
+
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
@@ -253,6 +279,44 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             assert!(other == units, "preset {preset}: {threads} threads");
         });
     });
+}
+
+/// Parity hiding with the preset's TCQ frames: mid and leaf frames of a
+/// mini-GOP hide parity (`allow_parity_hiding`), TCQ frames do not, and the
+/// transform-type model of p6 prices levels that hide it; the streams decode
+/// to the encoder recon with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn parity_hiding_codes_the_frames_without_tcq() {
+    for (width, height, bit_depth, qp) in
+        [(136, 72, BitDepth::Eight, 110), (72, 40, BitDepth::Ten, 60)]
+    {
+        let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            parity_hiding: true,
+            ..*Preset::new(6).unwrap().params()
+        }));
+        assert!(params.tx_type_model_keep > 0);
+        let stream = |threads: usize| {
+            let mut config = config(width, height, bit_depth, 6, 60);
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            carry::planned_stream_of(&config, coder, panning_frame, qp)
+        };
+        let (units, expected, cores, _) = stream(1);
+        let hidden = cores
+            .iter()
+            .filter_map(|core| core.lossless_info.as_ref())
+            .map(|info| (info.allow_tcq, info.allow_parity_hiding))
+            .collect::<Vec<_>>();
+        assert!(
+            hidden.contains(&(false, true)) && hidden.contains(&(true, false)),
+            "{hidden:?}"
+        );
+        assert!(!hidden.contains(&(true, true)));
+        assert_same_samples(&decode(&units), &expected, &format!("{bit_depth:?}"));
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == units, "{bit_depth:?} {threads}");
+        }
+    }
 }
 
 /// TCQ on every frame: key and inter frames at a full-trial and a
@@ -602,6 +666,72 @@ fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         "RD never chose another kernel than the energy one"
     );
 }
+
+/// RD trials of the four best DIP predictions, without the angular SATD
+/// gate, change the stream against one gated trial, and decode to the
+/// encoder recon at both bit depths (a key frame and the inter frames that
+/// reference it, p6 in-loop filters), with the same bytes on 1, 2 and 8
+/// threads. The 8-bit single-trial stream pins the single-trial path to the
+/// bytes main coded with `dip` (FNV-1a golden).
+#[test]
+fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let (mut differs, mut more) = (false, 0);
+    for (width, height, bit_depth) in [(128, 64, BitDepth::Eight), (96, 64, BitDepth::Ten)] {
+        let mut config = config(width, height, bit_depth, 6, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |trials: u8, threads: usize| -> (Vec<u8>, Vec<u8>) {
+            let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+                dip: true,
+                dip_trials: trials,
+                ..*Preset::new(6).unwrap().params()
+            }));
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let coded: Vec<_> = (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    coder
+                        .encode_frame(&smooth_frame(&config, 150 + index as u32), &plan, 60)
+                        .unwrap()
+                })
+                .collect();
+            (
+                coded.iter().flat_map(|f| f.temporal_unit.clone()).collect(),
+                coded
+                    .iter()
+                    .flat_map(|f| recon_bytes(f, bit_depth))
+                    .collect(),
+            )
+        };
+        crate::tile_writer::DIP_CODED.set(0);
+        let (units, expected) = stream(4, 1);
+        let four = crate::tile_writer::DIP_CODED.get();
+        let name = format!("{bit_depth:?}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        let one = stream(1, 1).0;
+        if bit_depth == BitDepth::Eight {
+            assert_eq!(gm::fnv1a(&one), DIP_ONE_TRIAL_GOLDEN, "{name}: one trial");
+        }
+        differs |= one != units;
+        more += four;
+        for threads in [2, 8] {
+            assert!(stream(4, threads).0 == units, "{name}: {threads} threads");
+        }
+    }
+    assert!(
+        differs,
+        "four DIP trials coded the streams of one gated trial"
+    );
+    assert!(
+        more > 0,
+        "four DIP trials never coded a DIP of the wider search"
+    );
+}
+
+/// The FNV-1a hash of the 8-bit `dip` stream of one trial, recorded from main
+/// c449dab0f.
+const DIP_ONE_TRIAL_GOLDEN: u64 = 7_325_615_198_436_183_569;
 
 /// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
 /// frames only.
@@ -1464,7 +1594,13 @@ fn inter_stream_of(
             .search_superblock(|syntax, root| tree(syntax, root, &mut rng, &mut coverage))
             .unwrap();
         writer
-            .write_superblock(&SuperblockDecision { tree }, &mut residual)
+            .write_superblock(
+                &SuperblockDecision {
+                    tree,
+                    segment: None,
+                },
+                &mut residual,
+            )
             .unwrap();
     }
     let (tile, recon) = writer.finish().unwrap();
@@ -1632,16 +1768,26 @@ fn search_frame_counting(
     source: &SourceFrame,
     bit_depth: BitDepth,
 ) -> (Vec<PartitionTree>, [usize; 2]) {
+    search_frame_at(coder, plan, source, (bit_depth, 90))
+}
+
+/// [`search_frame_counting`] at `qindex`.
+fn search_frame_at(
+    coder: &IntraFrameCoder,
+    plan: &GopFrame,
+    source: &SourceFrame,
+    (bit_depth, qindex): (BitDepth, u16),
+) -> (Vec<PartitionTree>, [usize; 2]) {
     let core = plan
         .header(
             &coder.view,
             &coder.references,
-            90,
+            u32::from(qindex),
             &FrameFilterParams::default(),
             crate::gop::frame_tools(
                 (&coder.preset, crate::preset::PresetContext::default()),
                 coder.tiles,
-                90,
+                u32::from(qindex),
             ),
         )
         .unwrap();
@@ -1649,7 +1795,7 @@ fn search_frame_counting(
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
     let sb = writer.syntax().superblock_size4() * 4;
     let padded = PaddedSource::new(source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
-    let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
+    let lambda = Lambda::from_qindex(qindex.into(), bit_depth).unwrap();
     let motion = MotionSearch::new(
         writer.syntax(),
         &padded,
@@ -1658,8 +1804,9 @@ fn search_frame_counting(
         Vec::new(),
     )
     .unwrap();
-    let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
-    residual.context = coder.preset_context(plan, 90);
+    let mut residual =
+        SourceResidualCoder::new(&padded, u32::from(qindex), bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(plan, u32::from(qindex));
     let (luma, stride, width, height) = padded.luma();
     let bv_search = crate::intrabc::BvSearch::new(luma, stride, (width, height));
     residual.intrabc = (core.allow_intrabc == Some(true)).then_some(&bv_search);
@@ -1684,7 +1831,13 @@ fn search_frame_counting(
         assert_eq!(tree, search());
         let mut counting = ToolCount(&mut residual, counts);
         writer
-            .write_superblock(&SuperblockDecision { tree: tree.clone() }, &mut counting)
+            .write_superblock(
+                &SuperblockDecision {
+                    tree: tree.clone(),
+                    segment: None,
+                },
+                &mut counting,
+            )
             .unwrap();
         counts = counting.1;
         trees.push(tree);
@@ -1764,13 +1917,7 @@ fn b_frame_search_picks_compound_and_skip_mode_leaves() {
 
 /// The leaves of `tree` that `keep` accepts.
 fn leaves(tree: &PartitionTree, keep: impl Fn(&LeafChoice) -> bool + Copy) -> usize {
-    match tree {
-        PartitionTree::Leaf(choice) => usize::from(keep(choice)),
-        PartitionTree::Split { children, .. } => {
-            children.iter().map(|child| leaves(child, keep)).sum()
-        }
-        PartitionTree::Sdp { luma, chroma } => leaves(luma, keep) + leaves(chroma, keep),
-    }
+    tree.count_leaves(&keep)
 }
 
 /// `(width, height, bit depth, preset, qp, (cols_log2, rows_log2))`: 2x1, 1x2,
@@ -1923,6 +2070,8 @@ mod compound;
 mod content;
 #[path = "intra_frame_delta_q_tests.rs"]
 mod delta_q;
+#[path = "intra_frame_ext_sdp_tests.rs"]
+mod ext_sdp;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
 #[path = "intra_frame_gm_tests.rs"]
@@ -1941,8 +2090,12 @@ mod large_inter;
 mod mds;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_qm_tests.rs"]
+mod qm;
 #[path = "intra_frame_refine_tests.rs"]
 mod refine;
+#[path = "intra_frame_segmentation_tests.rs"]
+mod segmentation;
 #[path = "intra_frame_tf_tests.rs"]
 mod tf;
 #[path = "intra_frame_tip_tests.rs"]

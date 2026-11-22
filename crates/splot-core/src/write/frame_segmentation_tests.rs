@@ -445,4 +445,76 @@ mod tests {
         let reparsed = parse(&written, &seg, None);
         assert_eq!(reparsed, params);
     }
+
+    fn alt_q_segment_two() -> SegmentationParams {
+        let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+        features[2][0] = SegmentFeature {
+            enabled: true,
+            data: -100,
+        };
+        SegmentationParams {
+            segmentation_enabled: true,
+            reuse_seg_info: false,
+            features,
+            segmentation_update_map: true,
+            segmentation_temporal_update: false,
+            seg_id_pre_skip: false,
+            last_active_seg_id: 2,
+        }
+    }
+
+    fn write_coded_map(params: &SegmentationParams, frame_is_switch: bool) -> WriteResult<Vec<u8>> {
+        let mut writer = BitWriter::new();
+        let seg = no_seq_info_view(8);
+        write_inter_segmentation_params(&mut writer, params, (&seg, None), Some(frame_is_switch))?;
+        Ok(writer.into_bytes())
+    }
+
+    #[test]
+    fn coded_map_flags_follow_the_feature_data() {
+        let mut bits = Bits::default();
+        bits.bit(1); // segmentation_enabled
+        for _ in 0..2 {
+            bits.f(0, 3); // segments 0..2 disabled
+        }
+        bits.bit(1); // feature_enabled[2][0]
+        bits.f(0x39c, 10); // su(10) feature value = -100
+        bits.bit(0); // feature_enabled[2][1]
+        bits.bit(0); // feature_enabled[2][2]
+        for _ in 0..5 {
+            bits.f(0, 3); // segments 3..8 disabled
+        }
+        let inferred = bits.clone().into_bytes();
+        bits.bit(1); // segmentation_update_map
+        bits.bit(0); // segmentation_temporal_update
+        let coded = bits.into_bytes();
+        let params = alt_q_segment_two();
+        assert_eq!(parse(&inferred, &no_seq_info_view(8), None), params);
+        assert_eq!(write_coded_map(&params, false).unwrap(), coded);
+        let mut switch = BitWriter::new();
+        let seg = no_seq_info_view(8);
+        write_inter_segmentation_params(&mut switch, &params, (&seg, None), Some(true)).unwrap();
+        assert_eq!(switch.bit_len(), 36, "a switch frame codes no temporal update");
+    }
+
+    #[test]
+    fn coded_map_rejects_a_temporal_update_the_frame_cannot_code() {
+        let mut params = alt_q_segment_two();
+        params.segmentation_temporal_update = true;
+        assert!(write_coded_map(&params, true).is_err());
+        params.segmentation_update_map = false;
+        assert!(write_coded_map(&params, false).is_err());
+        let mut inferred = BitWriter::new();
+        let seg = no_seq_info_view(8);
+        assert!(write_segmentation_params(&mut inferred, &alt_q_segment_two_map_off(), &seg, None).is_err());
+        assert_eq!(inferred.bit_len(), 0);
+    }
+
+    fn alt_q_segment_two_map_off() -> SegmentationParams {
+        SegmentationParams {
+            segmentation_update_map: false,
+            ..alt_q_segment_two()
+        }
+    }
+
 }

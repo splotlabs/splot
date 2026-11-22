@@ -10,7 +10,7 @@ use crate::headers::frame::global_motion::DEFAULT_WARP_PARAMS;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefStrengthSet, CdefStrengthSets, EncoderStreamParams, EncoderToolFlags,
     FrameHeaderParseInput, FrameHeaderParseMode, FrameType, InterpolationFilter, MvPrecision,
-    TxMode, build_encoder_sequence_header, parse_frame_header_core,
+    SeqTiles, TxMode, build_encoder_sequence_header, parse_frame_header_core,
 };
 use crate::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 
@@ -156,6 +156,9 @@ fn inter_headers_parse_with_the_reference_state() {
                         force_integer_mv: sb == SuperblockSize::Block128x128 && !high_precision_mv,
                         warp: false,
                         global_motion: [None; 7],
+                        global_motion_predict: false,
+                        explicit_refs: None,
+                        implicit_output: false,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -246,6 +249,9 @@ fn order_hints_unwrap_against_the_reference_slots() {
         force_integer_mv: false,
         warp: false,
         global_motion: [None; 7],
+        global_motion_predict: false,
+        explicit_refs: None,
+        implicit_output: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -349,6 +355,9 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             force_integer_mv: false,
             warp: false,
             global_motion: [None; 7],
+            global_motion_predict: false,
+            explicit_refs: None,
+            implicit_output: false,
         },
     )
     .unwrap();
@@ -553,6 +562,9 @@ fn rejects_out_of_range_inter_inputs() {
         force_integer_mv: false,
         warp: false,
         global_motion: [None; 7],
+        global_motion_predict: false,
+        explicit_refs: None,
+        implicit_output: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -1082,6 +1094,9 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         force_integer_mv: false,
         warp: false,
         global_motion: [None; 7],
+        global_motion_predict: false,
+        explicit_refs: None,
+        implicit_output: false,
         tip_global_mv: TipGlobalMv::default(),
         tip_filter: None,
         tip_deblocking: false,
@@ -1147,9 +1162,110 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         ..fixed
     };
     assert_eq!(key(ignored), key(fixed));
-    let obu = encode_inter_frame_obu(&on, &[&[0xab]]).unwrap();
+    assert_cut_header_fails(&seq, &on, &slots.view());
+}
+
+/// The inter header `header` cut by its last byte does not parse to a
+/// complete header with the § 7.23 state `refs`.
+fn assert_cut_header_fails(
+    seq: &SequenceHeader,
+    header: &EncodedFrameHeader,
+    refs: &FrameReferenceStateView<'_>,
+) {
+    let info = header.core.tile_info.as_ref();
+    let tiles =
+        vec![&[0xab][..]; info.map_or(1, |info| (info.tile_cols * info.tile_rows) as usize)];
+    let obu = encode_inter_frame_obu(header, &tiles).unwrap();
     let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
-    let cut = on.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
+    let cut = header.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::RegularTileGroup,
+        first_picture_in_tu: true,
+        active_sequence: Some(seq),
+        mfh_record: None,
+        reference_state: *refs,
+        mode: FrameHeaderParseMode::Core,
+    };
+    let mut reader = BitReader::new(&payload[..cut], ByteOffset::new(0));
+    assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
+    let cut_core = parse_frame_header_core(&mut reader, &input);
+    assert!(!matches!(
+        cut_core,
+        Ok(ref core) if core.status == FrameHeaderParseStatus::InterHeaderComplete
+    ));
+}
+
+/// A `reuse_ccso` plane of an inter frame codes its two reuse flags and no
+/// parameters (§ 5.18.7.12): it parses back with the flags, `ccso_ref_idx`
+/// inferred `0` over one reference, and no parameters, and the header is
+/// shorter than the one that codes them. A `ccso_ref_idx` outside the
+/// references and reuse in a key frame are refused; a cut header does not
+/// parse complete.
+#[test]
+fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
+    let sb = SuperblockSize::Block64x64;
+    let seq = sequence(64, 64, BitDepthIdc::Eight, sb);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(64, 64, 0);
+    let coded = filters(sb);
+    let reuse = |ccso_ref_idx| FrameFilterParams {
+        ccso: coded.ccso.map(|plane| CcsoPlaneParams {
+            reuse_ccso: plane.ccso_planes,
+            ccso_ref_idx: plane.ccso_planes.then_some(ccso_ref_idx),
+            ..plane
+        }),
+        ..coded
+    };
+    let params = |filters| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 1,
+        refresh_frame_flags: 2,
+        show_frame: true,
+        filters,
+        tx: KeyFrameTxParams::default(),
+        tiles: UniformTiles::default(),
+        reference_select: false,
+        skip_mode_present: false,
+        primary_slot: Some(0),
+        use_ref_frame_mvs: false,
+        high_precision_mv: false,
+        switchable_interp_filter: false,
+        tip_weight: None,
+        tip_hole_fill: false,
+        opfl_refine_type: 0,
+        force_integer_mv: false,
+        warp: false,
+        global_motion: [None; 7],
+        tip_global_mv: TipGlobalMv::default(),
+        tip_filter: None,
+        tip_deblocking: false,
+        global_motion_predict: false,
+        explicit_refs: None,
+        implicit_output: false,
+    };
+    let build = |filters| build_inter_frame_header(&view, &slots.view(), &params(filters));
+    let fresh = build(coded).unwrap();
+    let reused = build(reuse(0)).unwrap();
+    let plane = &reused.core.ccso_params.as_ref().unwrap().planes[1];
+    assert!(plane.ccso_planes && plane.reuse_ccso && !plane.sb_reuse_ccso);
+    assert_eq!(plane.ccso_ref_idx, Some(0));
+    assert_eq!(plane.ccso_scale_idx, None);
+    assert!(reused.bits.num_frame_header_bits() < fresh.bits.num_frame_header_bits());
+    let fresh_plane = &fresh.core.ccso_params.as_ref().unwrap().planes[1];
+    assert!(!fresh_plane.reuse_ccso && fresh_plane.ccso_scale_idx == Some(2));
+    assert!(build(reuse(1)).is_err(), "one reference has no index 1");
+    let key = crate::headers::frame::build_key_frame_header(
+        &view,
+        90,
+        0,
+        &reuse(0),
+        KeyFrameTxParams::default(),
+        UniformTiles::default(),
+    );
+    assert!(key.is_err(), "a key frame cannot reuse CCSO");
+    let obu = encode_inter_frame_obu(&reused, &[&[0xab]]).unwrap();
+    let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
+    let cut = reused.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
     let input = FrameHeaderParseInput {
         obu_type: ObuType::RegularTileGroup,
         first_picture_in_tu: true,
@@ -1165,4 +1281,425 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         cut_core,
         Ok(ref core) if core.status == FrameHeaderParseStatus::InterHeaderComplete
     ));
+}
+
+/// Each slot saved `model` against a frame as far behind it as the current
+/// frame is ahead. With `global_motion_predict` the header codes the `our_ref`
+/// and `their_ref` (§ 5.18.9.1) whose saved model predicts the coded one: fewer
+/// bits and the same `gm_params`. A restricted saved order hint (§ 6.17.9.1)
+/// is never chosen, so the header keeps `our_ref = NumTotalRefs`. A cut
+/// header does not parse.
+#[test]
+fn global_motion_predict_codes_their_ref_and_the_same_models() {
+    let seq = build_encoder_sequence_header(&EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            global_motion: true,
+            ..EncoderToolFlags::default()
+        },
+    })
+    .unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let mut slots = Slots::after_key(64, 64, 4);
+    slots.valid[1] = true;
+    slots.hints[1] = 8;
+    slots.counters[1] = 1;
+    let model = [
+        7 << 13,
+        -(11 << 13),
+        (1 << 16) + (40 << 6),
+        -(23 << 6),
+        23 << 6,
+        (1 << 16) + (40 << 6),
+    ];
+    let mut models = [None; 7];
+    models[0] = Some(model);
+    let params = InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 6,
+        show_frame: true,
+        global_motion: models,
+        ..InterFrameParams::default()
+    };
+    let predict = InterFrameParams {
+        global_motion_predict: true,
+        ..params
+    };
+    let counts = [1; 8];
+    let saved = [[model; 7]; 8];
+    let mut hints = [[0; 7]; 8];
+    for (saved_hint, &hint) in hints.iter_mut().zip(&slots.hints) {
+        saved_hint[0] = 2 * hint - 6;
+    }
+    let refs = slots
+        .view()
+        .with_global_motion_state(&counts, &hints, &saved);
+    let off = build_inter_frame_header(&view, &refs, &params).unwrap();
+    let on = build_inter_frame_header(&view, &refs, &predict).unwrap();
+    let gm = |header: &EncodedFrameHeader| header.core.inter_tail.clone().unwrap().global_motion;
+    let num_total_refs = on.core.inter.as_ref().unwrap().num_total_refs;
+    assert!(on.bits.num_frame_header_bits() < off.bits.num_frame_header_bits());
+    assert_eq!(gm(&off).our_ref, num_total_refs);
+    assert_ne!(gm(&on).our_ref, num_total_refs);
+    assert_eq!(gm(&on).references, gm(&off).references);
+    assert_eq!(gm(&on).references[0].gm_params, model);
+    let restricted = [[u32::MAX; 7]; 8];
+    let refs_restricted = slots
+        .view()
+        .with_global_motion_state(&counts, &restricted, &saved);
+    let kept = build_inter_frame_header(&view, &refs_restricted, &predict).unwrap();
+    assert_eq!(gm(&kept).our_ref, num_total_refs);
+    assert_eq!(
+        kept.bits,
+        build_inter_frame_header(&view, &refs_restricted, &params)
+            .unwrap()
+            .bits
+    );
+    assert_cut_header_fails(&seq, &on, &refs);
+}
+
+/// With `enable_short_refresh_frame_flags` an inter or TIP output header
+/// codes `has_refresh_frame_flags` and the `frame_to_refresh` of its one
+/// slot (§ 5.18.2), parses back to the same `refresh_frame_flags` and is
+/// shorter than the `NumRefFrames` bits; two slots, or a slot outside
+/// `NumRefFrames`, are rejected; a cut header does not parse.
+#[test]
+fn short_refresh_flags_code_one_slot_or_none() {
+    let stream = |short_refresh| EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            ref_frame_mvs: true,
+            tip: true,
+            tip_output: true,
+            short_refresh,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seqs = [false, true].map(|short| build_encoder_sequence_header(&stream(short)).unwrap());
+    let [long, short] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+    assert!(!long.enable_short_refresh_frame_flags && short.enable_short_refresh_frame_flags);
+    let mut slots = Slots::after_key(64, 64, 4);
+    slots.valid[1] = true;
+    slots.hints[1] = 8;
+    slots.counters[1] = 1;
+    let params = |refresh_frame_flags| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 6,
+        refresh_frame_flags,
+        show_frame: true,
+        primary_slot: Some(0),
+        tip_weight: Some(3),
+        ..InterFrameParams::default()
+    };
+    for (flags, saved) in [(0, 7), (0b10, 4), (0b1000_0000, 4)] {
+        let bits = |view: &CoreSeqView| {
+            let header = build_inter_frame_header(view, &slots.view(), &params(flags)).unwrap();
+            assert_eq!(header.core.refresh_frame_flags, Some(flags), "{flags:#b}");
+            assert_eq!(
+                header.core.consumed_bits,
+                header.bits.num_frame_header_bits()
+            );
+            header
+        };
+        let header = bits(&short);
+        let long_bits = bits(&long).bits.num_frame_header_bits();
+        assert_eq!(long_bits - header.bits.num_frame_header_bits(), saved);
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
+    for flags in [0b11, 1 << 8] {
+        assert!(build_inter_frame_header(&short, &slots.view(), &params(flags)).is_err());
+    }
+    let tip = build_tip_output_frame_header(&short, &slots.view(), &params(0), &[0, 1]).unwrap();
+    assert_eq!(tip.core.refresh_frame_flags, Some(0));
+    let obu = encode_tip_output_frame_obu(&tip).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    assert!(parsed.error.is_none() && parsed.obus.len() == 1);
+}
+
+/// A sequence with `seq_tile_info_present_flag` codes its uniform layout
+/// (§ 5.4.2); key and inter frames reuse it when `allow_tile_info_change` is
+/// off, code `reuse_tile_info` when it is on, and code their own tile info
+/// after `reuse_tile_info = 0`. A frame that reuses the layout codes it in
+/// place of its own; a bad `TileSizeBytes` is rejected; a cut header does not
+/// parse.
+#[test]
+fn sequence_tile_info_is_reused_or_coded_per_frame() {
+    for (allow, reuse, saved) in [(false, true, 3), (true, true, 2), (true, false, -1)] {
+        let tiles = |cols_log2| UniformTiles {
+            cols_log2,
+            rows_log2: 0,
+            reuse_tile_info: reuse,
+            ..UniformTiles::default()
+        };
+        let stream = |seq_tiles| EncoderStreamParams {
+            width: 256,
+            height: 64,
+            bit_depth: BitDepthIdc::Eight,
+            chroma: ChromaFormatIdc::Yuv420,
+            sb_size: SuperblockSize::Block64x64,
+            tools: EncoderToolFlags {
+                seq_tiles,
+                ..EncoderToolFlags::default()
+            },
+        };
+        let present = Some(SeqTiles {
+            cols_log2: 1,
+            rows_log2: 0,
+            allow_tile_info_change: allow,
+        });
+        let seqs = [None, present]
+            .map(|seq_tiles| build_encoder_sequence_header(&stream(seq_tiles)).unwrap());
+        let [plain, seq] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+        assert!(seq.tile.seq_tile_info_present_flag && seq.tile.allow_tile_info_change == allow);
+        assert_eq!(seq.tile.seq_tile_params.unwrap().tile_cols, 2);
+        let slots = Slots::after_key(256, 64, 0);
+        let params = |cols_log2| InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 1,
+            refresh_frame_flags: 2,
+            show_frame: true,
+            primary_slot: Some(0),
+            tiles: tiles(cols_log2),
+            ..InterFrameParams::default()
+        };
+        let inter = |view: &CoreSeqView, cols_log2| {
+            build_inter_frame_header(view, &slots.view(), &params(cols_log2))
+        };
+        let key = |view: &CoreSeqView, cols_log2| {
+            crate::headers::frame::build_key_frame_header(
+                view,
+                90,
+                0,
+                &FrameFilterParams::default(),
+                KeyFrameTxParams::default(),
+                tiles(cols_log2),
+            )
+        };
+        let header = inter(&seq, 1).unwrap();
+        let info = header.core.tile_info.as_ref().unwrap();
+        assert_eq!(
+            (info.tile_cols, info.reuse_tile_info),
+            (2, reuse),
+            "{allow} {reuse}"
+        );
+        let bits = |header: &EncodedFrameHeader| header.bits.num_frame_header_bits() as i64;
+        assert_eq!(bits(&inter(&plain, 1).unwrap()) - bits(&header), saved);
+        assert_eq!(key(&seq, 1).unwrap().tile_info.unwrap().tile_cols, 2);
+        let own = inter(&seq, 0).unwrap().core.tile_info.unwrap().tile_cols;
+        assert_eq!(own, if reuse { 2 } else { 1 }, "{allow} {reuse}");
+        assert_eq!(key(&seq, 0).unwrap().tile_info.unwrap().tile_cols, own);
+        let bad = InterFrameParams {
+            tiles: UniformTiles {
+                size_bytes: 5,
+                ..tiles(1)
+            },
+            ..params(1)
+        };
+        assert!(build_inter_frame_header(&seq, &slots.view(), &bad).is_err());
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
+}
+
+/// With `explicit_ref_frame_map` an inter frame codes
+/// `frame_explicit_ref_frame_map` (§ 5.18.2): `0` keeps the default map for one
+/// more bit, and `1` codes `num_total_refs` and the first `ref_frame_idx` of
+/// the default map. An explicit map without the sequence flag, or with no
+/// reference, is rejected; a TIP output header codes the flag `0`; a cut
+/// header does not parse.
+#[test]
+fn explicit_reference_maps_code_the_first_default_references() {
+    let stream = |explicit_ref_frame_map| EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            ref_frame_mvs: true,
+            tip: true,
+            tip_output: true,
+            explicit_ref_frame_map,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seqs = [false, true].map(|map| build_encoder_sequence_header(&stream(map)).unwrap());
+    let [implicit, explicit] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+    let mut slots = Slots::after_key(64, 64, 4);
+    for slot in 1..4 {
+        slots.valid[slot] = true;
+        slots.hints[slot] = 4 + 2 * slot as u32;
+        slots.counters[slot] = slot as u32;
+    }
+    let params = |explicit_refs| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 7,
+        refresh_frame_flags: 0b1_0000,
+        show_frame: true,
+        primary_slot: Some(1),
+        tip_weight: Some(3),
+        explicit_refs,
+        ..InterFrameParams::default()
+    };
+    let map =
+        |header: &EncodedFrameHeader| header.core.inter.as_ref().unwrap().ref_frame_idx.clone();
+    let default = build_inter_frame_header(&implicit, &slots.view(), &params(None)).unwrap();
+    assert_eq!(default.core.inter.as_ref().unwrap().num_total_refs, Some(4));
+    let bits = |header: &EncodedFrameHeader| header.bits.num_frame_header_bits();
+    let flag_off = build_inter_frame_header(&explicit, &slots.view(), &params(None)).unwrap();
+    assert_eq!(
+        (map(&flag_off), bits(&flag_off)),
+        (map(&default), bits(&default) + 1)
+    );
+    for limit in [1, 2, 4, 7] {
+        let header =
+            build_inter_frame_header(&explicit, &slots.view(), &params(Some(limit))).unwrap();
+        let count = usize::from(limit).min(4);
+        assert_eq!(map(&header)[..], map(&default)[..count], "{limit}");
+        let inter = header.core.inter.as_ref().unwrap();
+        assert_eq!(inter.explicit_ref_frame_map, Some(true));
+        assert_eq!(header.core.consumed_bits, bits(&header));
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
+    assert!(build_inter_frame_header(&implicit, &slots.view(), &params(Some(2))).is_err());
+    assert!(build_inter_frame_header(&explicit, &slots.view(), &params(Some(0))).is_err());
+    let tip =
+        build_tip_output_frame_header(&explicit, &slots.view(), &params(None), &map(&default))
+            .unwrap();
+    assert_eq!(tip.core.inter.unwrap().explicit_ref_frame_map, Some(false));
+}
+
+#[test]
+fn intra_only_headers_keep_the_other_slots() {
+    for sb in [SuperblockSize::Block64x64, SuperblockSize::Block256x256] {
+        let seq = sequence(200, 136, BitDepthIdc::Eight, sb);
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let slots = Slots::after_key(200, 136, 4);
+        for (show_frame, refresh_frame_flags, filters) in [
+            (true, 0b10, FrameFilterParams::default()),
+            (false, 0b1000_0000, filters(sb)),
+        ] {
+            let params = InterFrameParams {
+                base_q_idx: 90,
+                order_hint: 6,
+                refresh_frame_flags,
+                show_frame,
+                filters,
+                ..InterFrameParams::default()
+            };
+            let header = build_intra_only_frame_header(&view, &slots.view(), &params).unwrap();
+            let core = &header.core;
+            assert_eq!(core.frame_type, Some(FrameType::IntraOnly));
+            assert_eq!(core.frame_is_intra, Some(true));
+            assert_eq!(core.refresh_frame_flags, Some(refresh_frame_flags));
+            assert_eq!(core.display_order_hint(), Some(6));
+            assert_eq!(core.immediate_output_frame, Some(show_frame));
+            assert!(core.inter.is_none());
+            assert_eq!(header.bits.num_frame_header_bits(), core.consumed_bits);
+            let bytes = encode_inter_frame_obu(&header, &[&[0x5a; 3]]).unwrap();
+            assert!(!bytes.is_empty());
+            let mut w = BitWriter::new();
+            for index in 0..header.bits.num_frame_header_bits() {
+                w.write_flag(header.bits.bit(index).unwrap()).unwrap();
+            }
+            let full = w.into_bytes();
+            for len in 0..core.consumed_bits.div_ceil(8) as usize {
+                let mut cut = BitReader::new(&full[..len], ByteOffset::new(0));
+                let parsed =
+                    parse_frame_header_prefix(&mut cut, ObuType::RegularTileGroup, Some(true))
+                        .and_then(|prefix| {
+                            let mut cut_core =
+                                init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
+                            parse_core_body(&mut cut, &mut cut_core, &view, None, &slots.view())?;
+                            Ok(cut_core.status)
+                        });
+                let complete = FrameHeaderParseStatus::IntraHeaderComplete;
+                assert!(parsed.map_or(true, |s| s != complete), "cut at {len}");
+            }
+        }
+        let bad = |params: InterFrameParams| {
+            build_intra_only_frame_header(&view, &slots.view(), &params).is_err()
+        };
+        let base = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 6,
+            refresh_frame_flags: 0b10,
+            ..InterFrameParams::default()
+        };
+        assert!(bad(InterFrameParams {
+            base_q_idx: 0,
+            ..base
+        }));
+        assert!(bad(InterFrameParams {
+            tx: KeyFrameTxParams {
+                tx_mode: TxMode::Only4x4,
+                ..KeyFrameTxParams::default()
+            },
+            ..base
+        }));
+    }
+}
+
+/// With `implicit_output` the sequence codes `monotonic_output_order_flag =
+/// 0`; a hidden inter frame codes `implicit_output_frame` (§ 5.18.2) and, as an
+/// output frame, its film grain (§ 5.18.10.1). An implicit shown frame or an
+/// implicit frame in monotonic order is rejected; a cut header does not
+/// parse.
+#[test]
+fn hidden_frames_code_implicit_output() {
+    let stream = |implicit_output| EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            implicit_output,
+            film_grain: true,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seqs =
+        [false, true].map(|implicit| build_encoder_sequence_header(&stream(implicit)).unwrap());
+    assert!(seqs[0].general.monotonic_output_order_flag);
+    assert!(!seqs[1].general.monotonic_output_order_flag);
+    let [monotonic, free] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+    let slots = Slots::after_key(64, 64, 0);
+    let params = |show_frame, implicit_output, grain_seed| InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 4,
+        refresh_frame_flags: 2,
+        show_frame,
+        primary_slot: Some(0),
+        implicit_output,
+        tx: KeyFrameTxParams {
+            grain_seed,
+            ..KeyFrameTxParams::default()
+        },
+        ..InterFrameParams::default()
+    };
+    for (implicit, seed) in [(false, None), (true, None), (true, Some(0x1234))] {
+        let header =
+            build_inter_frame_header(&free, &slots.view(), &params(false, implicit, seed)).unwrap();
+        assert_eq!(header.core.implicit_output_frame, Some(implicit));
+        assert_eq!(
+            header.core.consumed_bits,
+            header.bits.num_frame_header_bits()
+        );
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
+    assert!(
+        build_inter_frame_header(&free, &slots.view(), &params(false, false, Some(7))).is_err()
+    );
+    assert!(build_inter_frame_header(&free, &slots.view(), &params(true, true, None)).is_err());
+    assert!(
+        build_inter_frame_header(&monotonic, &slots.view(), &params(false, true, None)).is_err()
+    );
 }

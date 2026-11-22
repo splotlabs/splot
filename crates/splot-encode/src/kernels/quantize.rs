@@ -31,7 +31,7 @@ use fearless_simd::{
     SimdInt as _, SimdIntWiden as _, SimdMask as _, dispatch, f32x8, i32x8, u32x8, u64x4,
 };
 
-use splot_recon::BitDepth;
+use splot_recon::{BitDepth, qm_weighted_quantizer};
 
 use super::KernelError;
 
@@ -92,12 +92,14 @@ impl Step {
 }
 
 /// A validated quantizer for one transform block.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Quantizer {
     dc: Step,
     ac: Step,
     bound: u32,
     rounding_q8: u32,
+    /// The quantization-matrix weighted step of each raster coefficient.
+    weighted: Option<Box<[Step]>>,
 }
 
 impl Quantizer {
@@ -126,7 +128,35 @@ impl Quantizer {
             ac: Step::new(ac_q2, dq_denom, bound)?,
             bound,
             rounding_q8,
+            weighted: None,
         })
+    }
+
+    /// This quantizer with the § 7.14.4 matrix weight `m` of each raster
+    /// coefficient in `weights`, whose step is `q2 = Round2(q * m, 5)`.
+    ///
+    /// # Errors
+    /// Returns [`KernelError::InvalidQuantizer`] for a weighted step that
+    /// [`Self::new`] rejects.
+    pub(crate) fn with_weights(mut self, weights: Option<&[i32]>) -> Result<Self, KernelError> {
+        if let Some(weights) = weights {
+            let denom = 1 << self.ac.denom_shift;
+            let steps = weights.iter().enumerate().map(|(i, &m)| {
+                let q = if i == 0 { self.dc.q2 } else { self.ac.q2 };
+                Step::new(qm_weighted_quantizer(q, m), denom, self.bound)
+            });
+            self.weighted = Some(steps.collect::<Result<_, _>>()?);
+        }
+        Ok(self)
+    }
+
+    /// The step of raster coefficient `i`.
+    fn step(&self, i: usize) -> Step {
+        match self.weighted.as_deref().and_then(|steps| steps.get(i)) {
+            Some(&step) => step,
+            None if i == 0 => self.dc,
+            None => self.ac,
+        }
     }
 
     /// The § 7.14.4 `dqDenom` with `allow_tcq` off for an original
@@ -165,7 +195,7 @@ pub(super) fn quantize_scalar(
         .zip(dequant.iter_mut())
         .enumerate()
     {
-        let step = if i == 0 { quantizer.dc } else { quantizer.ac };
+        let step = quantizer.step(i);
         let a = c.unsigned_abs();
         let estimate = (u64::from(a) << (3 + step.denom_shift)) / u64::from(step.q2);
         let mut lo = estimate.min(u64::from(step.max_level)) as u32;
@@ -225,9 +255,8 @@ struct StepLanes<S: Simd> {
 const LANES: usize = 8;
 
 impl<S: Simd> StepLanes<S> {
-    /// Lane 0 takes `first` and the other lanes `rest`.
-    fn new(simd: S, first: Step, rest: Step, rounding_q8: u32) -> Self {
-        let step = |i: usize| if i == 0 { first } else { rest };
+    /// Lane `i` takes `step(i)`.
+    fn new(simd: S, step: impl Fn(usize) -> Step, rounding_q8: u32) -> Self {
         let pick = |f: fn(Step) -> u32| u32x8::from_fn(simd, |i| f(step(i)));
         Self {
             q2: pick(|s| s.q2),
@@ -299,13 +328,24 @@ fn quantize_kernel<S: Simd, const ERROR: bool>(
     let (c_chunks, c_tail) = coeffs.as_chunks::<LANES>();
     let (l_chunks, l_tail) = levels.as_chunks_mut::<LANES>();
     let (d_chunks, d_tail) = dequant.as_chunks_mut::<LANES>();
-    let first = StepLanes::new(simd, quantizer.dc, quantizer.ac, quantizer.rounding_q8);
-    let rest = StepLanes::new(simd, quantizer.ac, quantizer.ac, quantizer.rounding_q8);
+    let rounding = quantizer.rounding_q8;
+    let first = StepLanes::new(simd, |i| quantizer.step(i), rounding);
+    let rest = StepLanes::new(simd, |_| quantizer.ac, rounding);
+    let weighted =
+        |chunk: usize| StepLanes::new(simd, |i| quantizer.step(LANES * chunk + i), rounding);
+    let mut lanes;
     let mut count = 0;
     let zero = i32x8::splat(simd, 0);
     let mut error = u64x4::splat(simd, 0);
     for (i, ((c, l), d)) in c_chunks.iter().zip(l_chunks).zip(d_chunks).enumerate() {
-        let steps = if i == 0 { &first } else { &rest };
+        let steps = if quantizer.weighted.is_some() {
+            lanes = weighted(i);
+            &lanes
+        } else if i == 0 {
+            &first
+        } else {
+            &rest
+        };
         let c = i32x8::load_array_ref(simd, c);
         if c.abs()
             .bitcast::<u32x8<S>>()
@@ -328,7 +368,14 @@ fn quantize_kernel<S: Simd, const ERROR: bool>(
     }
     let n = c_tail.len();
     if n > 0 {
-        let steps = if c_chunks.is_empty() { &first } else { &rest };
+        let steps = if quantizer.weighted.is_some() {
+            lanes = weighted(c_chunks.len());
+            &lanes
+        } else if c_chunks.is_empty() {
+            &first
+        } else {
+            &rest
+        };
         let mut c = [0; LANES];
         c[..n].copy_from_slice(c_tail);
         let c = i32x8::load_array_ref(simd, &c);

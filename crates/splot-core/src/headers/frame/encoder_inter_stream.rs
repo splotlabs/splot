@@ -15,18 +15,20 @@ use crate::headers::film_grain::{
     FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate,
 };
 use crate::headers::frame::encoder_stream::{
-    MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_film_grain_config,
-    write_quant_and_filters, write_uniform_tile_info,
+    MAX_REDUCED_TX_SET, UniformTiles, obu_header, plane_quantization, tile_framing,
+    write_film_grain_config, write_intra_frame_tail, write_quant_and_filters,
+    write_uniform_tile_info,
 };
-use crate::headers::frame::global_motion::{REFS_PER_FRAME, default_base_prediction};
+use crate::headers::frame::get_ref_frames::get_relative_dist;
+use crate::headers::frame::global_motion::{DEFAULT_WARP_PARAMS, REFS_PER_FRAME, base_prediction};
 use crate::headers::frame::info::build_inter_seq_view;
 use crate::headers::frame::inter::tip_weight_coded;
 use crate::headers::frame::inter_shared_tail::lr_reference_filters;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
-    CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore, FrameHeaderParseStatus,
-    FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode, init_core_from_prefix,
-    parse_core_body, parse_frame_header_prefix,
+    CcsoPlaneParams, CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
+    FrameHeaderParseStatus, FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode,
+    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
@@ -122,6 +124,24 @@ pub struct InterFrameParams {
     /// NumTotalRefs`; `None` codes `IDENTITY`, and all `None` codes
     /// `use_global_motion = 0`. Needs `enable_global_motion`.
     pub global_motion: [Option<[i32; 6]>; REFS_PER_FRAME],
+    /// Codes the `our_ref` and `their_ref` (§ 5.18.9.1) of the fewest
+    /// `global_motion_params()` bits instead of `our_ref = NumTotalRefs`.
+    pub global_motion_predict: bool,
+    /// `frame_explicit_ref_frame_map = 1` (§ 5.18.2) with `num_total_refs`
+    /// the smaller of this and the default count, over the first references
+    /// of the default map. Needs `explicit_ref_frame_map`.
+    pub explicit_refs: Option<u8>,
+    /// `implicit_output_frame` of a hidden frame (§ 5.18.2): the decoder
+    /// outputs it by order hint. Needs `monotonic_output_order_flag = 0`.
+    pub implicit_output: bool,
+}
+
+/// `our_ref`, `their_ref` with its `ns` range, and the `PrevGmParams` of each
+/// reference (§ 5.18.9.1) of one `global_motion_params()` coding.
+struct GmBase {
+    our_ref: u32,
+    their_ref: Option<(u32, u32)>,
+    predictions: Vec<Option<[i32; 6]>>,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -163,33 +183,58 @@ pub fn build_inter_frame_header(
         filters: FrameFilterParams {
             lr_luma_wiener_ns: None,
             lr_chroma_wiener_ns: [None; 2],
+            ccso: params.filters.ccso.map(|plane| CcsoPlaneParams {
+                reuse_ccso: false,
+                sb_reuse_ccso: false,
+                ccso_ref_idx: None,
+                ..plane
+            }),
             ..params.filters
         },
         ..*params
     };
-    let header = parse_inter_frame_header(seq, refs, &plain, (None, 0), &[])?;
+    let header = parse_inter_frame_header(
+        seq,
+        refs,
+        &InterFrameParams {
+            explicit_refs: None,
+            ..plain
+        },
+        (None, 0),
+        &[],
+    )?;
     let inter = header
         .core
         .inter
         .as_ref()
         .ok_or(EncoderHeaderError::Incomplete)?;
+    let mut num_total_refs = inter.num_total_refs.unwrap_or(0);
+    if let Some(limit) = params.explicit_refs {
+        if !seq.inter.explicit_ref_frame_map || limit == 0 {
+            return Err(unsupported(
+                "an explicit reference map the sequence does not allow",
+            ));
+        }
+        num_total_refs = num_total_refs.min(u32::from(limit));
+    }
+    let ref_frame_idx =
+        &inter.ref_frame_idx[..inter.ref_frame_idx.len().min(num_total_refs as usize)];
     let position = params.primary_slot.and_then(|slot| {
-        let position = inter
-            .ref_frame_idx
+        let position = ref_frame_idx
             .iter()
             .zip(inter.order_hints.iter())
             .position(|(&index, &hint)| index == slot && hint != u32::MAX)?;
         u32::try_from(position).ok()
     });
     if position.is_none()
+        && params.explicit_refs.is_none()
         && !params.use_ref_frame_mvs
         && params.filters == plain.filters
         && params.global_motion == plain.global_motion
     {
         return Ok(header);
     }
-    let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    let ref_frame_idx = inter.ref_frame_idx.clone();
+    let ref_frame_idx = ref_frame_idx.to_vec();
     parse_inter_frame_header(
         seq,
         refs,
@@ -222,16 +267,10 @@ fn parse_inter_frame_header(
         u32::from(params.opfl_refine_type),
     )
     .unwrap_or(true);
-    let gm_predictions: Vec<Option<[i32; 6]>> = ref_frame_idx
-        .iter()
-        .take(map.1 as usize)
-        .map(|&slot| {
-            let hint = refs.ref_order_hint?.get(slot as usize).copied()?;
-            default_base_prediction(params.order_hint, hint)
-        })
-        .collect();
+    let gm = cheapest_gm_base(seq, refs, params, map.1, ref_frame_idx)?;
+    let explicit = params.explicit_refs.map(|_| ref_frame_idx);
     let (bytes, bit_len) =
-        inter_frame_header_bits(seq, params, map, (lr_refs, &gm_predictions), weight_coded)?;
+        inter_frame_header_bits(seq, params, map, (lr_refs, &gm), (weight_coded, explicit))?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -256,8 +295,8 @@ fn inter_frame_header_bits(
     seq: &CoreSeqView,
     params: &InterFrameParams,
     (primary_ref_frame, num_total_refs): (Option<u32>, u32),
-    (lr_refs, gm_predictions): (LrReferenceFilters<'_>, &[Option<[i32; 6]>]),
-    weight_coded: bool,
+    (lr_refs, gm): (LrReferenceFilters<'_>, &GmBase),
+    (weight_coded, explicit): (bool, Option<&[u32]>),
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
@@ -267,9 +306,7 @@ fn inter_frame_header_bits(
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
     w.write_flag(true)?; // frame_is_inter
     w.write_flag(params.show_frame)?; // immediate_output_frame
-    if !params.show_frame && !seq.monotonic_output_order_flag {
-        w.write_flag(false)?; // implicit_output_frame
-    }
+    write_implicit_output(&mut w, seq, params)?;
     w.write_flag(false)?; // frame_size_override_flag
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
@@ -279,12 +316,11 @@ fn inter_frame_header_bits(
     if !choose {
         w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
     }
-    if seq.enable_short_refresh_frame_flags || seq.seq_force_screen_content_tools == 1 {
-        return Err(unsupported(
-            "short refresh flags or forced screen content tools",
-        ));
+    if seq.seq_force_screen_content_tools == 1 {
+        return Err(unsupported("forced screen content tools"));
     }
-    w.write_bits(params.refresh_frame_flags, seq.num_ref_frames)?;
+    write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
+    write_explicit_ref_map(&mut w, seq, explicit)?;
     if params.use_ref_frame_mvs && !seq.inter.enable_ref_frame_mvs {
         return Err(unsupported(
             "use_ref_frame_mvs without enable_ref_frame_mvs",
@@ -372,7 +408,7 @@ fn inter_frame_header_bits(
         seq,
         (params.base_q_idx, params.tiles, tx),
         &params.filters,
-        (false, lr_refs),
+        (false, lr_refs, primary_ref_frame.map(|_| false)),
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_flag(params.reference_select)?;
@@ -384,22 +420,103 @@ fn inter_frame_header_bits(
         w.write_flag(true)?; // allow_warpmv_mode
     }
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
-    write_global_motion(&mut w, seq, params, (num_total_refs, gm_predictions))?;
-    write_film_grain_config(&mut w, seq, params.show_frame, tx.grain_seed)?;
+    write_global_motion(&mut w, seq, params, (num_total_refs, gm))?;
+    let output = params.show_frame || params.implicit_output;
+    write_film_grain_config(&mut w, seq, output, tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.align_to_byte();
     Ok((w.into_bytes(), bit_len))
 }
 
+/// The [`GmBase`] of the fewest `global_motion_params()` bits over the
+/// references `ref_frame_idx` of the § 7.23 state `refs`: `our_ref =
+/// NumTotalRefs`, and with `global_motion_predict` also each `our_ref` and
+/// `their_ref` that § 6.17.9.1 allows. Ties keep the earlier base.
+fn cheapest_gm_base(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+    num_total_refs: u32,
+    ref_frame_idx: &[u32],
+) -> Result<GmBase, EncoderHeaderError> {
+    let slots = &ref_frame_idx[..ref_frame_idx.len().min(num_total_refs as usize)];
+    let hint = |slot: u32| refs.ref_order_hint?.get(slot as usize).copied();
+    let predict = |base: ([i32; 6], i32)| -> Vec<Option<[i32; 6]>> {
+        slots
+            .iter()
+            .map(|&slot| base_prediction(params.order_hint, hint(slot)?, base))
+            .collect()
+    };
+    let default = GmBase {
+        our_ref: num_total_refs,
+        their_ref: None,
+        predictions: predict((DEFAULT_WARP_PARAMS, 1)),
+    };
+    if !params.global_motion_predict || params.global_motion.iter().all(Option::is_none) {
+        return Ok(default);
+    }
+    let mut bases = vec![default];
+    for (our_ref, &slot) in (0u32..).zip(slots) {
+        let Some(our_hint) = hint(slot).and_then(|h| i32::try_from(h).ok()) else {
+            continue;
+        };
+        let index = slot as usize;
+        let saved = refs.ref_num_total_refs.and_then(|counts| counts.get(index));
+        let Some(&count @ 0..=7) = saved else {
+            continue;
+        };
+        if count == 0 {
+            bases.push(GmBase {
+                our_ref,
+                their_ref: None,
+                predictions: predict((DEFAULT_WARP_PARAMS, 1)),
+            });
+            continue;
+        }
+        let saved_hints = refs
+            .saved_global_motion_order_hints
+            .and_then(|h| h.get(index));
+        let saved_params = refs.saved_global_motion_params.and_then(|p| p.get(index));
+        let (Some(saved_hints), Some(saved_params)) = (saved_hints, saved_params) else {
+            continue;
+        };
+        for their_ref in 0..count {
+            let their = their_ref as usize;
+            let Ok(saved_hint) = i32::try_from(saved_hints[their]) else {
+                continue;
+            };
+            bases.push(GmBase {
+                our_ref,
+                their_ref: Some((their_ref, count)),
+                predictions: predict((
+                    saved_params[their],
+                    get_relative_dist(our_hint, saved_hint),
+                )),
+            });
+        }
+    }
+    let mut best: Option<(u64, GmBase)> = None;
+    for base in bases {
+        let mut w = BitWriter::new();
+        write_global_motion(&mut w, seq, params, (num_total_refs, &base))?;
+        if best.as_ref().is_none_or(|(bits, _)| w.bit_len() < *bits) {
+            best = Some((w.bit_len(), base));
+        }
+    }
+    best.map(|(_, base)| base)
+        .ok_or(EncoderHeaderError::Incomplete)
+}
+
 /// Writes `global_motion_params()` (§ 5.18.9.1) of `params` over a map of
-/// `num_total_refs` references whose `PrevGmParams` are `predictions`, `None`
-/// for a reference that reads no model.
+/// `num_total_refs` references with the base `gm`, whose `predictions` are
+/// `None` for a reference that reads no model.
 fn write_global_motion(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     params: &InterFrameParams,
-    (num_total_refs, predictions): (u32, &[Option<[i32; 6]>]),
+    (num_total_refs, gm): (u32, &GmBase),
 ) -> Result<(), EncoderHeaderError> {
+    let predictions = &gm.predictions;
     let used = params.global_motion.iter().any(Option::is_some);
     if !seq.inter.enable_global_motion {
         return if used {
@@ -412,7 +529,10 @@ fn write_global_motion(
     if !used {
         return Ok(());
     }
-    w.write_ns(num_total_refs, num_total_refs + 1)?; // our_ref
+    w.write_ns(gm.our_ref, num_total_refs + 1)?; // our_ref
+    if let Some((their_ref, count)) = gm.their_ref {
+        w.write_ns(their_ref, count)?;
+    }
     for (index, &model) in params.global_motion.iter().enumerate() {
         let Some(&Some(prev)) = predictions.get(index) else {
             if model.is_some() {
@@ -436,6 +556,55 @@ fn write_global_motion(
         }
     }
     Ok(())
+}
+
+/// Builds the `INTRA_ONLY_FRAME` header (§ 5.18.2 `frame_is_inter = 0`) of
+/// `params` in an `OBU_REGULAR_TILE_GROUP`, parsed with `refs`: its
+/// `order_hint`, `show_frame` and `refresh_frame_flags`, then the key-frame
+/// tail of `base_q_idx`, `tiles`, `filters` and `tx`. An intra frame codes
+/// `PRIMARY_REF_NONE` and no references; the slots it does not refresh keep
+/// their frames for later frames.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for a single-picture view, a zero or
+/// too-wide `base_q_idx`, `filters` or `tx` the sequence cannot carry, or bits
+/// that do not parse to a complete intra header with `refs`.
+pub fn build_intra_only_frame_header(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+) -> Result<EncodedFrameHeader, EncoderHeaderError> {
+    if seq.single_picture_header_flag {
+        return Err(EncoderHeaderError::SinglePictureView);
+    }
+    let mut w = BitWriter::new();
+    w.write_uvlc(0)?; // cur_mfh_id
+    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    w.write_flag(false)?; // frame_is_inter
+    w.write_flag(params.show_frame)?; // immediate_output_frame
+    write_implicit_output(&mut w, seq, params)?;
+    w.write_flag(false)?; // frame_size_override_flag
+    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
+    w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
+    write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
+    let output = params.show_frame || params.implicit_output;
+    let tail = (params.base_q_idx, params.tiles, output);
+    write_intra_frame_tail(&mut w, seq, tail, &params.filters, params.tx)?;
+    let bytes = w.into_bytes();
+    let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+    let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
+    parse_core_body(&mut reader, &mut core, seq, None, refs)?;
+    let bit_len = reader.consumed_bits();
+    core.consumed_bits = bit_len;
+    if core.status != FrameHeaderParseStatus::IntraHeaderComplete
+        || core.frame_type != Some(crate::headers::frame::FrameType::IntraOnly)
+    {
+        return Err(EncoderHeaderError::Incomplete);
+    }
+    let bits =
+        RecordedFrameHeaderBits::record(&mut BitReader::new(&bytes, ByteOffset::new(0)), bit_len)?;
+    Ok(EncodedFrameHeader { core, bits })
 }
 
 /// Serializes the `OBU_REGULAR_TILE_GROUP` OBU of `header` whose one tile group
@@ -525,9 +694,6 @@ pub fn build_tip_output_frame_header(
             "TIP output without TIP, reference MVs or two references",
         ));
     }
-    if seq.enable_short_refresh_frame_flags {
-        return Err(unsupported("TIP output header tools"));
-    }
     let mv = params.tip_global_mv;
     if mv.row.unsigned_abs() > 15 || mv.col.unsigned_abs() > 15 {
         return Err(unsupported("TipGlobalMv outside -15..=15"));
@@ -552,15 +718,14 @@ pub fn build_tip_output_frame_header(
     w.write_uvlc(0)?; // cur_mfh_id
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
     w.write_flag(params.show_frame)?; // immediate_output_frame
-    if !params.show_frame && !seq.monotonic_output_order_flag {
-        w.write_flag(false)?; // implicit_output_frame
-    }
+    write_implicit_output(&mut w, seq, params)?;
     w.write_flag(false)?; // frame_size_override_flag
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
     w.write_flag(true)?; // signal_primary_ref_frame
     w.write_bits(PRIMARY_REF_NONE, 3)?; // primary_ref_frame
-    w.write_bits(params.refresh_frame_flags, seq.num_ref_frames)?;
+    write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
+    write_explicit_ref_map(&mut w, seq, None)?;
     w.write_flag(true)?; // use_ref_frame_mvs
     if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
@@ -589,7 +754,14 @@ pub fn build_tip_output_frame_header(
         w.write_flag(regular)?; // tip_regular
     }
     if inter.enable_tip_explicit_qp {
-        let quant = QuantizationParams::inferred_tip(params.base_q_idx, 0, 0);
+        let plane = plane_quantization(seq, params.base_q_idx, params.tx);
+        let dc = |ac| if seq.quant.equal_ac_dc_q { ac } else { 0 };
+        let quant = QuantizationParams {
+            delta_q_y_dc: 0,
+            delta_q_u_dc: dc(plane.delta_q_u_ac),
+            delta_q_v_dc: dc(plane.delta_q_v_ac),
+            ..plane
+        };
         write_quantization_params(&mut w, &quant, &seq.quant, true)?;
     }
     if seq.filter.enable_df_sub_pu {
@@ -599,7 +771,8 @@ pub fn build_tip_output_frame_header(
             write_uniform_tile_info(&mut w, seq, params.tiles, false)?;
         }
     }
-    write_film_grain_config(&mut w, seq, params.show_frame, params.tx.grain_seed)?;
+    let output = params.show_frame || params.implicit_output;
+    write_film_grain_config(&mut w, seq, output, params.tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.write_trailing_bits(8 - bit_len % 8)?;
     let bytes = w.into_bytes();
@@ -907,6 +1080,67 @@ fn annexb_obu(
     let mut w = BitWriter::new();
     write_annexb_obu(&mut w, &obu_header(obu_type), &payload.into_bytes())?;
     Ok(w.into_bytes())
+}
+
+/// The § 5.18.2 `refresh_frame_flags` of an inter frame: with
+/// `enable_short_refresh_frame_flags`, `has_refresh_frame_flags` and the
+/// `frame_to_refresh` of at most one slot.
+fn write_refresh_frame_flags(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    flags: u32,
+) -> Result<(), EncoderHeaderError> {
+    if !seq.enable_short_refresh_frame_flags {
+        return Ok(w.write_bits(flags, seq.num_ref_frames)?);
+    }
+    if flags.count_ones() > 1 || flags >> seq.num_ref_frames != 0 {
+        return Err(unsupported(
+            "short refresh_frame_flags of more than one slot",
+        ));
+    }
+    w.write_flag(flags != 0)?; // has_refresh_frame_flags
+    if flags != 0 {
+        w.write_bits(flags.trailing_zeros(), ceil_log2(seq.num_ref_frames))?; // frame_to_refresh
+    }
+    Ok(())
+}
+
+/// `frame_explicit_ref_frame_map` of a sequence with `explicit_ref_frame_map`,
+/// then for an `explicit` map its `num_total_refs` and `ref_frame_idx`
+/// (§ 5.18.2).
+fn write_explicit_ref_map(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    explicit: Option<&[u32]>,
+) -> Result<(), EncoderHeaderError> {
+    if seq.inter.explicit_ref_frame_map {
+        w.write_flag(explicit.is_some())?; // frame_explicit_ref_frame_map
+    }
+    if let Some(map) = explicit {
+        w.write_bits(u32::try_from(map.len()).unwrap_or(u32::MAX), 3)?; // num_total_refs
+        for &index in map {
+            w.write_bits(index, ceil_log2(seq.num_ref_frames))?; // ref_frame_idx
+        }
+    }
+    Ok(())
+}
+
+/// `implicit_output_frame` of a hidden frame in a sequence without monotonic
+/// output order (§ 5.18.2).
+fn write_implicit_output(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    params: &InterFrameParams,
+) -> Result<(), EncoderHeaderError> {
+    if params.implicit_output && (params.show_frame || seq.monotonic_output_order_flag) {
+        return Err(unsupported(
+            "implicit output of a shown frame or in monotonic order",
+        ));
+    }
+    if !params.show_frame && !seq.monotonic_output_order_flag {
+        w.write_flag(params.implicit_output)?; // implicit_output_frame
+    }
+    Ok(())
 }
 
 fn unsupported(what: &'static str) -> EncoderHeaderError {
