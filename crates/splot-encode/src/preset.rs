@@ -924,6 +924,22 @@ impl PresetParams {
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
         check("num_ref_frames", self.num_ref_frames, 0, 16, "")?;
+        for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
+            let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
+                .with_ref_slots(self.num_ref_frames);
+            let fits = self.num_ref_frames == 0
+                || (0..3).all(|_| {
+                    let len = probe.next_len(usize::MAX, true).unwrap_or(1);
+                    probe.plan(len).is_ok()
+                });
+            if !fits {
+                return Err(PresetError::OutOfRange {
+                    field: "num_ref_frames",
+                    value: self.num_ref_frames.into(),
+                    allowed: format!("the slots a mini-GOP of {mini_gop} needs"),
+                });
+            }
+        }
         check("seq_tile_info", self.seq_tile_info, 0, 3, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check("tip_output_search", self.tip_output_search, 0, 2, "")?;

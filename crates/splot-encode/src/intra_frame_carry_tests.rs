@@ -304,7 +304,7 @@ fn sequence_tile_info_streams_decode_alike_on_any_thread_count() {
 /// With `num_ref_frames` the sequence codes that many slots and the mini-GOP
 /// of 8 plans over them: streams of 4, 5 and 16 slots decode to the encoder
 /// recon with the same bytes on 1, 2 and 8 threads. Too few slots for the
-/// mini-GOP fail when the encoder starts.
+/// mini-GOP fail validation.
 #[test]
 fn explicit_slot_count_streams_decode_alike_on_any_thread_count() {
     let stream = |slots: u8, threads: usize| {
@@ -325,7 +325,6 @@ fn explicit_slot_count_streams_decode_alike_on_any_thread_count() {
         }
     }
     let mut config = config(72, 40, BitDepth::Eight, 6, 150);
-    config.preset_overrides = vec![("num_ref_frames".to_owned(), "1".to_owned())];
-    let coder = IntraFrameCoder::new(&config).unwrap();
-    assert!(Encoder::with_coder(config, Box::new(coder)).is_err());
+    config.preset_overrides = vec![("num_ref_frames".to_owned(), "2".to_owned())];
+    assert!(config.validate().is_err());
 }

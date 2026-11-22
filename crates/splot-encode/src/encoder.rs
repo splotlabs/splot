@@ -242,11 +242,6 @@ impl Encoder {
             slots => slots,
         };
         let planner = GopPlanner::new(config.keyint, mini_gop_size).with_ref_slots(slots);
-        let mut probe = planner.clone();
-        for _ in 0..3 {
-            let len = probe.next_len(usize::MAX, true).unwrap_or(1);
-            probe.plan(len)?;
-        }
         Ok(Self {
             rate_control,
             stats_sink: None,
