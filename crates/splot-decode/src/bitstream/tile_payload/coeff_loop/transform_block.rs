@@ -506,11 +506,9 @@ fn read_eob_base<const LUMA: bool, const UPD: bool>(
         (true, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob(), ctx)),
         (true, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob(), ctx)),
         (false, true) => {
-            symbols.read_trusted::<6, UPD>(row_at(&mut rows.cdf.coeff_base_lf_eob_uv, ctx))
+            symbols.read_trusted::<6, UPD>(row_at(rows.cdf.coeff_base_lf_eob_uv(), ctx))
         }
-        (false, false) => {
-            symbols.read_trusted::<4, UPD>(row_at(&mut rows.cdf.coeff_base_eob_uv, ctx))
-        }
+        (false, false) => symbols.read_trusted::<4, UPD>(row_at(rows.cdf.coeff_base_eob_uv(), ctx)),
     }
 }
 
@@ -629,13 +627,13 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let ctx = self.br_ctx::<CLASS, LUMA>(grid, LF && (!is_dc || CLASS != 0));
         level
             + if !LUMA {
-                let row = row_at(&mut rows.cdf.coeff_br_uv, ctx);
+                let row = row_at(rows.cdf.coeff_br_uv(), ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             } else if LF {
-                let row = row_at(&mut rows.cdf.coeff_br_lf, ctx);
+                let row = row_at(rows.cdf.coeff_br_lf(), ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             } else {
-                let row = row_at(&mut rows.cdf.coeff_br, ctx);
+                let row = row_at(rows.cdf.coeff_br(), ctx);
                 self.symbols.read_trusted::<5, UPD>(row)
             }
     }
@@ -671,7 +669,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         };
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
-            let row = row_at(&mut rows.cdf.coeff_base_lf_uv, ctx);
+            let row = row_at(rows.cdf.coeff_base_lf_uv(), ctx);
             return self.symbols.read_trusted::<7, UPD>(row);
         }
         let ctx = if CLASS == 0 {
@@ -712,7 +710,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let mag = self.base_mag::<CLASS, LUMA, false, false>(entry_grid(entry));
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
-            let row = row_at(&mut rows.cdf.coeff_base_uv, ctx);
+            let row = row_at(rows.cdf.coeff_base_uv(), ctx);
             return self.symbols.read_trusted::<5, UPD>(row);
         }
         let q0 = self.tcq_q0 & 1;
@@ -813,7 +811,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let dc_grid = entry_grid(scan[0]);
         let level = if PH && (self.ph >> 1) >= PHTHRESH {
             let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
-            let row = row_at(&mut rows.cdf.coeff_base_ph, half_capped(mag, 4));
+            let row = row_at(rows.cdf.coeff_base_ph(), half_capped(mag, 4));
             self.symbols.read_trusted::<5, UPD>(row)
         } else {
             let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);

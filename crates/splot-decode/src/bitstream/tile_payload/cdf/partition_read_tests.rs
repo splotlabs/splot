@@ -206,7 +206,7 @@ fn symbol_cdf_error_preserves_core_error_and_row() {
         ctx: 0,
     };
     let mut tile = frame.tile_copy();
-    tile.rows.do_split[0][0] = [0, 0, 0];
+    tile.rows.do_split()[0][0] = [0, 0, 0];
     let before = tile.with_row_mut(selector, |row| row.to_vec()).unwrap();
     let mut symbol = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
 

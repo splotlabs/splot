@@ -58,19 +58,16 @@ impl TileCdfSubset {
             TileCdfSelector::CflIndex => read_row(symbols, rows.cfl_index()),
             TileCdfSelector::CflMhccp => read_row(symbols, rows.cfl_mhccp()),
             TileCdfSelector::Skip { ctx } => read_row(symbols, row_at(rows.skip(), ctx)),
-            TileCdfSelector::FscMode { ctx, bsize_group } => read_row(
-                symbols,
-                row_at(row_at(&mut tile.fsc_mode, ctx), bsize_group),
-            ),
-            TileCdfSelector::MrlIndex { ctx } => {
-                read_row(symbols, row_at(&mut tile.mrl_index, ctx))
+            TileCdfSelector::FscMode { ctx, bsize_group } => {
+                read_row(symbols, row_at(row_at(tile.fsc_mode(), ctx), bsize_group))
             }
+            TileCdfSelector::MrlIndex { ctx } => read_row(symbols, row_at(tile.mrl_index(), ctx)),
             TileCdfSelector::MrlSecIndex { ctx } => {
-                read_row(symbols, row_at(&mut tile.mrl_sec_index, ctx))
+                read_row(symbols, row_at(tile.mrl_sec_index(), ctx))
             }
-            TileCdfSelector::Intrabc { ctx } => read_row(symbols, row_at(&mut tile.intrabc, ctx)),
+            TileCdfSelector::Intrabc { ctx } => read_row(symbols, row_at(tile.intrabc(), ctx)),
             TileCdfSelector::CdefIndex0 { ctx } => {
-                read_row(symbols, row_at(&mut tile.cdef_index0, ctx))
+                read_row(symbols, row_at(tile.cdef_index0(), ctx))
             }
             TileCdfSelector::CompRef0 { ctx, ref_idx } => {
                 read_row(symbols, row_at(row_at(rows.comp_ref0(), ctx), ref_idx))

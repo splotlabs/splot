@@ -52,7 +52,7 @@ pub(crate) const fn tx_partition_type_array(reduced: bool) -> TileCdfArray {
     }
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_row<const N: usize>(
+fn avg_cdf_row<const N: usize>(
     cdf: &mut [u16; N],
     tile_cdf: &[u16; N],
     tile_num: u32,
@@ -78,10 +78,7 @@ fn set_count<const N: usize>(cdf: &mut [u16; N], count: u16) {
     cdf[N - 2] = cdf[N - 2] % COUNT_STEP + count * COUNT_STEP;
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_row<const N: usize>(
-    cdf: &mut [u16; N],
-    saved_cdf: &[u16; N],
-) {
+fn blend_cdf_row<const N: usize>(cdf: &mut [u16; N], saved_cdf: &[u16; N]) {
     for i in 0..N - 2 {
         let saved = u32::from(saved_cdf[i]);
         let current = u32::from(cdf[i]);
@@ -93,11 +90,11 @@ pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_row<const N: usize>(
     set_count(cdf, ((count(saved_cdf) + 7 * count(cdf) + 4) >> 3) as u16);
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_count<const N: usize>(cdf: &mut [u16; N]) {
+fn scale_cdf_count<const N: usize>(cdf: &mut [u16; N]) {
     set_count(cdf, ((cdf[N - 2] >> CDF_COUNT_SHIFT) * 3) >> 2);
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_rows<const N: usize>(
+fn avg_cdf_rows<const N: usize>(
     frame: &mut [[u16; N]],
     tile: &[[u16; N]],
     tile_num: u32,
@@ -108,18 +105,13 @@ pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_rows<const N: usize>(
     }
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_rows<const N: usize>(
-    rows: &mut [[u16; N]],
-    saved: &[[u16; N]],
-) {
+fn blend_cdf_rows<const N: usize>(rows: &mut [[u16; N]], saved: &[[u16; N]]) {
     for (row, saved_row) in rows.iter_mut().zip(saved) {
         blend_cdf_row(row, saved_row);
     }
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_rows<const N: usize>(
-    rows: &mut [[u16; N]],
-) {
+fn scale_cdf_rows<const N: usize>(rows: &mut [[u16; N]]) {
     for row in rows {
         scale_cdf_count(row);
     }
@@ -193,9 +185,7 @@ pub(in crate::bitstream::tile_payload::cdf) fn cdf_store_valid(
 /// `CDF_PROB_SCALE` and a use count up to 32: the § 8.2.6 invariants the
 /// trusted symbol reads rely on.
 #[cfg(any(debug_assertions, fuzzing, test))]
-pub(in crate::bitstream::tile_payload::cdf) fn cdf_rows_valid<const N: usize>(
-    rows: &[[u16; N]],
-) -> bool {
+fn cdf_rows_valid<const N: usize>(rows: &[[u16; N]]) -> bool {
     rows.iter().all(|row| {
         let probabilities = &row[..N - 2];
         probabilities.is_sorted()

@@ -7,10 +7,7 @@
 
 #[cfg(test)]
 use super::SavedCdfSubset;
-use super::{
-    FrameCdfSubset, TileCdfRows, TileCdfSavePolicy, TileCdfSubset, TileCdfWorkUnitBoundary,
-    scale_cdf_count, scale_cdf_rows,
-};
+use super::{FrameCdfSubset, TileCdfSavePolicy, TileCdfSubset, TileCdfWorkUnitBoundary};
 
 impl FrameCdfSubset {
     /// Builds the frame-end updated bank. `None` means no tile was saved,
@@ -116,23 +113,5 @@ impl SavedCdfSubset {
                 .rows
                 .avg_from_tile(tile_num, &tile.rows, policy.num_log2);
         }
-    }
-}
-
-impl TileCdfRows {
-    fn scale_counts_for_frame_end_update(&mut self) {
-        macro_rules! scale_row {
-            ($field:ident) => {
-                scale_cdf_count(&mut self.$field);
-            };
-        }
-        macro_rules! scale_rows {
-            ($field:ident $(. $flatten:ident())*) => {
-                scale_cdf_rows(flat_cdf_rows_mut!(self.$field $(, $flatten)*));
-            };
-        }
-
-        tile_cdf_saved_rows!(scale_row, scale_rows);
-        self.block.scale_counts_for_frame_end_update();
     }
 }
