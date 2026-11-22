@@ -30,9 +30,8 @@ use parking_lot::{Mutex, RwLock};
 
 /// One inter frame's header-derived walk state, shared by the fused walk and
 /// the split parse pass so both enter their tile phase identically.
-pub(super) struct InterWalkPrologue<'payload, T: ReconSample> {
+pub(super) struct InterWalkPrologue<'payload> {
     pub(super) tile_plan: DecodeTilePayloadPlan<'payload>,
-    pub(super) workspace: CurrentFrameWorkspace<T>,
     pub(super) setup: FilterSinkSetup,
     pub(super) facts: InterBlockFacts,
     pub(super) ref_frame_idx: RefIdxBuf,
@@ -160,7 +159,7 @@ impl FrameDecodeGeometry {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
+pub(super) fn derive_inter_walk_prologue<'payload>(
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'payload>,
     core: &FrameHeaderCore,
@@ -169,10 +168,9 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     reference: &ReferenceMetadata,
     bit_depth: BitDepth,
     geometry: FrameDecodeGeometry,
-    workspace: impl FnOnce(DecodedFrameInfo) -> splot_recon::Result<CurrentFrameWorkspace<T>>,
     initial_cdf_storage: Option<&mut Option<Arc<FrameCdfSubset>>>,
     payload_scratch: &mut crate::bitstream::tile_payload::TilePayloadScratch,
-) -> Result<InterWalkPrologue<'payload, T>> {
+) -> Result<InterWalkPrologue<'payload>> {
     let offset = candidate.offset();
     let initial_cdfs = if let Some(storage) = initial_cdf_storage {
         resolve_initial_frame_cdfs_reusing(core, sequence, reference, candidate, offset, storage)?
@@ -242,7 +240,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let workspace = workspace(geometry.info())?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let quantization = core.quantization_params.as_ref().ok_or_else(|| {
         unsupported_at(
             "inter_missing_base_q",
@@ -274,7 +271,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     };
     Ok(InterWalkPrologue {
         tile_plan,
-        workspace,
         setup,
         facts: InterBlockFacts {
             geometry,
@@ -418,18 +414,24 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             &reference,
             bit_depth,
             geometry,
-            |info| CurrentFrameWorkspace::new_band(info, band_rows, spare_band),
             Some(reusable.initial_cdfs()),
             &mut payload_scratch,
-        );
-        let InterWalkPrologue {
-            tile_plan,
+        )
+        .and_then(|prologue| {
+            let workspace =
+                CurrentFrameWorkspace::new_band(geometry.info(), band_rows, spare_band)?;
+            Ok((prologue, workspace))
+        });
+        let (
+            InterWalkPrologue {
+                tile_plan,
+                setup,
+                facts,
+                ref_frame_idx,
+                quantizer_deltas,
+            },
             workspace,
-            setup,
-            facts,
-            ref_frame_idx,
-            quantizer_deltas,
-        } = match prologue {
+        ) = match prologue {
             Ok(prologue) => prologue,
             Err(error) => {
                 reusable.payload = payload_scratch;

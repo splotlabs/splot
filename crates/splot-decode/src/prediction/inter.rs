@@ -140,10 +140,8 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         }
     }
     let mut payload_scratch = core::mem::take(&mut scratch.payload);
-    let mut recycled = scratch.pooled_planes();
     let frame_walk::InterWalkPrologue {
         tile_plan,
-        workspace,
         setup,
         facts,
         ref_frame_idx,
@@ -157,11 +155,13 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         reference,
         bit_depth,
         geometry,
-        |info| splot_recon::CurrentFrameWorkspace::new_recycled_from(info, &mut recycled),
         Some(&mut scratch.initial_cdfs),
         &mut payload_scratch,
     )?;
     scratch.payload = payload_scratch;
+    let mut recycled = scratch.pooled_planes();
+    let workspace =
+        splot_recon::CurrentFrameWorkspace::new_recycled_from(geometry.info(), &mut recycled)?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let InterBlockDecodeOutput {
         workspace,
