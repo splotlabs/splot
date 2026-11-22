@@ -5353,7 +5353,7 @@ module = "crates/splot-encode/src/config.rs"
 change_id = "enc-tile-groups"
 owner = "encoder"
 risk = "low"
-notes = "Config::tile_groups (2026-11-22, 1 by default; CLI --tile-groups N): the tiles of a key or inter frame split in raster order into N tile group OBUs of consecutive tiles, N clamped to the tile count; group g starts at tile g * NumTiles / N, so the group sizes differ by at most 1. Each group codes tile_start_and_end_present_flag = 1 with its tg_start and tg_end; the first group carries the frame header, and the later groups code is_first_tile_group = 0 and frame_header_present_flag = 0 (§ 5.19). The last tile of each group codes no size field (§ 5.20.1). The recon and the tile payloads do not change; splot and AVM decode the streams alike."
+notes = "Config::tile_groups (2026-11-22, 1 by default; CLI --tile-groups N): the tiles of a key or inter frame split in raster order into N tile group OBUs of consecutive tiles, N clamped to the tile count; group g starts at tile g * NumTiles / N, so the group sizes differ by at most 1. With more than one group, each group codes tile_start_and_end_present_flag = 1 with its tg_start and tg_end (one group keeps the inferred whole-frame range); the first group carries the frame header, and the later groups code is_first_tile_group = 0 and frame_header_present_flag = 0 (§ 5.19). The last tile of each group codes no size field (§ 5.20.1). The recon and the tile payloads do not change; splot and AVM decode the streams alike."
 
 [feature.status]
 mapped = "done"
