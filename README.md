@@ -180,6 +180,8 @@ splot --help
 > **Older x86 CPUs:** release builds use AVX2 (Intel Haswell 2013+, AMD
 > Excavator 2015+). On an older CPU, build with
 > `RUSTFLAGS="-C target-cpu=x86-64"`. Apple Silicon and ARM need nothing extra.
+>
+> **Linux:** builds need glibc 2.36 or newer (Debian 12, Ubuntu 24.04).
 
 ## Where it stands.
 

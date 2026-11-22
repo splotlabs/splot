@@ -13,6 +13,12 @@
 [target.'cfg(target_arch = "x86_64")']
 rustflags = ["-C", "target-cpu=x86-64-v3", "--cfg", "disable_dispatch_avx512"]
 
+# Packed relative relocations (`DT_RELR`) shrink the load-time relocations of
+# every binary. The loader must be glibc 2.36 or newer; the link records that
+# as a version need, so an older loader refuses the binary with a clear error.
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))']
+rustflags = ["-C", "link-arg=-Wl,-z,pack-relative-relocs"]
+
 [alias]
 # Release decoder binary, output in target/release/splot.
 fast = "build --release -p splot-cli --locked"
