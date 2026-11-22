@@ -14,8 +14,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, Partition,
-    PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
+    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, ParityHiding,
+    Partition, PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
 };
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
@@ -32,7 +32,7 @@ use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
 use crate::grain;
 use crate::intrabc::BvSearch;
-use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
+use crate::kernels::rdoq::{CoeffRates, RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
@@ -1337,7 +1337,7 @@ thread_local! {
     /// the one that leaves V the least energy (tests only).
     pub(crate) static CCTX_LATER_ROTATIONS: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
-    /// Intra luma blocks outside mode trials whose RD-chosen IST kernel is
+    /// Luma blocks outside mode trials whose RD-chosen IST kernel is
     /// not the one that keeps the most energy (tests only).
     pub(crate) static IST_RD_OTHER: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
@@ -1371,7 +1371,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             (false, true) => u8::from(self.preset.inter_ist && !self.trial),
             (false, false) => self.preset.ist_sets,
         };
-        let ist_probe = if inter { 4 } else { 2 };
+        let (ist_probe, ist_rd) = if inter {
+            (4, self.preset.inter_ist_rd)
+        } else {
+            (2, self.preset.intra_ist_rd)
+        };
         let mut best: Option<(u128, TransformDecision)> = None;
         let keep = match self.preset.tx_type_model_keep {
             0 => count,
@@ -1404,7 +1408,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 return Ok(decision);
             }
             let mut trials = vec![decision];
-            if ist && !inter && self.preset.intra_ist_rd {
+            if ist && ist_rd {
                 for ist in Self::ist_kernels(syntax, &tx, ist_sets)? {
                     trials.push(self.code(syntax, &TransformBlock { ist, ..tx }, prediction)?);
                 }
@@ -1433,7 +1437,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
         #[cfg(test)]
-        if !self.trial && !inter && self.preset.intra_ist_rd && decision.ist != Ist::OFF {
+        if !self.trial && ist_rd && decision.ist != Ist::OFF {
             let plain = TransformBlock {
                 tx_type: decision.tx_type,
                 ..*tx
@@ -1686,24 +1690,11 @@ impl SourceResidualCoder<'_> {
         coeffs: &[i32],
         dequant: &mut Vec<i32>,
     ) -> core::result::Result<Vec<i32>, TileWriterError> {
-        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let len = coeffs.len();
         dequant.resize(len, 0);
         let use_tcq = syntax.uses_tcq(tx);
         let mut levels = vec![0; len];
-        let block = RdoqBlock {
-            dc_q2: params.dc_quant,
-            ac_q2: params.ac_quant,
-            dq_denom: params.dq_denom,
-            bit_depth: self.bit_depth,
-            log2_width: forward.coeff_width().ilog2(),
-            log2_height: forward.coeff_height().ilog2(),
-            plane: tx.plane,
-            tx_type: tx.tx_type,
-        };
-        let lambda_q8 = self
-            .lambda
-            .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
+        let (block, lambda_q8) = self.rdoq_block(tx, params, forward)?;
         let parity = syntax.parity_hiding(tx);
         let (rows, trellis) = &mut self.rates;
         let fsc = syntax.uses_fsc(tx);
@@ -1745,16 +1736,38 @@ impl SourceResidualCoder<'_> {
                 .quantize(&quantizer, coeffs, &mut levels, dequant)
                 .map_err(kernel)?;
         }
-        if let Some(parity) = parity {
-            let holds = |levels: &[i32]| parity.holds(levels).map_err(TileWriterError::from);
-            if !holds(&levels)? {
-                let rates = (!self.candidate && !self.trial).then_some(&mut rates);
-                let moves =
-                    parity_moves(&block, coeffs, rates, lambda_q8, &levels).map_err(kernel)?;
-                hide_parity(holds, moves, (&mut levels, dequant))?;
-            }
-        }
+        let rates = (!self.candidate && !self.trial).then_some(&mut rates);
+        hide(
+            parity,
+            (&block, coeffs, lambda_q8),
+            rates,
+            (&mut levels, dequant),
+        )?;
         Ok(levels)
+    }
+
+    /// The RDOQ view of `tx` and its coefficient lambda.
+    fn rdoq_block(
+        &self,
+        tx: &TransformBlock,
+        params: &DequantBlockParams,
+        forward: &ForwardTransform2d,
+    ) -> core::result::Result<(RdoqBlock, u64), TileWriterError> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        let block = RdoqBlock {
+            dc_q2: params.dc_quant,
+            ac_q2: params.ac_quant,
+            dq_denom: params.dq_denom,
+            bit_depth: self.bit_depth,
+            log2_width: forward.coeff_width().ilog2(),
+            log2_height: forward.coeff_height().ilog2(),
+            plane: tx.plane,
+            tx_type: tx.tx_type,
+        };
+        let lambda_q8 = self
+            .lambda
+            .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
+        Ok((block, lambda_q8))
     }
 
     /// The source residual of `tx` over `prediction` and its primary forward
@@ -1855,7 +1868,7 @@ impl SourceResidualCoder<'_> {
         [residual, coeffs, dequant]: &mut [Vec<i32>; 3],
         levels: &mut Vec<i32>,
     ) -> core::result::Result<Option<u128>, TileWriterError> {
-        let (params, _) =
+        let (params, forward) =
             self.forward(tx, (false, syntax.uses_ddt()), prediction, residual, coeffs)?;
         let quantizer = Quantizer::new(
             params.dc_quant,
@@ -1870,6 +1883,13 @@ impl SourceResidualCoder<'_> {
         let (_, error) = kernels()
             .quantize_error(&quantizer, coeffs, levels, dequant)
             .map_err(kernel)?;
+        let (block, lambda_q8) = self.rdoq_block(tx, &params, &forward)?;
+        let moved = hide(
+            syntax.parity_hiding(tx),
+            (&block, coeffs, lambda_q8),
+            None::<&mut CdfCoeffRates>,
+            (levels, dequant),
+        )?;
         let eob = eob(tx, levels)?;
         if eob > 0
             && syntax
@@ -1882,13 +1902,8 @@ impl SourceResidualCoder<'_> {
         if rate == Bits::IMPOSSIBLE {
             return Ok(None);
         }
-        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
-        let lambda_q8 = self
-            .lambda
-            .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
-        Ok(Some(
-            (u128::from(error) << 16) + u128::from(lambda_q8) * u128::from(rate.0),
-        ))
+        let error = u128::try_from((i128::from(error) << 16) + moved).unwrap_or(0);
+        Ok(Some(error + u128::from(lambda_q8) * u128::from(rate.0)))
     }
 
     /// Every secondary transform of the first `sets` sets that `tx` can code.
@@ -1992,6 +2007,26 @@ impl SourceResidualCoder<'_> {
         };
         Ok(Some(cost.cost(self.lambda)))
     }
+}
+
+/// Moves one level of `levels` (and its `dequant`) so that the block keeps
+/// the § 5.20.7.27 hidden parity `parity`; `rates` ranks the moves, else only
+/// the scan index 0 level moves. Returns the `J` change of the move.
+fn hide<R: CoeffRates>(
+    parity: Option<ParityHiding>,
+    (block, coeffs, lambda_q8): (&RdoqBlock, &[i32], u64),
+    rates: Option<&mut R>,
+    (levels, dequant): (&mut [i32], &mut [i32]),
+) -> core::result::Result<i128, TileWriterError> {
+    let Some(parity) = parity else {
+        return Ok(0);
+    };
+    let holds = |levels: &[i32]| parity.holds(levels).map_err(TileWriterError::from);
+    if holds(levels)? {
+        return Ok(0);
+    }
+    let moves = parity_moves(block, coeffs, rates, lambda_q8, levels).map_err(kernel)?;
+    hide_parity(holds, moves, (levels, dequant))
 }
 
 fn plane_id(plane: usize) -> core::result::Result<PlaneId, TileWriterError> {

@@ -437,7 +437,7 @@ pub(crate) fn parity_moves<R: CoeffRates + ?Sized>(
 /// Makes `levels` and their reconstruction `dequant` keep the rule `holds`
 /// (the facade's `ParityHiding::holds`): when they hide a parity the scan
 /// index 0 level does not have, applies the first move of `moves` in `J`
-/// order after which the rule holds.
+/// order after which the rule holds; returns the `J` change of that move.
 ///
 /// # Errors
 /// Returns the error of `holds`, and [`KernelError::HiddenParity`] when no
@@ -446,16 +446,16 @@ pub(crate) fn hide_parity<E: From<KernelError>>(
     holds: impl Fn(&[i32]) -> Result<bool, E>,
     mut moves: Vec<ParityMove>,
     (levels, dequant): (&mut [i32], &mut [i32]),
-) -> Result<(), E> {
+) -> Result<i128, E> {
     if holds(levels)? {
-        return Ok(());
+        return Ok(0);
     }
     while let Some(best) = (0..moves.len()).min_by_key(|&i| moves[i]) {
         let ParityMove {
+            delta,
             pos,
             level,
             dequant: dq,
-            ..
         } = moves.swap_remove(best);
         if pos >= levels.len().min(dequant.len()) {
             continue;
@@ -463,7 +463,7 @@ pub(crate) fn hide_parity<E: From<KernelError>>(
         let kept = core::mem::replace(&mut levels[pos], level);
         if holds(levels)? {
             dequant[pos] = dq;
-            return Ok(());
+            return Ok(delta);
         }
         levels[pos] = kept;
     }

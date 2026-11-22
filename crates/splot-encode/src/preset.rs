@@ -339,9 +339,12 @@ pub struct PresetParams {
     pub ref_intra_refresh: u8,
     /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
     /// intra frame searches its luma tree on luma alone, then a chroma tree
-    /// that only merges luma leaves. On in every row: intra frames gain luma
+    /// of `sdp_chroma_search`. On in every row: intra frames gain luma
     /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
     pub sdp: bool,
+    /// The SDP chroma tree search, `0..=1`: `0` searches only the merges of
+    /// the luma tree, `1` every partition the chroma node allows (§ 5.20.3.2).
+    pub sdp_chroma_search: u8,
     /// Extended SDP (`enable_extended_sdp`, § 5.20.3.1) with `sdp`, `0..=2`:
     /// an inter-frame node may code an `INTRA_REGION`, an intra luma tree and
     /// one chroma block. `1` tries the region where the shared tree of the
@@ -363,6 +366,11 @@ pub struct PresetParams {
     /// `1..=4`: the superblock size, then each larger size of § 5.18.7.11 up
     /// to 512 whose units do not cross a tile edge; the lowest RD cost wins.
     pub lr_unit_sizes: u8,
+    /// Chroma loop-restoration unit sizes the Wiener-NS chroma search tries,
+    /// `1..=4`: the size derived from the luma units, then each larger size
+    /// of § 5.18.7.11 up to 512 at chroma scale whose units do not cross a
+    /// tile edge; the lowest RD cost wins.
+    pub lr_chroma_unit_sizes: u8,
     /// The most CDEF strength sets a frame codes, `1..=8`.
     pub cdef_strengths: u8,
     /// CDEF `(pri, sec)` strength pairs the search tries, `0..=64`: `0`
@@ -442,6 +450,9 @@ pub struct PresetParams {
     /// beats the best angular SATD; off disables `enable_dip`. Off in every
     /// row: the `use_dip` flag cost offsets its wins (2026-10-25).
     pub dip: bool,
+    /// DIP predictions by SATD that get an RD trial: `1` gives the best one
+    /// a trial when it beats the best angular SATD; more drop that gate.
+    pub dip_trials: u8,
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
@@ -480,6 +491,9 @@ pub struct PresetParams {
     /// (2026-10-25): every such block with `eob > 3` then pays a
     /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
     pub inter_ist: bool,
+    /// With `inter_ist`, an inter luma block gives an RD trial to every
+    /// kernel in place of the one that keeps the most energy.
+    pub inter_ist_rd: bool,
     /// TIP (`enable_tip`), `0..=2`: `1` inter frames with reference MVs and
     /// a TIP reference pair code `TIP_FRAME_AS_REF` with equal weights, and
     /// inter leaves also try the TIP `NEARMV` candidates; `2` also picks the
@@ -546,6 +560,10 @@ pub struct PresetParams {
     /// (2026-10-30): at `1` p6 measured paris +0.01%, niklas +0.00%, park_joy
     /// +0.49%; the lookahead vectors are too coarse.
     pub global_motion: u8,
+    /// With `global_motion`, inter frames code the `our_ref` and `their_ref`
+    /// (§ 5.18.9.1) of the fewest parameter bits; off, `our_ref =
+    /// NumTotalRefs` predicts every model from the identity.
+    pub global_motion_predict: bool,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
     /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows that search
@@ -870,6 +888,7 @@ impl PresetParams {
         check("delta_q_res", self.delta_q_res, 0, 3, "")?;
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
+        check("sdp_chroma_search", self.sdp_chroma_search, 0, 1, "")?;
         check("extended_sdp", self.extended_sdp, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
@@ -877,6 +896,7 @@ impl PresetParams {
         check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
         check("ccso_bo_band_log2", self.ccso_bo_band_log2, 3, 6, "")?;
         check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
+        check("lr_chroma_unit_sizes", self.lr_chroma_unit_sizes, 1, 4, "")?;
         check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
         check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
         check("compound_refs", self.compound_refs, 1, 7, "")?;
@@ -1090,6 +1110,7 @@ preset_table! {
         ref_intra_margin:      [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        sdp_chroma_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         extended_sdp:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     intra {
@@ -1107,6 +1128,7 @@ preset_table! {
         cfl_zero_alpha:        [false, false, false, false, false, false, false, false, false, false, false],
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
         dip:                   [false, false, false, false, false, false, false, false, false, false, false],
+        dip_trials:            [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     transform {
         full_trials:           [    6,     6,     6,     4,     0,     0,     0,     0,     0,     0,     0],
@@ -1129,6 +1151,7 @@ preset_table! {
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
         cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
+        inter_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
     inter {
@@ -1184,6 +1207,7 @@ preset_table! {
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        global_motion_predict: [false, false, false, false, false, false, false, false, false, false, false],
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
@@ -1198,6 +1222,7 @@ preset_table! {
         ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         lr_unit_sizes:         [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        lr_chroma_unit_sizes:  [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
@@ -1356,6 +1381,7 @@ mod tests {
             assert!(at_most(&slow.breakout_area, &fast.breakout_area));
             assert!(at_most(&slow.leaf_reuse, &fast.leaf_reuse));
             assert!(fast.sdp <= slow.sdp);
+            assert!(fast.sdp_chroma_search <= slow.sdp_chroma_search);
             assert!(fast.extended_sdp <= slow.extended_sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
@@ -1439,15 +1465,18 @@ mod tests {
             assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.cfl_zero_alpha <= slow.cfl_zero_alpha);
             assert!(fast.dip <= slow.dip);
+            assert!(fast.dip_trials <= slow.dip_trials);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.gdf_candidates <= slow.gdf_candidates);
             assert!(fast.cdef_strengths <= slow.cdef_strengths);
             assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
+            assert!(fast.inter_ist_rd <= slow.inter_ist_rd);
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
             assert!(fast.global_motion <= slow.global_motion);
+            assert!(fast.global_motion_predict <= slow.global_motion_predict);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
@@ -1639,6 +1668,7 @@ mod tests {
             (&[("ccso_candidates", "113")], "ccso_candidates"),
             (&[("ccso_bo_band_log2", "7")], "ccso_bo_band_log2"),
             (&[("lr_unit_sizes", "0")], "lr_unit_sizes"),
+            (&[("lr_chroma_unit_sizes", "5")], "lr_chroma_unit_sizes"),
             (&[("deblock_offset_bits", "6")], "deblock_offset_bits"),
             (&[("cdef_pairs", "65")], "cdef_pairs"),
             (&[("compound_refs", "0")], "compound_refs"),
@@ -1646,6 +1676,7 @@ mod tests {
             (&[("jmvd_scales", "0")], "jmvd_scales"),
             (&[("jmvd_scales", "6")], "jmvd_scales"),
             (&[("interintra_search", "2")], "interintra_search"),
+            (&[("sdp_chroma_search", "2")], "sdp_chroma_search"),
             (&[("extended_sdp", "3")], "extended_sdp"),
             (&[("warp_interintra", "3")], "warp_interintra"),
             (&[("bawp_search", "3")], "bawp_search"),

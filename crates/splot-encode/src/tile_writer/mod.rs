@@ -305,6 +305,10 @@ thread_local! {
         const { core::cell::Cell::new([0; 7]) };
 }
 
+/// A DIP prediction at a leaf position and size (tests only).
+#[cfg(test)]
+pub(crate) type DipLeaf = ((usize, usize, usize), splot_decode::encoder_syntax::Dip);
+
 #[cfg(test)]
 thread_local! {
     /// Compound leaves of the final passes on this thread: same-reference
@@ -323,6 +327,14 @@ thread_local! {
     /// Leaves of the final passes on this thread that code explicit CFL
     /// alphas with alpha 0 in one plane.
     pub(crate) static CFL_ZERO_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Intra leaves of the final passes on this thread that code a DIP
+    /// prediction that only the wider DIP search offers.
+    pub(crate) static DIP_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// The DIP predictions that only the wider DIP search offers (a rank
+    /// below the best SATD, or a best that loses to the angular SATD), by
+    /// leaf position and size.
+    pub(crate) static DIP_NEW: core::cell::RefCell<std::collections::HashSet<DipLeaf>> =
+        core::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 #[cfg(test)]
@@ -553,6 +565,16 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                     if alpha_u == 0 || alpha_v == 0)
         {
             CFL_ZERO_CODED.set(CFL_ZERO_CODED.get() + 1);
+        }
+        #[cfg(test)]
+        if self.filters.is_some()
+            && modes.dip.is_some_and(|dip| {
+                DIP_NEW.with_borrow(|set| {
+                    set.contains(&((leaf.row4(), leaf.col4(), leaf.block_size()), dip))
+                })
+            })
+        {
+            DIP_CODED.set(DIP_CODED.get() + 1);
         }
         if let Some(palette) = &modes.palette {
             self.syntax

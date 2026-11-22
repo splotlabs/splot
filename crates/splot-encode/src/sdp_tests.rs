@@ -25,14 +25,16 @@ type Tools = [bool; 7];
 /// luma and chroma restoration with 64x64 superblocks.
 const QP: u16 = 160;
 
-/// Codes key frame, inter frame, key frame of panning content with SDP and
-/// asymmetric superblock qindex offsets on `threads` threads; returns the
-/// units, the encoder recon and the frame filter tools coded. Key frames
-/// keep the 8xN search, whose streams code every tool at [`QP`].
-fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
-    let (width, height, bit_depth, preset, chroma, (cols_log2, rows_log2)) = case;
+/// Codes key frame, inter frame, key frame of panning content with SDP at
+/// `sdp_chroma_search` level `chroma` and asymmetric superblock qindex
+/// offsets on `threads` threads; returns the units, the encoder recon, the
+/// frame filter tools coded and, at level 1, the SDP nodes of the key frames
+/// whose chroma tree does not merge the luma tree. Key frames keep the 8xN
+/// search, whose streams code every tool at [`QP`].
+fn sdp_stream(case: SdpCase, threads: usize, chroma: u8) -> (Vec<Vec<u8>>, Vec<u8>, Tools, usize) {
+    let (width, height, bit_depth, preset, format, (cols_log2, rows_log2)) = case;
     let mut config = config(width, height, bit_depth, preset, QP);
-    config.chroma = chroma;
+    config.chroma = format;
     config.keyint = core::num::NonZeroU32::new(2).unwrap();
     config.tiles = TileLayout {
         cols_log2,
@@ -43,6 +45,7 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
     let kinds = params.min_block_log2.values();
     let preset = PresetParams {
         sdp: true,
+        sdp_chroma_search: chroma,
         min_block_log2: Levels::by_frame([3, kinds[9], kinds[18], kinds[27]]),
         cctx: false,
         ..*params
@@ -51,9 +54,21 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
     assert!(coder.sequence.partition.unwrap().enable_sdp);
     let sb = if preset.max_block_log2 >= 7 { 128 } else { 64 };
     let superblocks = (width.div_ceil(sb) * height.div_ceil(sb)) as usize;
-    let (mut units, mut recon, mut tools) = (Vec::new(), Vec::new(), [false; 7]);
+    let (mut units, mut recon, mut tools, mut free) = (Vec::new(), Vec::new(), [false; 7], 0);
     for index in 0..3 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
+        if chroma > 0 && plan.frame_type == FrameType::Key {
+            let source = panning_frame(&config, index);
+            let mut roots = Vec::new();
+            let trees = search_frame(&coder, &plan, &source, bit_depth);
+            for tree in &trees {
+                collect_sdp(tree, &mut roots);
+            }
+            free += roots
+                .iter()
+                .filter(|(luma, chroma)| !merges(chroma, luma))
+                .count();
+        }
         let offsets: Vec<(i16, i16)> = (0..superblocks)
             .map(|sb| [-23, 0, 17, -6, 29][(sb * 3 + index as usize) % 5])
             .map(|offset| (offset, offset * 256 / 12))
@@ -93,7 +108,7 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
         recon.extend(recon_bytes(&coded, bit_depth));
         units.push(coded.temporal_unit);
     }
-    (units, recon, tools)
+    (units, recon, tools, free)
 }
 
 /// SDP key frames and the inter frames between them decode to the encoder
@@ -103,7 +118,7 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
 fn sdp_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     let mut coded = [false; 7];
     let tools = each_case(SDP_CASES.into_iter().enumerate(), |(index, case)| {
-        let (one, expected, tools) = sdp_stream(case, 1);
+        let (one, expected, tools, _) = sdp_stream(case, 1, 0);
         if index == 0 {
             assert!(
                 tools[4] && tools[5],
@@ -113,7 +128,7 @@ fn sdp_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
         each_case([2, 8], |threads| {
             assert!(
-                sdp_stream(case, threads).0 == one,
+                sdp_stream(case, threads, 0).0 == one,
                 "{case:?} {threads} threads"
             );
         });
@@ -124,6 +139,33 @@ fn sdp_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             *all |= on;
         }
     }
+    assert_eq!(coded, [true; 7], "some frame filter tool is never coded");
+}
+
+/// With `sdp_chroma_search = 1` the key frames code chroma trees that do not
+/// merge the luma tree; the streams code every frame filter tool, decode to
+/// the encoder recon, and code the same bytes on 1, 2 and 8 threads.
+#[test]
+fn free_sdp_chroma_trees_decode_on_any_thread_count() {
+    let (mut coded, mut free) = ([false; 7], 0);
+    let results = each_case(SDP_CASES, |case| {
+        let (one, expected, tools, found) = sdp_stream(case, 1, 1);
+        assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
+        each_case([2, 8], |threads| {
+            assert!(
+                sdp_stream(case, threads, 1).0 == one,
+                "{case:?} {threads} threads"
+            );
+        });
+        (tools, found)
+    });
+    for (tools, found) in results {
+        free += found;
+        for (all, on) in coded.iter_mut().zip(tools) {
+            *all |= on;
+        }
+    }
+    assert!(free > 0, "no chroma tree left the luma tree");
     assert_eq!(coded, [true; 7], "some frame filter tool is never coded");
 }
 
@@ -212,17 +254,20 @@ fn shape(tree: &PartitionTree) -> Vec<Partition> {
 }
 
 /// AVM decodes SDP key frames and the inter frames between them to the
-/// encoder reconstructions in every chroma format.
+/// encoder reconstructions in every chroma format, at both chroma searches.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_sdp_streams_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    for case in SDP_CASES {
-        let (units, expected, _) = sdp_stream(case, 2);
+    for (case, chroma) in SDP_CASES
+        .into_iter()
+        .flat_map(|case| [(case, 0), (case, 1)])
+    {
+        let (units, expected, ..) = sdp_stream(case, 2, chroma);
         let avm = avm_decode(&avmdec, &units, (case.0, case.1), case.2, "sdp");
-        assert!(avm == expected, "{case:?}: AVM output differs");
+        assert!(avm == expected, "{case:?} {chroma}: AVM output differs");
     }
 }
 
