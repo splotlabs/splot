@@ -1262,7 +1262,8 @@ fn write_uniform_tile_params(
 /// Returns [`EncoderHeaderError`] if `seq` has no complete view, a tile is empty or
 /// too long for `TileSizeBytes`, the tile count differs from the header, or an OBU
 /// does not serialize. The OBUs `key_obus` (empty for none) follow the sequence
-/// header: a content interpretation OBU, then film grain OBUs (§ 7.3.3).
+/// header: a content interpretation OBU, then metadata and film grain OBUs
+/// (§ 7.3.3).
 pub fn encode_key_frame_temporal_unit(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,

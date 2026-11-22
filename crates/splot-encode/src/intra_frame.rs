@@ -72,8 +72,9 @@ pub(crate) struct IntraFrameCoder {
     /// [`Self::preset`].
     screen: Option<PresetParams>,
     references: EncoderReferences,
-    /// The content interpretation OBU of every key frame; empty for none.
-    content_obu: Vec<u8>,
+    /// The content interpretation and HDR metadata OBUs of every key frame;
+    /// empty for none.
+    content_obus: Vec<u8>,
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
@@ -307,7 +308,7 @@ impl IntraFrameCoder {
         Ok(Self {
             params,
             references,
-            content_obu: config.content.obu(config.frame_rate)?,
+            content_obus: config.content.obus(config.frame_rate)?,
             sequence,
             view,
             bit_depth: config.bit_depth,
@@ -693,7 +694,7 @@ impl IntraFrameCoder {
         let segments = segments.map_or(Vec::new(), |(map, _)| map);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         let key_obus = if plan.frame_type == FrameType::Key {
-            [self.content_obu.as_slice(), &grain_obu].concat()
+            [self.content_obus.as_slice(), &grain_obu].concat()
         } else {
             grain_obu
         };
