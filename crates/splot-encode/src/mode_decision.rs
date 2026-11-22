@@ -1059,7 +1059,6 @@ impl TrialCoder<'_, '_> {
                 {
                     continue;
                 }
-                // A REFINE_ALL frame refines this block with optical flow (§ 5.20.7.6).
                 let refined = self.preset.opfl_refine_all
                     && codable(
                         self.syntax
