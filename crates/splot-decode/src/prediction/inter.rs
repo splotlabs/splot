@@ -1736,10 +1736,12 @@ pub(crate) fn tip_pair_available(
     ) else {
         return false;
     };
-    [pair.past_ref, pair.future_ref].into_iter().any(|ref_frame| {
-        block_reference_slot(&inter.ref_frame_idx, ref_frame)
-            .is_ok_and(|slot| reference.ref_is_inter.get(slot as usize) == Some(&true))
-    })
+    [pair.past_ref, pair.future_ref]
+        .into_iter()
+        .any(|ref_frame| {
+            block_reference_slot(&inter.ref_frame_idx, ref_frame)
+                .is_ok_and(|slot| reference.ref_is_inter.get(slot as usize) == Some(&true))
+        })
 }
 
 fn required_tip_reference_pair(
