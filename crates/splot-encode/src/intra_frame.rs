@@ -671,7 +671,8 @@ impl IntraFrameCoder {
         {
             tools.2.7 = self.global_motion;
         }
-        if plan.frame_type == FrameType::Inter && !self.global_models.is_empty() {
+        if plan.frame_type == FrameType::Inter && !plan.intra_only && !self.global_models.is_empty()
+        {
             let probe = plan.header(
                 &self.view,
                 &self.references,

@@ -8,10 +8,10 @@ use crate::encoder::Encoder;
 use crate::test_support::{avm_decode, avm_decoder};
 
 /// The units and the source bytes of `frames` panning frames of `chroma` at
-/// `bit_depth`, coded lossless at `preset` on `threads` threads with a key
-/// frame every 6 frames.
+/// `bit_depth`, coded lossless at `preset` with the `intra_only` field on
+/// `threads` threads with a key frame every 6 frames.
 fn lossless_stream(
-    (chroma, bit_depth, preset): (PixelFormat, BitDepth, u8),
+    (chroma, bit_depth, preset, intra_only): (PixelFormat, BitDepth, u8, u8),
     threads: usize,
     frames: u32,
 ) -> (Vec<Vec<u8>>, Vec<u8>) {
@@ -19,6 +19,9 @@ fn lossless_stream(
     config.chroma = chroma;
     config.keyint = core::num::NonZeroU32::new(6).unwrap();
     config.threads = splot_parallel::ThreadCount::from(threads);
+    config
+        .preset_overrides
+        .push(("intra_only".to_owned(), intra_only.to_string()));
     let mut encoder = Encoder::new(config.clone()).unwrap();
     let mut source = Vec::new();
     for index in 0..frames {
@@ -36,15 +39,16 @@ fn lossless_stream(
     (units, source)
 }
 
-const CASES: [(PixelFormat, BitDepth, u8); 4] = [
-    (PixelFormat::Yuv420, BitDepth::Eight, 6),
-    (PixelFormat::Yuv444, BitDepth::Ten, 6),
-    (PixelFormat::Yuv420, BitDepth::Ten, 10),
-    (PixelFormat::Yuv422, BitDepth::Eight, 0),
+const CASES: [(PixelFormat, BitDepth, u8, u8); 5] = [
+    (PixelFormat::Yuv420, BitDepth::Eight, 6, 0),
+    (PixelFormat::Yuv444, BitDepth::Ten, 6, 0),
+    (PixelFormat::Yuv420, BitDepth::Ten, 10, 0),
+    (PixelFormat::Yuv422, BitDepth::Eight, 0, 0),
+    (PixelFormat::Yuv420, BitDepth::Eight, 10, 1),
 ];
 
-/// Intra and inter frames, with a later key frame, decode to the source
-/// samples exactly, with the same bytes on 1, 2 and 8 threads.
+/// Intra, intra-only and inter frames, with a later key frame, decode to the
+/// source samples exactly, with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn lossless_streams_decode_to_the_source_on_any_thread_count() {
     each_case(CASES, |case| {

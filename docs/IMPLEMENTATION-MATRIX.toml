@@ -6460,6 +6460,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTRA-ONLY"
+name = "Encoder intra-only frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "7.9", "7.20"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-intra-only"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::intra_only (2026-11-22, 0 = off in every row, not measured): value N codes the anchor of every Nth mini-GOP as INTRA_ONLY_FRAME with PRIMARY_REF_NONE, its order hint and one refreshed slot; later frames still reference frames before it, so it is no random access point. A frame whose closest past and future references are both intra codes no TIP (§ 7.9)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::intra_only_headers_keep_the_other_slots", "crates/splot-encode/src/intra_frame_carry_tests.rs::intra_only_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_tip_tests.rs::frames_between_intra_references_code_no_tip"]
+commands = ["cargo test -p splot-core intra_only --locked", "cargo test -p splot-encode intra_only --locked", "cargo test -p splot-encode frames_between_intra_references --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-PALETTE"
 name = "Encoder luma palette"
 category = "encoder"
@@ -17964,7 +17996,7 @@ id = "DECODE-INTER-TIP-REFERENCE"
 name = "TIP reference block runtime"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.9.5", "7.9.8", "7.10.2", "7.12.2.10", "7.12.2.15", "7.12.2.18", "7.13.3", "7.22", "8.3.2", "9.3"]
+spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.9.5", "7.9.8", "7.10.1", "7.10.2", "7.12.2.10", "7.12.2.15", "7.12.2.18", "7.13.3", "7.22", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
@@ -17973,6 +18005,7 @@ sources = [
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-3",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-5",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-10-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-10-2",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-10",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-15",
@@ -17987,7 +18020,7 @@ module = "crates/splot-decode/src/prediction/inter/block.rs"
 change_id = "decode-inter-tip-reference"
 owner = "decoder"
 risk = "medium"
-notes = "TIP-as-reference uses dedicated mode/DRL syntax, projected temporal motion, sharp interpolation and the shared compound prediction/residual paths. Projection retains reference hints, sizes and temporal ordering, samples and stores on the signaled projection grid, and enforces TMVP bounds. TIP-coded spatial neighbours contribute through their underlying reference pair; each compound neighbour contributes once to the bounded derived stack. Reconstruction retains output motion fields and supports projected-motion hole filling. TIP-as-reference full-stream conformance remains partial."
+notes = "TIP-as-reference uses dedicated mode/DRL syntax, projected temporal motion, sharp interpolation and the shared compound prediction/residual paths. Projection retains reference hints, sizes and temporal ordering, samples and stores on the signaled projection grid, and enforces TMVP bounds. TIP-coded spatial neighbours contribute through their underlying reference pair; each compound neighbour contributes once to the bounded derived stack. Reconstruction retains output motion fields and supports projected-motion hole filling. TIP-as-reference full-stream conformance remains partial. The § 7.10.1 header check rejects TIP when both ClosestPast and ClosestFuture hold a key or intra-only frame (per-slot is_intra_frame saved at refresh, § 7.9 is_ref_motion_field_eligible_by_frame_type)."
 
 [feature.status]
 mapped = "done"
@@ -18002,7 +18035,7 @@ avm_diff = "partial"
 perf = "not-applicable"
 
 [feature.proof]
-tests = [
+tests = ["crates/splot-decode/tests/frame_pipelining.rs::tip_without_an_inter_closest_reference_is_rejected_at_every_width", 
     "crates/splot-decode/src/prediction/inter/block/syntax.rs::tests::skip_and_tip_drl_idx_use_dedicated_cdf_banks",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::tip_neighbour_matches_its_underlying_compound_reference_pair",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_projects_tip_neighbour_to_its_reference_pair",
@@ -18024,7 +18057,7 @@ commands = [
     "cargo xtask check-duplication",
     "cargo xtask check-feature-status",
 ]
-fixtures = [
+fixtures = ["tests/conformance/vectors/invalid/syn-tip-intra-pair-72x40.ivf", 
     "crates/splot-decode/src/prediction/inter/block.rs",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs",
     "crates/splot-decode/src/prediction/inter/block/syntax.rs",

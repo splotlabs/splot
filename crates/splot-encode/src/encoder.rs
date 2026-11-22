@@ -252,6 +252,7 @@ impl Encoder {
         };
         let planner = GopPlanner::new(config.keyint, mini_gop_size)
             .with_ref_slots(slots)
+            .with_intra_only(params.intra_only)
             .with_implicit_output(params.implicit_output);
         Ok(Self {
             rate_control,

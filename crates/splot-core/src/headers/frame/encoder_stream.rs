@@ -780,7 +780,6 @@ fn key_frame_header_bits(
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
     }
-    check_tx_params(base_q_idx, tx)?;
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     let mut w = BitWriter::new();
     w.write_uvlc(0)?; // cur_mfh_id
@@ -795,6 +794,21 @@ fn key_frame_header_bits(
     w.write_flag(true)?; // immediate_output_frame
     w.write_flag(false)?; // frame_size_override_flag
     w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
+    write_intra_frame_tail(&mut w, seq, (base_q_idx, tiles, true), filters, tx)?;
+    Ok(w.into_bytes())
+}
+
+/// § 5.18.2 of an intra frame from `screen_content_params()` to
+/// `film_grain_config()`: the `base_q_idx`, `tiles`, `filters` and `tx` of a
+/// frame with `immediate_output_frame` `show`, then the byte alignment.
+pub(super) fn write_intra_frame_tail(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    (base_q_idx, tiles, show): (u32, UniformTiles, bool),
+    filters: &FrameFilterParams,
+    tx: KeyFrameTxParams,
+) -> Result<(), EncoderHeaderError> {
+    check_tx_params(base_q_idx, tx)?;
     if seq.seq_force_screen_content_tools == 2 {
         w.write_flag(true)?; // allow_screen_content_tools
         if seq.seq_force_integer_mv == 2 {
@@ -808,10 +822,10 @@ fn key_frame_header_bits(
         change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
         max_bvp_drl_bits_minus_1: None,
     };
-    write_intrabc_params(&mut w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
+    write_intrabc_params(w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
     w.write_flag(tx.disable_cdf_update)?;
     write_quant_and_filters(
-        &mut w,
+        w,
         seq,
         (base_q_idx, tiles, tx),
         filters,
@@ -821,9 +835,9 @@ fn key_frame_header_bits(
         w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     }
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
-    write_film_grain_config(&mut w, seq, true, tx.grain_seed)?;
+    write_film_grain_config(w, seq, show, tx.grain_seed)?;
     w.align_to_byte();
-    Ok(w.into_bytes())
+    Ok(())
 }
 
 /// Refuses `tx` unless its `tx_mode` is `ONLY_4X4` exactly when `base_q_idx = 0`
