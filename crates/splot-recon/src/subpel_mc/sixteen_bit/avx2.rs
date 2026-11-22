@@ -28,21 +28,47 @@ fn token() -> Option<Avx2> {
 }
 
 /// Predicts a filtered 16-bit `block` into `sink`, as [`super::predict`]
-/// admits: in word lanes when a row holds the 16 samples a horizontal pass
-/// loads, else in the portable kernels.
+/// admits: in word lanes when a row of its storage holds the samples its
+/// kernel loads from one ([`row_samples`]), else in the portable kernels.
+/// Rows that short belong to a plane under 16 samples wide read in place.
 pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
     match token() {
-        Some(t) if block.stride >= 16 => predict_lanes(t, block, sink),
+        Some(t) if block.stride >= row_samples(block) => predict_lanes(t, block, sink),
         _ => generic::predict(block, sink),
+    }
+}
+
+/// The samples the kernel of `block` loads from a window row: 8, and for
+/// a horizontal pass of two or more tap pairs 16 in a strip, 12 for more
+/// than two in a 4-column pair of rows; one pair in a strip loads 9.
+fn row_samples(block: &Block<'_, u16>) -> usize {
+    match (block.w == 4, block.horizontal.map_or(0, |taps| taps.count)) {
+        (true, 3..) => 12,
+        (false, 2..) => 16,
+        (false, 1) => 9,
+        _ => 8,
     }
 }
 
 /// The tap pairs of the horizontal pass of a kernel: those of `taps`, an
 /// odd count with one more pair, whose taps are zero. A row is loaded whole
 /// whatever its taps, so the pair reads nothing more, and the kernels of
-/// one and of three pairs need not exist.
+/// three pairs need not exist, nor those of one where a row holds the 16
+/// samples two load.
 pub(super) fn even_pairs(taps: &Taps) -> usize {
     taps.count.next_multiple_of(2)
+}
+
+/// The tap pairs the kernel of `block` runs its horizontal pass of `taps`
+/// with: their [`even_pairs`], or the one pair of a strip whose rows are
+/// under the 16 samples that two load, which [`predict`] admits with one
+/// pair alone.
+fn row_pairs(block: &Block<'_, u16>, taps: &Taps) -> usize {
+    if block.w == 4 || block.stride >= 16 {
+        even_pairs(taps)
+    } else {
+        taps.count
+    }
 }
 
 /// Calls `$f::<W, P, _>` for 4-column pairs or 8-column strips and the
@@ -65,23 +91,27 @@ macro_rules! specialize {
         match ($four, $pairs) {
             (true, 2) => $f::<4, 2, _>($($arg),*),
             (true, _) => $f::<4, 4, _>($($arg),*),
+            (false, 1) => $f::<8, 1, _>($($arg),*),
             (false, 2) => $f::<8, 2, _>($($arg),*),
             (false, _) => $f::<8, 4, _>($($arg),*),
         }
     };
 }
 
-/// Calls `$f::<W, H, V, _>` for the group width, the [`even_pairs`] of the
-/// horizontal pass and the pair count of the vertical one.
+/// Calls `$f::<W, H, V, _>` for the group width, the tap pairs the kernel
+/// runs the horizontal pass with ([`row_pairs`]) and the pair count of the
+/// vertical one.
 macro_rules! specialize_pairs {
     ($four:expr, $h:expr, $v:expr, $f:ident $args:tt) => {
         specialize_pairs!(@ $four, $h, $v, $f $args,
-            [2 1, 2 2, 2 3, 2 4, 4 1, 4 2, 4 3, 4 4])
+            [2 1, 2 2, 2 3, 2 4, 4 1, 4 2, 4 3, 4 4], [1 1, 1 2, 1 3, 1 4])
     };
-    (@ $four:expr, $h:expr, $v:expr, $f:ident $args:tt, [$($hh:literal $vv:literal),*]) => {
+    (@ $four:expr, $h:expr, $v:expr, $f:ident $args:tt,
+        [$($hh:literal $vv:literal),*], [$($one:literal $ov:literal),*]) => {
         match ($four, $h.min(4), $v.min(4)) {
             $((true, $hh, $vv) => $f::<4, $hh, $vv, _> $args,)*
             $((false, $hh, $vv) => $f::<8, $hh, $vv, _> $args,)*
+            $((false, $one, $ov) => $f::<8, $one, $ov, _> $args,)*
             _ => {}
         }
     };
@@ -170,12 +200,12 @@ fn shapes<O: WordOut>(t: Avx2, block: &Block<'_, u16>, out: &mut O, max: u16) {
     }
     match (block.horizontal, block.vertical) {
         (Some(taps), None) => {
-            specialize!(even four, even_pairs(taps), horizontal(t, block, taps, out, max));
+            specialize!(even four, row_pairs(block, taps), horizontal(t, block, taps, out, max));
         }
         (None, Some(taps)) => specialize!(four, taps.count, vertical(t, block, taps, out, max)),
         (Some(h_taps), Some(v_taps)) => specialize_pairs!(
             four,
-            even_pairs(h_taps),
+            row_pairs(block, h_taps),
             v_taps.count,
             two_pass(t, block, (h_taps, v_taps), out, max)
         ),

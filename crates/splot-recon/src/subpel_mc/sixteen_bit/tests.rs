@@ -283,3 +283,39 @@ fn neon_wide_puts_match_portable_at_narrow_strides() {
         }
     }
 }
+
+/// Blocks read in place from a plane under 16 samples wide, whose rows are
+/// shorter than the 16 samples a horizontal pass of two tap pairs loads:
+/// every kernel entry stores what the portable kernels store.
+#[test]
+fn blocks_of_narrow_planes_match_portable() {
+    for &max in maxes() {
+        let plane = &planes(max)[0];
+        for stride in 4..16 {
+            for (w, h) in [(4, 4), (4, 8), (8, 4), (8, 8)] {
+                for filter in 0..NUM_FILTER_TYPES {
+                    for (h_phase, v_phase) in [(0, 5), (9, 0), (9, 5)] {
+                        let horizontal = taps(filter, h_phase);
+                        let columns = w + horizontal.map_or(0, |taps| taps.span() - 1);
+                        if columns > stride {
+                            continue;
+                        }
+                        let block = Block {
+                            source: plane,
+                            stride,
+                            origin: stride - columns,
+                            w,
+                            h,
+                            horizontal,
+                            vertical: taps(filter, v_phase),
+                        };
+                        let label = format!(
+                            "{max} stride {stride} {w}x{h} filter {filter} phases {h_phase},{v_phase}"
+                        );
+                        check_predict(&block, max, &label);
+                    }
+                }
+            }
+        }
+    }
+}
