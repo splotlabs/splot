@@ -251,6 +251,8 @@ pub struct SyntaxSnapshot {
     sdp: super::SdpPartitionState,
     samples: Vec<(PlaneId, PlaneRect, Vec<u16>)>,
     inter: super::inter::InterSnapshot,
+    /// The coded `segment_id` count and the leaf segment.
+    segment: (u64, u8),
     #[cfg(debug_assertions)]
     check: Option<Box<WholeState>>,
 }
@@ -319,6 +321,7 @@ impl IntraTileSyntax {
         self.sdp = snapshot.sdp;
         self.recon.restore_samples(&snapshot.samples)?;
         self.inter_restore(&snapshot.inter);
+        self.restore_segment(snapshot.segment);
         #[cfg(debug_assertions)]
         if snapshot
             .check
@@ -380,6 +383,7 @@ impl IntraTileSyntax {
             sdp: self.sdp,
             samples: self.recon.save_samples((x, y, w, h), (sub_x, sub_y))?,
             inter: self.inter_snapshot((x, y, w, h), since),
+            segment: (self.coded_segment_ids(), self.leaf_segment()),
             #[cfg(debug_assertions)]
             check: self.journal.sample().then(|| Box::new(self.whole_state())),
         })
@@ -414,6 +418,11 @@ impl IntraTileSyntax {
         self.intra_facts
             .grid_mut()
             .visit_cells(rows.clone(), cols, |c| intra_facts.visit(c));
+        if let Some(segments) = &mut self.segments {
+            segments
+                .ids
+                .visit_cells(rows.clone(), cols, |c| bytes.visit(c));
+        }
         bytes.done() && intra_facts.done()
     }
 

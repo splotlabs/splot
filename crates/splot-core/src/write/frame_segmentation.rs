@@ -127,7 +127,26 @@ pub fn write_segmentation_params(
     seg: &CoreSeqSegView,
     mfh: Option<&MfhSegView>,
 ) -> WriteResult<()> {
-    check_segmentation_encodable(params, seg, mfh)?;
+    write_inter_segmentation_params(writer, params, (seg, mfh), None)
+}
+
+/// [`write_segmentation_params`] of a frame whose `DerivedPrimaryRefFrame`
+/// is not `PRIMARY_REF_NONE` when `coded_map` is `Some(frame_is_switch)`:
+/// `segmentation_update_map` `f(1)` and, when it is 1 outside a switch
+/// frame, `segmentation_temporal_update` `f(1)` follow the feature data
+/// (§ 5.18.7.1). `None` is the inferred path of [`write_segmentation_params`].
+///
+/// # Errors
+/// The errors of [`write_segmentation_params`]; on the coded path a model
+/// with `segmentation_temporal_update` and no `segmentation_update_map`, or
+/// with `segmentation_temporal_update` in a switch frame.
+pub fn write_inter_segmentation_params(
+    writer: &mut BitWriter,
+    params: &SegmentationParams,
+    (seg, mfh): (&CoreSeqSegView, Option<&MfhSegView>),
+    coded_map: Option<bool>,
+) -> WriteResult<()> {
+    check_segmentation_encodable(params, seg, mfh, coded_map)?;
 
     writer.write_flag(params.segmentation_enabled)?;
 
@@ -144,6 +163,12 @@ pub fn write_segmentation_params(
                 features: params.features,
             };
             write_seg_info(writer, &info, seg.max_segments)?;
+        }
+        if let Some(frame_is_switch) = coded_map {
+            writer.write_flag(params.segmentation_update_map)?;
+            if params.segmentation_update_map && !frame_is_switch {
+                writer.write_flag(params.segmentation_temporal_update)?;
+            }
         }
     }
 
@@ -163,6 +188,7 @@ fn check_segmentation_encodable(
     params: &SegmentationParams,
     seg: &CoreSeqSegView,
     mfh: Option<&MfhSegView>,
+    coded_map: Option<bool>,
 ) -> WriteResult<()> {
     if params.segmentation_enabled {
         let (have_seg_params, allow_change, reuse_source) = derive_seg_params(seg, mfh);
@@ -188,12 +214,16 @@ fn check_segmentation_encodable(
             check_seg_info_encodable(&info, seg.max_segments)?;
         }
 
-        if !params.segmentation_update_map {
+        let (map_inferred, temporal_inferred) = match coded_map {
+            None => (true, true),
+            Some(frame_is_switch) => (false, !params.segmentation_update_map || frame_is_switch),
+        };
+        if map_inferred && !params.segmentation_update_map {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "segmentation_update_map",
             });
         }
-        if params.segmentation_temporal_update {
+        if temporal_inferred && params.segmentation_temporal_update {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "segmentation_temporal_update",
             });

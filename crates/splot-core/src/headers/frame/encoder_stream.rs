@@ -15,23 +15,47 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
     FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, SetupQmParams,
-    TxMode, WienerNsFrameFilterBank, encode_temporal_delimiter_obu, gdf_per_block_is_coded,
-    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, QmSetLevels, SegmentationParams,
+    SetupQmParams, TxMode, WienerNsFrameFilterBank, encode_temporal_delimiter_obu,
+    gdf_per_block_is_coded, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
 };
 use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
 use crate::obu::{ObuHeader, ParsedObu};
+use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use crate::span::ByteOffset;
 use crate::tile::TileSpacing;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
-    write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_intrabc_params,
-    write_lr_params_for_inter, write_obu_payload, write_setup_qm_params, write_tile_group_obu,
+    write_cdef_params, write_deblocking_filter_params, write_gdf_params,
+    write_inter_segmentation_params, write_intrabc_params, write_lr_params_for_inter,
+    write_obu_payload, write_setup_qm_params, write_tile_group_obu,
 };
+
+/// The [`SegmentationParams`] of [`KeyFrameTxParams::segment_alt_q`].
+fn segmentation_params(alt_q: Option<[i16; 4]>) -> SegmentationParams {
+    let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+    if let Some(alt_q) = alt_q {
+        for (segment, data) in features.iter_mut().zip(alt_q) {
+            segment[0] = SegmentFeature {
+                enabled: true,
+                data: i32::from(data),
+            };
+        }
+    }
+    SegmentationParams {
+        segmentation_enabled: alt_q.is_some(),
+        reuse_seg_info: false,
+        features,
+        segmentation_update_map: alt_q.is_some(),
+        segmentation_temporal_update: false,
+        seg_id_pre_skip: false,
+        last_active_seg_id: if alt_q.is_some() { 3 } else { 0 },
+    }
+}
 
 /// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
 const UNCONSTRAINED_LEVEL_IDX: u32 = 31;
@@ -308,6 +332,11 @@ pub struct KeyFrameTxParams {
     /// `using_qmatrix = 1` with this § 5.18.6.2 level, `0..=15`, in `qm_y`,
     /// `qm_u` and `qm_v`; `None` codes `using_qmatrix = 0`.
     pub qm_level: Option<u8>,
+    /// `segmentation_enabled` (§ 5.18.7.1) with segments 0..=3 enabling
+    /// `SEG_LVL_ALT_Q` at these data, an updated map and no temporal update;
+    /// `None` codes `segmentation_enabled = 0`. Every segment shares the
+    /// one `qm_level` (`pic_qm_num_minus_1 = 0`).
+    pub segment_alt_q: Option<[i16; 4]>,
 }
 
 impl Default for KeyFrameTxParams {
@@ -323,6 +352,7 @@ impl Default for KeyFrameTxParams {
             disable_cross_frame_cdf_init: false,
             choose_primary_ref_frame: false,
             qm_level: None,
+            segment_alt_q: None,
         }
     }
 }
@@ -739,7 +769,7 @@ fn key_frame_header_bits(
         seq,
         (base_q_idx, tiles, tx),
         filters,
-        (true, LrReferenceFilters::default()),
+        (true, LrReferenceFilters::default(), None),
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
@@ -782,7 +812,7 @@ pub(super) fn write_quant_and_filters(
     seq: &CoreSeqView,
     (base_q_idx, tiles, tx): (u32, UniformTiles, KeyFrameTxParams),
     filters: &FrameFilterParams,
-    (frame_is_intra, lr_refs): (bool, LrReferenceFilters<'_>),
+    (frame_is_intra, lr_refs, coded_map): (bool, LrReferenceFilters<'_>, Option<bool>),
 ) -> Result<(), EncoderHeaderError> {
     let allow_tcq = tx.allow_tcq;
     if tx.delta_q_res.is_some() && base_q_idx == 0 {
@@ -800,7 +830,12 @@ pub(super) fn write_quant_and_filters(
     }
     let spacing = write_uniform_tile_info(w, seq, tiles, frame_is_intra)?;
     w.write_bits(base_q_idx, q_bits)?;
-    w.write_flag(false)?; // segmentation_enabled
+    write_inter_segmentation_params(
+        w,
+        &segmentation_params(tx.segment_alt_q),
+        (&seq.seg, None),
+        coded_map,
+    )?;
     let chroma = |level| if seq.quant.num_planes > 1 { level } else { 0 };
     let qm = SetupQmParams {
         using_qmatrix: tx.qm_level.is_some(),
@@ -814,7 +849,7 @@ pub(super) fn write_quant_and_filters(
             _ => QmSetLevels::default(),
         }),
     };
-    write_setup_qm_params(w, &qm, &seq.quant, false)?;
+    write_setup_qm_params(w, &qm, &seq.quant, tx.segment_alt_q.is_some())?;
     if base_q_idx > 0 {
         w.write_flag(tx.delta_q_res.is_some())?; // delta_q_present
     }

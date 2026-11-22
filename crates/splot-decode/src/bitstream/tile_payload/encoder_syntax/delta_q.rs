@@ -143,10 +143,11 @@ impl IntraTileSyntax {
         self.delta_q.pending = self.delta_q.res.is_some();
     }
 
-    fn apply_qindex(&mut self, qindex: i32) {
-        self.tools.qindex = qindex as u32;
+    pub(super) fn apply_qindex(&mut self, qindex: i32) {
+        let qindex = self.block_qindex(qindex);
+        self.tools.qindex = qindex;
         if let Some(inter) = &mut self.inter {
-            inter.tile.set_qindex(qindex as u32);
+            inter.tile.set_qindex(qindex);
         }
     }
 }

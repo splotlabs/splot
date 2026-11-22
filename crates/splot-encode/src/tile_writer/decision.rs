@@ -32,6 +32,8 @@ pub(crate) const INTRA_MODES: [IntraMode; 13] = [
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SuperblockDecision {
     pub(crate) tree: PartitionTree,
+    /// The segment its leaves code in a frame with segmentation.
+    pub(crate) segment: Option<u8>,
 }
 
 /// One `decode_partition` call: a coded leaf or a split into child calls.

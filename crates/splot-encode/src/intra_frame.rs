@@ -460,13 +460,7 @@ impl IntraFrameCoder {
         if costs.is_none() && self.preset.ssim_aq == 0 {
             return Vec::new();
         }
-        let sb = match self.view.frame_sb_size(plan.frame_type == FrameType::Key) {
-            SuperblockSize::Block64x64 => 64,
-            SuperblockSize::Block128x128 => 128,
-            SuperblockSize::Block256x256 => 256,
-        };
-        let (width, height) = (self.params.width as usize, self.params.height as usize);
-        let grid = (width.div_ceil(sb), height.div_ceil(sb), sb);
+        let grid = self.superblock_grid(plan);
         let mut quant = costs.map_or_else(
             || vec![(0, 0); grid.0 * grid.1],
             |costs| {
@@ -496,6 +490,43 @@ impl IntraFrameCoder {
             return Vec::new();
         }
         quant
+    }
+
+    /// The `(columns, rows, luma side)` of the superblocks of `plan`.
+    fn superblock_grid(&self, plan: &GopFrame) -> (usize, usize, usize) {
+        let sb = match self.view.frame_sb_size(plan.frame_type == FrameType::Key) {
+            SuperblockSize::Block64x64 => 64,
+            SuperblockSize::Block128x128 => 128,
+            SuperblockSize::Block256x256 => 256,
+        };
+        let (width, height) = (self.params.width as usize, self.params.height as usize);
+        (width.div_ceil(sb), height.div_ceil(sb), sb)
+    }
+
+    /// The source-activity segment of each superblock of `plan` in raster
+    /// order and the `SEG_LVL_ALT_Q` data of each segment at `qindex`, clamped
+    /// to `qindex + data >= 1` so no segment is lossless; `None` with
+    /// [`crate::preset::PresetParams::segmentation`] `0`.
+    fn segment_map(
+        &self,
+        plan: &GopFrame,
+        source: &SourceFrame,
+        qindex: u32,
+    ) -> Option<(Vec<u8>, [i16; 4])> {
+        if self.preset.segmentation == 0 {
+            return None;
+        }
+        let size = source.plane_sizes()[0];
+        let map = tpl::ssim_lambda_log2(
+            &source.planes()[0],
+            (size.width(), size.height()),
+            self.bit_depth,
+            self.superblock_grid(plan),
+            100,
+        );
+        let floor = 1 - qindex as i16;
+        let alt_q = tpl::SEGMENT_LAMBDA_LOG2.map(|log2| tpl::quant_of(log2).0.max(floor));
+        Some((map.into_iter().map(tpl::activity_segment).collect(), alt_q))
     }
 
     /// The `tip_global_wtd_index` whose TIP prediction of `source` has the
@@ -644,6 +675,9 @@ impl IntraFrameCoder {
         }
         tools.2.6 &= self.warp_gate.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
+        let segments = self.segment_map(plan, source, qindex);
+        tools.0.segment_alt_q = segments.as_ref().map(|&(_, alt_q)| alt_q);
+        let segments = segments.map_or(Vec::new(), |(map, _)| map);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         let key_obus = if plan.frame_type == FrameType::Key {
             [self.content_obu.as_slice(), &grain_obu].concat()
@@ -715,9 +749,12 @@ impl IntraFrameCoder {
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
         let superblocks = sb_cols * mi_rows.div_ceil(sb / 4);
-        if !sb_quant.is_empty() && sb_quant.len() != superblocks {
+        if [sb_quant.len(), segments.len()]
+            .iter()
+            .any(|&len| len != 0 && len != superblocks)
+        {
             return Err(Error::Unsupported {
-                what: "superblock offsets that do not cover the superblock grid",
+                what: "superblock offsets or segments that do not cover the superblock grid",
             });
         }
         let publishes = self.preset.ref_intra_margin != u8::MAX;
@@ -743,30 +780,46 @@ impl IntraFrameCoder {
                 what: "a search past its tile",
             })?;
             let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
-            let (lambda, target) = match sb_quant.get(index) {
-                Some(&(offset, lambda_log2)) => {
-                    let mut target = qindex.saturating_add_signed(i32::from(offset));
-                    if wavefront {
-                        let step = 1 << self.preset.delta_q_res;
-                        let max_q = splot_recon::max_quantizer_index(bit_depth);
-                        target =
-                            target.clamp(1 + (qindex - 1) % step, max_q - (max_q - qindex) % step);
+            let segment = segments.get(index).copied();
+            let (lambda, target) = match (sb_quant.get(index), segment) {
+                (None, None) => (lambda, None),
+                (sb, segment) => {
+                    let (offset, mut lambda_log2) = sb.map_or((0, 0), |&(o, l)| (o, i32::from(l)));
+                    let mut block_qindex = qindex;
+                    let mut target = None;
+                    if sb.is_some() {
+                        let mut want = qindex.saturating_add_signed(i32::from(offset));
+                        if wavefront {
+                            let step = 1 << self.preset.delta_q_res;
+                            let max_q = splot_recon::max_quantizer_index(bit_depth);
+                            want = want
+                                .clamp(1 + (qindex - 1) % step, max_q - (max_q - qindex) % step);
+                        }
+                        block_qindex = writer
+                            .set_superblock_qindex(want)
+                            .map_err(coding("delta-q"))?;
+                        target = Some(block_qindex);
                     }
-                    let sb_qindex = writer
-                        .set_superblock_qindex(target)
-                        .map_err(coding("delta-q"))?;
-                    let applied = 2 * (sb_qindex as i32 - qindex as i32);
+                    if let Some(segment) = segment {
+                        block_qindex = writer
+                            .syntax_mut()
+                            .set_superblock_segment(segment)
+                            .map_err(coding("segment"))?;
+                        lambda_log2 += tpl::SEGMENT_LAMBDA_LOG2
+                            .get(usize::from(segment))
+                            .map_or(0, |&log2| log2);
+                    }
+                    let applied = 2 * (block_qindex as i32 - qindex as i32);
                     let clip_slack = (1 << self.preset.delta_q_res) + 1;
                     let per_octave = tpl::QINDEX_PER_IMPORTANCE_OCTAVE as i32;
-                    let lambda_log2 = i32::from(lambda_log2).clamp(
+                    let lambda_log2 = lambda_log2.clamp(
                         (applied - clip_slack) * 128 / per_octave,
                         (applied + clip_slack) * 128 / per_octave,
                     );
                     let lambda = lambda.scaled(lambda_log2);
-                    coder.set_quantizer(sb_qindex, lambda);
-                    (lambda, Some(sb_qindex))
+                    coder.set_quantizer(block_qindex, lambda);
+                    (lambda, target)
                 }
-                None => (lambda, None),
             };
             let tree = writer
                 .search_superblock(|syntax, root| {
@@ -791,7 +844,7 @@ impl IntraFrameCoder {
                     .extend(leaves);
             }
             self.progress.superblock(superblocks);
-            Ok((SuperblockDecision { tree }, target))
+            Ok((SuperblockDecision { tree, segment }, target))
         };
         let new_coder = || {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);

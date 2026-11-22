@@ -240,7 +240,9 @@ impl IntraTileSyntax {
         let tile = &mut self.inter_state()?.tile;
         tile.publish_intrabc(&leaf.frontier, mv, skip)
             .map_err(rule("IntraBC publication"))?;
-        self.publish_leaf_modes(leaf, GeneralIntraLeafMode::no_luma_mode().mark_intrabc())
+        self.publish_leaf_modes(leaf, GeneralIntraLeafMode::no_luma_mode().mark_intrabc())?;
+        self.end_leaf_segment();
+        Ok(())
     }
 }
 
