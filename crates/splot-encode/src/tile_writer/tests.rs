@@ -124,6 +124,7 @@ impl Case {
                 disable_cdf_update: false,
                 disable_cross_frame_cdf_init: false,
                 choose_primary_ref_frame: false,
+                qm_level: None,
             },
         }
     }

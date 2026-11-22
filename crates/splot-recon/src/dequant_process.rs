@@ -122,6 +122,20 @@ pub struct QmDequant {
     pub user: Option<QmUserPlane>,
 }
 
+impl QmDequant {
+    /// The built-in `Quantizer_Matrix` weights of the first `len` raster
+    /// coefficients of the block, `None` for a user matrix or a region the
+    /// table does not cover.
+    #[must_use]
+    pub fn built_in_weights(&self, len: usize) -> Option<&'static [i32]> {
+        if self.user.is_some() {
+            return None;
+        }
+        QUANTIZER_MATRIX.get(self.seg_level)?[usize::from(self.plane_is_chroma)]
+            .get(self.qm_offset..self.qm_offset.checked_add(len)?)
+    }
+}
+
 /// One immutable user-defined quantizer-matrix plane used by § 7.14.4.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QmUserPlane {
@@ -248,11 +262,9 @@ fn qm_weights(
     len: usize,
 ) -> Result<[i32; 8]> {
     let mut weights = [0i32; 8];
-    let at = qm.qm_offset + start;
-    if qm.user.is_none()
-        && let Some(row) = QUANTIZER_MATRIX
-            .get(qm.seg_level)
-            .and_then(|level| level[usize::from(qm.plane_is_chroma)].get(at..at + len))
+    if let Some(row) = qm
+        .built_in_weights(start + len)
+        .and_then(|row| row.get(start..))
     {
         weights[..len].copy_from_slice(row); // splot-copy-ok: one weight-row group
         return Ok(weights);

@@ -2071,6 +2071,8 @@ mod large_inter;
 mod mds;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_qm_tests.rs"]
+mod qm;
 #[path = "intra_frame_refine_tests.rs"]
 mod refine;
 #[path = "intra_frame_tf_tests.rs"]

@@ -4,7 +4,9 @@
 #![allow(clippy::unwrap_used)]
 
 use proptest::prelude::*;
-use splot_recon::{BitDepth, dequant_coefficient, max_quantizer_index, quantizer_value};
+use splot_recon::{
+    BitDepth, dequant_coefficient, max_quantizer_index, qm_weighted_quantizer, quantizer_value,
+};
 
 use super::super::{EncoderKernels, ScalarKernels, SimdKernels};
 use super::{MAX_LEVEL, Quantizer};
@@ -35,6 +37,19 @@ fn quantizer(
             )
         },
     )
+}
+
+/// A [`quantizer`] weighted by random § 7.14.4 matrix weights in the
+/// built-in range `30..=242`, and the weights.
+fn weighted() -> impl Strategy<Value = ((Quantizer, u32, u32, u32, BitDepth), Vec<i32>)> {
+    (
+        quantizer(0u32..=128),
+        proptest::collection::vec(30i32..=242, 1024),
+    )
+        .prop_map(|((q, dc, ac, denom, bd), weights)| {
+            let q = q.with_weights(Some(&weights)).unwrap();
+            ((q, dc, ac, denom, bd), weights)
+        })
 }
 
 fn coefficient() -> impl Strategy<Value = i32> {
@@ -113,6 +128,24 @@ proptest! {
                     prop_assert!(distance <= (i64::from(c) - i64::from(other)).abs(), "c={} level={} neighbour={}", c, level, neighbour);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn weighted_simd_matches_scalar_and_the_decoder(
+        ((q, dc, ac, denom, bd), weights) in weighted(),
+        coeffs in coefficients(),
+    ) {
+        let (levels, dequant, nonzero) = run(&SimdKernels, &q, &coeffs);
+        prop_assert_eq!((levels.clone(), dequant.clone(), nonzero), run(&ScalarKernels, &q, &coeffs));
+        let error = |k: &dyn EncoderKernels| {
+            let (mut l, mut d) = (vec![0; coeffs.len()], vec![0; coeffs.len()]);
+            k.quantize_error(&q, &coeffs, &mut l, &mut d).unwrap()
+        };
+        prop_assert_eq!(error(&SimdKernels), error(&ScalarKernels));
+        for (i, (&level, &dq)) in levels.iter().zip(&dequant).enumerate() {
+            let q2 = qm_weighted_quantizer(if i == 0 { dc } else { ac }, weights[i]);
+            prop_assert_eq!(dq, dequant_coefficient(level, q2, denom, bd));
         }
     }
 
