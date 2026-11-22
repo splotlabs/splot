@@ -927,7 +927,8 @@ impl IntraTileSyntax {
                 .map(|()| [mv, Mv::default()]),
         }
         .map_err(rule("inter prediction"))?;
-        let units = inter_residual_units(&leaf.frontier, chroma).map_err(rule("inter residual"))?;
+        let units = inter_residual_units(&leaf.frontier, chroma, self.tools.lossless)
+            .map_err(rule("inter residual"))?;
         let (sub_x, sub_y) = super::super::tile_frontier::chroma_subsampling(chroma);
         let mut blocks: Vec<TransformBlock> = units
             .into_iter()
@@ -974,7 +975,9 @@ impl IntraTileSyntax {
             blocks.splice(..1, luma);
         }
         if self.tools.lossless {
-            blocks = lossless_units(&blocks, (mi_cols * 4, mi_rows * 4), (sub_x, sub_y))?;
+            self.lossless_tx_size_leaf = core::mem::take(&mut self.next_lossless_tx_size);
+            let luma = lossless_luma_tx_size(leaf, self.lossless_tx_size_leaf)?;
+            blocks = lossless_units(&blocks, (mi_cols * 4, mi_rows * 4), (sub_x, sub_y), luma)?;
         }
         state.planned = Some(PlannedInter {
             leaf: *leaf,
@@ -1005,7 +1008,7 @@ impl IntraTileSyntax {
         chroma: &TransformBlock,
     ) -> Result<TxType> {
         if self.tools.lossless {
-            return Ok(TxType::DctDct);
+            return self.lossless_chroma_tx_type(leaf, before, chroma);
         }
         let collocated = chroma_inter_tx_type(
             &leaf.frontier,
@@ -1015,6 +1018,7 @@ impl IntraTileSyntax {
                 .filter(|tx| tx.plane == 0)
                 .map(|tx| (tx.x, tx.y, tx.tx_size, tx.tx_type as usize)),
             (chroma.x, chroma.y),
+            false,
         )
         .map_err(rule("chroma transform type"))?;
         TxType::from_value(
@@ -1026,6 +1030,44 @@ impl IntraTileSyntax {
             )
             .map_err(rule("chroma transform type"))?,
         )
+    }
+
+    /// [`Self::inter_chroma_tx_type`] in a lossless frame (§ 5.20.7.29): IDTX
+    /// when the leaf codes `lossless_tx_size = 1`, else the type of the
+    /// collocated luma block, or of the leaf's first luma block in an intra
+    /// frame (an IntraBC leaf) or when the chroma reference is another leaf.
+    #[cold]
+    #[inline(never)]
+    fn lossless_chroma_tx_type(
+        &self,
+        leaf: &LeafBlock,
+        before: &[TransformBlock],
+        chroma: &TransformBlock,
+    ) -> Result<TxType> {
+        if self.lossless_tx_size_leaf {
+            return Ok(TxType::Idtx);
+        }
+        let reference = leaf.frontier.chroma_ref_geometry();
+        let intrabc = self
+            .inter
+            .as_ref()
+            .and_then(|state| state.planned.as_ref())
+            .is_some_and(|planned| planned.use_intrabc);
+        let current_block = intrabc
+            || leaf.frontier.r != reference.row()
+            || leaf.frontier.c != reference.col();
+        let collocated = chroma_inter_tx_type(
+            &leaf.frontier,
+            self.chroma,
+            before
+                .iter()
+                .filter(|tx| tx.plane == 0)
+                .map(|tx| (tx.x, tx.y, tx.tx_size, tx.tx_type as usize)),
+            (chroma.x, chroma.y),
+            current_block,
+        )
+        .map_err(rule("chroma transform type"))?;
+        TxType::from_value(collocated)
     }
 
     /// Adds the residual of the planned inter leaf: `levels[i]` holds the
@@ -1728,32 +1770,57 @@ impl IntraTileSyntax {
 
 const INTRA_FRAME: EncoderSyntaxError =
     EncoderSyntaxError::Unsupported("inter syntax in an intra frame");
-/// The 4x4 units of `blocks` that start in the `(width, height)` luma frame
-/// of `subsampling`, in the raster order of the decoder's lossless parse
-/// (§ 5.20.6.1 `TX_4X4`; § 5.20.7.29 `DCT_DCT` for every inter 4x4 unit).
+/// The luma transform size of the lossless inter `leaf` (§ 5.20.6.1):
+/// `TX_4X4` (index 0), or with `lossless_tx_size` the size of
+/// `find_tx_size(Min(32, width), Min(32, height))`.
+fn lossless_luma_tx_size(leaf: &LeafBlock, lossless_tx_size: bool) -> Result<usize> {
+    if !lossless_tx_size {
+        return Ok(0);
+    }
+    if leaf.frontier.b_size.index() == 0 {
+        return Err(EncoderSyntaxError::Unsupported(
+            "lossless_tx_size of a 4x4 leaf",
+        ));
+    }
+    Ok(super::super::general_intra_block::lossless_max_tx_size(
+        leaf.frontier.b_size,
+    ))
+}
+
+/// The units of `blocks` that start in the `(width, height)` luma frame of
+/// `subsampling`, in the raster order of the decoder's lossless parse:
+/// luma units of size `luma` (IDTX unless `TX_4X4`, § 5.20.8.2) and chroma
+/// 4x4 units (§ 5.20.6.1, § 5.20.7.29), each `DCT_DCT` until it is coded.
 fn lossless_units(
     blocks: &[TransformBlock],
     (width, height): (usize, usize),
     (sub_x, sub_y): (bool, bool),
+    luma: usize,
 ) -> Result<Vec<TransformBlock>> {
     let mut units = Vec::new();
     for block in blocks {
         let (log2_w, log2_h) = super::tx_log2(block.tx_size)?;
         let (w, h) = (1usize << log2_w, 1usize << log2_h);
-        let (sx, sy) = if block.plane > 0 {
-            (sub_x, sub_y)
+        let (sx, sy, tx_size) = if block.plane > 0 {
+            (sub_x, sub_y, 0)
         } else {
-            (false, false)
+            (false, false, luma)
         };
-        for y in (block.y..block.y + h).step_by(4) {
-            for x in (block.x..block.x + w).step_by(4) {
+        let (unit_w, unit_h) = super::tx_log2(tx_size)?;
+        let tx_type = if tx_size == 0 {
+            TxType::DctDct
+        } else {
+            TxType::Idtx
+        };
+        for y in (block.y..block.y + h).step_by(1 << unit_h) {
+            for x in (block.x..block.x + w).step_by(1 << unit_w) {
                 if x < width >> u8::from(sx) && y < height >> u8::from(sy) {
                     units.push(TransformBlock {
                         x,
                         y,
-                        tx_size: 0,
-                        fills_block: block.fills_block && block.tx_size == 0,
-                        tx_type: TxType::DctDct,
+                        tx_size,
+                        fills_block: block.fills_block && block.tx_size == tx_size,
+                        tx_type,
                         ..*block
                     });
                 }

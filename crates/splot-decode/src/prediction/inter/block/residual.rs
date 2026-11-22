@@ -565,13 +565,15 @@ impl InterChromaGroup {
 /// plane samples.
 pub(crate) type ResidualUnit = (usize, usize, usize, usize, bool);
 
-/// The transform blocks of a non-lossless inter leaf with its largest
-/// transforms, in the § 5.20.7.23 order [`read_inter_residual`] reads them:
-/// the luma blocks of each 64x64 chunk, each followed at the first chunk of a
-/// chroma group by the U blocks, then the V blocks, of the group.
+/// The transform blocks of an inter leaf with its largest luma transforms,
+/// in the § 5.20.7.23 order [`read_inter_residual`] reads them: the luma
+/// blocks of each 64x64 chunk, each followed at the first chunk of a chroma
+/// group by the U blocks, then the V blocks, of the group; a `lossless` leaf
+/// groups no chunks and codes 4x4 chroma blocks.
 pub(crate) fn inter_residual_units(
     frontier: &DecodeBlockFrontier,
     chroma: ChromaFormatIdc,
+    lossless: bool,
 ) -> Result<Vec<ResidualUnit>> {
     let n4w = frontier
         .b_size
@@ -615,7 +617,7 @@ pub(crate) fn inter_residual_units(
                         height_chunks,
                         subsampling.0,
                         subsampling.1,
-                        false,
+                        lossless,
                     );
                     if let (true, Some(chunk)) = (has_chroma, group_start) {
                         let group = InterChromaGroup::new(
@@ -623,7 +625,7 @@ pub(crate) fn inter_residual_units(
                             mi_size_chunk,
                             subsampling,
                             chunk,
-                            false,
+                            lossless,
                         )?;
                         let (bx, by) = group.base;
                         for plane in 1..3 {

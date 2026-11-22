@@ -1122,7 +1122,7 @@ pub(crate) fn lossless_tx_size_group(block_size: BlockSize) -> usize {
     SIZE_GROUP[block_size.index()] as usize
 }
 
-fn lossless_max_tx_size(block_size: BlockSize) -> usize {
+pub(crate) fn lossless_max_tx_size(block_size: BlockSize) -> usize {
     let max_tx_size = MAX_TX_SIZE_RECT[block_size.index()] as usize;
     ADJUSTED_TX_SIZE[max_tx_size] as usize
 }
