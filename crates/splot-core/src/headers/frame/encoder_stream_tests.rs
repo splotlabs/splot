@@ -190,6 +190,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         mvd_tools: [true, false, true],
         warp: true,
         global_motion: true,
+        seq_tiles: None,
         masked_compound: true,
         cwp: true,
         implicit_mask: true,
@@ -775,6 +776,7 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
             rows_log2,
             size_bytes: 2,
             middle_cdf_update_tile: false,
+            reuse_tile_info: true,
         };
         let key = |tiles| {
             build_key_frame_header(

@@ -277,6 +277,11 @@ pub struct PresetParams {
     /// § 5.18.2) when the reference the decoder derives is their primary
     /// reference: the same CDFs for 3 fewer header bits.
     pub primary_ref_choose: bool,
+    /// Sequence tile info (§ 5.4.2), `0..=3`: `0` off; `1` the sequence codes
+    /// the tile layout and frames reuse it (`allow_tile_info_change = 0`); `2`
+    /// frames code `reuse_tile_info = 1`; `3` frames code `reuse_tile_info = 0`
+    /// and their own tile info.
+    pub seq_tile_info: u8,
     /// Inter frames predict motion vectors from the projected motion fields
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
@@ -900,6 +905,7 @@ impl PresetParams {
         check("bawp_search", self.bawp_search, 0, 2, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
+        check("seq_tile_info", self.seq_tile_info, 0, 3, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check("tip_output_search", self.tip_output_search, 0, 2, "")?;
         check(
@@ -1189,6 +1195,7 @@ preset_table! {
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
+        seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tip_output_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],

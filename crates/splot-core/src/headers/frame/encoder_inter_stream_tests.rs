@@ -10,7 +10,7 @@ use crate::headers::frame::global_motion::DEFAULT_WARP_PARAMS;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefStrengthSet, CdefStrengthSets, EncoderStreamParams, EncoderToolFlags,
     FrameHeaderParseInput, FrameHeaderParseMode, FrameType, InterpolationFilter, MvPrecision,
-    TxMode, build_encoder_sequence_header, parse_frame_header_core,
+    SeqTiles, TxMode, build_encoder_sequence_header, parse_frame_header_core,
 };
 use crate::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 
@@ -1118,7 +1118,10 @@ fn assert_cut_header_fails(
     header: &EncodedFrameHeader,
     refs: &FrameReferenceStateView<'_>,
 ) {
-    let obu = encode_inter_frame_obu(header, &[&[0xab]]).unwrap();
+    let info = header.core.tile_info.as_ref();
+    let tiles =
+        vec![&[0xab][..]; info.map_or(1, |info| (info.tile_cols * info.tile_rows) as usize)];
+    let obu = encode_inter_frame_obu(header, &tiles).unwrap();
     let payload = parse_annex_b_obus_partial(&obu).obus[0].payload;
     let cut = header.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
     let input = FrameHeaderParseInput {
@@ -1215,4 +1218,88 @@ fn global_motion_predict_codes_their_ref_and_the_same_models() {
             .bits
     );
     assert_cut_header_fails(&seq, &on, &refs);
+}
+
+/// A sequence with `seq_tile_info_present_flag` codes its uniform layout
+/// (§ 5.4.2); key and inter frames reuse it when `allow_tile_info_change` is
+/// off, code `reuse_tile_info` when it is on, and code their own tile info
+/// after `reuse_tile_info = 0`. A frame that reuses the layout codes it in
+/// place of its own; a bad `TileSizeBytes` is rejected; a cut header does not
+/// parse.
+#[test]
+fn sequence_tile_info_is_reused_or_coded_per_frame() {
+    for (allow, reuse, saved) in [(false, true, 3), (true, true, 2), (true, false, -1)] {
+        let tiles = |cols_log2| UniformTiles {
+            cols_log2,
+            rows_log2: 0,
+            reuse_tile_info: reuse,
+            ..UniformTiles::default()
+        };
+        let stream = |seq_tiles| EncoderStreamParams {
+            width: 256,
+            height: 64,
+            bit_depth: BitDepthIdc::Eight,
+            chroma: ChromaFormatIdc::Yuv420,
+            sb_size: SuperblockSize::Block64x64,
+            tools: EncoderToolFlags {
+                seq_tiles,
+                ..EncoderToolFlags::default()
+            },
+        };
+        let present = Some(SeqTiles {
+            cols_log2: 1,
+            rows_log2: 0,
+            allow_tile_info_change: allow,
+        });
+        let seqs = [None, present]
+            .map(|seq_tiles| build_encoder_sequence_header(&stream(seq_tiles)).unwrap());
+        let [plain, seq] = [0, 1].map(|i| CoreSeqView::from_sequence(&seqs[i]).unwrap());
+        assert!(seq.tile.seq_tile_info_present_flag && seq.tile.allow_tile_info_change == allow);
+        assert_eq!(seq.tile.seq_tile_params.unwrap().tile_cols, 2);
+        let slots = Slots::after_key(256, 64, 0);
+        let params = |cols_log2| InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 1,
+            refresh_frame_flags: 2,
+            show_frame: true,
+            primary_slot: Some(0),
+            tiles: tiles(cols_log2),
+            ..InterFrameParams::default()
+        };
+        let inter = |view: &CoreSeqView, cols_log2| {
+            build_inter_frame_header(view, &slots.view(), &params(cols_log2))
+        };
+        let key = |view: &CoreSeqView, cols_log2| {
+            crate::headers::frame::build_key_frame_header(
+                view,
+                90,
+                0,
+                &FrameFilterParams::default(),
+                KeyFrameTxParams::default(),
+                tiles(cols_log2),
+            )
+        };
+        let header = inter(&seq, 1).unwrap();
+        let info = header.core.tile_info.as_ref().unwrap();
+        assert_eq!(
+            (info.tile_cols, info.reuse_tile_info),
+            (2, reuse),
+            "{allow} {reuse}"
+        );
+        let bits = |header: &EncodedFrameHeader| header.bits.num_frame_header_bits() as i64;
+        assert_eq!(bits(&inter(&plain, 1).unwrap()) - bits(&header), saved);
+        assert_eq!(key(&seq, 1).unwrap().tile_info.unwrap().tile_cols, 2);
+        let own = inter(&seq, 0).unwrap().core.tile_info.unwrap().tile_cols;
+        assert_eq!(own, if reuse { 2 } else { 1 }, "{allow} {reuse}");
+        assert_eq!(key(&seq, 0).unwrap().tile_info.unwrap().tile_cols, own);
+        let bad = InterFrameParams {
+            tiles: UniformTiles {
+                size_bytes: 5,
+                ..tiles(1)
+            },
+            ..params(1)
+        };
+        assert!(build_inter_frame_header(&seq, &slots.view(), &bad).is_err());
+        assert_cut_header_fails(&seqs[1], &header, &slots.view());
+    }
 }

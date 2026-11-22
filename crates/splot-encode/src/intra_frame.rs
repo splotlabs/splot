@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    GrainScaling, InterpolationFilter, TipGlobalMv, UniformTiles, build_encoder_sequence_header,
-    encode_film_grain_obu, encoder_film_grain_model,
+    GrainScaling, InterpolationFilter, SeqTiles, TipGlobalMv, UniformTiles,
+    build_encoder_sequence_header, encode_film_grain_obu, encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -278,6 +278,11 @@ impl IntraFrameCoder {
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
+                seq_tiles: (preset.seq_tile_info > 0).then_some(SeqTiles {
+                    cols_log2: config.tiles.cols_log2,
+                    rows_log2: config.tiles.rows_log2,
+                    allow_tile_info_change: preset.seq_tile_info > 1,
+                }),
                 tcq: preset.tcq.values().contains(&true),
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
@@ -299,6 +304,7 @@ impl IntraFrameCoder {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
                 middle_cdf_update_tile: preset.cdf_update_tile == 1,
+                reuse_tile_info: preset.seq_tile_info < 3,
                 ..UniformTiles::default()
             },
             pool: (config.threads.resolve().get() > 1)
