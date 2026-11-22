@@ -279,10 +279,10 @@ impl IntraTools {
         let refused = [
             (
                 frame_allows_intrabc(core)
-                    && !(core.frame_is_intra == Some(true)
-                        && core
-                            .intrabc
-                            .is_some_and(|params| params.allow_global_intrabc == Some(true))),
+                    && core.frame_is_intra == Some(true)
+                    && !core
+                        .intrabc
+                        .is_some_and(|params| params.allow_global_intrabc == Some(true)),
                 "intra block copy without the global area in an intra frame",
             ),
             (

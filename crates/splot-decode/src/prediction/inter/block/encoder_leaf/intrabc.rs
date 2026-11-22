@@ -6,8 +6,8 @@
 //! publication, as the decoder's intra-frame walk parses and resolves them.
 
 use crate::filters::wienerns_lr::intrabc_records::{
-    IntrabcBlockGeometry, IntrabcInfo, IntrabcRefSelection, intrabc_use_coded,
-    max_bvp_drl_bits_minus_1,
+    IntrabcBlockGeometry, IntrabcInfo, IntrabcRefSelection, frame_allows_intrabc,
+    intrabc_use_coded, max_bvp_drl_bits_minus_1,
 };
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
     DrlReorderMode, IntrabcStackGeometry, select_intrabc_ref_mv_from_candidates,
@@ -129,9 +129,40 @@ impl EncoderInterTile {
     }
 
     /// The base column of the coded block that covers the 4x4 cell at `row`,
-    /// `col` of an intra frame's IntraBC state; `None` for an uncoded cell.
+    /// `col`; `None` for an uncoded cell. An inter frame reads it from the
+    /// neighbour grid, as the decoder does.
     pub(crate) fn intrabc_coded_base_col(&self, row: usize, col: usize) -> Option<usize> {
-        self.intrabc.as_ref()?.block_base_col_at(row, col)
+        match &self.intrabc {
+            Some(state) => state.block_base_col_at(row, col),
+            None => self
+                .grid
+                .base_c_at(i32::try_from(row).ok()?, i32::try_from(col).ok()?)
+                .map(|col| col as usize),
+        }
+    }
+
+    /// `(allow_global_intrabc, allow_local_intrabc)` of the frame with the
+    /// values that § 5.18.3.4 implies: an inter frame has the local area
+    /// only, an intra frame without the global area has the local area.
+    pub(crate) fn intrabc_areas(&self) -> (bool, bool) {
+        if self.intrabc.is_none() {
+            return (false, true);
+        }
+        let params = self.core.intrabc;
+        let global = params.is_some_and(|p| p.allow_global_intrabc == Some(true));
+        let local = !global || params.is_some_and(|p| p.allow_local_intrabc == Some(true));
+        (global, local)
+    }
+
+    /// Whether the frame codes `allow_intrabc` with the local area.
+    pub(crate) fn intrabc_local_area(&self) -> bool {
+        frame_allows_intrabc(&self.core) && self.intrabc_areas().1
+    }
+
+    /// `force_integer_mv` of the frame, also where only the inter path
+    /// records it.
+    pub(crate) fn force_integer_mv(&self) -> bool {
+        effective_force_integer_mv(&self.core)
     }
 
     /// Whether the tile is the IntraBC state of an intra frame.
@@ -165,12 +196,18 @@ impl EncoderInterTile {
         frontier: &DecodeBlockFrontier,
     ) -> Result<Option<IntrabcContexts>> {
         let (n4w, n4h) = block_size4(frontier)?;
-        let Some(state) = &self.intrabc else {
-            return Ok(None);
-        };
         if !intrabc_use_coded(&self.core, frontier, n4w, n4h) {
             return Ok(None);
         }
+        let Some(state) = &self.intrabc else {
+            let block = self.block(frontier, (SINGLE_REF_FRAME0, None))?;
+            let neighbour = block_neighbour_ctx(&self.grid, &block);
+            return Ok(Some(IntrabcContexts {
+                use_intrabc: neighbour.intrabc_ctx(),
+                skip: neighbour.skip_ctx(),
+                morph_pred: 0,
+            }));
+        };
         let (r, c) = (frontier.r, frontier.c);
         Ok(Some(IntrabcContexts {
             use_intrabc: state.intrabc_ctx(r, c, n4w, n4h)?,
@@ -191,12 +228,13 @@ impl EncoderInterTile {
         let max = self.max_bvp_drl_bits_minus_1()?;
         let block = self.block(frontier, (INTRABC_REF_FRAME, None))?;
         self.reset_banks(&block);
-        let state = self.intrabc.as_ref().ok_or(INTRA_ONLY)?;
         let geometry = IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h);
         let grid = &self.grid;
-        let spatial = state
-            .capture_spatial_intrabc_probes(geometry)
-            .resolve(|row, col| grid.intrabc_mv_at(row, col));
+        let probes = match &self.intrabc {
+            Some(state) => state.capture_spatial_intrabc_probes(geometry),
+            None => grid.capture_spatial_intrabc_probes(&block),
+        };
+        let spatial = probes.resolve(|row, col| grid.intrabc_mv_at(row, col));
         let bank = self.ref_mv_bank.as_ref().map(RefMvBank::intrabc_candidates);
         let drl_reorder = match self.drl_reorder {
             DrlReorder::Always => DrlReorderMode::Always,
