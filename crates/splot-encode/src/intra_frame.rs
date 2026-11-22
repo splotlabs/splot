@@ -746,9 +746,12 @@ impl IntraFrameCoder {
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
         let superblocks = sb_cols * mi_rows.div_ceil(sb / 4);
-        if !sb_quant.is_empty() && sb_quant.len() != superblocks {
+        if [sb_quant.len(), segments.len()]
+            .iter()
+            .any(|&len| len != 0 && len != superblocks)
+        {
             return Err(Error::Unsupported {
-                what: "superblock offsets that do not cover the superblock grid",
+                what: "superblock offsets or segments that do not cover the superblock grid",
             });
         }
         let publishes = self.preset.ref_intra_margin != u8::MAX;
