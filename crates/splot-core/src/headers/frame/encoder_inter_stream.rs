@@ -820,8 +820,10 @@ pub fn encode_tip_output_frame_obu(
 }
 
 /// Serializes an `OBU_REGULAR_SEF` OBU that shows reference slot
-/// `frame_to_show_map_idx` with `derive_sef_order_hint = 1` (§ 5.18.2) and
-/// the `film_grain_config()` of `grain_seed` (see [`KeyFrameTxParams::grain_seed`]).
+/// `frame_to_show_map_idx` (§ 5.18.2) with the `film_grain_config()` of
+/// `grain_seed` (see [`KeyFrameTxParams::grain_seed`]): with
+/// `derive_sef_order_hint = 1`, or with `sef_order_hint` = the low
+/// `OrderHintBits` of `order_hint` when it is given.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a slot outside the sequence's reference
@@ -831,6 +833,7 @@ pub fn encode_tip_output_frame_obu(
 pub fn encode_show_existing_frame_obu(
     seq: &CoreSeqView,
     frame_to_show_map_idx: u32,
+    order_hint: Option<u32>,
     grain_seed: Option<u16>,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     if frame_to_show_map_idx >= seq.num_ref_frames {
@@ -842,7 +845,13 @@ pub fn encode_show_existing_frame_obu(
     w.write_uvlc(0)?; // cur_mfh_id
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
     w.write_bits(frame_to_show_map_idx, ceil_log2(seq.num_ref_frames))?;
-    w.write_flag(true)?; // derive_sef_order_hint
+    w.write_flag(order_hint.is_none())?; // derive_sef_order_hint
+    if let Some(order_hint) = order_hint {
+        w.write_bits(
+            order_hint & ((1 << seq.order_hint_bits) - 1),
+            seq.order_hint_bits,
+        )?; // sef_order_hint
+    }
     write_film_grain_config(&mut w, seq, true, grain_seed)?;
     w.write_trailing_bits(8 - w.bit_len() % 8)?;
     let payload = w.into_bytes();

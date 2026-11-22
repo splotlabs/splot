@@ -80,6 +80,12 @@ pub trait RateController {
     /// Records the size in bits of a show-existing temporal unit, which codes
     /// no frame. The default ignores it.
     fn update_show_existing(&mut self, _bits: u64) {}
+    /// Records the size in bits of the show-existing temporal unit that
+    /// repeats an earlier frame as input frame `display_index`, which no
+    /// window planned. The default takes it as [`Self::update_show_existing`].
+    fn update_repeat(&mut self, bits: u64, _display_index: u64) {
+        self.update_show_existing(bits);
+    }
 }
 
 /// Uses the same quantizer for every frame.
@@ -425,6 +431,12 @@ impl RateController for Vbr {
     fn update_show_existing(&mut self, bits: u64) {
         self.spend(bits, 0);
     }
+
+    /// The repeat's own budget is credited, so later windows get the bits
+    /// it saves.
+    fn update_repeat(&mut self, bits: u64, display_index: u64) {
+        self.spend(bits, self.budget(display_index));
+    }
 }
 
 /// Constant bitrate: every window meets the target, and no frame overflows
@@ -503,6 +515,10 @@ impl RateController for Cbr {
 
     fn update_show_existing(&mut self, bits: u64) {
         self.vbr.update_show_existing(bits);
+    }
+
+    fn update_repeat(&mut self, bits: u64, display_index: u64) {
+        self.vbr.update_repeat(bits, display_index);
     }
 }
 

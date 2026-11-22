@@ -389,7 +389,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
 fn show_existing_frame_obu_parses_complete() {
     let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let obu = encode_show_existing_frame_obu(&view, 5, None).unwrap();
+    let obu = encode_show_existing_frame_obu(&view, 5, None, None).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -413,7 +413,38 @@ fn show_existing_frame_obu_parses_complete() {
     );
     assert_eq!(core.frame_to_show_map_idx, Some(5));
     assert_eq!(core.order_hint, Some(7));
-    assert!(encode_show_existing_frame_obu(&view, 8, None).is_err());
+    assert!(encode_show_existing_frame_obu(&view, 8, None, None).is_err());
+}
+
+/// An explicit `sef_order_hint` codes `derive_sef_order_hint = 0` and its
+/// low `OrderHintBits` (§ 5.18.2); the parser rebuilds the display order
+/// hint, and a payload cut inside the hint does not parse.
+#[test]
+fn show_existing_frame_obu_codes_an_explicit_order_hint() {
+    let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(17, 9, 7);
+    let input = FrameHeaderParseInput {
+        obu_type: ObuType::RegularSef,
+        first_picture_in_tu: true,
+        active_sequence: Some(&seq),
+        mfh_record: None,
+        reference_state: slots.view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    let obu = encode_show_existing_frame_obu(&view, 5, Some(9 + 256), None).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    let payload = parsed.obus[0].payload;
+    let core =
+        parse_frame_header_core(&mut BitReader::new(payload, ByteOffset::new(0)), &input).unwrap();
+    assert_eq!(
+        core.status,
+        FrameHeaderParseStatus::ShowExistingFrameComplete
+    );
+    assert_eq!(core.derive_sef_order_hint, Some(false));
+    assert_eq!((core.order_hint_lsb, core.order_hint), (Some(9), Some(9)));
+    let cut = &payload[..1];
+    assert!(parse_frame_header_core(&mut BitReader::new(cut, ByteOffset::new(0)), &input).is_err());
 }
 
 /// A film-grain sequence codes `apply_grain` with the seed of each output
@@ -453,12 +484,12 @@ fn film_grain_headers_code_the_seed_and_the_model() {
         (grain.apply_grain, grain.fgm_id, grain.grain_seed),
         (true, Some(0), Some(0xa5c3))
     );
-    let sef = encode_show_existing_frame_obu(&view, 2, Some(0x0f0f)).unwrap();
+    let sef = encode_show_existing_frame_obu(&view, 2, None, Some(0x0f0f)).unwrap();
     assert!(parse_annex_b_obus_partial(&sef).error.is_none());
     params.tools.film_grain = false;
     let plain =
         CoreSeqView::from_sequence(&build_encoder_sequence_header(&params).unwrap()).unwrap();
-    assert!(encode_show_existing_frame_obu(&plain, 2, Some(1)).is_err());
+    assert!(encode_show_existing_frame_obu(&plain, 2, None, Some(1)).is_err());
     assert!(
         crate::headers::frame::build_key_frame_header(
             &plain,

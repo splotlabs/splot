@@ -6524,6 +6524,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-SEF-REPEAT"
+name = "Encoder repeats of an input frame as show-existing frames with an explicit order hint"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "7.21.1", "7.21.2", "7.21.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-sef-repeat"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::sef_repeat (2026-11-22, off in every row, not measured): an input frame equal on every plane to the input frame before it is not coded. The mini-GOP stops before it, and it is a temporal unit of a temporal delimiter and an OBU_REGULAR_SEF of the slot of the newest coded frame with derive_sef_order_hint = 0 and sef_order_hint = its display order hint; a scheduled key frame is still coded. A run stops so that the next coded frame stays within half the order-hint window (OrderHintBits = 8) of the frame it repeats. Each input frame keeps one packet. VBR and CBR spend the unit against the repeat's own budget. With film grain the repeat codes apply_grain and a new seed; it outputs the slot's samples with its own film_grain_config (§ 7.21.2, no save_grain_params). With implicit_output the § 7.21.6 output order holds, and AVM agrees."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::show_existing_frame_obu_codes_an_explicit_order_hint", "crates/splot-encode/src/gop_tests.rs::repeats_show_the_newest_coded_frame_with_an_explicit_order_hint", "crates/splot-encode/src/gop_tests.rs::a_repeat_run_stops_inside_half_the_order_hint_window", "crates/splot-encode/src/intra_frame_repeat_tests.rs::repeats_decode_to_the_frames_they_show_on_any_thread_count", "crates/splot-encode/src/intra_frame_repeat_tests.rs::capped_runs_and_rate_controlled_repeats_decode_to_the_shown_frames", "crates/splot-encode/src/intra_frame_repeat_tests.rs::repeats_with_film_grain_get_their_own_seed", "crates/splot-encode/src/rate_control_tests.rs::repeats_bank_their_budget"]
+commands = ["cargo test -p splot-core show_existing_frame_obu --locked", "cargo test -p splot-encode repeat --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-PALETTE"
 name = "Encoder luma palette"
 category = "encoder"

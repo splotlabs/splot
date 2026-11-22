@@ -401,14 +401,14 @@ impl FrameCoder for IntraFrameCoder {
             .map_err(coding("reference update"))
     }
 
-    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
+    fn show_existing_frame(&mut self, slot: u32, order_hint: Option<u32>) -> Result<Vec<u8>> {
         let seed = self.grain_active.then(|| {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
         });
-        let unit = gop::show_existing_unit(&self.view, slot, seed)?;
+        let unit = gop::show_existing_unit(&self.view, slot, order_hint, seed)?;
         self.references
-            .show_existing(slot)
+            .show_existing(slot, order_hint.is_none())
             .map_err(coding("show-existing frame"))?;
         Ok(unit)
     }

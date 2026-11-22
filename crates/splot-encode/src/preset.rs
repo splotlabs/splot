@@ -305,6 +305,11 @@ pub struct PresetParams {
     /// `monotonic_output_order_flag = 0` (§ 5.4.1, § 5.18.2), in place of
     /// show-existing frames.
     pub implicit_output: bool,
+    /// An input frame equal on every plane to the frame before it is not
+    /// coded: a show-existing frame with `derive_sef_order_hint = 0`
+    /// (§ 5.18.2) shows that frame's slot again at its display order hint.
+    /// Off in every row (not measured).
+    pub sef_repeat: bool,
     /// `NumRefFrames` (§ 5.4.6), `0..=16`: `0` keeps the default 8 slots
     /// without `explicit_num_ref_frames`; `n` codes `n` slots, which the GOP
     /// planner uses.
@@ -1349,6 +1354,7 @@ preset_table! {
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
         long_term_id_bits:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_output:       [false, false, false, false, false, false, false, false, false, false, false],
+        sef_repeat:            [false, false, false, false, false, false, false, false, false, false, false],
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
