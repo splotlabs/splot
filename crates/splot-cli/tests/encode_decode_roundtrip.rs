@@ -345,6 +345,37 @@ fn cropped_clips_decode_to_the_window() {
     }
 }
 
+/// `--cbr-padding` with `--rc cbr` gives a stream that validates with
+/// `--strict` and decodes to every frame; without CBR it is a usage error.
+#[test]
+fn cbr_padding_clips_validate_and_decode() {
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let raw = temp_output("yuv");
+    let (input_s, ivf_s, raw_s) = (
+        input.to_str().unwrap(),
+        ivf.to_str().unwrap(),
+        raw.to_str().unwrap(),
+    );
+    let cbr = ["--bitrate", "500", "--rc", "cbr", "--cbr-padding"];
+    let encode = splot(&[&["encode", input_s, "-o", ivf_s][..], &cbr].concat());
+    assert!(encode.status.success(), "{encode:?}");
+    let validate = splot(&["validate", "--strict", ivf_s]);
+    assert!(validate.status.success(), "{validate:?}");
+    let decode = splot(&["decode", ivf_s, "--output", raw_s, "--output-format", "raw"]);
+    assert!(decode.status.success(), "{decode:?}");
+    assert_eq!(
+        std::fs::read(&raw).unwrap().len(),
+        FRAMES * (72 * 24 + 2 * 36 * 12)
+    );
+    let bad = splot(&["encode", input_s, "-o", ivf_s, "--cbr-padding"]);
+    assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    for path in [input, ivf, raw] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(8, YUV420, &["--crf", "25"]);

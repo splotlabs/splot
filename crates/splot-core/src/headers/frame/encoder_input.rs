@@ -574,6 +574,41 @@ pub fn encode_minimal_intra_clk_temporal_unit_with_base_q_idx(
     Ok(temporal_unit)
 }
 
+/// Serializes an `OBU_PADDING` (§ 5.16) of the fewest bytes, at least
+/// `bytes` and at least 2, in Annex B framing: zero `obu_padding_byte`s and
+/// then the trailing-bits byte `0x80`, so the last payload byte is not zero
+/// (§ 6.15). A size that the `leb128` prefix cannot hit takes one byte more.
+///
+/// # Errors
+/// Returns [`WriteError`] if the Annex B OBU framing cannot be serialized.
+pub fn encode_padding_obu(bytes: usize) -> Result<Vec<u8>, WriteError> {
+    let header = ObuHeader {
+        has_header_extension: false,
+        obu_type: ObuType::Padding,
+        temporal_layer_id: TemporalLayerId::from_bits(0),
+        embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        extended_layer_id: ExtendedLayerId::from_bits(0),
+        header_size_bytes: 1,
+    };
+    let leb128_len =
+        |value: usize| (usize::BITS - value.max(1).leading_zeros()).div_ceil(7) as usize;
+    let total = |payload: usize| leb128_len(1 + payload) + 1 + payload;
+    let mut payload = bytes.saturating_sub(2);
+    while payload > 0 && total(payload - 1) >= bytes {
+        payload -= 1;
+    }
+    while total(payload) < bytes {
+        payload += 1;
+    }
+    let mut body = vec![0; payload];
+    if let Some(last) = body.last_mut() {
+        *last = 0x80;
+    }
+    let mut writer = BitWriter::new();
+    write_annexb_obu(&mut writer, &header, &body)?;
+    Ok(writer.into_bytes())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -582,6 +617,26 @@ mod tests {
     use crate::headers::frame::{FrameHeaderParseStatus, FrameSize, FrameType};
     use crate::headers::tile_group::parse_tile_group_prefix;
     use crate::write::write_frame_header_core;
+
+    /// A padding OBU of `n` bytes is exactly `n` bytes (one more where the
+    /// `leb128` size grows), parses as `OBU_PADDING`, and ends in a nonzero
+    /// byte.
+    #[test]
+    fn padding_obus_take_the_asked_size() {
+        for bytes in 0..400 {
+            let obu = encode_padding_obu(bytes).unwrap();
+            let want = bytes.max(2);
+            assert!(
+                obu.len() == want || (obu.len() == want + 1 && want == 129),
+                "{bytes}"
+            );
+            let parsed = parse_annex_b_obus_partial(&obu);
+            assert!(parsed.error.is_none(), "{bytes}");
+            assert_eq!(parsed.obus.len(), 1);
+            assert_eq!(parsed.obus[0].header.obu_type, ObuType::Padding);
+            assert!(obu.len() == 2 || obu.last() == Some(&0x80), "{bytes}");
+        }
+    }
 
     #[test]
     fn core_seq_inter_view_minimal_intra_is_all_disabled() {

@@ -38,7 +38,7 @@ pub use encoder_input::{
     encode_minimal_intra_clk_ivf_with_base_q_idx,
     encode_minimal_intra_clk_temporal_unit_with_base_q_idx,
     encode_minimal_intra_clk_tile_group_obu, encode_minimal_intra_sequence_header_obu,
-    encode_temporal_delimiter_obu,
+    encode_padding_obu, encode_temporal_delimiter_obu,
 };
 pub use encoder_inter_stream::{
     EncodedFrameHeader, GrainScaling, InterFrameParams, build_inter_frame_header,

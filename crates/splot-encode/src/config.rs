@@ -157,6 +157,11 @@ pub struct Config {
     /// its source (none under a threshold), and every output frame applies it
     /// (§ 5.14, § 5.18.10.1). Off by default; TIP output frames stay off.
     pub film_grain: bool,
+    /// CBR filler: when a temporal unit leaves the decoder buffer of
+    /// [`RateControlMode::Cbr`] fuller than its size, the unit ends with one
+    /// `OBU_PADDING` (§ 5.16) of the overflow, so the stream keeps the
+    /// bitrate. Off by default; only CBR takes it.
+    pub cbr_padding: bool,
     /// The metric the encoder tunes for; [`Tune::Psnr`] by default.
     pub tune: Tune,
     /// Fast decode: the preset takes [`Self::FAST_DECODE`] before
@@ -222,6 +227,7 @@ impl Config {
             resize_denominator: None,
             crop: None,
             film_grain: false,
+            cbr_padding: false,
             tune: Tune::Psnr,
             first_pass: Vec::new(),
             fast_decode: false,
@@ -236,8 +242,8 @@ impl Config {
     /// [`Error::InvalidCrop`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
-    /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`]
-    /// or [`Error::Preset`].
+    /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
+    /// [`Error::PaddingWithoutCbr`] or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
         let lossless_refused = [
             (self.film_grain, "film grain"),
@@ -287,6 +293,9 @@ impl Config {
             || self.tiles.rows_log2 > TileLayout::MAX_LOG2
         {
             return Err(Error::InvalidTiles { tiles: self.tiles });
+        }
+        if self.cbr_padding && !matches!(self.rate_control, RateControlMode::Cbr { .. }) {
+            return Err(Error::PaddingWithoutCbr);
         }
         match self.rate_control {
             RateControlMode::ConstantQp { qp } if qp > max_qindex(self.bit_depth) => {
@@ -363,6 +372,7 @@ impl Config {
             qp: Self::FIRST_PASS_QP,
         };
         first.film_grain = false;
+        first.cbr_padding = false;
         first.crop = None;
         first.first_pass = Vec::new();
         first.preset_overrides.push((

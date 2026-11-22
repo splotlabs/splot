@@ -78,6 +78,10 @@ pub enum Error {
         crf: u8,
     },
 
+    /// [`crate::Config::cbr_padding`] is set without CBR rate control.
+    #[error("CBR padding needs CBR rate control")]
+    PaddingWithoutCbr,
+
     /// A bitrate setting is zero or too large.
     #[error("{what} {value} is outside 1..={max}")]
     InvalidBitrate {

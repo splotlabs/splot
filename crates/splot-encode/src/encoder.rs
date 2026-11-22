@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, encode_padding_obu};
 use splot_decode::encoder_syntax::{FrameStart, TileEnd};
 use splot_recon::DecodedFrame;
 
@@ -619,6 +619,19 @@ impl Encoder {
             }
             if let Some(display_index) = step.output() {
                 if let Some(buffer) = &mut self.buffer {
+                    let overflow = buffer.overflow();
+                    if self.config.cbr_padding && overflow > 0 {
+                        let padding = encode_padding_obu(overflow.div_ceil(8) as usize).map_err(
+                            |source| Error::Coding {
+                                stage: "padding",
+                                source: Box::new(source),
+                            },
+                        )?;
+                        let bits = padding.len() as u64 * 8;
+                        buffer.add(bits);
+                        self.rate_control.update_padding(bits);
+                        data.extend(padding);
+                    }
                     buffer.drain();
                 }
                 self.ready.push_back(Packet {
