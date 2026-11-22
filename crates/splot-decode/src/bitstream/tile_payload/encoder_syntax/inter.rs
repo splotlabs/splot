@@ -1034,7 +1034,8 @@ impl IntraTileSyntax {
 
     /// The type of chroma block `chroma` of the planned inter leaf `leaf`
     /// after its blocks `before`, whose luma blocks each code their `tx_type`
-    /// (`DCT_DCT` when all zero).
+    /// (`DCT_DCT` when all zero); IDTX in a lossless leaf with
+    /// `lossless_tx_size = 1` (§ 5.20.7.29).
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid block.
@@ -1044,8 +1045,9 @@ impl IntraTileSyntax {
         before: &[TransformBlock],
         chroma: &TransformBlock,
     ) -> Result<TxType> {
-        if self.tools.lossless {
-            return self.lossless_chroma_tx_type(leaf, before, chroma);
+        let lossless = self.tools.lossless;
+        if lossless && self.lossless_tx_size_leaf {
+            return Ok(TxType::Idtx);
         }
         let collocated = chroma_inter_tx_type(
             &leaf.frontier,
@@ -1055,9 +1057,12 @@ impl IntraTileSyntax {
                 .filter(|tx| tx.plane == 0)
                 .map(|tx| (tx.x, tx.y, tx.tx_size, tx.tx_type as usize)),
             (chroma.x, chroma.y),
-            false,
+            lossless && self.lossless_chroma_reads_leaf_start(leaf),
         )
         .map_err(rule("chroma transform type"))?;
+        if lossless {
+            return TxType::from_value(collocated);
+        }
         TxType::from_value(
             inter_chroma_plane_tx_type(
                 chroma.plane,
@@ -1069,41 +1074,19 @@ impl IntraTileSyntax {
         )
     }
 
-    /// [`Self::inter_chroma_tx_type`] in a lossless frame (§ 5.20.7.29): IDTX
-    /// when the leaf codes `lossless_tx_size = 1`, else the type of the
-    /// collocated luma block, or of the leaf's first luma block in an intra
-    /// frame (an IntraBC leaf) or when the chroma reference is another leaf.
+    /// Whether chroma of the lossless inter `leaf` takes the type of the
+    /// leaf's first luma block (§ 5.20.7.29): in an intra frame (an IntraBC
+    /// leaf) or when the chroma reference is another leaf.
     #[cold]
     #[inline(never)]
-    fn lossless_chroma_tx_type(
-        &self,
-        leaf: &LeafBlock,
-        before: &[TransformBlock],
-        chroma: &TransformBlock,
-    ) -> Result<TxType> {
-        if self.lossless_tx_size_leaf {
-            return Ok(TxType::Idtx);
-        }
+    fn lossless_chroma_reads_leaf_start(&self, leaf: &LeafBlock) -> bool {
         let reference = leaf.frontier.chroma_ref_geometry();
         let intrabc = self
             .inter
             .as_ref()
             .and_then(|state| state.planned.as_ref())
             .is_some_and(|planned| planned.use_intrabc);
-        let current_block =
-            intrabc || leaf.frontier.r != reference.row() || leaf.frontier.c != reference.col();
-        let collocated = chroma_inter_tx_type(
-            &leaf.frontier,
-            self.chroma,
-            before
-                .iter()
-                .filter(|tx| tx.plane == 0)
-                .map(|tx| (tx.x, tx.y, tx.tx_size, tx.tx_type as usize)),
-            (chroma.x, chroma.y),
-            current_block,
-        )
-        .map_err(rule("chroma transform type"))?;
-        TxType::from_value(collocated)
+        intrabc || leaf.frontier.r != reference.row() || leaf.frontier.c != reference.col()
     }
 
     /// Adds the residual of the planned inter leaf: `levels[i]` holds the
