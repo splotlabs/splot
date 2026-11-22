@@ -5641,7 +5641,7 @@ module = "crates/splot-encode/src/kernels/forward_transform.rs"
 change_id = "enc-lossless"
 owner = "encoder"
 risk = "medium"
-notes = "ConstantQp qp 0 (CLI --lossless, 2026-11-22; qp 0 was an error before) codes every frame at base_q_idx 0 with zero deltas, so CodedLossless = 1: TX_MODE_ONLY_4X4, no TCQ, parity hiding or loop filter syntax, every block 4x4 Walsh-Hadamard units whose levels invert the 7.15.2.2 lifting exactly. Blocks code use_dpcm_y/uv = 0, inter lossless_tx_size = 0 and lossless_inter_tx_type = 0. PresetParams::set_lossless switches off the searches that lossless forbids or that change samples, and for now SDP, palette, IntraBC, FSC/IDTX; segmentation, quant_matrices, film grain and resize are refused. DPCM, IDTX and large lossless transforms are a later search (B-11)."
+notes = "ConstantQp qp 0 (CLI --lossless, 2026-11-22; qp 0 was an error before) codes every frame at base_q_idx 0 with zero deltas, so CodedLossless = 1: TX_MODE_ONLY_4X4, no TCQ, parity hiding or loop filter syntax, every block 4x4 Walsh-Hadamard units whose levels invert the 7.15.2.2 lifting exactly. Blocks code use_dpcm_y/uv = 0, inter lossless_tx_size = 0 and lossless_inter_tx_type = 0. PresetParams::set_lossless switches off the searches that lossless forbids or that change samples, and for now palette, IntraBC, FSC/IDTX; SDP is on, and SDP chroma-part leaves code Walsh-Hadamard units; segmentation, quant_matrices, film grain and resize are refused. DPCM, IDTX and large lossless transforms are a later search (B-11)."
 
 [feature.status]
 mapped = "done"
@@ -6584,6 +6584,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::show_existing_frame_obu_codes_an_explicit_order_hint", "crates/splot-encode/src/gop_tests.rs::repeats_show_the_newest_coded_frame_with_an_explicit_order_hint", "crates/splot-encode/src/gop_tests.rs::a_repeat_run_stops_inside_half_the_order_hint_window", "crates/splot-encode/src/intra_frame_repeat_tests.rs::repeats_decode_to_the_frames_they_show_on_any_thread_count", "crates/splot-encode/src/intra_frame_repeat_tests.rs::capped_runs_and_rate_controlled_repeats_decode_to_the_shown_frames", "crates/splot-encode/src/intra_frame_repeat_tests.rs::repeats_with_film_grain_get_their_own_seed", "crates/splot-encode/src/rate_control_tests.rs::repeats_bank_their_budget"]
 commands = ["cargo test -p splot-core show_existing_frame_obu --locked", "cargo test -p splot-encode repeat --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-MULTI-FRAME-HEADER"
+name = "Encoder multi-frame header OBU and frame references to it"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.7", "5.18.2", "7.3.3", "7.3.8.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-multi-frame-header"
+owner = "encoder"
+risk = "low"
+notes = "Config::multi_frame_header (2026-11-22, off by default; CLI --multi-frame-header): each key frame unit codes one OBU_MULTI_FRAME_HEADER after the sequence header and the content interpretation OBU (§ 7.3.3), with mfh_seq_header_id = 0 and mfh_id_minus_1 = 0. It codes no frame size (frames take the sequence maximum), no deblocking update (the loop-filter search picks apply_deblocking_filter per frame) and no segmentation information (segmentation stays per frame). Every key, inter, intra-only, TIP output and show-existing frame codes cur_mfh_id = 1 and no seq_header_id_in_frame_header (§ 5.18.2). The recon does not change; splot and AVM decode the streams alike."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::multi_frame_header_obu_and_references_parse_back", "crates/splot-encode/src/intra_frame_mfh_tests.rs::mfh_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_repeat_tests.rs::repeats_refer_to_the_multi_frame_header", "crates/splot-cli/tests/encode_decode_roundtrip.rs::multi_frame_header_clips_validate_and_decode"]
+commands = ["cargo test -p splot-core multi_frame_header_obu --locked", "cargo test -p splot-encode mfh --locked", "cargo test -p splot-encode multi_frame_header --locked", "cargo test -p splot-cli --test encode_decode_roundtrip multi_frame_header --locked"]
 fixtures = []
 diagnostics = []
 

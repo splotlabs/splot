@@ -102,7 +102,7 @@ pub struct SecondaryTransformLayout {
     /// Block position of each of the `width` outputs.
     pub outputs: [u16; IST_8X8_WIDTH],
     /// The `n` kernel rows of `width` weights each, row-major.
-    pub kernel: &'static [i32],
+    pub kernel: &'static [i8],
     /// The `Clip3` bound `1 << (BitDepth + 7)`.
     pub bound: i32,
 }
@@ -482,7 +482,6 @@ static IST_8X8_PACKED: [[[IstKernel; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2] = {
             let mut row = 0;
             while row < IST_8X8_HEIGHT {
                 let weight = IST_8X8_KERNEL[set][kind][row][col];
-                assert!(weight == weight as i16 as i32);
                 kernels[transpose][set][kind].pairs[row / 2][2 * rank + row % 2] = weight as i16;
                 row += 1;
             }
@@ -557,7 +556,7 @@ const fn pair_kernels<
     const W2: usize,
     const H2: usize,
 >(
-    kernels: &[[[[i32; W]; H]; T]; S],
+    kernels: &[[[[i8; W]; H]; T]; S],
 ) -> [[[[i16; W2]; H2]; T]; S] {
     assert!(W2 == 2 * W && 2 * H2 == H);
     let mut out = [[[[0i16; W2]; H2]; T]; S];
@@ -567,7 +566,6 @@ const fn pair_kernels<
         let (kind, rest) = (rest / (H * W), rest % (H * W));
         let (row, col) = (rest / W, rest % W);
         let weight = kernels[set][kind][row][col];
-        assert!(weight == weight as i16 as i32);
         out[set][kind][row / 2][2 * col + row % 2] = weight as i16;
         index += 1;
     }

@@ -138,12 +138,12 @@ impl Quantizer {
     /// # Errors
     /// Returns [`KernelError::InvalidQuantizer`] for a weighted step that
     /// [`Self::new`] rejects.
-    pub(crate) fn with_weights(mut self, weights: Option<&[i32]>) -> Result<Self, KernelError> {
+    pub(crate) fn with_weights(mut self, weights: Option<&[u8]>) -> Result<Self, KernelError> {
         if let Some(weights) = weights {
             let denom = 1 << self.ac.denom_shift;
             let steps = weights.iter().enumerate().map(|(i, &m)| {
                 let q = if i == 0 { self.dc.q2 } else { self.ac.q2 };
-                Step::new(qm_weighted_quantizer(q, m), denom, self.bound)
+                Step::new(qm_weighted_quantizer(q, i32::from(m)), denom, self.bound)
             });
             self.weighted = Some(steps.collect::<Result<_, _>>()?);
         }

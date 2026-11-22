@@ -62,7 +62,7 @@ pub(crate) fn forward_scalar(
         .iter_mut()
         .zip(layout.kernel.chunks_exact(layout.width))
     {
-        *sum = row.iter().zip(&x).map(|(&k, &v)| k * v).sum();
+        *sum = row.iter().zip(&x).map(|(&k, &v)| i32::from(k) * v).sum();
     }
     scatter(layout, &sums[..layout.n], coeffs);
     Ok(())
@@ -86,7 +86,8 @@ pub(crate) fn forward_simd(
         {
             let mut acc = i32x8::splat(simd, 0);
             for (k, v) in row.chunks_exact(LANES).zip(x.chunks_exact(LANES)) {
-                acc += i32x8::from_slice(simd, k) * i32x8::from_slice(simd, v);
+                let k: [i8; LANES] = core::array::from_fn(|i| k[i]);
+                acc += i32x8::load_array(simd, k.map(i32::from)) * i32x8::from_slice(simd, v);
             }
             *sum = acc.reduce_sum();
         }

@@ -204,6 +204,13 @@ fn implicit_output_clips_decode_in_input_order() {
     }
 }
 
+/// `--multi-frame-header` streams validate with `--strict` and decode to
+/// the reported frames.
+#[test]
+fn multi_frame_header_clips_validate_and_decode() {
+    round_trip(8, YUV420, &["--qp", "90", "--multi-frame-header"]);
+}
+
 #[test]
 fn low_delay_clips_code_every_frame_in_input_order() {
     round_trip(8, YUV420, &["--qp", "90", "--low-delay"]);
