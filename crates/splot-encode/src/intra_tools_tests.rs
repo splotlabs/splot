@@ -417,7 +417,10 @@ fn source_stream(
     (width, source, tiles_log2): (u32, fn(&Config, u32) -> SourceFrame, u8),
 ) -> (Vec<u8>, Vec<u8>) {
     let mut config = config(width, 128, bit_depth, 9, 90);
-    (config.tiles.cols_log2, config.tiles.rows_log2) = (tiles_log2, tiles_log2);
+    config.tiles = TileLayout::Uniform {
+        cols_log2: tiles_log2,
+        rows_log2: tiles_log2,
+    };
     config.chroma = chroma;
     config.keyint = core::num::NonZeroU32::MIN;
     config.threads = splot_parallel::ThreadCount::from(threads);
