@@ -46,6 +46,8 @@ Options:
           Stop after this many input frames
       --resize-denominator <D>
           Fixed-ratio resize: codes every frame at 8/D of the input size per axis, D in 9..=16; off by default. The IVF, its decode and the `--stats` PSNR (against the resized source) are at the coded size
+      --crop <L,R,T,B>
+          Cropping window: cut L, R, T and B luma samples off the left, right, top and bottom of the coded frame (after --resize-denominator); the stream decodes to the rest. L and T fall on a chroma sample (even for 4:2:0, L even for 4:2:2). Off by default. The `--stats` PSNR covers the full coded frame
       --film-grain
           Film grain: each key frame codes a grain model fitted to the noise of its source, and every output frame applies it at decode; off by default. The encoder does not denoise, so the stats PSNR does not include the grain
       --color-primaries <N>

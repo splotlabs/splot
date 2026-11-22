@@ -287,6 +287,7 @@ impl IntraFrameCoder {
                 df_par_bits_extra: preset.deblock_offset_bits.saturating_sub(3),
                 interintra: preset.interintra,
                 bawp: preset.bawp,
+                crop: config.crop,
                 parity_hiding: preset.parity_hiding,
                 long_term_frame_id_bits: preset.long_term_id_bits,
                 implicit_output: preset.implicit_output,
