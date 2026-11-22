@@ -224,6 +224,38 @@ pub(super) struct TileParseContext<'a> {
     previous_segment_ids: Option<&'a FrameSegmentIdMap>,
 }
 
+/// The inter leaf syntax of one walk, storing each leaf in its row.
+impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
+    for super::BlockDecodeContext<'_>
+{
+    type Command = ();
+    type Error = crate::DecodeError;
+
+    fn decode_leaf<const ACTIVE: bool>(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'payload>,
+        frontier: &DecodeBlockFrontier,
+        neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
+    ) -> Result<(crate::bitstream::tile_payload::GeneralIntraLeafMode, ())> {
+        #[cfg(test)]
+        crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_leaf(
+            frontier,
+            &neighbours,
+            self.sink.mv_grid,
+            self.sink.params.sb_h4,
+            self.sink.core.frame_is_intra == Some(true),
+        );
+        debug_assert_eq!(frontier.bru_active(), ACTIVE);
+        if ACTIVE {
+            decode_block(work_unit, symbols, frontier, self, neighbours)
+        } else {
+            super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
+        }
+        .map(|leaf| (leaf, ()))
+    }
+}
+
 /// How far one [`TileParser::walk_leaves`] call parses.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum WalkSpan {
@@ -569,29 +601,8 @@ impl<'payload> TileParser<'payload> {
         let mut on_published = |_: DecodedLeafPublication, ()| {};
         loop {
             let first = block_context.entries.len();
-            let mut decode_leaf = |work_unit: &mut DecodeTileWorkUnit,
-                                   symbols: &mut SymbolDecoder<'_>,
-                                   frontier: &DecodeBlockFrontier,
-                                   neighbours: crate::bitstream::tile_payload::LeafNeighbours<
-                '_,
-            >| {
-                #[cfg(test)]
-                crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_leaf(
-                    frontier,
-                    &neighbours,
-                    block_context.sink.mv_grid,
-                    context.params.sb_h4,
-                    context.core.frame_is_intra == Some(true),
-                );
-                if frontier.bru_active() {
-                    decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)
-                } else {
-                    super::bru::decode_bru_leaf(work_unit, symbols, frontier, &mut block_context)
-                }
-                .map(|leaf| (leaf, ()))
-            };
             let origin = walk.next_origin();
-            let next = walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published);
+            let next = walk.decode_next_superblock(tile, &mut block_context, &mut on_published);
             if let Some(superblock) =
                 ReconSuperblock::new(origin, first..block_context.entries.len())
                     .map(|sb| sb.with_allow_extra_ibc_range(walk.allow_extra_ibc_range()))

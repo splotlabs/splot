@@ -42,7 +42,7 @@ use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    LeafNeighbours, SdpPartitionState, TileTraversalStorage, decode_block_frontier,
+    LeafDecoder, LeafNeighbours, SdpPartitionState, TileTraversalStorage, decode_block_frontier,
     decode_block_part, is_intra_sdp_shared_root, partition_allowed_input, partition_context_inputs,
     updated_chroma_offset,
 };
