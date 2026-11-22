@@ -167,7 +167,7 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
     let (symbol, sign) = match input.source {
         CoeffSignReadSource::None => (CoeffSignReadSymbol::None, false),
         CoeffSignReadSource::Cdf(selector) => {
-            let rows = row_at(&mut cdfs.block_rows_mut().dc_sign, selector.plane_type);
+            let rows = row_at(cdfs.block_rows_mut().dc_sign(), selector.plane_type);
             let row = row_at(row_at(rows, selector.group), selector.ctx);
             (CoeffSignReadSymbol::Cdf, read_row(symbols, row) != 0)
         }

@@ -54,6 +54,9 @@ macro_rules! tile_cdf_saved_rows {
     };
 }
 
+#[macro_use]
+mod layout;
+
 pub(crate) mod block_context;
 pub(crate) mod block_read;
 mod block_rows;
@@ -93,11 +96,12 @@ pub(crate) use self::block_rows::{
     PB_MV_PRECISION_CDF_ROW_LEN,
 };
 pub(crate) use self::coeff_rows::{CoeffBaseRow, CoeffCdfRows, CoeffCdfSelector, CoeffLevelRows};
-#[cfg(any(debug_assertions, fuzzing, test))]
-pub(in crate::bitstream::tile_payload::cdf) use self::util::cdf_rows_valid;
 pub(in crate::bitstream::tile_payload::cdf) use self::util::{
-    avg_cdf_row, avg_cdf_rows, blend_cdf_row, blend_cdf_rows, scale_cdf_count, scale_cdf_rows,
+    avg_cdf_row, avg_cdf_rows, avg_cdf_store, blend_cdf_row, blend_cdf_rows, blend_cdf_store,
+    scale_cdf_count, scale_cdf_rows, scale_cdf_store,
 };
+#[cfg(any(debug_assertions, fuzzing, test))]
+pub(in crate::bitstream::tile_payload::cdf) use self::util::{cdf_rows_valid, cdf_store_valid};
 use self::util::{
     checked_context, checked_plane, checked_square_split_plane, floor_log2, tx_partition_type_array,
 };

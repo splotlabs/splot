@@ -1001,11 +1001,11 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let cdfs = work_unit.cdf.tile_cdfs_mut();
     let rows = cdfs.block_rows_mut();
     let row = if block.plane == 2 {
-        row_at(&mut rows.v_txb_skip, ctx)
+        row_at(rows.v_txb_skip(), ctx)
     } else {
         let plane_type = usize::from(block.is_inter || block.txb_skip_fsc_mode);
         row_at(
-            row_at(row_at(&mut rows.txb_skip, plane_type), tx.size_ctx.into()),
+            row_at(row_at(rows.txb_skip(), plane_type), tx.size_ctx.into()),
             ctx,
         )
     };
@@ -1305,7 +1305,7 @@ fn ensure_transform_tool_residual_handoff(
         && input.cctx_allowed
         && (is_inter || eob != 1)
     {
-        metadata.cctx_type = Some(read_row(symbols, &mut cdfs.block_rows_mut().cctx_type));
+        metadata.cctx_type = Some(read_row(symbols, cdfs.block_rows_mut().cctx_type()));
     }
     if lossless {
         if !is_inter && input.fsc_mode {
@@ -1352,7 +1352,7 @@ fn ensure_transform_tool_residual_handoff(
         && inter_ist_can_read_sec_tx(tx_size, eob)?
     {
         let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
-        let row = row_at(&mut cdfs.block_rows_mut().sec_tx_type[1], tx_size_sqr);
+        let row = row_at(&mut cdfs.block_rows_mut().sec_tx_type()[1], tx_size_sqr);
         let sec_tx_type = read_row(symbols, row);
         metadata.intra_ist = Some(IntraIstSyntax {
             sec_tx_type: sec_tx_type as u8,
@@ -1413,13 +1413,13 @@ fn read_intra_ist_sec_tx(
 
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
     let rows = cdfs.block_rows_mut();
-    let sec_tx_type = read_row(symbols, row_at(&mut rows.sec_tx_type[0], tx_size_sqr));
+    let sec_tx_type = read_row(symbols, row_at(&mut rows.sec_tx_type()[0], tx_size_sqr));
     let most_probable_stx_set = if sec_tx_type == 0 {
         None
     } else if most_probable_stx_uses_adst(tx_size, luma_tx_type)? {
-        Some(read_row(symbols, &mut rows.most_probable_stx_set_adst))
+        Some(read_row(symbols, rows.most_probable_stx_set_adst()))
     } else {
-        Some(read_row(symbols, &mut rows.most_probable_stx_set))
+        Some(read_row(symbols, rows.most_probable_stx_set()))
     };
     let syntax = IntraIstSyntax {
         sec_tx_type: sec_tx_type as u8,
@@ -1490,18 +1490,18 @@ fn read_active_luma_transform_type(
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
     let rows = cdfs.block_rows_mut();
     let intra_tx_type = match tx_set {
-        TX_SET_INTRA_2 => read_row(symbols, row_at(&mut rows.intra_tx_type_set2, tx_size_sqr)),
+        TX_SET_INTRA_2 => read_row(symbols, row_at(rows.intra_tx_type_set2(), tx_size_sqr)),
         TX_SET_WIDE_64 | TX_SET_HIGH_64 | TX_SET_WIDE_32 | TX_SET_HIGH_32 => {
             let shape = long_tx_set_shape(tx_set);
             let is_long_side_dct = read_long_side_dct_symbol(rows, symbols, shape, 0);
-            let row = row_at(&mut rows.intra_tx_type_long, tx_size_sqr);
+            let row = row_at(rows.intra_tx_type_long(), tx_size_sqr);
             return Ok(long_tx_type_from_index(
                 shape,
                 is_long_side_dct,
                 read_row(symbols, row),
             ));
         }
-        _ => read_row(symbols, row_at(&mut rows.intra_tx_type_set1, tx_size_sqr)),
+        _ => read_row(symbols, row_at(rows.intra_tx_type_set1(), tx_size_sqr)),
     };
     md_idx_luma_tx_type(tx_size, luma_context, intra_tx_type)
 }
@@ -1524,7 +1524,7 @@ fn read_active_inter_transform_type(
         TX_SET_WIDE_64 | TX_SET_WIDE_32 | TX_SET_HIGH_64 | TX_SET_HIGH_32 => {
             let shape = long_tx_set_shape(tx_set);
             let is_long_side_dct = read_long_side_dct_symbol(rows, symbols, shape, 1);
-            let row = row_at(row_at(&mut rows.inter_tx_type_long, ctx), tx_size_sqr);
+            let row = row_at(row_at(rows.inter_tx_type_long(), ctx), tx_size_sqr);
             return Ok(long_tx_type_from_index(
                 shape,
                 is_long_side_dct,
@@ -1534,12 +1534,12 @@ fn read_active_inter_transform_type(
         TX_SET_INTER_1 => {
             let set = read_row(
                 symbols,
-                row_at(row_at(&mut rows.inter_tx_type_set1, ctx), tx_size_sqr),
+                row_at(row_at(rows.inter_tx_type_set1(), ctx), tx_size_sqr),
             );
             let offset = if set == 0 {
-                read_row(symbols, row_at(&mut rows.inter_tx_type_index_set1, ctx))
+                read_row(symbols, row_at(rows.inter_tx_type_index_set1(), ctx))
             } else {
-                read_row(symbols, row_at(&mut rows.inter_tx_type_offset_set1, ctx))
+                read_row(symbols, row_at(rows.inter_tx_type_offset_set1(), ctx))
             };
             (
                 &TX_TYPE_INTER_INV_SET1,
@@ -1547,11 +1547,11 @@ fn read_active_inter_transform_type(
             )
         }
         TX_SET_INTER_2 => {
-            let set = read_row(symbols, row_at(&mut rows.inter_tx_type_set2, ctx));
+            let set = read_row(symbols, row_at(rows.inter_tx_type_set2(), ctx));
             let offset = if set == 0 {
-                read_row(symbols, row_at(&mut rows.inter_tx_type_index_set2, ctx))
+                read_row(symbols, row_at(rows.inter_tx_type_index_set2(), ctx))
             } else {
-                read_row(symbols, row_at(&mut rows.inter_tx_type_offset_set2, ctx))
+                read_row(symbols, row_at(rows.inter_tx_type_offset_set2(), ctx))
             };
             (
                 &TX_TYPE_INTER_INV_SET2,
@@ -1559,11 +1559,11 @@ fn read_active_inter_transform_type(
             )
         }
         TX_SET_DCT_IDTX => {
-            let row = row_at(row_at(&mut rows.inter_tx_type_set3, ctx), tx_size_sqr);
+            let row = row_at(row_at(rows.inter_tx_type_set3(), ctx), tx_size_sqr);
             (&TX_TYPE_INTER_INV_SET3, read_row(symbols, row))
         }
         _ => {
-            let row = row_at(row_at(&mut rows.inter_tx_type_set4, ctx), tx_size_sqr);
+            let row = row_at(row_at(rows.inter_tx_type_set4(), ctx), tx_size_sqr);
             (&TX_TYPE_INTER_INV_SET4, read_row(symbols, row))
         }
     };
@@ -1599,7 +1599,7 @@ fn read_long_side_dct_symbol(
     if shape.long_side_dct_is_forced {
         1
     } else {
-        read_row(symbols, row_at(&mut rows.is_long_side_dct, is_inter))
+        read_row(symbols, row_at(rows.is_long_side_dct(), is_inter))
     }
 }
 

@@ -5,6 +5,7 @@
 
 use splot_core::symbol::CDF_COUNT_SHIFT;
 
+use super::layout::{RowLenBounds, rows_of_len, rows_of_len_mut};
 use super::{
     CDF_PROB_SCALE, DO_SPLIT_PLANE_CONTEXTS, DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS, TileCdfArray,
     TileCdfError,
@@ -122,6 +123,70 @@ pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_rows<const N: usize>(
     for row in rows {
         scale_cdf_count(row);
     }
+}
+
+/// [`avg_cdf_rows`] over every row of two stores of one layout.
+pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_store(
+    frame: &mut [u16],
+    tile: &[u16],
+    bounds: &RowLenBounds,
+    tile_num: u32,
+    num_log2: u8,
+) {
+    macro_rules! avg {
+        ($len:literal) => {
+            avg_cdf_rows::<$len>(
+                rows_of_len_mut(frame, bounds),
+                rows_of_len(tile, bounds),
+                tile_num,
+                num_log2,
+            );
+        };
+    }
+    for_each_cdf_row_len!(avg);
+}
+
+/// [`blend_cdf_rows`] over every row of two stores of one layout.
+pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_store(
+    store: &mut [u16],
+    saved: &[u16],
+    bounds: &RowLenBounds,
+) {
+    macro_rules! blend {
+        ($len:literal) => {
+            blend_cdf_rows::<$len>(rows_of_len_mut(store, bounds), rows_of_len(saved, bounds));
+        };
+    }
+    for_each_cdf_row_len!(blend);
+}
+
+/// [`scale_cdf_rows`] over every row of a store.
+pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_store(
+    store: &mut [u16],
+    bounds: &RowLenBounds,
+) {
+    macro_rules! scale {
+        ($len:literal) => {
+            scale_cdf_rows::<$len>(rows_of_len_mut(store, bounds));
+        };
+    }
+    for_each_cdf_row_len!(scale);
+}
+
+/// [`cdf_rows_valid`] over every row of a store.
+#[cfg(any(debug_assertions, fuzzing, test))]
+pub(in crate::bitstream::tile_payload::cdf) fn cdf_store_valid(
+    store: &[u16],
+    bounds: &RowLenBounds,
+) -> bool {
+    let mut valid = true;
+    macro_rules! check {
+        ($len:literal) => {
+            valid &= cdf_rows_valid::<$len>(rows_of_len(store, bounds));
+        };
+    }
+    for_each_cdf_row_len!(check);
+    valid
 }
 
 /// Whether every row holds non-decreasing probabilities up to

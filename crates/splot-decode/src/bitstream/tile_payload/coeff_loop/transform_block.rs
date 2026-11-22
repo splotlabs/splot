@@ -950,7 +950,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
             let ctx = dc_sign_ctx(dc.above_dc, dc.left_dc, dc.x4, dc.y4, dc.w4, dc.h4);
             read_row(
                 symbols,
-                row_at(&mut cdfs.block_rows_mut().dc_sign[0][0], ctx),
+                row_at(&mut cdfs.block_rows_mut().dc_sign()[0][0], ctx),
             ) != 0
         } else {
             symbols.read_bool_trusted()

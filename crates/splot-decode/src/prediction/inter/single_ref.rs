@@ -15,7 +15,7 @@ pub(crate) fn read_single_ref(
 ) -> usize {
     let decisions = num_total_refs.saturating_sub(1);
     for ref_idx in 0..decisions {
-        let bank = row_at(&mut cdfs.block_rows_mut().single_ref, ctx(ref_idx));
+        let bank = row_at(cdfs.block_rows_mut().single_ref(), ctx(ref_idx));
         if read_row(symbols, row_at(bank, ref_idx)) != 0 {
             return ref_idx;
         }
