@@ -111,7 +111,7 @@ impl BvSearch {
                 break;
             }
         }
-        refine(best?, cost)
+        Some(refine(best?, cost))
     }
 }
 
@@ -142,7 +142,7 @@ fn copy_cost(
 fn refine(
     mut best: ([i32; 2], u64),
     cost: impl Fn(i64, i64) -> Option<([i32; 2], u64)>,
-) -> Option<([i32; 2], u64)> {
+) -> ([i32; 2], u64) {
     let (row, col) = (i64::from(best.0[0] / 8), i64::from(best.0[1] / 8));
     for dy in -REFINE..=REFINE {
         for dx in -REFINE..=REFINE {
@@ -153,7 +153,7 @@ fn refine(
             }
         }
     }
-    Some(best)
+    best
 }
 
 /// The IntraBC candidate of `leaf` in a frame whose block hashes `coder`
