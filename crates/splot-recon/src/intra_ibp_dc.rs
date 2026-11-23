@@ -233,10 +233,6 @@ pub(crate) fn predict_dc_in_frame<T: ReconSample>(
 }
 
 /// Typed [`predict_dc_in_frame`] using caller-selected `backend`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired in follow-up workspace PR")
-)]
 pub(crate) fn predict_dc_in_frame_with<B: SimdBackend, T: ReconSample>(
     backend: B,
     samples: &mut [T],

@@ -117,7 +117,8 @@ impl<'a> Window<'a> {
 /// The `Round2(sum, round1)` rows of the section whose source window starts
 /// at `(first_col, first_row)`, or `None` without AVX2 or NEON or for
 /// 16-bit samples.
-pub(super) fn section<T: ReconSample>(
+pub(super) fn section<R: super::WarpRunner, T: ReconSample>(
+    runner: R,
     reference: &ReferencePlaneView<'_, T>,
     shear: &Shear,
     projected: &ProjectedCenter,
@@ -127,18 +128,18 @@ pub(super) fn section<T: ReconSample>(
     let shear = [shear.alpha, shear.beta, shear.gamma, shear.delta];
     let phases = [projected.sx4, projected.sy4];
     #[cfg(target_arch = "x86_64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
+    if let Some(token) = runner.avx2_token() {
         let reference = reference.as_u8()?;
         let window = Window::new(&reference, origin)?;
         return Some(avx2::section(token, &window, shear, phases, round1));
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+    if let Some(token) = runner.neon_token() {
         let reference = reference.as_u8()?;
         let window = Window::new(&reference, origin)?;
         return Some(neon::section(token, &window, shear, phases, round1));
     }
-    let _ = (reference, shear, phases, origin, round1);
+    let _ = (runner, reference, shear, phases, origin, round1);
     None
 }
 
@@ -200,7 +201,8 @@ impl RowProjection {
 ///
 /// Sections start below `2^20`, where every projection is exact in `i64`
 /// and an interior source position fits `i32`.
-pub(super) fn put_row<T: ReconSample>(
+pub(super) fn put_row<R: super::WarpRunner, T: ReconSample>(
+    runner: R,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     shear: &Shear,
@@ -231,7 +233,7 @@ pub(super) fn put_row<T: ReconSample>(
     };
     let shear = [shear.alpha, shear.beta, shear.gamma, shear.delta];
     #[cfg(target_arch = "x86_64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
+    if let Some(token) = runner.avx2_token() {
         let placed = (&projection, shear, sections, stride);
         if let (Some(reference), Some(output)) = (reference.as_u8(), T::u8_slice_mut(output)) {
             return avx2::put_row(token, &reference, placed, output);
@@ -239,7 +241,7 @@ pub(super) fn put_row<T: ReconSample>(
         return 0;
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_neon()
+    if let Some(token) = runner.neon_token()
         && let (Some(reference), Some(output)) = (reference.as_u8(), T::u8_slice_mut(output))
     {
         return neon::put_row(
@@ -252,7 +254,7 @@ pub(super) fn put_row<T: ReconSample>(
             stride,
         );
     }
-    let _ = (projection, shear, output, stride);
+    let _ = (runner, projection, shear, output, stride);
     0
 }
 

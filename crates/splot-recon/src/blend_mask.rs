@@ -840,10 +840,6 @@ pub(crate) fn subsample_mask(luma: &[u8], stride: usize, mask: &mut [u8], w: usi
 }
 
 /// Typed [`subsample_mask`] using caller-selected `backend`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired in follow-up workspace/inter PR")
-)]
 pub(crate) fn subsample_mask_with<B: SimdBackend>(
     backend: B,
     luma: &[u8],

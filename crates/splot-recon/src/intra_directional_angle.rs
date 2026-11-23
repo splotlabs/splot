@@ -6,6 +6,8 @@
 //! Feature tracking: `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
+use splot_core::simd::SimdBackend;
+
 use crate::intra_dc_math::{validate_output_shape, validate_sample_type};
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -439,6 +441,18 @@ impl<'a, T: ReconSample> IntraDirectionalAngleIdifEdges<'a, T> {
     }
 }
 
+fn predict_intra_directional_angle_rect_into_with_runner<R: lines::LineRunner, T: ReconSample>(
+    runner: R,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleEdges<'_, T>,
+    (output, stride_samples): (&mut [T], usize),
+) -> Result<()> {
+    let edge = validate_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
+    write_prediction(runner, bit_depth, size, angle, edge, output, stride_samples)
+}
+
 /// Writes a supported one-sided AV2 §7.13.2.8 directional prediction into caller storage.
 ///
 /// Uses bilinear interpolation without MRL. Callers provide `AboveRow[0..w+h)`
@@ -458,8 +472,61 @@ pub fn predict_intra_directional_angle_rect_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let edge = validate_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
-    write_prediction(bit_depth, size, angle, edge, output, stride_samples)
+    predict_intra_directional_angle_rect_into_with_runner(
+        lines::BaselineLines,
+        bit_depth,
+        size,
+        angle,
+        edges,
+        (output, stride_samples),
+    )
+}
+
+/// Typed [`predict_intra_directional_angle_rect_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_directional_angle_rect_into`].
+pub fn predict_intra_directional_angle_rect_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_directional_angle_rect_into_with_runner(
+        lines::TypedLines(backend.narrow()),
+        bit_depth,
+        size,
+        angle,
+        edges,
+        (output, stride_samples),
+    )
+}
+
+fn predict_intra_middle_directional_angle_rect_into_with_runner<
+    R: lines::LineRunner,
+    T: ReconSample,
+>(
+    runner: R,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleEdges<'_, T>,
+    (output, stride_samples): (&mut [T], usize),
+) -> Result<()> {
+    let context =
+        validate_middle_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
+    write_middle_prediction(
+        runner,
+        bit_depth,
+        size,
+        angle,
+        [context.left, context.above],
+        output,
+        stride_samples,
+    )
 }
 
 /// Writes a supported middle AV2 §7.13.2.8 directional prediction into caller storage.
@@ -483,16 +550,36 @@ pub fn predict_intra_middle_directional_angle_rect_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let context =
-        validate_middle_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
-    write_middle_prediction(
+    predict_intra_middle_directional_angle_rect_into_with_runner(
+        lines::BaselineLines,
         bit_depth,
         size,
         angle,
-        context.left,
-        context.above,
-        output,
-        stride_samples,
+        edges,
+        (output, stride_samples),
+    )
+}
+
+/// Typed [`predict_intra_middle_directional_angle_rect_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_middle_directional_angle_rect_into`].
+pub fn predict_intra_middle_directional_angle_rect_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_middle_directional_angle_rect_into_with_runner(
+        lines::TypedLines(backend.narrow()),
+        bit_depth,
+        size,
+        angle,
+        edges,
+        (output, stride_samples),
     )
 }
 
@@ -539,6 +626,70 @@ pub fn predict_intra_middle_directional_angle_rect_idif_into<T: ReconSample>(
     )
 }
 
+/// Typed [`predict_intra_middle_directional_angle_rect_idif_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_middle_directional_angle_rect_idif_into`].
+pub fn predict_intra_middle_directional_angle_rect_idif_into_with<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleIdifEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_middle_directional_angle_rect_idif_mrl_into_with(
+        backend,
+        bit_depth,
+        size,
+        angle,
+        edges,
+        0,
+        output,
+        stride_samples,
+    )
+}
+
+fn predict_intra_middle_directional_angle_rect_idif_mrl_into_with_runner<
+    R: lines::LineRunner,
+    T: ReconSample,
+>(
+    runner: R,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleIdifMrlEdges<'_, T>,
+    mrl_index: usize,
+    (output, stride_samples): (&mut [T], usize),
+) -> Result<()> {
+    let context = validate_middle_idif_mrl_inputs(
+        bit_depth,
+        size,
+        angle,
+        edges,
+        mrl_index,
+        output.len(),
+        stride_samples,
+    )?;
+    write_middle_idif_mrl_prediction(
+        runner,
+        MiddleIdifMrlPrediction {
+            bit_depth,
+            size,
+            angle,
+            left: context.left,
+            above: context.above,
+            mrl_index,
+            stride_samples,
+        },
+        output,
+    )
+}
+
 /// Writes a luma IDIF middle directional prediction with AV2 §5.20.5.5
 /// `MrlIndex`.
 ///
@@ -562,26 +713,43 @@ pub fn predict_intra_middle_directional_angle_rect_idif_mrl_into<T: ReconSample>
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let context = validate_middle_idif_mrl_inputs(
+    predict_intra_middle_directional_angle_rect_idif_mrl_into_with_runner(
+        lines::BaselineLines,
         bit_depth,
         size,
         angle,
         edges,
         mrl_index,
-        output.len(),
-        stride_samples,
-    )?;
-    write_middle_idif_mrl_prediction(
-        MiddleIdifMrlPrediction {
-            bit_depth,
-            size,
-            angle,
-            left: context.left,
-            above: context.above,
-            mrl_index,
-            stride_samples,
-        },
-        output,
+        (output, stride_samples),
+    )
+}
+
+/// Typed [`predict_intra_middle_directional_angle_rect_idif_mrl_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same error cases as [`predict_intra_middle_directional_angle_rect_idif_mrl_into`].
+#[expect(clippy::too_many_arguments)]
+pub fn predict_intra_middle_directional_angle_rect_idif_mrl_into_with<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    edges: IntraMiddleDirectionalAngleIdifMrlEdges<'_, T>,
+    mrl_index: usize,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_middle_directional_angle_rect_idif_mrl_into_with_runner(
+        lines::TypedLines(backend.narrow()),
+        bit_depth,
+        size,
+        angle,
+        edges,
+        mrl_index,
+        (output, stride_samples),
     )
 }
 
@@ -645,6 +813,66 @@ pub fn predict_intra_directional_angle_rect_one_sided_idif_into<T: ReconSample>(
     )
 }
 
+/// Typed [`predict_intra_directional_angle_rect_one_sided_idif_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_directional_angle_rect_one_sided_idif_into`].
+pub fn predict_intra_directional_angle_rect_one_sided_idif_into_with<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleIdifEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with(
+        backend,
+        bit_depth,
+        size,
+        angle,
+        edges,
+        0,
+        output,
+        stride_samples,
+    )
+}
+
+fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with_runner<
+    R: lines::LineRunner,
+    T: ReconSample,
+>(
+    runner: R,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleIdifEdges<'_, T>,
+    mrl_index: usize,
+    (output, stride_samples): (&mut [T], usize),
+) -> Result<()> {
+    let edge = validate_one_sided_idif_inputs(
+        bit_depth,
+        size,
+        angle,
+        edges,
+        mrl_index,
+        output.len(),
+        stride_samples,
+    )?;
+    write_one_sided_idif_prediction(
+        runner,
+        bit_depth,
+        size,
+        angle,
+        edge,
+        mrl_index,
+        (output, stride_samples),
+    )
+}
+
 /// Writes a supported luma IDIF one-sided directional prediction at a §5.20.5.5
 /// `mrl_index` (the multi-reference-line distance; `0` is the immediate edge).
 ///
@@ -666,23 +894,44 @@ pub fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into<T: ReconSamp
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    let edge = validate_one_sided_idif_inputs(
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with_runner(
+        lines::BaselineLines,
         bit_depth,
         size,
         angle,
         edges,
         mrl_index,
-        output.len(),
-        stride_samples,
-    )?;
-    write_one_sided_idif_prediction(
+        (output, stride_samples),
+    )
+}
+
+/// Typed [`predict_intra_directional_angle_rect_one_sided_idif_mrl_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same [`ReconError`] cases as
+/// [`predict_intra_directional_angle_rect_one_sided_idif_mrl_into`].
+#[expect(clippy::too_many_arguments)]
+pub fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edges: IntraDirectionalAngleIdifEdges<'_, T>,
+    mrl_index: usize,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with_runner(
+        lines::TypedLines(backend.narrow()),
         bit_depth,
         size,
         angle,
-        edge,
+        edges,
         mrl_index,
-        output,
-        stride_samples,
+        (output, stride_samples),
     )
 }
 
@@ -975,7 +1224,8 @@ where
     Ok(())
 }
 
-fn write_prediction<T: ReconSample>(
+fn write_prediction<R: lines::LineRunner, T: ReconSample>(
+    runner: R,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
@@ -984,16 +1234,17 @@ fn write_prediction<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     if let (Some(edge), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output)) {
-        return write_bilinear_lines(bit_depth, size, angle, edge, output, stride_samples);
+        return write_bilinear_lines(runner, bit_depth, size, angle, edge, output, stride_samples);
     }
     if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
-        return write_bilinear_lines(bit_depth, size, angle, edge, output, stride_samples);
+        return write_bilinear_lines(runner, bit_depth, size, angle, edge, output, stride_samples);
     }
     Err(unsupported_storage::<T>(bit_depth))
 }
 
 /// [`write_prediction`] as one bilinear line per zone-1 row or zone-3 column.
-fn write_bilinear_lines<P: lines::LineSample>(
+fn write_bilinear_lines<R: lines::LineRunner, P: lines::LineSample>(
+    runner: R,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
@@ -1019,6 +1270,7 @@ fn write_bilinear_lines<P: lines::LineSample>(
     };
     if lines::is_small_one_sided(size, branch) {
         return lines::write_one_sided_small(
+            runner,
             size,
             branch,
             lines::LineFilter::Bilinear,
@@ -1032,6 +1284,7 @@ fn write_bilinear_lines<P: lines::LineSample>(
     }
     let padded = lines::PaddedEdge::new(edge, 1, bit_depth.max_sample())?;
     lines::write_one_sided(
+        runner,
         size,
         branch,
         lines::LineFilter::Bilinear,
@@ -1204,35 +1457,35 @@ fn one_sided_idif_reference(
     })
 }
 
-fn write_one_sided_idif_prediction<T: ReconSample>(
+fn write_one_sided_idif_prediction<R: lines::LineRunner, T: ReconSample>(
+    runner: R,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
     edge: &[T],
     mrl_index: usize,
-    output: &mut [T],
-    stride_samples: usize,
+    (output, stride_samples): (&mut [T], usize),
 ) -> Result<()> {
     if let (Some(edge), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output)) {
         return write_one_sided_idif_lines(
+            runner,
             bit_depth,
             size,
             angle,
             edge,
             mrl_index,
-            output,
-            stride_samples,
+            (output, stride_samples),
         );
     }
     if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
         return write_one_sided_idif_lines(
+            runner,
             bit_depth,
             size,
             angle,
             edge,
             mrl_index,
-            output,
-            stride_samples,
+            (output, stride_samples),
         );
     }
     Err(unsupported_storage::<T>(bit_depth))
@@ -1240,14 +1493,14 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
 
 /// [`write_one_sided_idif_prediction`] as one IDIF line per zone-1 row or
 /// zone-3 column.
-fn write_one_sided_idif_lines<P: lines::LineSample>(
+fn write_one_sided_idif_lines<R: lines::LineRunner, P: lines::LineSample>(
+    runner: R,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
     edge: &[P],
     mrl_index: usize,
-    output: &mut [P],
-    stride_samples: usize,
+    (output, stride_samples): (&mut [P], usize),
 ) -> Result<()> {
     let (derivative, branch) = (one_sided_idif_derivative(angle), angle.branch());
     let max_base = one_sided_max_base(size, mrl_index)?;
@@ -1263,6 +1516,7 @@ fn write_one_sided_idif_lines<P: lines::LineSample>(
     };
     if lines::is_small_one_sided(size, branch) {
         return lines::write_one_sided_small(
+            runner,
             size,
             branch,
             lines::LineFilter::Idif,
@@ -1276,6 +1530,7 @@ fn write_one_sided_idif_lines<P: lines::LineSample>(
     }
     let padded = lines::PaddedEdge::new(edge, 0, bit_depth.max_sample())?;
     lines::write_one_sided(
+        runner,
         size,
         branch,
         lines::LineFilter::Idif,
@@ -1287,12 +1542,12 @@ fn write_one_sided_idif_lines<P: lines::LineSample>(
     )
 }
 
-fn write_middle_prediction<T: ReconSample>(
+fn write_middle_prediction<R: lines::LineRunner, T: ReconSample>(
+    runner: R,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
-    left: &[T],
-    above: &[T],
+    [left, above]: [&[T]; 2],
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
@@ -1302,6 +1557,7 @@ fn write_middle_prediction<T: ReconSample>(
         T::u8_slice_mut(output),
     ) {
         return write_middle_bilinear_lines(
+            runner,
             bit_depth,
             size,
             angle,
@@ -1316,6 +1572,7 @@ fn write_middle_prediction<T: ReconSample>(
         T::u16_slice_mut(output),
     ) {
         return write_middle_bilinear_lines(
+            runner,
             bit_depth,
             size,
             angle,
@@ -1328,7 +1585,8 @@ fn write_middle_prediction<T: ReconSample>(
 }
 
 /// [`write_middle_prediction`] as bilinear above row runs and left column runs.
-fn write_middle_bilinear_lines<P: lines::LineSample>(
+fn write_middle_bilinear_lines<R: lines::LineRunner, P: lines::LineSample>(
+    runner: R,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
@@ -1339,6 +1597,7 @@ fn write_middle_bilinear_lines<P: lines::LineSample>(
     let max = bit_depth.max_sample();
     if lines::is_small_middle(size) {
         return lines::write_middle_small(
+            runner,
             size,
             angle,
             lines::LineFilter::Bilinear,
@@ -1364,6 +1623,7 @@ fn write_middle_bilinear_lines<P: lines::LineSample>(
         Some((above.len() - 1, above_last)),
     ];
     lines::write_middle(
+        runner,
         size,
         angle,
         lines::LineFilter::Bilinear,
@@ -1412,7 +1672,8 @@ fn for_each_middle_left_run(
     Ok(())
 }
 
-fn write_middle_idif_mrl_prediction<T: ReconSample>(
+fn write_middle_idif_mrl_prediction<R: lines::LineRunner, T: ReconSample>(
+    runner: R,
     params: MiddleIdifMrlPrediction<'_, T>,
     output: &mut [T],
 ) -> Result<()> {
@@ -1421,20 +1682,21 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
         T::u8_slice(params.above),
         T::u8_slice_mut(output),
     ) {
-        return write_middle_idif_lines(&params, [left, above], out);
+        return write_middle_idif_lines(runner, &params, [left, above], out);
     }
     if let (Some(left), Some(above), Some(out)) = (
         T::u16_slice(params.left),
         T::u16_slice(params.above),
         T::u16_slice_mut(output),
     ) {
-        return write_middle_idif_lines(&params, [left, above], out);
+        return write_middle_idif_lines(runner, &params, [left, above], out);
     }
     Err(unsupported_storage::<T>(params.bit_depth))
 }
 
 /// [`write_middle_idif_mrl_prediction`] over the edges' line kernel.
-fn write_middle_idif_lines<T: ReconSample, P: lines::LineSample>(
+fn write_middle_idif_lines<R: lines::LineRunner, T: ReconSample, P: lines::LineSample>(
+    runner: R,
     params: &MiddleIdifMrlPrediction<'_, T>,
     [left, above]: [&[P]; 2],
     output: &mut [P],
@@ -1443,6 +1705,7 @@ fn write_middle_idif_lines<T: ReconSample, P: lines::LineSample>(
     let mrl = params.mrl_index;
     if lines::is_small_middle(params.size) {
         return lines::write_middle_small(
+            runner,
             params.size,
             params.angle,
             lines::LineFilter::Idif,
@@ -1459,6 +1722,7 @@ fn write_middle_idif_lines<T: ReconSample, P: lines::LineSample>(
         lines::PaddedEdge::new(above, 0, max)?,
     );
     lines::write_middle(
+        runner,
         params.size,
         params.angle,
         lines::LineFilter::Idif,

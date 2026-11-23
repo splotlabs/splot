@@ -104,8 +104,9 @@ impl<'a, T: ReconSample> OwnedPlaneMut<'a, T> {
         self.samples
     }
 
-    pub(super) fn write_rect(
+    pub(super) fn write_rect_with_runner<R: WorkspaceRunner>(
         &mut self,
+        runner: R,
         rect: PlaneRect,
         samples: &[T],
         row_stride_samples: usize,
@@ -113,7 +114,8 @@ impl<'a, T: ReconSample> OwnedPlaneMut<'a, T> {
     ) -> Result<()> {
         let rect = clamp_rect_to_storage(self.region.plane, self.region.storage_size, rect)?;
         self.region.ensure_rect(rect)?;
-        validate_write_source(
+        validate_write_source_with_runner(
+            runner,
             self.region.plane,
             rect,
             samples,
