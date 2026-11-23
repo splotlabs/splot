@@ -16,6 +16,7 @@ use crate::intra_directional_angle::{
 use crate::intra_ibp_dc::blend_ibp_lanes;
 use crate::{ReconError, ReconSample, Result};
 use fearless_simd::{Simd, SimdBase, u16x16};
+use splot_core::simd::SimdBackend;
 use std::sync::OnceLock;
 
 const IBP_WEIGHT_SIZE_LOG2: u32 = 4;
@@ -133,16 +134,81 @@ fn ibp_weights(p_angle: u16) -> Result<IbpWeights> {
     Ok(weights)
 }
 
-/// Applies AV2 §7.13.2.9 IBP angular blending in place.
-///
-/// `primary` and `second` are tightly packed `width * height` row-major buffers.
-/// Non-one-sided or disabled `p_angle`s are validated no-ops.
-///
-/// # Errors
-/// Returns [`ReconError::ArithmeticOverflow`] on index/arithmetic overflow or
-/// when `primary`/`second` are too small for `size`, and any error surfaced by
-/// the §7.13.2.9 weight derivation.
-pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
+#[derive(Clone, Copy)]
+struct BaselineIbpAngular;
+
+#[derive(Clone, Copy)]
+struct TypedIbpAngular<B: SimdBackend>(B);
+
+trait IbpAngularRunner: Copy {
+    fn blend<O: IntraLaneSample>(
+        self,
+        weights: &IbpWeights,
+        shifts: (u32, u32),
+        width: usize,
+        wide: bool,
+        primary: &mut [O],
+        second: &[O],
+    );
+}
+
+impl IbpAngularRunner for BaselineIbpAngular {
+    #[inline]
+    fn blend<O: IntraLaneSample>(
+        self,
+        weights: &IbpWeights,
+        shifts: (u32, u32),
+        width: usize,
+        wide: bool,
+        primary: &mut [O],
+        second: &[O],
+    ) {
+        blend_rows_lanes(weights, shifts, width, wide, primary, second);
+    }
+}
+
+impl<B: SimdBackend> IbpAngularRunner for TypedIbpAngular<B> {
+    #[inline]
+    fn blend<O: IntraLaneSample>(
+        self,
+        weights: &IbpWeights,
+        shifts: (u32, u32),
+        width: usize,
+        wide: bool,
+        primary: &mut [O],
+        second: &[O],
+    ) {
+        let narrow = self.0.narrow();
+        if width <= 16 {
+            narrow.vectorize(|| {
+                blend_rows::<_, _, 16>(
+                    narrow.token(),
+                    weights,
+                    shifts,
+                    width,
+                    wide,
+                    primary,
+                    second,
+                );
+            });
+        } else {
+            narrow.vectorize(|| {
+                blend_rows::<_, _, 64>(
+                    narrow.token(),
+                    weights,
+                    shifts,
+                    width,
+                    wide,
+                    primary,
+                    second,
+                );
+            });
+        }
+    }
+}
+
+fn apply_ibp_dr_blend_rect_with_runner<R: IbpAngularRunner, T: ReconSample>(
+    runner: R,
     size: IntraRectBlockSize,
     p_angle: u16,
     primary: &mut [T],
@@ -170,16 +236,43 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     let r_shift = (height as u32) >> shift;
     let (primary, second) = (&mut primary[..needed], &second[..needed]);
     if let (Some(primary), Some(second)) = (T::u16_slice_mut(primary), T::u16_slice(second)) {
-        blend_rows_lanes(weights, (c_shift, r_shift), width, true, primary, second);
+        runner.blend(weights, (c_shift, r_shift), width, true, primary, second);
         return Ok(());
     }
     if let (Some(primary), Some(second)) = (T::u8_slice_mut(primary), T::u8_slice(second)) {
-        blend_rows_lanes(weights, (c_shift, r_shift), width, false, primary, second);
+        runner.blend(weights, (c_shift, r_shift), width, false, primary, second);
         return Ok(());
     }
     Err(ReconError::ArithmeticOverflow {
         context: "IBP angular blend sample type",
     })
+}
+
+/// Blends opposite-zone directional predictions in place using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`apply_ibp_dr_blend_rect`].
+pub fn apply_ibp_dr_blend_rect_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    size: IntraRectBlockSize,
+    p_angle: u16,
+    primary: &mut [T],
+    second: &[T],
+) -> Result<()> {
+    apply_ibp_dr_blend_rect_with_runner(TypedIbpAngular(backend), size, p_angle, primary, second)
+}
+
+/// Blends directional prediction in place for AV2 §7.13.2.9 IBP angular modes.
+///
+/// # Errors
+/// Returns [`ReconError`] for overflowing sizes, short buffers, or unsupported sample types.
+pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
+    size: IntraRectBlockSize,
+    p_angle: u16,
+    primary: &mut [T],
+    second: &[T],
+) -> Result<()> {
+    apply_ibp_dr_blend_rect_with_runner(BaselineIbpAngular, size, p_angle, primary, second)
 }
 
 /// The lane form of the blend over `width`-sample rows, 16 lanes at a time:

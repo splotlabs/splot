@@ -4,6 +4,7 @@
 //! AV2 § 7.13.6 MHCCP parameter derivation helpers.
 
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x8, i32x8, u16x8};
+use splot_core::simd::SimdBackend;
 
 use crate::{BitDepth, ReconSample};
 
@@ -77,33 +78,132 @@ impl NormalEquations {
     }
 }
 
-/// Derives the three MHCCP model parameters of each chroma plane in
-/// `chroma` from the § 7.13.7 reference samples of `edges` (above, then
-/// left), whose targets `CflRef[1]` are `chroma[plane][edge]`, at least as
-/// long as the edge; the luma statistics are gathered once for all planes.
-#[must_use]
-pub fn derive_mhccp_params<const N: usize>(
+#[derive(Clone, Copy)]
+struct BaselineMhccp;
+
+#[derive(Clone, Copy)]
+struct TypedMhccp<B: SimdBackend>(B);
+
+trait MhccpRunner: Copy {
+    fn gather_sums<const N: usize>(
+        self,
+        edges: [MhccpEdge<'_>; 2],
+        chroma: [[&[u16]; 2]; N],
+        bits: u32,
+    ) -> (LumaSums, [[i32; 3]; N]);
+
+    #[expect(clippy::too_many_arguments)]
+    fn predict<P: PredictedSample, const N: usize, const WIDE: bool>(
+        self,
+        bits: u32,
+        predictors: [&MhccpPredictor; N],
+        linear: &[i16],
+        centre: &[i16],
+        width: usize,
+        outs: [&mut [P]; N],
+        strides: [usize; N],
+    );
+}
+
+impl MhccpRunner for BaselineMhccp {
+    #[inline]
+    fn gather_sums<const N: usize>(
+        self,
+        edges: [MhccpEdge<'_>; 2],
+        chroma: [[&[u16]; 2]; N],
+        bits: u32,
+    ) -> (LumaSums, [[i32; 3]; N]) {
+        baseline_simd!(simd => gather_mhccp_sums(simd, edges, chroma, bits))
+    }
+
+    #[inline]
+    fn predict<P: PredictedSample, const N: usize, const WIDE: bool>(
+        self,
+        bits: u32,
+        predictors: [&MhccpPredictor; N],
+        linear: &[i16],
+        centre: &[i16],
+        width: usize,
+        outs: [&mut [P]; N],
+        strides: [usize; N],
+    ) {
+        baseline_simd!(
+            simd => predict_rows::<_, _, N, WIDE>(simd, bits, predictors, linear, centre, width, outs, strides)
+        );
+    }
+}
+
+impl<B: SimdBackend> MhccpRunner for TypedMhccp<B> {
+    #[inline]
+    fn gather_sums<const N: usize>(
+        self,
+        edges: [MhccpEdge<'_>; 2],
+        chroma: [[&[u16]; 2]; N],
+        bits: u32,
+    ) -> (LumaSums, [[i32; 3]; N]) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| gather_mhccp_sums(narrow.token(), edges, chroma, bits))
+    }
+
+    #[inline]
+    fn predict<P: PredictedSample, const N: usize, const WIDE: bool>(
+        self,
+        bits: u32,
+        predictors: [&MhccpPredictor; N],
+        linear: &[i16],
+        centre: &[i16],
+        width: usize,
+        outs: [&mut [P]; N],
+        strides: [usize; N],
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            predict_rows::<_, _, N, WIDE>(
+                narrow.token(),
+                bits,
+                predictors,
+                linear,
+                centre,
+                width,
+                outs,
+                strides,
+            );
+        });
+    }
+}
+
+#[inline]
+fn gather_mhccp_sums<S: Simd, const N: usize>(
+    simd: S,
+    edges: [MhccpEdge<'_>; 2],
+    chroma: [[&[u16]; 2]; N],
+    bits: u32,
+) -> (LumaSums, [[i32; 3]; N]) {
+    let mut luma = LumaSums::default();
+    let mut cross = [[0i32; 3]; N];
+    let mut lanes = LaneSums::new(simd);
+    for (e, edge) in edges.iter().enumerate() {
+        let len = edge.linear.len().min(edge.centre.len());
+        for at in (0..len).step_by(8) {
+            let n = (len - at).min(8);
+            let targets = chroma.map(|plane| masked_lanes(simd, lanes8(plane[e], at), n));
+            let [linear, centre] =
+                [edge.linear, edge.centre].map(|luma| masked_lanes(simd, lanes8(luma, at), n) >> 3);
+            lanes.add(linear, centre, targets, n, bits);
+        }
+    }
+    lanes.reduce_into(simd, &mut luma, &mut cross);
+    (luma, cross)
+}
+
+fn derive_mhccp_params_with_runner<R: MhccpRunner, const N: usize>(
+    runner: R,
     edges: [MhccpEdge<'_>; 2],
     chroma: [[&[u16]; 2]; N],
     bit_depth: BitDepth,
 ) -> [[i32; MHCCP_PARAM_COUNT]; N] {
     let bits = u32::from(bit_depth.bits());
-    let mut luma = LumaSums::default();
-    let mut cross = [[0i32; 3]; N];
-    baseline_simd!(simd => {
-        let mut lanes = LaneSums::new(simd);
-        for (e, edge) in edges.iter().enumerate() {
-            let len = edge.linear.len().min(edge.centre.len());
-            for at in (0..len).step_by(8) {
-                let n = (len - at).min(8);
-                let targets = chroma.map(|plane| masked_lanes(simd, lanes8(plane[e], at), n));
-                let [linear, centre] = [edge.linear, edge.centre]
-                    .map(|luma| masked_lanes(simd, lanes8(luma, at), n) >> 3);
-                lanes.add(linear, centre, targets, n, bits);
-            }
-        }
-        lanes.reduce_into(simd, &mut luma, &mut cross);
-    });
+    let (luma, cross) = runner.gather_sums(edges, chroma, bits);
     let mid = 1i32 << (bits - 1);
     if luma.count == 0 {
         return [[0, 0, 1i32 << MHCCP_BITS]; N];
@@ -117,6 +217,30 @@ pub fn derive_mhccp_params<const N: usize>(
         equations
     });
     solve_mhccp(&equations, bit_depth)
+}
+
+/// Derives the three MHCCP model parameters of each chroma plane in
+/// `chroma` from the § 7.13.7 reference samples of `edges` (above, then
+/// left), whose targets `CflRef[1]` are `chroma[plane][edge]`, at least as
+/// long as the edge; the luma statistics are gathered once for all planes.
+#[must_use]
+pub fn derive_mhccp_params<const N: usize>(
+    edges: [MhccpEdge<'_>; 2],
+    chroma: [[&[u16]; 2]; N],
+    bit_depth: BitDepth,
+) -> [[i32; MHCCP_PARAM_COUNT]; N] {
+    derive_mhccp_params_with_runner(BaselineMhccp, edges, chroma, bit_depth)
+}
+
+/// Typed [`derive_mhccp_params`] using caller-selected `backend`.
+#[must_use]
+pub fn derive_mhccp_params_with<B: SimdBackend, const N: usize>(
+    backend: B,
+    edges: [MhccpEdge<'_>; 2],
+    chroma: [[&[u16]; 2]; N],
+    bit_depth: BitDepth,
+) -> [[i32; MHCCP_PARAM_COUNT]; N] {
+    derive_mhccp_params_with_runner(TypedMhccp(backend), edges, chroma, bit_depth)
 }
 
 /// Wrapping sums of the § 7.13.7 luma products `v0 * v0`, `v0 * v1`,
@@ -352,10 +476,55 @@ impl MhccpPredictor {
         Self::predict_planes([self], linear, centre, width, [(out, stride)])
     }
 
+    /// Typed [`Self::predict_block`] using caller-selected `backend`.
+    #[must_use]
+    pub fn predict_block_with<B: SimdBackend, T: ReconSample>(
+        &self,
+        backend: B,
+        linear: &[i16],
+        centre: &[i16],
+        width: usize,
+        out: &mut [T],
+        stride: usize,
+    ) -> bool {
+        Self::predict_planes_with(backend, [self], linear, centre, width, [(out, stride)])
+    }
+
     /// [`Self::predict_block`] of the `N` planes of `predictors`, which share
     /// the block's luma, in one pass over it.
     #[must_use]
     pub fn predict_planes<T: ReconSample, const N: usize>(
+        predictors: [&Self; N],
+        linear: &[i16],
+        centre: &[i16],
+        width: usize,
+        outs: [(&mut [T], usize); N],
+    ) -> bool {
+        Self::predict_planes_with_runner(BaselineMhccp, predictors, linear, centre, width, outs)
+    }
+
+    /// Typed [`Self::predict_planes`] using caller-selected `backend`.
+    #[must_use]
+    pub fn predict_planes_with<B: SimdBackend, T: ReconSample, const N: usize>(
+        backend: B,
+        predictors: [&Self; N],
+        linear: &[i16],
+        centre: &[i16],
+        width: usize,
+        outs: [(&mut [T], usize); N],
+    ) -> bool {
+        Self::predict_planes_with_runner(
+            TypedMhccp(backend),
+            predictors,
+            linear,
+            centre,
+            width,
+            outs,
+        )
+    }
+
+    fn predict_planes_with_runner<R: MhccpRunner, T: ReconSample, const N: usize>(
+        runner: R,
         predictors: [&Self; N],
         linear: &[i16],
         centre: &[i16],
@@ -379,16 +548,20 @@ impl MhccpPredictor {
         if T::u16_slice(&[T::default()]).is_some() {
             let outs = outs.map(|out| T::u16_slice_mut(out.0).unwrap_or_default());
             if wide {
-                baseline_simd!(simd => predict_rows::<_, _, N, true>(simd, bits, predictors, linear, centre, width, outs, strides));
+                runner
+                    .predict::<_, N, true>(bits, predictors, linear, centre, width, outs, strides);
             } else {
-                baseline_simd!(simd => predict_rows::<_, _, N, false>(simd, bits, predictors, linear, centre, width, outs, strides));
+                runner
+                    .predict::<_, N, false>(bits, predictors, linear, centre, width, outs, strides);
             }
         } else {
             let outs = outs.map(|out| T::u8_slice_mut(out.0).unwrap_or_default());
             if wide {
-                baseline_simd!(simd => predict_rows::<_, _, N, true>(simd, bits, predictors, linear, centre, width, outs, strides));
+                runner
+                    .predict::<_, N, true>(bits, predictors, linear, centre, width, outs, strides);
             } else {
-                baseline_simd!(simd => predict_rows::<_, _, N, false>(simd, bits, predictors, linear, centre, width, outs, strides));
+                runner
+                    .predict::<_, N, false>(bits, predictors, linear, centre, width, outs, strides);
             }
         }
         true
@@ -963,5 +1136,145 @@ mod tests {
             derive_mhccp_params([MhccpEdge::default(); 2], [[&[], &[]]], BitDepth::Eight),
             [[0, 0, 1 << MHCCP_BITS]]
         );
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+                    let max = bit_depth.max_sample() as i16;
+                    let lin_a: Vec<i16> = (0..18).map(|i| ((i * 5) % max) << 3).collect();
+                    let cen_a: Vec<i16> = (0..18).map(|i| ((i * 7) % max) << 3).collect();
+                    let lin_l: Vec<i16> = (0..12).map(|i| ((i * 9) % max) << 3).collect();
+                    let cen_l: Vec<i16> = (0..12).map(|i| ((i * 11) % max) << 3).collect();
+                    let edges = [
+                        MhccpEdge {
+                            linear: &lin_a,
+                            centre: &cen_a,
+                        },
+                        MhccpEdge {
+                            linear: &lin_l,
+                            centre: &cen_l,
+                        },
+                    ];
+                    let cu0: Vec<u16> = (0..18)
+                        .map(|i| (i as u16 * 13 + 7) % (max as u16 + 1))
+                        .collect();
+                    let cu1: Vec<u16> = (0..12)
+                        .map(|i| (i as u16 * 17 + 11) % (max as u16 + 1))
+                        .collect();
+                    let cv0: Vec<u16> = (0..18)
+                        .map(|i| (i as u16 * 19 + 3) % (max as u16 + 1))
+                        .collect();
+                    let cv1: Vec<u16> = (0..12)
+                        .map(|i| (i as u16 * 23 + 5) % (max as u16 + 1))
+                        .collect();
+                    let compat_p =
+                        derive_mhccp_params(edges, [[&cu0, &cu1], [&cv0, &cv1]], bit_depth);
+                    let typed_p = derive_mhccp_params_with(
+                        backend,
+                        edges,
+                        [[&cu0, &cu1], [&cv0, &cv1]],
+                        bit_depth,
+                    );
+                    assert_eq!(typed_p, compat_p);
+
+                    let narrow_pred = MhccpPredictor::new([512, -256, 65536], bit_depth);
+                    let wide_pred = MhccpPredictor::new([32_768, 16_384, 65536], bit_depth);
+                    let (w, h, stride) = (16, 4, 20);
+                    let lin_blk: Vec<i16> = (0..w * h)
+                        .map(|i| ((i as i16 * 13 + 3) % max) << 3)
+                        .collect();
+                    let cen_blk: Vec<i16> = (0..w * h)
+                        .map(|i| ((i as i16 * 17 + 9) % max) << 3)
+                        .collect();
+                    if bit_depth == BitDepth::Eight {
+                        let (mut compat_a, mut typed_a) =
+                            (vec![0u8; stride * h], vec![0u8; stride * h]);
+                        assert!(narrow_pred.predict_block(
+                            &lin_blk,
+                            &cen_blk,
+                            w,
+                            &mut compat_a,
+                            stride
+                        ));
+                        assert!(narrow_pred.predict_block_with(
+                            backend,
+                            &lin_blk,
+                            &cen_blk,
+                            w,
+                            &mut typed_a,
+                            stride
+                        ));
+                        assert_eq!(typed_a, compat_a);
+                        let (mut cu, mut cv) = (vec![0u8; stride * h], vec![0u8; stride * h]);
+                        let (mut tu, mut tv) = (vec![0u8; stride * h], vec![0u8; stride * h]);
+                        assert!(MhccpPredictor::predict_planes(
+                            [&narrow_pred, &wide_pred],
+                            &lin_blk,
+                            &cen_blk,
+                            w,
+                            [(&mut cu, stride), (&mut cv, stride)],
+                        ));
+                        assert!(MhccpPredictor::predict_planes_with(
+                            backend,
+                            [&narrow_pred, &wide_pred],
+                            &lin_blk,
+                            &cen_blk,
+                            w,
+                            [(&mut tu, stride), (&mut tv, stride)],
+                        ));
+                        assert_eq!(tu, cu);
+                        assert_eq!(tv, cv);
+                    } else {
+                        let (mut compat_a, mut typed_a) =
+                            (vec![0u16; stride * h], vec![0u16; stride * h]);
+                        assert!(wide_pred.predict_block(
+                            &lin_blk,
+                            &cen_blk,
+                            w,
+                            &mut compat_a,
+                            stride
+                        ));
+                        assert!(wide_pred.predict_block_with(
+                            backend,
+                            &lin_blk,
+                            &cen_blk,
+                            w,
+                            &mut typed_a,
+                            stride
+                        ));
+                        assert_eq!(typed_a, compat_a);
+                        let (mut cu, mut cv) = (vec![0u16; stride * h], vec![0u16; stride * h]);
+                        let (mut tu, mut tv) = (vec![0u16; stride * h], vec![0u16; stride * h]);
+                        assert!(MhccpPredictor::predict_planes(
+                            [&narrow_pred, &wide_pred],
+                            &lin_blk,
+                            &cen_blk,
+                            w,
+                            [(&mut cu, stride), (&mut cv, stride)],
+                        ));
+                        assert!(MhccpPredictor::predict_planes_with(
+                            backend,
+                            [&narrow_pred, &wide_pred],
+                            &lin_blk,
+                            &cen_blk,
+                            w,
+                            [(&mut tu, stride), (&mut tv, stride)],
+                        ));
+                        assert_eq!(tu, cu);
+                        assert_eq!(tv, cv);
+                    }
+                }
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

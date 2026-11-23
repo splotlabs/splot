@@ -12,6 +12,7 @@ use crate::intra_dc_math::{
 };
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use fearless_simd::{Simd, SimdBase, u16x16};
+use splot_core::simd::SimdBackend;
 
 const IBP_WEIGHT_MAX: u16 = 128;
 const IBP_WEIGHT_SHIFT: u8 = 7;
@@ -41,18 +42,60 @@ const IBP_INVERSE: [[u16; 16]; 5] = {
     table
 };
 
-/// Writes rectangular AV2 §7.13.2.10 DC prediction with the §7.13.2.12 IBP
-/// blend into caller storage.
-///
-/// `pred` points at the top-left destination sample and `stride_samples` is
-/// the distance between adjacent output rows. Samples outside the predicted
-/// rectangle are left unchanged.
-///
-/// # Errors
-/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
-/// wrong edge lengths, out-of-range edge samples, a too-small stride, or a
-/// too-small output buffer.
-pub fn predict_intra_ibp_dc_rect_into<T: ReconSample>(
+#[derive(Clone, Copy)]
+struct BaselineIbpDc;
+
+#[derive(Clone, Copy)]
+struct TypedIbpDc<B: SimdBackend>(B);
+
+trait IbpDcRunner: Copy {
+    fn ibp_dc<P: IntraLaneSample>(
+        self,
+        block: IbpDcBlock,
+        edges: (Option<&[P]>, Option<&[P]>),
+        pred: &mut [P],
+    ) -> Option<()>;
+    fn dc_frame<P: IntraLaneSample>(self, block: DcFrameBlock, samples: &mut [P]) -> Option<()>;
+}
+
+impl IbpDcRunner for BaselineIbpDc {
+    #[inline]
+    fn ibp_dc<P: IntraLaneSample>(
+        self,
+        block: IbpDcBlock,
+        edges: (Option<&[P]>, Option<&[P]>),
+        pred: &mut [P],
+    ) -> Option<()> {
+        baseline_simd!(simd => ibp_dc_block(simd, block, edges, pred))
+    }
+
+    #[inline]
+    fn dc_frame<P: IntraLaneSample>(self, block: DcFrameBlock, samples: &mut [P]) -> Option<()> {
+        baseline_simd!(simd => dc_frame_block(simd, block, samples))
+    }
+}
+
+impl<B: SimdBackend> IbpDcRunner for TypedIbpDc<B> {
+    #[inline]
+    fn ibp_dc<P: IntraLaneSample>(
+        self,
+        block: IbpDcBlock,
+        edges: (Option<&[P]>, Option<&[P]>),
+        pred: &mut [P],
+    ) -> Option<()> {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| ibp_dc_block(narrow.token(), block, edges, pred))
+    }
+
+    #[inline]
+    fn dc_frame<P: IntraLaneSample>(self, block: DcFrameBlock, samples: &mut [P]) -> Option<()> {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| dc_frame_block(narrow.token(), block, samples))
+    }
+}
+
+fn predict_intra_ibp_dc_rect_into_with_runner<R: IbpDcRunner, T: ReconSample>(
+    runner: R,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     edges: IntraDcEdges<'_, T>,
@@ -81,11 +124,11 @@ pub fn predict_intra_ibp_dc_rect_into<T: ReconSample>(
                     dc: dc.to_u16(),
                     stride: stride_samples,
                 };
-                return baseline_simd!(simd => ibp_dc_block(simd, block, edges, pred)).ok_or(
-                    ReconError::ArithmeticOverflow {
+                return runner
+                    .ibp_dc(block, edges, pred)
+                    .ok_or(ReconError::ArithmeticOverflow {
                         context: "IBP DC prediction output shape",
-                    },
-                );
+                    });
             }
         };
     }
@@ -95,6 +138,56 @@ pub fn predict_intra_ibp_dc_rect_into<T: ReconSample>(
         sample_type: T::TYPE_NAME,
         bit_depth,
     })
+}
+
+/// Writes rectangular AV2 §7.13.2.10 DC prediction with the §7.13.2.12 IBP
+/// blend into caller storage.
+///
+/// `pred` points at the top-left destination sample and `stride_samples` is
+/// the distance between adjacent output rows. Samples outside the predicted
+/// rectangle are left unchanged.
+///
+/// # Errors
+/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
+/// wrong edge lengths, out-of-range edge samples, a too-small stride, or a
+/// too-small output buffer.
+pub fn predict_intra_ibp_dc_rect_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    edges: IntraDcEdges<'_, T>,
+    pred: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_ibp_dc_rect_into_with_runner(
+        BaselineIbpDc,
+        bit_depth,
+        size,
+        edges,
+        pred,
+        stride_samples,
+    )
+}
+
+/// Typed [`predict_intra_ibp_dc_rect_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_ibp_dc_rect_into`].
+pub fn predict_intra_ibp_dc_rect_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    edges: IntraDcEdges<'_, T>,
+    pred: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_ibp_dc_rect_into_with_runner(
+        TypedIbpDc(backend),
+        bit_depth,
+        size,
+        edges,
+        pred,
+        stride_samples,
+    )
 }
 
 /// One block predicted in place by [`predict_dc_in_frame`]: its first sample
@@ -111,6 +204,24 @@ pub(crate) struct DcFrameBlock {
     pub(crate) ibp: bool,
 }
 
+fn predict_dc_in_frame_with_runner<R: IbpDcRunner, T: ReconSample>(
+    runner: R,
+    samples: &mut [T],
+    block: DcFrameBlock,
+) -> Result<()> {
+    validate_sample_type::<T>(block.bit_depth)?;
+    let written = if let Some(samples) = T::u8_slice_mut(samples) {
+        runner.dc_frame(block, samples)
+    } else if let Some(samples) = T::u16_slice_mut(samples) {
+        runner.dc_frame(block, samples)
+    } else {
+        None
+    };
+    written.ok_or(ReconError::ArithmeticOverflow {
+        context: "DC prediction frame block",
+    })
+}
+
 /// Writes the § 7.13.2.10 DC prediction of `block`, with the § 7.13.2.12
 /// IBP blend when `block.ibp`, straight from and into the plane `samples`,
 /// which hold samples of the active bit depth.
@@ -118,17 +229,20 @@ pub(crate) fn predict_dc_in_frame<T: ReconSample>(
     samples: &mut [T],
     block: DcFrameBlock,
 ) -> Result<()> {
-    validate_sample_type::<T>(block.bit_depth)?;
-    let written = if let Some(samples) = T::u8_slice_mut(samples) {
-        baseline_simd!(simd => dc_frame_block(simd, block, samples))
-    } else if let Some(samples) = T::u16_slice_mut(samples) {
-        baseline_simd!(simd => dc_frame_block(simd, block, samples))
-    } else {
-        None
-    };
-    written.ok_or(ReconError::ArithmeticOverflow {
-        context: "DC prediction frame block",
-    })
+    predict_dc_in_frame_with_runner(BaselineIbpDc, samples, block)
+}
+
+/// Typed [`predict_dc_in_frame`] using caller-selected `backend`.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired in follow-up workspace PR")
+)]
+pub(crate) fn predict_dc_in_frame_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    samples: &mut [T],
+    block: DcFrameBlock,
+) -> Result<()> {
+    predict_dc_in_frame_with_runner(TypedIbpDc(backend), samples, block)
 }
 
 #[inline]
@@ -660,5 +774,107 @@ mod tests {
             })
         ));
         assert_eq!(pred, before);
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                for (log2_w, log2_h) in [(2, 3), (4, 4), (5, 4)] {
+                    let size = rect_size(log2_w, log2_h);
+                    let stride = size.width() + 4;
+                    let left8: Vec<u8> = (0..size.height()).map(|i| (i * 29 + 3) as u8).collect();
+                    let above8: Vec<u8> = (0..size.width()).map(|i| (i * 41 + 7) as u8).collect();
+                    let edges8 = IntraDcEdges::new(Some(&left8[..]), Some(&above8[..]));
+                    let mut compat8 = vec![3u8; stride * size.height()];
+                    let mut typed8 = Vec::from(compat8.as_slice());
+                    predict_intra_ibp_dc_rect_into(
+                        BitDepth::Eight,
+                        size,
+                        edges8,
+                        &mut compat8,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_ibp_dc_rect_into_with(
+                        backend,
+                        BitDepth::Eight,
+                        size,
+                        edges8,
+                        &mut typed8,
+                        stride,
+                    )
+                    .unwrap();
+                    assert_eq!(typed8, compat8);
+
+                    let left10: Vec<u16> = (0..size.height())
+                        .map(|i| (i as u16 * 71 + 9) % 1024)
+                        .collect();
+                    let above10: Vec<u16> = (0..size.width())
+                        .map(|i| (i as u16 * 97 + 13) % 1024)
+                        .collect();
+                    let edges10 = IntraDcEdges::new(Some(&left10[..]), Some(&above10[..]));
+                    let mut compat10 = vec![5u16; stride * size.height()];
+                    let mut typed10 = Vec::from(compat10.as_slice());
+                    predict_intra_ibp_dc_rect_into(
+                        BitDepth::Ten,
+                        size,
+                        edges10,
+                        &mut compat10,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_ibp_dc_rect_into_with(
+                        backend,
+                        BitDepth::Ten,
+                        size,
+                        edges10,
+                        &mut typed10,
+                        stride,
+                    )
+                    .unwrap();
+                    assert_eq!(typed10, compat10);
+
+                    let frame_stride = size.width() + 8;
+                    let origin = frame_stride + 1;
+                    let len = (size.height() + 2) * frame_stride;
+                    for ibp in [false, true] {
+                        let mut frame8_a: Vec<u8> =
+                            (0..len).map(|i| ((i * 19 + 5) % 256) as u8).collect();
+                        let mut frame8_b = Vec::from(frame8_a.as_slice());
+                        let block8 = DcFrameBlock {
+                            size,
+                            bit_depth: BitDepth::Eight,
+                            origin,
+                            stride: frame_stride,
+                            left: true,
+                            above: true,
+                            ibp,
+                        };
+                        predict_dc_in_frame(&mut frame8_a, block8).unwrap();
+                        predict_dc_in_frame_with(backend, &mut frame8_b, block8).unwrap();
+                        assert_eq!(frame8_b, frame8_a);
+
+                        let mut frame10_a: Vec<u16> =
+                            (0..len).map(|i| ((i * 109 + 11) % 1024) as u16).collect();
+                        let mut frame10_b = Vec::from(frame10_a.as_slice());
+                        let block10 = DcFrameBlock {
+                            bit_depth: BitDepth::Ten,
+                            ..block8
+                        };
+                        predict_dc_in_frame(&mut frame10_a, block10).unwrap();
+                        predict_dc_in_frame_with(backend, &mut frame10_b, block10).unwrap();
+                        assert_eq!(frame10_b, frame10_a);
+                    }
+                }
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

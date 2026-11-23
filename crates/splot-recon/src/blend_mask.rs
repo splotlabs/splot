@@ -12,8 +12,228 @@
 //! contract the written values are unspecified.
 
 use fearless_simd::{Simd, i16x8, i32x4, prelude::*, u8x16, u16x8};
+use splot_core::simd::SimdBackend;
 
 use crate::{BitDepth, ReconSample};
+
+#[derive(Clone, Copy)]
+struct BaselineBlend;
+
+#[derive(Clone, Copy)]
+struct TypedBlend<B: SimdBackend>(B);
+
+trait BlendRunner: Copy {
+    fn blend_u8(
+        self,
+        output: (&mut [u8], usize),
+        preds: [&[i16]; 2],
+        mask: &[u8],
+        size: (usize, usize),
+    );
+    fn diff_u8(
+        self,
+        output: (&mut [u8], usize),
+        preds: [&[i16]; 2],
+        size: (usize, usize),
+        inverse: bool,
+        chroma_mask: ChromaMask<'_>,
+    );
+    fn blend_wide<O: WideSample>(
+        self,
+        output: (&mut [O], usize),
+        preds: [&[i32]; 2],
+        mask: &[u8],
+        size: (usize, usize),
+        max: i32,
+    );
+    fn diff_wide<O: WideSample>(
+        self,
+        output: (&mut [O], usize),
+        preds: [&[i32]; 2],
+        size: (usize, usize),
+        mode: (bool, i32, (i32, u32)),
+        chroma_mask: ChromaMask<'_>,
+    );
+    fn subsample(self, luma: &[u8], stride: usize, mask: &mut [u8], w: usize, sub_y: u32);
+}
+
+impl BlendRunner for BaselineBlend {
+    #[inline]
+    fn blend_u8(
+        self,
+        output: (&mut [u8], usize),
+        preds: [&[i16]; 2],
+        mask: &[u8],
+        size: (usize, usize),
+    ) {
+        baseline_simd!(simd => blend_u8_simd(simd, output, preds, mask, size));
+    }
+
+    #[inline]
+    fn diff_u8(
+        self,
+        output: (&mut [u8], usize),
+        preds: [&[i16]; 2],
+        size: (usize, usize),
+        inverse: bool,
+        chroma_mask: ChromaMask<'_>,
+    ) {
+        baseline_simd!(simd => diff_u8_simd(simd, output, preds, size, inverse, chroma_mask));
+    }
+
+    #[inline]
+    fn blend_wide<O: WideSample>(
+        self,
+        output: (&mut [O], usize),
+        preds: [&[i32]; 2],
+        mask: &[u8],
+        size: (usize, usize),
+        max: i32,
+    ) {
+        baseline_simd!(simd => blend_wide_simd(simd, output, preds, mask, size, max));
+    }
+
+    #[inline]
+    fn diff_wide<O: WideSample>(
+        self,
+        output: (&mut [O], usize),
+        preds: [&[i32]; 2],
+        size: (usize, usize),
+        mode: (bool, i32, (i32, u32)),
+        chroma_mask: ChromaMask<'_>,
+    ) {
+        baseline_simd!(simd => diff_wide_simd(simd, output, preds, size, mode, chroma_mask));
+    }
+
+    #[inline]
+    fn subsample(self, luma: &[u8], stride: usize, mask: &mut [u8], w: usize, sub_y: u32) {
+        baseline_simd!(simd => subsample_mask_simd(simd, luma, stride, mask, w, sub_y));
+    }
+}
+
+impl<B: SimdBackend> BlendRunner for TypedBlend<B> {
+    #[inline]
+    fn blend_u8(
+        self,
+        output: (&mut [u8], usize),
+        preds: [&[i16]; 2],
+        mask: &[u8],
+        size: (usize, usize),
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| blend_u8_simd(narrow.token(), output, preds, mask, size));
+    }
+
+    #[inline]
+    fn diff_u8(
+        self,
+        output: (&mut [u8], usize),
+        preds: [&[i16]; 2],
+        size: (usize, usize),
+        inverse: bool,
+        chroma_mask: ChromaMask<'_>,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            diff_u8_simd(narrow.token(), output, preds, size, inverse, chroma_mask);
+        });
+    }
+
+    #[inline]
+    fn blend_wide<O: WideSample>(
+        self,
+        output: (&mut [O], usize),
+        preds: [&[i32]; 2],
+        mask: &[u8],
+        size: (usize, usize),
+        max: i32,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| blend_wide_simd(narrow.token(), output, preds, mask, size, max));
+    }
+
+    #[inline]
+    fn diff_wide<O: WideSample>(
+        self,
+        output: (&mut [O], usize),
+        preds: [&[i32]; 2],
+        size: (usize, usize),
+        mode: (bool, i32, (i32, u32)),
+        chroma_mask: ChromaMask<'_>,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| diff_wide_simd(narrow.token(), output, preds, size, mode, chroma_mask));
+    }
+
+    #[inline]
+    fn subsample(self, luma: &[u8], stride: usize, mask: &mut [u8], w: usize, sub_y: u32) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| subsample_mask_simd(narrow.token(), luma, stride, mask, w, sub_y));
+    }
+}
+
+#[inline]
+fn blend_u8_simd<S: Simd>(
+    simd: S,
+    output: (&mut [u8], usize),
+    preds: [&[i16]; 2],
+    mask: &[u8],
+    size: (usize, usize),
+) {
+    mask_block(output, preds, mask, size, |p0, p1, m, out| {
+        let (p0, p1) = (
+            i16x8::load_array_ref(simd, p0),
+            i16x8::load_array_ref(simd, p1),
+        );
+        *out = blend(p1, p0 - p1, load_bytes(simd, *m));
+    });
+}
+
+#[inline]
+fn diff_u8_simd<S: Simd>(
+    simd: S,
+    output: (&mut [u8], usize),
+    preds: [&[i16]; 2],
+    size: (usize, usize),
+    inverse: bool,
+    chroma_mask: ChromaMask<'_>,
+) {
+    let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
+    diff_block(output, preds, size, chroma_mask, |p0, p1, out| {
+        narrow_weighted(simd, (p0, p1), out, flip)
+    });
+}
+
+#[inline]
+fn blend_wide_simd<S: Simd, O: WideSample>(
+    simd: S,
+    output: (&mut [O], usize),
+    preds: [&[i32]; 2],
+    mask: &[u8],
+    size: (usize, usize),
+    max: i32,
+) {
+    mask_block(output, preds, mask, size, |p0, p1, m, out| {
+        O::put(wide_blend(simd, (p0, p1), load_bytes(simd, *m), max), out);
+    });
+}
+
+#[inline]
+fn diff_wide_simd<S: Simd, O: WideSample>(
+    simd: S,
+    output: (&mut [O], usize),
+    preds: [&[i32]; 2],
+    size: (usize, usize),
+    (inverse, max, weights): (bool, i32, (i32, u32)),
+    chroma_mask: ChromaMask<'_>,
+) {
+    let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
+    diff_block(output, preds, size, chroma_mask, |p0, p1, out| {
+        let m = wide_weight(simd, (p0, p1), flip, weights);
+        O::put(wide_blend(simd, (p0, p1), m, max), out);
+        m
+    });
+}
 
 const LANES: usize = 8;
 
@@ -59,10 +279,19 @@ pub fn blend_mask_u8(
     mask: &[u8],
     (w, h): (usize, usize),
 ) {
-    baseline_simd!(simd => mask_block((output, output_stride), preds, mask, (w, h), |p0, p1, m, out| {
-        let (p0, p1) = (i16x8::load_array_ref(simd, p0), i16x8::load_array_ref(simd, p1));
-        *out = blend(p1, p0 - p1, load_bytes(simd, *m));
-    }));
+    BaselineBlend.blend_u8((output, output_stride), preds, mask, (w, h));
+}
+
+/// Typed [`blend_mask_u8`] using caller-selected `backend`.
+pub fn blend_mask_u8_with<B: SimdBackend>(
+    backend: B,
+    output: &mut [u8],
+    output_stride: usize,
+    preds: [&[i16]; 2],
+    mask: &[u8],
+    (w, h): (usize, usize),
+) {
+    TypedBlend(backend).blend_u8((output, output_stride), preds, mask, (w, h));
 }
 
 /// Derives the § 7.13.3.28 difference-weight mask of two eight-bit compound
@@ -94,12 +323,37 @@ pub fn blend_diff_weighted_u8(
     inverse: bool,
     chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
 ) {
-    baseline_simd!(simd => {
-        let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
-        diff_block((output, output_stride), preds, (w, h), chroma_mask, |p0, p1, out| {
-            narrow_weighted(simd, (p0, p1), out, flip)
-        });
-    });
+    BaselineBlend.diff_u8((output, output_stride), preds, (w, h), inverse, chroma_mask);
+}
+
+/// Typed [`blend_diff_weighted_u8`] using caller-selected `backend`.
+pub fn blend_diff_weighted_u8_with<B: SimdBackend>(
+    backend: B,
+    output: &mut [u8],
+    output_stride: usize,
+    preds: [&[i16]; 2],
+    (w, h): (usize, usize),
+    inverse: bool,
+    chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
+) {
+    TypedBlend(backend).diff_u8((output, output_stride), preds, (w, h), inverse, chroma_mask);
+}
+
+fn blend_mask_wide_with_runner<R: BlendRunner, O: ReconSample>(
+    runner: R,
+    output: &mut [O],
+    output_stride: usize,
+    preds: [&[i32]; 2],
+    mask: &[u8],
+    size: (usize, usize),
+    bit_depth: BitDepth,
+) {
+    let max = i32::from(bit_depth.max_sample());
+    if let Some(output) = O::u8_slice_mut(&mut *output) {
+        runner.blend_wide((output, output_stride), preds, mask, size, max);
+    } else if let Some(output) = O::u16_slice_mut(output) {
+        runner.blend_wide((output, output_stride), preds, mask, size, max);
+    }
 }
 
 /// [`blend_mask_u8`] of `i32` compound predictors at either bit depth, into
@@ -117,21 +371,69 @@ pub fn blend_mask_wide<O: ReconSample>(
     output_stride: usize,
     preds: [&[i32]; 2],
     mask: &[u8],
-    (w, h): (usize, usize),
+    size: (usize, usize),
     bit_depth: BitDepth,
 ) {
+    blend_mask_wide_with_runner(
+        BaselineBlend,
+        output,
+        output_stride,
+        preds,
+        mask,
+        size,
+        bit_depth,
+    );
+}
+
+/// Typed [`blend_mask_wide`] using caller-selected `backend`.
+pub fn blend_mask_wide_with<B: SimdBackend, O: ReconSample>(
+    backend: B,
+    output: &mut [O],
+    output_stride: usize,
+    preds: [&[i32]; 2],
+    mask: &[u8],
+    size: (usize, usize),
+    bit_depth: BitDepth,
+) {
+    blend_mask_wide_with_runner(
+        TypedBlend(backend),
+        output,
+        output_stride,
+        preds,
+        mask,
+        size,
+        bit_depth,
+    );
+}
+
+fn blend_diff_weighted_wide_with_runner<R: BlendRunner, O: ReconSample>(
+    runner: R,
+    output: &mut [O],
+    output_stride: usize,
+    preds: [&[i32]; 2],
+    size: (usize, usize),
+    (inverse, bit_depth): (bool, BitDepth),
+    chroma_mask: ChromaMask<'_>,
+) {
     let max = i32::from(bit_depth.max_sample());
-    macro_rules! run {
-        ($output:expr) => {
-            baseline_simd!(simd => mask_block(($output, output_stride), preds, mask, (w, h), |p0, p1, m, out| {
-                WideSample::put(wide_blend(simd, (p0, p1), load_bytes(simd, *m), max), out);
-            }))
-        };
-    }
+    let diff_round = u32::from(bit_depth.bits() - 8) + 4;
+    let weights = (1 << (diff_round - 1), diff_round + 4);
     if let Some(output) = O::u8_slice_mut(&mut *output) {
-        run!(output);
+        runner.diff_wide(
+            (output, output_stride),
+            preds,
+            size,
+            (inverse, max, weights),
+            chroma_mask,
+        );
     } else if let Some(output) = O::u16_slice_mut(output) {
-        run!(output);
+        runner.diff_wide(
+            (output, output_stride),
+            preds,
+            size,
+            (inverse, max, weights),
+            chroma_mask,
+        );
     }
 }
 
@@ -146,30 +448,40 @@ pub fn blend_diff_weighted_wide<O: ReconSample>(
     output: &mut [O],
     output_stride: usize,
     preds: [&[i32]; 2],
-    (w, h): (usize, usize),
-    (inverse, bit_depth): (bool, BitDepth),
+    size: (usize, usize),
+    mode: (bool, BitDepth),
     chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
 ) {
-    let max = i32::from(bit_depth.max_sample());
-    let diff_round = u32::from(bit_depth.bits() - 8) + 4;
-    let weights = (1 << (diff_round - 1), diff_round + 4);
-    macro_rules! run {
-        ($output:expr) => {
-            baseline_simd!(simd => {
-                let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
-                diff_block(($output, output_stride), preds, (w, h), chroma_mask, |p0, p1, out| {
-                    let m = wide_weight(simd, (p0, p1), flip, weights);
-                    WideSample::put(wide_blend(simd, (p0, p1), m, max), out);
-                    m
-                })
-            })
-        };
-    }
-    if let Some(output) = O::u8_slice_mut(&mut *output) {
-        run!(output);
-    } else if let Some(output) = O::u16_slice_mut(output) {
-        run!(output);
-    }
+    blend_diff_weighted_wide_with_runner(
+        BaselineBlend,
+        output,
+        output_stride,
+        preds,
+        size,
+        mode,
+        chroma_mask,
+    );
+}
+
+/// Typed [`blend_diff_weighted_wide`] using caller-selected `backend`.
+pub fn blend_diff_weighted_wide_with<B: SimdBackend, O: ReconSample>(
+    backend: B,
+    output: &mut [O],
+    output_stride: usize,
+    preds: [&[i32]; 2],
+    size: (usize, usize),
+    mode: (bool, BitDepth),
+    chroma_mask: Option<(&mut [u8], usize, (u32, u32))>,
+) {
+    blend_diff_weighted_wide_with_runner(
+        TypedBlend(backend),
+        output,
+        output_stride,
+        preds,
+        size,
+        mode,
+        chroma_mask,
+    );
 }
 
 fn rest<V>(buffer: &[V], start: usize) -> &[V] {
@@ -524,18 +836,44 @@ fn narrow_weighted<S: Simd>(
 /// apart, into the packed `w`-wide `mask` (`w % 4 == 0`): the `Round2` of
 /// each 2x1 sum by 1 when `sub_y == 0`, else of each 2x2 sum by 2.
 pub(crate) fn subsample_mask(luma: &[u8], stride: usize, mask: &mut [u8], w: usize, sub_y: u32) {
+    BaselineBlend.subsample(luma, stride, mask, w, sub_y);
+}
+
+/// Typed [`subsample_mask`] using caller-selected `backend`.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired in follow-up workspace/inter PR")
+)]
+pub(crate) fn subsample_mask_with<B: SimdBackend>(
+    backend: B,
+    luma: &[u8],
+    stride: usize,
+    mask: &mut [u8],
+    w: usize,
+    sub_y: u32,
+) {
+    TypedBlend(backend).subsample(luma, stride, mask, w, sub_y);
+}
+
+#[inline]
+fn subsample_mask_simd<S: Simd>(
+    simd: S,
+    luma: &[u8],
+    stride: usize,
+    mask: &mut [u8],
+    w: usize,
+    sub_y: u32,
+) {
     let pairs = |y: usize| rest(luma, y * stride).get(..2 * w).unwrap_or_default();
-    baseline_simd!(simd => {
-        for (y, out) in mask.chunks_exact_mut(w.max(1)).enumerate() {
-            let (upper, lower) = (pairs(y << sub_y), pairs((y << sub_y) + sub_y as usize));
-            let rows = upper.as_chunks().0.iter().zip(lower.as_chunks().0);
-            for ((upper, lower), out) in rows.zip(out.as_chunks_mut().0) {
-                let sums = load_bytes(simd, *upper).pairwise_widening_add()
-                    + load_bytes(simd, *lower).pairwise_widening_add();
-                store_quarter((sums + 2) >> 2, out);
-            }
+    for (y, out) in mask.chunks_exact_mut(w.max(1)).enumerate() {
+        let (upper, lower) = (pairs(y << sub_y), pairs((y << sub_y) + sub_y as usize));
+        let rows = upper.as_chunks().0.iter().zip(lower.as_chunks().0);
+        for ((upper, lower), out) in rows.zip(out.as_chunks_mut().0) {
+            let sums = load_bytes(simd, *upper).pairwise_widening_add()
+                + load_bytes(simd, *lower).pairwise_widening_add();
+            store_quarter((sums + 2) >> 2, out);
         }
-    });
+    }
 }
 
 #[inline]
@@ -728,5 +1066,123 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                let (w, h, stride) = (16, 8, 20);
+                let preds16: [Vec<i16>; 2] = [
+                    (0..w * h)
+                        .map(|i| ((i * 53) % 8000) as i16 - 2000)
+                        .collect(),
+                    (0..w * h)
+                        .map(|i| ((i * 79) % 8000) as i16 - 1500)
+                        .collect(),
+                ];
+                let mask: Vec<u8> = (0..w * h).map(|i| ((i * 11) % 65) as u8).collect();
+                let mut compat_u8 = vec![0x33u8; stride * h];
+                let mut typed_u8 = Vec::from(compat_u8.as_slice());
+                blend_mask_u8(
+                    &mut compat_u8,
+                    stride,
+                    [&preds16[0], &preds16[1]],
+                    &mask,
+                    (w, h),
+                );
+                blend_mask_u8_with(
+                    backend,
+                    &mut typed_u8,
+                    stride,
+                    [&preds16[0], &preds16[1]],
+                    &mask,
+                    (w, h),
+                );
+                assert_eq!(typed_u8, compat_u8);
+
+                let mut mask_compat = vec![0u8; (w / 2) * (h / 2)];
+                let mut mask_typed = vec![0u8; (w / 2) * (h / 2)];
+                blend_diff_weighted_u8(
+                    &mut compat_u8,
+                    stride,
+                    [&preds16[0], &preds16[1]],
+                    (w, h),
+                    true,
+                    Some((&mut mask_compat, w / 2, (1, 1))),
+                );
+                blend_diff_weighted_u8_with(
+                    backend,
+                    &mut typed_u8,
+                    stride,
+                    [&preds16[0], &preds16[1]],
+                    (w, h),
+                    true,
+                    Some((&mut mask_typed, w / 2, (1, 1))),
+                );
+                assert_eq!(typed_u8, compat_u8);
+                assert_eq!(mask_typed, mask_compat);
+
+                let preds32: [Vec<i32>; 2] = [
+                    (0..w * h)
+                        .map(|i| (i as i32 * 131) % 16000 - 4000)
+                        .collect(),
+                    (0..w * h).map(|i| (i as i32 * 97) % 16000 - 3000).collect(),
+                ];
+                let mut compat_u16 = vec![17u16; stride * h];
+                let mut typed_u16 = Vec::from(compat_u16.as_slice());
+                blend_mask_wide(
+                    &mut compat_u16,
+                    stride,
+                    [&preds32[0], &preds32[1]],
+                    &mask,
+                    (w, h),
+                    BitDepth::Ten,
+                );
+                blend_mask_wide_with(
+                    backend,
+                    &mut typed_u16,
+                    stride,
+                    [&preds32[0], &preds32[1]],
+                    &mask,
+                    (w, h),
+                    BitDepth::Ten,
+                );
+                assert_eq!(typed_u16, compat_u16);
+
+                blend_diff_weighted_wide(
+                    &mut compat_u16,
+                    stride,
+                    [&preds32[0], &preds32[1]],
+                    (w, h),
+                    (false, BitDepth::Ten),
+                    Some((&mut mask_compat, w / 2, (1, 0))),
+                );
+                blend_diff_weighted_wide_with(
+                    backend,
+                    &mut typed_u16,
+                    stride,
+                    [&preds32[0], &preds32[1]],
+                    (w, h),
+                    (false, BitDepth::Ten),
+                    Some((&mut mask_typed, w / 2, (1, 0))),
+                );
+                assert_eq!(typed_u16, compat_u16);
+                assert_eq!(mask_typed, mask_compat);
+
+                let mut sub_compat = vec![0u8; (w / 2) * (h / 2)];
+                let mut sub_typed = vec![0u8; (w / 2) * (h / 2)];
+                subsample_mask(&mask, w, &mut sub_compat, w / 2, 1);
+                subsample_mask_with(backend, &mask, w, &mut sub_typed, w / 2, 1);
+                assert_eq!(sub_typed, sub_compat);
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

@@ -13,6 +13,7 @@ use crate::intra_dc_math::{
 };
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8};
+use splot_core::simd::SimdBackend;
 
 const MIN_SQUARE_BLOCK_LOG2: u8 = 2;
 const MAX_SQUARE_BLOCK_LOG2: u8 = 6;
@@ -409,13 +410,63 @@ pub fn predict_intra_dc_square<T: ReconSample>(
     SquareIntraPredictionBlock::filled(size, sample)
 }
 
-/// Writes the § 7.11.4 palette prediction `output[i] = colors[map[i]]` and
-/// returns the largest color index of `map`, which the caller checks against
-/// the palette size. `map` and `output` have the same length, a multiple of 16.
-///
-/// # Errors
-/// Returns [`ReconError::BufferLengthMismatch`] for other lengths.
-pub fn predict_intra_palette_into<T: ReconSample>(
+#[derive(Clone, Copy)]
+struct BaselineIntra;
+
+#[derive(Clone, Copy)]
+struct TypedIntra<B: SimdBackend>(B);
+
+trait IntraRunner: Copy {
+    fn palette<P: PaletteSample>(
+        self,
+        low: [u8; 16],
+        high: Option<[u8; 16]>,
+        map: &[u8],
+        output: &mut [P],
+    ) -> u8;
+    fn average<P: IntraLaneSample>(self, primary: &mut [P], secondary: &[P]);
+}
+
+impl IntraRunner for BaselineIntra {
+    #[inline]
+    fn palette<P: PaletteSample>(
+        self,
+        low: [u8; 16],
+        high: Option<[u8; 16]>,
+        map: &[u8],
+        output: &mut [P],
+    ) -> u8 {
+        baseline_simd!(simd => palette_lanes(simd, low, high, map, output))
+    }
+
+    #[inline]
+    fn average<P: IntraLaneSample>(self, primary: &mut [P], secondary: &[P]) {
+        baseline_simd!(simd => average_lanes(simd, primary, secondary));
+    }
+}
+
+impl<B: SimdBackend> IntraRunner for TypedIntra<B> {
+    #[inline]
+    fn palette<P: PaletteSample>(
+        self,
+        low: [u8; 16],
+        high: Option<[u8; 16]>,
+        map: &[u8],
+        output: &mut [P],
+    ) -> u8 {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| palette_lanes(narrow.token(), low, high, map, output))
+    }
+
+    #[inline]
+    fn average<P: IntraLaneSample>(self, primary: &mut [P], secondary: &[P]) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| average_lanes(narrow.token(), primary, secondary));
+    }
+}
+
+fn predict_intra_palette_into_with_runner<R: IntraRunner, T: ReconSample>(
+    runner: R,
     colors: &[u16; 8],
     map: &[u8],
     output: &mut [T],
@@ -431,16 +482,43 @@ pub fn predict_intra_palette_into<T: ReconSample>(
     };
     let (low, high) = (byte(0), byte(8));
     if let Some(output) = T::u8_slice_mut(output) {
-        return Ok(baseline_simd!(simd => palette_lanes(simd, low, None, map, output)));
+        return Ok(runner.palette(low, None, map, output));
     }
     if let Some(output) = T::u16_slice_mut(output) {
-        return Ok(baseline_simd!(simd => palette_lanes(simd, low, Some(high), map, output)));
+        return Ok(runner.palette(low, Some(high), map, output));
     }
     Err(ReconError::SampleValueUnsupportedStorage {
         sample_type: T::TYPE_NAME,
         value: 0,
         max: 0,
     })
+}
+
+/// Writes the § 7.11.4 palette prediction `output[i] = colors[map[i]]` and
+/// returns the largest color index of `map`, which the caller checks against
+/// the palette size. `map` and `output` have the same length, a multiple of 16.
+///
+/// # Errors
+/// Returns [`ReconError::BufferLengthMismatch`] for other lengths.
+pub fn predict_intra_palette_into<T: ReconSample>(
+    colors: &[u16; 8],
+    map: &[u8],
+    output: &mut [T],
+) -> Result<u8> {
+    predict_intra_palette_into_with_runner(BaselineIntra, colors, map, output)
+}
+
+/// Typed [`predict_intra_palette_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns [`ReconError::BufferLengthMismatch`] for non-matching or non-16-aligned lengths.
+pub fn predict_intra_palette_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    colors: &[u16; 8],
+    map: &[u8],
+    output: &mut [T],
+) -> Result<u8> {
+    predict_intra_palette_into_with_runner(TypedIntra(backend), colors, map, output)
 }
 
 /// Sample storage a palette lookup writes: bytes from the low table, or
@@ -496,12 +574,11 @@ fn palette_lanes<S: Simd, P: PaletteSample>(
     simd.reduce_max_u8x16(max)
 }
 
-/// Replaces `primary` with the rounded average `(primary + secondary + 1) >>
-/// 1` of two predictions of the same length, a multiple of 16.
-///
-/// # Errors
-/// Returns [`ReconError::BufferLengthMismatch`] for other lengths.
-pub fn average_intra_predictions<T: ReconSample>(primary: &mut [T], secondary: &[T]) -> Result<()> {
+fn average_intra_predictions_with_runner<R: IntraRunner, T: ReconSample>(
+    runner: R,
+    primary: &mut [T],
+    secondary: &[T],
+) -> Result<()> {
     if primary.len() != secondary.len() || !primary.len().is_multiple_of(16) {
         return Err(ReconError::BufferLengthMismatch {
             expected: primary.len(),
@@ -509,13 +586,34 @@ pub fn average_intra_predictions<T: ReconSample>(primary: &mut [T], secondary: &
         });
     }
     if let (Some(primary), Some(secondary)) = (T::u8_slice_mut(primary), T::u8_slice(secondary)) {
-        baseline_simd!(simd => average_lanes(simd, primary, secondary));
+        runner.average(primary, secondary);
     } else if let (Some(primary), Some(secondary)) =
         (T::u16_slice_mut(primary), T::u16_slice(secondary))
     {
-        baseline_simd!(simd => average_lanes(simd, primary, secondary));
+        runner.average(primary, secondary);
     }
     Ok(())
+}
+
+/// Replaces `primary` with the rounded average `(primary + secondary + 1) >>
+/// 1` of two predictions of the same length, a multiple of 16.
+///
+/// # Errors
+/// Returns [`ReconError::BufferLengthMismatch`] for other lengths.
+pub fn average_intra_predictions<T: ReconSample>(primary: &mut [T], secondary: &[T]) -> Result<()> {
+    average_intra_predictions_with_runner(BaselineIntra, primary, secondary)
+}
+
+/// Typed [`average_intra_predictions`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns [`ReconError::BufferLengthMismatch`] for non-matching or non-16-aligned lengths.
+pub fn average_intra_predictions_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    primary: &mut [T],
+    secondary: &[T],
+) -> Result<()> {
+    average_intra_predictions_with_runner(TypedIntra(backend), primary, secondary)
 }
 
 #[inline]
@@ -998,5 +1096,57 @@ mod tests {
                 context: "square DC prediction block samples"
             })
         ));
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                let colors8 = [10, 42, 99, 128, 200, 211, 240, 255];
+                let colors10 = [10, 310, 520, 610, 740, 880, 990, 1020];
+                let map: Vec<u8> = (0..64).map(|i| (i * 3) as u8 % 7).collect();
+
+                let (mut pal8_compat, mut pal8_typed) = (vec![0u8; 64], vec![0u8; 64]);
+                assert_eq!(
+                    predict_intra_palette_into_with(backend, &colors8, &map, &mut pal8_typed)
+                        .unwrap(),
+                    predict_intra_palette_into(&colors8, &map, &mut pal8_compat).unwrap()
+                );
+                assert_eq!(pal8_typed, pal8_compat);
+
+                let (mut pal10_compat, mut pal10_typed) = (vec![0u16; 64], vec![0u16; 64]);
+                assert_eq!(
+                    predict_intra_palette_into_with(backend, &colors10, &map, &mut pal10_typed)
+                        .unwrap(),
+                    predict_intra_palette_into(&colors10, &map, &mut pal10_compat).unwrap()
+                );
+                assert_eq!(pal10_typed, pal10_compat);
+
+                let sec8: Vec<u8> = (0..64).map(|i| ((i * 19 + 5) % 256) as u8).collect();
+                let (mut avg8_compat, mut avg8_typed) = (
+                    Vec::from(pal8_compat.as_slice()),
+                    Vec::from(pal8_compat.as_slice()),
+                );
+                average_intra_predictions(&mut avg8_compat, &sec8).unwrap();
+                average_intra_predictions_with(backend, &mut avg8_typed, &sec8).unwrap();
+                assert_eq!(avg8_typed, avg8_compat);
+
+                let sec10: Vec<u16> = (0..64).map(|i| ((i * 71 + 9) % 1024) as u16).collect();
+                let (mut avg10_compat, mut avg10_typed) = (
+                    Vec::from(pal10_compat.as_slice()),
+                    Vec::from(pal10_compat.as_slice()),
+                );
+                average_intra_predictions(&mut avg10_compat, &sec10).unwrap();
+                average_intra_predictions_with(backend, &mut avg10_typed, &sec10).unwrap();
+                assert_eq!(avg10_typed, avg10_compat);
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }
