@@ -430,6 +430,8 @@ pub(crate) fn derive_inter_block_setup(
         allow_bawp,
         allow_warpmv_mode,
         allow_intrabc: crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(core),
+        allow_local_intrabc:
+            crate::filters::wienerns_lr::intrabc_records::frame_allows_local_intrabc(core),
         frame_is_switch,
         current_order_hint,
         temporal_first_frame: frame_temporal_first(

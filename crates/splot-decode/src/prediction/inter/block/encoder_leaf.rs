@@ -819,6 +819,7 @@ impl EncoderInterTile {
             grid: &mut self.grid,
             ref_mv_bank: &mut self.ref_mv_bank,
             warp_param_bank: &mut self.warp_bank,
+            ibc_local: None,
             core: &self.core,
             temporal: self.temporal.as_deref(),
             order_hints: OrderHintMvContext::new(

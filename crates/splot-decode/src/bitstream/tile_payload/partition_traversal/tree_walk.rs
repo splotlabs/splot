@@ -155,6 +155,11 @@ pub(crate) trait LeafDecoder<'payload> {
         frontier: &DecodeBlockFrontier,
         neighbours: LeafNeighbours<'_>,
     ) -> Result<(GeneralIntraLeafMode, Self::Command), Self::Error>;
+
+    /// Notifies the decoder when an out-of-frame partition node terminates
+    /// (`r >= MiRows || c >= MiCols`), for § 5.20.3.1 `IBCCoded` and IBC
+    /// buffer updates.
+    fn on_out_of_frame_partition(&mut self, _publication: DecodedLeafPublication) {}
 }
 
 /// A closure as the leaf syntax of both BRU states.
@@ -407,6 +412,13 @@ where
             .map_err(TilePartitionTraversalError::from)?;
     }
     if !walker.sb_inside_frame && !call_in_frame(frame, call) {
+        hooks
+            .on_leaf
+            .on_out_of_frame_partition(DecodedLeafPublication::new(
+                call,
+                call.b_size,
+                walker.sb_mask,
+            ));
         return Ok(());
     }
     let chroma_ref = call.chroma_ref(walker.chroma_ref);

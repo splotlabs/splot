@@ -92,6 +92,9 @@ pub(super) fn resolve_parsed_leaves(
     debug_assert_eq!(intrabc_sb_h4, sb_h4);
     for superblock in &row.superblocks {
         let [r, c] = superblock.origin;
+        if let Some(ibc) = state.ibc_local.as_mut() {
+            ibc.begin_superblock(r, superblock.bru_inactive);
+        }
         if let Some(bank) = state.ref_mv_bank.as_mut() {
             bank.reset_for_leaf(state.grid, r, c, intrabc_sb_h4, !is_intra);
         }
@@ -103,6 +106,15 @@ pub(super) fn resolve_parsed_leaves(
             .get_mut(superblock.entries.clone())
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         for entry in entries {
+            if let EntryState::OutOfFrame = entry.state {
+                if let Some(ibc) = state.ibc_local.as_mut()
+                    && let Some((mi_row, mi_col, n4w, n4h)) =
+                        entry.publication.luma_tree_block(superblock.origin)
+                {
+                    ibc.record_out_of_frame(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                }
+                continue;
+            }
             if let EntryState::Intra(_) = entry.state {
                 if let Some((mi_row, mi_col, n4w, n4h)) =
                     entry.publication.luma_tree_block(superblock.origin)
@@ -111,19 +123,45 @@ pub(super) fn resolve_parsed_leaves(
                     if let Some(bank) = state.ref_mv_bank.as_mut() {
                         bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
                     }
+                    if let Some(ibc) = state.ibc_local.as_mut() {
+                        ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                        ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    }
                 }
                 continue;
             }
+            let luma_block = entry.publication.luma_tree_block(superblock.origin);
             let Some(slot) = entry.slot_mut(&mut row.slots) else {
                 continue;
             };
             match slot {
-                LeafSlot::PendingInter(command) => *slot = LeafSlot::Inter(command.resolve(state)?),
+                LeafSlot::PendingInter(command) => {
+                    if let Some(ibc) = state.ibc_local.as_mut()
+                        && let Some((mi_row, mi_col, n4w, n4h)) = luma_block
+                    {
+                        ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    }
+                    *slot = LeafSlot::Inter(command.resolve(state)?);
+                    if let Some(ibc) = state.ibc_local.as_mut()
+                        && let Some((mi_row, mi_col, n4w, n4h)) = luma_block
+                    {
+                        ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    }
+                }
                 LeafSlot::PendingIntrabc(_) => {
                     let LeafSlot::PendingIntrabc(block) = core::mem::replace(slot, LeafSlot::Spent)
                     else {
                         return Err(invalid_inter_tile_scheduling_state());
                     };
+                    if let Some(ibc) = state.ibc_local.as_mut() {
+                        ibc.enter_leaf(
+                            block.frontier.r,
+                            block.frontier.c,
+                            block.n4w,
+                            block.n4h,
+                            superblock.bru_inactive,
+                        );
+                    }
                     *slot = LeafSlot::Intrabc(resolve_pending_intrabc(
                         block,
                         state,
@@ -220,12 +258,15 @@ fn resolve_pending_intrabc(
         subsampling,
         state.tile_offset,
     )?;
+    #[cfg(test)]
+    crate::filters::wienerns_lr::recon::record_bru_intrabc_block();
     crate::filters::wienerns_lr::intrabc_mv_valid::check_intrabc_block_vector(
         state.core,
         &frontier,
         (n4w, n4h),
         (sb_h4, allow_extra_ibc_range),
         info,
+        state.ibc_local.as_deref(),
         state.tile_offset,
     )?;
     let command = intrabc::IntrabcReconCommand::new(
@@ -397,6 +438,8 @@ pub(super) struct MvResolutionState<'a> {
     pub(super) grid: &'a mut NeighbourMvGrid,
     pub(super) ref_mv_bank: &'a mut Option<RefMvBank>,
     pub(super) warp_param_bank: &'a mut WarpParamBank,
+    pub(super) ibc_local:
+        Option<&'a mut crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>,
     pub(super) core: &'a FrameHeaderCore,
     pub(super) temporal: Option<&'a TemporalMvContext>,
     pub(super) order_hints: OrderHintMvContext<'a>,

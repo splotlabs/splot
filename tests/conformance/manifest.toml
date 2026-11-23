@@ -1367,6 +1367,31 @@ description = "Six 8-bit 256x256 frames in 2x2 tiles (--tile-columns=1 --tile-ro
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-local-intrabc-8bit.ivf"
+description = "Six 8-bit 320x128 frames (5x2 SB64) with repeated/fractional-shifted screen glyphs and localized updates, avmenc --enable-bru=1 --tune-content=screen --enable-intrabc=1 --enable-intrabc-ext=1 --qp=140: frames 3-5 combine use_bru == 1 with BRU_INACTIVE/BRU_SUPPORT/BRU_ACTIVE superblocks and actual use_intrabc blocks in the same frame, plus reference reuse; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-local-intrabc-10bit.ivf"
+description = "Six 10-bit 320x128 frames matching syn-bru-local-intrabc-8bit (--bit-depth=10 --input-bit-depth=10 --qp=140): frames 3-5 exercise 10-bit partial BRU superblock transitions and local IntraBC in the same frame; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-local-intrabc-multitile-8bit.ivf"
+description = "Six 8-bit 256x256 frames in 2x2 tiles (--tile-columns=1 --tile-rows=1 --disable-loopfilters-across-tiles=1) with active tiles abutting tile borders: frames 3-5 combine partial BRU superblock modes (inactive/support/active) and same-tile local IntraBC copies; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-local-intrabc-lr-8bit.ivf"
+description = "Six 8-bit 320x128 frames combining avmenc --enable-bru=1 --tune-content=screen --enable-intrabc=1 --enable-intrabc-ext=1 --enable-restoration=1 --enable-wiener-nonsep=1 --enable-pc-wiener=1 --qp=165: frames 3-5 exercise partial BRU, active loop restoration, and local IntraBC in the same frame; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-local-intrabc-gdf-8bit.ivf"
+description = "Six 8-bit 320x128 frames combining avmenc --enable-bru=1 --tune-content=screen --enable-intrabc=1 --enable-intrabc-ext=1 --enable-gdf=1 --gdf-unit-matches-sb=1 --qp=140: frame 3 exercises partial BRU, active per-block GDF, and local IntraBC in the same frame; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-intra-64x64-10bit.ivf"
 description = "10-bit intra key frame at 64x64 (bit_depth_idc path); validates clean."
 expect = "clean"

@@ -125,6 +125,7 @@ pub(crate) struct TileWalkParams {
     pub(super) allow_bawp: bool,
     pub(super) allow_warpmv_mode: bool,
     pub(super) allow_intrabc: bool,
+    pub(super) allow_local_intrabc: bool,
     pub(super) frame_is_switch: bool,
     pub(super) current_order_hint: u32,
     pub(super) temporal_first_frame: bool,
@@ -255,6 +256,13 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
             super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
         }
         .map(|leaf| (leaf, ()))
+    }
+
+    fn on_out_of_frame_partition(&mut self, publication: DecodedLeafPublication) {
+        if self.sink.params.allow_local_intrabc {
+            self.entries
+                .push(ReconRowEntry::new(publication, EntryState::OutOfFrame));
+        }
     }
 }
 
@@ -606,8 +614,12 @@ impl<'payload> TileParser<'payload> {
             let origin = walk.next_origin();
             let next = walk.decode_next_superblock(tile, &mut block_context, &mut on_published);
             if let Some(superblock) =
-                ReconSuperblock::new(origin, first..block_context.entries.len())
-                    .map(|sb| sb.with_allow_extra_ibc_range(walk.allow_extra_ibc_range()))
+                ReconSuperblock::new(origin, first..block_context.entries.len()).map(|sb| {
+                    sb.with_allow_extra_ibc_range(walk.allow_extra_ibc_range())
+                        .with_bru_inactive(
+                            walk.bru_mode() == crate::bitstream::tile_payload::BRU_INACTIVE,
+                        )
+                })
             {
                 row.superblocks.push(superblock);
             }
@@ -668,18 +680,37 @@ fn finish_tile_symbols(symbols: SymbolDecoder<'_>, tile_offset: ByteOffset) -> R
 struct TileResolveState {
     ref_mv_bank: Option<super::super::find_mv_stack::RefMvBank>,
     warp_param_bank: super::super::find_mv_stack::WarpParamBank,
+    ibc_local: Option<crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>,
 }
 
 impl TileResolveState {
-    fn new(sequence: &SequenceHeader) -> Self {
-        Self {
+    fn new(
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        tile_cols: Range<usize>,
+        sb_h4: usize,
+    ) -> Result<Self> {
+        let ibc_local =
+            if crate::filters::wienerns_lr::intrabc_records::frame_allows_local_intrabc(core) {
+                let sdp_intra = sequence.partition.is_some_and(|p| p.enable_sdp)
+                    && core.frame_is_intra == Some(true);
+                Some(
+                    crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState::new(
+                        tile_cols, sb_h4, sdp_intra,
+                    )?,
+                )
+            } else {
+                None
+            };
+        Ok(Self {
             ref_mv_bank: sequence
                 .inter
                 .as_ref()
                 .is_some_and(|inter| inter.enable_refmvbank)
                 .then(super::super::find_mv_stack::RefMvBank::new),
             warp_param_bank: super::super::find_mv_stack::WarpParamBank::new(),
-        }
+            ibc_local,
+        })
     }
 
     /// Replays one parsed unit's § 7.12 work, in the leaf order the fused walk
@@ -700,6 +731,7 @@ impl TileResolveState {
                 grid,
                 ref_mv_bank: &mut self.ref_mv_bank,
                 warp_param_bank: &mut self.warp_param_bank,
+                ibc_local: self.ibc_local.as_mut(),
                 core: context.core,
                 temporal: frame_uses_temporal_mvs(context.core).then_some(temporal_context),
                 order_hints: temporal_context.order_hint_mv_context(),
@@ -756,6 +788,7 @@ pub(super) struct ReconRowEntry {
 pub(super) enum EntryState {
     Intra(crate::pipeline::general_intra::GeneralIntraReconCommand),
     Slot(u32),
+    OutOfFrame,
     Spent,
 }
 
@@ -776,14 +809,14 @@ impl ReconRowEntry {
     fn slot<'a>(&self, slots: &'a [LeafSlot]) -> Option<&'a LeafSlot> {
         match self.state {
             EntryState::Slot(index) => slots.get(index as usize),
-            EntryState::Intra(_) | EntryState::Spent => None,
+            EntryState::Intra(_) | EntryState::OutOfFrame | EntryState::Spent => None,
         }
     }
 
     pub(super) fn slot_mut<'a>(&self, slots: &'a mut [LeafSlot]) -> Option<&'a mut LeafSlot> {
         match self.state {
             EntryState::Slot(index) => slots.get_mut(index as usize),
-            EntryState::Intra(_) | EntryState::Spent => None,
+            EntryState::Intra(_) | EntryState::OutOfFrame | EntryState::Spent => None,
         }
     }
 
@@ -863,6 +896,8 @@ pub(super) struct ReconSuperblock {
     pub(super) entries: Range<usize>,
     /// § 5.20.3.1 `AllowExtraIBCRange` of the superblock.
     pub(super) allow_extra_ibc_range: bool,
+    /// Whether the superblock's § 5.20.2.1 `bru_mode` is `BRU_INACTIVE`.
+    pub(super) bru_inactive: bool,
 }
 
 impl ReconSuperblock {
@@ -871,11 +906,17 @@ impl ReconSuperblock {
             origin,
             entries,
             allow_extra_ibc_range: false,
+            bru_inactive: false,
         })
     }
 
     const fn with_allow_extra_ibc_range(mut self, allow: bool) -> Self {
         self.allow_extra_ibc_range = allow;
+        self
+    }
+
+    const fn with_bru_inactive(mut self, bru_inactive: bool) -> Self {
+        self.bru_inactive = bru_inactive;
         self
     }
 }
@@ -2190,7 +2231,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
             parse_state,
             NeighbourGridMode::MotionAndEdges,
         )?;
-        let mut resolve_state = TileResolveState::new(sequence);
+        let mut resolve_state =
+            TileResolveState::new(sequence, context.core, tile_mi_cols.clone(), sb_h4)?;
         let mut commit = TileCommit::direct(
             ordered,
             workspace,
