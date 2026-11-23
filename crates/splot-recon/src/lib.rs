@@ -164,11 +164,17 @@ pub use intra_directional_angle::{
     IntraDirectionalAngleIdifEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges,
     apply_intra_edge_filter, filter_intra_edge_corner, predict_intra_directional_angle_rect_into,
+    predict_intra_directional_angle_rect_into_with,
     predict_intra_directional_angle_rect_one_sided_idif_into,
+    predict_intra_directional_angle_rect_one_sided_idif_into_with,
     predict_intra_directional_angle_rect_one_sided_idif_mrl_into,
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with,
     predict_intra_middle_directional_angle_rect_idif_into,
+    predict_intra_middle_directional_angle_rect_idif_into_with,
     predict_intra_middle_directional_angle_rect_idif_mrl_into,
+    predict_intra_middle_directional_angle_rect_idif_mrl_into_with,
     predict_intra_middle_directional_angle_rect_into,
+    predict_intra_middle_directional_angle_rect_into_with,
 };
 pub use intra_edge_filter::apply_intra_edge_filter_with;
 pub use intra_ibp_angular::{apply_ibp_dr_blend_rect, apply_ibp_dr_blend_rect_with};
@@ -193,8 +199,10 @@ pub use loop_restoration::{
     LoopRestorationSourceSample, LoopRestorationSourceSampleValue, loop_restoration_source_sample,
 };
 pub use optflow::{
-    OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas_into,
-    optflow_unit_8x8_u8, optflow_unit_8x8_u16,
+    OptflowScratch, derive_optflow_mv_delta_8x8_strided_into,
+    derive_optflow_mv_delta_8x8_strided_into_with, derive_optflow_mv_deltas_into,
+    derive_optflow_mv_deltas_into_with, optflow_unit_8x8_u8, optflow_unit_8x8_u8_with,
+    optflow_unit_8x8_u16, optflow_unit_8x8_u16_with,
 };
 pub use pc_wiener::{
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES,
@@ -243,7 +251,8 @@ pub use transform_params::{
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use warp_prediction::{
     IDENTITY_WARP_PARAMS, PreparedWarpPrediction, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
-    ext_warp_predict_unit, warp_predict_block, warp_predict_block_into, warp_shear_is_valid,
+    ext_warp_predict_unit, ext_warp_predict_unit_with, warp_predict_block, warp_predict_block_into,
+    warp_predict_block_into_with, warp_predict_block_with, warp_shear_is_valid,
 };
 pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CONFIG_UV,
@@ -259,7 +268,7 @@ pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameRect, CurrentFrameRectRowsMut,
     CurrentFrameSurface, CurrentFrameWorkspace, InterIntraMode, IntraBlockFrame,
     IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect, OwnedFrameRectRows,
-    WorkspaceRectRows, wedge_mask_into, wedge_mask_rows, wedge_mask_unit,
+    WorkspaceRectRows, wedge_mask_into, wedge_mask_into_with, wedge_mask_rows, wedge_mask_unit,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

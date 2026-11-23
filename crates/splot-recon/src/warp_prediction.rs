@@ -15,10 +15,11 @@
 //! `DECODE-INTER-COMPOUND-LOCALWARP`.
 
 #[cfg(target_arch = "x86_64")]
-use fearless_simd::{Avx2, Level};
+use fearless_simd::Avx2;
 use fearless_simd::{
     i16x8, i16x16, i32x4, i32x8, i64x2, prelude::*, u8x16, u8x32, u16x8, u16x16, u64x2,
 };
+use splot_core::simd::SimdBackend;
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 
 use crate::error::{ReconError, Result};
@@ -101,6 +102,186 @@ impl WarpPredictBlockParams {
     }
 }
 
+pub(super) trait WarpRunner: Copy {
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<Avx2>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn neon_token(self) -> Option<fearless_simd::Neon>;
+
+    fn predict_clipped<T: ReconSample>(
+        self,
+        prepared: &PreparedWarpPrediction,
+        reference: &ReferencePlaneView<'_, T>,
+        block: [usize; 4],
+        out: (&mut [T], usize),
+        max_sample: i16,
+    ) -> Result<()>;
+
+    fn ext_unit<T: ReconSample>(
+        self,
+        reference: &ReferencePlaneView<'_, T>,
+        params: &WarpPredictBlockParams,
+        coords: [i32; 2],
+        phases: [usize; 2],
+        round1: u32,
+    ) -> [i32; 16];
+
+    fn predict_block<T: ReconSample>(
+        self,
+        reference: &ReferencePlaneView<'_, T>,
+        params: &WarpPredictBlockParams,
+        shear: &Shear,
+        round1: u32,
+        output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+    ) -> Result<()>;
+}
+
+#[derive(Clone, Copy)]
+struct BaselineWarp;
+
+#[derive(Clone, Copy)]
+struct TypedWarp<B>(B);
+
+impl WarpRunner for BaselineWarp {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<Avx2> {
+        fearless_simd::Level::baseline().as_avx2()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        fearless_simd::Level::baseline().as_neon()
+    }
+
+    #[inline]
+    fn predict_clipped<T: ReconSample>(
+        self,
+        prepared: &PreparedWarpPrediction,
+        reference: &ReferencePlaneView<'_, T>,
+        block: [usize; 4],
+        out: (&mut [T], usize),
+        max_sample: i16,
+    ) -> Result<()> {
+        baseline_simd!(simd => prepared.clipped_sections(self, simd, reference, block, out, max_sample))
+    }
+
+    #[inline]
+    fn ext_unit<T: ReconSample>(
+        self,
+        reference: &ReferencePlaneView<'_, T>,
+        params: &WarpPredictBlockParams,
+        [ix4, iy4]: [i32; 2],
+        [phase_x, phase_y]: [usize; 2],
+        round1: u32,
+    ) -> [i32; 16] {
+        baseline_simd!(simd => {
+            let intermediate = ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
+            ext_unit::vertical(simd, &intermediate, phase_y, round1)
+        })
+    }
+
+    #[inline]
+    fn predict_block<T: ReconSample>(
+        self,
+        reference: &ReferencePlaneView<'_, T>,
+        params: &WarpPredictBlockParams,
+        shear: &Shear,
+        round1: u32,
+        output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+    ) -> Result<()> {
+        let rows = output.as_chunks_mut::<WARPED_BLOCK_SIZE>().0;
+        baseline_simd!(simd => {
+            warp_predict_section(self, simd, reference, params, shear, round1, |row, rounded| {
+                rounded.store_array(&mut rows[row]);
+                Ok(())
+            })
+        })
+    }
+}
+
+impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<Avx2> {
+        self.0.narrow().avx2_token()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        self.0.narrow().neon_token()
+    }
+
+    #[inline]
+    fn predict_clipped<T: ReconSample>(
+        self,
+        prepared: &PreparedWarpPrediction,
+        reference: &ReferencePlaneView<'_, T>,
+        block: [usize; 4],
+        out: (&mut [T], usize),
+        max_sample: i16,
+    ) -> Result<()> {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            prepared.clipped_sections(
+                TypedWarp(narrow),
+                narrow.token(),
+                reference,
+                block,
+                out,
+                max_sample,
+            )
+        })
+    }
+
+    #[inline]
+    fn ext_unit<T: ReconSample>(
+        self,
+        reference: &ReferencePlaneView<'_, T>,
+        params: &WarpPredictBlockParams,
+        [ix4, iy4]: [i32; 2],
+        [phase_x, phase_y]: [usize; 2],
+        round1: u32,
+    ) -> [i32; 16] {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            let simd = narrow.token();
+            let intermediate = ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
+            ext_unit::vertical(simd, &intermediate, phase_y, round1)
+        })
+    }
+
+    #[inline]
+    fn predict_block<T: ReconSample>(
+        self,
+        reference: &ReferencePlaneView<'_, T>,
+        params: &WarpPredictBlockParams,
+        shear: &Shear,
+        round1: u32,
+        output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+    ) -> Result<()> {
+        let narrow = self.0.narrow();
+        let rows = output.as_chunks_mut::<WARPED_BLOCK_SIZE>().0;
+        narrow.vectorize(|| {
+            warp_predict_section(
+                TypedWarp(narrow),
+                narrow.token(),
+                reference,
+                params,
+                shear,
+                round1,
+                |row, rounded| {
+                    rounded.store_array(&mut rows[row]);
+                    Ok(())
+                },
+            )
+        })
+    }
+}
+
 /// Validated affine-warp setup reusable across the 8x8 sections of one block.
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedWarpPrediction {
@@ -142,6 +323,30 @@ impl PreparedWarpPrediction {
         }))
     }
 
+    fn predict_block_into_with_runner<R: WarpRunner, T: ReconSample>(
+        &self,
+        runner: R,
+        reference: &ReferencePlaneView<'_, T>,
+        block_x: i32,
+        block_y: i32,
+        is_compound: bool,
+        output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+    ) -> Result<()> {
+        let params = WarpPredictBlockParams {
+            block_x,
+            block_y,
+            ..self.params
+        };
+        warp_predict_block_prepared_into_with_runner(
+            runner,
+            reference,
+            &params,
+            &self.shear,
+            is_compound,
+            output,
+        )
+    }
+
     /// Writes one 8x8 section using the prepared affine-warp setup.
     ///
     /// # Errors
@@ -155,27 +360,42 @@ impl PreparedWarpPrediction {
         is_compound: bool,
         output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
     ) -> Result<()> {
-        let params = WarpPredictBlockParams {
+        self.predict_block_into_with_runner(
+            BaselineWarp,
+            reference,
             block_x,
             block_y,
-            ..self.params
-        };
-        warp_predict_block_prepared_into(reference, &params, &self.shear, is_compound, output)
+            is_compound,
+            output,
+        )
     }
 
-    /// Predicts every 8x8 section of a non-compound `width` x `height` block at
-    /// `(x, y)` straight into `output` rows `stride` apart, applying the final
-    /// § 7.13.3.19 `Clip1` as each sample is stored.
+    /// Typed [`Self::predict_block_into`] using caller-selected `backend`.
     ///
     /// # Errors
-    /// Returns the errors of [`Self::predict_block_into`],
-    /// [`ReconError::SampleTypeUnsupportedBitDepth`] when `T` cannot hold the
-    /// bit depth, [`ReconError::ArithmeticOverflow`] when the block's end
-    /// does not fit `i32`, [`ReconError::StrideTooSmall`] when `stride` is below
-    /// `width`, or [`ReconError::BufferLengthMismatch`] when `output` cannot
-    /// hold the block.
-    pub fn predict_clipped_into<T: ReconSample>(
+    /// Returns the same errors as [`Self::predict_block_into`].
+    pub fn predict_block_into_with<B: SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
+        reference: &ReferencePlaneView<'_, T>,
+        block_x: i32,
+        block_y: i32,
+        is_compound: bool,
+        output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+    ) -> Result<()> {
+        self.predict_block_into_with_runner(
+            TypedWarp(backend.narrow()),
+            reference,
+            block_x,
+            block_y,
+            is_compound,
+            output,
+        )
+    }
+
+    fn predict_clipped_into_with_runner<R: WarpRunner, T: ReconSample>(
+        &self,
+        runner: R,
         reference: &ReferencePlaneView<'_, T>,
         [x, y, width, height]: [usize; 4],
         output: &mut [T],
@@ -210,19 +430,65 @@ impl PreparedWarpPrediction {
         let output = &mut output[..span];
         let max_sample = self.params.bit_depth.max_sample() as i16;
         let block = [x, y, width, height];
-        baseline_simd!(simd => {
-            self.clipped_sections(simd, reference, block, output, stride, max_sample)
-        })
+        runner.predict_clipped(self, reference, block, (output, stride), max_sample)
     }
 
-    #[inline(never)]
-    fn clipped_sections<S: Simd, T: ReconSample>(
+    /// Predicts every 8x8 section of a non-compound `width` x `height` block at
+    /// `(x, y)` straight into `output` rows `stride` apart, applying the final
+    /// § 7.13.3.19 `Clip1` as each sample is stored.
+    ///
+    /// # Errors
+    /// Returns the errors of [`Self::predict_block_into`],
+    /// [`ReconError::SampleTypeUnsupportedBitDepth`] when `T` cannot hold the
+    /// bit depth, [`ReconError::ArithmeticOverflow`] when the block's end
+    /// does not fit `i32`, [`ReconError::StrideTooSmall`] when `stride` is below
+    /// `width`, or [`ReconError::BufferLengthMismatch`] when `output` cannot
+    /// hold the block.
+    pub fn predict_clipped_into<T: ReconSample>(
         &self,
-        simd: S,
         reference: &ReferencePlaneView<'_, T>,
         [x, y, width, height]: [usize; 4],
         output: &mut [T],
         stride: usize,
+    ) -> Result<()> {
+        self.predict_clipped_into_with_runner(
+            BaselineWarp,
+            reference,
+            [x, y, width, height],
+            output,
+            stride,
+        )
+    }
+
+    /// Typed [`Self::predict_clipped_into`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::predict_clipped_into`].
+    pub fn predict_clipped_into_with<B: SimdBackend, T: ReconSample>(
+        &self,
+        backend: B,
+        reference: &ReferencePlaneView<'_, T>,
+        [x, y, width, height]: [usize; 4],
+        output: &mut [T],
+        stride: usize,
+    ) -> Result<()> {
+        self.predict_clipped_into_with_runner(
+            TypedWarp(backend.narrow()),
+            reference,
+            [x, y, width, height],
+            output,
+            stride,
+        )
+    }
+
+    #[inline(never)]
+    fn clipped_sections<R: WarpRunner, S: Simd, T: ReconSample>(
+        &self,
+        runner: R,
+        simd: S,
+        reference: &ReferencePlaneView<'_, T>,
+        [x, y, width, height]: [usize; 4],
+        (output, stride): (&mut [T], usize),
         max_sample: i16,
     ) -> Result<()> {
         if self.translation_two_tap_into(
@@ -245,7 +511,15 @@ impl PreparedWarpPrediction {
             let written = match output.get_mut(local_y * stride..) {
                 Some(target) if section_h == WARPED_BLOCK_SIZE => {
                     let sections = width / WARPED_BLOCK_SIZE;
-                    eight_bit::put_row(reference, &row, &self.shear, sections, target, stride)
+                    eight_bit::put_row(
+                        runner,
+                        reference,
+                        &row,
+                        &self.shear,
+                        sections,
+                        target,
+                        stride,
+                    )
                 }
                 _ => 0,
             };
@@ -269,6 +543,7 @@ impl PreparedWarpPrediction {
                     Ok(())
                 };
                 warp_predict_section(
+                    runner,
                     simd,
                     reference,
                     &params,
@@ -476,20 +751,8 @@ pub fn warp_shear_is_valid(warp_params: [i32; 6]) -> bool {
     setup_shear(warp_params).is_ok()
 }
 
-/// AV2 § 7.13.3.20 extended block warp: predicts one 4x4 unit
-/// at `(j4, i4)` (in 4-sample units relative to the block's plane top-left) by
-/// projecting the unit centre through the warp model and running the fixed-
-/// phase `Ext_Warped_Filters` two-pass interpolation over the clipped
-/// reference window. `is_compound` selects the § 7.13.3.16 `InterRound1`
-/// shift; the returned values are the unclipped `Round2(s, InterRound1)`
-/// predictors — single-reference writers finish with the § 4.8
-/// `Clip1` clamp, compound callers blend
-/// the `Preds[refList]` intermediates first.
-///
-/// # Errors
-/// Returns [`ReconError`] for invalid reference bounds, a filter phase outside
-/// the generated table, or arithmetic overflow.
-pub fn ext_warp_predict_unit<T: ReconSample>(
+fn ext_warp_predict_unit_with_runner<R: WarpRunner, T: ReconSample>(
+    runner: R,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     i4: usize,
@@ -574,10 +837,52 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
     };
     let phase_x = phase(sx4)?;
     let phase_y = phase(sy4)?;
-    Ok(baseline_simd!(simd => {
-        let intermediate = ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
-        ext_unit::vertical(simd, &intermediate, phase_y, round1)
-    }))
+    Ok(runner.ext_unit(reference, params, [ix4, iy4], [phase_x, phase_y], round1))
+}
+
+/// AV2 § 7.13.3.20 extended block warp: predicts one 4x4 unit
+/// at `(j4, i4)` (in 4-sample units relative to the block's plane top-left) by
+/// projecting the unit centre through the warp model and running the fixed-
+/// phase `Ext_Warped_Filters` two-pass interpolation over the clipped
+/// reference window. `is_compound` selects the § 7.13.3.16 `InterRound1`
+/// shift; the returned values are the unclipped `Round2(s, InterRound1)`
+/// predictors — single-reference writers finish with the § 4.8
+/// `Clip1` clamp, compound callers blend
+/// the `Preds[refList]` intermediates first.
+///
+/// # Errors
+/// Returns [`ReconError`] for invalid reference bounds, a filter phase outside
+/// the generated table, or arithmetic overflow.
+pub fn ext_warp_predict_unit<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    i4: usize,
+    j4: usize,
+    is_compound: bool,
+) -> Result<[i32; 16]> {
+    ext_warp_predict_unit_with_runner(BaselineWarp, reference, params, i4, j4, is_compound)
+}
+
+/// Typed [`ext_warp_predict_unit`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`ext_warp_predict_unit`].
+pub fn ext_warp_predict_unit_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    i4: usize,
+    j4: usize,
+    is_compound: bool,
+) -> Result<[i32; 16]> {
+    ext_warp_predict_unit_with_runner(
+        TypedWarp(backend.narrow()),
+        reference,
+        params,
+        i4,
+        j4,
+        is_compound,
+    )
 }
 
 #[inline]
@@ -726,6 +1031,21 @@ pub fn warp_predict_block<T: ReconSample>(
     Ok(output.into())
 }
 
+/// Typed [`warp_predict_block`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`warp_predict_block`].
+pub fn warp_predict_block_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    is_compound: bool,
+) -> Result<Vec<i32>> {
+    let mut output = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+    warp_predict_block_into_with(backend, reference, params, is_compound, &mut output)?;
+    Ok(output.into())
+}
+
 /// Writes one AV2 § 7.13.3.19 block-warp prediction into a caller-owned 8x8
 /// array.
 ///
@@ -750,7 +1070,29 @@ pub fn warp_predict_block_into<T: ReconSample>(
     )
 }
 
-fn warp_predict_block_prepared_into<T: ReconSample>(
+/// Typed [`warp_predict_block_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`warp_predict_block_into`].
+pub fn warp_predict_block_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    is_compound: bool,
+    output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+) -> Result<()> {
+    PreparedWarpPrediction::new(params)?.predict_block_into_with(
+        backend,
+        reference,
+        params.block_x,
+        params.block_y,
+        is_compound,
+        output,
+    )
+}
+
+fn warp_predict_block_prepared_into_with_runner<R: WarpRunner, T: ReconSample>(
+    runner: R,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     shear: &Shear,
@@ -762,19 +1104,14 @@ fn warp_predict_block_prepared_into<T: ReconSample>(
     } else {
         INTER_ROUND1_NON_COMPOUND
     };
-    let rows = output.as_chunks_mut::<WARPED_BLOCK_SIZE>().0;
-    baseline_simd!(simd => {
-        warp_predict_section(simd, reference, params, shear, round1, |row, rounded| {
-            rounded.store_array(&mut rows[row]);
-            Ok(())
-        })
-    })
+    runner.predict_block(reference, params, shear, round1, output)
 }
 
 /// Runs both § 7.13.3.19 passes for one 8x8 section and hands each rounded
 /// output row to `store`.
 #[inline]
-fn warp_predict_section<S: Simd, T: ReconSample>(
+fn warp_predict_section<R: WarpRunner, S: Simd, T: ReconSample>(
+    runner: R,
     simd: S,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
@@ -787,7 +1124,8 @@ fn warp_predict_section<S: Simd, T: ReconSample>(
     let origin = interior_warp_source_origin(reference, params, &projected);
     if let Some(source_origin) = origin
         && !(shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some())
-        && let Some(rows) = eight_bit::section(reference, shear, &projected, source_origin, round1)
+        && let Some(rows) =
+            eight_bit::section(runner, reference, shear, &projected, source_origin, round1)
     {
         let mut store = store;
         for (row, values) in rows.into_iter().enumerate() {
@@ -1055,7 +1393,7 @@ fn checked_ext_warp_source(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Shear {
+pub(super) struct Shear {
     alpha: i32,
     beta: i32,
     gamma: i32,
@@ -1384,7 +1722,7 @@ fn column_dot_products<S: Simd>(simd: S, quads: [i32x8<S>; WARPED_BLOCK_SIZE / 2
 #[inline(always)]
 fn hadd_blocks<S: Simd>(simd: S, a: i32x8<S>, b: i32x8<S>) -> i32x8<S> {
     #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
+    if let Some(avx2) = simd.level().as_avx2() {
         return i32x8::load_array(simd, avx2_hadd_blocks(avx2, a.to_array(), b.to_array()));
     }
     #[cfg(not(target_arch = "x86_64"))]
@@ -1605,7 +1943,7 @@ fn paired_column_taps<S: Simd>(
     simd: S,
     columns: [i16x8<S>; WARPED_BLOCK_SIZE],
 ) -> [i16x16<S>; WARP_FILTER_TAPS / 2] {
-    if let Some(avx2) = Level::baseline().as_avx2() {
+    if let Some(avx2) = simd.level().as_avx2() {
         let pairs = avx2_paired_column_taps(avx2, columns.map(SimdBase::to_array));
         return pairs.map(|pair| i16x16::load_array(simd, pair));
     }

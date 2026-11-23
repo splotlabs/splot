@@ -19,10 +19,6 @@ pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> 
 }
 
 /// Typed [`samples_exceed`] using caller-selected `backend` with no baseline re-probe.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired in follow-up intra/inter PR")
-)]
 #[inline]
 pub(crate) fn samples_exceed_with<B: SimdBackend, T: ReconSample>(
     backend: B,

@@ -267,10 +267,6 @@ pub(crate) fn add_block_residual_into_rows<T: ReconSample>(
     )
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired in follow-up intra/inter PR")
-)]
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn add_block_residual_into_rows_with<B: SimdBackend, T: ReconSample>(
     backend: B,
@@ -450,10 +446,6 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
     add_residual_in_place_with_runner(BaselineResidual, samples, residual, max)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired in follow-up intra/inter PR")
-)]
 pub(crate) fn add_residual_in_place_with<B: SimdBackend, T: ReconSample>(
     backend: B,
     samples: &mut [T],
@@ -653,10 +645,6 @@ pub(crate) fn add_constant_u8_rows(
 }
 
 /// Applies [`add_constant_u8_rows`] using `backend`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired in follow-up intra/inter PR")
-)]
 pub(crate) fn add_constant_u8_rows_with<B: SimdBackend>(
     backend: B,
     samples: &mut [u8],
