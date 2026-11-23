@@ -14,10 +14,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context as _, Result};
 use clap::{Args, ValueEnum};
 use serde::Serialize;
+use splot_core::simd::SimdBackend;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOptions, DecodeOutputError,
-    DecodeOutputOperation, DecodeRuntimeConfig, Y4mFrameRate,
+    DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, TypedDecodeContext, Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -466,30 +467,15 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
         target,
         DecodeOutputTarget::Y4m { path } | DecodeOutputTarget::Raw { path } if is_stdout_path(path)
     );
-    let report = match target {
-        DecodeOutputTarget::Null => match context.decode_discard_reader(input, options) {
-            Ok(()) => return Ok(ExitCode::SUCCESS),
-            Err(error) => decode_report_from_error(&error, &args.input)?,
-        },
-        DecodeOutputTarget::Hash => match context.decode_hash_report_reader(input, options) {
-            Ok(report) => {
-                render_hash_report(&report, args.json)?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            Err(error) => decode_report_from_error(&error, &args.input)?,
-        },
-        DecodeOutputTarget::Y4m { path } => {
-            match decode_y4m_to_file(&context, input, &options, path) {
-                Ok(()) => return Ok(ExitCode::SUCCESS),
-                Err(error) => decode_report_from_error(&error, &args.input)?,
-            }
-        }
-        DecodeOutputTarget::Raw { path } => {
-            match decode_raw_to_file(&context, input, &options, path) {
-                Ok(()) => return Ok(ExitCode::SUCCESS),
-                Err(error) => decode_report_from_error(&error, &args.input)?,
-            }
-        }
+    let Some(report) = context.with_typed_backend(CliDecodeScope {
+        target,
+        input,
+        input_path: &args.input,
+        options,
+        json: args.json,
+    })?
+    else {
+        return Ok(ExitCode::SUCCESS);
     };
 
     if args.json {
@@ -507,8 +493,53 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     Ok(ExitCode::from(1))
 }
 
-fn decode_y4m_to_file(
-    context: &DecodeContext,
+struct CliDecodeScope<'a> {
+    target: DecodeOutputTarget<'a>,
+    input: BufReader<File>,
+    input_path: &'a Path,
+    options: DecodeOptions,
+    json: bool,
+}
+
+impl DecodeScope<Result<Option<DecodeDiagnosticReport>>> for CliDecodeScope<'_> {
+    fn run<B: SimdBackend>(
+        self,
+        context: &TypedDecodeContext<'_, B>,
+    ) -> Result<Option<DecodeDiagnosticReport>> {
+        match self.target {
+            DecodeOutputTarget::Null => {
+                match context.decode_discard_reader(self.input, self.options) {
+                    Ok(()) => Ok(None),
+                    Err(error) => decode_report_from_error(&error, self.input_path).map(Some),
+                }
+            }
+            DecodeOutputTarget::Hash => {
+                match context.decode_hash_report_reader(self.input, self.options) {
+                    Ok(report) => {
+                        render_hash_report(&report, self.json)?;
+                        Ok(None)
+                    }
+                    Err(error) => decode_report_from_error(&error, self.input_path).map(Some),
+                }
+            }
+            DecodeOutputTarget::Y4m { path } => {
+                match decode_y4m_to_file(context, self.input, &self.options, path) {
+                    Ok(()) => Ok(None),
+                    Err(error) => decode_report_from_error(&error, self.input_path).map(Some),
+                }
+            }
+            DecodeOutputTarget::Raw { path } => {
+                match decode_raw_to_file(context, self.input, &self.options, path) {
+                    Ok(()) => Ok(None),
+                    Err(error) => decode_report_from_error(&error, self.input_path).map(Some),
+                }
+            }
+        }
+    }
+}
+
+fn decode_y4m_to_file<B: SimdBackend>(
+    context: &TypedDecodeContext<'_, B>,
     input: BufReader<File>,
     options: &DecodeOptions,
     path: &Path,
@@ -518,8 +549,8 @@ fn decode_y4m_to_file(
     })
 }
 
-fn decode_raw_to_file(
-    context: &DecodeContext,
+fn decode_raw_to_file<B: SimdBackend>(
+    context: &TypedDecodeContext<'_, B>,
     input: BufReader<File>,
     options: &DecodeOptions,
     path: &Path,
