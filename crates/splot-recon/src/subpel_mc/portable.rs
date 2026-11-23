@@ -87,13 +87,19 @@ macro_rules! with_pairs {
 }
 
 /// Predicts the block into `sink`; `stage` holds every intermediate row.
-pub(super) fn predict<T: Lanes>(block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) {
-    baseline_simd!(simd => run(simd, block, sink, stage));
+pub(super) fn predict<R: super::SubpelRunner, T: Lanes>(
+    runner: R,
+    block: &Block<'_, T>,
+    sink: &mut Sink<'_>,
+    stage: &mut [i16],
+) {
+    runner.portable_predict(block, sink, stage);
 }
 
 /// Predicts both blocks of a 16-bit compound cell (`w * h <= 64` or full-pel)
 /// and stores their COMPOUND_AVERAGE clipped to `max` into `output`.
-pub(super) fn compound_u16(
+pub(super) fn compound_u16<R: super::SubpelRunner>(
+    runner: R,
     blocks: [&Block<'_, u16>; 2],
     forward: i32,
     max: u16,
@@ -105,38 +111,49 @@ pub(super) fn compound_u16(
         .iter()
         .all(|b| b.horizontal.is_none() && b.vertical.is_none())
     {
-        baseline_simd!(simd => copy_compound_u16(simd, blocks, forward, max, output, stride));
+        runner.portable_copy_compound_u16(blocks, forward, max, output, stride);
         return;
     }
+    runner.portable_compound_u16(blocks, forward, max, stage, output, stride);
+}
+
+#[inline]
+pub(super) fn compound_u16_simd<S: Simd>(
+    simd: S,
+    blocks: [&Block<'_, u16>; 2],
+    forward: i32,
+    max: u16,
+    stage: &mut [i16],
+    output: &mut [u16],
+    stride: usize,
+) {
     let w = blocks[0].w;
     let mut pred0 = [0i32; 64];
-    baseline_simd!(simd => {
-        run(
-            simd,
-            blocks[0],
-            &mut Sink::Prep {
-                output: &mut pred0,
-                stride: w,
-            },
-            stage,
-        );
-        run(
-            simd,
-            blocks[1],
-            &mut Sink::AverageWide {
-                pred0: &pred0,
-                forward,
-                output,
-                stride,
-                max,
-            },
-            stage,
-        );
-    });
+    run(
+        simd,
+        blocks[0],
+        &mut Sink::Prep {
+            output: &mut pred0,
+            stride: w,
+        },
+        stage,
+    );
+    run(
+        simd,
+        blocks[1],
+        &mut Sink::AverageWide {
+            pred0: &pred0,
+            forward,
+            output,
+            stride,
+            max,
+        },
+        stage,
+    );
 }
 
 #[inline(never)]
-fn copy_compound_u16<S: Simd>(
+pub(super) fn copy_compound_u16<S: Simd>(
     simd: S,
     blocks: [&Block<'_, u16>; 2],
     forward: i32,
@@ -266,7 +283,12 @@ fn copy_compound_u16<S: Simd>(
 }
 
 #[inline]
-fn run<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) {
+pub(super) fn run<S: Simd, T: Lanes>(
+    simd: S,
+    block: &Block<'_, T>,
+    sink: &mut Sink<'_>,
+    stage: &mut [i16],
+) {
     match (block.horizontal, block.vertical) {
         (None, None) => copy(simd, block, sink),
         (Some(taps), None) => with_pairs!(taps.count, horizontal::<S, T>(simd, block, taps, sink)),

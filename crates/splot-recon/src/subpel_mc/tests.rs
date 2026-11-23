@@ -10,6 +10,7 @@ use crate::error::ReconError;
 
 mod byte_lanes;
 mod refinemv_windows;
+mod typed_backend;
 
 /// Default single-reference 8-bit params for a `w x h` block sampled from
 /// reference origin `(rx, ry)` in whole samples (full-pel) with the given filter.

@@ -15,7 +15,6 @@
 
 use super::super::block::{Block, Sink, Taps};
 use super::super::rows::{self, Average, Out, Prep, Put, store_pair};
-use super::generic;
 pub(super) use cells::{compound_cell, compound_windows, program};
 
 mod cells;
@@ -23,17 +22,10 @@ use core::arch::x86_64::*;
 use core::cell::Cell;
 use fearless_simd::{Avx2, Simd, SimdBase, SimdFrom, i32x4, i32x8, u8x16, u8x32, u16x8, u16x16};
 
-fn token() -> Option<Avx2> {
-    fearless_simd::Level::baseline().as_avx2()
-}
-
 /// Predicts a filtered 16-bit `block` into `sink`, as [`super::predict`]
 /// admits.
-pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
-    match token() {
-        Some(t) => predict_lanes(t, block, sink),
-        None => generic::predict(block, sink),
-    }
+pub(super) fn predict(t: Avx2, block: &Block<'_, u16>, sink: &mut Sink<'_>) {
+    predict_lanes(t, block, sink);
 }
 
 /// Calls `$f::<W, P, _>` for 4-column pairs or 8-column strips and the

@@ -18,6 +18,42 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     output: &mut [u8],
     output_stride: usize,
 ) -> Result<()> {
+    subpel_predict_block_strided_into_u8_with_runner(
+        BaselineSubpel,
+        reference,
+        params,
+        output,
+        output_stride,
+    )
+}
+
+/// Typed [`subpel_predict_block_strided_into_u8`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_block_strided_into_u8`].
+pub fn subpel_predict_block_strided_into_u8_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u8],
+    output_stride: usize,
+) -> Result<()> {
+    subpel_predict_block_strided_into_u8_with_runner(
+        TypedSubpel(backend),
+        reference,
+        params,
+        output,
+        output_stride,
+    )
+}
+
+fn subpel_predict_block_strided_into_u8_with_runner<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u8],
+    output_stride: usize,
+) -> Result<()> {
     let (w, h) = (params.w, params.h);
     if let Some(view) = reference.as_u8()
         && params.bit_depth == BitDepth::Eight
@@ -38,8 +74,8 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
             .is_some_and(|end| end <= output.len())
     {
         let window = block::Window::new(params.interp, w, h, [params.start_x, params.start_y]);
-        if block::with_block(&window, &view, params.bounds(), 0, |block| {
-            super::eight_bit::put(block, output, output_stride);
+        if block::with_block(runner, &window, &view, params.bounds(), 0, |block| {
+            super::eight_bit::put(runner, block, output, output_stride);
         })
         .is_some()
         {
@@ -51,7 +87,7 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
         output,
         stride: output_stride,
     };
-    block::predict(reference, params, sink, None);
+    block::predict(runner, reference, params, sink, None);
     Ok(())
 }
 
@@ -101,6 +137,29 @@ impl UnscaledPut {
 pub fn subpel_put_block<T: ReconSample>(
     surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
     interp: InterpolationFilter,
+    luma: (&ReferencePlaneView<'_, T>, UnscaledPut),
+    chroma: Option<([&ReferencePlaneView<'_, T>; 2], UnscaledPut)>,
+) -> [bool; 2] {
+    subpel_put_block_with_runner(BaselineSubpel, surface, interp, luma, chroma)
+}
+
+/// Typed [`subpel_put_block`] using caller-selected `backend`.
+#[inline]
+pub fn subpel_put_block_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
+    interp: InterpolationFilter,
+    luma: (&ReferencePlaneView<'_, T>, UnscaledPut),
+    chroma: Option<([&ReferencePlaneView<'_, T>; 2], UnscaledPut)>,
+) -> [bool; 2] {
+    subpel_put_block_with_runner(TypedSubpel(backend), surface, interp, luma, chroma)
+}
+
+#[inline]
+fn subpel_put_block_with_runner<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
+    interp: InterpolationFilter,
     (view, luma): (&ReferencePlaneView<'_, T>, UnscaledPut),
     chroma: Option<([&ReferencePlaneView<'_, T>; 2], UnscaledPut)>,
 ) -> [bool; 2] {
@@ -108,7 +167,9 @@ pub fn subpel_put_block<T: ReconSample>(
     let luma_put = luma.window(interp).is_some_and(|(window, bounds)| {
         surface
             .rect_mut(crate::PlaneId::Y, luma.rect)
-            .is_some_and(|(output, stride)| put_window(&window, bounds, view, max, output, stride))
+            .is_some_and(|(output, stride)| {
+                put_window(runner, &window, bounds, view, max, output, stride)
+            })
     });
     let chroma_put = chroma.is_some_and(|([u, v], put)| {
         let Some((window, bounds)) = put.window(interp) else {
@@ -116,7 +177,9 @@ pub fn subpel_put_block<T: ReconSample>(
         };
         surface
             .chroma_rects_mut(put.rect)
-            .is_some_and(|[u_out, v_out]| put_pair(&window, bounds, [u, v], max, [u_out, v_out]))
+            .is_some_and(|[u_out, v_out]| {
+                put_pair(runner, &window, bounds, [u, v], max, [u_out, v_out])
+            })
     });
     [luma_put, chroma_put]
 }
@@ -135,6 +198,38 @@ pub fn subpel_compound_block<T: ReconSample>(
     surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
     interp: InterpolationFilter,
     cwp_weight: i16,
+    luma: (Views<'_, '_, T>, [UnscaledPut; 2]),
+    chroma: Option<([Views<'_, '_, T>; 2], [UnscaledPut; 2])>,
+) -> [bool; 2] {
+    subpel_compound_block_with_runner(BaselineSubpel, surface, interp, cwp_weight, luma, chroma)
+}
+
+/// Typed [`subpel_compound_block`] using caller-selected `backend`.
+#[inline]
+pub fn subpel_compound_block_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
+    interp: InterpolationFilter,
+    cwp_weight: i16,
+    luma: (Views<'_, '_, T>, [UnscaledPut; 2]),
+    chroma: Option<([Views<'_, '_, T>; 2], [UnscaledPut; 2])>,
+) -> [bool; 2] {
+    subpel_compound_block_with_runner(
+        TypedSubpel(backend),
+        surface,
+        interp,
+        cwp_weight,
+        luma,
+        chroma,
+    )
+}
+
+#[inline]
+fn subpel_compound_block_with_runner<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
+    interp: InterpolationFilter,
+    cwp_weight: i16,
     (views, luma): (Views<'_, '_, T>, [UnscaledPut; 2]),
     chroma: Option<([Views<'_, '_, T>; 2], [UnscaledPut; 2])>,
 ) -> [bool; 2] {
@@ -146,7 +241,7 @@ pub fn subpel_compound_block<T: ReconSample>(
         surface
             .rect_mut(crate::PlaneId::Y, luma[0].rect)
             .is_some_and(|(output, stride)| {
-                compound_windows(views, windows, bounds, clip, output, stride)
+                compound_windows(runner, views, windows, bounds, clip, output, stride)
             })
     });
     let chroma_put = chroma.is_some_and(|([u, v], puts)| {
@@ -155,7 +250,7 @@ pub fn subpel_compound_block<T: ReconSample>(
         };
         surface
             .chroma_rects_mut(puts[0].rect)
-            .is_some_and(|outputs| compound_pair([u, v], windows, bounds, clip, outputs))
+            .is_some_and(|outputs| compound_pair(runner, [u, v], windows, bounds, clip, outputs))
     });
     [luma_put, chroma_put]
 }
@@ -176,7 +271,8 @@ fn windows(
 /// their outputs: filtered eight-bit pairs read in place in one pair call.
 #[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
-fn compound_pair<T: ReconSample>(
+fn compound_pair<R: SubpelRunner, T: ReconSample>(
+    runner: R,
     [u, v]: [Views<'_, '_, T>; 2],
     windows: [block::Window; 2],
     bounds: [[i32; 4]; 2],
@@ -209,19 +305,20 @@ fn compound_pair<T: ReconSample>(
             place(second, &v1, bounds[1]),
         ) {
             let outputs = [(u8_u, u_stride), (u8_v, v_stride)];
-            super::eight_bit::compound_pair([[&a, &b], [&c, &d]], clip.0, outputs);
+            super::eight_bit::compound_pair(runner, [[&a, &b], [&c, &d]], clip.0, outputs);
             return true;
         }
     }
-    compound_windows(u, windows, bounds, clip, u_out, u_stride)
-        && compound_windows(v, windows, bounds, clip, v_out, v_stride)
+    compound_windows(runner, u, windows, bounds, clip, u_out, u_stride)
+        && compound_windows(runner, v, windows, bounds, clip, v_out, v_stride)
 }
 
 /// [`put_window`] of two views of one geometry, U and V, into their
 /// outputs: eight-bit planes read in place in one pair call.
 #[expect(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
-fn put_pair<T: ReconSample>(
+fn put_pair<R: SubpelRunner, T: ReconSample>(
+    runner: R,
     window: &block::Window,
     bounds: [i32; 4],
     views: [&ReferencePlaneView<'_, T>; 2],
@@ -241,13 +338,14 @@ fn put_pair<T: ReconSample>(
             window.block(v.samples, v.stride, v_origin),
         ];
         super::eight_bit::put_pair(
+            runner,
             [&blocks[0], &blocks[1]],
             [(first, first_stride), (second, second_stride)],
         );
         return true;
     }
-    put_window(window, bounds, views[0], max, first, first_stride)
-        && put_window(window, bounds, views[1], max, second, second_stride)
+    put_window(runner, window, bounds, views[0], max, first, first_stride)
+        && put_window(runner, window, bounds, views[1], max, second, second_stride)
 }
 
 /// The `Clip1` single-reference prediction of `window` read from `view`
@@ -255,7 +353,8 @@ fn put_pair<T: ReconSample>(
 /// range or storage that is neither 8- nor 16-bit.
 #[expect(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
-fn put_window<T: ReconSample>(
+fn put_window<R: SubpelRunner, T: ReconSample>(
+    runner: R,
     window: &block::Window,
     bounds: [i32; 4],
     view: &ReferencePlaneView<'_, T>,
@@ -271,7 +370,7 @@ fn put_window<T: ReconSample>(
         T::u8_slice_mut(&mut *output),
     ) {
         let block = window.block(samples, view.stride, origin);
-        super::eight_bit::put(&block, output, stride);
+        super::eight_bit::put(runner, &block, output, stride);
         return true;
     }
     if let (Some(origin), Some(samples), Some(output)) = (
@@ -285,18 +384,19 @@ fn put_window<T: ReconSample>(
             max,
         };
         let block = window.block(samples, view.stride, origin);
-        if !super::sixteen_bit::predict(&block, sink) {
-            block::kernels(&block, sink, None);
+        if !super::sixteen_bit::predict(runner, &block, sink) {
+            block::kernels(runner, &block, sink, None);
         }
         return true;
     }
-    in_place.is_none() && put_emulated(*window, bounds, view, max, output, stride)
+    in_place.is_none() && put_emulated(runner, *window, bounds, view, max, output, stride)
 }
 
 /// [`put_window`] of a window that is not read in place.
 #[cold]
 #[inline(never)]
-fn put_emulated<T: ReconSample>(
+fn put_emulated<R: SubpelRunner, T: ReconSample>(
+    runner: R,
     window: block::Window,
     bounds: [i32; 4],
     view: &ReferencePlaneView<'_, T>,
@@ -305,22 +405,22 @@ fn put_emulated<T: ReconSample>(
     stride: usize,
 ) -> bool {
     if let (Some(view), Some(output)) = (view.as_u8(), T::u8_slice_mut(&mut *output)) {
-        return block::with_block(&window, &view, bounds, 0, |block| {
-            super::eight_bit::put(block, output, stride);
+        return block::with_block(runner, &window, &view, bounds, 0, |block| {
+            super::eight_bit::put(runner, block, output, stride);
         })
         .is_some();
     }
     let (Some(view), Some(output)) = (view.as_u16(), T::u16_slice_mut(output)) else {
         return false;
     };
-    block::with_block(&window, &view, bounds, 0, |block| {
+    block::with_block(runner, &window, &view, bounds, 0, |block| {
         let sink = &mut Sink::PutWide {
             output,
             stride,
             max,
         };
-        if !super::sixteen_bit::predict(block, sink) {
-            block::kernels(block, sink, None);
+        if !super::sixteen_bit::predict(runner, block, sink) {
+            block::kernels(runner, block, sink, None);
         }
     })
     .is_some()

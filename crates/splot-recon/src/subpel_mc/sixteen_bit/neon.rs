@@ -16,8 +16,8 @@
 )]
 
 use super::super::block::{Block, Geometry, Sink, Taps, Window};
-use super::super::cell::{Cell, Plane, Written, fullpel_u16};
-use super::super::eight_bit::neon::{Reads, Sums, reads, slide, sums32, token};
+use super::super::cell::{Cell, Plane, Written, fullpel_u16_simd};
+use super::super::eight_bit::neon::{Reads, Sums, reads, slide, sums32};
 use super::super::rows::{self, Average, Out, Prep, Put, rows_mut, store_pair};
 use super::super::{CellPlacement, ReferencePlaneView};
 use core::arch::aarch64::*;
@@ -29,24 +29,21 @@ type ProgramPlane<'a, 'b> = ([&'b [u16]; 2], &'a mut [u16], usize);
 
 /// Predicts `block` into `sink`, as [`super::predict`] admits.
 #[inline]
-pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
-    if let Some(t) = token() {
-        predict_lanes(t, block, sink);
-    }
+pub(super) fn predict(t: Neon, block: &Block<'_, u16>, sink: &mut Sink<'_>) {
+    predict_lanes(t, block, sink);
 }
 
 /// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of a 4x4 or 8x8
 /// register cell pair.
 #[inline]
 pub(super) fn compound_cell(
+    t: Neon,
     blocks: [&Block<'_, u16>; 2],
     clip: (i32, u16),
     output: &mut [u16],
     stride: usize,
 ) {
-    if let Some(t) = token() {
-        cell_pair(t, blocks, clip, output, stride);
-    }
+    cell_pair(t, blocks, clip, output, stride);
 }
 
 /// Stores the COMPOUND_AVERAGE, clipped to `clip.1`, of the 4x4 or 8x8
@@ -54,6 +51,7 @@ pub(super) fn compound_cell(
 /// without writing when a clamped row cannot load its samples.
 #[inline]
 pub(super) fn compound_windows(
+    t: Neon,
     views: [&ReferencePlaneView<'_, u16>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -63,7 +61,7 @@ pub(super) fn compound_windows(
 ) -> bool {
     let references = views.map(|view| (view.samples, view.geometry()));
     let windows = [&windows[0], &windows[1]];
-    token().is_some_and(|t| windows_cell(t, references, windows, bounds, clip, output, stride))
+    windows_cell(t, references, windows, bounds, clip, output, stride)
 }
 
 /// Runs the cells of a program of `size`-square cells whose windows are
@@ -71,12 +69,13 @@ pub(super) fn compound_windows(
 /// returns their bits.
 #[inline]
 pub(super) fn program(
+    t: Neon,
     planes: &mut [Option<Plane<'_, '_, u16>>; 2],
     shape: (usize, usize),
     cells: &[Cell],
     clip: (i32, u16),
 ) -> Written {
-    let (Some(t), Some((views, ..))) = (token(), &planes[0]) else {
+    let Some((views, ..)) = &planes[0] else {
         return [[0; 4]; 2];
     };
     let geometry = views.each_ref().map(ReferencePlaneView::geometry);
@@ -314,12 +313,11 @@ fn store_placed<const W: usize>(
 ) {
     let still = |placed: &Placed| !placed.1 && placed.2.is_none() && placed.3.is_none();
     let [a, b] = placed;
-    if still(a) && still(b) {
+    if still(a) && still(b) && (0..=16).contains(&forward) {
         let sources = [(sources[0], a.0.stride), (sources[1], b.0.stride)];
         let clip = (forward, vgetq_lane_u16::<0>(max));
-        if fullpel_u16(sources, [a.0.base, b.0.base], W, clip, output, stride) {
-            return;
-        }
+        fullpel_u16_simd(t, sources, [a.0.base, b.0.base], W, clip, output, stride);
+        return;
     }
     let cells = [(sources[0], a), (sources[1], b)];
     store_cell::<W>(t, cells, forward, max, output, stride);

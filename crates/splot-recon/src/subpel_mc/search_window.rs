@@ -14,7 +14,8 @@ use super::*;
 /// inner `w - 1` columns and `h - 1` rows, so the outer column and row read
 /// their inner neighbour twice.
 #[must_use]
-pub(super) fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
+pub(super) fn subpel_predict_bilinear_search_window_u8<R: SubpelRunner, T: ReconSample>(
+    runner: R,
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u8],
@@ -48,16 +49,16 @@ pub(super) fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     let at = [origin, view.stride];
     let phases = phases(params);
     #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
+    if let Some(t) = runner.avx2_token() {
         avx2::window(t, view.samples, at, [w, h], phases, output);
         return true;
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+    if let Some(t) = runner.neon_token() {
         neon::window(t, view.samples, at, [w, h], phases, output);
         return true;
     }
-    baseline_simd!(simd => generic::window(simd, view.samples, at, [w, h], phases, output));
+    runner.search_window_generic(view.samples, at, [w, h], phases, output);
     true
 }
 
@@ -77,14 +78,57 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     output: &mut [u16],
     stride: usize,
 ) -> bool {
+    let Some((samples, geometry, phases)) = prepare_bilinear_u8(view, params, output, stride)
+    else {
+        return false;
+    };
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
+        avx2::block(t, samples, geometry, phases, output, stride);
+        return true;
+    }
+    baseline_simd!(simd => generic::block(simd, samples, geometry, phases, output, stride));
+    true
+}
+
+/// Typed [`subpel_predict_bilinear_u8`] using caller-selected `backend`.
+#[must_use]
+pub fn subpel_predict_bilinear_u8_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
+    let Some((samples, geometry, phases)) = prepare_bilinear_u8(view, params, output, stride)
+    else {
+        return false;
+    };
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = backend.avx2_token() {
+        avx2::block(t, samples, geometry, phases, output, stride);
+        return true;
+    }
+    let narrow = backend.narrow();
+    narrow.vectorize(|| generic::block(narrow.token(), samples, geometry, phases, output, stride));
+    true
+}
+
+type PreparedBilinearU8<'a> = (&'a [u8], ([usize; 2], [usize; 2]), [u8; 2]);
+
+#[inline]
+fn prepare_bilinear_u8<'a, T: ReconSample>(
+    view: &ReferencePlaneView<'a, T>,
+    params: &SubpelPredictParams,
+    output: &[u16],
+    stride: usize,
+) -> Option<PreparedBilinearU8<'a>> {
     let (w, h) = (params.w, params.h);
     let (x0, y0) = (
         params.start_x >> SCALE_SUBPEL_BITS,
         params.start_y >> SCALE_SUBPEL_BITS,
     );
-    let Some(view) = view.as_u8() else {
-        return false;
-    };
+    let view = view.as_u8()?;
     if params.interp != InterpolationFilter::Bilinear
         || (params.step_x, params.step_y) != (1 << SCALE_SUBPEL_BITS, 1 << SCALE_SUBPEL_BITS)
         || w == 0
@@ -98,22 +142,18 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
         || x0 + w as i32 > params.last_x.min(view.width as i32 - 1)
         || y0 + h as i32 > params.last_y.min(view.readable_rows as i32 - 1)
     {
-        return false;
+        return None;
     }
     let origin = y0 as usize * view.stride + x0 as usize;
     let last_load = origin + h * view.stride + w + 8;
     if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
-        return false;
+        return None;
     }
-    let geometry = ([origin, view.stride], [w, h]);
-    let phases = phases(params);
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        avx2::block(t, view.samples, geometry, phases, output, stride);
-        return true;
-    }
-    baseline_simd!(simd => generic::block(simd, view.samples, geometry, phases, output, stride));
-    true
+    Some((
+        view.samples,
+        ([origin, view.stride], [w, h]),
+        phases(params),
+    ))
 }
 
 /// The § 7.13.3.6 search positions `(dy, dx)` in `Refinemv_Neighbors` order.
@@ -139,8 +179,31 @@ pub const REFINEMV_NEIGHBORS: [(i32, i32); 24] = {
 pub fn refinemv_area_sad_u8<T: ReconSample>(
     views: [&ReferencePlaneView<'_, T>; 2],
     corners: [[usize; 2]; 2],
-    [w, h]: [usize; 2],
+    size: [usize; 2],
 ) -> Option<u32> {
+    let (planes, strides) = prepare_area_sad_u8(views, corners, size)?;
+    Some(baseline_simd!(simd => generic::area_sad(simd, planes, [0; 2], strides, size)))
+}
+
+/// Typed [`refinemv_area_sad_u8`] using caller-selected `backend`.
+#[must_use]
+pub fn refinemv_area_sad_u8_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    views: [&ReferencePlaneView<'_, T>; 2],
+    corners: [[usize; 2]; 2],
+    size: [usize; 2],
+) -> Option<u32> {
+    let (planes, strides) = prepare_area_sad_u8(views, corners, size)?;
+    let narrow = backend.narrow();
+    Some(narrow.vectorize(|| generic::area_sad(narrow.token(), planes, [0; 2], strides, size)))
+}
+
+#[inline]
+fn prepare_area_sad_u8<'a, T: ReconSample>(
+    views: [&ReferencePlaneView<'a, T>; 2],
+    corners: [[usize; 2]; 2],
+    [w, h]: [usize; 2],
+) -> Option<([&'a [u8]; 2], [usize; 2])> {
     if !matches!(w, 12 | 20) || h < 2 || !h.is_multiple_of(2) {
         return None;
     }
@@ -159,7 +222,7 @@ pub fn refinemv_area_sad_u8<T: ReconSample>(
             .get(start..start + (h - 2) * view.stride + w.max(16))?;
         *stride = view.stride;
     }
-    Some(baseline_simd!(simd => generic::area_sad(simd, planes, [0; 2], strides, [w, h])))
+    Some((planes, strides))
 }
 
 /// The § 7.13.3.6 search over the biased `center` SAD, kept when below
