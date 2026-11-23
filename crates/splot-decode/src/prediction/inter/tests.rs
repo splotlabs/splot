@@ -37,6 +37,7 @@ use crate::{
     DecodeStreamPlan,
 };
 
+mod bru_filters;
 mod header_state;
 mod segmentation;
 mod zero_reference;
