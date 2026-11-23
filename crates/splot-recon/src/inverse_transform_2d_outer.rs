@@ -400,6 +400,7 @@ pub fn inverse_transform_2d_outer_adjusted_with<B: SimdBackend>(
     )
 }
 
+#[inline]
 fn inverse_transform_2d_outer_adjusted_with_runner<R: OuterRunner>(
     runner: R,
     params: &InverseTransform2dOuter,
@@ -444,10 +445,12 @@ trait OuterRunner: Copy {
 struct BaselineOuter;
 
 impl OuterRunner for BaselineOuter {
+    #[inline]
     fn idtx_shift(self, dequant: &[i32], coded: &mut [i32], down: u32) {
         baseline_simd!(simd => idtx_shift_lanes(simd, dequant, coded, down));
     }
 
+    #[inline]
     fn inner_transform(
         self,
         inner: &InverseTransform2d,
@@ -458,10 +461,12 @@ impl OuterRunner for BaselineOuter {
         inverse_transform_2d_with_scratch(inner, dequant, residual, transform_scratch)
     }
 
+    #[inline]
     fn apply_dpcm(self, res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
         baseline_simd!(simd => apply_dpcm_lanes(simd, res, w, h, direction));
     }
 
+    #[inline]
     fn duplicate_columns(self, src: &[i32], dst: &mut [i32]) {
         baseline_simd!(simd => duplicate_columns_lanes(simd, src, dst));
     }

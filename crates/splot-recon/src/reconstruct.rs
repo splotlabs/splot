@@ -49,14 +49,17 @@ trait ResidualRunner: Copy {
 struct BaselineResidual;
 
 impl ResidualRunner for BaselineResidual {
+    #[inline]
     fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
         crate::workspace::u16_samples_exceed(samples, max_sample)
     }
 
+    #[inline]
     fn add_u16(self, prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
         baseline_simd!(simd => add_residual_u16_lanes(simd, prediction, residual, max, out));
     }
 
+    #[inline]
     fn add_u16_in_place(self, samples: &mut [u16], residual: &[i32], max: i32) {
         baseline_simd!(simd => add_residual_u16_in_place_lanes(simd, samples, residual, max));
     }
@@ -75,6 +78,7 @@ impl ResidualRunner for BaselineResidual {
         ));
     }
 
+    #[inline]
     fn add_constant_u8_rows(
         self,
         samples: &mut [u8],

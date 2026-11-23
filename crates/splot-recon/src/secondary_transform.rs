@@ -384,6 +384,7 @@ trait IstRunner: Copy {
 struct BaselineIst;
 
 impl IstRunner for BaselineIst {
+    #[inline]
     fn dequant_pow2(
         self,
         coefs: &mut [i32; IST_8X8_HEIGHT],
@@ -394,6 +395,7 @@ impl IstRunner for BaselineIst {
         baseline_simd!(simd => dequant_ist_pow2(simd, coefs, n, quantizers, bound));
     }
 
+    #[inline]
     fn ist_8x8(
         self,
         kernel: Option<&IstKernel>,
@@ -406,6 +408,7 @@ impl IstRunner for BaselineIst {
         baseline_simd!(simd => ist_8x8_simd(simd, kernel, coefs, wide, bound, geom, dequant));
     }
 
+    #[inline]
     fn ist_4x4(
         self,
         kernel: usize,
@@ -422,6 +425,7 @@ impl IstRunner for BaselineIst {
 struct TypedIst<B: SimdBackend>(B);
 
 impl<B: SimdBackend> IstRunner for TypedIst<B> {
+    #[inline]
     fn dequant_pow2(
         self,
         coefs: &mut [i32; IST_8X8_HEIGHT],
@@ -433,6 +437,7 @@ impl<B: SimdBackend> IstRunner for TypedIst<B> {
         narrow.vectorize(|| dequant_ist_pow2(narrow.token(), coefs, n, quantizers, bound));
     }
 
+    #[inline]
     fn ist_8x8(
         self,
         kernel: Option<&IstKernel>,
@@ -448,6 +453,7 @@ impl<B: SimdBackend> IstRunner for TypedIst<B> {
         });
     }
 
+    #[inline]
     fn ist_4x4(
         self,
         kernel: usize,
