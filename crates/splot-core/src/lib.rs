@@ -35,6 +35,7 @@ pub mod ivf;
 pub mod leb128;
 pub mod obu;
 pub mod segment;
+pub mod simd;
 pub mod span;
 pub mod stream;
 pub mod stream_reader;

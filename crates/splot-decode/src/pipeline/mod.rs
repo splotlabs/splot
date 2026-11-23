@@ -117,7 +117,9 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
     mut collect: impl FnMut(&PipelineFrame) -> Result<R> + Send,
 ) -> Result<Vec<R>> {
     let threads = NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN);
-    let session = DecodeSession::detaching_held(NonZeroUsize::MIN, row_scheduler(threads)?);
+    let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)?;
+    let session =
+        DecodeSession::detaching_held(NonZeroUsize::MIN, row_scheduler(threads)?, backend);
     let mut collected = Vec::new();
     splot_parallel::run_on_thread("splot-driver", || {
         let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());

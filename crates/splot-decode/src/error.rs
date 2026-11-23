@@ -89,6 +89,13 @@ pub enum DecodeError {
         #[from]
         source: DecoderStateError,
     },
+    /// A requested SIMD backend is unsupported on this build or CPU.
+    #[error("unsupported SIMD backend: {source}")]
+    UnsupportedBackend {
+        /// The startup policy validation failure.
+        #[from]
+        source: splot_core::simd::UnsupportedBackendError,
+    },
 }
 
 /// Why a [`crate::Decoder`] session refused a call.
