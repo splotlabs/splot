@@ -34,6 +34,19 @@ const CROP: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-crop-intra-64x64-q80.ivf");
 const FILM_GRAIN: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf");
+const BRU_INACTIVE: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/valid/syn-bru-inactive-frame-128x64-q220.ivf"
+);
+const BRU_INACTIVE_REFRESH_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inactive-refresh-8bit.ivf");
+const BRU_INACTIVE_REFRESH_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inactive-refresh-10bit.ivf");
+const BRU_INACTIVE_FILMGRAIN_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inactive-filmgrain-8bit.ivf");
+const BRU_INTER_CONTROL: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inter-128x64-q220.ivf");
+const BRU_MULTITILE_CONTROL: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-multitile-256x128-q220.ivf");
 
 const FIXTURES: &[&[u8]] = &[
     MULTIREF,
@@ -44,6 +57,12 @@ const FIXTURES: &[&[u8]] = &[
     TEN_BIT_INTER,
     CROP,
     FILM_GRAIN,
+    BRU_INACTIVE,
+    BRU_INACTIVE_REFRESH_8BIT,
+    BRU_INACTIVE_REFRESH_10BIT,
+    BRU_INACTIVE_FILMGRAIN_8BIT,
+    BRU_INTER_CONTROL,
+    BRU_MULTITILE_CONTROL,
 ];
 
 /// The payload of each non-empty IVF frame record: one temporal unit each.
@@ -463,4 +482,181 @@ fn decoder_validates_simd_policy_once_and_retains_it_across_flush() {
     let second = decode(&mut decoder, &expected_units, |_| DataProps::default());
     assert_eq!(raw_of(&with_film_grain(&second)), expected);
     assert_eq!(decoder.selected_backend(), initial);
+}
+
+struct ChunkedSliceReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    pattern: &'a [usize],
+    step: usize,
+}
+
+impl std::io::Read for ChunkedSliceReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.offset >= self.bytes.len() || buf.is_empty() {
+            return Ok(0);
+        }
+        let max_chunk = self.pattern[self.step % self.pattern.len()];
+        self.step += 1;
+        let count = (self.bytes.len() - self.offset)
+            .min(buf.len())
+            .min(max_chunk);
+        buf[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+        self.offset += count;
+        Ok(count)
+    }
+}
+
+#[test]
+fn bru_inactive_and_refresh_vectors_match_batch_and_chunked_streaming() {
+    let bru_fixtures = [
+        (
+            "syn-bru-inactive-frame-128x64-q220",
+            BRU_INACTIVE,
+            5usize,
+            Some((2usize, 4usize)),
+        ),
+        (
+            "syn-bru-inactive-refresh-8bit",
+            BRU_INACTIVE_REFRESH_8BIT,
+            8,
+            Some((3, 5)),
+        ),
+        (
+            "syn-bru-inactive-refresh-10bit",
+            BRU_INACTIVE_REFRESH_10BIT,
+            8,
+            Some((3, 5)),
+        ),
+        ("syn-bru-inter-128x64-q220", BRU_INTER_CONTROL, 5, None),
+        (
+            "syn-bru-multitile-256x128-q220",
+            BRU_MULTITILE_CONTROL,
+            6,
+            None,
+        ),
+    ];
+
+    for (name, bytes, expected_frames, inactive_pair) in bru_fixtures {
+        let units = units(bytes);
+        let expected = batch_raw(bytes);
+        let frame_bytes = expected.len() / expected_frames;
+        assert_eq!(frame_bytes * expected_frames, expected.len(), "{name}");
+        if let Some((src_idx, inactive_idx)) = inactive_pair {
+            let src = &expected[src_idx * frame_bytes..(src_idx + 1) * frame_bytes];
+            let inactive = &expected[inactive_idx * frame_bytes..(inactive_idx + 1) * frame_bytes];
+            assert_eq!(
+                inactive, src,
+                "{name}: bru_inactive frame {inactive_idx} must copy frame {src_idx}"
+            );
+            if expected_frames > inactive_idx + 1 {
+                let next =
+                    &expected[(inactive_idx + 1) * frame_bytes..(inactive_idx + 2) * frame_bytes];
+                assert_ne!(
+                    next, inactive,
+                    "{name}: subsequent inter frame must differ from inactive"
+                );
+            }
+        }
+
+        for threads in [1, 3, 12] {
+            let context =
+                DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads))).unwrap();
+            let mut batch_out = Vec::new();
+            context
+                .decode_raw_bytes(bytes, DecodeOptions::default(), &mut batch_out)
+                .unwrap();
+            assert_eq!(batch_out, expected, "{name} batch at {threads} threads");
+
+            let mut chunked_out = Vec::new();
+            let reader = ChunkedSliceReader {
+                bytes,
+                offset: 0,
+                pattern: &[1, 3, 7, 13, 2],
+                step: 0,
+            };
+            context
+                .decode_raw_reader(reader, DecodeOptions::default(), &mut chunked_out)
+                .unwrap();
+            assert_eq!(chunked_out, expected, "{name} chunked at {threads} threads");
+
+            let mut dec = decoder(threads, threads.min(4));
+            let pics = decode(&mut dec, &units, |_| DataProps::default());
+            assert_eq!(pics.len(), expected_frames, "{name}");
+            assert_eq!(
+                raw_of(&pics),
+                expected,
+                "{name} stream at {threads} threads"
+            );
+
+            dec.flush();
+            dec.drain();
+            assert!(dec.get_picture().unwrap().is_none());
+            dec.flush();
+            let pics_again = decode(&mut dec, &units, |_| DataProps::default());
+            assert_eq!(
+                raw_of(&pics_again),
+                expected,
+                "{name} repeated flush/drain at {threads} threads"
+            );
+        }
+    }
+}
+
+#[test]
+fn bru_inactive_film_grain_does_not_mutate_reference_or_double_apply() {
+    let pre_grain_expected = batch_raw(BRU_INACTIVE_REFRESH_8BIT);
+    let grained_expected = batch_raw(BRU_INACTIVE_FILMGRAIN_8BIT);
+    let skipped = batch_raw_with(
+        BRU_INACTIVE_FILMGRAIN_8BIT,
+        &DecodeOptions::default().with_skip_film_grain(true),
+    );
+    assert_eq!(
+        skipped, pre_grain_expected,
+        "film-grain bru_inactive fixture pre-grain output must equal non-grain fixture"
+    );
+    assert_ne!(grained_expected, skipped);
+
+    let frame_bytes = skipped.len() / 8;
+    assert_eq!(frame_bytes * 8, skipped.len());
+    assert_eq!(
+        &skipped[5 * frame_bytes..6 * frame_bytes],
+        &skipped[3 * frame_bytes..4 * frame_bytes],
+        "pre-grain bru_inactive frame must still match its reference frame"
+    );
+    assert_ne!(
+        &grained_expected[5 * frame_bytes..6 * frame_bytes],
+        &skipped[5 * frame_bytes..6 * frame_bytes],
+        "bru_inactive frame must apply its own output film grain"
+    );
+
+    let units = units(BRU_INACTIVE_FILMGRAIN_8BIT);
+    for threads in [1, 3, 12] {
+        let mut clean_dec = Decoder::new(
+            DecoderSettings::default()
+                .with_threads(ThreadCount::from(threads))
+                .with_skip_film_grain(true),
+        )
+        .unwrap();
+        let clean_pics = decode(&mut clean_dec, &units, |_| DataProps::default());
+        assert_eq!(raw_of(&clean_pics), skipped);
+        assert!(clean_pics.iter().all(Picture::has_film_grain));
+
+        let applied_pics = with_film_grain(&clean_pics);
+        assert_eq!(raw_of(&applied_pics), grained_expected);
+        assert_eq!(
+            raw_of(&clean_pics),
+            skipped,
+            "applying grain to emitted bru_inactive picture mutated its source samples"
+        );
+        assert_eq!(
+            raw_of(&with_film_grain(&applied_pics)),
+            grained_expected,
+            "re-applying grain double-applied grain"
+        );
+
+        let mut grained_dec = decoder(threads, threads.min(4));
+        let grained_pics = decode(&mut grained_dec, &units, |_| DataProps::default());
+        assert_eq!(raw_of(&grained_pics), grained_expected);
+    }
 }
