@@ -25,6 +25,7 @@
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::sequence::ProfileIdc;
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 use crate::types::ExtendedLayerId;
 
 /// `ops_id` is a 4-bit field (`f(4)`); the OPS identifier within an extended layer.
@@ -285,58 +286,92 @@ pub fn parse_operating_point_set(
     reader: &mut BitReader<'_>,
     xlayer_id: ExtendedLayerId,
 ) -> Result<OperatingPointSet> {
-    let reset_flag = reader.read_flag()?;
-    let ops_id = reader.read_bits_u8(OPS_ID_BITS)?;
-    let ops_cnt = reader.read_bits_u8(OPS_COUNT_BITS)?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_operating_point_set_with_reader(&mut sr, xlayer_id)
+}
 
-    let is_global = xlayer_id.is_global();
-    let mut priority = None;
-    let mut intent = None;
-    let mut intent_present = false;
-    let mut ptl_present = false;
-    let mut color_info_present = false;
-    let mut mlayer_info_idc = None;
-    let mut local_reserved_2bits = None;
-    let mut payloads = Vec::new();
+/// Parses `operating_point_set_obu()` (AV2 v1.0.0 § 5.10) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors or [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof).
+pub fn parse_operating_point_set_observed(
+    reader: &mut BitReader<'_>,
+    xlayer_id: ExtendedLayerId,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<OperatingPointSet> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_operating_point_set_with_reader(&mut sr, xlayer_id)
+}
 
-    if ops_cnt > 0 {
-        priority = Some(reader.read_bits_u8(OPS_PRIORITY_BITS)?);
-        intent = Some(reader.read_bits_u8(OPS_INTENT_BITS)?);
-        intent_present = reader.read_flag()?;
-        ptl_present = reader.read_flag()?;
-        color_info_present = reader.read_flag()?;
-        if is_global {
-            mlayer_info_idc = Some(reader.read_bits_u8(OPS_RESERVED_2BITS)?);
+pub(crate) fn parse_operating_point_set_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    xlayer_id: ExtendedLayerId,
+) -> Result<OperatingPointSet> {
+    sr.in_struct("operating_point_set_obu", Some("5.10"), |sr| {
+        let reset_flag = sr.read_flag("ops_reset_flag")?;
+        let ops_id = sr.read_bits_u8("ops_id", OPS_ID_BITS)?;
+        let ops_cnt = sr.read_bits_u8("ops_cnt", OPS_COUNT_BITS)?;
+
+        let is_global = xlayer_id.is_global();
+        let mut priority = None;
+        let mut intent = None;
+        let mut intent_present = false;
+        let mut ptl_present = false;
+        let mut color_info_present = false;
+        let mut mlayer_info_idc = None;
+        let mut local_reserved_2bits = None;
+        let mut payloads = Vec::new();
+
+        if ops_cnt > 0 {
+            priority = Some(sr.read_bits_u8("ops_priority", OPS_PRIORITY_BITS)?);
+            intent = Some(sr.read_bits_u8("ops_intent", OPS_INTENT_BITS)?);
+            intent_present = sr.read_flag("ops_intent_present_flag")?;
+            ptl_present = sr.read_flag("ops_ptl_present_flag")?;
+            color_info_present = sr.read_flag("ops_color_info_present_flag")?;
+            if is_global {
+                mlayer_info_idc = Some(sr.read_bits_u8("ops_mlayer_info_idc", OPS_RESERVED_2BITS)?);
+            } else {
+                local_reserved_2bits =
+                    Some(sr.read_bits_u8("ops_reserved_2bits", OPS_RESERVED_2BITS)?);
+            }
+
+            let header = OpsPayloadFlags {
+                intent_present,
+                ptl_present,
+                color_info_present,
+                mlayer_info_idc,
+            };
+            for index in 0..ops_cnt {
+                let payload = sr.in_loop_item("i", usize::from(index), |sr| {
+                    parse_operating_point_payload(sr, xlayer_id, index, &header)
+                })?;
+                payloads.push(payload);
+            }
         } else {
-            local_reserved_2bits = Some(reader.read_bits_u8(OPS_RESERVED_2BITS)?);
+            sr.absent("ops_priority", "ops_cnt == 0");
+            sr.absent("ops_intent", "ops_cnt == 0");
+            sr.inferred_bool("ops_intent_present_flag", "ops_cnt == 0", false);
+            sr.inferred_bool("ops_ptl_present_flag", "ops_cnt == 0", false);
+            sr.inferred_bool("ops_color_info_present_flag", "ops_cnt == 0", false);
         }
 
-        let header = OpsPayloadFlags {
+        Ok(OperatingPointSet {
+            xlayer_id,
+            reset_flag,
+            ops_id,
+            ops_cnt,
+            priority,
+            intent,
             intent_present,
             ptl_present,
             color_info_present,
             mlayer_info_idc,
-        };
-        for index in 0..ops_cnt {
-            payloads.push(parse_operating_point_payload(
-                reader, xlayer_id, index, &header,
-            )?);
-        }
-    }
-
-    Ok(OperatingPointSet {
-        xlayer_id,
-        reset_flag,
-        ops_id,
-        ops_cnt,
-        priority,
-        intent,
-        intent_present,
-        ptl_present,
-        color_info_present,
-        mlayer_info_idc,
-        local_reserved_2bits,
-        payloads,
+            local_reserved_2bits,
+            payloads,
+        })
     })
 }
 
@@ -348,118 +383,131 @@ struct OpsPayloadFlags {
     mlayer_info_idc: Option<u8>,
 }
 
-/// Parses one `operating_point_payload()` (AV2 v1.0.0 § 5.11).
-fn parse_operating_point_payload(
-    reader: &mut BitReader<'_>,
+fn parse_operating_point_payload<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     xlayer_id: ExtendedLayerId,
     index: u8,
     flags: &OpsPayloadFlags,
 ) -> Result<OperatingPointPayload> {
-    let declared_size_bytes = reader.read_leb128()?;
-    let start_bits = reader.consumed_bits();
-    let is_global = xlayer_id.is_global();
+    sr.in_struct("operating_point_payload", Some("5.11"), |sr| {
+        let declared_size_bytes = sr.read_leb128("ops_data_size")?;
+        let start_bits = sr.consumed_bits();
+        let is_global = xlayer_id.is_global();
 
-    let op_intent = if flags.intent_present {
-        Some(reader.read_bits_u8(OPS_INTENT_BITS)?)
-    } else {
-        None
-    };
-
-    let mut aggregate_info = None;
-    let mut local_ptl_info = None;
-    if flags.ptl_present {
-        if is_global {
-            aggregate_info = Some(parse_ops_aggregate_info(reader)?);
+        let op_intent = if flags.intent_present {
+            Some(sr.read_bits_u8("ops_op_intent", OPS_INTENT_BITS)?)
         } else {
-            local_ptl_info = Some(parse_ops_seq_profile_tier_level_info(reader, xlayer_id)?);
-        }
-    }
+            sr.absent("ops_op_intent", "!ops_intent_present_flag");
+            None
+        };
 
-    let color_info = if flags.color_info_present {
-        Some(parse_ops_color_info(reader)?)
-    } else {
-        None
-    };
-
-    let decoder_model_present = reader.read_flag()?;
-    let decoder_model_info = if decoder_model_present {
-        Some(parse_ops_decoder_model_info(reader)?)
-    } else {
-        None
-    };
-
-    let initial_display_delay_present = reader.read_flag()?;
-    let initial_display_delay_minus_1 = if initial_display_delay_present {
-        Some(reader.read_bits_u8(OPS_INITIAL_DISPLAY_DELAY_BITS)?)
-    } else {
-        None
-    };
-
-    let mut xlayer_map = None;
-    let mut xlayer_entries = Vec::new();
-    if is_global {
-        let map = reader.read_bits(OPS_XLAYER_MAP_BITS)?;
-        xlayer_map = Some(map);
-        for j in 0u8..31 {
-            if map & (1u32 << u32::from(j)) == 0 {
-                continue;
-            }
-            let entry_xlayer = ExtendedLayerId::from_bits(j);
-            let ptl_info = if flags.ptl_present {
-                Some(parse_ops_seq_profile_tier_level_info(reader, entry_xlayer)?)
+        let mut aggregate_info = None;
+        let mut local_ptl_info = None;
+        if flags.ptl_present {
+            if is_global {
+                aggregate_info = Some(parse_ops_aggregate_info(sr)?);
             } else {
-                None
-            };
-            let mlayer = parse_global_mlayer_source(reader, flags.mlayer_info_idc)?;
+                local_ptl_info = Some(parse_ops_seq_profile_tier_level_info(sr, xlayer_id)?);
+            }
+        }
+
+        let color_info = if flags.color_info_present {
+            Some(parse_ops_color_info(sr)?)
+        } else {
+            None
+        };
+
+        let decoder_model_present =
+            sr.read_flag("ops_decoder_model_info_for_this_op_present_flag")?;
+        let decoder_model_info = if decoder_model_present {
+            Some(parse_ops_decoder_model_info(sr)?)
+        } else {
+            None
+        };
+
+        let initial_display_delay_present =
+            sr.read_flag("ops_initial_display_delay_present_flag")?;
+        let initial_display_delay_minus_1 = if initial_display_delay_present {
+            Some(sr.read_bits_u8(
+                "ops_initial_display_delay_minus_1",
+                OPS_INITIAL_DISPLAY_DELAY_BITS,
+            )?)
+        } else {
+            sr.absent(
+                "ops_initial_display_delay_minus_1",
+                "!ops_initial_display_delay_present_flag",
+            );
+            None
+        };
+
+        let mut xlayer_map = None;
+        let mut xlayer_entries = Vec::new();
+        if is_global {
+            let map = sr.read_bits("ops_xlayer_map", OPS_XLAYER_MAP_BITS)?;
+            xlayer_map = Some(map);
+            for j in 0u8..31 {
+                if map & (1u32 << u32::from(j)) == 0 {
+                    continue;
+                }
+                let entry_xlayer = ExtendedLayerId::from_bits(j);
+                let entry = sr.in_loop_item("xlayer", usize::from(j), |sr| {
+                    let ptl_info = if flags.ptl_present {
+                        Some(parse_ops_seq_profile_tier_level_info(sr, entry_xlayer)?)
+                    } else {
+                        None
+                    };
+                    let mlayer = parse_global_mlayer_source(sr, flags.mlayer_info_idc)?;
+                    Ok(OpsXlayerEntry {
+                        xlayer_id: entry_xlayer,
+                        ptl_info,
+                        mlayer,
+                    })
+                })?;
+                xlayer_entries.push(entry);
+            }
+        } else {
+            let mlayer = OpsMlayerSource::Explicit(parse_ops_mlayer_info(sr)?);
             xlayer_entries.push(OpsXlayerEntry {
-                xlayer_id: entry_xlayer,
-                ptl_info,
+                xlayer_id,
+                ptl_info: local_ptl_info,
                 mlayer,
             });
         }
-    } else {
-        let mlayer = OpsMlayerSource::Explicit(parse_ops_mlayer_info(reader)?);
-        xlayer_entries.push(OpsXlayerEntry {
-            xlayer_id,
-            ptl_info: local_ptl_info,
-            mlayer,
-        });
-    }
 
-    reader.byte_align_zero()?;
-    let consumed = reader.consumed_bits().saturating_sub(start_bits);
-    let computed_size_bytes = u32::try_from(consumed / 8).unwrap_or(0);
+        sr.byte_align_zero()?;
+        let consumed = sr.consumed_bits().saturating_sub(start_bits);
+        let computed_size_bytes = u32::try_from(consumed / 8).unwrap_or(0);
 
-    Ok(OperatingPointPayload {
-        index,
-        declared_size_bytes,
-        computed_size_bytes,
-        op_intent,
-        aggregate_info,
-        color_info,
-        decoder_model_info,
-        initial_display_delay_minus_1,
-        xlayer_map,
-        xlayer_entries,
+        Ok(OperatingPointPayload {
+            index,
+            declared_size_bytes,
+            computed_size_bytes,
+            op_intent,
+            aggregate_info,
+            color_info,
+            decoder_model_info,
+            initial_display_delay_minus_1,
+            xlayer_map,
+            xlayer_entries,
+        })
     })
 }
 
-/// Reads the per-layer mlayer info source for a global OPS payload, following the
-/// `ops_mlayer_info_idc` branches of § 5.11. `idc` values `0` and the reserved `3`
-/// code nothing.
-fn parse_global_mlayer_source(
-    reader: &mut BitReader<'_>,
+fn parse_global_mlayer_source<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     mlayer_info_idc: Option<u8>,
 ) -> Result<OpsMlayerSource> {
     match mlayer_info_idc {
-        Some(1) => Ok(OpsMlayerSource::Explicit(parse_ops_mlayer_info(reader)?)),
+        Some(1) => Ok(OpsMlayerSource::Explicit(parse_ops_mlayer_info(sr)?)),
         Some(2) => {
-            let explicit = reader.read_flag()?;
+            let explicit = sr.read_flag("ops_explicit_mlayer_info_flag")?;
             if explicit {
-                Ok(OpsMlayerSource::Explicit(parse_ops_mlayer_info(reader)?))
+                Ok(OpsMlayerSource::Explicit(parse_ops_mlayer_info(sr)?))
             } else {
-                let embedded_ops_id = reader.read_bits_u8(OPS_EMBEDDED_OPS_ID_BITS)?;
-                let embedded_op_index = reader.read_bits_u8(OPS_EMBEDDED_OP_INDEX_BITS)?;
+                let embedded_ops_id =
+                    sr.read_bits_u8("ops_embedded_ops_id", OPS_EMBEDDED_OPS_ID_BITS)?;
+                let embedded_op_index =
+                    sr.read_bits_u8("ops_embedded_op_index", OPS_EMBEDDED_OP_INDEX_BITS)?;
                 Ok(OpsMlayerSource::Inherited {
                     embedded_ops_id,
                     embedded_op_index,
@@ -470,90 +518,98 @@ fn parse_global_mlayer_source(
     }
 }
 
-/// Parses `ops_aggregate_info()` (AV2 v1.0.0 § 5.11.1).
-fn parse_ops_aggregate_info(reader: &mut BitReader<'_>) -> Result<OpsAggregateInfo> {
-    let config_idc = reader.read_bits_u8(6)?;
-    let aggregate_level_idx = reader.read_bits_u8(5)?;
-    let max_tier_flag = reader.read_flag()?;
-    let max_interop = reader.read_bits_u8(4)?;
-    Ok(OpsAggregateInfo {
-        config_idc,
-        aggregate_level_idx,
-        max_tier_flag,
-        max_interop,
+fn parse_ops_aggregate_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<OpsAggregateInfo> {
+    sr.in_struct("ops_aggregate_info", Some("5.11.1"), |sr| {
+        Ok(OpsAggregateInfo {
+            config_idc: sr.read_bits_u8("ops_config_idc", 6)?,
+            aggregate_level_idx: sr.read_bits_u8("ops_aggregate_level_idx", 5)?,
+            max_tier_flag: sr.read_flag("ops_max_tier_flag")?,
+            max_interop: sr.read_bits_u8("ops_max_interop", 4)?,
+        })
     })
 }
 
-/// Parses `ops_seq_profile_tier_level_info()` (AV2 v1.0.0 § 5.11.2) targeting
-/// `target_xlayer_id`.
-fn parse_ops_seq_profile_tier_level_info(
-    reader: &mut BitReader<'_>,
+fn parse_ops_seq_profile_tier_level_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     target_xlayer_id: ExtendedLayerId,
 ) -> Result<OpsSeqProfileTierLevelInfo> {
-    let seq_profile_idc = ProfileIdc::from_bits(reader.read_bits_u8(5)?);
-    let level_idx = reader.read_bits_u8(5)?;
-    let tier_flag = reader.read_flag()?;
-    let mlayer_count = reader.read_bits_u8(3)?;
-    let reserved_2bits = reader.read_bits_u8(OPS_RESERVED_2BITS)?;
-    Ok(OpsSeqProfileTierLevelInfo {
-        target_xlayer_id,
-        seq_profile_idc,
-        level_idx,
-        tier_flag,
-        mlayer_count,
-        reserved_2bits,
+    sr.in_struct("ops_seq_profile_tier_level_info", Some("5.11.2"), |sr| {
+        Ok(OpsSeqProfileTierLevelInfo {
+            target_xlayer_id,
+            seq_profile_idc: ProfileIdc::from_bits(sr.read_bits_u8("ops_seq_profile_idc", 5)?),
+            level_idx: sr.read_bits_u8("ops_level_idx", 5)?,
+            tier_flag: sr.read_flag("ops_tier_flag")?,
+            mlayer_count: sr.read_bits_u8("ops_mlayer_count", 3)?,
+            reserved_2bits: sr.read_bits_u8("ops_ptl_reserved_2bits", OPS_RESERVED_2BITS)?,
+        })
     })
 }
 
-/// Parses `ops_decoder_model_info()` (AV2 v1.0.0 § 5.11.3).
-fn parse_ops_decoder_model_info(reader: &mut BitReader<'_>) -> Result<OpsDecoderModelInfo> {
-    let decoder_buffer_delay = reader.read_uvlc()?;
-    let encoder_buffer_delay = reader.read_uvlc()?;
-    let low_delay_mode_flag = reader.read_flag()?;
-    Ok(OpsDecoderModelInfo {
-        decoder_buffer_delay,
-        encoder_buffer_delay,
-        low_delay_mode_flag,
+fn parse_ops_decoder_model_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<OpsDecoderModelInfo> {
+    sr.in_struct("ops_decoder_model_info", Some("5.11.3"), |sr| {
+        Ok(OpsDecoderModelInfo {
+            decoder_buffer_delay: sr.read_uvlc("ops_decoder_buffer_delay")?,
+            encoder_buffer_delay: sr.read_uvlc("ops_encoder_buffer_delay")?,
+            low_delay_mode_flag: sr.read_flag("ops_low_delay_mode_flag")?,
+        })
     })
 }
 
-/// Parses `ops_color_info()` (AV2 v1.0.0 § 5.11.4).
-fn parse_ops_color_info(reader: &mut BitReader<'_>) -> Result<OpsColorInfo> {
-    let color_description_idc = reader.read_rg(2)?;
-    let (color_primaries, transfer_characteristics, matrix_coefficients) =
-        if color_description_idc == 0 {
-            (
-                Some(reader.read_bits_u8(8)?),
-                Some(reader.read_bits_u8(8)?),
-                Some(reader.read_bits_u8(8)?),
-            )
-        } else {
-            (None, None, None)
-        };
-    let full_range_flag = reader.read_flag()?;
-    Ok(OpsColorInfo {
-        color_description_idc,
-        color_primaries,
-        transfer_characteristics,
-        matrix_coefficients,
-        full_range_flag,
+fn parse_ops_color_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<OpsColorInfo> {
+    sr.in_struct("ops_color_info", Some("5.11.4"), |sr| {
+        let color_description_idc = sr.read_rg("ops_color_description_idc", 2)?;
+        let (color_primaries, transfer_characteristics, matrix_coefficients) =
+            if color_description_idc == 0 {
+                (
+                    Some(sr.read_bits_u8("ops_color_primaries", 8)?),
+                    Some(sr.read_bits_u8("ops_transfer_characteristics", 8)?),
+                    Some(sr.read_bits_u8("ops_matrix_coefficients", 8)?),
+                )
+            } else {
+                sr.absent("ops_color_primaries", "ops_color_description_idc != 0");
+                sr.absent(
+                    "ops_transfer_characteristics",
+                    "ops_color_description_idc != 0",
+                );
+                sr.absent("ops_matrix_coefficients", "ops_color_description_idc != 0");
+                (None, None, None)
+            };
+        let full_range_flag = sr.read_flag("ops_full_range_flag")?;
+        Ok(OpsColorInfo {
+            color_description_idc,
+            color_primaries,
+            transfer_characteristics,
+            matrix_coefficients,
+            full_range_flag,
+        })
     })
 }
 
-/// Parses `ops_mlayer_info()` (AV2 v1.0.0 § 5.11.5).
-fn parse_ops_mlayer_info(reader: &mut BitReader<'_>) -> Result<OpsMlayerInfo> {
-    let mlayer_map = reader.read_bits_u8(OPS_MLAYER_MAP_BITS)?;
-    let mut tlayer_maps = Vec::new();
-    for j in 0u8..8 {
-        if mlayer_map & (1u8 << j) == 0 {
-            continue;
+fn parse_ops_mlayer_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<OpsMlayerInfo> {
+    sr.in_struct("ops_mlayer_info", Some("5.11.5"), |sr| {
+        let mlayer_map = sr.read_bits_u8("ops_mlayer_map", OPS_MLAYER_MAP_BITS)?;
+        let mut tlayer_maps = Vec::new();
+        for j in 0u8..8 {
+            if mlayer_map & (1u8 << j) == 0 {
+                continue;
+            }
+            let tlayer_map = sr.in_loop_item("mlayer", usize::from(j), |sr| {
+                sr.read_bits_u8("ops_tlayer_map", OPS_TLAYER_MAP_BITS)
+            })?;
+            tlayer_maps.push((j, tlayer_map));
         }
-        let tlayer_map = reader.read_bits_u8(OPS_TLAYER_MAP_BITS)?;
-        tlayer_maps.push((j, tlayer_map));
-    }
-    Ok(OpsMlayerInfo {
-        mlayer_map,
-        tlayer_maps,
+        Ok(OpsMlayerInfo {
+            mlayer_map,
+            tlayer_maps,
+        })
     })
 }
 

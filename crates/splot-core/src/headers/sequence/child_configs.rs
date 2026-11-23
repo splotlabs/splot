@@ -8,8 +8,9 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
-use crate::segment::{SegmentInfo, parse_seg_info};
-use crate::tile::{TileParams, TileParamsInput, parse_tile_layout};
+use crate::segment::{SegmentInfo, parse_seg_info_with_reader};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
+use crate::tile::{TileParams, TileParamsInput, parse_tile_layout_with_reader};
 
 /// `MOTION_MODES`: number of motion modes (AV2 § 3).
 const MOTION_MODES: usize = 5;
@@ -84,45 +85,74 @@ pub fn parse_sequence_partition_config(
     monochrome: bool,
     single_picture: bool,
 ) -> Result<SequencePartitionConfig> {
-    let use_256x256_superblock = reader.read_flag()?;
-    let use_128x128_superblock = if use_256x256_superblock {
-        false
-    } else {
-        reader.read_flag()?
-    };
-    let enable_sdp = if monochrome {
-        false
-    } else {
-        reader.read_flag()?
-    };
-    let enable_extended_sdp = if enable_sdp && !single_picture {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    let enable_ext_partitions = reader.read_flag()?;
-    let enable_uneven_4way_partitions = if enable_ext_partitions {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    let reduce_pb_aspect_ratio = reader.read_flag()?;
-    let max_pb_aspect_ratio = if reduce_pb_aspect_ratio {
-        let max_pb_aspect_ratio_log2_minus_1 = reader.read_bits_u8(1)?;
-        1u32 << (u32::from(max_pb_aspect_ratio_log2_minus_1) + 1)
-    } else {
-        8
-    };
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_partition_config_with_reader(&mut sr, monochrome, single_picture)
+}
 
-    Ok(SequencePartitionConfig {
-        use_256x256_superblock,
-        use_128x128_superblock,
-        enable_sdp,
-        enable_extended_sdp,
-        enable_ext_partitions,
-        enable_uneven_4way_partitions,
-        reduce_pb_aspect_ratio,
-        max_pb_aspect_ratio,
+pub(crate) fn parse_sequence_partition_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    monochrome: bool,
+    single_picture: bool,
+) -> Result<SequencePartitionConfig> {
+    sr.in_struct("sequence_partition_config", Some("5.4.3"), |sr| {
+        let use_256x256_superblock = sr.read_flag("use_256x256_superblock")?;
+        let use_128x128_superblock = if use_256x256_superblock {
+            sr.inferred_bool("use_128x128_superblock", "use_256x256_superblock", false);
+            false
+        } else {
+            sr.read_flag("use_128x128_superblock")?
+        };
+        let enable_sdp = if monochrome {
+            sr.inferred_bool("enable_sdp", "monochrome", false);
+            false
+        } else {
+            sr.read_flag("enable_sdp")?
+        };
+        let enable_extended_sdp = if enable_sdp && !single_picture {
+            sr.read_flag("enable_extended_sdp")?
+        } else {
+            sr.inferred_bool(
+                "enable_extended_sdp",
+                "!(enable_sdp && !single_picture_header_flag)",
+                false,
+            );
+            false
+        };
+        let enable_ext_partitions = sr.read_flag("enable_ext_partitions")?;
+        let enable_uneven_4way_partitions = if enable_ext_partitions {
+            sr.read_flag("enable_uneven_4way_partitions")?
+        } else {
+            sr.inferred_bool(
+                "enable_uneven_4way_partitions",
+                "!enable_ext_partitions",
+                false,
+            );
+            false
+        };
+        let reduce_pb_aspect_ratio = sr.read_flag("reduce_pb_aspect_ratio")?;
+        let max_pb_aspect_ratio = if reduce_pb_aspect_ratio {
+            let max_pb_aspect_ratio_log2_minus_1 =
+                sr.read_bits_u8("max_pb_aspect_ratio_log2_minus_1", 1)?;
+            1u32 << (u32::from(max_pb_aspect_ratio_log2_minus_1) + 1)
+        } else {
+            sr.absent(
+                "max_pb_aspect_ratio_log2_minus_1",
+                "!reduce_pb_aspect_ratio",
+            );
+            8
+        };
+
+        Ok(SequencePartitionConfig {
+            use_256x256_superblock,
+            use_128x128_superblock,
+            enable_sdp,
+            enable_extended_sdp,
+            enable_ext_partitions,
+            enable_uneven_4way_partitions,
+            reduce_pb_aspect_ratio,
+            max_pb_aspect_ratio,
+        })
     })
 }
 
@@ -147,23 +177,34 @@ pub struct SequenceSegmentConfig {
 /// # Errors
 /// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field.
 pub fn parse_sequence_segment_config(reader: &mut BitReader<'_>) -> Result<SequenceSegmentConfig> {
-    let enable_ext_seg = reader.read_flag()?;
-    let max_segments = if enable_ext_seg { 16 } else { 8 };
-    let seq_seg_info_present_flag = reader.read_flag()?;
-    let (seq_allow_seg_info_change, segment_info) = if seq_seg_info_present_flag {
-        let allow = reader.read_flag()?;
-        let info = parse_seg_info(reader, max_segments)?;
-        (Some(allow), Some(info))
-    } else {
-        (None, None)
-    };
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_segment_config_with_reader(&mut sr)
+}
 
-    Ok(SequenceSegmentConfig {
-        enable_ext_seg,
-        max_segments,
-        seq_seg_info_present_flag,
-        seq_allow_seg_info_change,
-        segment_info,
+pub(crate) fn parse_sequence_segment_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<SequenceSegmentConfig> {
+    sr.in_struct("sequence_segment_config", Some("5.4.4"), |sr| {
+        let enable_ext_seg = sr.read_flag("enable_ext_seg")?;
+        let max_segments = if enable_ext_seg { 16 } else { 8 };
+        let seq_seg_info_present_flag = sr.read_flag("seq_seg_info_present_flag")?;
+        let (seq_allow_seg_info_change, segment_info) = if seq_seg_info_present_flag {
+            let allow = sr.read_flag("seq_allow_seg_info_change")?;
+            let info = parse_seg_info_with_reader(sr, max_segments)?;
+            (Some(allow), Some(info))
+        } else {
+            sr.absent("seq_allow_seg_info_change", "!seq_seg_info_present_flag");
+            (None, None)
+        };
+
+        Ok(SequenceSegmentConfig {
+            enable_ext_seg,
+            max_segments,
+            seq_seg_info_present_flag,
+            seq_allow_seg_info_change,
+            segment_info,
+        })
     })
 }
 
@@ -194,26 +235,38 @@ pub fn parse_sequence_intra_config(
     reader: &mut BitReader<'_>,
     monochrome: bool,
 ) -> Result<SequenceIntraConfig> {
-    let enable_dip = reader.read_flag()?;
-    let enable_intra_edge_filter = reader.read_flag()?;
-    let enable_mrls = reader.read_flag()?;
-    let enable_cfl_intra = reader.read_flag()?;
-    let cfl_ds_filter_index = if monochrome {
-        0
-    } else {
-        reader.read_bits_u8(2)?
-    };
-    let enable_mhccp = reader.read_flag()?;
-    let enable_ibp = reader.read_flag()?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_intra_config_with_reader(&mut sr, monochrome)
+}
 
-    Ok(SequenceIntraConfig {
-        enable_dip,
-        enable_intra_edge_filter,
-        enable_mrls,
-        enable_cfl_intra,
-        cfl_ds_filter_index,
-        enable_mhccp,
-        enable_ibp,
+pub(crate) fn parse_sequence_intra_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    monochrome: bool,
+) -> Result<SequenceIntraConfig> {
+    sr.in_struct("sequence_intra_config", Some("5.4.5"), |sr| {
+        let enable_dip = sr.read_flag("enable_dip")?;
+        let enable_intra_edge_filter = sr.read_flag("enable_intra_edge_filter")?;
+        let enable_mrls = sr.read_flag("enable_mrls")?;
+        let enable_cfl_intra = sr.read_flag("enable_cfl_intra")?;
+        let cfl_ds_filter_index = if monochrome {
+            sr.inferred_u64("cfl_ds_filter_index", "monochrome", 0);
+            0
+        } else {
+            sr.read_bits_u8("cfl_ds_filter_index", 2)?
+        };
+        let enable_mhccp = sr.read_flag("enable_mhccp")?;
+        let enable_ibp = sr.read_flag("enable_ibp")?;
+
+        Ok(SequenceIntraConfig {
+            enable_dip,
+            enable_intra_edge_filter,
+            enable_mrls,
+            enable_cfl_intra,
+            cfl_ds_filter_index,
+            enable_mhccp,
+            enable_ibp,
+        })
     })
 }
 
@@ -307,12 +360,13 @@ pub struct SequenceInterConfig {
     pub enable_short_refresh_frame_flags: bool,
 }
 
-fn read_drl_reorder(reader: &mut BitReader<'_>) -> Result<DrlReorder> {
-    let disable_drl_reorder = reader.read_flag()?;
+fn read_drl_reorder<O: SyntaxObserver>(sr: &mut SyntaxReader<'_, '_, O>) -> Result<DrlReorder> {
+    let disable_drl_reorder = sr.read_flag("disable_drl_reorder")?;
     if disable_drl_reorder {
+        sr.absent("constrain_drl_reorder", "disable_drl_reorder");
         Ok(DrlReorder::Disabled)
     } else {
-        let constrain_drl_reorder = reader.read_flag()?;
+        let constrain_drl_reorder = sr.read_flag("constrain_drl_reorder")?;
         Ok(if constrain_drl_reorder {
             DrlReorder::Constraint
         } else {
@@ -332,125 +386,166 @@ pub fn parse_sequence_inter_config(
     reader: &mut BitReader<'_>,
     single_picture: bool,
 ) -> Result<SequenceInterConfig> {
-    let mut config = SequenceInterConfig {
-        seq_enabled_motion_modes: [false; MOTION_MODES],
-        seq_frame_motion_modes_present_flag: false,
-        enable_six_param_warp_delta: false,
-        enable_masked_compound: false,
-        enable_ref_frame_mvs: false,
-        reduced_ref_frame_mvs_mode: false,
-        order_hint_bits: 0,
-        enable_refmvbank: false,
-        drl_reorder: DrlReorder::Disabled,
-        explicit_ref_frame_map: false,
-        num_ref_frames: 2,
-        long_term_frame_id_bits: 0,
-        seq_max_drl_bits_minus_1: 0,
-        allow_frame_max_drl_bits: false,
-        seq_max_bvp_drl_bits_minus_1: 0,
-        allow_frame_max_bvp_drl_bits: false,
-        num_same_ref_compound: 0,
-        enable_tip: false,
-        enable_tip_output: false,
-        enable_tip_hole_fill: false,
-        enable_mv_traj: false,
-        enable_bawp: false,
-        enable_cwp: false,
-        enable_imp_msk_bld: false,
-        enable_df_sub_pu: false,
-        enable_tip_explicit_qp: false,
-        enable_opfl_refine: 0,
-        enable_refinemv: false,
-        enable_tip_refinemv: false,
-        enable_bru: false,
-        enable_adaptive_mvd: false,
-        enable_mvd_sign_derive: false,
-        enable_flex_mvres: false,
-        enable_global_motion: false,
-        enable_short_refresh_frame_flags: false,
-    };
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_inter_config_with_reader(&mut sr, single_picture)
+}
 
-    if single_picture {
-        config.enable_refmvbank = reader.read_flag()?;
-        config.drl_reorder = read_drl_reorder(reader)?;
-        config.seq_max_bvp_drl_bits_minus_1 = reader.read_ns(MAX_REF_BV_STACK_SIZE - 1)?;
-        config.allow_frame_max_bvp_drl_bits = reader.read_flag()?;
-        config.enable_bawp = reader.read_flag()?;
-        return Ok(config);
-    }
+pub(crate) fn parse_sequence_inter_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    single_picture: bool,
+) -> Result<SequenceInterConfig> {
+    sr.in_struct("sequence_inter_config", Some("5.4.6"), |sr| {
+        let mut config = SequenceInterConfig {
+            seq_enabled_motion_modes: [false; MOTION_MODES],
+            seq_frame_motion_modes_present_flag: false,
+            enable_six_param_warp_delta: false,
+            enable_masked_compound: false,
+            enable_ref_frame_mvs: false,
+            reduced_ref_frame_mvs_mode: false,
+            order_hint_bits: 0,
+            enable_refmvbank: false,
+            drl_reorder: DrlReorder::Disabled,
+            explicit_ref_frame_map: false,
+            num_ref_frames: 2,
+            long_term_frame_id_bits: 0,
+            seq_max_drl_bits_minus_1: 0,
+            allow_frame_max_drl_bits: false,
+            seq_max_bvp_drl_bits_minus_1: 0,
+            allow_frame_max_bvp_drl_bits: false,
+            num_same_ref_compound: 0,
+            enable_tip: false,
+            enable_tip_output: false,
+            enable_tip_hole_fill: false,
+            enable_mv_traj: false,
+            enable_bawp: false,
+            enable_cwp: false,
+            enable_imp_msk_bld: false,
+            enable_df_sub_pu: false,
+            enable_tip_explicit_qp: false,
+            enable_opfl_refine: 0,
+            enable_refinemv: false,
+            enable_tip_refinemv: false,
+            enable_bru: false,
+            enable_adaptive_mvd: false,
+            enable_mvd_sign_derive: false,
+            enable_flex_mvres: false,
+            enable_global_motion: false,
+            enable_short_refresh_frame_flags: false,
+        };
 
-    let mut motion_mode_enabled = false;
-    for mode in INTERINTRA..MOTION_MODES {
-        let enabled = reader.read_flag()?;
-        config.seq_enabled_motion_modes[mode] = enabled;
-        motion_mode_enabled |= enabled;
-    }
-    config.seq_frame_motion_modes_present_flag = if motion_mode_enabled {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    config.enable_six_param_warp_delta = if config.seq_enabled_motion_modes[DELTAWARP] {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    config.enable_masked_compound = reader.read_flag()?;
-    config.enable_ref_frame_mvs = reader.read_flag()?;
-    config.reduced_ref_frame_mvs_mode = if config.enable_ref_frame_mvs {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    let order_hint_bits_minus_1 = reader.read_bits_u8(4)?;
-    config.order_hint_bits = order_hint_bits_minus_1 + 1;
-    config.enable_refmvbank = reader.read_flag()?;
-    config.drl_reorder = read_drl_reorder(reader)?;
-    config.explicit_ref_frame_map = reader.read_flag()?;
-    let explicit_num_ref_frames = reader.read_flag()?;
-    config.num_ref_frames = if explicit_num_ref_frames {
-        reader.read_bits_u8(4)? + 1
-    } else {
-        8
-    };
-    config.long_term_frame_id_bits = reader.read_bits_u8(3)?;
-    config.seq_max_drl_bits_minus_1 = reader.read_ns(MAX_REF_MV_STACK_SIZE - 1)?;
-    config.allow_frame_max_drl_bits = reader.read_flag()?;
-    config.seq_max_bvp_drl_bits_minus_1 = reader.read_ns(MAX_REF_BV_STACK_SIZE - 1)?;
-    config.allow_frame_max_bvp_drl_bits = reader.read_flag()?;
-    config.num_same_ref_compound = reader.read_bits_u8(2)?;
-    config.enable_tip = reader.read_flag()?;
-    if config.enable_tip {
-        let disable_tip_output = reader.read_flag()?;
-        config.enable_tip_output = !disable_tip_output;
-        config.enable_tip_hole_fill = reader.read_flag()?;
-    }
-    config.enable_mv_traj = reader.read_flag()?;
-    config.enable_bawp = reader.read_flag()?;
-    config.enable_cwp = reader.read_flag()?;
-    config.enable_imp_msk_bld = reader.read_flag()?;
-    config.enable_df_sub_pu = reader.read_flag()?;
-    config.enable_tip_explicit_qp = if config.enable_tip_output && config.enable_df_sub_pu {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    config.enable_opfl_refine = reader.read_bits_u8(2)?;
-    config.enable_refinemv = reader.read_flag()?;
-    config.enable_tip_refinemv =
-        if config.enable_tip && (config.enable_opfl_refine != 0 || config.enable_refinemv) {
-            reader.read_flag()?
+        if single_picture {
+            config.enable_refmvbank = sr.read_flag("enable_refmvbank")?;
+            config.drl_reorder = read_drl_reorder(sr)?;
+            config.seq_max_bvp_drl_bits_minus_1 =
+                sr.read_ns("seq_max_bvp_drl_bits_minus_1", MAX_REF_BV_STACK_SIZE - 1)?;
+            config.allow_frame_max_bvp_drl_bits = sr.read_flag("allow_frame_max_bvp_drl_bits")?;
+            config.enable_bawp = sr.read_flag("enable_bawp")?;
+            return Ok(config);
+        }
+
+        let mut motion_mode_enabled = false;
+        for mode in INTERINTRA..MOTION_MODES {
+            let enabled =
+                sr.in_loop_item("mode", mode, |sr| sr.read_flag("seq_enabled_motion_modes"))?;
+            config.seq_enabled_motion_modes[mode] = enabled;
+            motion_mode_enabled |= enabled;
+        }
+        config.seq_frame_motion_modes_present_flag = if motion_mode_enabled {
+            sr.read_flag("seq_frame_motion_modes_present_flag")?
         } else {
+            sr.inferred_bool(
+                "seq_frame_motion_modes_present_flag",
+                "!motion_mode_enabled",
+                false,
+            );
             false
         };
-    config.enable_bru = reader.read_flag()?;
-    config.enable_adaptive_mvd = reader.read_flag()?;
-    config.enable_mvd_sign_derive = reader.read_flag()?;
-    config.enable_flex_mvres = reader.read_flag()?;
-    config.enable_global_motion = reader.read_flag()?;
-    config.enable_short_refresh_frame_flags = reader.read_flag()?;
+        config.enable_six_param_warp_delta = if config.seq_enabled_motion_modes[DELTAWARP] {
+            sr.read_flag("enable_six_param_warp_delta")?
+        } else {
+            sr.inferred_bool(
+                "enable_six_param_warp_delta",
+                "!seq_enabled_motion_modes[DELTAWARP]",
+                false,
+            );
+            false
+        };
+        config.enable_masked_compound = sr.read_flag("enable_masked_compound")?;
+        config.enable_ref_frame_mvs = sr.read_flag("enable_ref_frame_mvs")?;
+        config.reduced_ref_frame_mvs_mode = if config.enable_ref_frame_mvs {
+            sr.read_flag("reduced_ref_frame_mvs_mode")?
+        } else {
+            sr.inferred_bool("reduced_ref_frame_mvs_mode", "!enable_ref_frame_mvs", false);
+            false
+        };
+        let order_hint_bits_minus_1 = sr.read_bits_u8("order_hint_bits_minus_1", 4)?;
+        config.order_hint_bits = order_hint_bits_minus_1 + 1;
+        config.enable_refmvbank = sr.read_flag("enable_refmvbank")?;
+        config.drl_reorder = read_drl_reorder(sr)?;
+        config.explicit_ref_frame_map = sr.read_flag("explicit_ref_frame_map")?;
+        let explicit_num_ref_frames = sr.read_flag("explicit_num_ref_frames")?;
+        config.num_ref_frames = if explicit_num_ref_frames {
+            sr.read_bits_u8("num_ref_frames_minus_1", 4)? + 1
+        } else {
+            sr.inferred_u64("num_ref_frames_minus_1", "!explicit_num_ref_frames", 7);
+            8
+        };
+        config.long_term_frame_id_bits = sr.read_bits_u8("long_term_frame_id_bits", 3)?;
+        config.seq_max_drl_bits_minus_1 =
+            sr.read_ns("seq_max_drl_bits_minus_1", MAX_REF_MV_STACK_SIZE - 1)?;
+        config.allow_frame_max_drl_bits = sr.read_flag("allow_frame_max_drl_bits")?;
+        config.seq_max_bvp_drl_bits_minus_1 =
+            sr.read_ns("seq_max_bvp_drl_bits_minus_1", MAX_REF_BV_STACK_SIZE - 1)?;
+        config.allow_frame_max_bvp_drl_bits = sr.read_flag("allow_frame_max_bvp_drl_bits")?;
+        config.num_same_ref_compound = sr.read_bits_u8("num_same_ref_compound", 2)?;
+        config.enable_tip = sr.read_flag("enable_tip")?;
+        if config.enable_tip {
+            let disable_tip_output = sr.read_flag("disable_tip_output")?;
+            config.enable_tip_output = !disable_tip_output;
+            config.enable_tip_hole_fill = sr.read_flag("enable_tip_hole_fill")?;
+        } else {
+            sr.inferred_bool("disable_tip_output", "!enable_tip", true);
+            sr.inferred_bool("enable_tip_hole_fill", "!enable_tip", false);
+        }
+        config.enable_mv_traj = sr.read_flag("enable_mv_traj")?;
+        config.enable_bawp = sr.read_flag("enable_bawp")?;
+        config.enable_cwp = sr.read_flag("enable_cwp")?;
+        config.enable_imp_msk_bld = sr.read_flag("enable_imp_msk_bld")?;
+        config.enable_df_sub_pu = sr.read_flag("enable_df_sub_pu")?;
+        config.enable_tip_explicit_qp = if config.enable_tip_output && config.enable_df_sub_pu {
+            sr.read_flag("enable_tip_explicit_qp")?
+        } else {
+            sr.inferred_bool(
+                "enable_tip_explicit_qp",
+                "!(EnableTipOutput && enable_df_sub_pu)",
+                false,
+            );
+            false
+        };
+        config.enable_opfl_refine = sr.read_bits_u8("enable_opfl_refine", 2)?;
+        config.enable_refinemv = sr.read_flag("enable_refinemv")?;
+        config.enable_tip_refinemv =
+            if config.enable_tip && (config.enable_opfl_refine != 0 || config.enable_refinemv) {
+                sr.read_flag("enable_tip_refinemv")?
+            } else {
+                sr.inferred_bool(
+                    "enable_tip_refinemv",
+                    "!(enable_tip && (enable_opfl_refine != 0 || enable_refinemv))",
+                    false,
+                );
+                false
+            };
+        config.enable_bru = sr.read_flag("enable_bru")?;
+        config.enable_adaptive_mvd = sr.read_flag("enable_adaptive_mvd")?;
+        config.enable_mvd_sign_derive = sr.read_flag("enable_mvd_sign_derive")?;
+        config.enable_flex_mvres = sr.read_flag("enable_flex_mvres")?;
+        config.enable_global_motion = sr.read_flag("enable_global_motion")?;
+        config.enable_short_refresh_frame_flags =
+            sr.read_flag("enable_short_refresh_frame_flags")?;
 
-    Ok(config)
+        Ok(config)
+    })
 }
 
 /// `sequence_scc_config()` (AV2 v1.0.0 § 5.4.7 / § 6.4.7).
@@ -470,34 +565,70 @@ pub fn parse_sequence_scc_config(
     reader: &mut BitReader<'_>,
     single_picture: bool,
 ) -> Result<SequenceSccConfig> {
-    if single_picture {
-        return Ok(SequenceSccConfig {
-            seq_force_screen_content_tools: SELECT_SCREEN_CONTENT_TOOLS,
-            seq_force_integer_mv: SELECT_INTEGER_MV,
-        });
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_scc_config_with_reader(&mut sr, single_picture)
+}
 
-    let seq_choose_screen_content_tools = reader.read_flag()?;
-    let seq_force_screen_content_tools = if seq_choose_screen_content_tools {
-        SELECT_SCREEN_CONTENT_TOOLS
-    } else {
-        reader.read_bits_u8(1)?
-    };
-
-    let seq_force_integer_mv = if seq_force_screen_content_tools > 0 {
-        let seq_choose_integer_mv = reader.read_flag()?;
-        if seq_choose_integer_mv {
-            SELECT_INTEGER_MV
-        } else {
-            reader.read_bits_u8(1)?
+pub(crate) fn parse_sequence_scc_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    single_picture: bool,
+) -> Result<SequenceSccConfig> {
+    sr.in_struct("sequence_scc_config", Some("5.4.7"), |sr| {
+        if single_picture {
+            sr.inferred_u64(
+                "seq_force_screen_content_tools",
+                "single_picture_header_flag",
+                u64::from(SELECT_SCREEN_CONTENT_TOOLS),
+            );
+            sr.inferred_u64(
+                "seq_force_integer_mv",
+                "single_picture_header_flag",
+                u64::from(SELECT_INTEGER_MV),
+            );
+            return Ok(SequenceSccConfig {
+                seq_force_screen_content_tools: SELECT_SCREEN_CONTENT_TOOLS,
+                seq_force_integer_mv: SELECT_INTEGER_MV,
+            });
         }
-    } else {
-        SELECT_INTEGER_MV
-    };
 
-    Ok(SequenceSccConfig {
-        seq_force_screen_content_tools,
-        seq_force_integer_mv,
+        let seq_choose_screen_content_tools = sr.read_flag("seq_choose_screen_content_tools")?;
+        let seq_force_screen_content_tools = if seq_choose_screen_content_tools {
+            sr.inferred_u64(
+                "seq_force_screen_content_tools",
+                "seq_choose_screen_content_tools",
+                u64::from(SELECT_SCREEN_CONTENT_TOOLS),
+            );
+            SELECT_SCREEN_CONTENT_TOOLS
+        } else {
+            sr.read_bits_u8("seq_force_screen_content_tools", 1)?
+        };
+
+        let seq_force_integer_mv = if seq_force_screen_content_tools > 0 {
+            let seq_choose_integer_mv = sr.read_flag("seq_choose_integer_mv")?;
+            if seq_choose_integer_mv {
+                sr.inferred_u64(
+                    "seq_force_integer_mv",
+                    "seq_choose_integer_mv",
+                    u64::from(SELECT_INTEGER_MV),
+                );
+                SELECT_INTEGER_MV
+            } else {
+                sr.read_bits_u8("seq_force_integer_mv", 1)?
+            }
+        } else {
+            sr.inferred_u64(
+                "seq_force_integer_mv",
+                "seq_force_screen_content_tools == 0",
+                u64::from(SELECT_INTEGER_MV),
+            );
+            SELECT_INTEGER_MV
+        };
+
+        Ok(SequenceSccConfig {
+            seq_force_screen_content_tools,
+            seq_force_integer_mv,
+        })
     })
 }
 
@@ -559,104 +690,146 @@ pub fn parse_sequence_transform_quant_entropy_config(
     monochrome: bool,
     single_picture: bool,
 ) -> Result<SequenceTqEntropyConfig> {
-    let enable_fsc = reader.read_flag()?;
-    let enable_idtx_intra = if enable_fsc {
-        true
-    } else {
-        reader.read_flag()?
-    };
-    let enable_intra_ist = reader.read_flag()?;
-    let enable_inter_ist = reader.read_flag()?;
-    let enable_chroma_dctonly = if monochrome {
-        false
-    } else {
-        reader.read_flag()?
-    };
-    let enable_inter_ddt = if single_picture {
-        false
-    } else {
-        reader.read_flag()?
-    };
-    let reduced_tx_part_set = reader.read_flag()?;
-    let enable_cctx = if monochrome {
-        false
-    } else {
-        reader.read_flag()?
-    };
-    let enable_tcq = reader.read_flag()?;
-    let choose_tcq_per_frame = if enable_tcq && !single_picture {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    let enable_parity_hiding = if enable_tcq && !choose_tcq_per_frame {
-        false
-    } else {
-        reader.read_flag()?
-    };
-    let (enable_avg_cdf, avg_cdf_type) = if single_picture {
-        (true, 1)
-    } else {
-        let enable_avg_cdf = reader.read_flag()?;
-        let avg_cdf_type = if enable_avg_cdf {
-            reader.read_bits_u8(1)?
-        } else {
-            0
-        };
-        (enable_avg_cdf, avg_cdf_type)
-    };
-    let separate_uv_delta_q = if monochrome {
-        false
-    } else {
-        reader.read_flag()?
-    };
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_transform_quant_entropy_config_with_reader(&mut sr, monochrome, single_picture)
+}
 
-    let equal_ac_dc_q = reader.read_flag()?;
-    let mut base_y_dc_delta_q = 0;
-    let mut y_dc_delta_q_enabled = false;
-    if !equal_ac_dc_q {
-        base_y_dc_delta_q = reader.read_bits_u8(5)?;
-        y_dc_delta_q_enabled = reader.read_flag()?;
-    }
-    let mut base_uv_dc_delta_q = 0;
-    let mut uv_dc_delta_q_enabled = false;
-    let mut base_uv_ac_delta_q = 0;
-    let mut uv_ac_delta_q_enabled = false;
-    if !monochrome {
-        if !equal_ac_dc_q {
-            base_uv_dc_delta_q = reader.read_bits_u8(5)?;
-            uv_dc_delta_q_enabled = reader.read_flag()?;
-        }
-        base_uv_ac_delta_q = reader.read_bits_u8(5)?;
-        uv_ac_delta_q_enabled = reader.read_flag()?;
-        if equal_ac_dc_q {
-            base_uv_dc_delta_q = base_uv_ac_delta_q;
-        }
-    }
+pub(crate) fn parse_sequence_transform_quant_entropy_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    monochrome: bool,
+    single_picture: bool,
+) -> Result<SequenceTqEntropyConfig> {
+    sr.in_struct(
+        "sequence_transform_quant_entropy_config",
+        Some("5.4.8"),
+        |sr| {
+            let enable_fsc = sr.read_flag("enable_fsc")?;
+            let enable_idtx_intra = if enable_fsc {
+                sr.inferred_bool("enable_idtx_intra", "enable_fsc", true);
+                true
+            } else {
+                sr.read_flag("enable_idtx_intra")?
+            };
+            let enable_intra_ist = sr.read_flag("enable_intra_ist")?;
+            let enable_inter_ist = sr.read_flag("enable_inter_ist")?;
+            let enable_chroma_dctonly = if monochrome {
+                sr.inferred_bool("enable_chroma_dctonly", "monochrome", false);
+                false
+            } else {
+                sr.read_flag("enable_chroma_dctonly")?
+            };
+            let enable_inter_ddt = if single_picture {
+                sr.inferred_bool("enable_inter_ddt", "single_picture_header_flag", false);
+                false
+            } else {
+                sr.read_flag("enable_inter_ddt")?
+            };
+            let reduced_tx_part_set = sr.read_flag("reduced_tx_part_set")?;
+            let enable_cctx = if monochrome {
+                sr.inferred_bool("enable_cctx", "monochrome", false);
+                false
+            } else {
+                sr.read_flag("enable_cctx")?
+            };
+            let enable_tcq = sr.read_flag("enable_tcq")?;
+            let choose_tcq_per_frame = if enable_tcq && !single_picture {
+                sr.read_flag("choose_tcq_per_frame")?
+            } else {
+                sr.inferred_bool(
+                    "choose_tcq_per_frame",
+                    "!(enable_tcq && !single_picture_header_flag)",
+                    false,
+                );
+                false
+            };
+            let enable_parity_hiding = if enable_tcq && !choose_tcq_per_frame {
+                sr.inferred_bool(
+                    "enable_parity_hiding",
+                    "enable_tcq && !choose_tcq_per_frame",
+                    false,
+                );
+                false
+            } else {
+                sr.read_flag("enable_parity_hiding")?
+            };
+            let (enable_avg_cdf, avg_cdf_type) = if single_picture {
+                sr.inferred_bool("enable_avg_cdf", "single_picture_header_flag", true);
+                sr.inferred_u64("avg_cdf_type", "single_picture_header_flag", 1);
+                (true, 1)
+            } else {
+                let enable_avg_cdf = sr.read_flag("enable_avg_cdf")?;
+                let avg_cdf_type = if enable_avg_cdf {
+                    sr.read_bits_u8("avg_cdf_type", 1)?
+                } else {
+                    sr.inferred_u64("avg_cdf_type", "!enable_avg_cdf", 0);
+                    0
+                };
+                (enable_avg_cdf, avg_cdf_type)
+            };
+            let separate_uv_delta_q = if monochrome {
+                sr.inferred_bool("separate_uv_delta_q", "monochrome", false);
+                false
+            } else {
+                sr.read_flag("separate_uv_delta_q")?
+            };
 
-    Ok(SequenceTqEntropyConfig {
-        enable_fsc,
-        enable_idtx_intra,
-        enable_intra_ist,
-        enable_inter_ist,
-        enable_chroma_dctonly,
-        enable_inter_ddt,
-        reduced_tx_part_set,
-        enable_cctx,
-        enable_tcq,
-        choose_tcq_per_frame,
-        enable_parity_hiding,
-        enable_avg_cdf,
-        avg_cdf_type,
-        separate_uv_delta_q,
-        equal_ac_dc_q,
-        base_y_dc_delta_q,
-        y_dc_delta_q_enabled,
-        base_uv_dc_delta_q,
-        uv_dc_delta_q_enabled,
-        base_uv_ac_delta_q,
-        uv_ac_delta_q_enabled,
-    })
+            let equal_ac_dc_q = sr.read_flag("equal_ac_dc_q")?;
+            let mut base_y_dc_delta_q = 0;
+            let mut y_dc_delta_q_enabled = false;
+            if !equal_ac_dc_q {
+                base_y_dc_delta_q = sr.read_bits_u8("base_y_dc_delta_q", 5)?;
+                y_dc_delta_q_enabled = sr.read_flag("y_dc_delta_q_enabled")?;
+            } else {
+                sr.inferred_u64("base_y_dc_delta_q", "equal_ac_dc_q", 0);
+                sr.inferred_bool("y_dc_delta_q_enabled", "equal_ac_dc_q", false);
+            }
+            let mut base_uv_dc_delta_q = 0;
+            let mut uv_dc_delta_q_enabled = false;
+            let mut base_uv_ac_delta_q = 0;
+            let mut uv_ac_delta_q_enabled = false;
+            if !monochrome {
+                if !equal_ac_dc_q {
+                    base_uv_dc_delta_q = sr.read_bits_u8("base_uv_dc_delta_q", 5)?;
+                    uv_dc_delta_q_enabled = sr.read_flag("uv_dc_delta_q_enabled")?;
+                }
+                base_uv_ac_delta_q = sr.read_bits_u8("base_uv_ac_delta_q", 5)?;
+                uv_ac_delta_q_enabled = sr.read_flag("uv_ac_delta_q_enabled")?;
+                if equal_ac_dc_q {
+                    base_uv_dc_delta_q = base_uv_ac_delta_q;
+                    sr.inferred_u64(
+                        "base_uv_dc_delta_q",
+                        "equal_ac_dc_q",
+                        u64::from(base_uv_dc_delta_q),
+                    );
+                }
+            }
+
+            Ok(SequenceTqEntropyConfig {
+                enable_fsc,
+                enable_idtx_intra,
+                enable_intra_ist,
+                enable_inter_ist,
+                enable_chroma_dctonly,
+                enable_inter_ddt,
+                reduced_tx_part_set,
+                enable_cctx,
+                enable_tcq,
+                choose_tcq_per_frame,
+                enable_parity_hiding,
+                enable_avg_cdf,
+                avg_cdf_type,
+                separate_uv_delta_q,
+                equal_ac_dc_q,
+                base_y_dc_delta_q,
+                y_dc_delta_q_enabled,
+                base_uv_dc_delta_q,
+                uv_dc_delta_q_enabled,
+                base_uv_ac_delta_q,
+                uv_ac_delta_q_enabled,
+            })
+        },
+    )
 }
 
 /// `CdefOnSkipTxfm` mode derived in `sequence_filter_config()` (AV2 § 5.4.10).
@@ -716,68 +889,94 @@ pub fn parse_sequence_filter_config(
     single_picture: bool,
     seq_sb_size: SuperblockSize,
 ) -> Result<SequenceFilterConfig> {
-    let disable_loopfilters_across_tiles = reader.read_flag()?;
-    let enable_cdef = reader.read_flag()?;
-    let enable_gdf = reader.read_flag()?;
-    let gdf_unit_matches_sb_size = if enable_gdf && seq_sb_size == SuperblockSize::Block64x64 {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    let enable_restoration = reader.read_flag()?;
-    let mut lr_pc_wiener_disabled = false;
-    let mut lr_wiener_nonsep_disabled = false;
-    let mut lr_tools_uv_present = false;
-    let mut lr_uv_wiener_nonsep_disabled = false;
-    let lr_uv_pc_wiener_disabled = enable_restoration;
-    if enable_restoration {
-        lr_pc_wiener_disabled = reader.read_flag()?;
-        lr_wiener_nonsep_disabled = reader.read_flag()?;
-        lr_tools_uv_present = reader.read_flag()?;
-        lr_uv_wiener_nonsep_disabled = if lr_tools_uv_present {
-            reader.read_flag()?
-        } else {
-            lr_wiener_nonsep_disabled
-        };
-    }
-    let enable_ccso = reader.read_flag()?;
-    let ccso_unit_matches_sb_size = if enable_ccso {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    let cdef_on_skip_txfm = if single_picture {
-        CdefOnSkipTxfm::Adaptive
-    } else {
-        let cdef_on_skip_txfm_always_on = reader.read_flag()?;
-        if cdef_on_skip_txfm_always_on {
-            CdefOnSkipTxfm::AlwaysOn
-        } else {
-            let cdef_on_skip_txfm_disabled = reader.read_flag()?;
-            if cdef_on_skip_txfm_disabled {
-                CdefOnSkipTxfm::Disabled
-            } else {
-                CdefOnSkipTxfm::Adaptive
-            }
-        }
-    };
-    let df_par_bits_minus_2 = reader.read_bits_u8(2)?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_filter_config_with_reader(&mut sr, single_picture, seq_sb_size)
+}
 
-    Ok(SequenceFilterConfig {
-        disable_loopfilters_across_tiles,
-        enable_cdef,
-        enable_gdf,
-        gdf_unit_matches_sb_size,
-        enable_restoration,
-        lr_pc_wiener_disabled,
-        lr_wiener_nonsep_disabled,
-        lr_uv_pc_wiener_disabled,
-        lr_tools_uv_present,
-        lr_uv_wiener_nonsep_disabled,
-        enable_ccso,
-        ccso_unit_matches_sb_size,
-        cdef_on_skip_txfm,
-        df_par_bits_minus_2,
+pub(crate) fn parse_sequence_filter_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    single_picture: bool,
+    seq_sb_size: SuperblockSize,
+) -> Result<SequenceFilterConfig> {
+    sr.in_struct("sequence_filter_config", Some("5.4.10"), |sr| {
+        let disable_loopfilters_across_tiles = sr.read_flag("disable_loopfilters_across_tiles")?;
+        let enable_cdef = sr.read_flag("enable_cdef")?;
+        let enable_gdf = sr.read_flag("enable_gdf")?;
+        let gdf_unit_matches_sb_size = if enable_gdf && seq_sb_size == SuperblockSize::Block64x64 {
+            sr.read_flag("gdf_unit_matches_sb_size")?
+        } else {
+            sr.inferred_bool(
+                "gdf_unit_matches_sb_size",
+                "!(enable_gdf && SeqSbSize == BLOCK_64X64)",
+                false,
+            );
+            false
+        };
+        let enable_restoration = sr.read_flag("enable_restoration")?;
+        let mut lr_pc_wiener_disabled = false;
+        let mut lr_wiener_nonsep_disabled = false;
+        let mut lr_tools_uv_present = false;
+        let mut lr_uv_wiener_nonsep_disabled = false;
+        let lr_uv_pc_wiener_disabled = enable_restoration;
+        if enable_restoration {
+            lr_pc_wiener_disabled = sr.read_flag("lr_tools_disable[0][RESTORE_PC_WIENER]")?;
+            lr_wiener_nonsep_disabled =
+                sr.read_flag("lr_tools_disable[0][RESTORE_WIENER_NONSEP]")?;
+            lr_tools_uv_present = sr.read_flag("lr_tools_uv_present")?;
+            lr_uv_wiener_nonsep_disabled = if lr_tools_uv_present {
+                sr.read_flag("lr_tools_disable[1][RESTORE_WIENER_NONSEP]")?
+            } else {
+                sr.inferred_bool(
+                    "lr_tools_disable[1][RESTORE_WIENER_NONSEP]",
+                    "!lr_tools_uv_present",
+                    lr_wiener_nonsep_disabled,
+                );
+                lr_wiener_nonsep_disabled
+            };
+        }
+        let enable_ccso = sr.read_flag("enable_ccso")?;
+        let ccso_unit_matches_sb_size = if enable_ccso {
+            sr.read_flag("ccso_unit_matches_sb_size")?
+        } else {
+            sr.inferred_bool("ccso_unit_matches_sb_size", "!enable_ccso", false);
+            false
+        };
+        let cdef_on_skip_txfm = if single_picture {
+            sr.absent("cdef_on_skip_txfm_always_on", "single_picture_header_flag");
+            CdefOnSkipTxfm::Adaptive
+        } else {
+            let cdef_on_skip_txfm_always_on = sr.read_flag("cdef_on_skip_txfm_always_on")?;
+            if cdef_on_skip_txfm_always_on {
+                sr.absent("cdef_on_skip_txfm_disabled", "cdef_on_skip_txfm_always_on");
+                CdefOnSkipTxfm::AlwaysOn
+            } else {
+                let cdef_on_skip_txfm_disabled = sr.read_flag("cdef_on_skip_txfm_disabled")?;
+                if cdef_on_skip_txfm_disabled {
+                    CdefOnSkipTxfm::Disabled
+                } else {
+                    CdefOnSkipTxfm::Adaptive
+                }
+            }
+        };
+        let df_par_bits_minus_2 = sr.read_bits_u8("df_par_bits_minus_2", 2)?;
+
+        Ok(SequenceFilterConfig {
+            disable_loopfilters_across_tiles,
+            enable_cdef,
+            enable_gdf,
+            gdf_unit_matches_sb_size,
+            enable_restoration,
+            lr_pc_wiener_disabled,
+            lr_wiener_nonsep_disabled,
+            lr_uv_pc_wiener_disabled,
+            lr_tools_uv_present,
+            lr_uv_wiener_nonsep_disabled,
+            enable_ccso,
+            ccso_unit_matches_sb_size,
+            cdef_on_skip_txfm,
+            df_par_bits_minus_2,
+        })
     })
 }
 
@@ -837,39 +1036,51 @@ pub fn parse_sequence_tile_config(
     reader: &mut BitReader<'_>,
     tile_params_input: TileParamsInput,
 ) -> Result<SequenceTileConfig> {
-    let seq_tile_info_present_flag = reader.read_flag()?;
-    if !seq_tile_info_present_flag {
-        return Ok(SequenceTileConfig {
-            seq_tile_info_present_flag: false,
-            allow_tile_info_change: None,
-            params: None,
-            seq_sb_col_starts: std::sync::Arc::from(Vec::new()),
-            seq_sb_row_starts: std::sync::Arc::from(Vec::new()),
-        });
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_tile_config_with_reader(&mut sr, tile_params_input)
+}
 
-    let allow_tile_info_change = reader.read_flag()?;
-    let (params, seq_sb_col_starts, seq_sb_row_starts) =
-        match parse_tile_layout(reader, tile_params_input) {
-            Ok(layout) => (
-                Some(layout.params),
-                layout.sb_col_starts,
-                layout.sb_row_starts,
-            ),
-            Err(Error::Unimplemented { .. }) => (
-                None,
-                crate::tile::TileStarts::default(),
-                crate::tile::TileStarts::default(),
-            ),
-            Err(error) => return Err(error),
-        };
+pub(crate) fn parse_sequence_tile_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    tile_params_input: TileParamsInput,
+) -> Result<SequenceTileConfig> {
+    sr.in_struct("sequence_tile_config", Some("5.4.2"), |sr| {
+        let seq_tile_info_present_flag = sr.read_flag("seq_tile_info_present_flag")?;
+        if !seq_tile_info_present_flag {
+            sr.absent("allow_tile_info_change", "!seq_tile_info_present_flag");
+            return Ok(SequenceTileConfig {
+                seq_tile_info_present_flag: false,
+                allow_tile_info_change: None,
+                params: None,
+                seq_sb_col_starts: std::sync::Arc::from(Vec::new()),
+                seq_sb_row_starts: std::sync::Arc::from(Vec::new()),
+            });
+        }
 
-    Ok(SequenceTileConfig {
-        seq_tile_info_present_flag: true,
-        allow_tile_info_change: Some(allow_tile_info_change),
-        params,
-        seq_sb_col_starts: std::sync::Arc::from(&*seq_sb_col_starts),
-        seq_sb_row_starts: std::sync::Arc::from(&*seq_sb_row_starts),
+        let allow_tile_info_change = sr.read_flag("allow_tile_info_change")?;
+        let (params, seq_sb_col_starts, seq_sb_row_starts) =
+            match parse_tile_layout_with_reader(sr, tile_params_input) {
+                Ok(layout) => (
+                    Some(layout.params),
+                    layout.sb_col_starts,
+                    layout.sb_row_starts,
+                ),
+                Err(Error::Unimplemented { .. }) => (
+                    None,
+                    crate::tile::TileStarts::default(),
+                    crate::tile::TileStarts::default(),
+                ),
+                Err(error) => return Err(error),
+            };
+
+        Ok(SequenceTileConfig {
+            seq_tile_info_present_flag: true,
+            allow_tile_info_change: Some(allow_tile_info_change),
+            params,
+            seq_sb_col_starts: std::sync::Arc::from(&*seq_sb_col_starts),
+            seq_sb_row_starts: std::sync::Arc::from(&*seq_sb_row_starts),
+        })
     })
 }
 

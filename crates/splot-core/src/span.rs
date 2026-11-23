@@ -101,6 +101,62 @@ impl ByteSpan {
     }
 }
 
+/// A contiguous span of bits, measured relative to the start of an observed
+/// bitstream unit (such as an OBU payload or OBU header).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct BitSpan {
+    /// Zero-based starting bit index from the start of the observed unit.
+    pub start_bit: u64,
+    /// Length of the span in bits.
+    pub bit_len: u64,
+}
+
+impl BitSpan {
+    /// Creates a [`BitSpan`] from a starting bit index and bit length.
+    #[must_use]
+    pub const fn new(start_bit: u64, bit_len: u64) -> Self {
+        Self { start_bit, bit_len }
+    }
+
+    /// Returns the first bit index past the end of the span (saturating).
+    #[must_use]
+    pub const fn end_bit(self) -> u64 {
+        self.start_bit.saturating_add(self.bit_len)
+    }
+
+    /// Returns `true` when the span covers zero bits.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.bit_len == 0
+    }
+
+    /// Returns the byte offset of [`Self::start_bit`], relative to the observed unit.
+    #[must_use]
+    pub const fn start_byte_offset(self) -> ByteOffset {
+        ByteOffset::new(self.start_bit / 8)
+    }
+
+    /// Returns the MSB-first bit offset (`0..=7`) of [`Self::start_bit`] within its byte.
+    #[must_use]
+    pub const fn start_bit_offset(self) -> BitOffset {
+        BitOffset::from_bits((self.start_bit % 8) as u8)
+    }
+
+    /// Returns the minimal [`ByteSpan`] enclosing every byte touched by this bit span.
+    #[must_use]
+    pub const fn enclosing_byte_span(self) -> ByteSpan {
+        let start_byte = self.start_bit / 8;
+        if self.bit_len == 0 {
+            return ByteSpan::new(ByteOffset::new(start_byte), 0);
+        }
+        let end_byte = self.end_bit().div_ceil(8);
+        ByteSpan::new(
+            ByteOffset::new(start_byte),
+            end_byte.saturating_sub(start_byte),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +197,25 @@ mod tests {
     fn bit_offset_try_new_enforces_range() {
         assert_eq!(BitOffset::try_new(7).map(BitOffset::get), Some(7));
         assert!(BitOffset::try_new(8).is_none());
+    }
+
+    #[test]
+    fn bit_span_offsets_and_enclosing_bytes() {
+        let span = BitSpan::new(5, 6);
+        assert_eq!(span.end_bit(), 11);
+        assert!(!span.is_empty());
+        assert_eq!(span.start_byte_offset(), ByteOffset::new(0));
+        assert_eq!(span.start_bit_offset(), BitOffset::from_bits(5));
+        assert_eq!(
+            span.enclosing_byte_span(),
+            ByteSpan::new(ByteOffset::new(0), 2)
+        );
+
+        let empty = BitSpan::new(16, 0);
+        assert!(empty.is_empty());
+        assert_eq!(
+            empty.enclosing_byte_span(),
+            ByteSpan::new(ByteOffset::new(2), 0)
+        );
     }
 }

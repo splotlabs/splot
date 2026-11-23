@@ -10,6 +10,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `MAX_SEGMENTS`: number of segments allowed in segmentation (AV2 v1.0.0 § 3).
 pub const MAX_SEGMENTS: usize = 16;
@@ -86,32 +87,67 @@ impl SegmentInfo {
 /// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
 /// mid-field.
 pub fn parse_seg_info(reader: &mut BitReader<'_>, num_segments: u8) -> Result<SegmentInfo> {
-    let count = (num_segments as usize).min(MAX_SEGMENTS);
-    let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_seg_info_with_reader(&mut sr, num_segments)
+}
 
-    for segment in features.iter_mut().take(count) {
-        for (j, feature) in segment.iter_mut().enumerate() {
-            let enabled = reader.read_flag()?;
-            let data = if enabled {
-                let bits_to_read = SEGMENTATION_FEATURE_BITS[j];
-                let limit = SEGMENTATION_FEATURE_MAX[j];
-                if SEGMENTATION_FEATURE_SIGNED[j] {
-                    let value = reader.read_su(1 + bits_to_read)?;
-                    value.clamp(-limit, limit)
-                } else {
-                    let value = reader.read_bits(bits_to_read)?;
-                    (value as i32).clamp(0, limit)
+/// Parses `seg_info(numSegments)` (AV2 v1.0.0 § 5.4.9) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors or
+/// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
+/// mid-field.
+pub fn parse_seg_info_observed(
+    reader: &mut BitReader<'_>,
+    num_segments: u8,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<SegmentInfo> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_seg_info_with_reader(&mut sr, num_segments)
+}
+
+pub(crate) fn parse_seg_info_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    num_segments: u8,
+) -> Result<SegmentInfo> {
+    sr.in_struct("seg_info", Some("5.4.9"), |sr| {
+        let count = (num_segments as usize).min(MAX_SEGMENTS);
+        let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
+
+        for (i, segment) in features.iter_mut().take(count).enumerate() {
+            sr.in_loop_item("i", i, |sr| {
+                for (j, feature) in segment.iter_mut().enumerate() {
+                    sr.in_loop_item("j", j, |sr| {
+                        let enabled = sr.read_flag("feature_enabled")?;
+                        let data = if enabled {
+                            let bits_to_read = SEGMENTATION_FEATURE_BITS[j];
+                            let limit = SEGMENTATION_FEATURE_MAX[j];
+                            if SEGMENTATION_FEATURE_SIGNED[j] {
+                                let value = sr.read_su("feature_value", 1 + bits_to_read)?;
+                                value.clamp(-limit, limit)
+                            } else {
+                                let value = sr.read_bits("feature_value", bits_to_read)?;
+                                (value as i32).clamp(0, limit)
+                            }
+                        } else {
+                            sr.inferred_i64("feature_value", "!feature_enabled", 0);
+                            0
+                        };
+                        *feature = SegmentFeature { enabled, data };
+                        Ok(())
+                    })?;
                 }
-            } else {
-                0
-            };
-            *feature = SegmentFeature { enabled, data };
+                Ok(())
+            })?;
         }
-    }
 
-    Ok(SegmentInfo {
-        num_segments: count as u8,
-        features,
+        Ok(SegmentInfo {
+            num_segments: count as u8,
+            features,
+        })
     })
 }
 

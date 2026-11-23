@@ -14,34 +14,41 @@
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
 use crate::headers::frame::config::{
-    IntrabcParams, parse_intrabc_params_full, parse_screen_content_params_full,
+    IntrabcParams, parse_intrabc_params_with_reader, parse_screen_content_params_with_reader,
 };
 use crate::headers::frame::filtering::{
-    CdefParams, DeblockingFilterParams, GdfGeometry, GdfParams, parse_cdef_params,
-    parse_deblocking_filter_params, parse_gdf_params,
+    CdefParams, DeblockingFilterParams, GdfGeometry, GdfParams, parse_cdef_params_with_reader,
+    parse_deblocking_filter_params_with_reader, parse_gdf_params_with_reader,
 };
 use crate::headers::frame::quant::{
-    DeltaQParams, LosslessInfo, QuantizationParams, SetupQmParams, parse_delta_q_params,
-    parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
+    DeltaQParams, LosslessInfo, QuantizationParams, SetupQmParams,
+    parse_delta_q_params_with_reader, parse_lossless_info_with_reader,
+    parse_quantization_params_with_reader, parse_setup_qm_params_with_reader,
 };
 use crate::headers::frame::restoration::{
-    CcsoParams, LrGeometry, LrParams, SlotFrameFilterTaps, parse_ccso_params, parse_lr_params,
+    CcsoParams, LrGeometry, LrParams, SlotFrameFilterTaps, parse_ccso_params_with_reader,
+    parse_lr_params_with_reader,
 };
-use crate::headers::frame::segmentation::{SegmentationParams, parse_segmentation_params};
-use crate::headers::frame::size::{FrameSize, ceil_log2, parse_frame_size};
+use crate::headers::frame::segmentation::{
+    SegmentationParams, parse_segmentation_params_with_reader,
+};
+use crate::headers::frame::size::{FrameSize, ceil_log2, parse_frame_size_with_reader};
 use crate::headers::frame::tail::{
-    FilmGrainConfig, FrameHeaderTail, FrameTailInput, parse_film_grain_config,
-    parse_intra_tail as parse_intra_tail_grammar,
+    FilmGrainConfig, FrameHeaderTail, FrameTailInput, parse_film_grain_config_with_reader,
+    parse_intra_tail_with_reader as parse_intra_tail_grammar,
 };
-use crate::headers::frame::tiling::{TileInfo, parse_tile_info};
+use crate::headers::frame::tiling::{TileInfo, parse_tile_info_with_reader};
 use crate::headers::sequence::{SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 use crate::types::ObuType;
 
 use super::global_motion::{
     DEFAULT_WARP_PARAMS, REFS_PER_FRAME, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
 };
-use super::{FrameHeaderPrefix, RESTRICTED_ORDER_HINT, parse_frame_header_prefix};
+#[cfg(test)]
+use super::parse_frame_header_prefix;
+use super::{FrameHeaderPrefix, RESTRICTED_ORDER_HINT, parse_frame_header_prefix_with_reader};
 
 mod seq_view;
 mod show_existing;
@@ -600,31 +607,61 @@ pub fn parse_frame_header_core(
     reader: &mut BitReader<'_>,
     input: &FrameHeaderParseInput<'_>,
 ) -> Result<FrameHeaderCore> {
-    let start_bits = reader.consumed_bits();
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_frame_header_core_with_reader(&mut sr, input)
+}
 
-    let prefix =
-        parse_frame_header_prefix(reader, input.obu_type, Some(input.first_picture_in_tu))?;
-    let mut core = init_core_from_prefix(&prefix, input.obu_type, input.first_picture_in_tu);
+/// Parses `frame_header_info()` (AV2 v1.0.0 § 5.18.2) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`] or a typed descriptor error if the payload
+/// ends or is malformed before a modeled field can be read.
+pub fn parse_frame_header_core_observed(
+    reader: &mut BitReader<'_>,
+    input: &FrameHeaderParseInput<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<FrameHeaderCore> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_frame_header_core_with_reader(&mut sr, input)
+}
 
-    if let Some(seq) = input.active_sequence.and_then(CoreSeqView::from_sequence) {
-        let mfh_view = if core.cur_mfh_id.is_zero() {
-            None
-        } else {
-            input
-                .mfh_record
-                .map(|record| MfhFrameView::from_record(record, &seq))
-        };
-        parse_core_body(
-            reader,
-            &mut core,
-            &seq,
-            mfh_view.as_ref(),
-            &input.reference_state,
+pub(crate) fn parse_frame_header_core_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    input: &FrameHeaderParseInput<'_>,
+) -> Result<FrameHeaderCore> {
+    sr.in_struct("frame_header_info", Some("5.18.2"), |sr| {
+        let start_bits = sr.consumed_bits();
+
+        let prefix = parse_frame_header_prefix_with_reader(
+            sr,
+            input.obu_type,
+            Some(input.first_picture_in_tu),
         )?;
-    }
+        let mut core = init_core_from_prefix(&prefix, input.obu_type, input.first_picture_in_tu);
 
-    core.consumed_bits = reader.consumed_bits().saturating_sub(start_bits);
-    Ok(core)
+        if let Some(seq) = input.active_sequence.and_then(CoreSeqView::from_sequence) {
+            let mfh_view = if core.cur_mfh_id.is_zero() {
+                None
+            } else {
+                input
+                    .mfh_record
+                    .map(|record| MfhFrameView::from_record(record, &seq))
+            };
+            parse_core_body_with_reader(
+                sr,
+                &mut core,
+                &seq,
+                mfh_view.as_ref(),
+                &input.reference_state,
+            )?;
+        }
+
+        core.consumed_bits = sr.consumed_bits().saturating_sub(start_bits);
+        Ok(core)
+    })
 }
 
 /// Builds the initial core result from the activation prefix, with all post-prefix
@@ -706,10 +743,22 @@ pub(crate) fn parse_core_body(
     mfh: Option<&MfhFrameView>,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_core_body_with_reader(&mut sr, core, seq, mfh, reference_state)
+}
+
+pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
+    reference_state: &FrameReferenceStateView<'_>,
+) -> Result<()> {
     let obu_type = core.obu_type;
 
     let bridge_frame_ref_idx = if core.is_bridge {
-        let idx = reader.read_bits(ceil_log2(seq.num_ref_frames))?;
+        let idx = sr.read_bits("bridge_frame_ref_idx", ceil_log2(seq.num_ref_frames))?;
         core.bridge_frame_ref_idx = Some(idx);
         if let Ok(index) = usize::try_from(idx) {
             core.order_hint_lsb = reference_state
@@ -734,22 +783,14 @@ pub(crate) fn parse_core_body(
         core.implicit_output_frame = Some(false);
         if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
             return parse_single_picture_bridge_tail(
-                reader,
+                sr,
                 core,
                 seq,
                 bridge_frame_ref_idx,
                 reference_state,
             );
         }
-        return parse_intra_tail(
-            reader,
-            core,
-            seq,
-            mfh,
-            FrameType::Key,
-            true,
-            reference_state,
-        );
+        return parse_intra_tail(sr, core, seq, mfh, FrameType::Key, true, reference_state);
     }
 
     if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
@@ -758,24 +799,24 @@ pub(crate) fn parse_core_body(
         core.frame_is_intra = Some(false);
         core.immediate_output_frame = Some(false);
         core.implicit_output_frame = Some(false);
-        return parse_bridge_inter_path(reader, core, seq, bridge_frame_ref_idx, reference_state);
+        return parse_bridge_inter_path(sr, core, seq, bridge_frame_ref_idx, reference_state);
     }
 
     let show_existing_frame = obu_type.is_sef();
     core.show_existing_frame = Some(show_existing_frame);
     if show_existing_frame {
-        return parse_show_existing_frame(reader, core, seq, reference_state);
+        return parse_show_existing_frame(sr, core, seq, reference_state);
     }
 
     let frame_type = if obu_type == ObuType::Switch || obu_type == ObuType::RasFrame {
-        core.restricted_prediction_switch = Some(reader.read_flag()?);
+        core.restricted_prediction_switch = Some(sr.read_flag("restricted_prediction_switch")?);
         FrameType::Switch
     } else if obu_type.is_tip_frame() {
         FrameType::Inter
     } else if obu_type == ObuType::ClosedLoopKey || obu_type == ObuType::OpenLoopKey {
         FrameType::Key
     } else {
-        let frame_is_inter = reader.read_flag()?; // frame_is_inter f(1)
+        let frame_is_inter = sr.read_flag("frame_is_inter")?;
         if frame_is_inter {
             FrameType::Inter
         } else {
@@ -788,17 +829,20 @@ pub(crate) fn parse_core_body(
 
     core.long_term_id = Some(-1);
     if frame_type == FrameType::Key {
-        let long_term_id_plus_1 = reader.read_bits(seq.long_term_frame_id_bits)?;
+        let long_term_id_plus_1 =
+            sr.read_bits("long_term_id_plus_1", seq.long_term_frame_id_bits)?;
         core.long_term_id = Some(i32::try_from(long_term_id_plus_1).unwrap_or(i32::MAX) - 1);
     }
     if (obu_type == ObuType::RasFrame || obu_type == ObuType::OpenLoopKey)
         && seq.long_term_frame_id_bits != 0
     {
         let reserved_long_term_id = (1u32 << seq.long_term_frame_id_bits).wrapping_sub(1);
-        let num_key_ref_frames = reader.read_bits(3)?;
+        let num_key_ref_frames = sr.read_bits("num_key_ref_frames", 3)?;
         let mut ref_long_term_ids = Vec::with_capacity(num_key_ref_frames as usize);
-        for _ in 0..num_key_ref_frames {
-            let ref_long_term_id = reader.read_bits(seq.long_term_frame_id_bits)?;
+        for i in 0..num_key_ref_frames {
+            let ref_long_term_id = sr.in_loop_item("i", i as usize, |sr| {
+                sr.read_bits("ref_long_term_id", seq.long_term_frame_id_bits)
+            })?;
             if ref_long_term_id == reserved_long_term_id {
                 core.forbidden_ref_long_term_id = true;
             }
@@ -811,36 +855,46 @@ pub(crate) fn parse_core_body(
         || (obu_type == ObuType::Switch && core.restricted_prediction_switch == Some(true));
 
     let immediate_output_frame = if obu_type == ObuType::OpenLoopKey {
+        sr.inferred_bool(
+            "immediate_output_frame",
+            "obu_type == OBU_OPEN_LOOP_KEY",
+            false,
+        );
         false
     } else {
-        reader.read_flag()?
+        sr.read_flag("immediate_output_frame")?
     };
     core.immediate_output_frame = Some(immediate_output_frame);
     let implicit_output_frame = if immediate_output_frame || seq.monotonic_output_order_flag {
+        sr.inferred_bool(
+            "implicit_output_frame",
+            "immediate_output_frame || monotonic_output_order_flag",
+            false,
+        );
         false
     } else {
-        reader.read_flag()?
+        sr.read_flag("implicit_output_frame")?
     };
     core.implicit_output_frame = Some(implicit_output_frame);
 
     if frame_is_intra {
-        return parse_intra_tail(reader, core, seq, mfh, frame_type, false, reference_state);
+        return parse_intra_tail(sr, core, seq, mfh, frame_type, false, reference_state);
     }
 
-    parse_inter_path(reader, core, seq, mfh, frame_type, reference_state)
+    parse_inter_path(sr, core, seq, mfh, frame_type, reference_state)
 }
 
-/// Parses inter control and its selected shared or TIP-output tail (§ 5.18.2).
-/// Preserves parsed control facts when the payload ends or required state is unavailable.
-fn parse_inter_path(
-    reader: &mut BitReader<'_>,
+fn parse_inter_path<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
     frame_type: FrameType,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
-    use crate::headers::frame::inter::{InterFrameContext, InterStop, parse_inter_control_into};
+    use crate::headers::frame::inter::{
+        InterFrameContext, InterStop, parse_inter_control_into_with_reader,
+    };
     use crate::headers::frame::inter_shared_tail::{InterMfhState, parse_inter_shared_tail};
 
     let obu_type = core.obu_type;
@@ -851,13 +905,18 @@ fn parse_inter_path(
 
     let result = (|| -> Result<()> {
         let frame_size_override_flag = if frame_type == FrameType::Switch {
+            sr.inferred_bool(
+                "frame_size_override_flag",
+                "FrameType == SWITCH_FRAME",
+                true,
+            );
             true
         } else {
-            reader.read_flag()?
+            sr.read_flag("frame_size_override_flag")?
         };
         core.frame_size_override_flag = Some(frame_size_override_flag);
 
-        let order_hint = reader.read_bits(seq.order_hint_bits)?;
+        let order_hint = sr.read_bits("order_hint_lsb", seq.order_hint_bits)?;
         core.order_hint_lsb = Some(order_hint);
         core.order_hint = get_disp_order_hint(
             core.obu_type,
@@ -873,7 +932,7 @@ fn parse_inter_path(
         let ctx = InterFrameContext {
             obu_type,
             frame_type,
-            is_bridge: false, // bridge frames take parse_bridge_inter_path, not this path
+            is_bridge: false,
             bridge_frame_ref_idx: None,
             default_frame_size: if core.cur_mfh_id.is_zero() {
                 Some(FrameSize::new(seq.max_frame_width, seq.max_frame_height))
@@ -884,8 +943,8 @@ fn parse_inter_path(
             ras_long_term_ref_mask,
         };
 
-        parse_inter_control_into(
-            reader,
+        parse_inter_control_into_with_reader(
+            sr,
             &inter_seq,
             &ctx,
             reference_state,
@@ -898,7 +957,7 @@ fn parse_inter_path(
             Some(InterStop::ReachedSharedTail) => {
                 tail_ran = true;
                 parse_inter_shared_tail(
-                    reader,
+                    sr,
                     core,
                     seq,
                     &control,
@@ -913,12 +972,12 @@ fn parse_inter_path(
             }
             Some(InterStop::TipAsOutputReturn) => {
                 tail_ran = true;
-                parse_tip_output_tail(reader, core, seq, &mut control)?;
+                parse_tip_output_tail(sr, core, seq, &mut control)?;
             }
             Some(InterStop::BruInactiveOrBridgeReturn) => {
                 tail_ran = true;
                 control.disable_cdf_update = Some(true);
-                parse_bru_inactive_tail(reader, core, seq, &control, reference_state)?;
+                parse_bru_inactive_tail(sr, core, seq, &control, reference_state)?;
             }
             _ => {}
         }
@@ -960,19 +1019,30 @@ fn ras_long_term_ref_mask(
 /// Parses the `TipFrameMode == TIP_FRAME_AS_OUTPUT` terminal arm of § 5.18.2
 /// (mirror :4945-5031): optional explicit quantization, the TIP deblocking flags,
 /// conditional `tile_info()`, and `film_grain_config()`.
-fn parse_tip_output_tail(
-    reader: &mut BitReader<'_>,
+fn parse_tip_output_tail<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     control: &mut crate::headers::frame::inter::InterControl,
 ) -> Result<()> {
     if seq.inter.enable_tip_explicit_qp {
-        core.quantization_params = Some(parse_quantization_params(reader, &seq.quant, true)?);
+        core.quantization_params =
+            Some(parse_quantization_params_with_reader(sr, &seq.quant, true)?);
     }
 
-    let allow_df_sub_pu = seq.filter.enable_df_sub_pu && reader.read_flag()?;
+    let allow_df_sub_pu = if seq.filter.enable_df_sub_pu {
+        sr.read_flag("allow_df_sub_pu")?
+    } else {
+        sr.inferred_bool("allow_df_sub_pu", "!enable_df_sub_pu", false);
+        false
+    };
     control.allow_df_sub_pu = Some(allow_df_sub_pu);
-    let apply_deblocking_filter_tip = allow_df_sub_pu && reader.read_flag()?;
+    let apply_deblocking_filter_tip = if allow_df_sub_pu {
+        sr.read_flag("apply_deblocking_filter_tip")?
+    } else {
+        sr.inferred_bool("apply_deblocking_filter_tip", "!allow_df_sub_pu", false);
+        false
+    };
     control.apply_deblocking_filter_tip = Some(apply_deblocking_filter_tip);
 
     if apply_deblocking_filter_tip {
@@ -982,16 +1052,17 @@ fn parse_tip_output_tail(
             };
             return Ok(());
         };
-        core.tile_info = match parse_tile_info(reader, &seq.tile, frame_size, false, false, true) {
-            Ok(tile_info) => Some(tile_info),
-            Err(Error::Unimplemented { feature }) => {
-                core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-                    feature_id: feature,
-                };
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        };
+        core.tile_info =
+            match parse_tile_info_with_reader(sr, &seq.tile, frame_size, false, false, true) {
+                Ok(tile_info) => Some(tile_info),
+                Err(Error::Unimplemented { feature }) => {
+                    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                        feature_id: feature,
+                    };
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
     }
 
     let Some(film_grain_params_present) = seq.film_grain_params_present else {
@@ -1000,9 +1071,9 @@ fn parse_tip_output_tail(
         };
         return Ok(());
     };
-    let film_grain = parse_film_grain_config(
-        reader,
-        &FrameTailInput {
+    let film_grain = parse_film_grain_config_with_reader(
+        sr,
+        FrameTailInput {
             coded_lossless: false,
             film_grain_params_present,
             single_picture_header_flag: seq.single_picture_header_flag,
@@ -1099,14 +1170,16 @@ pub(crate) fn build_inter_seq_view(
 /// § 7.23 quantizer state available, the zero-bit bridge `tile_info()` layout, inherited
 /// quantizer, and `film_grain_config()` are derived and the header completes. Missing
 /// reference facts remain an unsupported stop, with parsed bridge facts preserved.
-fn parse_bridge_inter_path(
-    reader: &mut BitReader<'_>,
+fn parse_bridge_inter_path<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     bridge_frame_ref_idx: u32,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
-    use crate::headers::frame::inter::{InterFrameContext, InterStop, parse_inter_control_into};
+    use crate::headers::frame::inter::{
+        InterFrameContext, InterStop, parse_inter_control_into_with_reader,
+    };
 
     let inter_seq = build_inter_seq_view(seq);
     let ctx = InterFrameContext {
@@ -1122,8 +1195,8 @@ fn parse_bridge_inter_path(
     let mut control = crate::headers::frame::inter::InterControl::default();
     let mut tail_ran = false;
     let result = (|| -> Result<()> {
-        parse_inter_control_into(
-            reader,
+        parse_inter_control_into_with_reader(
+            sr,
             &inter_seq,
             &ctx,
             reference_state,
@@ -1134,7 +1207,7 @@ fn parse_bridge_inter_path(
             control.disable_cdf_update = Some(true);
             tail_ran = true;
             parse_bridge_return_tail(
-                reader,
+                sr,
                 core,
                 seq,
                 &control,
@@ -1148,9 +1221,8 @@ fn parse_bridge_inter_path(
     finish_inter_control_with_tail(core, control, result, tail_ran)
 }
 
-/// Completes the non-single-picture `IsBridge` early-return arm of § 5.18.2.
-fn parse_bridge_return_tail(
-    reader: &mut BitReader<'_>,
+fn parse_bridge_return_tail<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     control: &crate::headers::frame::inter::InterControl,
@@ -1186,8 +1258,8 @@ fn parse_bridge_return_tail(
         return Ok(());
     };
 
-    core.tile_info = Some(parse_tile_info(
-        reader, &seq.tile, frame_size, false, true, false,
+    core.tile_info = Some(parse_tile_info_with_reader(
+        sr, &seq.tile, frame_size, false, true, false,
     )?);
     core.quantization_params = Some(QuantizationParams::inferred_tip(
         base_q_idx,
@@ -1201,9 +1273,9 @@ fn parse_bridge_return_tail(
         };
         return Ok(());
     };
-    core.bridge_film_grain = Some(parse_film_grain_config(
-        reader,
-        &FrameTailInput {
+    core.bridge_film_grain = Some(parse_film_grain_config_with_reader(
+        sr,
+        FrameTailInput {
             coded_lossless: false,
             film_grain_params_present,
             single_picture_header_flag: false,
@@ -1215,11 +1287,8 @@ fn parse_bridge_return_tail(
     Ok(())
 }
 
-/// Completes the `bru_inactive == 1` early-return arm of § 5.18.2 (mirror
-/// :4971-5045): no `tile_info()`, the quantizer of `ref_frame_idx[ bru_ref ]`, then
-/// `film_grain_config()`. Missing reference facts stop as unsupported.
-fn parse_bru_inactive_tail(
-    reader: &mut BitReader<'_>,
+fn parse_bru_inactive_tail<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     control: &crate::headers::frame::inter::InterControl,
@@ -1255,9 +1324,9 @@ fn parse_bru_inactive_tail(
         delta_q_u_ac,
         delta_q_v_ac,
     ));
-    core.bridge_film_grain = Some(parse_film_grain_config(
-        reader,
-        &FrameTailInput {
+    core.bridge_film_grain = Some(parse_film_grain_config_with_reader(
+        sr,
+        FrameTailInput {
             coded_lossless: false,
             film_grain_params_present,
             single_picture_header_flag: false,
@@ -1269,22 +1338,8 @@ fn parse_bru_inactive_tail(
     Ok(())
 }
 
-/// Parses the single-picture bridge path: bridge sizing, SCC/intrabc, inherited
-/// quantization, and film grain (§ 5.18.2). Missing reference state stops before
-/// state-dependent fields; EOF preserves parsed facts.
-///
-/// SPEC FIDELITY: the single-picture bridge is a degenerate corner where the normative spec is
-/// internally inconsistent. (1) `refresh_frame_flags`: § 5.18.2 syntax would read it unconditionally
-/// on the KEY arm (:4429-4445), but § 6.17.2 semantics (:4522-4524) says it is inferred from
-/// `bridge_frame_ref_idx` when `bridge_frame_overwrite_flag == 0`; AVM follows § 6.17.2. Per the
-/// maintainer decision this parser follows § 6.17.2 + AVM (overwrite-gated) so a validator matches
-/// the reference decoder. (2) AVM's `setup_frame_size()` reads the § 5.18.4.2
-/// `bridge_frame_width_minus_1` / `bridge_frame_height_minus_1` fields even though the literal
-/// § 5.18.2 `FrameIsIntra` control flow points at `frame_size()`. Per the maintainer decision this
-/// parser follows AVM and the bridge-specific § 5.18.4.2 syntax. dav2d does not model this corner;
-/// keep it isolated to the frame-header bridge logic.
-fn parse_single_picture_bridge_tail(
-    reader: &mut BitReader<'_>,
+fn parse_single_picture_bridge_tail<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     bridge_frame_ref_idx: u32,
@@ -1297,24 +1352,35 @@ fn parse_single_picture_bridge_tail(
     let mut control = InterControl::default();
     let mut tail_ran = false;
     let result = (|| -> Result<()> {
-        let bridge_frame_overwrite_flag = reader.read_flag()?;
+        let bridge_frame_overwrite_flag = sr.read_flag("bridge_frame_overwrite_flag")?;
         control.bridge_frame_overwrite_flag = Some(bridge_frame_overwrite_flag);
 
         let refresh_frame_flags = if !bridge_frame_overwrite_flag {
-            1u32.wrapping_shl(bridge_frame_ref_idx)
+            let mask = 1u32.wrapping_shl(bridge_frame_ref_idx);
+            sr.inferred_u64(
+                "refresh_frame_flags",
+                "!bridge_frame_overwrite_flag",
+                u64::from(mask),
+            );
+            mask
         } else if seq.enable_short_refresh_frame_flags {
-            if reader.read_flag()? {
-                1u32.wrapping_shl(reader.read_bits(ceil_log2(seq.num_ref_frames))?)
+            if sr.read_flag("has_refresh_frame_flags")? {
+                1u32.wrapping_shl(sr.read_bits("frame_to_refresh", ceil_log2(seq.num_ref_frames))?)
             } else {
+                sr.inferred_u64("refresh_frame_flags", "!has_refresh_frame_flags", 0);
                 0
             }
         } else {
-            reader.read_bits(seq.num_ref_frames)?
+            sr.read_bits("refresh_frame_flags", seq.num_ref_frames)?
         };
         control.refresh_frame_flags = Some(refresh_frame_flags);
 
-        let bridge_max_width = reader.read_bits(seq.frame_width_bits)?.saturating_add(1);
-        let bridge_max_height = reader.read_bits(seq.frame_height_bits)?.saturating_add(1);
+        let bridge_max_width = sr
+            .read_bits("bridge_frame_width_minus_1", seq.frame_width_bits)?
+            .saturating_add(1);
+        let bridge_max_height = sr
+            .read_bits("bridge_frame_height_minus_1", seq.frame_height_bits)?
+            .saturating_add(1);
         let index = usize::try_from(bridge_frame_ref_idx).ok();
         let reference_valid = index
             .and_then(|index| reference_state.ref_valid?.get(index))
@@ -1334,8 +1400,8 @@ fn parse_single_picture_bridge_tail(
             ));
         }
 
-        let scc = parse_screen_content_params_full(
-            reader,
+        let scc = parse_screen_content_params_with_reader(
+            sr,
             seq.seq_force_screen_content_tools,
             seq.seq_force_integer_mv,
         )?;
@@ -1343,7 +1409,7 @@ fn parse_single_picture_bridge_tail(
         core.force_integer_mv = Some(scc.force_integer_mv);
         control.allow_screen_content_tools = Some(scc.allow_screen_content_tools);
 
-        let intrabc = parse_intrabc_params_full(reader, true, seq.allow_frame_max_bvp_drl_bits)?;
+        let intrabc = parse_intrabc_params_with_reader(sr, true, seq.allow_frame_max_bvp_drl_bits)?;
         core.allow_intrabc = Some(intrabc.allow_intrabc);
         core.intrabc = Some(intrabc);
         control.allow_intrabc = Some(intrabc.allow_intrabc);
@@ -1363,8 +1429,8 @@ fn parse_single_picture_bridge_tail(
         if let (Some(frame_size), Some((base_q_idx, [delta_q_u_ac, delta_q_v_ac]))) =
             (control.frame_size, quantizer)
         {
-            core.tile_info = Some(parse_tile_info(
-                reader, &seq.tile, frame_size, true, true, false,
+            core.tile_info = Some(parse_tile_info_with_reader(
+                sr, &seq.tile, frame_size, true, true, false,
             )?);
             core.quantization_params = Some(QuantizationParams::inferred_tip(
                 base_q_idx,
@@ -1379,7 +1445,7 @@ fn parse_single_picture_bridge_tail(
                     immediate_output_frame: true,
                     implicit_output_frame: false,
                 };
-                core.bridge_film_grain = Some(parse_film_grain_config(reader, &input)?);
+                core.bridge_film_grain = Some(parse_film_grain_config_with_reader(sr, input)?);
             }
         }
         control.stop = Some(InterStop::BruInactiveOrBridgeReturn);
@@ -1401,10 +1467,8 @@ fn parse_single_picture_bridge_tail(
     finish_inter_control_with_tail(core, control, result, tail_ran)
 }
 
-/// Parses intra frame-size/control fields and the remaining structure cluster (§ 5.18.2).
-/// `single_picture` suppresses the frame-size override bit.
-fn parse_intra_tail(
-    reader: &mut BitReader<'_>,
+fn parse_intra_tail<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
@@ -1413,13 +1477,18 @@ fn parse_intra_tail(
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
     let frame_size_override_flag = if single_picture {
+        sr.inferred_bool(
+            "frame_size_override_flag",
+            "single_picture_header_flag",
+            false,
+        );
         false
     } else {
-        reader.read_flag()?
+        sr.read_flag("frame_size_override_flag")?
     };
     core.frame_size_override_flag = Some(frame_size_override_flag);
 
-    let order_hint_lsb = reader.read_bits(seq.order_hint_bits)?;
+    let order_hint_lsb = sr.read_bits("order_hint_lsb", seq.order_hint_bits)?;
     core.order_hint_lsb = Some(order_hint_lsb);
     core.order_hint = get_disp_order_hint(
         core.obu_type,
@@ -1431,7 +1500,7 @@ fn parse_intra_tail(
     );
 
     core.refresh_frame_flags = Some(read_refresh_frame_flags(
-        reader,
+        sr,
         seq,
         core.obu_type,
         frame_type,
@@ -1442,33 +1511,31 @@ fn parse_intra_tail(
     } else {
         mfh.map(|view| view.default_dims)
     };
-    core.frame_size = parse_frame_size(
-        reader,
+    core.frame_size = parse_frame_size_with_reader(
+        sr,
         frame_size_override_flag,
         seq.frame_width_bits,
         seq.frame_height_bits,
         default_dims,
     )?;
-    let scc = parse_screen_content_params_full(
-        reader,
+    let scc = parse_screen_content_params_with_reader(
+        sr,
         seq.seq_force_screen_content_tools,
         seq.seq_force_integer_mv,
     )?;
     core.allow_screen_content_tools = Some(scc.allow_screen_content_tools);
     core.force_integer_mv = Some(scc.force_integer_mv);
-    let intrabc = parse_intrabc_params_full(reader, true, seq.allow_frame_max_bvp_drl_bits)?;
+    let intrabc = parse_intrabc_params_with_reader(sr, true, seq.allow_frame_max_bvp_drl_bits)?;
     core.allow_intrabc = Some(intrabc.allow_intrabc);
     core.intrabc = Some(intrabc);
 
-    core.disable_cdf_update = Some(reader.read_flag()?);
+    core.disable_cdf_update = Some(sr.read_flag("disable_cdf_update")?);
 
-    parse_intra_structures(reader, core, seq, mfh)
+    parse_intra_structures(sr, core, seq, mfh)
 }
 
-/// Parses the intra tile, quantization, segmentation, filtering, and terminal structures.
-/// MFH-dependent fields require a resolved `mfh` view (§ 5.18.2).
-fn parse_intra_structures(
-    reader: &mut BitReader<'_>,
+fn parse_intra_structures<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
@@ -1480,18 +1547,19 @@ fn parse_intra_structures(
         return Ok(());
     };
 
-    core.tile_info = match parse_tile_info(reader, &seq.tile, frame_size, true, false, false) {
-        Ok(tile_info) => Some(tile_info),
-        Err(Error::Unimplemented { feature }) => {
-            core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-                feature_id: feature,
-            };
-            return Ok(());
-        }
-        Err(error) => return Err(error),
-    };
+    core.tile_info =
+        match parse_tile_info_with_reader(sr, &seq.tile, frame_size, true, false, false) {
+            Ok(tile_info) => Some(tile_info),
+            Err(Error::Unimplemented { feature }) => {
+                core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                    feature_id: feature,
+                };
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
 
-    let quantization = parse_quantization_params(reader, &seq.quant, false)?;
+    let quantization = parse_quantization_params_with_reader(sr, &seq.quant, false)?;
     core.quantization_params = Some(quantization);
 
     if !core.cur_mfh_id.is_zero() && mfh.is_none() {
@@ -1501,18 +1569,18 @@ fn parse_intra_structures(
         return Ok(());
     }
     let mfh_seg = mfh.and_then(|view| view.seg.as_ref());
-    let segmentation = parse_segmentation_params(reader, &seq.seg, mfh_seg)?;
+    let segmentation = parse_segmentation_params_with_reader(sr, &seq.seg, mfh_seg)?;
 
-    let qm = parse_setup_qm_params(reader, &seq.quant, segmentation.segmentation_enabled)?;
+    let qm = parse_setup_qm_params_with_reader(sr, &seq.quant, segmentation.segmentation_enabled)?;
 
-    let delta_q = parse_delta_q_params(reader, quantization.base_q_idx)?;
+    let delta_q = parse_delta_q_params_with_reader(sr, quantization.base_q_idx)?;
 
-    core.lossless_info = Some(parse_lossless_info(
-        reader,
+    core.lossless_info = Some(parse_lossless_info_with_reader(
+        sr,
         &seq.quant,
         &quantization,
         &qm,
-        &delta_q,
+        delta_q,
         &segmentation,
         seq.seg.max_segments,
     )?);
@@ -1524,7 +1592,7 @@ fn parse_intra_structures(
     core.setup_qm_params = Some(qm);
     core.delta_q_params = Some(delta_q);
 
-    match parse_filter_cluster(reader, core, seq, mfh, coded_lossless) {
+    match parse_filter_cluster(sr, core, seq, mfh, coded_lossless) {
         Ok(()) => Ok(()),
         Err(Error::UnexpectedEof { .. }) => {
             core.status = FrameHeaderParseStatus::StoppedInsideFilterParams;
@@ -1534,18 +1602,16 @@ fn parse_intra_structures(
     }
 }
 
-/// Parses intra deblocking, GDF, CDEF, LR, CCSO, then the terminal tail (§ 5.18.2).
-/// Completed structures remain on `core`; the caller classifies EOF inside the cluster.
-fn parse_filter_cluster(
-    reader: &mut BitReader<'_>,
+fn parse_filter_cluster<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
     coded_lossless: bool,
 ) -> Result<()> {
     let mfh_deblocking = mfh.map(|view| &view.deblocking);
-    core.deblocking_filter_params = Some(parse_deblocking_filter_params(
-        reader,
+    core.deblocking_filter_params = Some(parse_deblocking_filter_params_with_reader(
+        sr,
         coded_lossless,
         seq.quant.num_planes,
         seq.filter.df_par_bits_minus_2,
@@ -1569,40 +1635,38 @@ fn parse_filter_cluster(
             mi_col_starts: &tile_info.mi_col_starts,
             mi_row_starts: &tile_info.mi_row_starts,
         };
-        parse_gdf_params(reader, coded_lossless, &seq.filter, geometry)?
+        parse_gdf_params_with_reader(sr, coded_lossless, seq.filter, geometry)?
     };
     core.gdf_params = Some(gdf);
 
-    core.cdef_params = Some(parse_cdef_params(
-        reader,
+    core.cdef_params = Some(parse_cdef_params_with_reader(
+        sr,
         coded_lossless,
         seq.quant.num_planes,
-        &seq.filter,
+        seq.filter,
     )?);
 
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
-    core.lr_params = Some(parse_lr_params(
-        reader,
+    core.lr_params = Some(parse_lr_params_with_reader(
+        sr,
         coded_lossless,
         seq.quant.num_planes,
-        &seq.restoration,
+        seq.restoration,
         lr_geometry,
     )?);
 
-    core.ccso_params = Some(parse_ccso_params(
-        reader,
+    core.ccso_params = Some(parse_ccso_params_with_reader(
+        sr,
         coded_lossless,
         seq.quant.num_planes,
-        &seq.ccso,
+        seq.ccso,
     )?);
 
-    parse_intra_tail_structures(reader, core, seq, coded_lossless)
+    parse_intra_tail_structures(sr, core, seq, coded_lossless)
 }
 
-/// Parses the intra coding-mode and film-grain tail after CCSO (§ 5.18.2).
-/// EOF becomes `StoppedInsideIntraTail`; unavailable grain state is a coverage stop.
-fn parse_intra_tail_structures(
-    reader: &mut BitReader<'_>,
+fn parse_intra_tail_structures<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     coded_lossless: bool,
@@ -1620,7 +1684,7 @@ fn parse_intra_tail_structures(
         immediate_output_frame: core.immediate_output_frame.unwrap_or(false),
         implicit_output_frame: core.implicit_output_frame.unwrap_or(false),
     };
-    match parse_intra_tail_grammar(reader, &input) {
+    match parse_intra_tail_grammar(sr, input) {
         Ok(tail) => {
             core.intra_tail = Some(tail);
             core.status = FrameHeaderParseStatus::IntraHeaderComplete;
@@ -1634,33 +1698,40 @@ fn parse_intra_tail_structures(
     }
 }
 
-/// Reads `refresh_frame_flags` for an intra frame (AV2 § 5.18.2): the KEY_FRAME branch
-/// for a key frame, or the INTRA_ONLY_FRAME branch otherwise.
-fn read_refresh_frame_flags(
-    reader: &mut BitReader<'_>,
+fn read_refresh_frame_flags<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     seq: &CoreSeqView,
     obu_type: ObuType,
     frame_type: FrameType,
 ) -> Result<u32> {
     if frame_type == FrameType::Key {
         if obu_type == ObuType::ClosedLoopKey && seq.max_mlayer_id == 0 {
-            Ok(all_frames_mask(seq.num_ref_frames))
+            let mask = all_frames_mask(seq.num_ref_frames);
+            sr.inferred_u64(
+                "refresh_frame_flags",
+                "obu_type == OBU_CLOSED_LOOP_KEY && max_mlayer_id == 0",
+                u64::from(mask),
+            );
+            Ok(mask)
         } else if seq.enable_short_refresh_frame_flags {
-            let frame_to_refresh = reader.read_bits(ceil_log2(seq.num_ref_frames))?;
+            let frame_to_refresh =
+                sr.read_bits("frame_to_refresh", ceil_log2(seq.num_ref_frames))?;
             Ok(1u32.wrapping_shl(frame_to_refresh))
         } else {
-            reader.read_bits(seq.num_ref_frames)
+            sr.read_bits("refresh_frame_flags", seq.num_ref_frames)
         }
     } else if seq.enable_short_refresh_frame_flags {
-        let has_refresh_frame_flags = reader.read_flag()?;
+        let has_refresh_frame_flags = sr.read_flag("has_refresh_frame_flags")?;
         if has_refresh_frame_flags {
-            let frame_to_refresh = reader.read_bits(ceil_log2(seq.num_ref_frames))?;
+            let frame_to_refresh =
+                sr.read_bits("frame_to_refresh", ceil_log2(seq.num_ref_frames))?;
             Ok(1u32.wrapping_shl(frame_to_refresh))
         } else {
+            sr.inferred_u64("refresh_frame_flags", "!has_refresh_frame_flags", 0);
             Ok(0)
         }
     } else {
-        reader.read_bits(seq.num_ref_frames)
+        sr.read_bits("refresh_frame_flags", seq.num_ref_frames)
     }
 }
 

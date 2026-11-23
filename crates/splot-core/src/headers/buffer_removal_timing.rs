@@ -18,6 +18,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `br_ops_id` is a 4-bit field (`f(4)`).
 const BR_OPS_ID_BITS: u32 = 4;
@@ -111,33 +112,66 @@ pub struct BufferRemovalOpTiming {
 /// [`Error::InvalidRg`](crate::error::Error::InvalidRg) from [`BitReader`] when the
 /// input is truncated or a `rg(4)` code is malformed.
 pub fn parse_buffer_removal_timing(reader: &mut BitReader<'_>) -> Result<BufferRemovalTiming> {
-    let ops_dependent = reader.read_flag()?;
-    if ops_dependent {
-        let br_ops_id = reader.read_bits_u8(BR_OPS_ID_BITS)?;
-        let br_ops_cnt = reader.read_bits_u8(BR_OPS_COUNT_BITS)?;
-        let mut op_times = Vec::new();
-        for index in 0..br_ops_cnt {
-            let decoder_model_present = reader.read_flag()?;
-            let br_time_op = if decoder_model_present {
-                Some(reader.read_rg(BR_TIME_RG_ORDER)?)
-            } else {
-                None
-            };
-            op_times.push(BufferRemovalOpTiming {
-                index,
-                decoder_model_present,
-                br_time_op,
-            });
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_buffer_removal_timing_with_reader(&mut sr)
+}
+
+/// Parses a `buffer_removal_timing_obu()` (AV2 v1.0.0 § 5.12) while reporting
+/// syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or
+/// [`Error::InvalidRg`](crate::error::Error::InvalidRg) when the input is
+/// truncated or a `rg(4)` code is malformed.
+pub fn parse_buffer_removal_timing_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<BufferRemovalTiming> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_buffer_removal_timing_with_reader(&mut sr)
+}
+
+pub(crate) fn parse_buffer_removal_timing_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<BufferRemovalTiming> {
+    sr.in_struct("buffer_removal_timing_obu", Some("5.12"), |sr| {
+        let ops_dependent = sr.read_flag("br_ops_dependent_flag")?;
+        if ops_dependent {
+            let br_ops_id = sr.read_bits_u8("br_ops_id", BR_OPS_ID_BITS)?;
+            let br_ops_cnt = sr.read_bits_u8("br_ops_cnt", BR_OPS_COUNT_BITS)?;
+            let mut op_times = Vec::new();
+            for index in 0..br_ops_cnt {
+                let op = sr.in_loop_item("op", usize::from(index), |sr| {
+                    let decoder_model_present = sr.read_flag("br_decoder_model_present_flag")?;
+                    let br_time_op = if decoder_model_present {
+                        Some(sr.read_rg("br_time_op", BR_TIME_RG_ORDER)?)
+                    } else {
+                        sr.absent("br_time_op", "!br_decoder_model_present_flag");
+                        None
+                    };
+                    Ok(BufferRemovalOpTiming {
+                        index,
+                        decoder_model_present,
+                        br_time_op,
+                    })
+                })?;
+                op_times.push(op);
+            }
+            sr.absent("br_time", "br_ops_dependent_flag");
+            Ok(BufferRemovalTiming::OperatingPointSet {
+                br_ops_id,
+                br_ops_cnt,
+                op_times,
+            })
+        } else {
+            sr.absent("br_ops_id", "!br_ops_dependent_flag");
+            sr.absent("br_ops_cnt", "!br_ops_dependent_flag");
+            let br_time = sr.read_rg("br_time", BR_TIME_RG_ORDER)?;
+            Ok(BufferRemovalTiming::ExtendedLayer { br_time })
         }
-        Ok(BufferRemovalTiming::OperatingPointSet {
-            br_ops_id,
-            br_ops_cnt,
-            op_times,
-        })
-    } else {
-        let br_time = reader.read_rg(BR_TIME_RG_ORDER)?;
-        Ok(BufferRemovalTiming::ExtendedLayer { br_time })
-    }
+    })
 }
 
 #[cfg(test)]

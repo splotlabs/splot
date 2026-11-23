@@ -9,29 +9,33 @@
 //! the corresponding typed coverage boundary. The caller preserves earlier facts
 //! when a modeled field reaches EOF.
 
-use crate::bitio::BitReader;
 use crate::error::{Error, Result};
 use crate::headers::frame::filtering::{
-    GdfGeometry, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
-    parse_gdf_params,
+    GdfGeometry, MfhDeblockingView, parse_cdef_params_with_reader,
+    parse_deblocking_filter_params_with_reader, parse_gdf_params_with_reader,
 };
 use crate::headers::frame::global_motion::{
-    GlobalMotionInput, GlobalMotionParams, GlobalMotionReferenceState, parse_global_motion_params,
+    GlobalMotionInput, GlobalMotionParams, GlobalMotionReferenceState,
+    parse_global_motion_params_with_reader,
 };
 use crate::headers::frame::info::{
     CoreSeqView, FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView,
 };
 use crate::headers::frame::inter::{InterControl, PRIMARY_REF_NONE};
 use crate::headers::frame::quant::{
-    parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
+    parse_delta_q_params_with_reader, parse_lossless_info_with_reader,
+    parse_quantization_params_with_reader, parse_setup_qm_params_with_reader,
 };
 use crate::headers::frame::restoration::{
-    LrGeometry, LrTemporalReferenceView, parse_ccso_params, parse_ccso_params_for_inter,
-    parse_lr_params_for_inter,
+    LrGeometry, LrTemporalReferenceView, parse_ccso_params_for_inter_with_reader,
+    parse_ccso_params_with_reader, parse_lr_params_for_inter_with_reader,
 };
 use crate::headers::frame::segmentation::MfhSegView;
-use crate::headers::frame::tail::{FilmGrainConfig, TxMode, parse_film_grain_config, read_tx_mode};
-use crate::headers::frame::tiling::parse_tile_info;
+use crate::headers::frame::tail::{
+    FilmGrainConfig, TxMode, parse_film_grain_config_with_reader, read_tx_mode_with_reader,
+};
+use crate::headers::frame::tiling::parse_tile_info_with_reader;
+use crate::syntax::{SyntaxObserver, SyntaxReader};
 
 use super::RESTRICTED_ORDER_HINT;
 use super::info::FrameType;
@@ -93,8 +97,8 @@ pub struct InterTail {
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
 /// mid-field (the caller converts this to a facts-preserving truncation status), or another
 /// typed descriptor error if a sub-parser rejects its inputs.
-pub(crate) fn parse_inter_shared_tail(
-    reader: &mut BitReader<'_>,
+pub(crate) fn parse_inter_shared_tail<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     control: &InterControl,
@@ -111,17 +115,18 @@ pub(crate) fn parse_inter_shared_tail(
         };
         return Ok(());
     };
-    core.tile_info = match parse_tile_info(reader, &seq.tile, frame_size, false, false, false) {
-        Ok(tile_info) => Some(tile_info),
-        Err(Error::Unimplemented { feature }) => {
-            core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-                feature_id: feature,
-            };
-            return Ok(());
-        }
-        Err(error) => return Err(error),
-    };
-    let quantization = parse_quantization_params(reader, &seq.quant, tip_frame_as_output)?;
+    core.tile_info =
+        match parse_tile_info_with_reader(sr, &seq.tile, frame_size, false, false, false) {
+            Ok(tile_info) => Some(tile_info),
+            Err(Error::Unimplemented { feature }) => {
+                core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                    feature_id: feature,
+                };
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+    let quantization = parse_quantization_params_with_reader(sr, &seq.quant, tip_frame_as_output)?;
 
     if mfh.missing {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
@@ -131,36 +136,37 @@ pub(crate) fn parse_inter_shared_tail(
     }
 
     let derived_primary_is_none = derived_primary_is_none(control, reference_state, frame_type);
-    let Some(segmentation) = crate::headers::frame::segmentation::parse_inter_segmentation_params(
-        reader,
-        &seq.seg,
-        mfh.seg,
-        derived_primary_is_none,
-        frame_type == FrameType::Switch,
-    )?
+    let Some(segmentation) =
+        crate::headers::frame::segmentation::parse_inter_segmentation_params_with_reader(
+            sr,
+            &seq.seg,
+            mfh.seg,
+            derived_primary_is_none,
+            frame_type == FrameType::Switch,
+        )?
     else {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
             feature_id: FRAME_HEADER_INFO_FEATURE,
         };
         return Ok(());
     };
-    let qm = parse_setup_qm_params(reader, &seq.quant, segmentation.segmentation_enabled)?;
-    let delta_q = parse_delta_q_params(reader, quantization.base_q_idx)?;
+    let qm = parse_setup_qm_params_with_reader(sr, &seq.quant, segmentation.segmentation_enabled)?;
+    let delta_q = parse_delta_q_params_with_reader(sr, quantization.base_q_idx)?;
 
-    let lossless = parse_lossless_info(
-        reader,
+    let lossless = parse_lossless_info_with_reader(
+        sr,
         &seq.quant,
         &quantization,
         &qm,
-        &delta_q,
+        delta_q,
         &segmentation,
         seq.seg.max_segments,
     )?;
     let coded_lossless = lossless.coded_lossless;
 
     let read_allow_df_sub_pu = seq.filter.enable_df_sub_pu && frame_type == FrameType::Inter;
-    core.deblocking_filter_params = Some(parse_deblocking_filter_params(
-        reader,
+    core.deblocking_filter_params = Some(parse_deblocking_filter_params_with_reader(
+        sr,
         coded_lossless,
         seq.quant.num_planes,
         seq.filter.df_par_bits_minus_2,
@@ -183,15 +189,15 @@ pub(crate) fn parse_inter_shared_tail(
             mi_col_starts: &tile_info.mi_col_starts,
             mi_row_starts: &tile_info.mi_row_starts,
         };
-        parse_gdf_params(reader, coded_lossless, &seq.filter, geometry)?
+        parse_gdf_params_with_reader(sr, coded_lossless, seq.filter, geometry)?
     };
     core.gdf_params = Some(gdf);
 
-    core.cdef_params = Some(parse_cdef_params(
-        reader,
+    core.cdef_params = Some(parse_cdef_params_with_reader(
+        sr,
         coded_lossless,
         seq.quant.num_planes,
-        &seq.filter,
+        seq.filter,
     )?);
 
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(false), seq.chroma_format_idc);
@@ -202,8 +208,8 @@ pub(crate) fn parse_inter_shared_tail(
     };
     let (lr_reference_filter_counts, lr_reference_filter_taps) =
         lr_reference_filters(reference_state, &control.ref_frame_idx, lr_num_total_refs);
-    let lr_params = match parse_lr_params_for_inter(
-        reader,
+    let lr_params = match parse_lr_params_for_inter_with_reader(
+        sr,
         coded_lossless,
         seq.quant.num_planes,
         seq.restoration,
@@ -234,10 +240,10 @@ pub(crate) fn parse_inter_shared_tail(
     core.lr_params = Some(lr_params);
 
     core.ccso_params = Some(if frame_type == FrameType::Switch {
-        parse_ccso_params(reader, coded_lossless, seq.quant.num_planes, &seq.ccso)?
+        parse_ccso_params_with_reader(sr, coded_lossless, seq.quant.num_planes, seq.ccso)?
     } else {
-        parse_ccso_params_for_inter(
-            reader,
+        parse_ccso_params_for_inter_with_reader(
+            sr,
             coded_lossless,
             seq.quant.num_planes,
             seq.ccso,
@@ -248,7 +254,7 @@ pub(crate) fn parse_inter_shared_tail(
     store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
 
     parse_inter_tail_arms(
-        reader,
+        sr,
         core,
         seq,
         control,
@@ -349,8 +355,8 @@ pub(super) fn lr_reference_filters<'a>(
 /// Parses the § 5.18.2 inter tail after `ccso_params()` (mirror :5307-5341) and sets the
 /// terminal status. On a clean parse of the modeled subset the tail is stored on
 /// `core.inter_tail` and the status is [`FrameHeaderParseStatus::InterHeaderComplete`].
-fn parse_inter_tail_arms(
-    reader: &mut BitReader<'_>,
+fn parse_inter_tail_arms<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     control: &InterControl,
@@ -358,20 +364,22 @@ fn parse_inter_tail_arms(
     coded_lossless: bool,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
-    let tx_mode = read_tx_mode(reader, coded_lossless)?;
+    let tx_mode = read_tx_mode_with_reader(sr, coded_lossless)?;
 
-    let reference_select = reader.read_flag()?;
+    let reference_select = sr.read_flag("reference_select")?;
 
     let skip_mode_allowed = frame_type != FrameType::Switch;
     let skip_mode_present = if skip_mode_allowed {
-        reader.read_flag()?
+        sr.read_flag("skip_mode_present")?
     } else {
+        sr.inferred_bool("skip_mode_present", "FrameType == SWITCH_FRAME", false);
         false
     };
 
     let allow_bawp = if seq.inter.enable_bawp {
-        reader.read_flag()?
+        sr.read_flag("allow_bawp")?
     } else {
+        sr.inferred_bool("allow_bawp", "!enable_bawp", false);
         false
     };
 
@@ -379,16 +387,21 @@ fn parse_inter_tail_arms(
         .frame_enabled_motion_modes
         .is_some_and(|modes| modes.get(DELTAWARP).copied().unwrap_or(false));
     let allow_warpmv_mode = if delta_warp_enabled {
-        reader.read_flag()?
+        sr.read_flag("allow_warpmv_mode")?
     } else {
+        sr.inferred_bool(
+            "allow_warpmv_mode",
+            "!frame_enabled_motion_modes[DELTAWARP]",
+            false,
+        );
         false
     };
 
-    let reduced_tx_set = reader.read_bits_u8(2)?;
+    let reduced_tx_set = sr.read_bits_u8("reduced_tx_set", 2)?;
 
     let num_total_refs = control.num_total_refs.unwrap_or(0);
-    let gm = parse_global_motion_params(
-        reader,
+    let gm = parse_global_motion_params_with_reader(
+        sr,
         &GlobalMotionInput {
             frame_is_intra: false,
             frame_type,
@@ -439,7 +452,7 @@ fn parse_inter_tail_arms(
         immediate_output_frame: core.immediate_output_frame.unwrap_or(false),
         implicit_output_frame: core.implicit_output_frame.unwrap_or(false),
     };
-    let film_grain = parse_film_grain_config(reader, &input)?;
+    let film_grain = parse_film_grain_config_with_reader(sr, input)?;
 
     core.inter_tail = Some(InterTail {
         tx_mode,

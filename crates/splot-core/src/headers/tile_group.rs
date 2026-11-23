@@ -8,7 +8,8 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
-use crate::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
+use crate::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix_with_reader};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 use crate::types::ObuType;
 
 /// A prefix-only parse of `tile_group_obu()` (AV2 v1.0.0 § 5.19).
@@ -45,30 +46,60 @@ pub fn parse_tile_group_prefix(
     obu_type: ObuType,
     first_picture_in_tu: Option<bool>,
 ) -> Result<TileGroupHeaderPrefix> {
-    let start_bits = reader.consumed_bits();
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_tile_group_prefix_with_reader(&mut sr, obu_type, first_picture_in_tu)
+}
 
-    let is_first_tile_group = reader.read_flag()?;
-    let frame_header_present_flag = if is_first_tile_group {
-        true
-    } else {
-        reader.read_flag()?
-    };
+/// Parses the `tile_group_obu()` prefix (AV2 v1.0.0 § 5.19) while reporting
+/// syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`] or a descriptor error if the payload ends
+/// or is malformed before the prefix fields can be read.
+pub fn parse_tile_group_prefix_observed(
+    reader: &mut BitReader<'_>,
+    obu_type: ObuType,
+    first_picture_in_tu: Option<bool>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<TileGroupHeaderPrefix> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_tile_group_prefix_with_reader(&mut sr, obu_type, first_picture_in_tu)
+}
 
-    let frame_header = if frame_header_present_flag && is_first_tile_group {
-        Some(parse_frame_header_prefix(
-            reader,
-            obu_type,
-            first_picture_in_tu,
-        )?)
-    } else {
-        None
-    };
+pub(crate) fn parse_tile_group_prefix_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    obu_type: ObuType,
+    first_picture_in_tu: Option<bool>,
+) -> Result<TileGroupHeaderPrefix> {
+    sr.in_struct("tile_group_obu", Some("5.19"), |sr| {
+        let start_bits = sr.consumed_bits();
 
-    Ok(TileGroupHeaderPrefix {
-        is_first_tile_group,
-        frame_header_present_flag,
-        frame_header,
-        consumed_bits: reader.consumed_bits().saturating_sub(start_bits),
+        let is_first_tile_group = sr.read_flag("is_first_tile_group")?;
+        let frame_header_present_flag = if is_first_tile_group {
+            sr.inferred_bool("frame_header_present_flag", "is_first_tile_group", true);
+            true
+        } else {
+            sr.read_flag("frame_header_present_flag")?
+        };
+
+        let frame_header = if frame_header_present_flag && is_first_tile_group {
+            Some(parse_frame_header_prefix_with_reader(
+                sr,
+                obu_type,
+                first_picture_in_tu,
+            )?)
+        } else {
+            None
+        };
+
+        Ok(TileGroupHeaderPrefix {
+            is_first_tile_group,
+            frame_header_present_flag,
+            frame_header,
+            consumed_bits: sr.consumed_bits().saturating_sub(start_bits),
+        })
     })
 }
 
@@ -242,10 +273,23 @@ pub fn parse_tile_group_structure(
     parse_tile_group_structure_with_bru(reader, layout, sz, None)
 }
 
+/// Parses the `tile_group_obu()` structure after `frame_header()` (AV2 v1.0.0
+/// § 5.19) while reporting syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::InvalidByteAlignment`] when a `byte_alignment()` pad bit is
+/// non-zero.
+pub fn parse_tile_group_structure_observed(
+    reader: &mut BitReader<'_>,
+    layout: TileGroupLayout,
+    sz: u64,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<TileGroupStructure> {
+    parse_tile_group_structure_with_bru_observed(reader, layout, sz, None, observer)
+}
+
 /// [`parse_tile_group_structure`] for a frame with `use_bru == 1` and `bru_inactive == 0`
-/// when `bru_tile_active` is `Some`: it also reads the § 5.19 `bru_tile_active` flags
-/// (mirror :8495-8517) before `byte_alignment()`, one per tile `tg_start..=tg_end`
-/// (inferred `1` for a single-tile frame), into `bru_tile_active` in tile order.
+/// when `bru_tile_active` is `Some`.
 ///
 /// # Errors
 /// As [`parse_tile_group_structure`].
@@ -255,68 +299,110 @@ pub fn parse_tile_group_structure_with_bru(
     sz: u64,
     bru_tile_active: Option<&mut Vec<bool>>,
 ) -> Result<TileGroupStructure> {
-    let num_tiles = layout.num_tiles;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_tile_group_structure_with_reader(&mut sr, layout, sz, bru_tile_active)
+}
 
-    let mut structure = TileGroupStructure {
-        tile_start_and_end_present_flag: false,
-        tg_start: 0,
-        tg_end: num_tiles.saturating_sub(1),
-        outcome: TileGroupStructureOutcome::Complete,
-        header_bytes: None,
-        payload_size: None,
-    };
+/// [`parse_tile_group_structure_with_bru`] while reporting syntax fields and
+/// bit spans to `observer`.
+///
+/// # Errors
+/// As [`parse_tile_group_structure`].
+pub fn parse_tile_group_structure_with_bru_observed(
+    reader: &mut BitReader<'_>,
+    layout: TileGroupLayout,
+    sz: u64,
+    bru_tile_active: Option<&mut Vec<bool>>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<TileGroupStructure> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_tile_group_structure_with_reader(&mut sr, layout, sz, bru_tile_active)
+}
 
-    if num_tiles > 1 {
-        let Ok(flag) = reader.read_bit() else {
-            structure.outcome = TileGroupStructureOutcome::Truncated;
-            return Ok(structure);
+pub(crate) fn parse_tile_group_structure_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    layout: TileGroupLayout,
+    sz: u64,
+    bru_tile_active: Option<&mut Vec<bool>>,
+) -> Result<TileGroupStructure> {
+    sr.in_struct("tile_group_header", Some("5.19"), |sr| {
+        let num_tiles = layout.num_tiles;
+
+        let mut structure = TileGroupStructure {
+            tile_start_and_end_present_flag: false,
+            tg_start: 0,
+            tg_end: num_tiles.saturating_sub(1),
+            outcome: TileGroupStructureOutcome::Complete,
+            header_bytes: None,
+            payload_size: None,
         };
-        structure.tile_start_and_end_present_flag = flag != 0;
-    }
 
-    if num_tiles > 1 && structure.tile_start_and_end_present_flag {
-        let tile_bits = layout.tile_bits();
-        let Ok(tg_start) = reader.read_bits(tile_bits) else {
-            structure.outcome = TileGroupStructureOutcome::Truncated;
-            return Ok(structure);
-        };
-        structure.tg_start = tg_start;
-        let Ok(tg_end) = reader.read_bits(tile_bits) else {
-            structure.outcome = TileGroupStructureOutcome::Truncated;
-            return Ok(structure);
-        };
-        structure.tg_end = tg_end;
-    }
-
-    if let Some(actives) = bru_tile_active {
-        actives.clear();
-        for _ in structure.tg_start..=structure.tg_end {
-            let active = if num_tiles > 1 {
-                let Ok(flag) = reader.read_bit() else {
-                    structure.outcome = TileGroupStructureOutcome::Truncated;
-                    return Ok(structure);
-                };
-                flag != 0
-            } else {
-                true
+        if num_tiles > 1 {
+            let Ok(flag) = sr.read_flag("tile_start_and_end_present_flag") else {
+                structure.outcome = TileGroupStructureOutcome::Truncated;
+                return Ok(structure);
             };
-            actives.push(active);
+            structure.tile_start_and_end_present_flag = flag;
+        } else {
+            sr.inferred_bool("tile_start_and_end_present_flag", "NumTiles <= 1", false);
         }
-    }
 
-    match reader.byte_align_zero() {
-        Ok(()) => {}
-        Err(Error::UnexpectedEof { .. }) => {
-            structure.outcome = TileGroupStructureOutcome::Truncated;
-            return Ok(structure);
+        if num_tiles > 1 && structure.tile_start_and_end_present_flag {
+            let tile_bits = layout.tile_bits();
+            let Ok(tg_start) = sr.read_bits("tg_start", tile_bits) else {
+                structure.outcome = TileGroupStructureOutcome::Truncated;
+                return Ok(structure);
+            };
+            structure.tg_start = tg_start;
+            let Ok(tg_end) = sr.read_bits("tg_end", tile_bits) else {
+                structure.outcome = TileGroupStructureOutcome::Truncated;
+                return Ok(structure);
+            };
+            structure.tg_end = tg_end;
+        } else {
+            sr.inferred_u64("tg_start", "!tile_start_and_end_present_flag", 0);
+            sr.inferred_u64(
+                "tg_end",
+                "!tile_start_and_end_present_flag",
+                u64::from(structure.tg_end),
+            );
         }
-        Err(other) => return Err(other),
-    }
 
-    let header_bytes = reader.consumed_bits() / 8;
-    structure.header_bytes = Some(header_bytes);
-    structure.payload_size = Some(sz.saturating_sub(header_bytes));
-    Ok(structure)
+        if let Some(actives) = bru_tile_active {
+            actives.clear();
+            for tile_num in structure.tg_start..=structure.tg_end {
+                let active = if num_tiles > 1 {
+                    let Ok(flag) = sr.in_loop_item("tile", tile_num as usize, |sr| {
+                        sr.read_flag("bru_tile_active")
+                    }) else {
+                        structure.outcome = TileGroupStructureOutcome::Truncated;
+                        return Ok(structure);
+                    };
+                    flag
+                } else {
+                    sr.inferred_bool("bru_tile_active", "NumTiles <= 1", true);
+                    true
+                };
+                actives.push(active);
+            }
+        }
+
+        match sr.byte_align_zero() {
+            Ok(()) => {}
+            Err(Error::UnexpectedEof { .. }) => {
+                structure.outcome = TileGroupStructureOutcome::Truncated;
+                return Ok(structure);
+            }
+            Err(other) => return Err(other),
+        }
+
+        let header_bytes = sr.consumed_bits() / 8;
+        structure.header_bytes = Some(header_bytes);
+        structure.payload_size = Some(sz.saturating_sub(header_bytes));
+        Ok(structure)
+    })
 }
 
 /// The byte framing of one tile inside `tile_group_payload()` (AV2 v1.0.0 § 5.20.1,

@@ -14,6 +14,7 @@
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, TileParamsErrorKind};
 use crate::headers::sequence::{LevelIdx, SuperblockSize, Tier};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `MAX_TILE_COLS`: maximum number of tile columns (AV2 v1.0.0 § 3).
 pub const MAX_TILE_COLS: u32 = 64;
@@ -371,133 +372,66 @@ pub struct TileLayout {
 /// [`Error::UnexpectedEof`] if the payload ends
 /// mid-field.
 pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> Result<TileLayout> {
-    let sb4x4 = num_4x4_blocks_wide(input.sb_size);
-    let sb_shift = mi_width_log2(input.sb_size);
-    let mi_cols = 2 * (input.frame_width.saturating_add(7) >> 3);
-    let mi_rows = 2 * (input.frame_height.saturating_add(7) >> 3);
-    let sb_cols = mi_cols.saturating_add(sb4x4 - 1) >> sb_shift;
-    let sb_rows = mi_rows.saturating_add(sb4x4 - 1) >> sb_shift;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_tile_layout_with_reader(&mut sr, input)
+}
 
-    let level_idx = input.seq_level_idx.get();
-    let (max_tile_width_sb, mut max_tile_area_sb) = if level_idx != NO_LEVEL_IDX {
-        let (width_sf, area_sf) =
-            tile_scaling_factors(input.seq_tier, level_idx).ok_or(Error::Unimplemented {
-                feature: "AV2-5.18.7.3-TILE-PARAMS",
-            })?;
-        let max_tile_width_sb = (width_sf * MAX_TILE_WIDTH) >> (sb_shift + 4);
-        let max_tile_area_sb = (area_sf * MAX_TILE_AREA) >> (2 * (sb_shift + 2) + 2);
-        (max_tile_width_sb, max_tile_area_sb)
-    } else {
-        (sb_cols, sb_cols.saturating_mul(sb_rows))
-    };
+/// Parses `tile_params()` (AV2 v1.0.0 § 5.18.7.3) while reporting syntax fields
+/// and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::InvalidTileParams`], [`Error::Unimplemented`], descriptor
+/// errors, or [`Error::UnexpectedEof`].
+pub fn parse_tile_layout_observed(
+    reader: &mut BitReader<'_>,
+    input: TileParamsInput,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<TileLayout> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_tile_layout_with_reader(&mut sr, input)
+}
 
-    let min_log2_tile_cols = tile_log2(max_tile_width_sb, sb_cols);
-    let max_log2_tile_cols = tile_log2(1, sb_cols.min(MAX_TILE_COLS));
-    let max_log2_tile_rows = tile_log2(1, sb_rows.min(MAX_TILE_ROWS));
-    let min_log2_tiles =
-        min_log2_tile_cols.max(tile_log2(max_tile_area_sb, sb_rows.saturating_mul(sb_cols)));
+pub(crate) fn parse_tile_layout_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    input: TileParamsInput,
+) -> Result<TileLayout> {
+    sr.in_struct("tile_params", Some("5.18.7.3"), |sr| {
+        let sb4x4 = num_4x4_blocks_wide(input.sb_size);
+        let sb_shift = mi_width_log2(input.sb_size);
+        let mi_cols = 2 * (input.frame_width.saturating_add(7) >> 3);
+        let mi_rows = 2 * (input.frame_height.saturating_add(7) >> 3);
+        let sb_cols = mi_cols.saturating_add(sb4x4 - 1) >> sb_shift;
+        let sb_rows = mi_rows.saturating_add(sb4x4 - 1) >> sb_shift;
 
-    let uniform = if input.is_bridge {
-        true
-    } else {
-        reader.read_flag()?
-    };
-
-    let (
-        tile_cols,
-        tile_cols_log2,
-        tile_rows,
-        sb_col_starts,
-        sb_row_starts,
-        covers_cols,
-        covers_rows,
-    ) = if uniform {
-        let mut tile_cols_log2 = min_log2_tile_cols;
-        if !input.is_bridge {
-            while tile_cols_log2 < max_log2_tile_cols {
-                if reader.read_bit()? == 1 {
-                    tile_cols_log2 += 1;
-                } else {
-                    break;
-                }
-            }
-        }
-        let cols = uniform_spacing(tile_cols_log2, mi_cols, input.uniform_sb_size);
-        let tile_cols = cols.count;
-        let tile_cols_log2 = tile_log2(1, tile_cols);
-
-        let min_log2_tile_rows = min_log2_tiles.saturating_sub(tile_cols_log2);
-        let mut tile_rows_log2 = min_log2_tile_rows;
-        if !input.is_bridge {
-            while tile_rows_log2 < max_log2_tile_rows {
-                if reader.read_bit()? == 1 {
-                    tile_rows_log2 += 1;
-                } else {
-                    break;
-                }
-            }
-        }
-        let rows = uniform_spacing(tile_rows_log2, mi_rows, input.uniform_sb_size);
-        (
-            tile_cols,
-            tile_cols_log2,
-            rows.count,
-            cols.starts,
-            rows.starts,
-            true,
-            true,
-        )
-    } else {
-        let mut widest_tile_sb = 1u32;
-        let mut start_sb = 0u32;
-        let mut tile_cols = 0u32;
-        let mut sb_col_starts = TileStarts::default();
-        while start_sb < sb_cols {
-            if tile_cols >= MAX_TILE_COLS {
-                return Err(Error::InvalidTileParams {
-                    offset: reader.byte_offset(),
-                    bit_offset: reader.bit_offset(),
-                    kind: TileParamsErrorKind::TileColsOutOfRange,
-                });
-            }
-            sb_col_starts.push(start_sb);
-            let n = (sb_cols - start_sb).min(max_tile_width_sb);
-            let width_in_sbs_minus_1 = reader.read_ns(n)?;
-            let size_sb = width_in_sbs_minus_1 + 1;
-            widest_tile_sb = widest_tile_sb.max(size_sb);
-            start_sb += size_sb;
-            tile_cols += 1;
-        }
-        let covers_cols = start_sb == sb_cols;
-        let tile_cols_log2 = tile_log2(1, tile_cols);
-
-        if min_log2_tiles > 0 {
-            max_tile_area_sb = sb_rows.saturating_mul(sb_cols) >> (u32::from(min_log2_tiles) + 1);
+        let level_idx = input.seq_level_idx.get();
+        let (max_tile_width_sb, mut max_tile_area_sb) = if level_idx != NO_LEVEL_IDX {
+            let (width_sf, area_sf) =
+                tile_scaling_factors(input.seq_tier, level_idx).ok_or(Error::Unimplemented {
+                    feature: "AV2-5.18.7.3-TILE-PARAMS",
+                })?;
+            let max_tile_width_sb = (width_sf * MAX_TILE_WIDTH) >> (sb_shift + 4);
+            let max_tile_area_sb = (area_sf * MAX_TILE_AREA) >> (2 * (sb_shift + 2) + 2);
+            (max_tile_width_sb, max_tile_area_sb)
         } else {
-            max_tile_area_sb = sb_rows.saturating_mul(sb_cols);
-        }
-        let max_tile_height_sb = (max_tile_area_sb / widest_tile_sb).max(1);
+            (sb_cols, sb_cols.saturating_mul(sb_rows))
+        };
 
-        let mut start_sb = 0u32;
-        let mut tile_rows = 0u32;
-        let mut sb_row_starts = TileStarts::default();
-        while start_sb < sb_rows {
-            if tile_rows >= MAX_TILE_ROWS {
-                return Err(Error::InvalidTileParams {
-                    offset: reader.byte_offset(),
-                    bit_offset: reader.bit_offset(),
-                    kind: TileParamsErrorKind::TileRowsOutOfRange,
-                });
-            }
-            sb_row_starts.push(start_sb);
-            let max_height = (sb_rows - start_sb).min(max_tile_height_sb);
-            let height_in_sbs_minus_1 = reader.read_ns(max_height)?;
-            let size_sb = height_in_sbs_minus_1 + 1;
-            start_sb += size_sb;
-            tile_rows += 1;
-        }
-        let covers_rows = start_sb == sb_rows;
-        (
+        let min_log2_tile_cols = tile_log2(max_tile_width_sb, sb_cols);
+        let max_log2_tile_cols = tile_log2(1, sb_cols.min(MAX_TILE_COLS));
+        let max_log2_tile_rows = tile_log2(1, sb_rows.min(MAX_TILE_ROWS));
+        let min_log2_tiles =
+            min_log2_tile_cols.max(tile_log2(max_tile_area_sb, sb_rows.saturating_mul(sb_cols)));
+
+        let uniform = if input.is_bridge {
+            sr.inferred_bool("uniform_tile_spacing_flag", "IsBridge", true);
+            true
+        } else {
+            sr.read_flag("uniform_tile_spacing_flag")?
+        };
+
+        let (
             tile_cols,
             tile_cols_log2,
             tile_rows,
@@ -505,32 +439,144 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
             sb_row_starts,
             covers_cols,
             covers_rows,
-        )
-    };
+        ) = if uniform {
+            let mut tile_cols_log2 = min_log2_tile_cols;
+            if !input.is_bridge {
+                let mut col_inc = 0usize;
+                while tile_cols_log2 < max_log2_tile_cols {
+                    let inc = sr.in_loop_item("col_inc", col_inc, |sr| {
+                        sr.read_bit("increment_tile_cols_log2")
+                    })?;
+                    col_inc += 1;
+                    if inc == 1 {
+                        tile_cols_log2 += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            let cols = uniform_spacing(tile_cols_log2, mi_cols, input.uniform_sb_size);
+            let tile_cols = cols.count;
+            let tile_cols_log2 = tile_log2(1, tile_cols);
 
-    let tile_rows_log2 = tile_log2(1, tile_rows);
+            let min_log2_tile_rows = min_log2_tiles.saturating_sub(tile_cols_log2);
+            let mut tile_rows_log2 = min_log2_tile_rows;
+            if !input.is_bridge {
+                let mut row_inc = 0usize;
+                while tile_rows_log2 < max_log2_tile_rows {
+                    let inc = sr.in_loop_item("row_inc", row_inc, |sr| {
+                        sr.read_bit("increment_tile_rows_log2")
+                    })?;
+                    row_inc += 1;
+                    if inc == 1 {
+                        tile_rows_log2 += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            let rows = uniform_spacing(tile_rows_log2, mi_rows, input.uniform_sb_size);
+            (
+                tile_cols,
+                tile_cols_log2,
+                rows.count,
+                cols.starts,
+                rows.starts,
+                true,
+                true,
+            )
+        } else {
+            let mut widest_tile_sb = 1u32;
+            let mut start_sb = 0u32;
+            let mut tile_cols = 0u32;
+            let mut sb_col_starts = TileStarts::default();
+            while start_sb < sb_cols {
+                if tile_cols >= MAX_TILE_COLS {
+                    let err = Error::InvalidTileParams {
+                        offset: sr.byte_offset(),
+                        bit_offset: sr.bit_offset(),
+                        kind: TileParamsErrorKind::TileColsOutOfRange,
+                    };
+                    return sr.fail(sr.rel_bit(), Some("width_in_sbs_minus_1"), err);
+                }
+                sb_col_starts.push(start_sb);
+                let n = (sb_cols - start_sb).min(max_tile_width_sb);
+                let width_in_sbs_minus_1 = sr.in_loop_item("col", tile_cols as usize, |sr| {
+                    sr.read_ns("width_in_sbs_minus_1", n)
+                })?;
+                let size_sb = width_in_sbs_minus_1 + 1;
+                widest_tile_sb = widest_tile_sb.max(size_sb);
+                start_sb += size_sb;
+                tile_cols += 1;
+            }
+            let covers_cols = start_sb == sb_cols;
+            let tile_cols_log2 = tile_log2(1, tile_cols);
 
-    let sb_shift2 = if uniform {
-        mi_width_log2(input.uniform_sb_size)
-    } else {
-        mi_width_log2(input.sb_size)
-    };
+            if min_log2_tiles > 0 {
+                max_tile_area_sb =
+                    sb_rows.saturating_mul(sb_cols) >> (u32::from(min_log2_tiles) + 1);
+            } else {
+                max_tile_area_sb = sb_rows.saturating_mul(sb_cols);
+            }
+            let max_tile_height_sb = (max_tile_area_sb / widest_tile_sb).max(1);
 
-    Ok(TileLayout {
-        params: TileParams {
-            tile_cols,
-            tile_rows,
-            tile_cols_log2,
-            tile_rows_log2,
-            sb_cols,
-            sb_rows,
-            uniform_spacing: uniform,
-            covers_cols,
-            covers_rows,
-        },
-        sb_col_starts,
-        sb_row_starts,
-        sb_shift2,
+            let mut start_sb = 0u32;
+            let mut tile_rows = 0u32;
+            let mut sb_row_starts = TileStarts::default();
+            while start_sb < sb_rows {
+                if tile_rows >= MAX_TILE_ROWS {
+                    let err = Error::InvalidTileParams {
+                        offset: sr.byte_offset(),
+                        bit_offset: sr.bit_offset(),
+                        kind: TileParamsErrorKind::TileRowsOutOfRange,
+                    };
+                    return sr.fail(sr.rel_bit(), Some("height_in_sbs_minus_1"), err);
+                }
+                sb_row_starts.push(start_sb);
+                let max_height = (sb_rows - start_sb).min(max_tile_height_sb);
+                let height_in_sbs_minus_1 = sr.in_loop_item("row", tile_rows as usize, |sr| {
+                    sr.read_ns("height_in_sbs_minus_1", max_height)
+                })?;
+                let size_sb = height_in_sbs_minus_1 + 1;
+                start_sb += size_sb;
+                tile_rows += 1;
+            }
+            let covers_rows = start_sb == sb_rows;
+            (
+                tile_cols,
+                tile_cols_log2,
+                tile_rows,
+                sb_col_starts,
+                sb_row_starts,
+                covers_cols,
+                covers_rows,
+            )
+        };
+
+        let tile_rows_log2 = tile_log2(1, tile_rows);
+
+        let sb_shift2 = if uniform {
+            mi_width_log2(input.uniform_sb_size)
+        } else {
+            mi_width_log2(input.sb_size)
+        };
+
+        Ok(TileLayout {
+            params: TileParams {
+                tile_cols,
+                tile_rows,
+                tile_cols_log2,
+                tile_rows_log2,
+                sb_cols,
+                sb_rows,
+                uniform_spacing: uniform,
+                covers_cols,
+                covers_rows,
+            },
+            sb_col_starts,
+            sb_row_starts,
+            sb_shift2,
+        })
     })
 }
 

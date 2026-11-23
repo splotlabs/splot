@@ -12,7 +12,8 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
-use crate::headers::sequence::{TimingInfo, parse_timing_info};
+use crate::headers::sequence::{TimingInfo, parse_timing_info_with_reader};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `ci_scan_type_idc` (AV2 v1.0.0 § 5.15 / § 6.14): how to interpret pictures in a
 /// CVS in terms of progressive or interlace samples (0 unspecified, 1 progressive
@@ -337,77 +338,125 @@ impl ContentInterpretation {
 /// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
 /// mid-field.
 pub fn parse_content_interpretation(reader: &mut BitReader<'_>) -> Result<ContentInterpretation> {
-    let scan_type_idc = ScanTypeIdc::from_bits(reader.read_bits_u8(2)?);
-    let color_description_present_flag = reader.read_flag()?;
-    let chroma_sample_position_present_flag = reader.read_flag()?;
-    let aspect_ratio_info_present_flag = reader.read_flag()?;
-    let timing_info_present_flag = reader.read_flag()?;
-    let reserved_2bit = reader.read_bits_u8(2)?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_content_interpretation_with_reader(&mut sr)
+}
 
-    let color_description = if color_description_present_flag {
-        let color_description_idc = reader.read_rg(2)?;
-        let primaries = if color_description_idc == 0 {
-            Some(ColorPrimariesTriple {
-                color_primaries: reader.read_bits_u8(8)?,
-                transfer_characteristics: reader.read_bits_u8(8)?,
-                matrix_coefficients: reader.read_bits_u8(8)?,
+/// Parses `content_interpretation_obu()` (AV2 v1.0.0 § 5.15) while reporting
+/// syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors, [`Error::InvalidSequenceHeader`](crate::error::Error::InvalidSequenceHeader),
+/// or [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof).
+pub fn parse_content_interpretation_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<ContentInterpretation> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_content_interpretation_with_reader(&mut sr)
+}
+
+pub(crate) fn parse_content_interpretation_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<ContentInterpretation> {
+    sr.in_struct("content_interpretation_obu", Some("5.15"), |sr| {
+        let scan_type_idc = ScanTypeIdc::from_bits(sr.read_bits_u8("ci_scan_type_idc", 2)?);
+        let color_description_present_flag = sr.read_flag("ci_color_description_present_flag")?;
+        let chroma_sample_position_present_flag =
+            sr.read_flag("ci_chroma_sample_position_present_flag")?;
+        let aspect_ratio_info_present_flag = sr.read_flag("ci_aspect_ratio_info_present_flag")?;
+        let timing_info_present_flag = sr.read_flag("ci_timing_info_present_flag")?;
+        let reserved_2bit = sr.read_bits_u8("ci_reserved_2bit", 2)?;
+
+        let color_description = if color_description_present_flag {
+            let color_description_idc = sr.read_rg("ci_color_description_idc", 2)?;
+            let primaries = if color_description_idc == 0 {
+                Some(ColorPrimariesTriple {
+                    color_primaries: sr.read_bits_u8("ci_color_primaries", 8)?,
+                    transfer_characteristics: sr.read_bits_u8("ci_transfer_characteristics", 8)?,
+                    matrix_coefficients: sr.read_bits_u8("ci_matrix_coefficients", 8)?,
+                })
+            } else {
+                sr.absent("ci_color_primaries", "ci_color_description_idc != 0");
+                sr.absent(
+                    "ci_transfer_characteristics",
+                    "ci_color_description_idc != 0",
+                );
+                sr.absent("ci_matrix_coefficients", "ci_color_description_idc != 0");
+                None
+            };
+            let full_range_flag = sr.read_flag("ci_full_range_flag")?;
+            Some(ColorDescription {
+                color_description_idc,
+                primaries,
+                full_range_flag,
             })
+        } else {
+            sr.absent(
+                "ci_color_description_idc",
+                "!ci_color_description_present_flag",
+            );
+            None
+        };
+
+        let chroma_sample_position = if chroma_sample_position_present_flag {
+            let top = sr.read_uvlc("ci_chroma_sample_position_top")?;
+            let bottom = if scan_type_idc.is_progressive_frame() {
+                sr.inferred_u64(
+                    "ci_chroma_sample_position_bottom",
+                    "ci_scan_type_idc == 1",
+                    u64::from(top),
+                );
+                top
+            } else {
+                sr.read_uvlc("ci_chroma_sample_position_bottom")?
+            };
+            Some(ChromaSamplePosition { top, bottom })
+        } else {
+            sr.absent(
+                "ci_chroma_sample_position_top",
+                "!ci_chroma_sample_position_present_flag",
+            );
+            None
+        };
+
+        let aspect_ratio = if aspect_ratio_info_present_flag {
+            let aspect_ratio_idc = sr.read_bits_u8("ci_aspect_ratio_idc", 8)?;
+            let extended_sar = if aspect_ratio_idc == 255 {
+                Some(ExtendedSampleAspectRatio {
+                    sar_width: sr.read_uvlc("ci_sar_width")?,
+                    sar_height: sr.read_uvlc("ci_sar_height")?,
+                })
+            } else {
+                sr.absent("ci_sar_width", "ci_aspect_ratio_idc != 255");
+                sr.absent("ci_sar_height", "ci_aspect_ratio_idc != 255");
+                None
+            };
+            Some(AspectRatioInfo {
+                aspect_ratio_idc,
+                extended_sar,
+            })
+        } else {
+            sr.absent("ci_aspect_ratio_idc", "!ci_aspect_ratio_info_present_flag");
+            None
+        };
+
+        let timing_info = if timing_info_present_flag {
+            Some(parse_timing_info_with_reader(sr)?)
         } else {
             None
         };
-        let full_range_flag = reader.read_flag()?;
-        Some(ColorDescription {
-            color_description_idc,
-            primaries,
-            full_range_flag,
+
+        Ok(ContentInterpretation {
+            scan_type_idc,
+            color_description,
+            chroma_sample_position,
+            aspect_ratio,
+            timing_info,
+            reserved_2bit,
         })
-    } else {
-        None
-    };
-
-    let chroma_sample_position = if chroma_sample_position_present_flag {
-        let top = reader.read_uvlc()?;
-        let bottom = if scan_type_idc.is_progressive_frame() {
-            top
-        } else {
-            reader.read_uvlc()?
-        };
-        Some(ChromaSamplePosition { top, bottom })
-    } else {
-        None
-    };
-
-    let aspect_ratio = if aspect_ratio_info_present_flag {
-        let aspect_ratio_idc = reader.read_bits_u8(8)?;
-        let extended_sar = if aspect_ratio_idc == 255 {
-            Some(ExtendedSampleAspectRatio {
-                sar_width: reader.read_uvlc()?,
-                sar_height: reader.read_uvlc()?,
-            })
-        } else {
-            None
-        };
-        Some(AspectRatioInfo {
-            aspect_ratio_idc,
-            extended_sar,
-        })
-    } else {
-        None
-    };
-
-    let timing_info = if timing_info_present_flag {
-        Some(parse_timing_info(reader)?)
-    } else {
-        None
-    };
-
-    Ok(ContentInterpretation {
-        scan_type_idc,
-        color_description,
-        chroma_sample_position,
-        aspect_ratio,
-        timing_info,
-        reserved_2bit,
     })
 }
 
