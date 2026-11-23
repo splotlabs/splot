@@ -43,6 +43,62 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
     stride: usize,
     carry: &mut BilinearOverlapCarry<'a, T>,
 ) -> Result<bool> {
+    let Some((window, output, geometry, ref_stride, reuse)) =
+        prepare_12x12_overlap(reference, params, output, stride, carry)?
+    else {
+        return Ok(false);
+    };
+    let [_, _, h_phase, v_phase] = geometry;
+    let block = (window, ref_stride, output, stride, &mut carry.columns);
+    baseline_simd!(simd => if reuse {
+        bilinear_12x12_block::<_, T, true>(simd, block, (h_phase, v_phase));
+    } else {
+        bilinear_12x12_block::<_, T, false>(simd, block, (h_phase, v_phase));
+    });
+    carry.source = Some((reference.samples, ref_stride, geometry));
+    Ok(true)
+}
+
+/// Typed [`subpel_predict_12x12_bilinear_overlap_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_12x12_bilinear_overlap_into`].
+pub fn subpel_predict_12x12_bilinear_overlap_into_with<'a, B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'a, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    stride: usize,
+    carry: &mut BilinearOverlapCarry<'a, T>,
+) -> Result<bool> {
+    let Some((window, output, geometry, ref_stride, reuse)) =
+        prepare_12x12_overlap(reference, params, output, stride, carry)?
+    else {
+        return Ok(false);
+    };
+    let [_, _, h_phase, v_phase] = geometry;
+    let block = (window, ref_stride, output, stride, &mut carry.columns);
+    let narrow = backend.narrow();
+    narrow.vectorize(|| {
+        if reuse {
+            bilinear_12x12_block::<_, T, true>(narrow.token(), block, (h_phase, v_phase));
+        } else {
+            bilinear_12x12_block::<_, T, false>(narrow.token(), block, (h_phase, v_phase));
+        }
+    });
+    carry.source = Some((reference.samples, ref_stride, geometry));
+    Ok(true)
+}
+
+#[inline]
+#[expect(clippy::type_complexity)]
+fn prepare_12x12_overlap<'a, 'o, T: ReconSample>(
+    reference: &ReferencePlaneView<'a, T>,
+    params: &SubpelPredictParams,
+    output: &'o mut [u16],
+    stride: usize,
+    carry: &BilinearOverlapCarry<'a, T>,
+) -> Result<Option<(&'a [T], &'o mut [u16], [i32; 4], usize, bool)>> {
     const SIZE: usize = 12;
     if params.interp != InterpolationFilter::Bilinear
         || params.step_x != 1 << SCALE_SUBPEL_BITS
@@ -51,7 +107,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
         || params.h != SIZE
         || stride < SIZE
     {
-        return Ok(false);
+        return Ok(None);
     }
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
@@ -60,7 +116,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
         || x0 + SIZE as i32 > params.last_x.min(reference.width as i32 - 1)
         || y0 + SIZE as i32 > params.last_y.min(reference.readable_rows as i32 - 1)
     {
-        return Ok(false);
+        return Ok(None);
     }
     let needed = stride
         .checked_mul(SIZE - 1)
@@ -85,7 +141,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
         .samples
         .get(origin..origin + SIZE * ref_stride + SIZE + 1)
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let reuse = carry
         .source
@@ -94,14 +150,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
                 && carry_stride == ref_stride
                 && [x + 8, y, h, v] == geometry
         });
-    let block = (window, ref_stride, output, stride, &mut carry.columns);
-    baseline_simd!(simd => if reuse {
-        bilinear_12x12_block::<_, T, true>(simd, block, (h_phase, v_phase));
-    } else {
-        bilinear_12x12_block::<_, T, false>(simd, block, (h_phase, v_phase));
-    });
-    carry.source = Some((reference.samples, ref_stride, geometry));
-    Ok(true)
+    Ok(Some((window, output, geometry, ref_stride, reuse)))
 }
 
 /// A source window and its stride, an output and its stride, and the carry

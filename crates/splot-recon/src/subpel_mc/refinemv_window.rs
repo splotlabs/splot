@@ -99,6 +99,44 @@ pub fn refinemv_search_windows<T: ReconSample, P: WindowSample>(
     bit_depth: BitDepth,
     windows: [&mut [P; REFINEMV_SEARCH_AREA]; 2],
 ) -> Option<(i32, i32)> {
+    refinemv_search_windows_with_runner(
+        BaselineSubpel,
+        views,
+        params,
+        allow_center,
+        bit_depth,
+        windows,
+    )
+}
+
+/// Typed [`refinemv_search_windows`] using caller-selected `backend`.
+#[must_use]
+pub fn refinemv_search_windows_with<B: SimdBackend, T: ReconSample, P: WindowSample>(
+    backend: B,
+    views: [&ReferencePlaneView<'_, T>; 2],
+    params: [&SubpelPredictParams; 2],
+    allow_center: bool,
+    bit_depth: BitDepth,
+    windows: [&mut [P; REFINEMV_SEARCH_AREA]; 2],
+) -> Option<(i32, i32)> {
+    refinemv_search_windows_with_runner(
+        TypedSubpel(backend),
+        views,
+        params,
+        allow_center,
+        bit_depth,
+        windows,
+    )
+}
+
+fn refinemv_search_windows_with_runner<R: SubpelRunner, T: ReconSample, P: WindowSample>(
+    runner: R,
+    views: [&ReferencePlaneView<'_, T>; 2],
+    params: [&SubpelPredictParams; 2],
+    allow_center: bool,
+    bit_depth: BitDepth,
+    windows: [&mut [P; REFINEMV_SEARCH_AREA]; 2],
+) -> Option<(i32, i32)> {
     let size = [params[0].w, params[0].h];
     let bytes = T::u8_slice(&[]).is_some();
     if !matches!(size, [16 | 24, 16 | 24])
@@ -117,10 +155,10 @@ pub fn refinemv_search_windows<T: ReconSample, P: WindowSample>(
             .zip(params)
             .zip([&mut *first, &mut *second])
         {
-            predict_centre(view, params, size, window)?;
+            predict_centre(runner, view, params, size, window)?;
         }
         let words = [&first[..], &second[..]].map(|window| P::words(window).unwrap_or_default());
-        if centre_ends_search(words, geometry, shift)? {
+        if centre_ends_search(runner, words, geometry, shift)? {
             return Some((0, 0));
         }
     }
@@ -130,22 +168,34 @@ pub fn refinemv_search_windows<T: ReconSample, P: WindowSample>(
         .zip([&mut *first, &mut *second])
     {
         if let Some(output) = P::bytes_mut(window)
-            && search_window::subpel_predict_bilinear_search_window_u8(view, params, output)
+            && search_window::subpel_predict_bilinear_search_window_u8(runner, view, params, output)
         {
             continue;
         }
-        predict_window(view, &plan(view, params, lanes)?, size, window);
+        predict_window(runner, view, &plan(view, params, lanes)?, size, window);
     }
     if let (Some(first), Some(second)) = (P::bytes(&first[..]), P::bytes(&second[..])) {
-        return Some(search_bytes([first, second], geometry, allow_center));
+        return Some(search_bytes(
+            runner,
+            [first, second],
+            geometry,
+            allow_center,
+        ));
     }
     let (first, second) = (P::words(&first[..])?, P::words(&second[..])?);
-    Some(search_words([first, second], geometry, allow_center, shift))
+    Some(search_words(
+        runner,
+        [first, second],
+        geometry,
+        allow_center,
+        shift,
+    ))
 }
 
 /// Predicts the `(w - 4) x (h - 4)` centre at `(2, 2)` of the `u16` window
 /// `params` into `window` at stride `w`, after the checks of [`plan`].
-fn predict_centre<T: ReconSample, P: WindowSample>(
+fn predict_centre<R: SubpelRunner, T: ReconSample, P: WindowSample>(
+    runner: R,
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     [w, h]: [usize; 2],
@@ -161,60 +211,105 @@ fn predict_centre<T: ReconSample, P: WindowSample>(
         ..*params
     };
     let output = P::words_mut(window)?.get_mut(2 * w + 2..)?;
-    subpel_predict_block_strided_into(view, &centre, output, w).ok()
+    subpel_predict_block_strided_into_with_runner(runner, view, &centre, output, w).ok()
 }
 
 /// Whether the biased centre SAD of two `u16` windows of `[stride, sad_h]`
 /// keeps the centre, from their centre alone.
-fn centre_ends_search(windows: [&[u16]; 2], geometry: [usize; 2], shift: u32) -> Option<bool> {
-    let sad = baseline_simd!(simd => match geometry {
+fn centre_ends_search<R: SubpelRunner>(
+    runner: R,
+    windows: [&[u16]; 2],
+    geometry: [usize; 2],
+    shift: u32,
+) -> Option<bool> {
+    let sad = runner.refinemv_centre_sad(windows, geometry)? >> shift;
+    Some(sad - (sad >> 3) < (2 * (geometry[0] - 4) * geometry[1]) as u32)
+}
+
+pub(super) fn centre_sad_generic<S: fearless_simd::Simd>(
+    simd: S,
+    windows: [&[u16]; 2],
+    geometry: [usize; 2],
+) -> Option<u32> {
+    match geometry {
         [16, 12] => generic::centre_sad::<_, 16, 12, 256>(simd, windows),
         [16, _] => generic::centre_sad::<_, 16, 20, 384>(simd, windows),
         [_, 12] => generic::centre_sad::<_, 24, 12, 384>(simd, windows),
         _ => generic::centre_sad::<_, 24, 20, 576>(simd, windows),
-    })? >> shift;
-    Some(sad - (sad >> 3) < (2 * (geometry[0] - 4) * geometry[1]) as u32)
+    }
 }
 
 /// The SAD search of two word windows of `[stride, sad_h]`, each SAD
 /// shifted down by `shift`.
-pub(super) fn search_words(
+pub(super) fn search_words<R: SubpelRunner>(
+    runner: R,
     windows: [&[u16]; 2],
     geometry: [usize; 2],
     allow_center: bool,
     shift: u32,
 ) -> (i32, i32) {
-    baseline_simd!(simd => match geometry {
-        [16, 12] => search_window::generic::search_u16::<_, 16, 12, 256>(
-            simd, windows, allow_center, shift,
-        ),
-        [16, _] => search_window::generic::search_u16::<_, 16, 20, 384>(
-            simd, windows, allow_center, shift,
-        ),
-        [_, 12] => search_window::generic::search_u16::<_, 24, 12, 384>(
-            simd, windows, allow_center, shift,
-        ),
-        _ => search_window::generic::search_u16::<_, 24, 20, 576>(
-            simd, windows, allow_center, shift,
-        ),
-    })
+    runner.refinemv_search_words(windows, geometry, allow_center, shift)
+}
+
+pub(super) fn search_words_generic<S: fearless_simd::Simd>(
+    simd: S,
+    windows: [&[u16]; 2],
+    geometry: [usize; 2],
+    allow_center: bool,
+    shift: u32,
+) -> (i32, i32) {
+    match geometry {
+        [16, 12] => {
+            search_window::generic::search_u16::<_, 16, 12, 256>(simd, windows, allow_center, shift)
+        }
+        [16, _] => {
+            search_window::generic::search_u16::<_, 16, 20, 384>(simd, windows, allow_center, shift)
+        }
+        [_, 12] => {
+            search_window::generic::search_u16::<_, 24, 12, 384>(simd, windows, allow_center, shift)
+        }
+        _ => {
+            search_window::generic::search_u16::<_, 24, 20, 576>(simd, windows, allow_center, shift)
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn search_bytes_avx2(
+    t: fearless_simd::Avx2,
+    windows: [&[u8]; 2],
+    geometry: [usize; 2],
+    allow_center: bool,
+) -> (i32, i32) {
+    search_window::avx2::search(t, windows, geometry, allow_center)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn search_bytes_neon(
+    t: fearless_simd::Neon,
+    windows: [&[u8]; 2],
+    geometry: [usize; 2],
+    allow_center: bool,
+) -> (i32, i32) {
+    search_window::neon::search(t, windows, geometry, allow_center)
 }
 
 /// The SAD search of two byte windows of `[stride, sad_h]`.
-pub(super) fn search_bytes(
+pub(super) fn search_bytes<R: SubpelRunner>(
+    runner: R,
     windows: [&[u8]; 2],
     geometry: [usize; 2],
     allow_center: bool,
 ) -> (i32, i32) {
     #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        return search_window::avx2::search(t, windows, geometry, allow_center);
+    if let Some(t) = runner.avx2_token() {
+        return search_bytes_avx2(t, windows, geometry, allow_center);
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
-        return search_window::neon::search(t, windows, geometry, allow_center);
+    if let Some(t) = runner.neon_token() {
+        return search_bytes_neon(t, windows, geometry, allow_center);
     }
-    baseline_simd!(simd => search_window::generic::search(simd, windows, geometry, allow_center))
+    runner.refinemv_search_bytes_generic(windows, geometry, allow_center)
 }
 
 /// Where one window reads its reference: `[y0, first, last]` of its rows,
@@ -351,14 +446,15 @@ pub(super) fn plan<T: ReconSample>(
 }
 
 /// Predicts one planned window of `size` into `window`.
-pub(super) fn predict_window<T: ReconSample, P: WindowSample>(
+pub(super) fn predict_window<R: SubpelRunner, T: ReconSample, P: WindowSample>(
+    runner: R,
     view: &ReferencePlaneView<'_, T>,
     plan: &Plan,
     size: [usize; 2],
     window: &mut [P],
 ) {
     #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
+    if let Some(t) = runner.avx2_token() {
         if let (Some(source), Some(output)) = (T::u8_slice(view.samples), P::bytes_mut(window)) {
             avx2::window_u8(t, source, plan, size, output);
             return;
@@ -368,7 +464,7 @@ pub(super) fn predict_window<T: ReconSample, P: WindowSample>(
             return;
         }
     }
-    baseline_simd!(simd => generic::window(simd, view.samples, plan, size, window));
+    runner.refinemv_predict_window_generic(view.samples, plan, size, window);
 }
 
 /// The windows in generic `u16` lanes, eight columns per group.

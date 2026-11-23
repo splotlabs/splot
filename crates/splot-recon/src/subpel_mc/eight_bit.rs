@@ -24,21 +24,48 @@
 //! x86_64 and the portable ones elsewhere; blocks no kernel takes decline
 //! to the portable kernels.
 
-use super::ReferencePlaneView;
 use super::block::{self, Block, Sink, Taps, Window, is_cell};
 use super::cell::{Cell, Plane, Written};
+use super::{ReferencePlaneView, SubpelRunner};
 use crate::format::ReconSample;
 
-#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-use generic as kernel;
 #[cfg(target_arch = "x86_64")]
 pub(super) mod avx2;
-#[cfg(target_arch = "x86_64")]
-use avx2 as kernel;
 #[cfg(target_arch = "aarch64")]
 pub(super) mod neon;
+
+#[cfg(target_arch = "x86_64")]
+macro_rules! kernel_or {
+    ($runner:expr, $f:ident($($arg:expr),* $(,)?), $fallback:expr) => {
+        if let Some(t) = $runner.avx2_token() {
+            if !avx2::$f(t, $($arg),*) {
+                $fallback
+            }
+        } else {
+            $fallback
+        }
+    };
+}
+
 #[cfg(target_arch = "aarch64")]
-use neon as kernel;
+macro_rules! kernel_or {
+    ($runner:expr, $f:ident($($arg:expr),* $(,)?), $fallback:expr) => {
+        if let Some(t) = $runner.neon_token() {
+            if !neon::$f(t, $($arg),*) {
+                $fallback
+            }
+        } else {
+            $fallback
+        }
+    };
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+macro_rules! kernel_or {
+    ($runner:expr, $f:ident($($arg:expr),* $(,)?), $fallback:expr) => {
+        $fallback
+    };
+}
 
 /// Whether the byte-lane kernels cover `block`: strips of 8 columns, the
 /// last overlapping the one before it, or 4 columns in pairs of rows with at
@@ -59,7 +86,11 @@ pub(super) fn pairs(taps: Option<&Taps>) -> usize {
 /// Predicts an eight-bit block in byte lanes and returns `true`, or returns
 /// `false` without writing for a block the kernels do not cover or a sink
 /// wider than eight bits.
-pub(super) fn predict<T: ReconSample>(block: &Block<'_, T>, sink: &mut Sink<'_>) -> bool {
+pub(super) fn predict<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    block: &Block<'_, T>,
+    sink: &mut Sink<'_>,
+) -> bool {
     let admitted = match sink {
         Sink::PutWide { max, .. } => *max == u16::from(u8::MAX),
         Sink::AverageWide { .. } => false,
@@ -67,7 +98,12 @@ pub(super) fn predict<T: ReconSample>(block: &Block<'_, T>, sink: &mut Sink<'_>)
     };
     match T::u8_slice(block.source) {
         Some(source) if admitted && fits(block) => {
-            kernel::predict(&block.with_source(source), sink);
+            let block = block.with_source(source);
+            kernel_or!(
+                runner,
+                predict(&block, sink),
+                generic::predict(runner, &block, sink)
+            );
             true
         }
         _ => false,
@@ -78,30 +114,47 @@ pub(super) fn predict<T: ReconSample>(block: &Block<'_, T>, sink: &mut Sink<'_>)
 /// rows `stride` apart.
 #[expect(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
-pub(super) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
+pub(super) fn put<R: SubpelRunner>(
+    runner: R,
+    block: &Block<'_, u8>,
+    output: &mut [u8],
+    stride: usize,
+) {
     if block.horizontal.is_none() && block.vertical.is_none() && copy(block, output, stride) {
         return;
     }
     if fits(block) {
-        kernel::put(block, output, stride);
+        kernel_or!(
+            runner,
+            put(block, output, stride),
+            generic::put(runner, block, output, stride)
+        );
         return;
     }
-    block::kernels(block, &mut Sink::Put { output, stride }, None);
+    block::kernels(runner, block, &mut Sink::Put { output, stride }, None);
 }
 
 /// [`put`] of two blocks of one window, the U and V planes of a block, each
 /// into its `(output, stride)`: a filtered pair in one call of the pair
 /// kernel.
 #[inline]
-pub(super) fn put_pair(blocks: [&Block<'_, u8>; 2], outputs: [(&mut [u8], usize); 2]) {
-    let [(first, first_stride), (second, second_stride)] = outputs;
+pub(super) fn put_pair<R: SubpelRunner>(
+    runner: R,
+    blocks: [&Block<'_, u8>; 2],
+    mut outputs: [(&mut [u8], usize); 2],
+) {
     let filtered = blocks[0].horizontal.is_some() || blocks[0].vertical.is_some();
     if filtered && fits(blocks[0]) {
-        kernel::put_pair(blocks, [(first, first_stride), (second, second_stride)]);
+        kernel_or!(
+            runner,
+            put_pair(blocks, outputs.each_mut().map(|(o, s)| (&mut **o, *s))),
+            generic::put_pair(runner, blocks, outputs)
+        );
         return;
     }
-    put(blocks[0], first, first_stride);
-    put(blocks[1], second, second_stride);
+    let [(first, first_stride), (second, second_stride)] = outputs;
+    put(runner, blocks[0], first, first_stride);
+    put(runner, blocks[1], second, second_stride);
 }
 
 /// Stores a zero-phase block (no filter pass): its prediction is its
@@ -161,17 +214,39 @@ fn copy(block: &Block<'_, u8>, output: &mut [u8], stride: usize) -> bool {
 /// COMPOUND_AVERAGE into `output`: a 4x4 or 8x8 register cell, two
 /// full-sample blocks averaged directly, else the first predictor staged
 /// for the second.
-pub(super) fn compound(
+pub(super) fn compound<R: SubpelRunner>(
+    runner: R,
     blocks: [&Block<'_, u8>; 2],
     forward: i32,
     output: &mut [u8],
     stride: usize,
 ) {
+    let mut outputs = [(output, stride)];
     match path(blocks) {
-        Path::Cell => kernel::compound_cell([blocks], forward, [(output, stride)]),
-        Path::Staged => staged(blocks, forward, output, stride),
-        Path::Fullpel => kernel::compound_fullpel(blocks, forward, output, stride),
-        Path::Strips => kernel::compound_strips([blocks], forward, [(output, stride)]),
+        Path::Cell => kernel_or!(
+            runner,
+            compound_cell(
+                [blocks],
+                forward,
+                outputs.each_mut().map(|(o, s)| (&mut **o, *s))
+            ),
+            generic::compound_cell(runner, [blocks], forward, outputs)
+        ),
+        Path::Staged => staged(runner, blocks, forward, outputs[0].0, outputs[0].1),
+        Path::Fullpel => kernel_or!(
+            runner,
+            compound_fullpel(blocks, forward, outputs[0].0, outputs[0].1),
+            generic::compound_fullpel(runner, blocks, forward, outputs[0].0, outputs[0].1)
+        ),
+        Path::Strips => kernel_or!(
+            runner,
+            compound_strips(
+                [blocks],
+                forward,
+                outputs.each_mut().map(|(o, s)| (&mut **o, *s))
+            ),
+            generic::compound_strips(runner, [blocks], forward, outputs)
+        ),
     }
 }
 
@@ -209,17 +284,34 @@ fn path(blocks: [&Block<'_, u8>; 2]) -> Path {
 /// windows, each into its `(output, stride)`: filtered pairs in one call of
 /// the pair kernel.
 #[inline]
-pub(super) fn compound_pair(
+pub(super) fn compound_pair<R: SubpelRunner>(
+    runner: R,
     pairs: [[&Block<'_, u8>; 2]; 2],
     forward: i32,
-    outputs: [(&mut [u8], usize); 2],
+    mut outputs: [(&mut [u8], usize); 2],
 ) {
     match path(pairs[0]) {
-        Path::Cell => kernel::compound_cell(pairs, forward, outputs),
-        Path::Strips => kernel::compound_strips(pairs, forward, outputs),
+        Path::Cell => kernel_or!(
+            runner,
+            compound_cell(
+                pairs,
+                forward,
+                outputs.each_mut().map(|(o, s)| (&mut **o, *s))
+            ),
+            generic::compound_cell(runner, pairs, forward, outputs)
+        ),
+        Path::Strips => kernel_or!(
+            runner,
+            compound_strips(
+                pairs,
+                forward,
+                outputs.each_mut().map(|(o, s)| (&mut **o, *s))
+            ),
+            generic::compound_strips(runner, pairs, forward, outputs)
+        ),
         Path::Staged | Path::Fullpel => {
             for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
-                compound(blocks, forward, output, stride);
+                compound(runner, blocks, forward, output, stride);
             }
         }
     }
@@ -227,21 +319,27 @@ pub(super) fn compound_pair(
 
 /// [`compound`] through the `i16` first predictor staged for the second.
 #[inline(never)]
-fn staged(blocks: [&Block<'_, u8>; 2], forward: i32, output: &mut [u8], stride: usize) {
+fn staged<R: SubpelRunner>(
+    runner: R,
+    blocks: [&Block<'_, u8>; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) {
     let w = blocks[0].w;
     super::with_compound_pred0_narrow(w * blocks[0].h, |pred0| {
         let sink = &mut Sink::PrepNarrow {
             output: pred0,
             stride: w,
         };
-        block::kernels(blocks[0], sink, None);
+        block::kernels(runner, blocks[0], sink, None);
         let sink = &mut Sink::AverageNarrow {
             pred0,
             forward,
             output,
             stride,
         };
-        block::kernels(blocks[1], sink, None);
+        block::kernels(runner, blocks[1], sink, None);
     });
 }
 
@@ -249,7 +347,8 @@ fn staged(blocks: [&Block<'_, u8>; 2], forward: i32, output: &mut [u8], stride: 
 /// `windows` within `bounds`, read in place or by clamped rows and columns
 /// of `views`, or returns `false` without writing when the cell kernel
 /// does not cover it.
-pub(super) fn compound_windows(
+pub(super) fn compound_windows<R: SubpelRunner>(
+    runner: R,
     views: [&ReferencePlaneView<'_, u8>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -257,78 +356,110 @@ pub(super) fn compound_windows(
     output: &mut [u8],
     stride: usize,
 ) -> bool {
-    kernel::compound_windows(views, windows, bounds, forward, output, stride)
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = runner.avx2_token() {
+        return avx2::compound_windows(t, views, windows, bounds, forward, output, stride);
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = runner.neon_token() {
+        return neon::compound_windows(t, views, windows, bounds, forward, output, stride);
+    }
+    generic::compound_windows(runner, views, windows, bounds, forward, output, stride)
 }
 
 /// Runs the cells of a program of `size`-square cells that the program
 /// kernel covers into `planes`, and returns their bits.
-pub(super) fn program(
+pub(super) fn program<R: SubpelRunner>(
+    runner: R,
     planes: &mut [Option<Plane<'_, '_, u8>>; 2],
     (filter, size): (usize, usize),
     cells: &[Cell],
     clip: (i32, u16),
 ) -> Written {
-    kernel::program(planes, (filter, size), cells, clip)
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = runner.avx2_token() {
+        return avx2::program(t, planes, (filter, size), cells, clip);
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(t) = runner.neon_token() {
+        return neon::program(t, planes, (filter, size), cells, clip);
+    }
+    generic::program(runner, planes, (filter, size), cells, clip)
 }
 
 /// The kernels of this module on targets without [`neon`], and those
 /// [`avx2`] declines to: the portable kernels on a stage, each compound
 /// pair through its staged first predictor.
-#[cfg(not(target_arch = "aarch64"))]
 #[cfg_attr(
-    target_arch = "x86_64",
-    expect(dead_code, reason = "the AVX2 kernels decline to part of these")
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    allow(
+        dead_code,
+        reason = "the AVX2 and NEON kernels decline to part of these"
+    )
 )]
 mod generic {
-    use super::super::ReferencePlaneView;
     use super::super::block::{self, Block, Sink, Window};
     use super::super::cell::{self, Cell, Plane, Written};
+    use super::super::{ReferencePlaneView, SubpelRunner};
 
-    pub(super) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) {
+    pub(super) fn predict<R: SubpelRunner>(runner: R, block: &Block<'_, u8>, sink: &mut Sink<'_>) {
         let len = block::stage_needed(block);
         block::with_stage(len, None, |stage| {
-            super::super::portable::predict(block, sink, stage);
+            super::super::portable::predict(runner, block, sink, stage);
         });
     }
 
-    pub(super) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
-        predict(block, &mut Sink::Put { output, stride });
+    pub(super) fn put<R: SubpelRunner>(
+        runner: R,
+        block: &Block<'_, u8>,
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        predict(runner, block, &mut Sink::Put { output, stride });
     }
 
-    pub(super) fn put_pair(blocks: [&Block<'_, u8>; 2], outputs: [(&mut [u8], usize); 2]) {
+    pub(super) fn put_pair<R: SubpelRunner>(
+        runner: R,
+        blocks: [&Block<'_, u8>; 2],
+        outputs: [(&mut [u8], usize); 2],
+    ) {
         for (block, (output, stride)) in blocks.into_iter().zip(outputs) {
-            put(block, output, stride);
+            put(runner, block, output, stride);
         }
     }
 
-    pub(super) fn compound_cell<const P: usize>(
+    pub(super) fn compound_cell<R: SubpelRunner, const P: usize>(
+        runner: R,
         pairs: [[&Block<'_, u8>; 2]; P],
         forward: i32,
         outputs: [(&mut [u8], usize); P],
     ) {
-        compound_strips(pairs, forward, outputs);
+        compound_strips(runner, pairs, forward, outputs);
     }
 
-    pub(super) fn compound_fullpel(
+    pub(super) fn compound_fullpel<R: SubpelRunner>(
+        runner: R,
         blocks: [&Block<'_, u8>; 2],
         forward: i32,
         output: &mut [u8],
         stride: usize,
     ) {
-        super::staged(blocks, forward, output, stride);
+        super::staged(runner, blocks, forward, output, stride);
     }
 
-    pub(super) fn compound_strips<const P: usize>(
+    pub(super) fn compound_strips<R: SubpelRunner, const P: usize>(
+        runner: R,
         pairs: [[&Block<'_, u8>; 2]; P],
         forward: i32,
         outputs: [(&mut [u8], usize); P],
     ) {
         for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
-            super::staged(blocks, forward, output, stride);
+            super::staged(runner, blocks, forward, output, stride);
         }
     }
 
-    pub(super) fn compound_windows(
+    pub(super) fn compound_windows<R: SubpelRunner>(
+        runner: R,
         views: [&ReferencePlaneView<'_, u8>; 2],
         windows: &[Window; 2],
         bounds: [[i32; 4]; 2],
@@ -337,15 +468,16 @@ mod generic {
         stride: usize,
     ) -> bool {
         let clip = (forward, u16::from(u8::MAX));
-        block::copied(views, windows, bounds, clip, output, stride)
+        block::copied(runner, views, windows, bounds, clip, output, stride)
     }
 
-    pub(super) fn program(
+    pub(super) fn program<R: SubpelRunner>(
+        runner: R,
         planes: &mut [Option<Plane<'_, '_, u8>>; 2],
         shape: (usize, usize),
         cells: &[Cell],
         clip: (i32, u16),
     ) -> Written {
-        cell::cell_by_cell(planes, shape, cells, clip, [[0; 4]; 2])
+        cell::cell_by_cell(runner, planes, shape, cells, clip, [[0; 4]; 2])
     }
 }

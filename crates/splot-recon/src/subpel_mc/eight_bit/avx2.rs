@@ -17,18 +17,11 @@ use super::super::ReferencePlaneView;
 use super::super::block::{Block, Sink, Taps, Window};
 use super::super::cell::{Cell, Plane, Written};
 use super::super::rows::{self, Average, Out, Prep, Put};
-use super::{generic, pairs};
+use super::pairs;
 use core::arch::x86_64::*;
 use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x8, i16x16, i32x4, i32x8, u8x16, u8x32, u16x16};
 
 mod cell;
-
-/// The AVX2 token, when the compiled baseline has AVX2.
-#[expect(clippy::inline_always, reason = "one check per kernel call")]
-#[inline(always)]
-fn token() -> Option<Avx2> {
-    fearless_simd::Level::baseline().as_avx2()
-}
 
 /// Whether the byte-lane kernels cover the shape of `block`, which
 /// [`super::fits`]: strips of 16 columns, or 8 or 4 columns in pairs of
@@ -38,94 +31,116 @@ fn fits<T>(block: &Block<'_, T>) -> bool {
 }
 
 /// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits.
-pub(super) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) {
-    match token() {
-        Some(t) if fits(block) => predict_on(t, block, sink),
-        _ => generic::predict(block, sink),
+pub(super) fn predict(t: Avx2, block: &Block<'_, u8>, sink: &mut Sink<'_>) -> bool {
+    if fits(block) {
+        predict_on(t, block, sink);
+        true
+    } else {
+        false
     }
 }
 
 /// Stores the `Clip1` single-reference prediction of `block`: a filtered
 /// 4x4 or 8x8 block in the cell kernels, else in the strip kernels.
-pub(super) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
+pub(super) fn put(t: Avx2, block: &Block<'_, u8>, output: &mut [u8], stride: usize) -> bool {
     let size = block.w;
     let filtered = block.horizontal.is_some() || block.vertical.is_some();
     let narrow = size == 4 && block.horizontal.is_some_and(|taps| taps.count > 2);
     let cell = block.h == size && (size == 4 || size == 8) && filtered && !narrow;
-    if cell
-        && let Some(t) = token()
-        && cell::put(t, block, size, output, stride)
-    {
-        return;
+    if cell && cell::put(t, block, size, output, stride) {
+        return true;
     }
-    match token() {
-        Some(t) if fits(block) => put_on(t, block, output, stride),
-        _ => generic::put(block, output, stride),
+    if fits(block) {
+        put_on(t, block, output, stride);
+        true
+    } else {
+        false
     }
 }
 
 /// [`put`] of two blocks of one window into `outputs`.
-pub(super) fn put_pair(blocks: [&Block<'_, u8>; 2], outputs: [(&mut [u8], usize); 2]) {
-    for (block, (output, stride)) in blocks.into_iter().zip(outputs) {
-        put(block, output, stride);
+pub(super) fn put_pair(
+    t: Avx2,
+    blocks: [&Block<'_, u8>; 2],
+    outputs: [(&mut [u8], usize); 2],
+) -> bool {
+    if !fits(blocks[0]) || !fits(blocks[1]) {
+        return false;
     }
+    for (block, (output, stride)) in blocks.into_iter().zip(outputs) {
+        let _ = put(t, block, output, stride);
+    }
+    true
 }
 
 /// The COMPOUND_AVERAGE of each of `P` 4x4 or 8x8 cell pairs into its
 /// output, in the cell kernels, else through [`compound_fullpel`].
 pub(super) fn compound_cell<const P: usize>(
+    t: Avx2,
     pairs: [[&Block<'_, u8>; 2]; P],
     forward: i32,
     outputs: [(&mut [u8], usize); P],
-) {
+) -> bool {
+    let mut handled = true;
     for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
         let size = blocks[0].w;
-        let taken =
-            token().is_some_and(|t| cell::compound(t, blocks, size, forward, &mut *output, stride));
-        if !taken {
-            compound_fullpel(blocks, forward, output, stride);
+        if !cell::compound(t, blocks, size, forward, &mut *output, stride)
+            && !compound_fullpel(t, blocks, forward, output, stride)
+        {
+            handled = false;
         }
     }
+    handled
 }
 
 /// The COMPOUND_AVERAGE of a pair in one call of the strip kernels, the
 /// `i16` first predictor of at most 64 samples on the stack, else in
 /// retained storage.
 pub(super) fn compound_fullpel(
+    t: Avx2,
     blocks: [&Block<'_, u8>; 2],
     forward: i32,
     output: &mut [u8],
     stride: usize,
-) {
-    let len = blocks[0].w * blocks[0].h;
-    match token() {
-        Some(t) if fits(blocks[0]) && fits(blocks[1]) && len <= 64 => {
-            compound_on(t, blocks, forward, &mut [0; 64], output, stride);
-        }
-        Some(t) if fits(blocks[0]) && fits(blocks[1]) => {
-            super::super::with_compound_pred0_narrow(len, |pred0| {
-                compound_on(t, blocks, forward, pred0, output, stride);
-            });
-        }
-        _ => super::staged(blocks, forward, output, stride),
+) -> bool {
+    if !fits(blocks[0]) || !fits(blocks[1]) {
+        return false;
     }
+    let len = blocks[0].w * blocks[0].h;
+    if len <= 64 {
+        compound_on(t, blocks, forward, &mut [0; 64], output, stride);
+    } else {
+        super::super::with_compound_pred0_narrow(len, |pred0| {
+            compound_on(t, blocks, forward, pred0, output, stride);
+        });
+    }
+    true
 }
 
 /// [`compound_fullpel`] of each of `P` compound pairs into its output.
 pub(super) fn compound_strips<const P: usize>(
+    t: Avx2,
     pairs: [[&Block<'_, u8>; 2]; P],
     forward: i32,
     outputs: [(&mut [u8], usize); P],
-) {
-    for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
-        compound_fullpel(blocks, forward, output, stride);
+) -> bool {
+    if !pairs
+        .iter()
+        .all(|blocks| fits(blocks[0]) && fits(blocks[1]))
+    {
+        return false;
     }
+    for (blocks, (output, stride)) in pairs.into_iter().zip(outputs) {
+        let _ = compound_fullpel(t, blocks, forward, output, stride);
+    }
+    true
 }
 
 /// Stores the COMPOUND_AVERAGE of the 4x4 or 8x8 cell of `windows`
 /// within `bounds`, read in place or by clamped rows and columns of
 /// `views`, or returns `false` without writing.
 pub(super) fn compound_windows(
+    t: Avx2,
     views: [&ReferencePlaneView<'_, u8>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -133,21 +148,19 @@ pub(super) fn compound_windows(
     output: &mut [u8],
     stride: usize,
 ) -> bool {
-    token()
-        .is_some_and(|t| cell::compound_windows(t, views, windows, bounds, forward, output, stride))
+    cell::compound_windows(t, views, windows, bounds, forward, output, stride)
 }
 
 /// Runs the cells of a program that the register cells cover into
 /// `planes`, and returns their bits.
 pub(super) fn program(
+    t: Avx2,
     planes: &mut [Option<Plane<'_, '_, u8>>; 2],
     shape: (usize, usize),
     cells: &[Cell],
     clip: (i32, u16),
 ) -> Written {
-    token().map_or([[0; 4]; 2], |t| {
-        cell::program(t, planes, shape, cells, clip)
-    })
+    cell::program(t, planes, shape, cells, clip)
 }
 
 /// `pshufb` patterns gathering source byte pairs `(2j + k, 2j + k + 1)`

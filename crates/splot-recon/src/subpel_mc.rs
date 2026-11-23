@@ -12,6 +12,7 @@
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
+use splot_core::simd::SimdBackend;
 
 /// Expands `$body` with `$row` bound to each listed index below `$rows`, a
 /// constant, so a kernel's rows or ring phases unroll.
@@ -46,16 +47,456 @@ mod search_window;
 mod sixteen_bit;
 mod tip_overlap;
 use block::Sink;
-pub use cell::{CompoundCells, subpel_compound_cells};
+pub use cell::{CompoundCells, subpel_compound_cells, subpel_compound_cells_with};
 #[cfg(test)]
 pub(crate) use copy::blend_compound_average_equal;
 pub use copy::{blend_compound_average_weighted, blend_compound_average_weighted_sample};
 pub use fullpel_u8::{
-    UnscaledPut, subpel_compound_block, subpel_predict_block_strided_into_u8, subpel_put_block,
+    UnscaledPut, subpel_compound_block, subpel_compound_block_with,
+    subpel_predict_block_strided_into_u8, subpel_predict_block_strided_into_u8_with,
+    subpel_put_block, subpel_put_block_with,
 };
-pub use refinemv_window::{REFINEMV_SEARCH_AREA, WindowSample, refinemv_search_windows};
-pub use search_window::{REFINEMV_NEIGHBORS, refinemv_area_sad_u8, subpel_predict_bilinear_u8};
-pub use tip_overlap::{BilinearOverlapCarry, subpel_predict_12x12_bilinear_overlap_into};
+pub use refinemv_window::{
+    REFINEMV_SEARCH_AREA, WindowSample, refinemv_search_windows, refinemv_search_windows_with,
+};
+pub use search_window::{
+    REFINEMV_NEIGHBORS, refinemv_area_sad_u8, refinemv_area_sad_u8_with,
+    subpel_predict_bilinear_u8, subpel_predict_bilinear_u8_with,
+};
+pub use tip_overlap::{
+    BilinearOverlapCarry, subpel_predict_12x12_bilinear_overlap_into,
+    subpel_predict_12x12_bilinear_overlap_into_with,
+};
+
+trait SubpelRunner: Copy {
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn neon_token(self) -> Option<fearless_simd::Neon>;
+
+    fn emulate_chunks<T: block::Sample, const PADDED: bool>(
+        self,
+        window: &block::Window,
+        view: &ReferencePlaneView<'_, T>,
+        clip: [i32; 4],
+        stride: usize,
+        storage: &mut [T],
+    ) -> Option<()>;
+
+    fn portable_predict<T: portable::Lanes>(
+        self,
+        block: &block::Block<'_, T>,
+        sink: &mut Sink<'_>,
+        stage: &mut [i16],
+    );
+
+    fn portable_copy_compound_u16(
+        self,
+        blocks: [&block::Block<'_, u16>; 2],
+        forward: i32,
+        max: u16,
+        output: &mut [u16],
+        stride: usize,
+    );
+
+    fn portable_compound_u16(
+        self,
+        blocks: [&block::Block<'_, u16>; 2],
+        forward: i32,
+        max: u16,
+        stage: &mut [i16],
+        output: &mut [u16],
+        stride: usize,
+    );
+
+    fn fullpel_u8(
+        self,
+        sources: [(&[u8], usize); 2],
+        origins: [usize; 2],
+        size: usize,
+        forward: i32,
+        output: &mut [u8],
+        stride: usize,
+    );
+
+    fn fullpel_u16(
+        self,
+        sources: [(&[u16], usize); 2],
+        origins: [usize; 2],
+        size: usize,
+        clip: (i32, u16),
+        output: &mut [u16],
+        stride: usize,
+    );
+
+    fn search_window_generic(
+        self,
+        samples: &[u8],
+        at: [usize; 2],
+        size: [usize; 2],
+        phases: [u8; 2],
+        output: &mut [u8],
+    );
+
+    fn refinemv_centre_sad(self, windows: [&[u16]; 2], geometry: [usize; 2]) -> Option<u32>;
+
+    fn refinemv_search_words(
+        self,
+        windows: [&[u16]; 2],
+        geometry: [usize; 2],
+        allow_center: bool,
+        shift: u32,
+    ) -> (i32, i32);
+
+    fn refinemv_search_bytes_generic(
+        self,
+        windows: [&[u8]; 2],
+        geometry: [usize; 2],
+        allow_center: bool,
+    ) -> (i32, i32);
+
+    fn refinemv_predict_window_generic<T: ReconSample, P: WindowSample>(
+        self,
+        samples: &[T],
+        plan: &refinemv_window::Plan,
+        size: [usize; 2],
+        window: &mut [P],
+    );
+}
+
+#[derive(Clone, Copy)]
+struct BaselineSubpel;
+
+#[derive(Clone, Copy)]
+struct TypedSubpel<B>(B);
+
+impl SubpelRunner for BaselineSubpel {
+    #[cfg(target_arch = "x86_64")]
+    #[expect(clippy::inline_always, reason = "one check per kernel call")]
+    #[inline(always)]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        fearless_simd::Level::baseline().as_avx2()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[expect(clippy::inline_always, reason = "one check per kernel call")]
+    #[inline(always)]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        fearless_simd::Level::baseline().as_neon()
+    }
+
+    #[inline]
+    fn emulate_chunks<T: block::Sample, const PADDED: bool>(
+        self,
+        window: &block::Window,
+        view: &ReferencePlaneView<'_, T>,
+        clip: [i32; 4],
+        stride: usize,
+        storage: &mut [T],
+    ) -> Option<()> {
+        baseline_simd!(simd => window.emulate_chunks::<_, _, PADDED>(simd, view, clip, stride, storage))
+    }
+
+    #[inline]
+    fn portable_predict<T: portable::Lanes>(
+        self,
+        block: &block::Block<'_, T>,
+        sink: &mut Sink<'_>,
+        stage: &mut [i16],
+    ) {
+        baseline_simd!(simd => portable::run(simd, block, sink, stage));
+    }
+
+    #[inline]
+    fn portable_copy_compound_u16(
+        self,
+        blocks: [&block::Block<'_, u16>; 2],
+        forward: i32,
+        max: u16,
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        baseline_simd!(simd => portable::copy_compound_u16(simd, blocks, forward, max, output, stride));
+    }
+
+    #[inline]
+    fn portable_compound_u16(
+        self,
+        blocks: [&block::Block<'_, u16>; 2],
+        forward: i32,
+        max: u16,
+        stage: &mut [i16],
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        baseline_simd!(simd => portable::compound_u16_simd(simd, blocks, forward, max, stage, output, stride));
+    }
+
+    #[inline]
+    fn fullpel_u8(
+        self,
+        sources: [(&[u8], usize); 2],
+        origins: [usize; 2],
+        size: usize,
+        forward: i32,
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        baseline_simd!(simd => cell::fullpel_u8_simd(simd, sources, origins, size, forward, output, stride));
+    }
+
+    #[inline]
+    fn fullpel_u16(
+        self,
+        sources: [(&[u16], usize); 2],
+        origins: [usize; 2],
+        size: usize,
+        clip: (i32, u16),
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        baseline_simd!(simd => cell::fullpel_u16_simd(simd, sources, origins, size, clip, output, stride));
+    }
+
+    #[inline]
+    fn search_window_generic(
+        self,
+        samples: &[u8],
+        at: [usize; 2],
+        size: [usize; 2],
+        phases: [u8; 2],
+        output: &mut [u8],
+    ) {
+        baseline_simd!(simd => search_window::generic::window(simd, samples, at, size, phases, output));
+    }
+
+    #[inline]
+    fn refinemv_centre_sad(self, windows: [&[u16]; 2], geometry: [usize; 2]) -> Option<u32> {
+        baseline_simd!(simd => refinemv_window::centre_sad_generic(simd, windows, geometry))
+    }
+
+    #[inline]
+    fn refinemv_search_words(
+        self,
+        windows: [&[u16]; 2],
+        geometry: [usize; 2],
+        allow_center: bool,
+        shift: u32,
+    ) -> (i32, i32) {
+        baseline_simd!(simd => refinemv_window::search_words_generic(simd, windows, geometry, allow_center, shift))
+    }
+
+    #[inline]
+    fn refinemv_search_bytes_generic(
+        self,
+        windows: [&[u8]; 2],
+        geometry: [usize; 2],
+        allow_center: bool,
+    ) -> (i32, i32) {
+        baseline_simd!(simd => search_window::generic::search(simd, windows, geometry, allow_center))
+    }
+
+    #[inline]
+    fn refinemv_predict_window_generic<T: ReconSample, P: WindowSample>(
+        self,
+        samples: &[T],
+        plan: &refinemv_window::Plan,
+        size: [usize; 2],
+        window: &mut [P],
+    ) {
+        baseline_simd!(simd => refinemv_window::generic::window(simd, samples, plan, size, window));
+    }
+}
+
+impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
+    #[cfg(target_arch = "x86_64")]
+    #[expect(clippy::inline_always, reason = "one check per kernel call")]
+    #[inline(always)]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        self.0.avx2_token()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[expect(clippy::inline_always, reason = "one check per kernel call")]
+    #[inline(always)]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        self.0.neon_token()
+    }
+
+    #[inline]
+    fn emulate_chunks<T: block::Sample, const PADDED: bool>(
+        self,
+        window: &block::Window,
+        view: &ReferencePlaneView<'_, T>,
+        clip: [i32; 4],
+        stride: usize,
+        storage: &mut [T],
+    ) -> Option<()> {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            window.emulate_chunks::<_, _, PADDED>(narrow.token(), view, clip, stride, storage)
+        })
+    }
+
+    #[inline]
+    fn portable_predict<T: portable::Lanes>(
+        self,
+        block: &block::Block<'_, T>,
+        sink: &mut Sink<'_>,
+        stage: &mut [i16],
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| portable::run(narrow.token(), block, sink, stage));
+    }
+
+    #[inline]
+    fn portable_copy_compound_u16(
+        self,
+        blocks: [&block::Block<'_, u16>; 2],
+        forward: i32,
+        max: u16,
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            portable::copy_compound_u16(narrow.token(), blocks, forward, max, output, stride);
+        });
+    }
+
+    #[inline]
+    fn portable_compound_u16(
+        self,
+        blocks: [&block::Block<'_, u16>; 2],
+        forward: i32,
+        max: u16,
+        stage: &mut [i16],
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            portable::compound_u16_simd(
+                narrow.token(),
+                blocks,
+                forward,
+                max,
+                stage,
+                output,
+                stride,
+            );
+        });
+    }
+
+    #[inline]
+    fn fullpel_u8(
+        self,
+        sources: [(&[u8], usize); 2],
+        origins: [usize; 2],
+        size: usize,
+        forward: i32,
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            cell::fullpel_u8_simd(
+                narrow.token(),
+                sources,
+                origins,
+                size,
+                forward,
+                output,
+                stride,
+            );
+        });
+    }
+
+    #[inline]
+    fn fullpel_u16(
+        self,
+        sources: [(&[u16], usize); 2],
+        origins: [usize; 2],
+        size: usize,
+        clip: (i32, u16),
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            cell::fullpel_u16_simd(narrow.token(), sources, origins, size, clip, output, stride);
+        });
+    }
+
+    #[inline]
+    fn search_window_generic(
+        self,
+        samples: &[u8],
+        at: [usize; 2],
+        size: [usize; 2],
+        phases: [u8; 2],
+        output: &mut [u8],
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            search_window::generic::window(narrow.token(), samples, at, size, phases, output);
+        });
+    }
+
+    #[inline]
+    fn refinemv_centre_sad(self, windows: [&[u16]; 2], geometry: [usize; 2]) -> Option<u32> {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| refinemv_window::centre_sad_generic(narrow.token(), windows, geometry))
+    }
+
+    #[inline]
+    fn refinemv_search_words(
+        self,
+        windows: [&[u16]; 2],
+        geometry: [usize; 2],
+        allow_center: bool,
+        shift: u32,
+    ) -> (i32, i32) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            refinemv_window::search_words_generic(
+                narrow.token(),
+                windows,
+                geometry,
+                allow_center,
+                shift,
+            )
+        })
+    }
+
+    #[inline]
+    fn refinemv_search_bytes_generic(
+        self,
+        windows: [&[u8]; 2],
+        geometry: [usize; 2],
+        allow_center: bool,
+    ) -> (i32, i32) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            search_window::generic::search(narrow.token(), windows, geometry, allow_center)
+        })
+    }
+
+    #[inline]
+    fn refinemv_predict_window_generic<T: ReconSample, P: WindowSample>(
+        self,
+        samples: &[T],
+        plan: &refinemv_window::Plan,
+        size: [usize; 2],
+        window: &mut [P],
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            refinemv_window::generic::window(narrow.token(), samples, plan, size, window);
+        });
+    }
+}
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
 /// reference coordinates (`startX` / `startY` / `stepX` / `stepY` units).
 const SCALE_SUBPEL_BITS: u32 = 10;
@@ -590,6 +1031,19 @@ pub fn subpel_predict_block_into<T: ReconSample>(
     subpel_predict_block_strided_into(reference, params, output, params.w)
 }
 
+/// Typed [`subpel_predict_block_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_block_into`].
+pub fn subpel_predict_block_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> Result<()> {
+    subpel_predict_block_strided_into_with(backend, reference, params, output, params.w)
+}
+
 /// Writes one single-reference prediction into row-strided `u16` storage.
 ///
 /// `output` starts at the prediction's top-left sample. The function writes
@@ -606,6 +1060,42 @@ pub fn subpel_predict_block_strided_into<T: ReconSample>(
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<()> {
+    subpel_predict_block_strided_into_with_runner(
+        BaselineSubpel,
+        reference,
+        params,
+        output,
+        output_stride,
+    )
+}
+
+/// Typed [`subpel_predict_block_strided_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_block_strided_into`].
+pub fn subpel_predict_block_strided_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    output_stride: usize,
+) -> Result<()> {
+    subpel_predict_block_strided_into_with_runner(
+        TypedSubpel(backend),
+        reference,
+        params,
+        output,
+        output_stride,
+    )
+}
+
+fn subpel_predict_block_strided_into_with_runner<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    output_stride: usize,
+) -> Result<()> {
     validate_subpel_params(params)?;
     validate_output_len(params, output.len(), output_stride)?;
     let sink = Sink::PutWide {
@@ -613,7 +1103,7 @@ pub fn subpel_predict_block_strided_into<T: ReconSample>(
         stride: output_stride,
         max: params.bit_depth.max_sample(),
     };
-    block::predict(reference, params, sink, None);
+    block::predict(runner, reference, params, sink, None);
     Ok(())
 }
 
@@ -703,6 +1193,54 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample, P: Compou
     output: &mut [P],
     output_stride: usize,
 ) -> Result<()> {
+    subpel_predict_block_compound_intermediate_into_with_runner(
+        BaselineSubpel,
+        reference,
+        params,
+        scratch,
+        output,
+        output_stride,
+    )
+}
+
+/// Typed [`subpel_predict_block_compound_intermediate_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_block_compound_intermediate_into`].
+pub fn subpel_predict_block_compound_intermediate_into_with<
+    B: SimdBackend,
+    T: ReconSample,
+    P: CompoundPredictor,
+>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    scratch: Option<&mut [i16]>,
+    output: &mut [P],
+    output_stride: usize,
+) -> Result<()> {
+    subpel_predict_block_compound_intermediate_into_with_runner(
+        TypedSubpel(backend),
+        reference,
+        params,
+        scratch,
+        output,
+        output_stride,
+    )
+}
+
+fn subpel_predict_block_compound_intermediate_into_with_runner<
+    R: SubpelRunner,
+    T: ReconSample,
+    P: CompoundPredictor,
+>(
+    runner: R,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    scratch: Option<&mut [i16]>,
+    output: &mut [P],
+    output_stride: usize,
+) -> Result<()> {
     validate_subpel_params(params)?;
     validate_output_len(params, output.len(), output_stride)?;
     let sink = match P::slice_mut(output) {
@@ -718,7 +1256,7 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample, P: Compou
             }
         }
     };
-    block::predict(reference, params, sink, scratch);
+    block::predict(runner, reference, params, sink, scratch);
     Ok(())
 }
 
@@ -844,6 +1382,59 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<()> {
+    subpel_predict_block_compound_average_strided_into_with_runner(
+        BaselineSubpel,
+        reference,
+        params,
+        pred0,
+        cwp_weight,
+        scratch,
+        output,
+        output_stride,
+    )
+}
+
+/// Typed [`subpel_predict_block_compound_average_strided_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_block_compound_average_strided_into`].
+#[expect(clippy::too_many_arguments)]
+pub fn subpel_predict_block_compound_average_strided_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    pred0: &[i32],
+    cwp_weight: i16,
+    scratch: Option<&mut [i16]>,
+    output: &mut [u16],
+    output_stride: usize,
+) -> Result<()> {
+    subpel_predict_block_compound_average_strided_into_with_runner(
+        TypedSubpel(backend),
+        reference,
+        params,
+        pred0,
+        cwp_weight,
+        scratch,
+        output,
+        output_stride,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn subpel_predict_block_compound_average_strided_into_with_runner<
+    R: SubpelRunner,
+    T: ReconSample,
+>(
+    runner: R,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    pred0: &[i32],
+    cwp_weight: i16,
+    scratch: Option<&mut [i16]>,
+    output: &mut [u16],
+    output_stride: usize,
+) -> Result<()> {
     validate_compound_average(params, pred0, output.len(), output_stride)?;
     let sink = Sink::AverageWide {
         pred0,
@@ -852,7 +1443,7 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
         stride: output_stride,
         max: params.bit_depth.max_sample(),
     };
-    block::predict(reference, params, sink, scratch);
+    block::predict(runner, reference, params, sink, scratch);
     Ok(())
 }
 
@@ -864,6 +1455,64 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<
     T: ReconSample,
     P: CompoundPredictor,
 >(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    pred0: &[P],
+    cwp_weight: i16,
+    scratch: Option<&mut [i16]>,
+    output: &mut [u8],
+    output_stride: usize,
+) -> Result<()> {
+    subpel_predict_block_compound_average_strided_into_u8_with_runner(
+        BaselineSubpel,
+        reference,
+        params,
+        pred0,
+        cwp_weight,
+        scratch,
+        output,
+        output_stride,
+    )
+}
+
+/// Typed [`subpel_predict_block_compound_average_strided_into_u8`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_block_compound_average_strided_into_u8`].
+#[expect(clippy::too_many_arguments)]
+pub fn subpel_predict_block_compound_average_strided_into_u8_with<
+    B: SimdBackend,
+    T: ReconSample,
+    P: CompoundPredictor,
+>(
+    backend: B,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    pred0: &[P],
+    cwp_weight: i16,
+    scratch: Option<&mut [i16]>,
+    output: &mut [u8],
+    output_stride: usize,
+) -> Result<()> {
+    subpel_predict_block_compound_average_strided_into_u8_with_runner(
+        TypedSubpel(backend),
+        reference,
+        params,
+        pred0,
+        cwp_weight,
+        scratch,
+        output,
+        output_stride,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn subpel_predict_block_compound_average_strided_into_u8_with_runner<
+    R: SubpelRunner,
+    T: ReconSample,
+    P: CompoundPredictor,
+>(
+    runner: R,
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     pred0: &[P],
@@ -892,7 +1541,7 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<
             }
         }
     };
-    block::predict(reference, params, sink, scratch);
+    block::predict(runner, reference, params, sink, scratch);
     Ok(())
 }
 
@@ -945,10 +1594,69 @@ pub fn subpel_predict_block_compound_average_unscaled_strided_into<
     output: &mut [O],
     output_stride: usize,
 ) -> Result<bool> {
+    subpel_predict_block_compound_average_unscaled_strided_into_with_runner(
+        BaselineSubpel,
+        reference0,
+        params0,
+        reference1,
+        params1,
+        cwp_weight,
+        output,
+        output_stride,
+    )
+}
+
+/// Typed [`subpel_predict_block_compound_average_unscaled_strided_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_block_compound_average_unscaled_strided_into`].
+#[expect(clippy::too_many_arguments)]
+pub fn subpel_predict_block_compound_average_unscaled_strided_into_with<
+    B: SimdBackend,
+    T: ReconSample,
+    O: ReconSample,
+>(
+    backend: B,
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+) -> Result<bool> {
+    subpel_predict_block_compound_average_unscaled_strided_into_with_runner(
+        TypedSubpel(backend),
+        reference0,
+        params0,
+        reference1,
+        params1,
+        cwp_weight,
+        output,
+        output_stride,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn subpel_predict_block_compound_average_unscaled_strided_into_with_runner<
+    R: SubpelRunner,
+    T: ReconSample,
+    O: ReconSample,
+>(
+    runner: R,
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+) -> Result<bool> {
     crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
     validate_subpel_params(params0)?;
     validate_subpel_params(params1)?;
-    subpel_predict_block_compound_average_fast_validated_strided_into(
+    subpel_predict_block_compound_average_fast_validated_strided_into_with_runner(
+        runner,
         reference0,
         params0,
         reference1,
@@ -985,12 +1693,74 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     output: &mut [O],
     output_stride: usize,
 ) -> Result<bool> {
+    subpel_predict_block_compound_average_fast_validated_strided_into_with_runner(
+        BaselineSubpel,
+        reference0,
+        params0,
+        reference1,
+        params1,
+        cwp_weight,
+        output,
+        output_stride,
+    )
+}
+
+/// Typed [`subpel_predict_block_compound_average_fast_validated_strided_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_block_compound_average_fast_validated_strided_into`].
+#[doc(hidden)]
+#[inline]
+#[expect(clippy::too_many_arguments)]
+pub fn subpel_predict_block_compound_average_fast_validated_strided_into_with<
+    B: SimdBackend,
+    T: ReconSample,
+    O: ReconSample,
+>(
+    backend: B,
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+) -> Result<bool> {
+    subpel_predict_block_compound_average_fast_validated_strided_into_with_runner(
+        TypedSubpel(backend),
+        reference0,
+        params0,
+        reference1,
+        params1,
+        cwp_weight,
+        output,
+        output_stride,
+    )
+}
+
+#[inline]
+#[expect(clippy::too_many_arguments)]
+fn subpel_predict_block_compound_average_fast_validated_strided_into_with_runner<
+    R: SubpelRunner,
+    T: ReconSample,
+    O: ReconSample,
+>(
+    runner: R,
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+) -> Result<bool> {
     crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
     if !fast_admitted(params0, params1) {
         return Ok(false);
     }
     validate_compound_output(params0, output, output_stride)?;
     Ok(compound_average(
+        runner,
         [reference0, reference1],
         [params0, params1],
         cwp_weight,
@@ -1004,7 +1774,8 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
 /// one depth or `O` is neither 8- nor 16-bit storage.
 #[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
-fn compound_average<T: ReconSample, O: ReconSample>(
+fn compound_average<R: SubpelRunner, T: ReconSample, O: ReconSample>(
+    runner: R,
     references: [&ReferencePlaneView<'_, T>; 2],
     params: [&SubpelPredictParams; 2],
     cwp_weight: i16,
@@ -1014,13 +1785,22 @@ fn compound_average<T: ReconSample, O: ReconSample>(
     let windows = params.map(|p| block::Window::new(p.interp, p.w, p.h, [p.start_x, p.start_y]));
     let bounds = params.map(SubpelPredictParams::bounds);
     let clip = (i32::from(cwp_weight), params[0].bit_depth.max_sample());
-    compound_windows(references, windows, bounds, clip, output, output_stride)
+    compound_windows(
+        runner,
+        references,
+        windows,
+        bounds,
+        clip,
+        output,
+        output_stride,
+    )
 }
 
 /// [`compound_average`] of two windows of one shape within `bounds`.
 #[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
-fn compound_windows<T: ReconSample, O: ReconSample>(
+fn compound_windows<R: SubpelRunner, T: ReconSample, O: ReconSample>(
+    runner: R,
     references: [&ReferencePlaneView<'_, T>; 2],
     windows: [block::Window; 2],
     bounds: [[i32; 4]; 2],
@@ -1030,6 +1810,7 @@ fn compound_windows<T: ReconSample, O: ReconSample>(
 ) -> bool {
     if let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) {
         return block::compound(
+            runner,
             [&first, &second],
             windows,
             bounds,
@@ -1040,6 +1821,7 @@ fn compound_windows<T: ReconSample, O: ReconSample>(
     }
     if let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u16) {
         return block::compound(
+            runner,
             [&first, &second],
             windows,
             bounds,
@@ -1115,7 +1897,16 @@ pub(crate) fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
         O::u8_slice_mut(output),
     ) {
         let references = [&first, &second];
-        return cell::compound_at(references, interp, size, placements, clip, output, stride);
+        return cell::compound_at(
+            BaselineSubpel,
+            references,
+            interp,
+            size,
+            placements,
+            clip,
+            output,
+            stride,
+        );
     }
     let ([Some(first), Some(second)], Some(output)) = (
         references.map(ReferencePlaneView::as_u16),
@@ -1124,6 +1915,7 @@ pub(crate) fn subpel_compound_cell<T: ReconSample, O: ReconSample>(
         return false;
     };
     cell::compound_at(
+        BaselineSubpel,
         [&first, &second],
         interp,
         size,

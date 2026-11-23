@@ -7,28 +7,23 @@
 //! program kernel that runs a grid of cells from their placements.
 
 use super::super::super::block::{Block, Geometry, Taps, Window};
-use super::super::super::cell::{Cell as ProgramCell, Plane, Written, fullpel_u16};
+use super::super::super::cell::{Cell as ProgramCell, Plane, Written, fullpel_u16_simd};
 use super::super::super::rows;
 use super::super::super::{CellPlacement, ReferencePlaneView};
-use super::{
-    Word, average, generic, interleave, load8, madds, pair, pairs_of, round, sums_of, token,
-    weights,
-};
+use super::{Word, average, interleave, load8, madds, pair, pairs_of, round, sums_of, weights};
 use core::arch::x86_64::*;
 use fearless_simd::Avx2;
 
 /// The COMPOUND_AVERAGE, clipped to `clip.1`, of a 4x4 or 8x8 cell pair
 /// in registers.
 pub(in crate::subpel_mc::sixteen_bit) fn compound_cell(
+    t: Avx2,
     blocks: [&Block<'_, u16>; 2],
     clip: (i32, u16),
     output: &mut [u16],
     stride: usize,
 ) {
-    match token() {
-        Some(t) => cell_pair(t, blocks, clip, output, stride),
-        None => generic::compound_cell(blocks, clip, output, stride),
-    }
+    cell_pair(t, blocks, clip, output, stride);
 }
 
 /// Where a cell reads window row `r`: `base + r * stride`, or when clamped
@@ -131,6 +126,7 @@ fearless_simd::kernel!(
 /// and columns of `views`; `false` without writing for a cell no kernel
 /// takes.
 pub(in crate::subpel_mc::sixteen_bit) fn compound_windows(
+    t: Avx2,
     views: [&ReferencePlaneView<'_, u16>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -138,10 +134,7 @@ pub(in crate::subpel_mc::sixteen_bit) fn compound_windows(
     output: &mut [u16],
     stride: usize,
 ) -> bool {
-    match token() {
-        Some(t) => windows_cell(t, views, windows, bounds, clip, output, stride),
-        None => generic::compound_windows(views, windows, bounds, clip, output, stride),
-    }
+    windows_cell(t, views, windows, bounds, clip, output, stride)
 }
 
 fearless_simd::kernel!(
@@ -179,15 +172,13 @@ fearless_simd::kernel!(
 /// read in place or by clamped rows and columns into every plane, and
 /// returns their bits.
 pub(in crate::subpel_mc::sixteen_bit) fn program(
+    t: Avx2,
     planes: &mut [Option<Plane<'_, '_, u16>>; 2],
     shape: (usize, usize),
     cells: &[ProgramCell],
     clip: (i32, u16),
 ) -> Written {
-    match token() {
-        Some(t) => run_cells(t, planes, shape, cells, clip),
-        None => generic::program(planes, shape, cells, clip),
-    }
+    run_cells(t, planes, shape, cells, clip)
 }
 
 fearless_simd::kernel!(
@@ -276,12 +267,11 @@ fn store_cell<const W: usize>(
         return false;
     }
     let still = |placed: &Placed| !placed.1 && placed.2.is_none() && placed.3.is_none();
-    if still(a) && still(b) {
+    if still(a) && still(b) && (0..=16).contains(&forward) {
         let sources = [(sources[0], a.0.stride), (sources[1], b.0.stride)];
         let origins = [a.0.base, b.0.base];
-        if fullpel_u16(sources, origins, W, (forward, max), output, stride) {
-            return true;
-        }
+        fullpel_u16_simd(t, sources, origins, W, (forward, max), output, stride);
+        return true;
     }
     let (Some(first), Some(second)) = (
         cell_of::<W>(t, sources[0], a),
