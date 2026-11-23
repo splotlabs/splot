@@ -175,25 +175,7 @@ fn filter_u8_avx2(token: fearless_simd::Avx2, window: &[u8], taps: [i8; 4], out:
     );
 }
 
-#[inline]
-fn filter_u16_simd<S: Simd>(
-    simd: S,
-    window: &[u16],
-    filter: LineFilter,
-    taps: [i8; 4],
-    max: u16,
-    out: &mut [u16],
-) {
-    if filter == LineFilter::Bilinear {
-        let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
-        bilinear_lanes_u16(simd, window, weights, out);
-        return;
-    }
-    line_lanes_u16(simd, window, taps, max, out);
-}
-
 impl LineRunner for BaselineLines {
-    #[inline]
     fn select_left<P: LineSample>(
         self,
         left: &[P; 16],
@@ -219,7 +201,6 @@ impl LineRunner for BaselineLines {
         baseline_simd!(simd => line_lanes(simd, window, taps, out));
     }
 
-    #[inline]
     fn transpose_u8(
         self,
         width: usize,
@@ -255,10 +236,14 @@ impl LineRunner for BaselineLines {
         max: u16,
         out: &mut [u16],
     ) {
-        baseline_simd!(simd => filter_u16_simd(simd, window, filter, taps, max, out));
+        if filter == LineFilter::Bilinear {
+            let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
+            baseline_simd!(simd => bilinear_lanes_u16(simd, window, weights, out));
+            return;
+        }
+        baseline_simd!(simd => line_lanes_u16(simd, window, taps, max, out));
     }
 
-    #[inline]
     fn transpose_u16(
         self,
         width: usize,
@@ -272,7 +257,6 @@ impl LineRunner for BaselineLines {
 }
 
 impl<B: SimdBackend> LineRunner for TypedLines<B> {
-    #[inline]
     fn select_left<P: LineSample>(
         self,
         left: &[P; 16],
@@ -301,7 +285,6 @@ impl<B: SimdBackend> LineRunner for TypedLines<B> {
         narrow.vectorize(|| line_lanes(narrow.token(), window, taps, out));
     }
 
-    #[inline]
     fn transpose_u8(
         self,
         width: usize,
@@ -341,10 +324,14 @@ impl<B: SimdBackend> LineRunner for TypedLines<B> {
         out: &mut [u16],
     ) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| filter_u16_simd(narrow.token(), window, filter, taps, max, out));
+        if filter == LineFilter::Bilinear {
+            let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
+            narrow.vectorize(|| bilinear_lanes_u16(narrow.token(), window, weights, out));
+            return;
+        }
+        narrow.vectorize(|| line_lanes_u16(narrow.token(), window, taps, max, out));
     }
 
-    #[inline]
     fn transpose_u16(
         self,
         width: usize,
@@ -431,7 +418,6 @@ impl LineSample for u8 {
         store_chunks::<u8, 16>(out, |at| window_chunk(window, at));
     }
 
-    #[inline]
     fn transpose<R: LineRunner>(
         runner: R,
         width: usize,
@@ -477,7 +463,6 @@ impl LineSample for u16 {
         store_chunks::<u16, 8>(out, |at| window_chunk(window, at));
     }
 
-    #[inline]
     fn transpose<R: LineRunner>(
         runner: R,
         width: usize,
