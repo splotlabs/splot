@@ -368,6 +368,12 @@ pub enum ResolvedBackend {
     Fallback(FallbackBackend),
 }
 
+/// Typed continuation entered once from a validated [`ResolvedBackend`].
+pub trait SimdScope<R> {
+    /// Executes with concrete compile-time backend `B` selected at startup.
+    fn run<B: SimdBackend>(self, backend: B) -> R;
+}
+
 impl ResolvedBackend {
     /// Returns the coarse backend tag for observation outside hot loops.
     #[must_use]
@@ -388,6 +394,21 @@ impl ResolvedBackend {
     #[must_use]
     pub const fn name(self) -> &'static str {
         self.kind().as_str()
+    }
+
+    /// Enters `scope` with the concrete [`SimdBackend`] represented by `self`.
+    #[inline]
+    pub fn enter<R>(self, scope: impl SimdScope<R>) -> R {
+        match self {
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(backend) => scope.run(backend),
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx512(backend) => scope.run(backend),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(backend) => scope.run(backend),
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            Self::Fallback(backend) => scope.run(backend),
+        }
     }
 }
 
@@ -648,5 +669,19 @@ mod tests {
             let _ = caps;
             assert_eq!(auto.kind(), SelectedBackend::Fallback);
         }
+    }
+
+    #[test]
+    fn resolved_backend_enter_dispatches_concrete_backend_kind() {
+        struct KindProbe;
+
+        impl SimdScope<SelectedBackend> for KindProbe {
+            fn run<B: SimdBackend>(self, _backend: B) -> SelectedBackend {
+                B::KIND
+            }
+        }
+
+        let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
+        assert_eq!(resolved.enter(KindProbe), resolved.kind());
     }
 }

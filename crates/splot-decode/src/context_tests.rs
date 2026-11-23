@@ -100,3 +100,65 @@ fn context_validates_simd_policy_at_startup() {
         }
     }
 }
+
+#[test]
+fn with_typed_backend_matches_compatibility_routes_across_repeated_streams() {
+    use crate::{DecodeScope, TypedDecodeContext};
+    use splot_core::simd::SimdBackend;
+
+    const STREAMS: [&[u8]; 3] = [
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf"),
+        include_bytes!(
+            "../../../tests/conformance/vectors/valid/syn-3frame-deblock-subpu-chroma-64x32-10bit-q90.ivf"
+        ),
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf"),
+    ];
+
+    struct BatchCheck<'a>(&'a DecodeContext, &'a [&'a [u8]]);
+
+    impl DecodeScope<()> for BatchCheck<'_> {
+        fn run<B: SimdBackend>(self, typed: &TypedDecodeContext<'_, B>) {
+            assert_eq!(typed.selected_backend(), self.0.selected_backend());
+            assert_eq!(B::KIND, typed.selected_backend());
+            assert_eq!(typed.threads(), self.0.threads());
+            assert_eq!(typed.frame_delay(), self.0.frame_delay());
+            for &bytes in self.1 {
+                let mut typed_raw = Vec::new();
+                let mut compat_raw = Vec::new();
+                typed
+                    .decode_raw_bytes(bytes, DecodeOptions::default(), &mut typed_raw)
+                    .unwrap();
+                self.0
+                    .decode_raw_bytes(bytes, DecodeOptions::default(), &mut compat_raw)
+                    .unwrap();
+                assert_eq!(typed_raw, compat_raw);
+
+                let mut typed_y4m = Vec::new();
+                let mut compat_y4m = Vec::new();
+                typed
+                    .decode_y4m_bytes(bytes, DecodeOptions::default(), &mut typed_y4m)
+                    .unwrap();
+                self.0
+                    .decode_y4m_bytes(bytes, DecodeOptions::default(), &mut compat_y4m)
+                    .unwrap();
+                assert_eq!(typed_y4m, compat_y4m);
+
+                assert_eq!(
+                    typed
+                        .decode_hash_report_bytes(bytes, DecodeOptions::default())
+                        .unwrap(),
+                    self.0
+                        .decode_hash_report_bytes(bytes, DecodeOptions::default())
+                        .unwrap()
+                );
+
+                typed
+                    .decode_discard_reader(bytes, DecodeOptions::default())
+                    .unwrap();
+            }
+        }
+    }
+
+    let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(2usize))).unwrap();
+    ctx.with_typed_backend(BatchCheck(&ctx, &STREAMS));
+}
