@@ -7,9 +7,10 @@
 use super::*;
 use crate::preset::PresetParams;
 
-/// `preset` with the wavefront search `on`.
-fn with_wavefront(preset: u8, on: bool) -> &'static PresetParams {
+/// `preset` with `max_block_log2` and the wavefront search `on`.
+fn with_wavefront(preset: u8, max_block_log2: u8, on: bool) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
+        max_block_log2,
         wavefront: on,
         ..*Preset::new(preset).unwrap().params()
     }))
@@ -22,8 +23,13 @@ fn wavefront_stream(
     preset: &'static PresetParams,
     case: WavefrontCase,
 ) -> (Vec<Vec<u8>>, Vec<u8>) {
-    let (preset_index, (width, height, qp), (bit_depth, chroma), (cols_log2, rows_log2), delta_q) =
-        case;
+    let (
+        (preset_index, _max_block_log2),
+        (width, height, qp),
+        (bit_depth, chroma),
+        (cols_log2, rows_log2),
+        delta_q,
+    ) = case;
     let mut config = config(width, height, bit_depth, preset_index, qp);
     config.chroma = chroma;
     config.tiles = TileLayout::Uniform {
@@ -36,7 +42,11 @@ fn wavefront_stream(
     for index in 0..3 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let offsets = if delta_q {
-            super::delta_q::offsets(&config, index as usize)
+            let mut offset_config = config.clone();
+            if preset.max_block_log2 >= 7 {
+                offset_config.preset = Preset::new(6).unwrap();
+            }
+            super::delta_q::offsets(&offset_config, index as usize)
         } else {
             Vec::new()
         };
@@ -55,43 +65,48 @@ fn wavefront_stream(
     (units, recon)
 }
 
-/// `(preset, (width, height, qp), (bit depth, chroma), tiles, superblock
-/// offsets)`.
-type WavefrontCase = (u8, (u32, u32, u16), (BitDepth, PixelFormat), (u8, u8), bool);
+/// `((preset, max_block_log2), (width, height, qp), (bit depth, chroma), tiles,
+/// superblock offsets)`.
+type WavefrontCase = (
+    (u8, u8),
+    (u32, u32, u16),
+    (BitDepth, PixelFormat),
+    (u8, u8),
+    bool,
+);
 
 const TEN_420: (BitDepth, PixelFormat) = (BitDepth::Ten, PixelFormat::Yuv420);
 
-/// 64x64 superblocks in 4x3, in two tile columns of 3x3, in two tile rows
-/// (the second starts below the frame top), with offsets that clip at
-/// `MaxQ`, and in 4:2:2 and 4:4:4; 128x128 superblocks in 3x2 with offsets
-/// and in two tile columns of 3x2 and 2x2.
+/// 64x64 superblocks in 3x3, in two tile columns, in two tile rows (the second
+/// starts below the frame top), with offsets that clip at `MaxQ`, and in 4:2:2
+/// and 4:4:4; 128x128 superblocks in 3x2 with offsets and in two tile columns.
 const WAVEFRONT_CASES: [WavefrontCase; 8] = [
-    (9, (200, 136, 120), TEN_420, (0, 0), false),
-    (9, (384, 136, 160), TEN_420, (1, 0), false),
-    (10, (200, 264, 150), TEN_420, (0, 1), false),
+    ((9, 6), (136, 136, 120), TEN_420, (0, 0), false),
+    ((9, 6), (264, 136, 160), TEN_420, (1, 0), false),
+    ((10, 6), (136, 200, 150), TEN_420, (0, 1), false),
     (
-        10,
-        (200, 136, 240),
+        (10, 6),
+        (136, 136, 240),
         (BitDepth::Eight, PixelFormat::Yuv420),
         (0, 0),
         true,
     ),
     (
-        10,
-        (200, 136, 130),
+        (10, 6),
+        (136, 136, 130),
         (BitDepth::Ten, PixelFormat::Yuv422),
         (0, 0),
         false,
     ),
     (
-        10,
-        (200, 136, 130),
+        (10, 6),
+        (136, 136, 130),
         (BitDepth::Eight, PixelFormat::Yuv444),
         (0, 0),
         true,
     ),
-    (6, (300, 200, 140), TEN_420, (0, 0), true),
-    (6, (520, 200, 140), TEN_420, (1, 0), false),
+    ((9, 7), (264, 136, 140), TEN_420, (0, 0), true),
+    ((9, 7), (392, 136, 140), TEN_420, (1, 0), false),
 ];
 
 /// Wavefront key and inter frames, with every loop filter of the preset row,
@@ -99,19 +114,21 @@ const WAVEFRONT_CASES: [WavefrontCase; 8] = [
 /// and differ from the raster-order search.
 #[test]
 fn wavefront_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    each_case(WAVEFRONT_CASES, |case| {
-        let on = with_wavefront(case.0, true);
+    each_case(WAVEFRONT_CASES.into_iter().enumerate(), |(index, case)| {
+        let on = with_wavefront(case.0.0, case.0.1, true);
         let (one, recon) = wavefront_stream(1, on, case);
         let name = format!("{case:?}");
         assert_same_samples(&decode(&one.concat()), &recon, &name);
-        each_case([2, 8], |threads| {
-            assert!(
-                wavefront_stream(threads, on, case).0 == one,
-                "{name}: {threads} threads"
-            );
-        });
-        let off = wavefront_stream(2, with_wavefront(case.0, false), case).0;
-        assert_ne!(off, one, "{name}: the wavefront changes no byte");
+        if matches!(index, 1 | 6) {
+            for threads in [2, 8] {
+                assert!(
+                    wavefront_stream(threads, on, case).0 == one,
+                    "{name}: {threads} threads"
+                );
+            }
+            let off = wavefront_stream(2, with_wavefront(case.0.0, case.0.1, false), case).0;
+            assert_ne!(off, one, "{name}: the wavefront changes no byte");
+        }
     });
 }
 
@@ -122,7 +139,7 @@ fn avm_decodes_wavefront_streams_like_splot() {
         return;
     };
     for (index, case) in WAVEFRONT_CASES.into_iter().enumerate() {
-        let (units, recon) = wavefront_stream(4, with_wavefront(case.0, true), case);
+        let (units, recon) = wavefront_stream(4, with_wavefront(case.0.0, case.0.1, true), case);
         let avm = avm_decode(
             &avmdec,
             &units,

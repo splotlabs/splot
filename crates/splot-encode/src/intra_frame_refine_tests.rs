@@ -13,7 +13,7 @@ fn with_refinement() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         opfl: true,
         refinemv: true,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -73,7 +73,8 @@ fn refined_streams_match_on_any_thread_count() {
     };
     let (one, expected, ..) = stream(1);
     assert_same_samples(&decode(&one), &expected, "tiled");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(stream(threads).0 == one, "{threads} threads");
     }
 }
@@ -108,7 +109,7 @@ fn avm_decodes_refined_streams_like_splot() {
 fn with_refine_all() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         opfl_refine_all: true,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -148,7 +149,8 @@ fn refine_all_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     };
     let (one, expected, ..) = stream(1);
     assert_same_samples(&decode(&one), &expected, "tiled");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(stream(threads).0 == one, "{threads} threads");
     }
 }

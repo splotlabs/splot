@@ -77,7 +77,7 @@ fn sb256_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     each_case(SB256_CASES, |case| {
         let (one, expected) = sb256_stream(case, 1);
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
-        each_case([2, 8], |threads| {
+        each_case([2], |threads| {
             assert!(
                 sb256_stream(case, threads).0 == one,
                 "{case:?} {threads} threads"

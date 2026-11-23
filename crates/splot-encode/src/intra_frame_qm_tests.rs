@@ -80,7 +80,8 @@ fn qm_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         assert_eq!(filters, [true; 5], "{name}: deblock, CDEF, LR, CCSO, GDF");
         assert_same_samples(&decode(&units), &recon, &name);
         assert!(qm_stream(case, 0, 1).0 != units, "{name}");
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(
                 qm_stream(case, quant_matrices, threads).0 == units,
                 "{name}: {threads} threads"

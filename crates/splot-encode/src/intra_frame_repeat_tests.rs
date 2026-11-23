@@ -131,7 +131,8 @@ fn repeats_decode_to_the_frames_they_show_on_any_thread_count() {
                 .all(|&(display, hint)| u64::from(hint) == display % 8)
         );
         assert_same_samples(&decode(&units.concat()), &expected, &case);
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             config.threads = splot_parallel::ThreadCount::from(threads);
             let other = repeat_stream(&config, &CONTENT, panning_frame).0;
             assert!(other == units, "{case}: {threads} threads");

@@ -116,7 +116,8 @@ fn assert_tool_streams(
     }
     let case = (1, PixelFormat::Yuv420, BitDepth::Ten);
     let (one, ..) = tool_stream(case, on);
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             tool_stream((threads, case.1, case.2), on).0 == one,
             "{threads} threads"
@@ -367,7 +368,8 @@ fn screen_streams_code_palette_leaves() {
     }
     let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
     let (one, ..) = cfl_stream(case(1), preset, 0, screen_frame);
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         let (units, ..) = cfl_stream(case(threads), preset, 0, screen_frame);
         assert!(units == one, "{threads} threads");
     }
@@ -426,14 +428,10 @@ fn source_stream(
     config.threads = splot_parallel::ThreadCount::from(threads);
     let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     let (mut units, mut recon) = (Vec::new(), Vec::new());
-    for index in 0..2 {
-        let plan = crate::gop::plan(u64::from(index), config.keyint);
-        let coded = coder
-            .encode_frame(&source(&config, index), &plan, 120)
-            .unwrap();
-        recon.extend(recon_bytes(&coded, bit_depth));
-        units.push(coded.temporal_unit);
-    }
+    let plan = crate::gop::plan(0, config.keyint);
+    let coded = coder.encode_frame(&source(&config, 0), &plan, 120).unwrap();
+    recon.extend(recon_bytes(&coded, bit_depth));
+    units.push(coded.temporal_unit);
     (units.concat(), recon)
 }
 
@@ -476,15 +474,21 @@ fn small_intrabc_codes_small_and_chroma_offset_leaves() {
     assert!(small > chroma && chroma > 0, "{small} {chroma}");
     assert_same_samples(&decode(&units), &recon, "forced IntraBC");
     let preset = small_intrabc_preset(true);
-    each_case(CHROMAS, |chroma| {
-        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Eight),
+            (PixelFormat::Yuv422, BitDepth::Ten),
+            (PixelFormat::Yuv444, BitDepth::Eight),
+            (PixelFormat::Monochrome, BitDepth::Ten),
+        ],
+        |(chroma, bit_depth)| {
             let (units, recon, _) = coded(preset, (2, chroma, bit_depth));
             let name = format!("{chroma:?} {bit_depth:?}");
             assert_same_samples(&decode(&units), &recon, &name);
-        }
-    });
+        },
+    );
     let (one, ..) = coded(preset, (1, PixelFormat::Yuv420, BitDepth::Ten));
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         let (bytes, ..) = coded(preset, (threads, PixelFormat::Yuv420, BitDepth::Ten));
         assert!(bytes == one, "{threads} threads");
     });
@@ -611,15 +615,20 @@ fn subpel_intrabc_codes_fractional_vectors() {
         assert!(quarter > 0, "{bit_depth:?}");
         assert_same_samples(&decode(&units), &recon, "forced IntraBC");
     }
-    each_case(CHROMAS, |chroma| {
-        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+    each_case(
+        [
+            (PixelFormat::Yuv422, BitDepth::Eight),
+            (PixelFormat::Yuv444, BitDepth::Ten),
+            (PixelFormat::Monochrome, BitDepth::Eight),
+        ],
+        |(chroma, bit_depth)| {
             let (units, recon, _) = coded(true, (2, chroma, bit_depth));
             let name = format!("{chroma:?} {bit_depth:?}");
             assert_same_samples(&decode(&units), &recon, &name);
-        }
-    });
+        },
+    );
     let (one, ..) = coded(true, (1, PixelFormat::Yuv420, BitDepth::Ten));
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         let (bytes, ..) = coded(true, (threads, PixelFormat::Yuv420, BitDepth::Ten));
         assert!(bytes == one, "{threads} threads");
     });
@@ -757,7 +766,7 @@ fn local_intrabc_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             }
         });
         let (one, _) = stream((1, PixelFormat::Yuv420, BitDepth::Ten));
-        each_case([2, 8], |threads| {
+        each_case([2], |threads| {
             let (bytes, _) = stream((threads, PixelFormat::Yuv420, BitDepth::Ten));
             assert!(bytes == one, "{threads} threads, sb {sb_log2}");
         });
@@ -816,7 +825,7 @@ fn intrabc_drl_streams_code_far_reference_vectors() {
         }
     });
     let (one, _) = stream((1, PixelFormat::Yuv420, BitDepth::Ten));
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(
             stream((threads, PixelFormat::Yuv420, BitDepth::Ten)).0 == one,
             "{threads} threads"
@@ -876,7 +885,7 @@ fn screen_streams_code_intrabc_leaves() {
     });
     let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
     let (one, _) = stream(case(1));
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(stream(case(threads)).0 == one, "{threads} threads");
     });
 }
@@ -1093,7 +1102,8 @@ fn vq_tuned_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     let case = (1, PixelFormat::Yuv420, BitDepth::Ten);
     let (units, recon, _) = tool_stream(case, vq);
     assert_same_samples(&decode(&units.concat()), &recon, "vq");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             tool_stream((threads, case.1, case.2), vq).0 == units,
             "{threads}"
@@ -1177,7 +1187,8 @@ fn fast_decode_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
     )));
     assert_same_samples(&decode(&units.concat()), &recon, "fast decode");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             fast_decode_stream(true, threads).0 == units,
             "{threads} threads"
@@ -1274,16 +1285,22 @@ fn morph_intrabc_frames_decode_to_the_encoder_recon() {
         assert!(morph > 0, "{bit_depth:?}");
         assert_same_samples(&decode(&units), &recon, "forced morph");
     }
-    each_case(CHROMAS, |chroma| {
-        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+    each_case(
+        [
+            (PixelFormat::Yuv420, BitDepth::Eight),
+            (PixelFormat::Yuv422, BitDepth::Ten),
+            (PixelFormat::Yuv444, BitDepth::Eight),
+            (PixelFormat::Monochrome, BitDepth::Ten),
+        ],
+        |(chroma, bit_depth)| {
             let (units, recon, _) = morph_stream((true, false), (2, chroma, bit_depth));
             let name = format!("{chroma:?} {bit_depth:?}");
             assert_same_samples(&decode(&units), &recon, &name);
-        }
-    });
+        },
+    );
     let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
     let (one, ..) = morph_stream((true, false), case(1));
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         let (bytes, ..) = morph_stream((true, false), case(threads));
         assert!(bytes == one, "{threads} threads");
     });

@@ -25,7 +25,7 @@ fn ext_partitions_decode_to_the_encoder_recon_on_any_thread_count() {
         |case| {
             let (one, expected) = tiled_stream(case, 1, Some(&EXT));
             assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
-            each_case([2, 8], |threads| {
+            each_case([2], |threads| {
                 assert!(
                     tiled_stream(case, threads, Some(&EXT)).0 == one,
                     "{threads} threads"

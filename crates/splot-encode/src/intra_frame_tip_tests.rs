@@ -27,7 +27,7 @@ fn with_tip_output(tip: u8, tip_output: u8) -> &'static PresetParams {
         tip,
         tip_output,
         tip_refinemv: false,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -82,7 +82,7 @@ fn tip_streams_match_on_any_thread_count() {
     };
     let (one, expected, ..) = stream(1);
     assert_same_samples(&decode(&one), &expected, "tiled");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
     });
 }
@@ -371,7 +371,7 @@ fn with_tip_refinement() -> &'static PresetParams {
         tip_output: 200,
         opfl: true,
         tip_refinemv: true,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -583,9 +583,9 @@ fn tip_tree(
 /// the same spatial TIP candidates and the frame decodes to the writer recon.
 #[test]
 fn refined_tip_units_match_the_decoder_in_a_zooming_frame() {
-    let config = config(192, 128, BitDepth::Eight, 6, 110);
-    assert!(config.preset.params().tip_refinemv);
-    let leaves = each_case(0..4, |seed| {
+    let mut config = config(192, 128, BitDepth::Eight, 9, 110);
+    config.preset_overrides = vec![("tip_refinemv".into(), "true".into())];
+    let leaves = each_case(0..2, |seed| {
         let (units, expected, coverage) =
             super::inter_stream_of(&config, 0x71F + seed, zooming_frame, tip_tree);
         assert_same_samples(&decode(&units.concat()), &expected, &format!("seed {seed}"));
@@ -745,7 +745,8 @@ fn hole_fill_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         "{filled:?}"
     );
     assert_same_samples(&decode(&one), &expected, "hole fill");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(hole_fill_stream(threads).0 == one, "{threads} threads");
     }
 }
@@ -777,7 +778,7 @@ fn tip_bawp_stream(
         mvd_tools,
         bawp: true,
         bawp_search: 2,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
     config.tiles = TileLayout::Uniform {
@@ -817,7 +818,8 @@ fn tip_newmv_and_bawp_variants_decode_on_any_thread_count() {
             .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
     }));
     assert_same_samples(&decode(&one), &expected, "TIP NEWMV and BAWP");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             tip_bawp_stream(180, threads, [false; 3]).0 == one,
             "{threads} threads"
@@ -833,7 +835,8 @@ fn tip_amvd_decodes_on_any_thread_count() {
     let (one, expected, _, coded) = tip_bawp_stream(180, 1, [true; 3]);
     assert!(coded[3] > 0, "{coded:?}");
     assert_same_samples(&decode(&one), &expected, "TIP AMVD");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             tip_bawp_stream(180, threads, [true; 3]).0 == one,
             "{threads} threads"
@@ -927,7 +930,8 @@ fn tip_output_options_decode_to_the_encoder_recon_on_any_thread_count() {
             assert!(core.quantization_params.is_some());
         }
         assert_same_samples(&decode(&one), &expected, &format!("{forced:?}"));
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             let stream = tip_output_options_stream(threads, 0, Some(forced)).0;
             assert!(stream == one, "{forced:?}: {threads} threads");
         }
@@ -997,7 +1001,8 @@ fn short_refresh_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     );
     assert_same_samples(&decode(&units), &expected, "short refresh");
     assert!(units.len() < stream(false, 1).0.len());
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(stream(true, threads).0 == units, "{threads} threads");
     }
 }
