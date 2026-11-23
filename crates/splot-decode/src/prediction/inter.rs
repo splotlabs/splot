@@ -302,8 +302,26 @@ fn decode_bridge_frame<T: ReconSample>(
     let current_order_hint = core
         .display_order_hint()
         .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
-    let motion_field = bridge::motion_field(frame_size, current_order_hint, reference_order_hint)
-        .ok_or(inter_allocation!("bridge temporal motion field"))?;
+    let bru_ref_hints = bru_inactive_frame(&core)
+        .then(|| {
+            core.inter.as_ref().map(|inter| {
+                find_mv_stack::reference_order_hints(
+                    &inter.ref_frame_idx,
+                    &reference.ref_valid,
+                    &reference.ref_order_hint,
+                )
+            })
+        })
+        .flatten();
+    let single_hint = [Some(reference_order_hint)];
+    let ref_order_hints = bru_ref_hints.as_deref().unwrap_or(&single_hint);
+    let motion_field = bridge::motion_field(
+        frame_size,
+        current_order_hint,
+        reference_order_hint,
+        ref_order_hints,
+    )
+    .ok_or(inter_allocation!("bridge temporal motion field"))?;
     let frame_cdfs =
         resolve_initial_frame_cdfs(&core, sequence, reference, Some(candidate), offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
@@ -366,7 +384,11 @@ fn frame_cdf_load(
         &reference.ref_frame_height,
         current_base_q_idx,
         current_order_hint,
-        cdf_blending_enabled(enable_avg_cdf, inter_ctrl.tip_frame_mode),
+        cdf_blending_enabled(
+            enable_avg_cdf,
+            inter_ctrl.tip_frame_mode,
+            inter_ctrl.bru_inactive == Some(true),
+        ),
         avg_cdf_type,
     )
 }
@@ -658,8 +680,12 @@ fn previous_segment_ids(
         .filter(|map| map.dimensions() == (mi_rows, mi_cols))
 }
 
-const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFrameMode>) -> bool {
-    enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput))
+const fn cdf_blending_enabled(
+    enable_avg_cdf: bool,
+    tip_frame_mode: Option<TipFrameMode>,
+    bru_inactive: bool,
+) -> bool {
+    enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput)) && !bru_inactive
 }
 
 /// Reference lists a frame header can name: `REFS_PER_FRAME` (AV2 § 3) plus
@@ -1663,6 +1689,9 @@ fn validate_and_resolve_inter_frame_core(
     validate_ras_reference_ids(core, reference, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset, frame_index)?;
     validate_inter_frame_core(core, sequence)?;
+    if bru_inactive_frame(core) {
+        validate_bru_inactive_reference(core, reference, offset, frame_index)?;
+    }
     if core.inter.as_ref().is_some_and(|inter| {
         matches!(
             inter.tip_frame_mode,
@@ -2036,14 +2065,21 @@ fn parse_inter_frame_core(
         mfh_record,
         reference_state: reference.header_view(),
     };
-    parse_frame_header_core(&mut reader, &input).map_err(|error| DecodeError::MalformedSource {
-        issue: DecodeSourceIssue::frame_header_conformance(
-            envelope.offset,
-            frame_index,
-            SPEC_HEADER,
-            error.to_string(),
-        ),
-    })
+    let core = parse_frame_header_core(&mut reader, &input).map_err(|error| {
+        malformed_frame_header(envelope.offset, frame_index, SPEC_HEADER, error.to_string())
+    })?;
+    if bru_inactive_frame(&core) && core.status == FrameHeaderParseStatus::InterHeaderComplete {
+        let remaining_bits = reader.remaining_bits();
+        splot_core::obu::parse_trailing_bits(&mut reader, remaining_bits).map_err(|error| {
+            malformed_frame_header(
+                envelope.offset,
+                frame_index,
+                SPEC_TILE_GROUP,
+                format!("bru_inactive tile group trailing_bits() are malformed: {error}"),
+            )
+        })?;
+    }
+    Ok(core)
 }
 
 fn validate_inter_frame_parse(
@@ -2152,6 +2188,55 @@ fn validate_inter_frame_core(core: &FrameHeaderCore, sequence: &SequenceHeader) 
         || core.ccso_params.is_none();
     if incomplete_tools {
         return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
+    }
+    Ok(())
+}
+
+fn validate_bru_inactive_reference(
+    core: &FrameHeaderCore,
+    reference: &ReferenceMetadata,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    let slot = bru_ref_slot(core).ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
+    let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
+    if core.immediate_output_frame != Some(true) {
+        return Err(malformed_frame_header(
+            offset,
+            frame_index,
+            SPEC_FRAME_HEADER_INFO_SEMANTICS,
+            "use_bru == 1 frame must set immediate_output_frame == 1".to_owned(),
+        ));
+    }
+    let refresh_mask = 1u32.checked_shl(slot).unwrap_or(0);
+    if core
+        .refresh_frame_flags
+        .is_none_or(|flags| flags & refresh_mask == 0)
+    {
+        return Err(malformed_frame_header(
+            offset,
+            frame_index,
+            SPEC_FRAME_HEADER_INFO_SEMANTICS,
+            format!("use_bru == 1 frame must refresh its bru_ref reference slot {slot}"),
+        ));
+    }
+    if reference.ref_valid.get(slot_index) == Some(&true)
+        && let (Some(frame_size), Some(&ref_w), Some(&ref_h)) = (
+            core.frame_size,
+            reference.ref_frame_width.get(slot_index),
+            reference.ref_frame_height.get(slot_index),
+        )
+        && (ref_w != frame_size.width || ref_h != frame_size.height)
+    {
+        return Err(malformed_frame_header(
+            offset,
+            frame_index,
+            SPEC_FRAME_HEADER_INFO_SEMANTICS,
+            format!(
+                "bru_inactive reference slot {slot} size {ref_w}x{ref_h} does not match frame size {}x{}",
+                frame_size.width, frame_size.height
+            ),
+        ));
     }
     Ok(())
 }

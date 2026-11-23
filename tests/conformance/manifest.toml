@@ -1287,6 +1287,21 @@ description = "As syn-bru-inter-128x64-q220 but the square stops after frame 2: 
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-inactive-refresh-8bit.ivf"
+description = "Eight 8-bit 128x64 frames with moving square then static repeat of frame 3 on frame 5 (use_bru == 1, bru_inactive == 1, bru_ref == 2 mapped to physical slot 1 with refresh) followed by moving frames 6 and 7 referencing the refreshed slot; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-inactive-refresh-10bit.ivf"
+description = "Eight 10-bit 128x64 frames matching syn-bru-inactive-refresh-8bit (--bit-depth=10 --input-bit-depth=10) with bru_inactive == 1 refresh of frame 3 on frame 5 and subsequent inter frames 6 and 7; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-inactive-filmgrain-8bit.ivf"
+description = "Eight 8-bit 128x64 frames matching syn-bru-inactive-refresh-8bit with --film-grain-test=1 so frame 5 (bru_inactive == 1) synthesizes output film grain without mutating stored reference pixels; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-bru-multitile-256x128-q220.ivf"
 description = "Six frames at 256x128 in 2x2 tiles (--tile-columns=1 --tile-rows=1) with two moving squares, avmenc --enable-bru=1 --qp=220: frames 3-5 code use_bru == 1 with per-tile bru_tile_active flags (§ 5.19); validates clean."
 expect = "clean"
