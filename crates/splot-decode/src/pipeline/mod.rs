@@ -44,6 +44,7 @@ pub(crate) use frame_store::DecodeSession;
 use frame_store::FrameStore;
 pub(crate) mod frame_progress;
 pub(crate) mod frame_tasks;
+pub(crate) use frame_tasks::DecoderRowScheduler;
 use frame_tasks::SplitSample;
 pub(crate) mod inflight;
 pub(crate) mod output_effects;
@@ -119,7 +120,7 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
     let threads = NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN);
     let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)?;
     let session =
-        DecodeSession::detaching_held(NonZeroUsize::MIN, row_scheduler(threads)?, backend);
+        DecodeSession::detaching_held(NonZeroUsize::MIN, row_scheduler(threads, backend)?, backend);
     let mut collected = Vec::new();
     splot_parallel::run_on_thread("splot-driver", || {
         let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
@@ -150,7 +151,7 @@ pub(crate) fn collect_bru_lr_audit(
     let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)?;
     let session = DecodeSession::detaching_held(
         NonZeroUsize::MIN,
-        row_scheduler(NonZeroUsize::MIN)?,
+        row_scheduler(NonZeroUsize::MIN, backend)?,
         backend,
     );
     let (headers, audits) = splot_parallel::run_on_thread("splot-driver", || {
@@ -275,7 +276,7 @@ fn reclaim_unowned_frames(
 fn admit_within_reference_store(
     mut check: impl FnMut(u64) -> Result<()>,
     options: &DecodeOptions,
-    rows: Option<&splot_parallel::RowScheduler>,
+    rows: Option<&DecoderRowScheduler>,
     pools: &mut frame_tasks::RowPools,
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
@@ -560,7 +561,7 @@ fn empty_key_reference<T: splot_recon::ReconSample>(
 
 #[expect(clippy::too_many_arguments)]
 fn decode_key_frame_with_effects(
-    rows: Option<&splot_parallel::RowScheduler>,
+    rows: Option<&DecoderRowScheduler>,
     pools: &mut frame_tasks::RowPools,
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
@@ -672,17 +673,47 @@ fn decode_key_frame_with_effects(
     })
 }
 
-/// Starts the row scheduler of a context with more than one worker thread.
+struct RowSchedulerLaunch {
+    threads: NonZeroUsize,
+}
+
+impl splot_core::simd::SimdScope<Result<Arc<DecoderRowScheduler>>> for RowSchedulerLaunch {
+    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> Result<Arc<DecoderRowScheduler>> {
+        spawn_row_scheduler(self.threads, backend)
+    }
+}
+
+fn spawn_row_scheduler<B: splot_core::simd::SimdBackend>(
+    threads: NonZeroUsize,
+    backend: B,
+) -> Result<Arc<DecoderRowScheduler>> {
+    Ok(Arc::new(DecoderRowScheduler::new_with(
+        threads,
+        move |worker_loop| run_typed_worker(backend, worker_loop),
+    )?))
+}
+
+fn run_typed_worker<B: splot_core::simd::SimdBackend>(
+    backend: B,
+    worker_loop: splot_parallel::WorkerLoop<frame_tasks::DecoderWork>,
+) {
+    worker_loop.run(|work, claim, worker| {
+        backend.vectorize(|| work.run_with_backend(backend, claim, worker));
+    });
+}
+
+/// Starts the typed row scheduler of a context with more than one worker thread.
 ///
 /// # Errors
 /// Returns [`crate::DecodeError::Pool`] when a worker thread cannot start.
 pub(crate) fn row_scheduler(
     threads: NonZeroUsize,
-) -> Result<Option<Arc<splot_parallel::RowScheduler>>> {
+    backend: splot_core::simd::ResolvedBackend,
+) -> Result<Option<Arc<DecoderRowScheduler>>> {
     if threads.get() <= 1 {
         return Ok(None);
     }
-    Ok(Some(Arc::new(splot_parallel::RowScheduler::new(threads)?)))
+    Ok(Some(backend.enter(RowSchedulerLaunch { threads })?))
 }
 
 /// Runs one decode over its retained storage, and resolves the run's outcome
@@ -695,7 +726,7 @@ fn drive_frames(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     retained: &mut frame_store::RetainedDecode,
-    rows: Option<&splot_parallel::RowScheduler>,
+    rows: Option<&DecoderRowScheduler>,
     preflight: &mut dyn FnMut(Option<IvfHeader>) -> Result<()>,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
@@ -744,7 +775,7 @@ fn share_sequence(
 #[expect(clippy::too_many_arguments)]
 fn push_split_inter<T: SplitSample>(
     pools: &mut frame_tasks::RowPools,
-    rows: &splot_parallel::RowScheduler,
+    rows: &DecoderRowScheduler,
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
     options: &DecodeOptions,
@@ -814,7 +845,7 @@ fn decode_frames_in_order(
     options: &DecodeOptions,
     preflight: &mut dyn FnMut(Option<IvfHeader>) -> Result<()>,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
-    rows: Option<&splot_parallel::RowScheduler>,
+    rows: Option<&DecoderRowScheduler>,
     ring: &mut inflight::InflightRing,
     pools: &mut frame_tasks::RowPools,
     frames: &mut FrameStore,

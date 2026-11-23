@@ -32,7 +32,170 @@ pub struct DecodeContext {
     session: crate::pipeline::DecodeSession,
 }
 
-use splot_core::simd::SelectedBackend;
+use splot_core::simd::{SelectedBackend, SimdBackend, SimdScope};
+
+/// Scoped synchronous callback entered once with a concrete compile-time [`SimdBackend`].
+pub trait DecodeScope<R> {
+    /// Runs caller work inside one fixed `B` backend lifetime on the calling thread.
+    fn run<B: SimdBackend>(self, context: &TypedDecodeContext<'_, B>) -> R;
+}
+
+/// Concrete synchronous view over [`DecodeContext`] bound to compile-time backend `B`.
+///
+/// Obtained from [`DecodeContext::with_typed_backend`]. All synchronous decode
+/// operations execute directly on the calling thread without allocating extra
+/// threads, queues, or input copies.
+#[derive(Debug)]
+pub struct TypedDecodeContext<'a, B: SimdBackend> {
+    context: &'a DecodeContext,
+    backend: B,
+}
+
+impl<B: SimdBackend> TypedDecodeContext<'_, B> {
+    /// The concrete SIMD backend selected when the parent context opened.
+    #[must_use]
+    pub const fn selected_backend(&self) -> SelectedBackend {
+        B::KIND
+    }
+
+    /// Returns the startup-validated [`SimdBackend`] capability token by value.
+    #[must_use]
+    pub const fn backend(&self) -> B {
+        self.backend
+    }
+
+    /// The resolved, non-zero requested frame-pipelining policy.
+    #[must_use]
+    pub fn frame_delay(&self) -> NonZeroUsize {
+        self.context.frame_delay()
+    }
+
+    /// The runtime (non-bitstream) configuration.
+    #[must_use]
+    pub fn runtime(&self) -> &DecodeRuntimeConfig {
+        self.context.runtime()
+    }
+
+    /// The resolved, non-zero thread count.
+    #[must_use]
+    pub fn threads(&self) -> NonZeroUsize {
+        self.context.threads()
+    }
+
+    /// [`Self::decode_hash_report_reader`] over in-memory bytes.
+    ///
+    /// # Errors
+    /// See [`DecodeContext::decode_hash_report_reader`].
+    pub fn decode_hash_report_bytes(
+        &self,
+        bytes: &[u8],
+        options: DecodeOptions,
+    ) -> Result<DecodeHashReport> {
+        self.decode_hash_report_reader(bytes, options)
+    }
+
+    /// Decodes the supported envelope and returns a deterministic hash report.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for read, planning, decode, limit, or thread failures.
+    pub fn decode_hash_report_reader<R: Read + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+    ) -> Result<DecodeHashReport> {
+        let _ = self.backend;
+        self.context.decode_hash_report(&mut reader, &options)
+    }
+
+    /// Decodes the supported envelope and discards each displayed frame.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for read, planning, decode, limit, or thread failures.
+    pub fn decode_discard_reader<R: Read + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+    ) -> Result<()> {
+        let _ = self.backend;
+        self.context.decode_discard(&mut reader, &options)
+    }
+
+    /// [`Self::decode_raw_reader`] over in-memory bytes.
+    ///
+    /// # Errors
+    /// See [`DecodeContext::decode_raw_reader`].
+    pub fn decode_raw_bytes<W: std::io::Write + Send>(
+        &self,
+        bytes: &[u8],
+        options: DecodeOptions,
+        writer: W,
+    ) -> Result<()> {
+        self.decode_raw_reader(bytes, options, writer)
+    }
+
+    /// Decodes the supported envelope and streams raw sample bytes.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for read, planning, decode, output, or thread failures.
+    pub fn decode_raw_reader<R: Read + Send, W: std::io::Write + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+        mut writer: W,
+    ) -> Result<()> {
+        let _ = self.backend;
+        self.context.decode_raw(&mut reader, &options, &mut writer)
+    }
+
+    /// [`Self::decode_y4m_reader`] over in-memory bytes.
+    ///
+    /// # Errors
+    /// See [`DecodeContext::decode_y4m_reader`].
+    pub fn decode_y4m_bytes<W: std::io::Write + Send>(
+        &self,
+        bytes: &[u8],
+        options: DecodeOptions,
+        writer: W,
+    ) -> Result<()> {
+        self.decode_y4m_reader(bytes, options, writer)
+    }
+
+    /// Decodes the supported envelope and streams a Y4M stream.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for read, planning, decode, Y4M, or thread failures.
+    pub fn decode_y4m_reader<R: Read + Send, W: std::io::Write + Send>(
+        &self,
+        mut reader: R,
+        options: DecodeOptions,
+        mut writer: W,
+    ) -> Result<()> {
+        let _ = self.backend;
+        self.context.decode_y4m(&mut reader, &options, &mut writer)
+    }
+}
+
+struct ContextScopeAdapter<'a, S> {
+    context: &'a DecodeContext,
+    scope: S,
+}
+
+#[derive(Clone, Copy)]
+enum StreamWriteKind {
+    Raw,
+    Y4m,
+}
+
+impl<R, S: DecodeScope<R>> SimdScope<R> for ContextScopeAdapter<'_, S> {
+    #[inline]
+    fn run<B: SimdBackend>(self, backend: B) -> R {
+        let typed = TypedDecodeContext {
+            context: self.context,
+            backend,
+        };
+        self.scope.run(&typed)
+    }
+}
 
 impl DecodeContext {
     /// Creates a decode context, validates its SIMD policy, and starts its row scheduler.
@@ -48,7 +211,7 @@ impl DecodeContext {
         let backend = splot_core::simd::resolve_backend(runtime.simd_policy)?;
         let threads = runtime.thread_count.resolve();
         let frame_delay = runtime.frame_delay.resolve(threads);
-        let rows = crate::pipeline::row_scheduler(threads)?;
+        let rows = crate::pipeline::row_scheduler(threads, backend)?;
         Ok(Self {
             runtime,
             threads,
@@ -60,6 +223,19 @@ impl DecodeContext {
     #[must_use]
     pub const fn selected_backend(&self) -> SelectedBackend {
         self.session.backend().kind()
+    }
+
+    /// Enters `scope` once with this context's concrete compile-time backend `B`.
+    ///
+    /// Callers with a repeated synchronous decode loop should wrap their loop in
+    /// one [`Self::with_typed_backend`] call instead of paying one outer selection
+    /// per call on the compatibility methods below.
+    #[inline]
+    pub fn with_typed_backend<R>(&self, scope: impl DecodeScope<R>) -> R {
+        self.session.backend().enter(ContextScopeAdapter {
+            context: self,
+            scope,
+        })
     }
 
     /// The resolved, non-zero requested frame-pipelining policy.
@@ -127,16 +303,29 @@ impl DecodeContext {
     /// and holds only the IVF frame records still being decoded. The supported
     /// decode envelope is tracked in `docs/DECODER-SUPPORT-MATRIX.toml`.
     ///
+    /// Ergonomic compatibility facade that selects the session backend once per
+    /// call; use [`Self::with_typed_backend`] to enclose repeated synchronous
+    /// calls in a single typed backend lifetime.
+    ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
     /// failures, thread failures, or reconstruction model errors.
     pub fn decode_hash_report_reader<R: Read + Send>(
         &self,
-        mut reader: R,
+        reader: R,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        self.decode_hash_report(&mut reader, &options)
+        struct Scope<R>(R, DecodeOptions);
+        impl<R: Read + Send> DecodeScope<Result<DecodeHashReport>> for Scope<R> {
+            fn run<B: SimdBackend>(
+                self,
+                context: &TypedDecodeContext<'_, B>,
+            ) -> Result<DecodeHashReport> {
+                context.decode_hash_report_reader(self.0, self.1)
+            }
+        }
+        self.with_typed_backend(Scope(reader, options))
     }
 
     fn decode_hash_report(
@@ -160,16 +349,26 @@ impl DecodeContext {
     /// does all the work of raw output, film grain included, but does not
     /// hash or serialize the samples.
     ///
+    /// Ergonomic compatibility facade that selects the session backend once per
+    /// call; use [`Self::with_typed_backend`] to enclose repeated synchronous
+    /// calls in a single typed backend lifetime.
+    ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
     /// failures, thread failures, or reconstruction model errors.
     pub fn decode_discard_reader<R: Read + Send>(
         &self,
-        mut reader: R,
+        reader: R,
         options: DecodeOptions,
     ) -> Result<()> {
-        self.decode_discard(&mut reader, &options)
+        struct Scope<R>(R, DecodeOptions);
+        impl<R: Read + Send> DecodeScope<Result<()>> for Scope<R> {
+            fn run<B: SimdBackend>(self, context: &TypedDecodeContext<'_, B>) -> Result<()> {
+                context.decode_discard_reader(self.0, self.1)
+            }
+        }
+        self.with_typed_backend(Scope(reader, options))
     }
 
     fn decode_discard(
@@ -201,6 +400,10 @@ impl DecodeContext {
     /// Each displayed frame is written before its output-only decoded storage
     /// is reclaimed; the complete output is not retained in decoder memory.
     ///
+    /// Ergonomic compatibility facade that selects the session backend once per
+    /// call; use [`Self::with_typed_backend`] to enclose repeated synchronous
+    /// calls in a single typed backend lifetime.
+    ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
@@ -208,11 +411,30 @@ impl DecodeContext {
     /// serialization errors, or caller-writer I/O errors.
     pub fn decode_raw_reader<R: Read + Send, W: std::io::Write + Send>(
         &self,
-        mut reader: R,
+        reader: R,
         options: DecodeOptions,
-        mut writer: W,
+        writer: W,
     ) -> Result<()> {
-        self.decode_raw(&mut reader, &options, &mut writer)
+        self.decode_with_writer_scope(StreamWriteKind::Raw, reader, &options, writer)
+    }
+
+    fn decode_with_writer_scope<R: Read + Send, W: std::io::Write + Send>(
+        &self,
+        kind: StreamWriteKind,
+        reader: R,
+        options: &DecodeOptions,
+        writer: W,
+    ) -> Result<()> {
+        struct Scope<'a, R, W>(StreamWriteKind, R, &'a DecodeOptions, W);
+        impl<R: Read + Send, W: std::io::Write + Send> DecodeScope<Result<()>> for Scope<'_, R, W> {
+            fn run<B: SimdBackend>(self, context: &TypedDecodeContext<'_, B>) -> Result<()> {
+                match self.0 {
+                    StreamWriteKind::Raw => context.decode_raw_reader(self.1, *self.2, self.3),
+                    StreamWriteKind::Y4m => context.decode_y4m_reader(self.1, *self.2, self.3),
+                }
+            }
+        }
+        self.with_typed_backend(Scope(kind, reader, options, writer))
     }
 
     fn decode_raw(
@@ -245,6 +467,10 @@ impl DecodeContext {
     /// The stream header is written with the first displayed frame, and each
     /// frame is written before its output-only decoded storage is reclaimed.
     ///
+    /// Ergonomic compatibility facade that selects the session backend once per
+    /// call; use [`Self::with_typed_backend`] to enclose repeated synchronous
+    /// calls in a single typed backend lifetime.
+    ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
@@ -252,11 +478,11 @@ impl DecodeContext {
     /// serialization errors, or caller-writer I/O errors.
     pub fn decode_y4m_reader<R: Read + Send, W: std::io::Write + Send>(
         &self,
-        mut reader: R,
+        reader: R,
         options: DecodeOptions,
-        mut writer: W,
+        writer: W,
     ) -> Result<()> {
-        self.decode_y4m(&mut reader, &options, &mut writer)
+        self.decode_with_writer_scope(StreamWriteKind::Y4m, reader, &options, writer)
     }
 
     fn decode_y4m(

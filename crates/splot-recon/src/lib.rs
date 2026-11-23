@@ -85,7 +85,7 @@ mod reconstruct;
 mod reconstruct_block;
 mod reference;
 mod sample_range;
-pub use sample_range::{SummedSample, sum_samples};
+pub use sample_range::{SummedSample, sum_samples, sum_samples_with};
 mod secondary_transform;
 mod subpel_mc;
 mod transform_params;
@@ -125,7 +125,7 @@ pub use dequant::{
 };
 pub use dequant_process::{
     DequantBlockParams, QmDequant, QmFrameLevels, QmUserPlane, QmWeightIndex, dequant_coefficient,
-    dequantize_block, qm_weighted_quantizer, quantization_matrix_weight,
+    dequantize_block, dequantize_block_with, qm_weighted_quantizer, quantization_matrix_weight,
 };
 pub use error::{ReconError, Result};
 pub use film_grain::{apply_film_grain, apply_film_grain_into};
@@ -168,11 +168,15 @@ pub use intra_smooth::{
     predict_intra_smooth_rect_into,
 };
 pub use inverse_transform::{InverseTransform1dType, inverse_transform_1d};
-pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, inverse_transform_2d};
+pub use inverse_transform_2d::{
+    InverseTransform2d, InverseTransform2dDim, inverse_transform_2d, inverse_transform_2d_with,
+};
 pub use inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd, InverseTransformAddScratch};
 pub use inverse_transform_2d_outer::{
     DpcmDirection, InverseTransform2dOuter, inverse_transform_2d_outer,
-    inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_with_scratch,
+    inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_adjusted_with,
+    inverse_transform_2d_outer_with, inverse_transform_2d_outer_with_scratch,
+    inverse_transform_2d_outer_with_scratch_and_backend,
 };
 pub use loop_restoration::{
     LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
@@ -192,17 +196,19 @@ pub use pc_wiener::{
     transpose4,
 };
 pub use plane::{Plane, VisibleRows};
-pub use reconstruct::reconstruct_add_residual;
+pub use reconstruct::{reconstruct_add_residual, reconstruct_add_residual_with};
 pub use reconstruct_block::{
-    dequantize_with_secondary, reconstruct_transform_block_residual,
+    dequantize_with_secondary, dequantize_with_secondary_and_backend,
+    reconstruct_transform_block_residual, reconstruct_transform_block_residual_with,
     reconstruct_transform_block_residual_with_secondary,
+    reconstruct_transform_block_residual_with_secondary_and_backend,
 };
 pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameStore, ReferenceSlot,
 };
 pub use secondary_transform::{
     SecondaryInverseTransform, SecondaryTransformLayout, secondary_inverse_transform,
-    secondary_transform_layout,
+    secondary_inverse_transform_with, secondary_transform_layout,
 };
 /// Re-export of the § 9.4 `Qm_Offset[txSz]` table so decode crates can resolve a
 /// transform block's built-in quantizer-matrix region without depending on

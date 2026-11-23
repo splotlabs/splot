@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::frame_tasks::RowPools;
+use super::frame_tasks::{DecoderRowScheduler, RowPools};
 use super::inflight::InflightRing;
 use crate::support::decode_buffers::DecodeBuffers;
 
@@ -33,7 +33,7 @@ pub(crate) struct DecodeSession {
     backend: splot_core::simd::ResolvedBackend,
     /// The row scheduler of a multi-threaded context, which the split inter
     /// frames run on.
-    rows: Option<Arc<splot_parallel::RowScheduler>>,
+    rows: Option<Arc<DecoderRowScheduler>>,
     retained: Mutex<Option<RetainedDecode>>,
     /// Whether frames that an outside owner still holds leave the store.
     detach_held: bool,
@@ -54,7 +54,7 @@ impl core::fmt::Debug for DecodeSession {
 impl DecodeSession {
     pub(crate) fn new(
         frame_delay: NonZeroUsize,
-        rows: Option<Arc<splot_parallel::RowScheduler>>,
+        rows: Option<Arc<DecoderRowScheduler>>,
         backend: splot_core::simd::ResolvedBackend,
     ) -> Self {
         Self {
@@ -71,7 +71,7 @@ impl DecodeSession {
     /// as a caller's picture, still holds their samples.
     pub(crate) fn detaching_held(
         frame_delay: NonZeroUsize,
-        rows: Option<Arc<splot_parallel::RowScheduler>>,
+        rows: Option<Arc<DecoderRowScheduler>>,
         backend: splot_core::simd::ResolvedBackend,
     ) -> Self {
         Self {
@@ -86,7 +86,7 @@ impl DecodeSession {
     }
 
     /// The row scheduler, or `None` when the decode runs on one thread.
-    pub(crate) fn rows(&self) -> Option<&splot_parallel::RowScheduler> {
+    pub(crate) fn rows(&self) -> Option<&DecoderRowScheduler> {
         self.rows.as_deref()
     }
 

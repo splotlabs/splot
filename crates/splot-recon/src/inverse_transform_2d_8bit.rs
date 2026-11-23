@@ -22,7 +22,7 @@ use fearless_simd::{
     Bytes as _, Simd, SimdBase as _, SimdInt, i16x8, i16x16, i32x4, i32x8, u8x16, u16x8, u16x16,
     u32x8, u64x2,
 };
-
+use splot_core::simd::SimdBackend;
 use splot_tables::tables::transform_1d::{DCT_KERNEL8, DCT_KERNEL16, DCT_KERNEL32};
 
 use crate::dequant_process::{dequant_coefficient, dequant_lanes};
@@ -30,7 +30,8 @@ use crate::inverse_transform::{InverseTransform1dType, Kernel1d, select_kernel};
 use crate::inverse_transform_2d::InverseTransform2dDim;
 use crate::secondary_transform::{
     SecondaryInverseTransform, secondary_inverse_transform_quant,
-    secondary_inverse_transform_quant_rows8,
+    secondary_inverse_transform_quant_rows8, secondary_inverse_transform_quant_rows8_with,
+    secondary_inverse_transform_quant_with,
 };
 use crate::{BitDepth, ReconSample};
 
@@ -469,9 +470,53 @@ impl InverseTransformAdd {
     /// `None` it is an already dequantized prefix of the block. Returns
     /// `false` with `dst` untouched when `coeffs` is longer than the block,
     /// the block does not fit `dst`, or `T` does not hold `bit_depth`.
+    /// Adds the transform of `coeffs` using `backend`.
+    #[inline]
+    pub fn add_with<B: SimdBackend, T: ReconSample>(
+        self,
+        backend: B,
+        coeffs: &[i32],
+        dequant_depth: (Option<FlatDequant>, BitDepth),
+        dst: &mut [T],
+        stride: usize,
+        scratch: &mut InverseTransformAddScratch,
+    ) -> bool {
+        self.add_with_runner(
+            TypedTransformRunner(backend.narrow()),
+            coeffs,
+            dequant_depth,
+            dst,
+            stride,
+            scratch,
+        )
+    }
+
+    /// Runs [`Self::put_prediction`] and adds the transform of `coeffs`,
+    /// returning `false` with `dst` untouched when `coeffs` is longer than the block,
+    /// the block does not fit `dst`, or `T` does not hold `bit_depth`.
     #[inline]
     pub fn add<T: ReconSample>(
         self,
+        coeffs: &[i32],
+        dequant_depth: (Option<FlatDequant>, BitDepth),
+        dst: &mut [T],
+        stride: usize,
+        scratch: &mut InverseTransformAddScratch,
+    ) -> bool {
+        self.add_with_runner(
+            BaselineTransformRunner,
+            coeffs,
+            dequant_depth,
+            dst,
+            stride,
+            scratch,
+        )
+    }
+
+    #[inline]
+    fn add_with_runner<R: TransformRunner, T: ReconSample>(
+        self,
+        runner: R,
         coeffs: &[i32],
         (dequant, bit_depth): (Option<FlatDequant>, BitDepth),
         dst: &mut [T],
@@ -484,6 +529,7 @@ impl InverseTransformAdd {
         }
         let Some(dst) = T::u8_slice_mut(dst).filter(|_| bit_depth == BitDepth::Eight) else {
             return self.run_add(
+                runner,
                 self.transform8(dequant, bit_depth),
                 (coeffs, w),
                 dst,
@@ -492,13 +538,13 @@ impl InverseTransformAdd {
             );
         };
         #[cfg(target_arch = "x86_64")]
-        if let Some(token) = Level::baseline().as_avx2() {
+        if let Some(token) = runner.avx2_token() {
             let sink = avx2::Sink::Add { dst, stride };
             avx2::transform(token, &self, dequant, coeffs, false, sink, &mut scratch[0]);
             return true;
         }
         #[cfg(target_arch = "aarch64")]
-        if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+        if let Some(token) = runner.neon_token() {
             match coeffs {
                 [] => {}
                 &[dc] if self.flat => neon::add_flat(token, self, (dc, dequant), (dst, stride)),
@@ -514,8 +560,34 @@ impl InverseTransformAdd {
             return true;
         }
         self.run_add(
+            runner,
             self.transform8(dequant, bit_depth),
             (coeffs, w),
+            dst,
+            stride,
+            scratch,
+        )
+    }
+
+    /// [`Self::put_prediction_with`], then [`Self::add_with`] onto it using
+    /// `backend`; `false` with `dst` untouched where either would return it.
+    #[expect(clippy::too_many_arguments)]
+    #[inline]
+    pub fn add_onto_with<B: SimdBackend, T: ReconSample>(
+        self,
+        backend: B,
+        prediction: &[T],
+        coeffs: &[i32],
+        dequant_depth: (Option<FlatDequant>, BitDepth),
+        dst: &mut [T],
+        stride: usize,
+        scratch: &mut InverseTransformAddScratch,
+    ) -> bool {
+        self.add_onto_with_runner(
+            TypedTransformRunner(backend.narrow()),
+            prediction,
+            coeffs,
+            dequant_depth,
             dst,
             stride,
             scratch,
@@ -529,14 +601,57 @@ impl InverseTransformAdd {
         self,
         prediction: &[T],
         coeffs: &[i32],
+        dequant_depth: (Option<FlatDequant>, BitDepth),
+        dst: &mut [T],
+        stride: usize,
+        scratch: &mut InverseTransformAddScratch,
+    ) -> bool {
+        self.add_onto_with_runner(
+            BaselineTransformRunner,
+            prediction,
+            coeffs,
+            dequant_depth,
+            dst,
+            stride,
+            scratch,
+        )
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    #[inline]
+    fn add_onto_with_runner<R: TransformRunner, T: ReconSample>(
+        self,
+        runner: R,
+        prediction: &[T],
+        coeffs: &[i32],
         (dequant, bit_depth): (Option<FlatDequant>, BitDepth),
         dst: &mut [T],
         stride: usize,
         scratch: &mut InverseTransformAddScratch,
     ) -> bool {
         coeffs.len() <= self.w() * self.h()
-            && self.put_prediction(prediction, bit_depth, dst, stride)
-            && self.add(coeffs, (dequant, bit_depth), dst, stride, scratch)
+            && self.put_prediction_with_runner(runner, prediction, bit_depth, dst, stride)
+            && self.add_with_runner(runner, coeffs, (dequant, bit_depth), dst, stride, scratch)
+    }
+
+    /// Writes `prediction` into `dst` like [`Self::put_prediction`], checking
+    /// sample range with `backend`.
+    #[inline]
+    pub fn put_prediction_with<B: SimdBackend, T: ReconSample>(
+        self,
+        backend: B,
+        prediction: &[T],
+        bit_depth: BitDepth,
+        dst: &mut [T],
+        stride: usize,
+    ) -> bool {
+        self.put_prediction_with_runner(
+            TypedTransformRunner(backend.narrow()),
+            prediction,
+            bit_depth,
+            dst,
+            stride,
+        )
     }
 
     /// Writes the `w x h` block `prediction` (rows `w` apart) into the block
@@ -551,13 +666,34 @@ impl InverseTransformAdd {
         dst: &mut [T],
         stride: usize,
     ) -> bool {
-        let w = self.w();
+        self.put_prediction_with_runner(BaselineTransformRunner, prediction, bit_depth, dst, stride)
+    }
+
+    #[inline]
+    fn put_prediction_with_runner<R: TransformRunner, T: ReconSample>(
+        self,
+        runner: R,
+        prediction: &[T],
+        bit_depth: BitDepth,
+        dst: &mut [T],
+        stride: usize,
+    ) -> bool {
         let in_range = match T::u16_slice(prediction) {
-            Some(samples) => {
-                !crate::sample_range::u16_samples_exceed(samples, bit_depth.max_sample())
-            }
+            Some(samples) => !runner.u16_samples_exceed(samples, bit_depth.max_sample()),
             None => bit_depth == BitDepth::Eight,
         };
+        self.write_prediction_checked(prediction, dst, stride, in_range)
+    }
+
+    #[inline]
+    fn write_prediction_checked<T: ReconSample>(
+        self,
+        prediction: &[T],
+        dst: &mut [T],
+        stride: usize,
+        in_range: bool,
+    ) -> bool {
+        let w = self.w();
         if !self.fits(dst.len(), stride) || prediction.len() != w * self.h() || !in_range {
             return false;
         }
@@ -582,6 +718,31 @@ impl InverseTransformAdd {
         true
     }
 
+    /// Adds the § 7.15.3 secondary inverse transform plus primary transform onto
+    /// `dst` using `backend`.
+    ///
+    /// # Errors
+    /// Returns the same secondary-transform validation errors as
+    /// [`Self::add_secondary`].
+    pub fn add_secondary_with<B: SimdBackend, T: ReconSample>(
+        self,
+        backend: B,
+        (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
+        quant: &[i32],
+        dequant: &mut [i32],
+        (dst, stride): (&mut [T], usize),
+        scratch: &mut InverseTransformAddScratch,
+    ) -> crate::Result<bool> {
+        self.add_secondary_with_runner(
+            TypedTransformRunner(backend.narrow()),
+            (quantizers, secondary),
+            quant,
+            dequant,
+            (dst, stride),
+            scratch,
+        )
+    }
+
     /// Adds the transform of the § 7.15.3 secondary inverse transform of
     /// `quant`, under the flat § 7.14.4 dequantization by the `(dc_quant,
     /// ac_quant, dq_denom)` `quantizers`, to the block at the start of `dst`
@@ -603,18 +764,35 @@ impl InverseTransformAdd {
         (dst, stride): (&mut [T], usize),
         scratch: &mut InverseTransformAddScratch,
     ) -> crate::Result<bool> {
+        self.add_secondary_with_runner(
+            BaselineTransformRunner,
+            (quantizers, secondary),
+            quant,
+            dequant,
+            (dst, stride),
+            scratch,
+        )
+    }
+
+    fn add_secondary_with_runner<R: TransformRunner, T: ReconSample>(
+        self,
+        runner: R,
+        (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
+        quant: &[i32],
+        dequant: &mut [i32],
+        (dst, stride): (&mut [T], usize),
+        scratch: &mut InverseTransformAddScratch,
+    ) -> crate::Result<bool> {
         let bit_depth = secondary.bit_depth;
         if self.w_log2 >= 4
             && self.fits(dst.len(), stride)
             && let Some(rows) = dequant.first_chunk_mut::<64>()
         {
-            let len = secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)?;
+            let len = runner.secondary_quant_rows8(quant, quantizers, secondary, rows)?;
             #[cfg(target_arch = "x86_64")]
-            if let (Some(token), Some(dst), BitDepth::Eight) = (
-                Level::baseline().as_avx2(),
-                T::u8_slice_mut(&mut *dst),
-                bit_depth,
-            ) && self.row != InverseTransform2dDim::Identity
+            if let (Some(token), Some(dst), BitDepth::Eight) =
+                (runner.avx2_token(), T::u8_slice_mut(&mut *dst), bit_depth)
+                && self.row != InverseTransform2dDim::Identity
             {
                 let sink = avx2::Sink::Add { dst, stride };
                 avx2::transform(
@@ -629,11 +807,9 @@ impl InverseTransformAdd {
                 return Ok(true);
             }
             #[cfg(target_arch = "aarch64")]
-            if let (Some(token), Some(dst), BitDepth::Eight) = (
-                fearless_simd::Level::baseline().as_neon(),
-                T::u8_slice_mut(&mut *dst),
-                bit_depth,
-            ) {
+            if let (Some(token), Some(dst), BitDepth::Eight) =
+                (runner.neon_token(), T::u8_slice_mut(&mut *dst), bit_depth)
+            {
                 if len > 0 {
                     let scratch = &mut scratch[0];
                     neon::add(token, self, (&rows[..len], 8, None), (dst, stride), scratch);
@@ -641,16 +817,24 @@ impl InverseTransformAdd {
                 return Ok(true);
             }
             let t = self.transform8(None, bit_depth);
-            return Ok(self.run_add(t, (&rows[..len], 8), dst, stride, scratch));
+            return Ok(self.run_add(runner, t, (&rows[..len], 8), dst, stride, scratch));
         }
-        let coded = secondary_inverse_transform_quant(quant, quantizers, secondary, dequant)?;
-        Ok(self.add(&dequant[..coded], (None, bit_depth), dst, stride, scratch))
+        let coded = runner.secondary_quant(quant, quantizers, secondary, dequant)?;
+        Ok(self.add_with_runner(
+            runner,
+            &dequant[..coded],
+            (None, bit_depth),
+            dst,
+            stride,
+            scratch,
+        ))
     }
 
     /// Runs `t` over `input` into the tile, then adds it to the `u8` or
     /// `u16` block at the start of `dst`.
-    fn run_add<T: ReconSample>(
+    fn run_add<R: TransformRunner, T: ReconSample>(
         self,
+        runner: R,
         t: Transform8,
         input: (&[i32], usize),
         dst: &mut [T],
@@ -660,10 +844,10 @@ impl InverseTransformAdd {
         let w = self.w();
         let tile = &mut tile[..w * self.h() / 2];
         if let Some(dst) = T::u8_slice_mut(&mut *dst) {
-            if t.bit_depth != BitDepth::Eight || !run::<false>(t, input, tile, rows) {
+            if t.bit_depth != BitDepth::Eight || !run::<R, false>(runner, t, input, tile, rows) {
                 return false;
             }
-            baseline_simd!(simd => add_tile_u8(simd, tile, w, dst, stride));
+            runner.add_tile_u8(tile, w, dst, stride);
             return true;
         }
         let Some(dst) = T::u16_slice_mut(dst) else {
@@ -675,13 +859,13 @@ impl InverseTransformAdd {
             && let Some(value) = self.flat_residual(input.0, t.dequant, t.bit_depth)
         {
             let geometry = (w, self.h(), stride);
-            baseline_simd!(simd => add_constant_u16(simd, dst, geometry, (value, max)));
+            runner.add_constant_u16(dst, geometry, (value, max));
             return true;
         }
-        if !run::<false>(t, input, tile, rows) {
+        if !run::<R, false>(runner, t, input, tile, rows) {
             return false;
         }
-        baseline_simd!(simd => add_tile_u16(simd, tile, w, (dst, stride), max));
+        runner.add_tile_u16(tile, w, (dst, stride), max);
         true
     }
 
@@ -741,6 +925,235 @@ impl InverseTransformAdd {
     }
 }
 
+trait TransformRunner: Copy {
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn neon_token(self) -> Option<fearless_simd::Neon>;
+
+    fn u16_samples_exceed(self, samples: &[u16], max: u16) -> bool;
+
+    fn secondary_quant_rows8(
+        self,
+        quant: &[i32],
+        quantizers: (u32, u32, u32),
+        secondary: &SecondaryInverseTransform,
+        rows: &mut [i32; 64],
+    ) -> crate::Result<usize>;
+
+    fn secondary_quant(
+        self,
+        quant: &[i32],
+        quantizers: (u32, u32, u32),
+        secondary: &SecondaryInverseTransform,
+        dequant: &mut [i32],
+    ) -> crate::Result<usize>;
+
+    fn run_dc_only<const RESIDUAL: bool>(
+        self,
+        t: Transform8,
+        dc: i32,
+        passes: (Pass1d, Pass1d),
+        out: &mut [i32],
+    );
+
+    fn run_transform<const RESIDUAL: bool>(
+        self,
+        passes: (Pass1d, Pass1d),
+        rows: Rows<'_>,
+        pass: ColPass,
+        out: &mut [i32],
+        scratch: &mut [i32; 32 * 32],
+    );
+
+    fn add_tile_u8(self, tile: &[i32], w: usize, dst: &mut [u8], stride: usize);
+
+    fn add_constant_u16(self, dst: &mut [u16], geometry: (usize, usize, usize), values: (i32, i16));
+
+    fn add_tile_u16(self, tile: &[i32], w: usize, dst_stride: (&mut [u16], usize), max: i16);
+}
+
+#[derive(Clone, Copy)]
+struct BaselineTransformRunner;
+
+impl TransformRunner for BaselineTransformRunner {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        Level::baseline().as_avx2()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        fearless_simd::Level::baseline().as_neon()
+    }
+
+    #[inline]
+    fn u16_samples_exceed(self, samples: &[u16], max: u16) -> bool {
+        crate::sample_range::u16_samples_exceed(samples, max)
+    }
+
+    #[inline]
+    fn secondary_quant_rows8(
+        self,
+        quant: &[i32],
+        quantizers: (u32, u32, u32),
+        secondary: &SecondaryInverseTransform,
+        rows: &mut [i32; 64],
+    ) -> crate::Result<usize> {
+        secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)
+    }
+
+    #[inline]
+    fn secondary_quant(
+        self,
+        quant: &[i32],
+        quantizers: (u32, u32, u32),
+        secondary: &SecondaryInverseTransform,
+        dequant: &mut [i32],
+    ) -> crate::Result<usize> {
+        secondary_inverse_transform_quant(quant, quantizers, secondary, dequant)
+    }
+
+    #[inline]
+    fn run_dc_only<const RESIDUAL: bool>(
+        self,
+        t: Transform8,
+        dc: i32,
+        passes: (Pass1d, Pass1d),
+        out: &mut [i32],
+    ) {
+        baseline_simd!(simd => dc_only_transform::<_, RESIDUAL>(simd, t, dc, passes, out));
+    }
+
+    #[inline]
+    fn run_transform<const RESIDUAL: bool>(
+        self,
+        passes: (Pass1d, Pass1d),
+        rows: Rows<'_>,
+        pass: ColPass,
+        out: &mut [i32],
+        scratch: &mut [i32; 32 * 32],
+    ) {
+        baseline_simd!(simd => transform::<_, RESIDUAL>(simd, passes, rows, pass, out, scratch));
+    }
+
+    #[inline]
+    fn add_tile_u8(self, tile: &[i32], w: usize, dst: &mut [u8], stride: usize) {
+        baseline_simd!(simd => add_tile_u8(simd, tile, w, dst, stride));
+    }
+
+    #[inline]
+    fn add_constant_u16(
+        self,
+        dst: &mut [u16],
+        geometry: (usize, usize, usize),
+        values: (i32, i16),
+    ) {
+        baseline_simd!(simd => add_constant_u16(simd, dst, geometry, values));
+    }
+
+    #[inline]
+    fn add_tile_u16(self, tile: &[i32], w: usize, dst_stride: (&mut [u16], usize), max: i16) {
+        baseline_simd!(simd => add_tile_u16(simd, tile, w, dst_stride, max));
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TypedTransformRunner<B: SimdBackend>(B);
+
+impl<B: SimdBackend> TransformRunner for TypedTransformRunner<B> {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        self.0.avx2_token()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        self.0.neon_token()
+    }
+
+    #[inline]
+    fn u16_samples_exceed(self, samples: &[u16], max: u16) -> bool {
+        crate::sample_range::u16_samples_exceed_with(self.0, samples, max)
+    }
+
+    #[inline]
+    fn secondary_quant_rows8(
+        self,
+        quant: &[i32],
+        quantizers: (u32, u32, u32),
+        secondary: &SecondaryInverseTransform,
+        rows: &mut [i32; 64],
+    ) -> crate::Result<usize> {
+        secondary_inverse_transform_quant_rows8_with(self.0, quant, quantizers, secondary, rows)
+    }
+
+    #[inline]
+    fn secondary_quant(
+        self,
+        quant: &[i32],
+        quantizers: (u32, u32, u32),
+        secondary: &SecondaryInverseTransform,
+        dequant: &mut [i32],
+    ) -> crate::Result<usize> {
+        secondary_inverse_transform_quant_with(self.0, quant, quantizers, secondary, dequant)
+    }
+
+    #[inline]
+    fn run_dc_only<const RESIDUAL: bool>(
+        self,
+        t: Transform8,
+        dc: i32,
+        passes: (Pass1d, Pass1d),
+        out: &mut [i32],
+    ) {
+        self.0
+            .vectorize(|| dc_only_transform::<_, RESIDUAL>(self.0.token(), t, dc, passes, out));
+    }
+
+    #[inline]
+    fn run_transform<const RESIDUAL: bool>(
+        self,
+        passes: (Pass1d, Pass1d),
+        rows: Rows<'_>,
+        pass: ColPass,
+        out: &mut [i32],
+        scratch: &mut [i32; 32 * 32],
+    ) {
+        self.0.vectorize(|| {
+            transform::<_, RESIDUAL>(self.0.token(), passes, rows, pass, out, scratch);
+        });
+    }
+
+    #[inline]
+    fn add_tile_u8(self, tile: &[i32], w: usize, dst: &mut [u8], stride: usize) {
+        self.0
+            .vectorize(|| add_tile_u8(self.0.token(), tile, w, dst, stride));
+    }
+
+    #[inline]
+    fn add_constant_u16(
+        self,
+        dst: &mut [u16],
+        geometry: (usize, usize, usize),
+        values: (i32, i16),
+    ) {
+        self.0
+            .vectorize(|| add_constant_u16(self.0.token(), dst, geometry, values));
+    }
+
+    #[inline]
+    fn add_tile_u16(self, tile: &[i32], w: usize, dst_stride: (&mut [u16], usize), max: i16) {
+        self.0
+            .vectorize(|| add_tile_u16(self.0.token(), tile, w, dst_stride, max));
+    }
+}
+
 /// Runs the transform of `dequant` (a whole-row prefix of the `w * h` block)
 /// into the `w * h` `residual`, or returns `false` with nothing written when
 /// the shape has no lane form.
@@ -750,11 +1163,37 @@ pub(crate) fn inverse_transform_2d_8bit(
     residual: &mut [i32],
     scratch: &mut [i32; 32 * 32],
 ) -> bool {
+    inverse_transform_2d_8bit_with_runner(BaselineTransformRunner, t, dequant, residual, scratch)
+}
+
+pub(crate) fn inverse_transform_2d_8bit_with<B: SimdBackend>(
+    backend: B,
+    t: Transform8,
+    dequant: &[i32],
+    residual: &mut [i32],
+    scratch: &mut [i32; 32 * 32],
+) -> bool {
+    inverse_transform_2d_8bit_with_runner(
+        TypedTransformRunner(backend.narrow()),
+        t,
+        dequant,
+        residual,
+        scratch,
+    )
+}
+
+fn inverse_transform_2d_8bit_with_runner<R: TransformRunner>(
+    runner: R,
+    t: Transform8,
+    dequant: &[i32],
+    residual: &mut [i32],
+    scratch: &mut [i32; 32 * 32],
+) -> bool {
     if residual.len() != t.w * t.h || dequant.len() > t.w * t.h {
         return false;
     }
     #[cfg(target_arch = "x86_64")]
-    if let Some(token) = Level::baseline().as_avx2()
+    if let Some(token) = runner.avx2_token()
         && t.bit_depth == crate::BitDepth::Eight
         && let Some(shape) = InverseTransformAdd::of(
             t.row,
@@ -769,7 +1208,7 @@ pub(crate) fn inverse_transform_2d_8bit(
         avx2::transform(token, &shape, t.dequant, dequant, false, sink, scratch);
         return true;
     }
-    run::<true>(t, (dequant, t.w), residual, scratch)
+    run::<R, true>(runner, t, (dequant, t.w), residual, scratch)
 }
 
 /// Whether `t` and `dequant` have a lane form.
@@ -825,7 +1264,8 @@ const _: () = assert!(
 /// column 8), into `out`: the `w * h` residual with `RESIDUAL`, else the
 /// `w * h / 2` words of the tile. Returns `false` with nothing written when
 /// the shape or a shift has no lane form.
-fn run<const RESIDUAL: bool>(
+fn run<R: TransformRunner, const RESIDUAL: bool>(
+    runner: R,
     t: Transform8,
     (dequant, in_w): (&[i32], usize),
     out: &mut [i32],
@@ -846,7 +1286,7 @@ fn run<const RESIDUAL: bool>(
         return false;
     };
     if let Some(dc) = dc_only(&t, dequant, in_w) {
-        baseline_simd!(simd => dc_only_transform::<_, RESIDUAL>(simd, t, dc, (row, col), out));
+        runner.run_dc_only::<RESIDUAL>(t, dc, (row, col), out);
         return true;
     }
     let rows = Rows {
@@ -866,7 +1306,7 @@ fn run<const RESIDUAL: bool>(
         shift: u32::from(t.col_shift).min(31),
         bound: bounds(t.bit_depth).1,
     };
-    baseline_simd!(simd => transform::<_, RESIDUAL>(simd, (row, col), rows, pass, out, scratch));
+    runner.run_transform::<RESIDUAL>((row, col), rows, pass, out, scratch);
     true
 }
 
@@ -1466,5 +1906,183 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        use crate::coefficient_scan::TransformClass;
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                let dq = FlatDequant {
+                    dc: 12,
+                    ac: 9,
+                    denom_shift: 1,
+                };
+                for (w_log2, h_log2) in [(3, 3), (4, 3), (4, 4)] {
+                    let add = InverseTransformAdd::new(0, w_log2, h_log2, false).unwrap();
+                    let w = add.w();
+                    let h = add.h();
+                    let stride = w + 5;
+                    let len = (h - 1) * stride + w;
+                    let coeffs: Vec<i32> = (0..w * h)
+                        .map(|i| {
+                            if i < 12 {
+                                ((i as i32 * 17) % 91) - 45
+                            } else {
+                                0
+                            }
+                        })
+                        .collect();
+
+                    let pred_u8: Vec<u8> =
+                        (0..w * h).map(|i| ((i * 29 + 11) % 251) as u8).collect();
+                    let mut compat_u8 = vec![7u8; len];
+                    let mut typed_u8 = vec![7u8; len];
+                    let mut scratch_a = Box::new([[0i32; 32 * 32]; 2]);
+                    let mut scratch_b = Box::new([[0i32; 32 * 32]; 2]);
+                    assert!(add.add_onto(
+                        &pred_u8,
+                        &coeffs,
+                        (Some(dq), BitDepth::Eight),
+                        &mut compat_u8,
+                        stride,
+                        &mut scratch_a,
+                    ));
+                    assert!(add.add_onto_with(
+                        backend,
+                        &pred_u8,
+                        &coeffs,
+                        (Some(dq), BitDepth::Eight),
+                        &mut typed_u8,
+                        stride,
+                        &mut scratch_b,
+                    ));
+                    assert_eq!(typed_u8, compat_u8);
+
+                    let sec = SecondaryInverseTransform {
+                        w,
+                        h,
+                        n: 16,
+                        kernel: 0,
+                        sec_tx_type: 1,
+                        primary_scan_class: TransformClass::TwoD,
+                        transpose: false,
+                        bit_depth: BitDepth::Eight,
+                    };
+                    let quant = vec![24i32; 16];
+                    let mut deq_a = vec![0i32; w * h];
+                    let mut deq_b = vec![0i32; w * h];
+                    assert!(
+                        add.add_secondary(
+                            ((8, 12, 2), &sec),
+                            &quant,
+                            &mut deq_a,
+                            (&mut compat_u8, stride),
+                            &mut scratch_a,
+                        )
+                        .unwrap()
+                    );
+                    assert!(
+                        add.add_secondary_with(
+                            backend,
+                            ((8, 12, 2), &sec),
+                            &quant,
+                            &mut deq_b,
+                            (&mut typed_u8, stride),
+                            &mut scratch_b,
+                        )
+                        .unwrap()
+                    );
+                    assert_eq!(typed_u8, compat_u8);
+
+                    let pred_u16: Vec<u16> =
+                        (0..w * h).map(|i| ((i * 113 + 7) % 1020) as u16).collect();
+                    let dc_only = [37i32; 1];
+                    let mut compat_u16 = vec![3u16; len];
+                    let mut typed_u16 = vec![3u16; len];
+                    assert!(add.put_prediction(&pred_u16, BitDepth::Ten, &mut compat_u16, stride,));
+                    assert!(add.put_prediction_with(
+                        backend,
+                        &pred_u16,
+                        BitDepth::Ten,
+                        &mut typed_u16,
+                        stride,
+                    ));
+                    assert!(add.add(
+                        &dc_only,
+                        (Some(dq), BitDepth::Ten),
+                        &mut compat_u16,
+                        stride,
+                        &mut scratch_a,
+                    ));
+                    assert!(add.add_with(
+                        backend,
+                        &dc_only,
+                        (Some(dq), BitDepth::Ten),
+                        &mut typed_u16,
+                        stride,
+                        &mut scratch_b,
+                    ));
+                    assert_eq!(typed_u16, compat_u16);
+
+                    assert!(add.add_onto(
+                        &pred_u16,
+                        &coeffs,
+                        (Some(dq), BitDepth::Ten),
+                        &mut compat_u16,
+                        stride,
+                        &mut scratch_a,
+                    ));
+                    assert!(add.add_onto_with(
+                        backend,
+                        &pred_u16,
+                        &coeffs,
+                        (Some(dq), BitDepth::Ten),
+                        &mut typed_u16,
+                        stride,
+                        &mut scratch_b,
+                    ));
+                    assert_eq!(typed_u16, compat_u16);
+
+                    let t = Transform8 {
+                        bit_depth: BitDepth::Eight,
+                        row: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
+                        col: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
+                        w,
+                        h,
+                        rescale: w != h,
+                        row_shift: 7,
+                        col_shift: 10,
+                        dequant: Some(dq),
+                    };
+                    let mut res_a = vec![0i32; w * h];
+                    let mut res_b = vec![0i32; w * h];
+                    let mut scratch_r_a = [0i32; 32 * 32];
+                    let mut scratch_r_b = [0i32; 32 * 32];
+                    assert!(inverse_transform_2d_8bit(
+                        t,
+                        &coeffs,
+                        &mut res_a,
+                        &mut scratch_r_a,
+                    ));
+                    assert!(inverse_transform_2d_8bit_with(
+                        backend,
+                        t,
+                        &coeffs,
+                        &mut res_b,
+                        &mut scratch_r_b,
+                    ));
+                    assert_eq!(res_b, res_a);
+                }
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

@@ -161,6 +161,9 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
     /// Underlying `fearless_simd` token type carried by value.
     type Token: Simd;
 
+    /// Narrower non-widened compute backend (`Avx2Backend` for AVX-512, else `Self`).
+    type Narrow: SimdBackend;
+
     /// Observation tag for this backend type.
     const KIND: SelectedBackend;
 
@@ -172,6 +175,23 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
 
     /// Executes `f` within the target-feature scope guaranteed by this token.
     fn vectorize<R>(self, f: impl FnOnce() -> R) -> R;
+
+    /// Converts `self` to its narrower compute backend with zero runtime checks.
+    fn narrow(self) -> Self::Narrow;
+
+    /// Returns the carried `Avx2` token on x86-64 AVX2/AVX-512 backends.
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        None
+    }
+
+    /// Returns the carried `Neon` token on AArch64 NEON backends.
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        None
+    }
 }
 
 /// Sealed x86-64 AVX2 backend carrying a genuine [`fearless_simd::Avx2`] token.
@@ -204,6 +224,7 @@ impl sealed::Sealed for Avx2Backend {}
 #[cfg(target_arch = "x86_64")]
 impl SimdBackend for Avx2Backend {
     type Token = fearless_simd::Avx2;
+    type Narrow = Self;
     const KIND: SelectedBackend = SelectedBackend::Avx2;
     const NAME: &'static str = "avx2";
 
@@ -216,13 +237,25 @@ impl SimdBackend for Avx2Backend {
     fn vectorize<R>(self, f: impl FnOnce() -> R) -> R {
         self.token.vectorize(f)
     }
+
+    #[inline]
+    fn narrow(self) -> Self::Narrow {
+        self
+    }
+
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        Some(self.token)
+    }
 }
 
-/// Sealed x86-64 AVX-512 backend carrying a genuine [`fearless_simd::Avx512`] token.
+/// Sealed x86-64 AVX-512 backend carrying genuine [`fearless_simd::Avx512`] and
+/// [`fearless_simd::Avx2`] tokens.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 pub struct Avx512Backend {
     token: fearless_simd::Avx512,
+    avx2: fearless_simd::Avx2,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -248,6 +281,7 @@ impl sealed::Sealed for Avx512Backend {}
 #[cfg(target_arch = "x86_64")]
 impl SimdBackend for Avx512Backend {
     type Token = fearless_simd::Avx512;
+    type Narrow = Avx2Backend;
     const KIND: SelectedBackend = SelectedBackend::Avx512;
     const NAME: &'static str = "avx512";
 
@@ -259,6 +293,16 @@ impl SimdBackend for Avx512Backend {
     #[inline]
     fn vectorize<R>(self, f: impl FnOnce() -> R) -> R {
         self.token.vectorize(f)
+    }
+
+    #[inline]
+    fn narrow(self) -> Self::Narrow {
+        Avx2Backend { token: self.avx2 }
+    }
+
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        Some(self.avx2)
     }
 }
 
@@ -292,6 +336,7 @@ impl sealed::Sealed for NeonBackend {}
 #[cfg(target_arch = "aarch64")]
 impl SimdBackend for NeonBackend {
     type Token = fearless_simd::Neon;
+    type Narrow = Self;
     const KIND: SelectedBackend = SelectedBackend::Neon;
     const NAME: &'static str = "neon";
 
@@ -303,6 +348,16 @@ impl SimdBackend for NeonBackend {
     #[inline]
     fn vectorize<R>(self, f: impl FnOnce() -> R) -> R {
         self.token.vectorize(f)
+    }
+
+    #[inline]
+    fn narrow(self) -> Self::Narrow {
+        self
+    }
+
+    #[inline]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        Some(self.token)
     }
 }
 
@@ -336,6 +391,7 @@ impl sealed::Sealed for FallbackBackend {}
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 impl SimdBackend for FallbackBackend {
     type Token = fearless_simd::Fallback;
+    type Narrow = Self;
     const KIND: SelectedBackend = SelectedBackend::Fallback;
     const NAME: &'static str = "fallback";
 
@@ -347,6 +403,11 @@ impl SimdBackend for FallbackBackend {
     #[inline]
     fn vectorize<R>(self, f: impl FnOnce() -> R) -> R {
         self.token.vectorize(f)
+    }
+
+    #[inline]
+    fn narrow(self) -> Self::Narrow {
+        self
     }
 }
 
@@ -366,6 +427,12 @@ pub enum ResolvedBackend {
     /// Non-x86/non-AArch64 fallback backend token.
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     Fallback(FallbackBackend),
+}
+
+/// Typed continuation entered once from a validated [`ResolvedBackend`].
+pub trait SimdScope<R> {
+    /// Executes with concrete compile-time backend `B` selected at startup.
+    fn run<B: SimdBackend>(self, backend: B) -> R;
 }
 
 impl ResolvedBackend {
@@ -388,6 +455,21 @@ impl ResolvedBackend {
     #[must_use]
     pub const fn name(self) -> &'static str {
         self.kind().as_str()
+    }
+
+    /// Enters `scope` with the concrete [`SimdBackend`] represented by `self`.
+    #[inline]
+    pub fn enter<R>(self, scope: impl SimdScope<R>) -> R {
+        match self {
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2(backend) => scope.run(backend),
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx512(backend) => scope.run(backend),
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon(backend) => scope.run(backend),
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            Self::Fallback(backend) => scope.run(backend),
+        }
     }
 }
 
@@ -500,7 +582,8 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
             .ok_or_else(err),
         SelectedBackend::Avx512 => level
             .as_avx512()
-            .map(|token| ResolvedBackend::Avx512(Avx512Backend { token }))
+            .zip(level.as_avx2())
+            .map(|(token, avx2)| ResolvedBackend::Avx512(Avx512Backend { token, avx2 }))
             .ok_or_else(err),
         SelectedBackend::Neon | SelectedBackend::Fallback => Err(err()),
     }
@@ -648,5 +731,43 @@ mod tests {
             let _ = caps;
             assert_eq!(auto.kind(), SelectedBackend::Fallback);
         }
+    }
+
+    #[test]
+    fn resolved_backend_enter_dispatches_concrete_backend_kind() {
+        struct KindProbe;
+
+        impl SimdScope<SelectedBackend> for KindProbe {
+            fn run<B: SimdBackend>(self, _backend: B) -> SelectedBackend {
+                B::KIND
+            }
+        }
+
+        let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
+        assert_eq!(resolved.enter(KindProbe), resolved.kind());
+    }
+
+    #[test]
+    fn narrow_backend_stays_zero_sized_and_preserves_tokens() {
+        struct NarrowProbe;
+
+        impl SimdScope<SelectedBackend> for NarrowProbe {
+            fn run<B: SimdBackend>(self, backend: B) -> SelectedBackend {
+                let narrow = backend.narrow();
+                #[cfg(target_arch = "x86_64")]
+                assert!(backend.avx2_token().is_some());
+                #[cfg(target_arch = "aarch64")]
+                assert!(backend.neon_token().is_some());
+                narrow.vectorize(|| <B::Narrow as SimdBackend>::KIND)
+            }
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert_eq!(core::mem::size_of::<Avx2Backend>(), 0);
+            assert_eq!(core::mem::size_of::<Avx512Backend>(), 0);
+        }
+        let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
+        assert_eq!(resolved.enter(NarrowProbe), resolved.kind());
     }
 }

@@ -27,7 +27,7 @@ use core::num::NonZeroUsize;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use splot_parallel::{CompletionCell, RowScheduler};
+use splot_parallel::CompletionCell;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame,
 };
@@ -676,7 +676,7 @@ impl InflightRing {
 pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
-    rows: Option<&RowScheduler>,
+    rows: Option<&super::frame_tasks::DecoderRowScheduler>,
     pools: &mut super::frame_tasks::RowPools,
     ring: &mut InflightRing,
     frames: &mut super::FrameStore,
