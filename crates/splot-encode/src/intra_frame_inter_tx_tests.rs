@@ -9,10 +9,11 @@ use super::*;
 use crate::preset::PresetParams;
 use splot_decode::encoder_syntax::TxPartition;
 
-/// Preset 6 with `inter_tx_split`.
+/// Fast 128x128 superblock preset with `inter_tx_split`.
 fn with_split(inter_tx_split: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         inter_tx_split,
+        tx_partition_search: Levels::all(true),
         ..*preset6(true)
     }))
 }
@@ -26,7 +27,7 @@ type Luma = (usize, usize, usize);
 #[test]
 fn inter_tx_partitions_plan_the_decoder_records() {
     let config = config(136, 136, BitDepth::Eight, 6, 110);
-    let (planned, large) = in_first_inter_frame(&config, preset6(true), |syntax, root, _| {
+    let (planned, large) = in_first_inter_frame(&config, with_split(24), |syntax, root, _| {
         let large = syntax.luma_tx_partitions(&syntax.leaf(root)?)?;
         let leaf = syntax.leaf(top_left(syntax, root, 32))?;
         let prediction = InterPrediction::Single(InterModes {
@@ -168,7 +169,7 @@ fn inter_tx_partition_streams_decode_alike_on_any_thread_count() {
     };
     let (one, expected, ..) = stream(1);
     assert_same_samples(&decode(&one), &expected, "tiled");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
     });
 }

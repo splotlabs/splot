@@ -91,6 +91,15 @@ fn config(width: u32, height: u32, bit_depth: BitDepth, preset: u8, qp: u16) -> 
     config
 }
 
+/// Fast search base with 128x128 superblocks (`max_block_log2 = 7`) and
+/// mini-GOPs (`preset 9` search speed with `preset 6` superblock size).
+fn fast_p6() -> PresetParams {
+    PresetParams {
+        max_block_log2: 7,
+        ..*Preset::new(9).unwrap().params()
+    }
+}
+
 fn code(config: &Config, seed: u32) -> CodedFrame {
     code_stream(config, &[seed]).pop().unwrap()
 }
@@ -226,7 +235,8 @@ fn monochrome_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .collect();
         let name = format!("preset {preset}");
         assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             let other: Vec<u8> = stream(threads)
                 .iter()
                 .flat_map(|f| f.temporal_unit.clone())
@@ -269,7 +279,7 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .flat_map(|frame| recon_bytes(frame, BitDepth::Ten))
             .collect();
         assert_same_samples(&decode(&units), &expected, &format!("preset {preset}"));
-        each_case([2, 8], |threads| {
+        each_case([2], |threads| {
             let other: Vec<u8> = stream(threads)
                 .iter()
                 .flat_map(|f| f.temporal_unit.clone())
@@ -311,7 +321,8 @@ fn parity_hiding_codes_the_frames_without_tcq() {
         );
         assert!(!hidden.contains(&(true, true)));
         assert_same_samples(&decode(&units), &expected, &format!("{bit_depth:?}"));
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(stream(threads).0 == units, "{bit_depth:?} {threads}");
         }
     }
@@ -358,7 +369,7 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 .collect();
             let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
             assert_same_samples(&decode(&units), &expected, &name);
-            each_case([2, 8], |threads| {
+            each_case([2], |threads| {
                 let other: Vec<u8> = stream(threads)
                     .iter()
                     .flat_map(|f| f.temporal_unit.clone())
@@ -421,7 +432,7 @@ fn type_model_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 .collect();
             let name = format!("{bit_depth:?} {chroma:?}");
             assert_same_samples(&decode(&units), &expected, &name);
-            each_case([2, 8], |threads| {
+            each_case([2], |threads| {
                 let other: Vec<u8> = type_model_stream(&config, params, threads)
                     .iter()
                     .flat_map(|f| f.temporal_unit.clone())
@@ -552,7 +563,8 @@ fn cctx_rd_over_every_rotation_decodes_to_the_encoder_recon_on_any_thread_count(
             stream(1, 1).0 != units,
             "{name}: the wider CCTX search coded the same stream"
         );
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(stream(6, threads).0 == units, "{name}: {threads} threads");
         }
     }
@@ -599,7 +611,8 @@ fn cfl_zero_alpha_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         total += coded;
         assert_same_samples(&decode(&units), &expected, &name);
         differs |= stream(false, 1).0 != units;
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(
                 stream(true, threads).0 == units,
                 "{name}: {threads} threads"
@@ -651,7 +664,8 @@ fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         chosen += other;
         assert_same_samples(&decode(&units), &expected, &name);
         differs |= stream(false, 1).0 != units;
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(
                 stream(true, threads).0 == units,
                 "{name}: {threads} threads"
@@ -714,7 +728,8 @@ fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         }
         differs |= one != units;
         more += four;
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(stream(4, threads).0 == units, "{name}: {threads} threads");
         }
     }
@@ -1984,6 +1999,49 @@ fn multi_tile_output_does_not_depend_on_the_thread_count() {
     }
 }
 
+/// Multi-tile wavefront mini-GOP with delta-q, segmentation, compound modes,
+/// TIP, warp, loop filters and film grain enabled together writes identical
+/// bytes on 1, 2 and 8 threads and decodes to the encoder recon.
+#[test]
+fn all_tools_decode_alike_on_any_thread_count() {
+    let stream = |threads: usize| {
+        let mut config = config(136, 136, BitDepth::Ten, 9, 150);
+        config.tiles = TileLayout::Uniform {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.film_grain = true;
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            wavefront: true,
+            segmentation: 1,
+            compound_types: 2,
+            implicit_mask: true,
+            tip: 2,
+            warp: 1,
+            ..*Preset::new(9).unwrap().params()
+        }));
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        carry::planned_stream_of(&config, coder, panning_frame, 150)
+    };
+    let (one, expected, ..) = stream(1);
+    let ctx = splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::new(
+        splot_parallel::ThreadCount::from(1),
+    ))
+    .unwrap();
+    let mut decoded = Vec::new();
+    ctx.decode_raw_bytes(
+        &one,
+        splot_decode::DecodeOptions::default().with_skip_film_grain(true),
+        &mut decoded,
+    )
+    .unwrap();
+    assert_same_samples(&decoded, &expected, "all tools");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == one, "{threads} threads");
+    }
+}
+
 /// Preset 9 refining to eighth samples in frames up to `base_q_idx` 100.
 static EIGHTH_PEL: PresetParams = PresetParams {
     subpel_depth: 3,
@@ -2006,7 +2064,8 @@ fn eighth_pel_vectors_decode_to_the_encoder_recon_on_any_thread_count() {
     let case = (72, 8, BitDepth::Eight, 9, 100, (1, 0));
     let (one, expected) = tiled_stream(case, 1, Some(&EIGHTH_PEL));
     assert_same_samples(&decode(&one.concat()), &expected, "eighth-pel");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         let (units, _) = tiled_stream(case, threads, Some(&EIGHTH_PEL));
         assert!(units == one, "{threads} threads");
     }

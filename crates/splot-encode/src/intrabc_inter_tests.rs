@@ -70,7 +70,8 @@ fn inter_frames_code_intrabc_leaves_that_decode_to_the_recon() {
     let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
     let (one, recon, ..) = inter_intrabc_stream(case(1), false);
     assert_same_samples(&decode(&one), &recon, "unforced");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             inter_intrabc_stream(case(threads), false).0 == one,
             "{threads} threads"

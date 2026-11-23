@@ -327,6 +327,9 @@ thread_local! {
     /// passes on this thread.
     pub(crate) static CODED_WARP_TOOLS: core::cell::Cell<[usize; 2]> =
         const { core::cell::Cell::new([0; 2]) };
+    /// `INTRA_REGION` nodes of the final passes on this thread.
+    pub(crate) static CODED_REGIONS: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
     /// Leaves of the final passes on this thread that code explicit CFL
     /// alphas with alpha 0 in one plane.
     pub(crate) static CFL_ZERO_CODED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
@@ -498,6 +501,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 Ok(())
             }
             PartitionTree::Region { kind, luma, chroma } => {
+                #[cfg(test)]
+                if self.filters.is_some() {
+                    CODED_REGIONS.set(CODED_REGIONS.get() + 1);
+                }
                 let (calls, chroma_node) = self.syntax.region_children(node, *kind)?;
                 if calls.len() != luma.len() {
                     return Err(TileWriterError::Shape("child count"));

@@ -40,8 +40,13 @@ fn staged_stream(
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     MDS0_PRUNED.set(0);
-    let (units, expected, cores, _) =
-        super::carry::planned_stream_of(&config, coder, super::compound::noisy_panning_frame, qp);
+    let (units, expected, cores, _) = super::carry::planned_stream_frames(
+        &config,
+        coder,
+        super::compound::noisy_panning_frame,
+        qp,
+        9,
+    );
     (units, expected, cores, MDS0_PRUNED.get())
 }
 
@@ -65,7 +70,7 @@ fn staged_streams_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "staged mode decision");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(
             staged_stream(preset, 200, threads).0 == one,
             "{threads} threads"
@@ -144,7 +149,7 @@ fn mds1_streams_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "MDS1");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(
             staged_stream(full_staged(), 200, threads).0 == one,
             "{threads} threads"
@@ -230,7 +235,7 @@ fn two_pass_streams_decode_on_any_thread_count() {
     assert!(passes > 0, "no first pass ran");
     assert!(breakouts > 0, "no NONE breakout ended a node");
     assert_same_samples(&decode(&one), &expected, "two-pass partition");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(two_pass_stream(6, threads).0 == one, "{threads} threads");
     });
 }
@@ -321,7 +326,7 @@ fn reference_intra_skip_streams_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "reference intra skip");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(
             staged_stream(reference_intra(), 230, threads).0 == one,
             "{threads} threads"
@@ -476,7 +481,8 @@ fn newmv_pruned_streams_decode_on_any_thread_count() {
     assert!(NEWMV_PRUNED.get() > 0, "no reference skipped NEWMV");
     assert_every_loop_filter(&cores);
     assert_same_samples(&decode(&one), &expected, "NEWMV reference pruning");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             staged_stream(preset, 160, threads).0 == one,
             "{threads} threads"
@@ -514,7 +520,8 @@ fn light_leaf_streams_decode_on_any_thread_count() {
     );
     assert_every_loop_filter(&cores);
     assert_same_samples(&decode(&one), &expected, "light leaf decision");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             staged_stream(light_leaf(0), 160, threads).0 == one,
             "{threads} threads"

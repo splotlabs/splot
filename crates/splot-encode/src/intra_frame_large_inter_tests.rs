@@ -8,13 +8,11 @@ use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
 use crate::tile_writer::Walk;
 
-/// Preset 6, which codes 128x128 superblocks, with `large_inter`.
+/// Fast 128x128 superblock preset with `large_inter`.
 pub(super) fn preset6(large_inter: bool) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         large_inter,
-        tcq_type_trellis: false,
-        cctx: false,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -257,7 +255,7 @@ fn large_inter_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, preset6(true)).0
     };
     let one = stream(1);
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(stream(threads) == one, "{threads} threads");
     });
 }

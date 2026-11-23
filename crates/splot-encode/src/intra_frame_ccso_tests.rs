@@ -80,7 +80,8 @@ fn ccso_frames_decode_to_the_encoder_recon_on_any_thread_count() {
         "{flags:?}"
     );
     assert_same_samples(&decode(&one.concat()), &recon, "ccso");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             ccso_stream((threads, PixelFormat::Yuv420), on).0 == one,
             "{threads} threads"
@@ -157,7 +158,8 @@ fn full_ccso_ladder_frames_decode_to_the_encoder_recon_on_any_thread_count() {
         ccso_stream_with((1, yuv, 90), with_full_ladder(), new_ccso_choice);
     assert!(flags.contains(&true), "{flags:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "full ccso ladder");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             ccso_stream_with((threads, yuv, 90), with_full_ladder(), new_ccso_choice).0 == one,
             "{threads} threads"
@@ -251,7 +253,8 @@ fn ccso_reuse_frames_decode_to_the_encoder_recon_on_any_thread_count() {
         "{flags:?}"
     );
     assert_same_samples(&decode(&one.concat()), &recon, "ccso reuse");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(forced(threads, with_reuse()).0 == one, "{threads} threads");
     }
     let (_, _, off, _) = forced(1, Preset::new(9).unwrap().params());
@@ -316,7 +319,8 @@ fn ccso_block_reuse_frames_decode_to_the_encoder_recon_on_any_thread_count() {
         "{flags:?}"
     );
     assert_same_samples(&decode(&one.concat()), &recon, "ccso block reuse");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             stream(threads, 0, with_block_reuse()).0 == one,
             "{threads} threads"

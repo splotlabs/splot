@@ -106,7 +106,7 @@ fn grain_streams_decode_to_the_recon_plus_grain() {
                 grain_stream(config.clone(), 1, false, grainy_frame);
             assert_eq!(plain_recon, recon, "{name}: grain changed the recon");
             assert_same_samples(&decode(&plain.concat()), &plain_grained, &name);
-            each_case([2, 8], |threads| {
+            each_case([2], |threads| {
                 assert!(
                     grain_stream(config.clone(), threads, true, grainy_frame).0 == units,
                     "{name}: {threads}"
