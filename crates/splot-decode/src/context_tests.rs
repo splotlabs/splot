@@ -67,3 +67,36 @@ fn a_context_reused_across_streams_decodes_like_a_new_one() {
         assert_eq!(decode(&reused, bytes), decode(&context(), bytes));
     }
 }
+
+#[test]
+fn context_validates_simd_policy_at_startup() {
+    use crate::{DecodeError, SelectedBackend, SimdPolicy};
+
+    let ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(ctx.selected_backend(), SelectedBackend::Avx2);
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(ctx.selected_backend(), SelectedBackend::Neon);
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let err =
+            DecodeContext::new(DecodeRuntimeConfig::default().with_simd_policy(SimdPolicy::Neon))
+                .unwrap_err();
+        assert!(
+            matches!(err, DecodeError::UnsupportedBackend { .. }),
+            "{err}"
+        );
+
+        if !splot_core::simd::detect_capabilities().has_avx512() {
+            let err = DecodeContext::new(
+                DecodeRuntimeConfig::default().with_simd_policy(SimdPolicy::Avx512),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, DecodeError::UnsupportedBackend { .. }),
+                "{err}"
+            );
+        }
+    }
+}

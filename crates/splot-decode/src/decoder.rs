@@ -14,6 +14,7 @@ use splot_core::headers::content_interpretation::ContentInterpretation;
 use splot_core::headers::frame::FrameType;
 use splot_core::headers::metadata::MetadataUnit;
 use splot_core::ivf::IvfHeader;
+use splot_core::simd::{ResolvedBackend, SelectedBackend, SimdPolicy};
 use splot_parallel::{FrameDelay, ThreadCount};
 use splot_recon::{
     BitDepth, DecodedFrameInfo, FramePlaneSamples, PixelFormat, PlaneId, PlanePool, PlaneRef,
@@ -41,6 +42,8 @@ pub struct DecoderSettings {
     /// Leaves film grain out of the pictures; [`Picture::apply_film_grain`]
     /// adds it to a picture later.
     pub skip_film_grain: bool,
+    /// Startup SIMD backend policy. Defaults to [`SimdPolicy::Auto`].
+    pub simd_policy: SimdPolicy,
 }
 
 impl DecoderSettings {
@@ -70,6 +73,13 @@ impl DecoderSettings {
     #[must_use]
     pub const fn with_skip_film_grain(mut self, skip: bool) -> Self {
         self.skip_film_grain = skip;
+        self
+    }
+
+    /// Returns a copy with the startup SIMD backend policy replaced.
+    #[must_use]
+    pub const fn with_simd_policy(mut self, simd_policy: SimdPolicy) -> Self {
+        self.simd_policy = simd_policy;
         self
     }
 }
@@ -376,6 +386,7 @@ fn recycle<T: ReconSample>(frame: SharedFrame<T>, pool: &Arc<PlanePool>) {
 pub struct Decoder {
     shared: Arc<Shared>,
     limits: DecodeLimits,
+    backend: ResolvedBackend,
     /// Joined by [`Decoder::drop`], which waits for the driver to stop.
     driver: Option<std::thread::JoinHandle<()>>,
 }
@@ -479,11 +490,14 @@ impl Drop for DriverGuard {
 }
 
 impl Decoder {
-    /// Opens a decoder and starts its driver and row workers.
+    /// Opens a decoder, validates its SIMD policy, and starts its driver and row workers.
     ///
     /// # Errors
-    /// Returns [`DecodeError::Pool`] if a thread cannot start.
+    /// Returns [`DecodeError::UnsupportedBackend`] if the requested SIMD policy
+    /// cannot run on this host, or [`DecodeError::Pool`] if a thread cannot
+    /// start.
     pub fn new(settings: DecoderSettings) -> Result<Self> {
+        let backend = splot_core::simd::resolve_backend(settings.simd_policy)?;
         let threads = settings.threads.resolve();
         let frame_delay = settings.frame_delay.resolve(threads);
         let capacity = frame_delay.get().max(2);
@@ -511,7 +525,7 @@ impl Decoder {
         let rows = crate::pipeline::row_scheduler(threads)?;
         let driver = splot_parallel::spawn_thread("splot-driver", move || {
             let guard = DriverGuard(driver);
-            let session = DecodeSession::detaching_held(frame_delay, rows);
+            let session = DecodeSession::detaching_held(frame_delay, rows, backend);
             loop {
                 let mut units = ChannelUnits(Arc::clone(&guard.0));
                 let result = crate::pipeline::emit_frames(
@@ -534,8 +548,15 @@ impl Decoder {
         Ok(Self {
             shared,
             limits: settings.limits,
+            backend,
             driver: Some(driver),
         })
+    }
+
+    /// The concrete SIMD backend selected when this decoder opened.
+    #[must_use]
+    pub const fn selected_backend(&self) -> SelectedBackend {
+        self.backend.kind()
     }
 
     /// Sends one whole temporal unit. The decoder copies it.

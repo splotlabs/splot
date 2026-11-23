@@ -42,6 +42,9 @@ use fearless_simd::{
 
 use crate::ReconSample;
 
+mod direction_backend;
+pub use direction_backend::{CdefDirectionBackend, cdef_direction_padded_with_backend};
+
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
 const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 
