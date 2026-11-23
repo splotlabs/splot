@@ -12,6 +12,7 @@ use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
+use crate::syntax::{NoopObserver, SyntaxDescriptor, SyntaxObserver, SyntaxReader, SyntaxValue};
 
 mod wienerns;
 
@@ -309,11 +310,23 @@ pub fn parse_lr_params(
     view: &CoreSeqRestorationView,
     geometry: LrGeometry,
 ) -> Result<LrParams> {
-    parse_lr_params_for_inter(
-        reader,
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_lr_params_with_reader(&mut sr, coded_lossless, num_planes, *view, geometry)
+}
+
+pub(crate) fn parse_lr_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coded_lossless: bool,
+    num_planes: u8,
+    view: CoreSeqRestorationView,
+    geometry: LrGeometry,
+) -> Result<LrParams> {
+    parse_lr_params_for_inter_with_reader(
+        sr,
         coded_lossless,
         num_planes,
-        *view,
+        view,
         geometry,
         0,
         [0; 3],
@@ -323,12 +336,6 @@ pub fn parse_lr_params(
 }
 
 /// Parses `lr_params()` for a non-switch inter path with `NumTotalRefs` already derived.
-///
-/// The inter grammar differs from the intra wrapper only when a Wiener-NS-capable plane has
-/// `frame_filters_on[plane] == 1`: § 5.18.7.11 reads `temporal_pred_flag[plane]` when
-/// `NumTotalRefs > 0`, and reads `rst_ref_pic_idx` when that flag is set and more than one
-/// reference is available. When `temporal_references` contains the selected slot, its
-/// retained class count and coefficients are copied into the current plane state.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -345,136 +352,182 @@ pub fn parse_lr_params_for_inter(
     reference_filter_taps: &[&[Option<&[i16]>]; 3],
     temporal_references: LrTemporalReferenceView<'_>,
 ) -> Result<LrParams> {
-    if coded_lossless || !view.enable_restoration {
-        return Ok(LrParams {
-            uses_lr: false,
-            planes: crate::tile::InlineVec::default(),
-            loop_restoration_size: default_restoration_size(geometry),
-        });
-    }
+    SyntaxReader::with_noop(reader, |sr| {
+        parse_lr_params_for_inter_with_reader(
+            sr,
+            coded_lossless,
+            num_planes,
+            view,
+            geometry,
+            num_ref_frames,
+            reference_filter_counts,
+            reference_filter_taps,
+            temporal_references,
+        )
+    })
+}
 
-    let mut uses_luma_lr = false;
-    let mut uses_chroma_lr = false;
-    let mut planes = crate::tile::InlineVec::default();
-    let mut temporal_pred_flags = [false; MAX_LR_PLANES];
-    let mut temporal_ref_indices = [0usize; MAX_LR_PLANES];
-
-    for plane in 0..usize::from(num_planes) {
-        let is_chroma = plane > 0;
-        let (index_to_tool, n) = lr_plane_tool_table(view, is_chroma);
-        let tool_index = reader.read_ns(n)?;
-        let tool = index_to_tool.get(tool_index as usize).copied().unwrap_or(0);
-        let restoration_type = FrameRestorationType::from_tool(tool);
-
-        if restoration_type != FrameRestorationType::None {
-            if plane == 0 {
-                uses_luma_lr = true;
-            } else {
-                uses_chroma_lr = true;
-            }
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn parse_lr_params_for_inter_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coded_lossless: bool,
+    num_planes: u8,
+    view: CoreSeqRestorationView,
+    geometry: LrGeometry,
+    num_ref_frames: u32,
+    reference_filter_counts: [usize; 3],
+    reference_filter_taps: &[&[Option<&[i16]>]; 3],
+    temporal_references: LrTemporalReferenceView<'_>,
+) -> Result<LrParams> {
+    sr.in_struct("lr_params", Some("5.18.7.11"), |sr| {
+        if coded_lossless || !view.enable_restoration {
+            return Ok(LrParams {
+                uses_lr: false,
+                planes: crate::tile::InlineVec::default(),
+                loop_restoration_size: default_restoration_size(geometry),
+            });
         }
 
-        let mut frame_filters_on = false;
-        let mut num_filter_classes: Option<u8> = None;
-        let mut temporal_pred_flag = false;
-        let mut temporal_ref_index = 0usize;
+        let mut uses_luma_lr = false;
+        let mut uses_chroma_lr = false;
+        let mut planes = crate::tile::InlineVec::default();
+        let mut temporal_pred_flags = [false; MAX_LR_PLANES];
+        let mut temporal_ref_indices = [0usize; MAX_LR_PLANES];
 
-        if matches!(
-            restoration_type,
-            FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
-        ) {
-            frame_filters_on = reader.read_flag()?;
-            if frame_filters_on && plane == 0 {
-                if num_ref_frames > 0 {
-                    temporal_pred_flag = reader.read_flag()?;
-                }
-                if temporal_pred_flag && num_ref_frames > 1 {
-                    let n = ceil_log2(num_ref_frames);
-                    temporal_ref_index = reader.read_bits(n)? as usize;
-                }
-                if !temporal_pred_flag {
-                    let idx = reader.read_bits_u8(3)?;
-                    num_filter_classes = Some(DECODE_NUM_FILTER_CLASSES[usize::from(idx)]);
-                }
-            } else if frame_filters_on && num_ref_frames > 0 {
-                temporal_pred_flag = reader.read_flag()?;
-                if temporal_pred_flag && num_ref_frames > 1 {
-                    let n = ceil_log2(num_ref_frames);
-                    temporal_ref_index = reader.read_bits(n)? as usize;
-                }
-            }
-        }
+        for plane in 0..usize::from(num_planes) {
+            let is_chroma = plane > 0;
+            let (index_to_tool, n) = lr_plane_tool_table(view, is_chroma);
+            let plane_params = sr.in_loop_item("plane", plane, |sr| {
+                let tool_index = sr.read_ns("tool_index", n)?;
+                let tool = index_to_tool.get(tool_index as usize).copied().unwrap_or(0);
+                let restoration_type = FrameRestorationType::from_tool(tool);
 
-        if let Some(slot) = temporal_pred_flags.get_mut(plane) {
-            *slot = temporal_pred_flag;
-        }
-        if let Some(slot) = temporal_ref_indices.get_mut(plane) {
-            *slot = temporal_ref_index;
-        }
-        planes
-            .push(LrPlaneParams {
-                restoration_type,
-                frame_filters_on,
-                num_filter_classes,
-                frame_filter_bank: None,
-                rst_ref_pic_idx: temporal_pred_flag.then_some(temporal_ref_index as u8),
-            })
-            .ok_or(crate::error::Error::Unimplemented {
-                feature: "lr_params_plane_count",
+                if restoration_type != FrameRestorationType::None {
+                    if plane == 0 {
+                        uses_luma_lr = true;
+                    } else {
+                        uses_chroma_lr = true;
+                    }
+                }
+
+                let mut frame_filters_on = false;
+                let mut num_filter_classes: Option<u8> = None;
+                let mut temporal_pred_flag = false;
+                let mut temporal_ref_index = 0usize;
+
+                if matches!(
+                    restoration_type,
+                    FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
+                ) {
+                    frame_filters_on = sr.read_flag("frame_filters_on")?;
+                    if frame_filters_on && plane == 0 {
+                        if num_ref_frames > 0 {
+                            temporal_pred_flag = sr.read_flag("temporal_pred_flag")?;
+                        }
+                        if temporal_pred_flag && num_ref_frames > 1 {
+                            let n = ceil_log2(num_ref_frames);
+                            temporal_ref_index = sr.read_bits("rst_ref_pic_idx", n)? as usize;
+                        }
+                        if !temporal_pred_flag {
+                            let idx = sr.read_bits_u8("num_filter_classes_idx", 3)?;
+                            num_filter_classes = Some(DECODE_NUM_FILTER_CLASSES[usize::from(idx)]);
+                        }
+                    } else if frame_filters_on && num_ref_frames > 0 {
+                        temporal_pred_flag = sr.read_flag("temporal_pred_flag")?;
+                        if temporal_pred_flag && num_ref_frames > 1 {
+                            let n = ceil_log2(num_ref_frames);
+                            temporal_ref_index = sr.read_bits("rst_ref_pic_idx", n)? as usize;
+                        }
+                    }
+                }
+
+                if let Some(slot) = temporal_pred_flags.get_mut(plane) {
+                    *slot = temporal_pred_flag;
+                }
+                if let Some(slot) = temporal_ref_indices.get_mut(plane) {
+                    *slot = temporal_ref_index;
+                }
+                Ok(LrPlaneParams {
+                    restoration_type,
+                    frame_filters_on,
+                    num_filter_classes,
+                    frame_filter_bank: None,
+                    rst_ref_pic_idx: temporal_pred_flag.then_some(temporal_ref_index as u8),
+                })
             })?;
-    }
-
-    let uses_lr = uses_luma_lr || uses_chroma_lr;
-    let max_subsampling = u32::from(geometry.subsampling_x.max(geometry.subsampling_y));
-    let mut loop_restoration_size = [
-        RESTORATION_TILESIZE_MAX >> 3,
-        RESTORATION_TILESIZE_MAX >> (3 + max_subsampling),
-        0,
-    ];
-
-    if uses_luma_lr {
-        let shift = read_lr_size_shift(reader, geometry.sb_size)?;
-        loop_restoration_size[0] = RESTORATION_TILESIZE_MAX >> shift;
-    }
-
-    if uses_chroma_lr {
-        let base = RESTORATION_TILESIZE_MAX >> max_subsampling;
-        let shift = read_lr_size_shift(reader, geometry.sb_size)?;
-        loop_restoration_size[1] = base >> shift;
-    }
-
-    loop_restoration_size[2] = loop_restoration_size[1];
-
-    for (plane, plane_params) in planes.iter_mut().enumerate() {
-        if !plane_params.frame_filters_on {
-            continue;
+            planes
+                .push(plane_params)
+                .ok_or(crate::error::Error::Unimplemented {
+                    feature: "lr_params_plane_count",
+                })?;
         }
-        if temporal_pred_flags.get(plane).copied().unwrap_or(false) {
-            copy_temporal_frame_filter(
-                plane_params,
-                plane,
-                temporal_ref_indices.get(plane).copied().unwrap_or(0),
-                temporal_references,
-            );
-        } else {
-            let classes = plane_params.num_filter_classes.unwrap_or(1);
-            let num_ref_filters = reference_filter_counts.get(plane).copied().unwrap_or(0);
-            let ref_taps = reference_filter_taps.get(plane).copied().unwrap_or(&[]);
-            plane_params.frame_filter_bank = Some(parse_frame_wiener_ns_filter(
-                reader,
-                plane,
-                classes,
-                num_ref_filters,
-                ref_taps,
-                view,
-            )?);
-        }
-    }
 
-    Ok(LrParams {
-        uses_lr,
-        planes,
-        loop_restoration_size,
+        let uses_lr = uses_luma_lr || uses_chroma_lr;
+        let max_subsampling = u32::from(geometry.subsampling_x.max(geometry.subsampling_y));
+        let mut loop_restoration_size = [
+            RESTORATION_TILESIZE_MAX >> 3,
+            RESTORATION_TILESIZE_MAX >> (3 + max_subsampling),
+            0,
+        ];
+
+        if uses_luma_lr {
+            let shift = read_lr_size_shift(
+                sr,
+                geometry.sb_size,
+                "lr_use_half_size",
+                "lr_use_max_size",
+                "lr_use_quarter_size",
+            )?;
+            loop_restoration_size[0] = RESTORATION_TILESIZE_MAX >> shift;
+        }
+
+        if uses_chroma_lr {
+            let base = RESTORATION_TILESIZE_MAX >> max_subsampling;
+            let shift = read_lr_size_shift(
+                sr,
+                geometry.sb_size,
+                "lr_uv_use_half_size",
+                "lr_uv_use_max_size",
+                "lr_uv_use_quarter_size",
+            )?;
+            loop_restoration_size[1] = base >> shift;
+        }
+
+        loop_restoration_size[2] = loop_restoration_size[1];
+
+        for (plane, plane_params) in planes.iter_mut().enumerate() {
+            if !plane_params.frame_filters_on {
+                continue;
+            }
+            if temporal_pred_flags.get(plane).copied().unwrap_or(false) {
+                copy_temporal_frame_filter(
+                    plane_params,
+                    plane,
+                    temporal_ref_indices.get(plane).copied().unwrap_or(0),
+                    temporal_references,
+                );
+            } else {
+                let classes = plane_params.num_filter_classes.unwrap_or(1);
+                let num_ref_filters = reference_filter_counts.get(plane).copied().unwrap_or(0);
+                let ref_taps = reference_filter_taps.get(plane).copied().unwrap_or(&[]);
+                plane_params.frame_filter_bank = Some(sr.in_loop_item("plane", plane, |sr| {
+                    parse_frame_wiener_ns_filter(
+                        sr,
+                        plane,
+                        classes,
+                        num_ref_filters,
+                        ref_taps,
+                        view,
+                    )
+                })?);
+            }
+        }
+
+        Ok(LrParams {
+            uses_lr,
+            planes,
+            loop_restoration_size,
+        })
     })
 }
 
@@ -545,20 +598,30 @@ fn copy_temporal_frame_filter(
 /// The luma and chroma arms read the same three-flag structure (`*_use_half_size`,
 /// `*_use_max_size`, `*_use_quarter_size`) with the same `SbSize`-dependent inferences, so
 /// they share one helper.
-fn read_lr_size_shift(reader: &mut BitReader<'_>, sb_size: SuperblockSize) -> Result<u32> {
-    if reader.read_flag()? {
+fn read_lr_size_shift<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    sb_size: SuperblockSize,
+    half_name: &'static str,
+    max_name: &'static str,
+    quarter_name: &'static str,
+) -> Result<u32> {
+    if sr.read_flag(half_name)? {
         return Ok(1);
     }
     if sb_size == SuperblockSize::Block256x256 {
         return Ok(0);
     }
-    if reader.read_flag()? {
+    if sr.read_flag(max_name)? {
         return Ok(0);
     }
     if sb_size == SuperblockSize::Block128x128 {
         return Ok(2);
     }
-    if reader.read_flag()? { Ok(2) } else { Ok(3) }
+    if sr.read_flag(quarter_name)? {
+        Ok(2)
+    } else {
+        Ok(3)
+    }
 }
 
 /// Reconstructs the per-plane `indexToTool` selection table (AV2 § 5.18.7.11, mirror
@@ -668,15 +731,21 @@ pub fn parse_ccso_params(
     num_planes: u8,
     view: &CoreSeqCcsoView,
 ) -> Result<CcsoParams> {
-    parse_ccso_params_with_references(reader, coded_lossless, num_planes, *view, None)
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_ccso_params_with_reader(&mut sr, coded_lossless, num_planes, *view)
 }
 
-/// Parses `ccso_params()` for a non-switch inter path with `NumTotalRefs` already derived.
-///
-/// When a plane enables CCSO, § 5.18.7.12 reads the inter-only `reuse_ccso` and
-/// `sb_reuse_ccso` flags. If `reuse_ccso` is set, the direct per-plane coefficients are not
-/// present; the returned plane keeps those direct fields as `None`, matching the existing
-/// "not locally available" representation used by runtime/frontier checks.
+pub(crate) fn parse_ccso_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coded_lossless: bool,
+    num_planes: u8,
+    view: CoreSeqCcsoView,
+) -> Result<CcsoParams> {
+    parse_ccso_params_with_references(sr, coded_lossless, num_planes, view, None)
+}
+
+#[cfg(test)]
 pub(super) fn parse_ccso_params_for_inter(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
@@ -684,141 +753,178 @@ pub(super) fn parse_ccso_params_for_inter(
     view: CoreSeqCcsoView,
     num_ref_frames: u32,
 ) -> Result<CcsoParams> {
-    parse_ccso_params_with_references(
-        reader,
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_ccso_params_for_inter_with_reader(
+        &mut sr,
         coded_lossless,
         num_planes,
         view,
-        Some(num_ref_frames),
+        num_ref_frames,
     )
 }
 
-fn parse_ccso_params_with_references(
-    reader: &mut BitReader<'_>,
+pub(super) fn parse_ccso_params_for_inter_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coded_lossless: bool,
+    num_planes: u8,
+    view: CoreSeqCcsoView,
+    num_ref_frames: u32,
+) -> Result<CcsoParams> {
+    parse_ccso_params_with_references(sr, coded_lossless, num_planes, view, Some(num_ref_frames))
+}
+
+fn parse_ccso_params_with_references<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     coded_lossless: bool,
     num_planes: u8,
     view: CoreSeqCcsoView,
     inter_num_ref_frames: Option<u32>,
 ) -> Result<CcsoParams> {
-    if coded_lossless || !view.enable_ccso {
-        return Ok(CcsoParams {
-            ccso_frame_flag: None,
-            planes: crate::tile::InlineVec::default(),
-        });
-    }
-
-    let ccso_frame_flag = if view.single_picture_header_flag {
-        true
-    } else {
-        reader.read_flag()?
-    };
-    if !ccso_frame_flag {
-        return Ok(CcsoParams {
-            ccso_frame_flag: Some(false),
-            planes: crate::tile::InlineVec::default(),
-        });
-    }
-
-    let mut planes = crate::tile::InlineVec::default();
-    for _ in 0..usize::from(num_planes) {
-        let ccso_planes = reader.read_flag()?;
-        let mut plane_params = CcsoPlaneParams {
-            ccso_planes,
-            ..Default::default()
-        };
-
-        if ccso_planes {
-            let mut reuse_ccso = false;
-            if let Some(num_ref_frames) = inter_num_ref_frames {
-                reuse_ccso = reader.read_flag()?;
-                let sb_reuse_ccso = reader.read_flag()?;
-                plane_params.reuse_ccso = reuse_ccso;
-                plane_params.sb_reuse_ccso = sb_reuse_ccso;
-                if reuse_ccso || sb_reuse_ccso {
-                    plane_params.ccso_ref_idx = if num_ref_frames > 1 {
-                        let n = ceil_log2(num_ref_frames);
-                        Some(reader.read_bits(n)?)
-                    } else {
-                        Some(0)
-                    };
-                }
-            }
-            if reuse_ccso {
-                planes
-                    .push(plane_params)
-                    .ok_or(crate::error::Error::Unimplemented {
-                        feature: "ccso_params_plane_count",
-                    })?;
-                continue;
-            }
-
-            let ccso_bo_only = reader.read_flag()?;
-            let ccso_scale_idx = reader.read_bits_u8(2)?;
-            let (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf) = if ccso_bo_only {
-                (0u8, 0u8, false)
-            } else {
-                let ccso_quant_idx = reader.read_bits_u8(2)?;
-                let ccso_ext_filter = reader.read_bits_u8(3)?;
-                let quant_step = ccso_quant_step(ccso_scale_idx, ccso_quant_idx);
-                let ccso_edge_clf = if quant_step == 0 {
-                    false
-                } else {
-                    reader.read_flag()?
-                };
-                (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf)
-            };
-
-            let band_bits = 2 + u32::from(ccso_bo_only);
-            let ccso_max_band_log2 = reader.read_bits_u8(band_bits)?;
-
-            let max_edge_interval = if ccso_bo_only {
-                1u32
-            } else {
-                CCSO_INPUT_INTERVAL - u32::from(ccso_edge_clf)
-            };
-            let max_band = 1u32 << u32::from(ccso_max_band_log2);
-
-            let offset_count = (max_edge_interval * max_edge_interval * max_band) as usize;
-            let mut ccso_offset_idx = CcsoOffsets::default();
-            for _ in 0..offset_count {
-                ccso_offset_idx.push(read_tu(reader, 7)? as u8).ok_or(
-                    crate::error::Error::Unimplemented {
-                        feature: "ccso_offset_idx_count",
-                    },
-                )?;
-            }
-
-            plane_params.ccso_bo_only = Some(ccso_bo_only);
-            plane_params.ccso_scale_idx = Some(ccso_scale_idx);
-            plane_params.ccso_quant_idx = Some(ccso_quant_idx);
-            plane_params.ccso_ext_filter = Some(ccso_ext_filter);
-            plane_params.ccso_edge_clf = Some(ccso_edge_clf);
-            plane_params.ccso_max_band_log2 = Some(ccso_max_band_log2);
-            plane_params.ccso_offset_idx = ccso_offset_idx;
+    sr.in_struct("ccso_params", Some("5.18.7.12"), |sr| {
+        if coded_lossless || !view.enable_ccso {
+            return Ok(CcsoParams {
+                ccso_frame_flag: None,
+                planes: crate::tile::InlineVec::default(),
+            });
         }
 
-        planes
-            .push(plane_params)
-            .ok_or(crate::error::Error::Unimplemented {
-                feature: "ccso_params_plane_count",
-            })?;
-    }
+        let ccso_frame_flag = if view.single_picture_header_flag {
+            sr.inferred_bool("ccso_frame_flag", "single_picture_header_flag", true);
+            true
+        } else {
+            sr.read_flag("ccso_frame_flag")?
+        };
+        if !ccso_frame_flag {
+            return Ok(CcsoParams {
+                ccso_frame_flag: Some(false),
+                planes: crate::tile::InlineVec::default(),
+            });
+        }
 
-    Ok(CcsoParams {
-        ccso_frame_flag: Some(true),
-        planes,
+        let mut planes = crate::tile::InlineVec::default();
+        for plane in 0..usize::from(num_planes) {
+            let plane_params = sr.in_loop_item("plane", plane, |sr| {
+                let ccso_planes = sr.read_flag("ccso_planes")?;
+                let mut plane_params = CcsoPlaneParams {
+                    ccso_planes,
+                    ..Default::default()
+                };
+
+                if ccso_planes {
+                    let mut reuse_ccso = false;
+                    if let Some(num_ref_frames) = inter_num_ref_frames {
+                        reuse_ccso = sr.read_flag("reuse_ccso")?;
+                        let sb_reuse_ccso = sr.read_flag("sb_reuse_ccso")?;
+                        plane_params.reuse_ccso = reuse_ccso;
+                        plane_params.sb_reuse_ccso = sb_reuse_ccso;
+                        if reuse_ccso || sb_reuse_ccso {
+                            plane_params.ccso_ref_idx = if num_ref_frames > 1 {
+                                let n = ceil_log2(num_ref_frames);
+                                Some(sr.read_bits("ccso_ref_idx", n)?)
+                            } else {
+                                sr.inferred_u64("ccso_ref_idx", "NumTotalRefs <= 1", 0);
+                                Some(0)
+                            };
+                        }
+                    }
+                    if reuse_ccso {
+                        return Ok(plane_params);
+                    }
+
+                    let ccso_bo_only = sr.read_flag("ccso_bo_only")?;
+                    let ccso_scale_idx = sr.read_bits_u8("ccso_scale_idx", 2)?;
+                    let (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf) = if ccso_bo_only {
+                        sr.inferred_u64("ccso_quant_idx", "ccso_bo_only", 0);
+                        sr.inferred_u64("ccso_ext_filter", "ccso_bo_only", 0);
+                        sr.inferred_bool("ccso_edge_clf", "ccso_bo_only", false);
+                        (0u8, 0u8, false)
+                    } else {
+                        let ccso_quant_idx = sr.read_bits_u8("ccso_quant_idx", 2)?;
+                        let ccso_ext_filter = sr.read_bits_u8("ccso_ext_filter", 3)?;
+                        let quant_step = ccso_quant_step(ccso_scale_idx, ccso_quant_idx);
+                        let ccso_edge_clf = if quant_step == 0 {
+                            sr.inferred_bool("ccso_edge_clf", "quantStep == 0", false);
+                            false
+                        } else {
+                            sr.read_flag("ccso_edge_clf")?
+                        };
+                        (ccso_quant_idx, ccso_ext_filter, ccso_edge_clf)
+                    };
+
+                    let band_bits = 2 + u32::from(ccso_bo_only);
+                    let ccso_max_band_log2 = sr.read_bits_u8("ccso_max_band_log2", band_bits)?;
+
+                    let max_edge_interval = if ccso_bo_only {
+                        1u32
+                    } else {
+                        CCSO_INPUT_INTERVAL - u32::from(ccso_edge_clf)
+                    };
+                    let max_band = 1u32 << u32::from(ccso_max_band_log2);
+
+                    let offset_count = (max_edge_interval * max_edge_interval * max_band) as usize;
+                    let mut ccso_offset_idx = CcsoOffsets::default();
+                    for idx in 0..offset_count {
+                        let val = sr.in_loop_item("offset", idx, |sr| {
+                            read_tu_observed(sr, "ccso_offset_idx", 7)
+                        })?;
+                        ccso_offset_idx.push(val as u8).ok_or(
+                            crate::error::Error::Unimplemented {
+                                feature: "ccso_offset_idx_count",
+                            },
+                        )?;
+                    }
+
+                    plane_params.ccso_bo_only = Some(ccso_bo_only);
+                    plane_params.ccso_scale_idx = Some(ccso_scale_idx);
+                    plane_params.ccso_quant_idx = Some(ccso_quant_idx);
+                    plane_params.ccso_ext_filter = Some(ccso_ext_filter);
+                    plane_params.ccso_edge_clf = Some(ccso_edge_clf);
+                    plane_params.ccso_max_band_log2 = Some(ccso_max_band_log2);
+                    plane_params.ccso_offset_idx = ccso_offset_idx;
+                }
+
+                Ok(plane_params)
+            })?;
+
+            planes
+                .push(plane_params)
+                .ok_or(crate::error::Error::Unimplemented {
+                    feature: "ccso_params_plane_count",
+                })?;
+        }
+
+        Ok(CcsoParams {
+            ccso_frame_flag: Some(true),
+            planes,
+        })
     })
 }
 
-/// Reads a `tu(mx)` truncated-unary value (AV2 § 4.11.9): up to `mx` `1`-bits terminated
-/// by a `0`, or `mx` when every bit is `1`.
-fn read_tu(reader: &mut BitReader<'_>, mx: u32) -> Result<u32> {
+fn read_tu_observed<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    name: &'static str,
+    mx: u32,
+) -> Result<u32> {
+    let start = sr.rel_bit();
+    let mut val = mx;
     for idx in 0..mx {
-        if reader.read_bit()? == 0 {
-            return Ok(idx);
+        match sr.reader_mut().read_bit() {
+            Ok(0) => {
+                val = idx;
+                break;
+            }
+            Ok(_) => {}
+            Err(err) => return sr.fail(start, Some(name), err),
         }
     }
-    Ok(mx)
+    sr.emit_read(
+        name,
+        SyntaxDescriptor::Tu(mx),
+        SyntaxValue::Unsigned(u64::from(val)),
+        start,
+    );
+    Ok(val)
 }
 
 #[cfg(test)]

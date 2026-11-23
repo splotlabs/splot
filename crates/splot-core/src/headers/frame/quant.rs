@@ -21,6 +21,7 @@ use crate::error::Result;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::sequence::{SequenceHeaderGeneral, SequenceTqEntropyConfig};
 use crate::segment::{MAX_SEGMENTS, SegmentFeature};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 use super::segmentation::SegmentationParams;
 
@@ -325,20 +326,26 @@ pub fn get_qindex(
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
 /// payload ends mid-field.
 pub fn read_delta_q(reader: &mut BitReader<'_>) -> Result<i32> {
-    let delta_coded = reader.read_flag()?;
-    if delta_coded {
-        reader.read_su(7)
-    } else {
-        Ok(0)
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    read_delta_q_with_reader(&mut sr)
 }
 
-/// Parses `quantization_params()` (AV2 v1.0.0 § 5.18.6.1,
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1`).
-///
-/// `tip_frame_as_output` is `TipFrameMode == TIP_FRAME_AS_OUTPUT` decoder state; the
-/// intra path always passes `false` (`TipFrameMode = TIP_FRAME_DISABLED`,
-/// AV2 § 5.18.2). It gates the `DeltaQYDc` and `DeltaQUDc` / `DeltaQVDc` reads.
+pub(crate) fn read_delta_q_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<i32> {
+    sr.in_struct("read_delta_q", Some("5.18.6.3"), |sr| {
+        let delta_coded = sr.read_flag("delta_coded")?;
+        if delta_coded {
+            sr.read_su("delta_q", 7)
+        } else {
+            sr.inferred_i64("delta_q", "!delta_coded", 0);
+            Ok(0)
+        }
+    })
+}
+
+/// Parses `quantization_params()` (AV2 v1.0.0 § 5.18.6.1).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
@@ -348,59 +355,69 @@ pub fn parse_quantization_params(
     quant: &CoreSeqQuantView,
     tip_frame_as_output: bool,
 ) -> Result<QuantizationParams> {
-    let n = if quant.bit_depth == 8 { 8 } else { 9 };
-    let base_q_idx = reader.read_bits(n)?;
-    let mut params = QuantizationParams {
-        base_q_idx,
-        delta_q_y_dc: 0,
-        delta_q_u_dc: 0,
-        delta_q_u_ac: 0,
-        delta_q_v_dc: 0,
-        delta_q_v_ac: 0,
-        diff_uv_delta: false,
-    };
-    if !tip_frame_as_output && quant.y_dc_delta_q_enabled {
-        params.delta_q_y_dc = read_delta_q(reader)?;
-    }
-    if quant.num_planes > 1
-        && (quant.uv_ac_delta_q_enabled || (!tip_frame_as_output && quant.uv_dc_delta_q_enabled))
-    {
-        if quant.separate_uv_delta_q {
-            params.diff_uv_delta = reader.read_flag()?;
-        }
-        if !tip_frame_as_output && quant.uv_dc_delta_q_enabled {
-            params.delta_q_u_dc = read_delta_q(reader)?;
-        }
-        if quant.uv_ac_delta_q_enabled {
-            params.delta_q_u_ac = read_delta_q(reader)?;
-        }
-        if quant.equal_ac_dc_q {
-            params.delta_q_u_dc = params.delta_q_u_ac;
-        }
-        if params.diff_uv_delta {
-            if !tip_frame_as_output && quant.uv_dc_delta_q_enabled {
-                params.delta_q_v_dc = read_delta_q(reader)?;
-            }
-            if quant.uv_ac_delta_q_enabled {
-                params.delta_q_v_ac = read_delta_q(reader)?;
-            }
-            if quant.equal_ac_dc_q {
-                params.delta_q_v_dc = params.delta_q_v_ac;
-            }
-        } else {
-            params.delta_q_v_dc = params.delta_q_u_dc;
-            params.delta_q_v_ac = params.delta_q_u_ac;
-        }
-    }
-    Ok(params)
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_quantization_params_with_reader(&mut sr, quant, tip_frame_as_output)
 }
 
-/// Parses `setup_qm_params()` (AV2 v1.0.0 § 5.18.6.2,
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-2`).
-///
-/// `segmentation_enabled` is the frame's parsed `segmentation_enabled`
-/// (§ 5.18.7.1); per § 5.18.2 call order, `setup_qm_params()` runs **after**
-/// `segmentation_params()`.
+pub(crate) fn parse_quantization_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    quant: &CoreSeqQuantView,
+    tip_frame_as_output: bool,
+) -> Result<QuantizationParams> {
+    sr.in_struct("quantization_params", Some("5.18.6.1"), |sr| {
+        let n = if quant.bit_depth == 8 { 8 } else { 9 };
+        let base_q_idx = sr.read_bits("base_q_idx", n)?;
+        let mut params = QuantizationParams {
+            base_q_idx,
+            delta_q_y_dc: 0,
+            delta_q_u_dc: 0,
+            delta_q_u_ac: 0,
+            delta_q_v_dc: 0,
+            delta_q_v_ac: 0,
+            diff_uv_delta: false,
+        };
+        if !tip_frame_as_output && quant.y_dc_delta_q_enabled {
+            params.delta_q_y_dc = read_delta_q_with_reader(sr)?;
+        }
+        if quant.num_planes > 1
+            && (quant.uv_ac_delta_q_enabled
+                || (!tip_frame_as_output && quant.uv_dc_delta_q_enabled))
+        {
+            if quant.separate_uv_delta_q {
+                params.diff_uv_delta = sr.read_flag("diff_uv_delta")?;
+            } else {
+                sr.inferred_bool("diff_uv_delta", "!separate_uv_delta_q", false);
+            }
+            if !tip_frame_as_output && quant.uv_dc_delta_q_enabled {
+                params.delta_q_u_dc = read_delta_q_with_reader(sr)?;
+            }
+            if quant.uv_ac_delta_q_enabled {
+                params.delta_q_u_ac = read_delta_q_with_reader(sr)?;
+            }
+            if quant.equal_ac_dc_q {
+                params.delta_q_u_dc = params.delta_q_u_ac;
+            }
+            if params.diff_uv_delta {
+                if !tip_frame_as_output && quant.uv_dc_delta_q_enabled {
+                    params.delta_q_v_dc = read_delta_q_with_reader(sr)?;
+                }
+                if quant.uv_ac_delta_q_enabled {
+                    params.delta_q_v_ac = read_delta_q_with_reader(sr)?;
+                }
+                if quant.equal_ac_dc_q {
+                    params.delta_q_v_dc = params.delta_q_v_ac;
+                }
+            } else {
+                params.delta_q_v_dc = params.delta_q_u_dc;
+                params.delta_q_v_ac = params.delta_q_u_ac;
+            }
+        }
+        Ok(params)
+    })
+}
+
+/// Parses `setup_qm_params()` (AV2 v1.0.0 § 5.18.6.2).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
@@ -410,71 +427,100 @@ pub fn parse_setup_qm_params(
     quant: &CoreSeqQuantView,
     segmentation_enabled: bool,
 ) -> Result<SetupQmParams> {
-    let using_qmatrix = reader.read_flag()?;
-    let mut pic_qm_num_minus_1 = 0u8;
-    let mut levels = [QmSetLevels::default(); MAX_PIC_QM_NUM];
-    if using_qmatrix {
-        if segmentation_enabled {
-            pic_qm_num_minus_1 = reader.read_bits_u8(2)?;
-        }
-        let qm_num = usize::from(pic_qm_num_minus_1) + 1;
-        for level in levels.iter_mut().take(qm_num) {
-            level.qm_y = reader.read_bits_u8(4)?;
-            if quant.num_planes > 1 {
-                let qm_uv_same_as_y = reader.read_flag()?;
-                if qm_uv_same_as_y {
-                    level.qm_u = level.qm_y;
-                    level.qm_v = level.qm_y;
-                } else {
-                    level.qm_u = reader.read_bits_u8(4)?;
-                    if quant.separate_uv_delta_q {
-                        level.qm_v = reader.read_bits_u8(4)?;
-                    } else {
-                        level.qm_v = level.qm_u;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_setup_qm_params_with_reader(&mut sr, quant, segmentation_enabled)
+}
+
+pub(crate) fn parse_setup_qm_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    quant: &CoreSeqQuantView,
+    segmentation_enabled: bool,
+) -> Result<SetupQmParams> {
+    sr.in_struct("setup_qm_params", Some("5.18.6.2"), |sr| {
+        let using_qmatrix = sr.read_flag("using_qmatrix")?;
+        let mut pic_qm_num_minus_1 = 0u8;
+        let mut levels = [QmSetLevels::default(); MAX_PIC_QM_NUM];
+        if using_qmatrix {
+            if segmentation_enabled {
+                pic_qm_num_minus_1 = sr.read_bits_u8("pic_qm_num_minus_1", 2)?;
+            } else {
+                sr.inferred_u64("pic_qm_num_minus_1", "!segmentation_enabled", 0);
+            }
+            let qm_num = usize::from(pic_qm_num_minus_1) + 1;
+            for (i, level) in levels.iter_mut().take(qm_num).enumerate() {
+                sr.in_loop_item("i", i, |sr| {
+                    level.qm_y = sr.read_bits_u8("qm_y", 4)?;
+                    if quant.num_planes > 1 {
+                        let qm_uv_same_as_y = sr.read_flag("qm_uv_same_as_y")?;
+                        if qm_uv_same_as_y {
+                            sr.inferred_u64("qm_u", "qm_uv_same_as_y", u64::from(level.qm_y));
+                            sr.inferred_u64("qm_v", "qm_uv_same_as_y", u64::from(level.qm_y));
+                            level.qm_u = level.qm_y;
+                            level.qm_v = level.qm_y;
+                        } else {
+                            level.qm_u = sr.read_bits_u8("qm_u", 4)?;
+                            if quant.separate_uv_delta_q {
+                                level.qm_v = sr.read_bits_u8("qm_v", 4)?;
+                            } else {
+                                sr.inferred_u64(
+                                    "qm_v",
+                                    "!separate_uv_delta_q",
+                                    u64::from(level.qm_u),
+                                );
+                                level.qm_v = level.qm_u;
+                            }
+                        }
                     }
-                }
+                    Ok(())
+                })?;
             }
         }
-    }
-    Ok(SetupQmParams {
-        using_qmatrix,
-        pic_qm_num_minus_1,
-        levels,
+        Ok(SetupQmParams {
+            using_qmatrix,
+            pic_qm_num_minus_1,
+            levels,
+        })
     })
 }
 
-/// Parses `delta_q_params()` (AV2 v1.0.0 § 5.18.7.8,
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-8`).
-///
-/// `base_q_idx` is the value parsed by `quantization_params()` (§ 5.18.6.1); it
-/// gates the `delta_q_present` read.
+/// Parses `delta_q_params()` (AV2 v1.0.0 § 5.18.7.8).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
 /// payload ends mid-field.
 pub fn parse_delta_q_params(reader: &mut BitReader<'_>, base_q_idx: u32) -> Result<DeltaQParams> {
-    let delta_q_present = base_q_idx > 0 && reader.read_flag()?;
-    let delta_q_res = if delta_q_present {
-        reader.read_bits_u8(2)?
-    } else {
-        0
-    };
-    Ok(DeltaQParams {
-        delta_q_present,
-        delta_q_res,
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_delta_q_params_with_reader(&mut sr, base_q_idx)
+}
+
+pub(crate) fn parse_delta_q_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    base_q_idx: u32,
+) -> Result<DeltaQParams> {
+    sr.in_struct("delta_q_params", Some("5.18.7.8"), |sr| {
+        let delta_q_present = if base_q_idx > 0 {
+            sr.read_flag("delta_q_present")?
+        } else {
+            sr.inferred_bool("delta_q_present", "base_q_idx == 0", false);
+            false
+        };
+        let delta_q_res = if delta_q_present {
+            sr.read_bits_u8("delta_q_res", 2)?
+        } else {
+            sr.inferred_u64("delta_q_res", "!delta_q_present", 0);
+            0
+        };
+        Ok(DeltaQParams {
+            delta_q_present,
+            delta_q_res,
+        })
     })
 }
 
 /// Parses the § 5.18.2 per-segment lossless/QM derivation loop and the
-/// `allow_tcq` / `allow_parity_hiding` reads (AV2 v1.0.0 § 5.18.2,
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2`).
-///
-/// Uses the minimal `get_qindex(1, segmentId)` form (AV2 § 7.14.2,
-/// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-14-2`) — a pure function of
-/// `base_q_idx` and the parsed segmentation `SEG_LVL_ALT_Q` feature data — plus
-/// the parsed quantizer deltas and the sequence base DC/AC offsets. When
-/// `using_qmatrix`, reads `qm_index` `f(CeilLog2(pic_qm_num_minus_1 + 1))` for
-/// each non-lossless segment in `0..max_segments` (`MaxSegments`, AV2 § 5.4.4).
+/// `allow_tcq` / `allow_parity_hiding` reads.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
@@ -485,6 +531,28 @@ pub fn parse_lossless_info(
     quantization: &QuantizationParams,
     qm: &SetupQmParams,
     delta_q: &DeltaQParams,
+    segmentation: &SegmentationParams,
+    max_segments: u8,
+) -> Result<LosslessInfo> {
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_lossless_info_with_reader(
+        &mut sr,
+        quant,
+        quantization,
+        qm,
+        *delta_q,
+        segmentation,
+        max_segments,
+    )
+}
+
+pub(crate) fn parse_lossless_info_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    quant: &CoreSeqQuantView,
+    quantization: &QuantizationParams,
+    qm: &SetupQmParams,
+    delta_q: DeltaQParams,
     segmentation: &SegmentationParams,
     max_segments: u8,
 ) -> Result<LosslessInfo> {
@@ -522,7 +590,13 @@ pub fn parse_lossless_info(
             } else {
                 let qm_num = u32::from(qm.pic_qm_num_minus_1) + 1;
                 let qm_index_bits = ceil_log2(qm_num);
-                let qm_index = reader.read_bits(qm_index_bits)?;
+                let qm_index = if qm_index_bits > 0 {
+                    sr.in_loop_item("segment", segment_id, |sr| {
+                        sr.read_bits("qm_index", qm_index_bits)
+                    })?
+                } else {
+                    0
+                };
                 let level = qm
                     .levels
                     .get(qm_index as usize)
@@ -533,16 +607,23 @@ pub fn parse_lossless_info(
         }
     }
     let allow_tcq = if coded_lossless {
+        sr.inferred_bool("allow_tcq", "CodedLossless", false);
         false
     } else if quant.choose_tcq_per_frame {
-        reader.read_flag()?
+        sr.read_flag("allow_tcq")?
     } else {
+        sr.inferred_bool("allow_tcq", "!choose_tcq_per_frame", quant.enable_tcq);
         quant.enable_tcq
     };
     let allow_parity_hiding = if coded_lossless || !quant.enable_parity_hiding || allow_tcq {
+        sr.inferred_bool(
+            "allow_parity_hiding",
+            "CodedLossless || !enable_parity_hiding || allow_tcq",
+            false,
+        );
         false
     } else {
-        reader.read_flag()?
+        sr.read_flag("allow_parity_hiding")?
     };
     Ok(LosslessInfo {
         lossless_array,

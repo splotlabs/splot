@@ -66,6 +66,15 @@ impl<'a> BitReader<'a> {
         BitOffset::from_bits(self.bit_pos)
     }
 
+    /// Returns the absolute bit offset (`byte_offset * 8 + bit_offset`).
+    #[must_use]
+    pub const fn abs_bit_offset(&self) -> u64 {
+        self.byte_offset()
+            .get()
+            .saturating_mul(8)
+            .saturating_add(self.bit_pos as u64)
+    }
+
     /// Returns `true` if the reader is positioned on a byte boundary.
     #[must_use]
     pub const fn is_byte_aligned(&self) -> bool {

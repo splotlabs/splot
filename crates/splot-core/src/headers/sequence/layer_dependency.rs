@@ -5,8 +5,8 @@
 //! (`MLayerDependencyMap` + its derived `MLayerPresenceMap` closure) and temporal-layer
 //! (`TLayerDependencyMap`) dependency models, plus the `dependency_maps()` parser region.
 
-use crate::bitio::BitReader;
 use crate::error::Result;
+use crate::syntax::{SyntaxObserver, SyntaxReader};
 use crate::types::{EmbeddedLayerId, TemporalLayerId};
 
 /// `MAX_NUM_TLAYERS` used by sequence-header dependency maps (AV2 § 5.4.1).
@@ -206,8 +206,8 @@ pub(super) struct DependencyMaps {
 /// Parses the § 5.4.1 dependency-map region: both maps receive their
 /// unconditional default fill first, then the signaled override bits (when
 /// present) replace entries following the spec's loop structure exactly.
-pub(super) fn parse_dependency_maps(
-    reader: &mut BitReader<'_>,
+pub(super) fn parse_dependency_maps<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     max_tlayer_id: TemporalLayerId,
     max_mlayer_id: EmbeddedLayerId,
 ) -> Result<DependencyMaps> {
@@ -216,45 +216,87 @@ pub(super) fn parse_dependency_maps(
 
     let mut mlayer_dependency_present_flag = false;
     if max_mlayer_id.get() > 0 {
-        mlayer_dependency_present_flag = reader.read_flag()?;
+        mlayer_dependency_present_flag = sr.read_flag("mlayer_dependency_present_flag")?;
         if mlayer_dependency_present_flag {
             for curr_layer in 1..=max_mlayer_id.get() {
-                for ref_layer in (0..=curr_layer).rev() {
-                    let bit = reader.read_flag()?;
-                    mlayer_dependency_map.set(curr_layer, ref_layer, bit);
-                }
+                sr.in_loop_item("curr_layer", usize::from(curr_layer), |sr| {
+                    for ref_layer in (0..=curr_layer).rev() {
+                        let bit = sr.in_loop_item("ref_layer", usize::from(ref_layer), |sr| {
+                            sr.read_flag("mlayer_dependency_map")
+                        })?;
+                        mlayer_dependency_map.set(curr_layer, ref_layer, bit);
+                    }
+                    Ok(())
+                })?;
             }
         }
+    } else {
+        sr.inferred_bool(
+            "mlayer_dependency_present_flag",
+            "max_mlayer_id == 0",
+            false,
+        );
     }
 
     let mut tlayer_dependency_present_flag = false;
     let mut multi_tlayer_dependency_map_present_flag = false;
     if max_tlayer_id.get() > 0 {
-        tlayer_dependency_present_flag = reader.read_flag()?;
+        tlayer_dependency_present_flag = sr.read_flag("tlayer_dependency_present_flag")?;
         if tlayer_dependency_present_flag {
             multi_tlayer_dependency_map_present_flag = if max_mlayer_id.get() > 0 {
-                reader.read_flag()?
+                sr.read_flag("multi_tlayer_dependency_map_present_flag")?
             } else {
+                sr.inferred_bool(
+                    "multi_tlayer_dependency_map_present_flag",
+                    "max_mlayer_id == 0",
+                    false,
+                );
                 false
             };
             for m_layer in 0..=max_mlayer_id.get() {
-                for curr_tlayer in 1..=max_tlayer_id.get() {
-                    for ref_tlayer in (0..=curr_tlayer).rev() {
-                        if multi_tlayer_dependency_map_present_flag || m_layer == 0 {
-                            let bit = reader.read_flag()?;
-                            tlayer_dependency_map.set(m_layer, curr_tlayer, ref_tlayer, bit);
-                        } else {
-                            let bit = tlayer_dependency_map.depends_on(
-                                EmbeddedLayerId::from_bits(0),
-                                TemporalLayerId::from_bits(curr_tlayer),
-                                TemporalLayerId::from_bits(ref_tlayer),
-                            );
-                            tlayer_dependency_map.set(m_layer, curr_tlayer, ref_tlayer, bit);
-                        }
+                sr.in_loop_item("m_layer", usize::from(m_layer), |sr| {
+                    for curr_tlayer in 1..=max_tlayer_id.get() {
+                        sr.in_loop_item("curr_tlayer", usize::from(curr_tlayer), |sr| {
+                            for ref_tlayer in (0..=curr_tlayer).rev() {
+                                if multi_tlayer_dependency_map_present_flag || m_layer == 0 {
+                                    let bit = sr.in_loop_item(
+                                        "ref_tlayer",
+                                        usize::from(ref_tlayer),
+                                        |sr| sr.read_flag("tlayer_dependency_map"),
+                                    )?;
+                                    tlayer_dependency_map.set(
+                                        m_layer,
+                                        curr_tlayer,
+                                        ref_tlayer,
+                                        bit,
+                                    );
+                                } else {
+                                    let bit = tlayer_dependency_map.depends_on(
+                                        EmbeddedLayerId::from_bits(0),
+                                        TemporalLayerId::from_bits(curr_tlayer),
+                                        TemporalLayerId::from_bits(ref_tlayer),
+                                    );
+                                    tlayer_dependency_map.set(
+                                        m_layer,
+                                        curr_tlayer,
+                                        ref_tlayer,
+                                        bit,
+                                    );
+                                }
+                            }
+                            Ok(())
+                        })?;
                     }
-                }
+                    Ok(())
+                })?;
             }
         }
+    } else {
+        sr.inferred_bool(
+            "tlayer_dependency_present_flag",
+            "max_tlayer_id == 0",
+            false,
+        );
     }
 
     Ok(DependencyMaps {

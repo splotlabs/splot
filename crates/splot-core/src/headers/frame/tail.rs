@@ -10,6 +10,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `TxMode` (AV2 v1.0.0 § 5.18.8.1, mirror :7634).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,23 +116,32 @@ pub struct FrameTailInput {
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
 /// ends before `tx_mode_select` can be read.
 pub fn read_tx_mode(reader: &mut BitReader<'_>, coded_lossless: bool) -> Result<TxMode> {
-    if coded_lossless {
-        Ok(TxMode::Only4x4)
-    } else {
-        let tx_mode_select = reader.read_flag()?; // tx_mode_select f(1)
-        Ok(if tx_mode_select {
-            TxMode::Select
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    read_tx_mode_with_reader(&mut sr, coded_lossless)
+}
+
+pub(crate) fn read_tx_mode_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coded_lossless: bool,
+) -> Result<TxMode> {
+    sr.in_struct("read_tx_mode", Some("5.18.8.1"), |sr| {
+        if coded_lossless {
+            sr.inferred_bool("tx_mode_select", "CodedLossless", false);
+            Ok(TxMode::Only4x4)
         } else {
-            TxMode::Largest
-        })
-    }
+            let tx_mode_select = sr.read_flag("tx_mode_select")?;
+            Ok(if tx_mode_select {
+                TxMode::Select
+            } else {
+                TxMode::Largest
+            })
+        }
+    })
 }
 
 /// Parses `film_grain_config()` (AV2 v1.0.0 § 5.18.10.1, mirror :8163) on a path where
 /// `apply_grain` is determined by the given inputs.
-///
-/// `load_grain_model( fgm_id )` reads no bits (§ 6.17.10.1), so when `apply_grain` is
-/// set this reads only `fgm_id` `f(3)` and `grain_seed` `f(16)`.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -140,54 +150,76 @@ pub fn parse_film_grain_config(
     reader: &mut BitReader<'_>,
     input: &FrameTailInput,
 ) -> Result<FilmGrainConfig> {
-    let apply_grain = if !input.film_grain_params_present
-        || (!input.immediate_output_frame && !input.implicit_output_frame)
-    {
-        false
-    } else if input.single_picture_header_flag {
-        true
-    } else {
-        reader.read_flag()? // apply_grain f(1)
-    };
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_film_grain_config_with_reader(&mut sr, *input)
+}
 
-    let (fgm_id, grain_seed) = if apply_grain {
-        let fgm_id = reader.read_bits_u8(3)?;
-        let grain_seed = reader.read_bits(16)? as u16;
-        (Some(fgm_id), Some(grain_seed))
-    } else {
-        (None, None)
-    };
+pub(crate) fn parse_film_grain_config_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    input: FrameTailInput,
+) -> Result<FilmGrainConfig> {
+    sr.in_struct("film_grain_config", Some("5.18.10.1"), |sr| {
+        let apply_grain = if !input.film_grain_params_present
+            || (!input.immediate_output_frame && !input.implicit_output_frame)
+        {
+            sr.inferred_bool(
+                "apply_grain",
+                "!film_grain_params_present || (!immediate_output_frame && !implicit_output_frame)",
+                false,
+            );
+            false
+        } else if input.single_picture_header_flag {
+            sr.inferred_bool("apply_grain", "single_picture_header_flag", true);
+            true
+        } else {
+            sr.read_flag("apply_grain")?
+        };
 
-    Ok(FilmGrainConfig {
-        apply_grain,
-        fgm_id,
-        grain_seed,
+        let (fgm_id, grain_seed) = if apply_grain {
+            let fgm_id = sr.read_bits_u8("fgm_id", 3)?;
+            let grain_seed = sr.read_bits("grain_seed", 16)? as u16;
+            (Some(fgm_id), Some(grain_seed))
+        } else {
+            sr.absent("fgm_id", "!apply_grain");
+            sr.absent("grain_seed", "!apply_grain");
+            (None, None)
+        };
+
+        Ok(FilmGrainConfig {
+            apply_grain,
+            fgm_id,
+            grain_seed,
+        })
     })
 }
 
-/// Parses the full § 5.18.2 intra tail after `ccso_params()` (AV2 v1.0.0 § 5.18.2,
-/// mirror :5307-5341): `read_tx_mode()`, the no-bit `frame_reference_mode()` /
-/// `skip_mode_params()` / `allow_bawp` / `allow_warpmv_mode` intra inferences,
-/// `reduced_tx_set` `f(2)`, the no-bit intra arm of `global_motion_params()`, and
-/// `film_grain_config()`.
+/// Parses the full § 5.18.2 intra tail after `ccso_params()`.
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
-/// ends partway through the tail; the caller decides whether that is a truncation
-/// (facts preserved) or a hard failure. Earlier fields read before the EOF are not lost
-/// because the caller reads the tail incrementally (see `parse_intra_tail_structures`).
+/// ends partway through the tail.
 pub fn parse_intra_tail(
     reader: &mut BitReader<'_>,
     input: &FrameTailInput,
 ) -> Result<FrameHeaderTail> {
-    let tx_mode = read_tx_mode(reader, input.coded_lossless)?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_intra_tail_with_reader(&mut sr, *input)
+}
+
+pub(crate) fn parse_intra_tail_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    input: FrameTailInput,
+) -> Result<FrameHeaderTail> {
+    let tx_mode = read_tx_mode_with_reader(sr, input.coded_lossless)?;
     let reference_select = false;
     let skip_mode_present = false;
     let allow_bawp = false;
     let allow_warpmv_mode = false;
-    let reduced_tx_set = reader.read_bits_u8(2)?;
+    let reduced_tx_set = sr.read_bits_u8("reduced_tx_set", 2)?;
     let use_global_motion = false;
-    let film_grain = parse_film_grain_config(reader, input)?;
+    let film_grain = parse_film_grain_config_with_reader(sr, input)?;
 
     Ok(FrameHeaderTail {
         tx_mode,

@@ -23,24 +23,35 @@ use serde::{Deserialize, Serialize};
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result, TrailingBitsErrorKind};
-use crate::headers::atlas_segment::{AtlasSegment, parse_atlas_segment};
-use crate::headers::buffer_removal_timing::{BufferRemovalTiming, parse_buffer_removal_timing};
-use crate::headers::content_interpretation::{ContentInterpretation, parse_content_interpretation};
-use crate::headers::film_grain::{FilmGrainObu, parse_film_grain};
-use crate::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
-use crate::headers::layer_config_record::{LayerConfigurationRecord, parse_layer_config_record};
-use crate::headers::metadata::{
-    MetadataGroupObu, MetadataShortObu, parse_metadata_group, parse_metadata_short,
+use crate::headers::atlas_segment::{AtlasSegment, parse_atlas_segment_with_reader};
+use crate::headers::buffer_removal_timing::{
+    BufferRemovalTiming, parse_buffer_removal_timing_with_reader,
 };
-use crate::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
-use crate::headers::padding::{PaddingObu, parse_padding_obu};
-use crate::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix};
-use crate::headers::sequence::{SequenceHeader, parse_sequence_header};
-use crate::headers::tile_group::{TileGroupHeaderPrefix, parse_tile_group_prefix};
+use crate::headers::content_interpretation::{
+    ContentInterpretation, parse_content_interpretation_with_reader,
+};
+use crate::headers::film_grain::{FilmGrainObu, parse_film_grain_with_reader};
+use crate::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix_with_reader};
+use crate::headers::layer_config_record::{
+    LayerConfigurationRecord, parse_layer_config_record_with_reader,
+};
+use crate::headers::metadata::{
+    MetadataGroupObu, MetadataShortObu, parse_metadata_group_with_reader,
+    parse_metadata_short_with_reader,
+};
+use crate::headers::operating_point_set::{
+    OperatingPointSet, parse_operating_point_set_with_reader,
+};
+use crate::headers::padding::{PaddingObu, parse_padding_obu_impl};
+use crate::headers::quantizer_matrix::{QuantizerMatrixObu, parse_quantizer_matrix_with_reader};
+use crate::headers::sequence::{SequenceHeader, parse_sequence_header_with_reader};
+use crate::headers::tile_group::{TileGroupHeaderPrefix, parse_tile_group_prefix_with_reader};
 use crate::hls::{
-    MultiFrameHeader, MultistreamDecoderOperation, parse_msdo, parse_multi_frame_header,
+    MultiFrameHeader, MultistreamDecoderOperation, parse_msdo_with_reader,
+    parse_multi_frame_header_with_reader,
 };
 use crate::span::ByteOffset;
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId};
 
 /// The reason the state-dependent remainder of a frame-carrying OBU payload was not
@@ -149,46 +160,45 @@ pub enum ParsedObu {
 }
 
 impl ParsedObu {
+    const fn metadata(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::TemporalDelimiter => ("AV2-5.5-TEMPORAL-DELIMITER", "temporal_delimiter_obu"),
+            Self::SequenceHeader(_) => ("AV2-5.4-SEQUENCE-HEADER", "sequence_header_obu"),
+            Self::Msdo(_) => ("AV2-5.6-MSDO", "multistream_decoder_operation_obu"),
+            Self::MultiFrameHeader(_) => ("AV2-5.7-MULTI-FRAME-HEADER", "multi_frame_header_obu"),
+            Self::LayerConfigurationRecord(_) => {
+                ("AV2-5.8-LAYER-CONFIG-RECORD", "layer_config_record_obu")
+            }
+            Self::AtlasSegment(_) => ("AV2-5.9-ATLAS-SEGMENT", "atlas_segment_info_obu"),
+            Self::OperatingPointSet(_) => {
+                ("AV2-5.10-OPERATING-POINT-SET", "operating_point_set_obu")
+            }
+            Self::BufferRemovalTiming(_) => (
+                "AV2-5.12-BUFFER-REMOVAL-TIMING",
+                "buffer_removal_timing_obu",
+            ),
+            Self::QuantizationMatrix(_) => ("AV2-5.13-QUANTIZATION-MATRIX", "quantizer_matrix_obu"),
+            Self::FilmGrain(_) => ("AV2-5.14-FILM-GRAIN", "film_grain_obu"),
+            Self::ContentInterpretation(_) => (
+                "AV2-5.15-CONTENT-INTERPRETATION",
+                "content_interpretation_obu",
+            ),
+            Self::Padding(_) => ("AV2-5.16-PADDING", "padding_obu"),
+            Self::MetadataShort(_) => ("AV2-5.17.2-METADATA-SHORT", "metadata_short_obu"),
+            Self::MetadataGroup(_) => ("AV2-5.17.3-METADATA-GROUP", "metadata_group_obu"),
+        }
+    }
+
     /// Returns the implementation-matrix feature ID for this parsed payload syntax.
     #[must_use]
     pub const fn feature_id(&self) -> &'static str {
-        match self {
-            Self::TemporalDelimiter => "AV2-5.5-TEMPORAL-DELIMITER",
-            Self::SequenceHeader(_) => "AV2-5.4-SEQUENCE-HEADER",
-            Self::Msdo(_) => "AV2-5.6-MSDO",
-            Self::MultiFrameHeader(_) => "AV2-5.7-MULTI-FRAME-HEADER",
-            Self::LayerConfigurationRecord(_) => "AV2-5.8-LAYER-CONFIG-RECORD",
-            Self::AtlasSegment(_) => "AV2-5.9-ATLAS-SEGMENT",
-            Self::OperatingPointSet(_) => "AV2-5.10-OPERATING-POINT-SET",
-            Self::BufferRemovalTiming(_) => "AV2-5.12-BUFFER-REMOVAL-TIMING",
-            Self::QuantizationMatrix(_) => "AV2-5.13-QUANTIZATION-MATRIX",
-            Self::FilmGrain(_) => "AV2-5.14-FILM-GRAIN",
-            Self::ContentInterpretation(_) => "AV2-5.15-CONTENT-INTERPRETATION",
-            Self::Padding(_) => "AV2-5.16-PADDING",
-            Self::MetadataShort(_) => "AV2-5.17.2-METADATA-SHORT",
-            Self::MetadataGroup(_) => "AV2-5.17.3-METADATA-GROUP",
-        }
+        self.metadata().0
     }
 
     /// Returns a stable snake-case syntax label for tools and JSON output.
     #[must_use]
     pub const fn syntax_name(&self) -> &'static str {
-        match self {
-            Self::TemporalDelimiter => "temporal_delimiter_obu",
-            Self::SequenceHeader(_) => "sequence_header_obu",
-            Self::Msdo(_) => "multistream_decoder_operation_obu",
-            Self::MultiFrameHeader(_) => "multi_frame_header_obu",
-            Self::LayerConfigurationRecord(_) => "layer_config_record_obu",
-            Self::AtlasSegment(_) => "atlas_segment_info_obu",
-            Self::OperatingPointSet(_) => "operating_point_set_obu",
-            Self::BufferRemovalTiming(_) => "buffer_removal_timing_obu",
-            Self::QuantizationMatrix(_) => "quantizer_matrix_obu",
-            Self::FilmGrain(_) => "film_grain_obu",
-            Self::ContentInterpretation(_) => "content_interpretation_obu",
-            Self::Padding(_) => "padding_obu",
-            Self::MetadataShort(_) => "metadata_short_obu",
-            Self::MetadataGroup(_) => "metadata_group_obu",
-        }
+        self.metadata().1
     }
 }
 
@@ -232,106 +242,132 @@ pub fn dispatch_obu_payload(
     payload: &[u8],
     payload_offset: ByteOffset,
 ) -> Result<PayloadStatus<'_, ParsedObu>> {
+    let mut noop = NoopObserver;
+    dispatch_obu_payload_impl(header, payload, payload_offset, &mut noop)
+}
+
+/// Dispatches an OBU payload to its typed parser while reporting syntax fields
+/// and OBU-payload-relative bit spans to `observer` (AV2 v1.0.0 § 5.2.1).
+///
+/// # Errors
+/// Returns any typed parser, extension-flag, or trailing-bits error produced
+/// by the dispatched parser.
+pub fn dispatch_obu_payload_observed<'a>(
+    header: ObuHeader,
+    payload: &'a [u8],
+    payload_offset: ByteOffset,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<PayloadStatus<'a, ParsedObu>> {
+    dispatch_obu_payload_impl(header, payload, payload_offset, &mut { observer })
+}
+
+fn dispatch_obu_payload_impl<'a, O: SyntaxObserver>(
+    header: ObuHeader,
+    payload: &'a [u8],
+    payload_offset: ByteOffset,
+    observer: &mut O,
+) -> Result<PayloadStatus<'a, ParsedObu>> {
     let mut reader = BitReader::new(payload, payload_offset);
+    let mut sr = SyntaxReader::new(&mut reader, observer);
     match header.obu_type {
         ObuType::Reserved0 | ObuType::Reserved(_) => Ok(PayloadStatus::Opaque(payload)),
         ObuType::TemporalDelimiter => {
-            parse_empty_payload_syntax(payload, payload_offset)?;
+            parse_empty_payload_syntax(&mut sr, payload)?;
             Ok(PayloadStatus::Parsed(ParsedObu::TemporalDelimiter))
         }
         ObuType::SequenceHeader => {
-            let sequence_header = parse_sequence_header(&mut reader)?;
+            let sequence_header = parse_sequence_header_with_reader(&mut sr)?;
             if let Some(feature) = sequence_header.unimplemented_at {
                 return Ok(PayloadStatus::Unimplemented { feature, payload });
             }
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::SequenceHeader(Box::new(
                 sequence_header,
             ))))
         }
         ObuType::Msdo => {
-            let msdo = parse_msdo(&mut reader)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let msdo = parse_msdo_with_reader(&mut sr)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::Msdo(msdo)))
         }
         ObuType::MultiFrameHeader => {
-            let multi_frame_header = parse_multi_frame_header(&mut reader)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let multi_frame_header = parse_multi_frame_header_with_reader(&mut sr)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MultiFrameHeader(
                 Box::new(multi_frame_header),
             )))
         }
         ObuType::LayerConfigurationRecord => {
             let layer_config_record =
-                parse_layer_config_record(&mut reader, header.extended_layer_id)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+                parse_layer_config_record_with_reader(&mut sr, header.extended_layer_id)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(
                 Box::new(layer_config_record),
             )))
         }
         ObuType::AtlasSegment => {
-            let atlas_segment = parse_atlas_segment(&mut reader)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let atlas_segment = parse_atlas_segment_with_reader(&mut sr)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::AtlasSegment(Box::new(
                 atlas_segment,
             ))))
         }
         ObuType::OperatingPointSet => {
             let operating_point_set =
-                parse_operating_point_set(&mut reader, header.extended_layer_id)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+                parse_operating_point_set_with_reader(&mut sr, header.extended_layer_id)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::OperatingPointSet(
                 Box::new(operating_point_set),
             )))
         }
         ObuType::BufferRemovalTiming => {
-            let buffer_removal_timing = parse_buffer_removal_timing(&mut reader)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let buffer_removal_timing = parse_buffer_removal_timing_with_reader(&mut sr)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::BufferRemovalTiming(
                 buffer_removal_timing,
             )))
         }
         ObuType::QuantizationMatrix => {
-            let quantizer_matrix = parse_quantizer_matrix(&mut reader)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let quantizer_matrix = parse_quantizer_matrix_with_reader(&mut sr)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::QuantizationMatrix(
                 Box::new(quantizer_matrix),
             )))
         }
         ObuType::FilmGrain => {
-            let film_grain = parse_film_grain(&mut reader)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let film_grain = parse_film_grain_with_reader(&mut sr)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::FilmGrain(Box::new(
                 film_grain,
             ))))
         }
         ObuType::ContentInterpretation => {
-            let content_interpretation = parse_content_interpretation(&mut reader)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let content_interpretation = parse_content_interpretation_with_reader(&mut sr)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::ContentInterpretation(
                 content_interpretation,
             )))
         }
         ObuType::Padding => {
-            let padding = parse_padding_obu(payload, payload_offset)?;
+            let padding = parse_padding_obu_impl(payload, payload_offset, sr.observer_mut())?;
             Ok(PayloadStatus::Parsed(ParsedObu::Padding(padding)))
         }
         ObuType::MetadataShort => {
-            let metadata = parse_metadata_short(&mut reader, payload.len())?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let metadata = parse_metadata_short_with_reader(&mut sr, payload.len())?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MetadataShort(Box::new(
                 metadata,
             ))))
         }
         ObuType::MetadataGroup => {
-            let metadata = parse_metadata_group(&mut reader, header.extended_layer_id)?;
-            finish_obu_payload(&mut reader, payload, header.obu_type.is_extensible_obu())?;
+            let metadata = parse_metadata_group_with_reader(&mut sr, header.extended_layer_id)?;
+            finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::MetadataGroup(Box::new(
                 metadata,
             ))))
         }
         obu_type if obu_type.is_tile_group() => {
-            let prefix = parse_tile_group_prefix(&mut reader, obu_type, None)?;
+            let prefix = parse_tile_group_prefix_with_reader(&mut sr, obu_type, None)?;
             Ok(PayloadStatus::PrefixParsed {
                 prefix: FramePayloadPrefix::TileGroup(prefix),
                 blocked_on: BLOCKED_ON_ACTIVE_SEQUENCE_HEADER_STATE,
@@ -341,7 +377,7 @@ pub fn dispatch_obu_payload(
         obu_type
             if obu_type.is_sef() || obu_type.is_tip_frame() || obu_type == ObuType::BridgeFrame =>
         {
-            let prefix = parse_frame_header_prefix(&mut reader, obu_type, None)?;
+            let prefix = parse_frame_header_prefix_with_reader(&mut sr, obu_type, None)?;
             Ok(PayloadStatus::PrefixParsed {
                 prefix: FramePayloadPrefix::FrameHeader(prefix),
                 blocked_on: BLOCKED_ON_ACTIVE_SEQUENCE_HEADER_STATE,
@@ -358,23 +394,38 @@ pub fn dispatch_obu_payload(
 /// Validates the bits between the end of an OBU's parsed syntax and the OBU
 /// boundary (AV2 v1.0.0 § 5.2.1 `open_bitstream_unit`).
 ///
-/// `reader` must be positioned immediately after the OBU's parsed syntax, over the
-/// same `payload` slice. For `is_extensible_obu()` types, an `obu_extension_flag`
-/// follows the syntax; AV2 § 6.2.1 requires it to be `0` in this specification
-/// version, so a set flag is rejected as [`Error::InvalidObuExtension`]. Otherwise
-/// the remainder is `trailing_bits()`. Non-extensible types use `trailing_bits()`
-/// directly. Tile groups (`usedArith`) are not handled here.
-///
-/// This is the shared "finish" logic used by both `dispatch_obu_payload` and the
-/// `splot-validate` payload checks, so the validator and inspector agree on
-/// payload-tail conformance.
-///
 /// # Errors
-/// Returns [`Error::InvalidObuExtension`] for a set `obu_extension_flag`,
-/// [`Error::InvalidTrailingBits`] for malformed trailing bits, or
-/// [`Error::UnexpectedEof`] if the tail is truncated.
+/// Returns [`Error::InvalidObuExtension`], [`Error::InvalidTrailingBits`], or
+/// [`Error::UnexpectedEof`].
 pub fn finish_obu_payload(
     reader: &mut BitReader<'_>,
+    payload: &[u8],
+    is_extensible: bool,
+) -> Result<()> {
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    finish_obu_payload_with_reader(&mut sr, payload, is_extensible)
+}
+
+/// Validates the OBU payload tail (`obu_extension_flag` and `trailing_bits()`)
+/// while reporting syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::InvalidObuExtension`], [`Error::InvalidTrailingBits`], or
+/// [`Error::UnexpectedEof`].
+pub fn finish_obu_payload_observed(
+    reader: &mut BitReader<'_>,
+    payload: &[u8],
+    is_extensible: bool,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<()> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    finish_obu_payload_with_reader(&mut sr, payload, is_extensible)
+}
+
+pub(crate) fn finish_obu_payload_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     payload: &[u8],
     is_extensible: bool,
 ) -> Result<()> {
@@ -383,115 +434,176 @@ pub fn finish_obu_payload(
     }
 
     if is_extensible {
-        let flag_offset = reader.byte_offset();
-        let flag_bit_offset = reader.bit_offset();
-        let obu_extension_flag = reader.read_flag()?;
+        let start = sr.rel_bit();
+        let flag_offset = sr.byte_offset();
+        let flag_bit_offset = sr.bit_offset();
+        let obu_extension_flag = sr.read_flag("obu_extension_flag")?;
         if obu_extension_flag {
-            return Err(Error::InvalidObuExtension {
-                offset: flag_offset,
-                bit_offset: flag_bit_offset,
-            });
+            return sr.fail(
+                start,
+                Some("obu_extension_flag"),
+                Error::InvalidObuExtension {
+                    offset: flag_offset,
+                    bit_offset: flag_bit_offset,
+                },
+            );
         }
     }
 
-    let remaining = reader.remaining_bits();
-    parse_trailing_bits(reader, remaining)
+    let remaining = sr.remaining_bits();
+    parse_trailing_bits_with_reader(sr, remaining)
 }
 
-fn parse_empty_payload_syntax(payload: &[u8], payload_offset: ByteOffset) -> Result<()> {
+fn parse_empty_payload_syntax<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    payload: &[u8],
+) -> Result<()> {
     if payload.is_empty() {
         return Ok(());
     }
 
-    let mut reader = BitReader::new(payload, payload_offset);
     let nb_bits = (payload.len() as u64).saturating_mul(8);
-    parse_trailing_bits(&mut reader, nb_bits)
+    parse_trailing_bits_with_reader(sr, nb_bits)
 }
 
 /// Parses AV2 `trailing_bits(nbBits)` from `reader` (AV2 v1.0.0 § 5.2.3).
 ///
-/// The parser consumes exactly `nb_bits` bits: the first bit must be
-/// `trailing_one_bit == 1`, and every remaining bit must be zero per AV2 § 6.2.3.
+/// # Errors
+/// Returns [`Error::InvalidTrailingBits`] or [`Error::UnexpectedEof`].
+pub fn parse_trailing_bits(reader: &mut BitReader<'_>, nb_bits: u64) -> Result<()> {
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_trailing_bits_with_reader(&mut sr, nb_bits)
+}
+
+/// Parses AV2 `trailing_bits(nbBits)` (AV2 v1.0.0 § 5.2.3) while reporting
+/// syntax fields and bit spans to `observer`.
 ///
 /// # Errors
-/// Returns [`Error::InvalidTrailingBits`] if `nb_bits == 0`, if the first bit is
-/// not `1`, or if any zero-padding bit is not `0`. Returns
-/// [`Error::UnexpectedEof`] if fewer than `nb_bits` bits remain.
-pub fn parse_trailing_bits(reader: &mut BitReader<'_>, nb_bits: u64) -> Result<()> {
-    if nb_bits == 0 {
-        return Err(Error::InvalidTrailingBits {
-            offset: reader.byte_offset(),
-            bit_offset: reader.bit_offset(),
-            kind: TrailingBitsErrorKind::Empty,
-        });
-    }
+/// Returns [`Error::InvalidTrailingBits`] or [`Error::UnexpectedEof`].
+pub fn parse_trailing_bits_observed(
+    reader: &mut BitReader<'_>,
+    nb_bits: u64,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<()> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_trailing_bits_with_reader(&mut sr, nb_bits)
+}
 
-    let offset = reader.byte_offset();
-    let bit_offset = reader.bit_offset();
-    if reader.read_bit()? != 1 {
-        return Err(Error::InvalidTrailingBits {
-            offset,
-            bit_offset,
-            kind: TrailingBitsErrorKind::MissingOneBit,
-        });
-    }
-
-    for _ in 1..nb_bits {
-        let offset = reader.byte_offset();
-        let bit_offset = reader.bit_offset();
-        if reader.read_flag()? {
-            return Err(Error::InvalidTrailingBits {
-                offset,
-                bit_offset,
-                kind: TrailingBitsErrorKind::ZeroBitNotZero,
-            });
+pub(crate) fn parse_trailing_bits_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    nb_bits: u64,
+) -> Result<()> {
+    sr.in_struct("trailing_bits", Some("5.2.3"), |sr| {
+        if nb_bits == 0 {
+            let err = Error::InvalidTrailingBits {
+                offset: sr.byte_offset(),
+                bit_offset: sr.bit_offset(),
+                kind: TrailingBitsErrorKind::Empty,
+            };
+            return sr.fail(sr.rel_bit(), Some("trailing_one_bit"), err);
         }
-    }
 
-    Ok(())
+        let start = sr.rel_bit();
+        let offset = sr.byte_offset();
+        let bit_offset = sr.bit_offset();
+        if sr.read_bit("trailing_one_bit")? != 1 {
+            return sr.fail(
+                start,
+                Some("trailing_one_bit"),
+                Error::InvalidTrailingBits {
+                    offset,
+                    bit_offset,
+                    kind: TrailingBitsErrorKind::MissingOneBit,
+                },
+            );
+        }
+
+        for _ in 1..nb_bits {
+            let zero_start = sr.rel_bit();
+            let offset = sr.byte_offset();
+            let bit_offset = sr.bit_offset();
+            if sr.read_flag("trailing_zero_bit")? {
+                return sr.fail(
+                    zero_start,
+                    Some("trailing_zero_bit"),
+                    Error::InvalidTrailingBits {
+                        offset,
+                        bit_offset,
+                        kind: TrailingBitsErrorKind::ZeroBitNotZero,
+                    },
+                );
+            }
+        }
+
+        Ok(())
+    })
 }
 
 /// Parses an AV2 OBU header from `obu_bytes`, whose first byte is at absolute
 /// offset `start` (AV2 v1.0.0 § 5.2.2).
 ///
-/// `obu_bytes` should contain only this OBU's bytes (per Annex B,
-/// `open_bitstream_unit` receives exactly `num_bytes_in_obu` bytes), so a header
-/// that signals an extension it has no room for returns [`Error::UnexpectedEof`]
-/// instead of reading into the following OBU.
-///
-/// When the extension flag is `0`, `obu_xlayer_id` is inferred to
-/// [`GLOBAL_XLAYER_ID`] for `OBU_MSDO` and `OBU_TEMPORAL_DELIMITER`, and `0`
-/// otherwise; `obu_mlayer_id` is inferred to `0`.
-///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`] if the header (including the extension byte,
 /// when signalled) does not fit in `obu_bytes`.
 pub fn read_obu_header_from_slice(obu_bytes: &[u8], start: ByteOffset) -> Result<ObuHeader> {
+    let mut noop = NoopObserver;
+    read_obu_header_from_slice_impl(obu_bytes, start, &mut noop)
+}
+
+/// Parses an AV2 OBU header from `obu_bytes` (AV2 v1.0.0 § 5.2.2) while
+/// reporting syntax fields and header-relative bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`] if the header does not fit in `obu_bytes`.
+pub fn read_obu_header_from_slice_observed(
+    obu_bytes: &[u8],
+    start: ByteOffset,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<ObuHeader> {
+    read_obu_header_from_slice_impl(obu_bytes, start, &mut { observer })
+}
+
+fn read_obu_header_from_slice_impl<O: SyntaxObserver>(
+    obu_bytes: &[u8],
+    start: ByteOffset,
+    observer: &mut O,
+) -> Result<ObuHeader> {
     let mut reader = BitReader::new(obu_bytes, start);
-    let has_header_extension = reader.read_bit()? == 1;
-    let obu_type = ObuType::from_raw(reader.read_bits_u8(5)?);
-    let temporal_layer_id = TemporalLayerId::from_bits(reader.read_bits_u8(2)?);
+    let mut sr = SyntaxReader::new(&mut reader, observer);
+    sr.in_struct("obu_header", Some("5.2.2"), |sr| {
+        let has_header_extension = sr.read_flag("obu_header_extension_flag")?;
+        let obu_type = ObuType::from_raw(sr.read_bits_u8("obu_type", 5)?);
+        let temporal_layer_id = TemporalLayerId::from_bits(sr.read_bits_u8("obu_tlayer_id", 2)?);
 
-    let (embedded_layer_id, extended_layer_id, header_size_bytes) = if has_header_extension {
-        let embedded = EmbeddedLayerId::from_bits(reader.read_bits_u8(3)?);
-        let extended = ExtendedLayerId::from_bits(reader.read_bits_u8(5)?);
-        (embedded, extended, 2)
-    } else {
-        let extended = if obu_type.requires_global_xlayer() {
-            GLOBAL_XLAYER_ID
+        let (embedded_layer_id, extended_layer_id, header_size_bytes) = if has_header_extension {
+            let embedded = EmbeddedLayerId::from_bits(sr.read_bits_u8("obu_mlayer_id", 3)?);
+            let extended = ExtendedLayerId::from_bits(sr.read_bits_u8("obu_xlayer_id", 5)?);
+            (embedded, extended, 2)
         } else {
-            ExtendedLayerId::from_bits(0)
+            let extended = if obu_type.requires_global_xlayer() {
+                GLOBAL_XLAYER_ID
+            } else {
+                ExtendedLayerId::from_bits(0)
+            };
+            sr.inferred_u64("obu_mlayer_id", "!obu_header_extension_flag", 0);
+            sr.inferred_u64(
+                "obu_xlayer_id",
+                "!obu_header_extension_flag",
+                u64::from(extended.get()),
+            );
+            (EmbeddedLayerId::from_bits(0), extended, 1)
         };
-        (EmbeddedLayerId::from_bits(0), extended, 1)
-    };
 
-    Ok(ObuHeader {
-        has_header_extension,
-        obu_type,
-        temporal_layer_id,
-        embedded_layer_id,
-        extended_layer_id,
-        header_size_bytes,
+        Ok(ObuHeader {
+            has_header_extension,
+            obu_type,
+            temporal_layer_id,
+            embedded_layer_id,
+            extended_layer_id,
+            header_size_bytes,
+        })
     })
 }
 

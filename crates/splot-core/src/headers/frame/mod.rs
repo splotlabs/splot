@@ -9,6 +9,7 @@ use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::sequence::SequenceHeaderId;
 use crate::hls::MfhId;
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 use crate::types::ObuType;
 
 mod config;
@@ -69,6 +70,7 @@ pub use global_motion::{
 pub use info::{
     CoreSeqInterView, CoreSeqView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus,
     FrameReferenceStateView, FrameType, MfhFrameView, SefTrailingBits, parse_frame_header_core,
+    parse_frame_header_core_observed,
 };
 pub(crate) use info::{init_core_from_prefix, parse_core_body};
 pub use inter::{
@@ -190,7 +192,34 @@ pub fn parse_frame_header_prefix(
     obu_type: ObuType,
     first_picture_in_tu: Option<bool>,
 ) -> Result<FrameHeaderPrefix> {
-    let start_bits = reader.consumed_bits();
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_frame_header_prefix_with_reader(&mut sr, obu_type, first_picture_in_tu)
+}
+
+/// Parses the AV2 frame-header activation prefix (AV2 v1.0.0 § 5.18.1 / § 5.18.2)
+/// while reporting syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or
+/// [`Error::InvalidUvlc`](crate::error::Error::InvalidUvlc).
+pub fn parse_frame_header_prefix_observed(
+    reader: &mut BitReader<'_>,
+    obu_type: ObuType,
+    first_picture_in_tu: Option<bool>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<FrameHeaderPrefix> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_frame_header_prefix_with_reader(&mut sr, obu_type, first_picture_in_tu)
+}
+
+pub(crate) fn parse_frame_header_prefix_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    obu_type: ObuType,
+    first_picture_in_tu: Option<bool>,
+) -> Result<FrameHeaderPrefix> {
+    let start_bits = sr.consumed_bits();
 
     let is_key_frame = derive_key_frame(obu_type);
     let is_bridge = obu_type == ObuType::BridgeFrame;
@@ -202,15 +231,17 @@ pub fn parse_frame_header_prefix(
     };
 
     let cur_mfh_id = if is_bridge {
+        sr.inferred_u64("cur_mfh_id", "IsBridge", 0);
         MfhId::zero()
     } else {
-        MfhId::from_raw(reader.read_uvlc()?)
+        MfhId::from_raw(sr.read_uvlc("cur_mfh_id")?)
     };
 
     let (seq_header_id_in_frame_header, referenced_sequence_header_id) = if cur_mfh_id.is_zero() {
-        let raw = reader.read_uvlc()?;
+        let raw = sr.read_uvlc("seq_header_id_in_frame_header")?;
         (Some(raw), SequenceHeaderId::try_new(raw))
     } else {
+        sr.absent("seq_header_id_in_frame_header", "cur_mfh_id != 0");
         (None, None)
     };
 
@@ -224,7 +255,7 @@ pub fn parse_frame_header_prefix(
         cur_mfh_id,
         seq_header_id_in_frame_header,
         referenced_sequence_header_id,
-        consumed_bits: reader.consumed_bits().saturating_sub(start_bits),
+        consumed_bits: sr.consumed_bits().saturating_sub(start_bits),
     })
 }
 

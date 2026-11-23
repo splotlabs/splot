@@ -7,6 +7,7 @@ use crate::bitio::BitReader;
 use crate::error::{Error, Result, SequenceHeaderErrorKind};
 use crate::headers::frame::ceil_log2;
 use crate::span::{BitOffset, ByteOffset};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 use crate::tile::TileParamsInput;
 use crate::types::{EmbeddedLayerId, TemporalLayerId};
 
@@ -421,47 +422,90 @@ pub struct SequenceHeaderGeneral {
 /// Returns typed [`Error`] values for EOF, malformed descriptors, or local § 6.4.1
 /// conformance violations.
 pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<SequenceHeaderGeneral> {
-    let seq_header_id_offset = reader.byte_offset();
-    let seq_header_id_bit_offset = reader.bit_offset();
-    let seq_header_id_raw = reader.read_uvlc()?;
-    let seq_header_id = SequenceHeaderId::try_new(seq_header_id_raw).ok_or_else(|| {
-        invalid_sequence_header(
-            seq_header_id_offset,
-            seq_header_id_bit_offset,
-            SequenceHeaderErrorKind::SeqHeaderIdOutOfRange,
-        )
-    })?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_header_general_with_reader(&mut sr)
+}
 
-    let seq_profile_idc = ProfileIdc::from_bits(reader.read_bits_u8(5)?);
-    let single_picture_header_flag = reader.read_flag()?;
-    let seq_level_idx = LevelIdx::from_bits(reader.read_bits_u8(5)?);
+/// Parses the general `sequence_header_obu()` fields (AV2 v1.0.0 § 5.4.1) while
+/// reporting syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns typed [`Error`] values for EOF, malformed descriptors, or local § 6.4.1
+/// conformance violations.
+pub fn parse_sequence_header_general_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<SequenceHeaderGeneral> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_sequence_header_general_with_reader(&mut sr)
+}
+
+pub(crate) fn parse_sequence_header_general_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<SequenceHeaderGeneral> {
+    let seq_header_id_start = sr.rel_bit();
+    let seq_header_id_offset = sr.byte_offset();
+    let seq_header_id_bit_offset = sr.bit_offset();
+    let seq_header_id_raw = sr.read_uvlc("seq_header_id")?;
+    let Some(seq_header_id) = SequenceHeaderId::try_new(seq_header_id_raw) else {
+        return sr.fail(
+            seq_header_id_start,
+            Some("seq_header_id"),
+            invalid_sequence_header(
+                seq_header_id_offset,
+                seq_header_id_bit_offset,
+                SequenceHeaderErrorKind::SeqHeaderIdOutOfRange,
+            ),
+        );
+    };
+
+    let seq_profile_idc = ProfileIdc::from_bits(sr.read_bits_u8("seq_profile_idc", 5)?);
+    let single_picture_header_flag = sr.read_flag("single_picture_header_flag")?;
+    let seq_level_idx = LevelIdx::from_bits(sr.read_bits_u8("seq_level_idx", 5)?);
     let seq_tier = if seq_level_idx.get() > 3 && !single_picture_header_flag {
-        Tier::from_bit(reader.read_bit()?)
+        Tier::from_bit(sr.read_bit("seq_tier")?)
     } else {
+        sr.inferred_u64(
+            "seq_tier",
+            "!(seq_level_idx > 3 && !single_picture_header_flag)",
+            0,
+        );
         Tier::Main
     };
 
-    let chroma_offset = reader.byte_offset();
-    let chroma_bit_offset = reader.bit_offset();
-    let chroma_raw = reader.read_uvlc()?;
-    let chroma_format_idc = ChromaFormatIdc::try_new(chroma_raw).ok_or_else(|| {
-        invalid_sequence_header(
-            chroma_offset,
-            chroma_bit_offset,
-            SequenceHeaderErrorKind::ChromaFormatOutOfRange,
-        )
-    })?;
+    let chroma_start = sr.rel_bit();
+    let chroma_offset = sr.byte_offset();
+    let chroma_bit_offset = sr.bit_offset();
+    let chroma_raw = sr.read_uvlc("chroma_format_idc")?;
+    let Some(chroma_format_idc) = ChromaFormatIdc::try_new(chroma_raw) else {
+        return sr.fail(
+            chroma_start,
+            Some("chroma_format_idc"),
+            invalid_sequence_header(
+                chroma_offset,
+                chroma_bit_offset,
+                SequenceHeaderErrorKind::ChromaFormatOutOfRange,
+            ),
+        );
+    };
 
-    let bit_depth_offset = reader.byte_offset();
-    let bit_depth_bit_offset = reader.bit_offset();
-    let bit_depth_raw = reader.read_uvlc()?;
-    let bit_depth_idc = BitDepthIdc::try_new(bit_depth_raw).ok_or_else(|| {
-        invalid_sequence_header(
-            bit_depth_offset,
-            bit_depth_bit_offset,
-            SequenceHeaderErrorKind::BitDepthOutOfRange,
-        )
-    })?;
+    let bit_depth_start = sr.rel_bit();
+    let bit_depth_offset = sr.byte_offset();
+    let bit_depth_bit_offset = sr.bit_offset();
+    let bit_depth_raw = sr.read_uvlc("bit_depth_idc")?;
+    let Some(bit_depth_idc) = BitDepthIdc::try_new(bit_depth_raw) else {
+        return sr.fail(
+            bit_depth_start,
+            Some("bit_depth_idc"),
+            invalid_sequence_header(
+                bit_depth_offset,
+                bit_depth_bit_offset,
+                SequenceHeaderErrorKind::BitDepthOutOfRange,
+            ),
+        );
+    };
 
     let (
         seq_lcr_id,
@@ -471,6 +515,20 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         seq_max_mlayer_count,
         monotonic_output_order_flag,
     ) = if single_picture_header_flag {
+        sr.inferred_u64("seq_lcr_id", "single_picture_header_flag", 0);
+        sr.inferred_bool("still_picture", "single_picture_header_flag", true);
+        sr.inferred_u64("max_tlayer_id", "single_picture_header_flag", 0);
+        sr.inferred_u64("max_mlayer_id", "single_picture_header_flag", 0);
+        sr.inferred_u64(
+            "seq_max_mlayer_cnt_minus_1",
+            "single_picture_header_flag",
+            0,
+        );
+        sr.inferred_bool(
+            "monotonic_output_order_flag",
+            "single_picture_header_flag",
+            true,
+        );
         (
             LcrId::from_bits(0),
             true,
@@ -480,27 +538,35 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
             true,
         )
     } else {
-        let seq_lcr_id = LcrId::from_bits(reader.read_bits_u8(3)?);
-        let still_picture = reader.read_flag()?;
-        let max_tlayer_id = TemporalLayerId::from_bits(reader.read_bits_u8(2)?);
-        let max_mlayer_id = EmbeddedLayerId::from_bits(reader.read_bits_u8(3)?);
+        let seq_lcr_id = LcrId::from_bits(sr.read_bits_u8("seq_lcr_id", 3)?);
+        let still_picture = sr.read_flag("still_picture")?;
+        let max_tlayer_id = TemporalLayerId::from_bits(sr.read_bits_u8("max_tlayer_id", 2)?);
+        let max_mlayer_id = EmbeddedLayerId::from_bits(sr.read_bits_u8("max_mlayer_id", 3)?);
         let seq_max_mlayer_count = if max_mlayer_id.get() > 0 {
             let n = ceil_log2(u32::from(max_mlayer_id.get()) + 1);
-            let count_offset = reader.byte_offset();
-            let count_bit_offset = reader.bit_offset();
-            let seq_max_mlayer_cnt_minus_1 = reader.read_bits(n)?;
-            EmbeddedLayerCount::try_from_minus_1(seq_max_mlayer_cnt_minus_1, max_mlayer_id)
-                .ok_or_else(|| {
+            let count_start = sr.rel_bit();
+            let count_offset = sr.byte_offset();
+            let count_bit_offset = sr.bit_offset();
+            let seq_max_mlayer_cnt_minus_1 = sr.read_bits("seq_max_mlayer_cnt_minus_1", n)?;
+            let Some(count) =
+                EmbeddedLayerCount::try_from_minus_1(seq_max_mlayer_cnt_minus_1, max_mlayer_id)
+            else {
+                return sr.fail(
+                    count_start,
+                    Some("seq_max_mlayer_cnt_minus_1"),
                     invalid_sequence_header(
                         count_offset,
                         count_bit_offset,
                         SequenceHeaderErrorKind::SeqMaxMlayerCountOutOfRange,
-                    )
-                })?
+                    ),
+                );
+            };
+            count
         } else {
+            sr.inferred_u64("seq_max_mlayer_cnt_minus_1", "max_mlayer_id == 0", 0);
             EmbeddedLayerCount::one()
         };
-        let monotonic_output_order_flag = reader.read_flag()?;
+        let monotonic_output_order_flag = sr.read_flag("monotonic_output_order_flag")?;
         (
             seq_lcr_id,
             still_picture,
@@ -511,15 +577,21 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         )
     };
 
-    let frame_width_bits = FrameDimensionBits::from_minus_1(reader.read_bits_u8(4)?);
-    let frame_height_bits = FrameDimensionBits::from_minus_1(reader.read_bits_u8(4)?);
-    let max_frame_width_minus_1 = reader.read_bits(u32::from(frame_width_bits.get()))?;
-    let max_frame_height_minus_1 = reader.read_bits(u32::from(frame_height_bits.get()))?;
+    let frame_width_bits =
+        FrameDimensionBits::from_minus_1(sr.read_bits_u8("frame_width_bits_minus_1", 4)?);
+    let frame_height_bits =
+        FrameDimensionBits::from_minus_1(sr.read_bits_u8("frame_height_bits_minus_1", 4)?);
+    let max_frame_width_minus_1 =
+        sr.read_bits("max_frame_width_minus_1", u32::from(frame_width_bits.get()))?;
+    let max_frame_height_minus_1 = sr.read_bits(
+        "max_frame_height_minus_1",
+        u32::from(frame_height_bits.get()),
+    )?;
     let max_frame_width = FrameWidth::from_minus_1(max_frame_width_minus_1);
     let max_frame_height = FrameHeight::from_minus_1(max_frame_height_minus_1);
 
     let (seq_cropping_window_present_flag, cropping_window) =
-        parse_cropping_window(reader, max_frame_width, max_frame_height)?;
+        parse_cropping_window(sr, max_frame_width, max_frame_height)?;
 
     let (
         seq_initial_display_delay_minus_1,
@@ -528,29 +600,50 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
         seq_decoder_model_info_present_flag,
         decoder_model_info,
     ) = if single_picture_header_flag {
+        sr.inferred_bool(
+            "seq_initial_display_delay_present_flag",
+            "single_picture_header_flag",
+            false,
+        );
+        sr.inferred_bool(
+            "decoder_model_info_present_flag",
+            "single_picture_header_flag",
+            false,
+        );
         (None, false, None, false, None)
     } else {
-        let seq_initial_display_delay_present_flag = reader.read_flag()?;
+        let seq_initial_display_delay_present_flag =
+            sr.read_flag("seq_initial_display_delay_present_flag")?;
         let seq_initial_display_delay_minus_1 = if seq_initial_display_delay_present_flag {
-            Some(reader.read_bits_u8(4)?)
+            Some(sr.read_bits_u8("seq_initial_display_delay_minus_1", 4)?)
         } else {
+            sr.absent(
+                "seq_initial_display_delay_minus_1",
+                "!seq_initial_display_delay_present_flag",
+            );
             None
         };
-        let decoder_model_info_present_flag = reader.read_flag()?;
+        let decoder_model_info_present_flag = sr.read_flag("decoder_model_info_present_flag")?;
         if decoder_model_info_present_flag {
-            let num_units_offset = reader.byte_offset();
-            let num_units_bit_offset = reader.bit_offset();
-            let num_units_in_decoding_tick = reader.read_bits(32)?;
+            let num_units_start = sr.rel_bit();
+            let num_units_offset = sr.byte_offset();
+            let num_units_bit_offset = sr.bit_offset();
+            let num_units_in_decoding_tick = sr.read_bits("num_units_in_decoding_tick", 32)?;
             if num_units_in_decoding_tick == 0 {
-                return Err(invalid_sequence_header(
-                    num_units_offset,
-                    num_units_bit_offset,
-                    SequenceHeaderErrorKind::TimingNumUnitsZero,
-                ));
+                return sr.fail(
+                    num_units_start,
+                    Some("num_units_in_decoding_tick"),
+                    invalid_sequence_header(
+                        num_units_offset,
+                        num_units_bit_offset,
+                        SequenceHeaderErrorKind::TimingNumUnitsZero,
+                    ),
+                );
             }
-            let seq_decoder_model_info_present_flag = reader.read_flag()?;
+            let seq_decoder_model_info_present_flag =
+                sr.read_flag("seq_decoder_model_info_present_flag")?;
             let decoder_model_info = if seq_decoder_model_info_present_flag {
-                Some(parse_sequence_decoder_model_info(reader)?)
+                Some(parse_sequence_decoder_model_info_with_reader(sr)?)
             } else {
                 None
             };
@@ -562,12 +655,16 @@ pub fn parse_sequence_header_general(reader: &mut BitReader<'_>) -> Result<Seque
                 decoder_model_info,
             )
         } else {
+            sr.absent(
+                "num_units_in_decoding_tick",
+                "!decoder_model_info_present_flag",
+            );
             (seq_initial_display_delay_minus_1, false, None, false, None)
         }
     };
 
     let dependency_maps =
-        layer_dependency::parse_dependency_maps(reader, max_tlayer_id, max_mlayer_id)?;
+        layer_dependency::parse_dependency_maps(sr, max_tlayer_id, max_mlayer_id)?;
 
     Ok(SequenceHeaderGeneral {
         seq_header_id,
@@ -657,51 +754,89 @@ impl SequenceHeader {
 /// Returns typed [`Error`] values for EOF, malformed descriptors, or local § 6.4
 /// conformance violations.
 pub fn parse_sequence_header(reader: &mut BitReader<'_>) -> Result<SequenceHeader> {
-    let general = parse_sequence_header_general(reader)?;
-    let monochrome = general.chroma_format_idc.is_monochrome();
-    let single_picture = general.single_picture_header_flag;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_header_with_reader(&mut sr)
+}
 
-    let partition = parse_sequence_partition_config(reader, monochrome, single_picture)?;
-    let seq_sb_size = partition.seq_sb_size();
+/// Parses the full `sequence_header_obu()` syntax (AV2 v1.0.0 § 5.4.1) while
+/// reporting syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns typed [`Error`] values for EOF, malformed descriptors, or local § 6.4
+/// conformance violations.
+pub fn parse_sequence_header_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<SequenceHeader> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_sequence_header_with_reader(&mut sr)
+}
 
-    let segment = parse_sequence_segment_config(reader)?;
-    let intra = parse_sequence_intra_config(reader, monochrome)?;
-    let inter = parse_sequence_inter_config(reader, single_picture)?;
-    let screen_content = parse_sequence_scc_config(reader, single_picture)?;
-    let transform_quant_entropy =
-        parse_sequence_transform_quant_entropy_config(reader, monochrome, single_picture)?;
-    let filter = parse_sequence_filter_config(reader, single_picture, seq_sb_size)?;
+pub(crate) fn parse_sequence_header_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<SequenceHeader> {
+    sr.in_struct("sequence_header_obu", Some("5.4.1"), |sr| {
+        let general = parse_sequence_header_general_with_reader(sr)?;
+        let monochrome = general.chroma_format_idc.is_monochrome();
+        let single_picture = general.single_picture_header_flag;
 
-    let tile_params_input = TileParamsInput {
-        frame_width: general.max_frame_width.get(),
-        frame_height: general.max_frame_height.get(),
-        uniform_sb_size: seq_sb_size,
-        sb_size: seq_sb_size,
-        is_bridge: false,
-        seq_tier: general.seq_tier,
-        seq_level_idx: general.seq_level_idx,
-    };
-    let tile = parse_sequence_tile_config(reader, tile_params_input)?;
+        let partition = child_configs::parse_sequence_partition_config_with_reader(
+            sr,
+            monochrome,
+            single_picture,
+        )?;
+        let seq_sb_size = partition.seq_sb_size();
 
-    let unimplemented_at = tile.unimplemented_at();
-    let film_grain_params_present = if unimplemented_at.is_none() {
-        Some(reader.read_flag()?)
-    } else {
-        None
-    };
+        let segment = child_configs::parse_sequence_segment_config_with_reader(sr)?;
+        let intra = child_configs::parse_sequence_intra_config_with_reader(sr, monochrome)?;
+        let inter = child_configs::parse_sequence_inter_config_with_reader(sr, single_picture)?;
+        let screen_content =
+            child_configs::parse_sequence_scc_config_with_reader(sr, single_picture)?;
+        let transform_quant_entropy =
+            child_configs::parse_sequence_transform_quant_entropy_config_with_reader(
+                sr,
+                monochrome,
+                single_picture,
+            )?;
+        let filter = child_configs::parse_sequence_filter_config_with_reader(
+            sr,
+            single_picture,
+            seq_sb_size,
+        )?;
 
-    Ok(SequenceHeader {
-        general,
-        partition: Some(partition),
-        segment: Some(segment),
-        intra: Some(intra),
-        inter: Some(inter),
-        screen_content: Some(screen_content),
-        transform_quant_entropy: Some(transform_quant_entropy),
-        filter: Some(filter),
-        tile: Some(tile),
-        film_grain_params_present,
-        unimplemented_at,
+        let tile_params_input = TileParamsInput {
+            frame_width: general.max_frame_width.get(),
+            frame_height: general.max_frame_height.get(),
+            uniform_sb_size: seq_sb_size,
+            sb_size: seq_sb_size,
+            is_bridge: false,
+            seq_tier: general.seq_tier,
+            seq_level_idx: general.seq_level_idx,
+        };
+        let tile = child_configs::parse_sequence_tile_config_with_reader(sr, tile_params_input)?;
+
+        let unimplemented_at = tile.unimplemented_at();
+        let film_grain_params_present = if unimplemented_at.is_none() {
+            Some(sr.read_flag("film_grain_params_present")?)
+        } else {
+            None
+        };
+
+        Ok(SequenceHeader {
+            general,
+            partition: Some(partition),
+            segment: Some(segment),
+            intra: Some(intra),
+            inter: Some(inter),
+            screen_content: Some(screen_content),
+            transform_quant_entropy: Some(transform_quant_entropy),
+            filter: Some(filter),
+            tile: Some(tile),
+            film_grain_params_present,
+            unimplemented_at,
+        })
     })
 }
 
@@ -729,50 +864,90 @@ pub struct TimingInfo {
 /// zero `time_scale`, or an out-of-range `num_ticks_per_picture_minus_1`, and
 /// [`Error::UnexpectedEof`] if the payload ends mid-field.
 pub fn parse_timing_info(reader: &mut BitReader<'_>) -> Result<TimingInfo> {
-    let display_tick_offset = reader.byte_offset();
-    let display_tick_bit_offset = reader.bit_offset();
-    let num_units_in_display_tick = reader.read_bits(32)?;
-    if num_units_in_display_tick == 0 {
-        return Err(invalid_sequence_header(
-            display_tick_offset,
-            display_tick_bit_offset,
-            SequenceHeaderErrorKind::TimingDisplayTickZero,
-        ));
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_timing_info_with_reader(&mut sr)
+}
 
-    let time_scale_offset = reader.byte_offset();
-    let time_scale_bit_offset = reader.bit_offset();
-    let time_scale = reader.read_bits(32)?;
-    if time_scale == 0 {
-        return Err(invalid_sequence_header(
-            time_scale_offset,
-            time_scale_bit_offset,
-            SequenceHeaderErrorKind::TimingTimeScaleZero,
-        ));
-    }
+/// Parses `timing_info()` (AV2 v1.0.0 § 5.4.12) while reporting syntax fields
+/// and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::InvalidSequenceHeader`] or [`Error::UnexpectedEof`].
+pub fn parse_timing_info_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<TimingInfo> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_timing_info_with_reader(&mut sr)
+}
 
-    let equal_picture_interval = reader.read_flag()?;
-    let num_ticks_per_picture_minus_1 = if equal_picture_interval {
-        let ticks_offset = reader.byte_offset();
-        let ticks_bit_offset = reader.bit_offset();
-        let value = reader.read_uvlc()?;
-        if value == u32::MAX {
-            return Err(invalid_sequence_header(
-                ticks_offset,
-                ticks_bit_offset,
-                SequenceHeaderErrorKind::TimingNumTicksOutOfRange,
-            ));
+pub(crate) fn parse_timing_info_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<TimingInfo> {
+    sr.in_struct("timing_info", Some("5.4.12"), |sr| {
+        let display_tick_start = sr.rel_bit();
+        let display_tick_offset = sr.byte_offset();
+        let display_tick_bit_offset = sr.bit_offset();
+        let num_units_in_display_tick = sr.read_bits("num_units_in_display_tick", 32)?;
+        if num_units_in_display_tick == 0 {
+            return sr.fail(
+                display_tick_start,
+                Some("num_units_in_display_tick"),
+                invalid_sequence_header(
+                    display_tick_offset,
+                    display_tick_bit_offset,
+                    SequenceHeaderErrorKind::TimingDisplayTickZero,
+                ),
+            );
         }
-        Some(value)
-    } else {
-        None
-    };
 
-    Ok(TimingInfo {
-        num_units_in_display_tick,
-        time_scale,
-        equal_picture_interval,
-        num_ticks_per_picture_minus_1,
+        let time_scale_start = sr.rel_bit();
+        let time_scale_offset = sr.byte_offset();
+        let time_scale_bit_offset = sr.bit_offset();
+        let time_scale = sr.read_bits("time_scale", 32)?;
+        if time_scale == 0 {
+            return sr.fail(
+                time_scale_start,
+                Some("time_scale"),
+                invalid_sequence_header(
+                    time_scale_offset,
+                    time_scale_bit_offset,
+                    SequenceHeaderErrorKind::TimingTimeScaleZero,
+                ),
+            );
+        }
+
+        let equal_picture_interval = sr.read_flag("equal_picture_interval")?;
+        let num_ticks_per_picture_minus_1 = if equal_picture_interval {
+            let ticks_start = sr.rel_bit();
+            let ticks_offset = sr.byte_offset();
+            let ticks_bit_offset = sr.bit_offset();
+            let value = sr.read_uvlc("num_ticks_per_picture_minus_1")?;
+            if value == u32::MAX {
+                return sr.fail(
+                    ticks_start,
+                    Some("num_ticks_per_picture_minus_1"),
+                    invalid_sequence_header(
+                        ticks_offset,
+                        ticks_bit_offset,
+                        SequenceHeaderErrorKind::TimingNumTicksOutOfRange,
+                    ),
+                );
+            }
+            Some(value)
+        } else {
+            sr.absent("num_ticks_per_picture_minus_1", "!equal_picture_interval");
+            None
+        };
+
+        Ok(TimingInfo {
+            num_units_in_display_tick,
+            time_scale,
+            equal_picture_interval,
+            num_ticks_per_picture_minus_1,
+        })
     })
 }
 
@@ -796,50 +971,92 @@ pub struct SequenceDecoderModelInfo {
 pub fn parse_sequence_decoder_model_info(
     reader: &mut BitReader<'_>,
 ) -> Result<SequenceDecoderModelInfo> {
-    let decoder_buffer_delay = reader.read_uvlc()?;
-    let encoder_buffer_delay = reader.read_uvlc()?;
-    let low_delay_mode_flag = reader.read_flag()?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_sequence_decoder_model_info_with_reader(&mut sr)
+}
 
-    Ok(SequenceDecoderModelInfo {
-        decoder_buffer_delay,
-        encoder_buffer_delay,
-        low_delay_mode_flag,
+/// Parses `seq_decoder_model_info()` (AV2 v1.0.0 § 5.4.13) while reporting
+/// syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors or [`Error::UnexpectedEof`].
+pub fn parse_sequence_decoder_model_info_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<SequenceDecoderModelInfo> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_sequence_decoder_model_info_with_reader(&mut sr)
+}
+
+pub(crate) fn parse_sequence_decoder_model_info_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<SequenceDecoderModelInfo> {
+    sr.in_struct("seq_decoder_model_info", Some("5.4.13"), |sr| {
+        let decoder_buffer_delay = sr.read_uvlc("decoder_buffer_delay")?;
+        let encoder_buffer_delay = sr.read_uvlc("encoder_buffer_delay")?;
+        let low_delay_mode_flag = sr.read_flag("low_delay_mode_flag")?;
+
+        Ok(SequenceDecoderModelInfo {
+            decoder_buffer_delay,
+            encoder_buffer_delay,
+            low_delay_mode_flag,
+        })
     })
 }
 
-/// Parses `seq_cropping_window_present_flag` and (when set) the four cropping
-/// offsets (AV2 § 5.4.1). Returns the present flag alongside the window so the
-/// validator can enforce the § 6.8.8 `lcr_cropping_window_present_flag ==
-/// seq_cropping_window_present_flag` equality exactly — when the flag is `0` the
-/// offsets are inferred to `0` (a default [`CroppingWindow`]), which would
-/// otherwise be indistinguishable from a present-but-all-zero window.
-fn parse_cropping_window(
-    reader: &mut BitReader<'_>,
+fn parse_cropping_window<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     max_frame_width: FrameWidth,
     max_frame_height: FrameHeight,
 ) -> Result<(bool, CroppingWindow)> {
-    let seq_cropping_window_present_flag = reader.read_flag()?;
+    let seq_cropping_window_present_flag = sr.read_flag("seq_cropping_window_present_flag")?;
     if !seq_cropping_window_present_flag {
+        sr.inferred_u64(
+            "seq_cropping_win_left_offset",
+            "!seq_cropping_window_present_flag",
+            0,
+        );
+        sr.inferred_u64(
+            "seq_cropping_win_right_offset",
+            "!seq_cropping_window_present_flag",
+            0,
+        );
+        sr.inferred_u64(
+            "seq_cropping_win_top_offset",
+            "!seq_cropping_window_present_flag",
+            0,
+        );
+        sr.inferred_u64(
+            "seq_cropping_win_bottom_offset",
+            "!seq_cropping_window_present_flag",
+            0,
+        );
         return Ok((false, CroppingWindow::default()));
     }
 
     let left = read_checked_crop(
-        reader,
+        sr,
+        "seq_cropping_win_left_offset",
         max_frame_width.minus_1(),
         SequenceHeaderErrorKind::CropLeftOutOfRange,
     )?;
     let right = read_checked_crop(
-        reader,
+        sr,
+        "seq_cropping_win_right_offset",
         max_frame_width.minus_1(),
         SequenceHeaderErrorKind::CropRightOutOfRange,
     )?;
     let top = read_checked_crop(
-        reader,
+        sr,
+        "seq_cropping_win_top_offset",
         max_frame_height.minus_1(),
         SequenceHeaderErrorKind::CropTopOutOfRange,
     )?;
     let bottom = read_checked_crop(
-        reader,
+        sr,
+        "seq_cropping_win_bottom_offset",
         max_frame_height.minus_1(),
         SequenceHeaderErrorKind::CropBottomOutOfRange,
     )?;
@@ -854,16 +1071,22 @@ fn parse_cropping_window(
     ))
 }
 
-fn read_checked_crop(
-    reader: &mut BitReader<'_>,
+fn read_checked_crop<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    name: &'static str,
     max_minus_1: u32,
     kind: SequenceHeaderErrorKind,
 ) -> Result<u32> {
-    let offset = reader.byte_offset();
-    let bit_offset = reader.bit_offset();
-    let value = reader.read_uvlc()?;
+    let start = sr.rel_bit();
+    let offset = sr.byte_offset();
+    let bit_offset = sr.bit_offset();
+    let value = sr.read_uvlc(name)?;
     if value > max_minus_1 {
-        return Err(invalid_sequence_header(offset, bit_offset, kind));
+        return sr.fail(
+            start,
+            Some(name),
+            invalid_sequence_header(offset, bit_offset, kind),
+        );
     }
     Ok(value)
 }

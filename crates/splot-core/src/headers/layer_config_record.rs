@@ -15,6 +15,7 @@
 use crate::bitio::BitReader;
 use crate::error::{Error, LayerConfigRecordErrorKind, Result};
 use crate::headers::sequence::{CroppingWindow, ProfileIdc};
+use crate::syntax::{NoopObserver, SyntaxDescriptor, SyntaxObserver, SyntaxReader, SyntaxValue};
 use crate::types::ExtendedLayerId;
 
 /// `MAX_NUM_TLAYERS` (AV2 § 3): the bit width of `lcr_tlayer_map` (`f(n)`,
@@ -326,89 +327,122 @@ pub fn parse_layer_config_record(
     reader: &mut BitReader<'_>,
     xlayer_id: ExtendedLayerId,
 ) -> Result<LayerConfigurationRecord> {
-    if xlayer_id.is_global() {
-        Ok(LayerConfigurationRecord::Global(parse_lcr_global_info(
-            reader,
-        )?))
-    } else {
-        Ok(LayerConfigurationRecord::Local(parse_lcr_local_info(
-            reader, xlayer_id,
-        )?))
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_layer_config_record_with_reader(&mut sr, xlayer_id)
 }
 
-/// Parses `lcr_global_info()` (AV2 v1.0.0 § 5.8.1).
-fn parse_lcr_global_info(reader: &mut BitReader<'_>) -> Result<LcrGlobalInfo> {
-    let global_config_record_id = reader.read_bits_u8(3)?;
-    let xlayer_map = reader.read_bits(31)?;
+/// Parses `layer_config_record_obu()` (AV2 v1.0.0 § 5.8) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors, [`Error::InvalidByteAlignment`],
+/// [`Error::InvalidLayerConfigRecord`], or [`Error::UnexpectedEof`].
+pub fn parse_layer_config_record_observed(
+    reader: &mut BitReader<'_>,
+    xlayer_id: ExtendedLayerId,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<LayerConfigurationRecord> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_layer_config_record_with_reader(&mut sr, xlayer_id)
+}
 
-    let xlayer_ids = derive_xlayer_ids(xlayer_map);
-
-    let aggregate_info_present = reader.read_flag()?;
-    let seq_ptl_info_present = reader.read_flag()?;
-    let global_payload_present = reader.read_flag()?;
-    let dependent_xlayers_flag = reader.read_flag()?;
-    let global_atlas_id_present = reader.read_flag()?;
-    let global_purpose_id = reader.read_bits_u8(7)?;
-    let doh_constraint_flag = reader.read_flag()?;
-    let enforce_tile_alignment_flag = reader.read_flag()?;
-
-    let (global_atlas_id, reserved_zero_3bits) = if global_atlas_id_present {
-        (Some(reader.read_bits_u8(3)?), 0)
-    } else {
-        (None, reader.read_bits_u8(3)?)
-    };
-    let reserved_zero_5bits = reader.read_bits_u8(5)?;
-
-    let aggregate_info = if aggregate_info_present {
-        Some(parse_lcr_aggregate_info(reader)?)
-    } else {
-        None
-    };
-
-    let mut seq_ptl_infos = Vec::new();
-    if seq_ptl_info_present {
-        for &xlayer in &xlayer_ids {
-            seq_ptl_infos.push(parse_lcr_seq_profile_tier_level_info(reader, xlayer)?);
+pub(crate) fn parse_layer_config_record_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    xlayer_id: ExtendedLayerId,
+) -> Result<LayerConfigurationRecord> {
+    sr.in_struct("layer_config_record_obu", Some("5.8"), |sr| {
+        if xlayer_id.is_global() {
+            Ok(LayerConfigurationRecord::Global(parse_lcr_global_info(sr)?))
+        } else {
+            Ok(LayerConfigurationRecord::Local(parse_lcr_local_info(
+                sr, xlayer_id,
+            )?))
         }
-    }
-
-    let mut payloads = Vec::new();
-    if global_payload_present {
-        for &xlayer in &xlayer_ids {
-            let data_size = reader.read_leb128()?;
-            payloads.push(parse_lcr_global_payload(
-                reader,
-                xlayer,
-                data_size,
-                dependent_xlayers_flag,
-                global_atlas_id_present,
-            )?);
-        }
-    }
-
-    Ok(LcrGlobalInfo {
-        global_config_record_id,
-        xlayer_map,
-        aggregate_info_present,
-        seq_ptl_info_present,
-        global_payload_present,
-        dependent_xlayers_flag,
-        global_atlas_id_present,
-        global_purpose_id,
-        doh_constraint_flag,
-        enforce_tile_alignment_flag,
-        global_atlas_id,
-        reserved_zero_3bits,
-        reserved_zero_5bits,
-        aggregate_info,
-        seq_ptl_infos,
-        payloads,
     })
 }
 
-/// Derives `LcrXLayerID[]` from `lcr_xlayer_map` (AV2 § 5.8.1): the bit indices set in
-/// the 31-bit map, in ascending order.
+fn parse_lcr_global_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<LcrGlobalInfo> {
+    sr.in_struct("lcr_global_info", Some("5.8.1"), |sr| {
+        let global_config_record_id = sr.read_bits_u8("lcr_global_config_record_id", 3)?;
+        let xlayer_map = sr.read_bits("lcr_xlayer_map", 31)?;
+
+        let xlayer_ids = derive_xlayer_ids(xlayer_map);
+
+        let aggregate_info_present = sr.read_flag("lcr_aggregate_info_present_flag")?;
+        let seq_ptl_info_present = sr.read_flag("lcr_seq_profile_tier_level_info_present_flag")?;
+        let global_payload_present = sr.read_flag("lcr_global_payload_present_flag")?;
+        let dependent_xlayers_flag = sr.read_flag("lcr_dependent_xlayers_flag")?;
+        let global_atlas_id_present = sr.read_flag("lcr_global_atlas_id_present_flag")?;
+        let global_purpose_id = sr.read_bits_u8("lcr_global_purpose_id", 7)?;
+        let doh_constraint_flag = sr.read_flag("lcr_doh_constraint_flag")?;
+        let enforce_tile_alignment_flag = sr.read_flag("lcr_enforce_tile_alignment_flag")?;
+
+        let (global_atlas_id, reserved_zero_3bits) = if global_atlas_id_present {
+            (Some(sr.read_bits_u8("lcr_global_atlas_id", 3)?), 0)
+        } else {
+            sr.absent("lcr_global_atlas_id", "!lcr_global_atlas_id_present_flag");
+            (None, sr.read_bits_u8("lcr_global_reserved_zero_3bits", 3)?)
+        };
+        let reserved_zero_5bits = sr.read_bits_u8("lcr_global_reserved_zero_5bits", 5)?;
+
+        let aggregate_info = if aggregate_info_present {
+            Some(parse_lcr_aggregate_info(sr)?)
+        } else {
+            None
+        };
+
+        let mut seq_ptl_infos = Vec::new();
+        if seq_ptl_info_present {
+            for &xlayer in &xlayer_ids {
+                let info = sr.in_loop_item("xlayer", usize::from(xlayer), |sr| {
+                    parse_lcr_seq_profile_tier_level_info(sr, xlayer)
+                })?;
+                seq_ptl_infos.push(info);
+            }
+        }
+
+        let mut payloads = Vec::new();
+        if global_payload_present {
+            for &xlayer in &xlayer_ids {
+                let payload = sr.in_loop_item("xlayer", usize::from(xlayer), |sr| {
+                    let data_size = sr.read_leb128("lcr_data_size")?;
+                    parse_lcr_global_payload(
+                        sr,
+                        xlayer,
+                        data_size,
+                        dependent_xlayers_flag,
+                        global_atlas_id_present,
+                    )
+                })?;
+                payloads.push(payload);
+            }
+        }
+
+        Ok(LcrGlobalInfo {
+            global_config_record_id,
+            xlayer_map,
+            aggregate_info_present,
+            seq_ptl_info_present,
+            global_payload_present,
+            dependent_xlayers_flag,
+            global_atlas_id_present,
+            global_purpose_id,
+            doh_constraint_flag,
+            enforce_tile_alignment_flag,
+            global_atlas_id,
+            reserved_zero_3bits,
+            reserved_zero_5bits,
+            aggregate_info,
+            seq_ptl_infos,
+            payloads,
+        })
+    })
+}
+
 fn derive_xlayer_ids(xlayer_map: u32) -> Vec<u8> {
     let mut ids = Vec::new();
     for i in 0u8..31 {
@@ -419,315 +453,356 @@ fn derive_xlayer_ids(xlayer_map: u32) -> Vec<u8> {
     ids
 }
 
-/// Parses `lcr_local_info(xlayerId)` (AV2 v1.0.0 § 5.8.2).
-fn parse_lcr_local_info(
-    reader: &mut BitReader<'_>,
+fn parse_lcr_local_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     xlayer_id: ExtendedLayerId,
 ) -> Result<LcrLocalInfo> {
-    let global_id = reader.read_bits_u8(3)?;
-    let local_id = reader.read_bits_u8(3)?;
-    let profile_tier_level_info_present = reader.read_flag()?;
-    let local_atlas_id_present = reader.read_flag()?;
+    sr.in_struct("lcr_local_info", Some("5.8.2"), |sr| {
+        let global_id = sr.read_bits_u8("lcr_global_id", 3)?;
+        let local_id = sr.read_bits_u8("lcr_local_id", 3)?;
+        let profile_tier_level_info_present =
+            sr.read_flag("lcr_profile_tier_level_info_present_flag")?;
+        let local_atlas_id_present = sr.read_flag("lcr_local_atlas_id_present_flag")?;
 
-    let seq_ptl_info = if profile_tier_level_info_present {
-        Some(parse_lcr_seq_profile_tier_level_info(
-            reader,
-            xlayer_id.get(),
-        )?)
-    } else {
-        None
-    };
+        let seq_ptl_info = if profile_tier_level_info_present {
+            Some(parse_lcr_seq_profile_tier_level_info(sr, xlayer_id.get())?)
+        } else {
+            None
+        };
 
-    let (local_atlas_id, reserved_zero_3bits) = if local_atlas_id_present {
-        (Some(reader.read_bits_u8(3)?), 0)
-    } else {
-        (None, reader.read_bits_u8(3)?)
-    };
-    let reserved_zero_5bits = reader.read_bits_u8(5)?;
+        let (local_atlas_id, reserved_zero_3bits) = if local_atlas_id_present {
+            (Some(sr.read_bits_u8("lcr_local_atlas_id", 3)?), 0)
+        } else {
+            sr.absent("lcr_local_atlas_id", "!lcr_local_atlas_id_present_flag");
+            (None, sr.read_bits_u8("lcr_local_reserved_zero_3bits", 3)?)
+        };
+        let reserved_zero_5bits = sr.read_bits_u8("lcr_local_reserved_zero_5bits", 5)?;
 
-    let xlayer_info = parse_lcr_xlayer_info(reader, false, local_atlas_id_present)?;
+        let xlayer_info = parse_lcr_xlayer_info(sr, false, local_atlas_id_present)?;
 
-    Ok(LcrLocalInfo {
-        xlayer_id: xlayer_id.get(),
-        global_id,
-        local_id,
-        profile_tier_level_info_present,
-        local_atlas_id_present,
-        seq_ptl_info,
-        local_atlas_id,
-        reserved_zero_3bits,
-        reserved_zero_5bits,
-        xlayer_info,
+        Ok(LcrLocalInfo {
+            xlayer_id: xlayer_id.get(),
+            global_id,
+            local_id,
+            profile_tier_level_info_present,
+            local_atlas_id_present,
+            seq_ptl_info,
+            local_atlas_id,
+            reserved_zero_3bits,
+            reserved_zero_5bits,
+            xlayer_info,
+        })
     })
 }
 
-/// Parses `lcr_aggregate_info()` (AV2 v1.0.0 § 5.8.3).
-fn parse_lcr_aggregate_info(reader: &mut BitReader<'_>) -> Result<LcrAggregateInfo> {
-    Ok(LcrAggregateInfo {
-        config_idc: reader.read_bits_u8(6)?,
-        aggregate_level_idx: reader.read_bits_u8(5)?,
-        max_tier_flag: reader.read_flag()?,
-        max_interop: reader.read_bits_u8(4)?,
+fn parse_lcr_aggregate_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<LcrAggregateInfo> {
+    sr.in_struct("lcr_aggregate_info", Some("5.8.3"), |sr| {
+        Ok(LcrAggregateInfo {
+            config_idc: sr.read_bits_u8("lcr_config_idc", 6)?,
+            aggregate_level_idx: sr.read_bits_u8("lcr_aggregate_level_idx", 5)?,
+            max_tier_flag: sr.read_flag("lcr_max_tier_flag")?,
+            max_interop: sr.read_bits_u8("lcr_max_interop", 4)?,
+        })
     })
 }
 
-/// Parses `lcr_seq_profile_tier_level_info(i)` (AV2 v1.0.0 § 5.8.4).
-fn parse_lcr_seq_profile_tier_level_info(
-    reader: &mut BitReader<'_>,
+fn parse_lcr_seq_profile_tier_level_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     xlayer_id: u8,
 ) -> Result<LcrSeqProfileTierLevelInfo> {
-    Ok(LcrSeqProfileTierLevelInfo {
-        xlayer_id,
-        seq_profile_idc: ProfileIdc::from_bits(reader.read_bits_u8(5)?),
-        max_level_idx: reader.read_bits_u8(5)?,
-        tier_flag: reader.read_flag()?,
-        max_mlayer_count: reader.read_bits_u8(3)?,
-        reserved_2bits: reader.read_bits_u8(2)?,
+    sr.in_struct("lcr_seq_profile_tier_level_info", Some("5.8.4"), |sr| {
+        Ok(LcrSeqProfileTierLevelInfo {
+            xlayer_id,
+            seq_profile_idc: ProfileIdc::from_bits(sr.read_bits_u8("lcr_seq_profile_idc", 5)?),
+            max_level_idx: sr.read_bits_u8("lcr_max_level_idx", 5)?,
+            tier_flag: sr.read_flag("lcr_tier_flag")?,
+            max_mlayer_count: sr.read_bits_u8("lcr_max_mlayer_count", 3)?,
+            reserved_2bits: sr.read_bits_u8("lcr_ptl_reserved_2bits", 2)?,
+        })
     })
 }
 
-/// Parses `lcr_global_payload(n, sz)` (AV2 v1.0.0 § 5.8.5).
-///
-/// The payload is exactly `sz * 8` bits long. After the optional dependent-xlayer map
-/// and the embedded `lcr_xlayer_info(1, n)`, the remaining bits up to `sz * 8` are
-/// consumed as reserved `lcr_remaining_payload_bit` bits.
-fn parse_lcr_global_payload(
-    reader: &mut BitReader<'_>,
+fn parse_lcr_global_payload<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     xlayer_id: u8,
     data_size: u32,
     dependent_xlayers_flag: bool,
     global_atlas_id_present: bool,
 ) -> Result<LcrGlobalPayload> {
-    let start_bits = reader.consumed_bits();
+    sr.in_struct("lcr_global_payload", Some("5.8.5"), |sr| {
+        let start_bits = sr.consumed_bits();
 
-    let num_dependent_xlayer_map = if dependent_xlayers_flag && xlayer_id > 0 {
-        Some(reader.read_bits(u32::from(xlayer_id))?)
-    } else {
-        None
-    };
+        let num_dependent_xlayer_map = if dependent_xlayers_flag && xlayer_id > 0 {
+            Some(sr.read_bits("lcr_num_dependent_xlayer_map", u32::from(xlayer_id))?)
+        } else {
+            None
+        };
 
-    let xlayer_info = parse_lcr_xlayer_info(reader, true, global_atlas_id_present)?;
+        let xlayer_info = parse_lcr_xlayer_info(sr, true, global_atlas_id_present)?;
 
-    let parsed_bits = reader.consumed_bits().saturating_sub(start_bits);
-    let total_bits = u64::from(data_size).saturating_mul(8);
-    if parsed_bits > total_bits {
-        return Err(Error::InvalidLayerConfigRecord {
-            offset: reader.byte_offset(),
-            bit_offset: reader.bit_offset(),
-            kind: LayerConfigRecordErrorKind::PayloadSizeOverflow,
-        });
-    }
+        let parsed_bits = sr.consumed_bits().saturating_sub(start_bits);
+        let total_bits = u64::from(data_size).saturating_mul(8);
+        if parsed_bits > total_bits {
+            let err = Error::InvalidLayerConfigRecord {
+                offset: sr.byte_offset(),
+                bit_offset: sr.bit_offset(),
+                kind: LayerConfigRecordErrorKind::PayloadSizeOverflow,
+            };
+            return sr.fail(sr.rel_bit(), None, err);
+        }
 
-    let remaining_payload_bits = total_bits - parsed_bits;
-    if remaining_payload_bits > reader.remaining_bits() {
-        let deficit = remaining_payload_bits - reader.remaining_bits();
-        return Err(Error::UnexpectedEof {
-            offset: reader.byte_offset(),
-            needed: usize::try_from(deficit.div_ceil(8)).unwrap_or(usize::MAX),
-        });
-    }
+        let remaining_payload_bits = total_bits - parsed_bits;
+        if remaining_payload_bits > sr.remaining_bits() {
+            let deficit = remaining_payload_bits - sr.remaining_bits();
+            let err = Error::UnexpectedEof {
+                offset: sr.byte_offset(),
+                needed: usize::try_from(deficit.div_ceil(8)).unwrap_or(usize::MAX),
+            };
+            return sr.fail(sr.rel_bit(), Some("lcr_remaining_payload_bit"), err);
+        }
 
-    let mut left = remaining_payload_bits;
-    while left >= 32 {
-        reader.read_bits(32)?;
-        left -= 32;
-    }
-    if left > 0 {
-        reader.read_bits(u32::try_from(left).unwrap_or(0))?;
-    }
+        if remaining_payload_bits > 0 {
+            let rem_start = sr.rel_bit();
+            let mut left = remaining_payload_bits;
+            while left >= 32 {
+                sr.reader_mut().read_bits(32)?;
+                left -= 32;
+            }
+            if left > 0 {
+                sr.reader_mut()
+                    .read_bits(u32::try_from(left).unwrap_or(0))?;
+            }
+            sr.emit_read(
+                "lcr_remaining_payload_bit",
+                SyntaxDescriptor::F(u32::try_from(remaining_payload_bits).unwrap_or(u32::MAX)),
+                SyntaxValue::Unsigned(0),
+                rem_start,
+            );
+        }
 
-    Ok(LcrGlobalPayload {
-        xlayer_id,
-        data_size,
-        num_dependent_xlayer_map,
-        xlayer_info,
-        remaining_payload_bits,
+        Ok(LcrGlobalPayload {
+            xlayer_id,
+            data_size,
+            num_dependent_xlayer_map,
+            xlayer_info,
+            remaining_payload_bits,
+        })
     })
 }
 
-/// Parses `lcr_xlayer_info(isGlobal, xId)` (AV2 v1.0.0 § 5.8.6).
-fn parse_lcr_xlayer_info(
-    reader: &mut BitReader<'_>,
+fn parse_lcr_xlayer_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     is_global: bool,
     atlas_segment_present: bool,
 ) -> Result<LcrXlayerInfo> {
-    let rep_info_present = reader.read_flag()?;
-    let xlayer_purpose_present = reader.read_flag()?;
-    let xlayer_color_info_present = reader.read_flag()?;
-    let embedded_layer_info_present = reader.read_flag()?;
+    sr.in_struct("lcr_xlayer_info", Some("5.8.6"), |sr| {
+        let rep_info_present = sr.read_flag("lcr_rep_info_present_flag")?;
+        let xlayer_purpose_present = sr.read_flag("lcr_xlayer_purpose_present_flag")?;
+        let xlayer_color_info_present = sr.read_flag("lcr_xlayer_color_info_present_flag")?;
+        let embedded_layer_info_present = sr.read_flag("lcr_embedded_layer_info_present_flag")?;
 
-    let rep_info = if rep_info_present {
-        Some(parse_lcr_rep_info(reader)?)
-    } else {
-        None
-    };
-    let purpose_id = if xlayer_purpose_present {
-        Some(reader.read_bits_u8(7)?)
-    } else {
-        None
-    };
-    let color_info = if xlayer_color_info_present {
-        Some(parse_lcr_xlayer_color_info(reader)?)
-    } else {
-        None
-    };
-
-    reader.byte_align_zero()?;
-
-    let (embedded_layer_info, xlayer_atlas) = if embedded_layer_info_present {
-        (
-            Some(parse_lcr_embedded_layer_info(
-                reader,
-                atlas_segment_present,
-            )?),
-            None,
-        )
-    } else if is_global && atlas_segment_present {
-        let atlas = LcrXlayerAtlasRef {
-            atlas_segment_id: reader.read_bits_u8(8)?,
-            priority_order: reader.read_bits_u8(8)?,
-            rendering_method: reader.read_bits_u8(8)?,
+        let rep_info = if rep_info_present {
+            Some(parse_lcr_rep_info(sr)?)
+        } else {
+            None
         };
-        (None, Some(atlas))
-    } else {
-        (None, None)
-    };
+        let purpose_id = if xlayer_purpose_present {
+            Some(sr.read_bits_u8("lcr_purpose_id", 7)?)
+        } else {
+            sr.absent("lcr_purpose_id", "!lcr_xlayer_purpose_present_flag");
+            None
+        };
+        let color_info = if xlayer_color_info_present {
+            Some(parse_lcr_xlayer_color_info(sr)?)
+        } else {
+            None
+        };
 
-    Ok(LcrXlayerInfo {
-        rep_info,
-        purpose_id,
-        color_info,
-        embedded_layer_info,
-        xlayer_atlas,
-    })
-}
+        sr.byte_align_zero()?;
 
-/// Parses `lcr_rep_info(isGlobal, xId)` (AV2 v1.0.0 § 5.8.7).
-fn parse_lcr_rep_info(reader: &mut BitReader<'_>) -> Result<LcrRepInfo> {
-    let max_pic_width = reader.read_uvlc()?;
-    let max_pic_height = reader.read_uvlc()?;
-    let format_info_present = reader.read_flag()?;
-    let cropping_window_present = reader.read_flag()?;
+        let (embedded_layer_info, xlayer_atlas) = if embedded_layer_info_present {
+            (
+                Some(parse_lcr_embedded_layer_info(sr, atlas_segment_present)?),
+                None,
+            )
+        } else if is_global && atlas_segment_present {
+            let atlas = LcrXlayerAtlasRef {
+                atlas_segment_id: sr.read_bits_u8("lcr_atlas_segment_id", 8)?,
+                priority_order: sr.read_bits_u8("lcr_priority_order", 8)?,
+                rendering_method: sr.read_bits_u8("lcr_rendering_method", 8)?,
+            };
+            (None, Some(atlas))
+        } else {
+            (None, None)
+        };
 
-    let format_info = if format_info_present {
-        Some(LcrFormatInfo {
-            bit_depth_idc: reader.read_uvlc()?,
-            chroma_format_idc: reader.read_uvlc()?,
+        Ok(LcrXlayerInfo {
+            rep_info,
+            purpose_id,
+            color_info,
+            embedded_layer_info,
+            xlayer_atlas,
         })
-    } else {
-        None
-    };
-    let cropping_window = if cropping_window_present {
-        Some(CroppingWindow {
-            left: reader.read_uvlc()?,
-            right: reader.read_uvlc()?,
-            top: reader.read_uvlc()?,
-            bottom: reader.read_uvlc()?,
+    })
+}
+
+fn parse_lcr_rep_info<O: SyntaxObserver>(sr: &mut SyntaxReader<'_, '_, O>) -> Result<LcrRepInfo> {
+    sr.in_struct("lcr_rep_info", Some("5.8.7"), |sr| {
+        let max_pic_width = sr.read_uvlc("lcr_max_pic_width")?;
+        let max_pic_height = sr.read_uvlc("lcr_max_pic_height")?;
+        let format_info_present = sr.read_flag("lcr_format_info_present_flag")?;
+        let cropping_window_present = sr.read_flag("lcr_cropping_window_present_flag")?;
+
+        let format_info = if format_info_present {
+            Some(LcrFormatInfo {
+                bit_depth_idc: sr.read_uvlc("lcr_bit_depth_idc")?,
+                chroma_format_idc: sr.read_uvlc("lcr_chroma_format_idc")?,
+            })
+        } else {
+            sr.absent("lcr_bit_depth_idc", "!lcr_format_info_present_flag");
+            sr.absent("lcr_chroma_format_idc", "!lcr_format_info_present_flag");
+            None
+        };
+        let cropping_window = if cropping_window_present {
+            Some(CroppingWindow {
+                left: sr.read_uvlc("lcr_cropping_win_left_offset")?,
+                right: sr.read_uvlc("lcr_cropping_win_right_offset")?,
+                top: sr.read_uvlc("lcr_cropping_win_top_offset")?,
+                bottom: sr.read_uvlc("lcr_cropping_win_bottom_offset")?,
+            })
+        } else {
+            sr.absent(
+                "lcr_cropping_win_left_offset",
+                "!lcr_cropping_window_present_flag",
+            );
+            None
+        };
+
+        Ok(LcrRepInfo {
+            max_pic_width,
+            max_pic_height,
+            format_info,
+            cropping_window,
         })
-    } else {
-        None
-    };
-
-    Ok(LcrRepInfo {
-        max_pic_width,
-        max_pic_height,
-        format_info,
-        cropping_window,
     })
 }
 
-/// Parses `lcr_xlayer_color_info(isGlobal, xId)` (AV2 v1.0.0 § 5.8.9).
-fn parse_lcr_xlayer_color_info(reader: &mut BitReader<'_>) -> Result<LcrXlayerColorInfo> {
-    let color_description_idc = reader.read_rg(2)?;
-    let primaries = if color_description_idc == 0 {
-        Some((
-            reader.read_bits_u8(8)?,
-            reader.read_bits_u8(8)?,
-            reader.read_bits_u8(8)?,
-        ))
-    } else {
-        None
-    };
-    let full_range_flag = reader.read_flag()?;
-    Ok(LcrXlayerColorInfo {
-        color_description_idc,
-        primaries,
-        full_range_flag,
+fn parse_lcr_xlayer_color_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<LcrXlayerColorInfo> {
+    sr.in_struct("lcr_xlayer_color_info", Some("5.8.9"), |sr| {
+        let color_description_idc = sr.read_rg("lcr_color_description_idc", 2)?;
+        let primaries = if color_description_idc == 0 {
+            Some((
+                sr.read_bits_u8("lcr_color_primaries", 8)?,
+                sr.read_bits_u8("lcr_transfer_characteristics", 8)?,
+                sr.read_bits_u8("lcr_matrix_coefficients", 8)?,
+            ))
+        } else {
+            sr.absent("lcr_color_primaries", "lcr_color_description_idc != 0");
+            sr.absent(
+                "lcr_transfer_characteristics",
+                "lcr_color_description_idc != 0",
+            );
+            sr.absent("lcr_matrix_coefficients", "lcr_color_description_idc != 0");
+            None
+        };
+        let full_range_flag = sr.read_flag("lcr_full_range_flag")?;
+        Ok(LcrXlayerColorInfo {
+            color_description_idc,
+            primaries,
+            full_range_flag,
+        })
     })
 }
 
-/// Parses `lcr_embedded_layer_info(isGlobal, xId)` (AV2 v1.0.0 § 5.8.8).
-fn parse_lcr_embedded_layer_info(
-    reader: &mut BitReader<'_>,
+fn parse_lcr_embedded_layer_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     atlas_segment_present: bool,
 ) -> Result<LcrEmbeddedLayerInfo> {
-    let mlayer_map = reader.read_bits_u8(8)?;
+    sr.in_struct("lcr_embedded_layer_info", Some("5.8.8"), |sr| {
+        let mlayer_map = sr.read_bits_u8("lcr_mlayer_map", 8)?;
 
-    let mut layers = Vec::new();
-    for j in 0u8..8 {
-        if mlayer_map & (1u8 << j) == 0 {
-            continue;
+        let mut layers = Vec::new();
+        for j in 0u8..8 {
+            if mlayer_map & (1u8 << j) == 0 {
+                continue;
+            }
+            let layer = sr.in_loop_item("mlayer", usize::from(j), |sr| {
+                let tlayer_map = sr.read_bits_u8("lcr_tlayer_map", MAX_NUM_TLAYERS)?;
+
+                let (atlas_segment_id, priority_order, rendering_method) = if atlas_segment_present
+                {
+                    (
+                        Some(sr.read_bits_u8("lcr_atlas_segment_id", 8)?),
+                        Some(sr.read_bits_u8("lcr_priority_order", 8)?),
+                        Some(sr.read_bits_u8("lcr_rendering_method", 8)?),
+                    )
+                } else {
+                    (None, None, None)
+                };
+
+                let layer_type = sr.read_bits_u8("lcr_layer_type", 8)?;
+                let auxiliary_type = if layer_type == AUX_LAYER {
+                    Some(sr.read_bits_u8("lcr_auxiliary_type", 8)?)
+                } else {
+                    sr.absent("lcr_auxiliary_type", "lcr_layer_type != AUX_LAYER");
+                    None
+                };
+
+                let view_type = sr.read_bits_u8("lcr_view_type", 8)?;
+                let view_id = if view_type == VIEW_EXPLICIT {
+                    Some(sr.read_bits_u8("lcr_view_id", 8)?)
+                } else {
+                    sr.absent("lcr_view_id", "lcr_view_type != VIEW_EXPLICIT");
+                    None
+                };
+
+                let dependent_layer_map = if j > 0 {
+                    Some(sr.read_bits("lcr_dependent_layer_map", u32::from(j))?)
+                } else {
+                    sr.absent("lcr_dependent_layer_map", "j == 0");
+                    None
+                };
+
+                let same_sh_max_resolution_flag =
+                    sr.read_flag("lcr_same_sh_max_resolution_flag")?;
+                let (max_expected_width, max_expected_height) = if same_sh_max_resolution_flag {
+                    sr.absent("lcr_max_expected_width", "lcr_same_sh_max_resolution_flag");
+                    sr.absent("lcr_max_expected_height", "lcr_same_sh_max_resolution_flag");
+                    (None, None)
+                } else {
+                    (
+                        Some(sr.read_uvlc("lcr_max_expected_width")?),
+                        Some(sr.read_uvlc("lcr_max_expected_height")?),
+                    )
+                };
+
+                sr.byte_align_zero()?;
+
+                Ok(LcrEmbeddedLayer {
+                    mlayer_index: j,
+                    tlayer_map,
+                    atlas_segment_id,
+                    priority_order,
+                    rendering_method,
+                    layer_type,
+                    auxiliary_type,
+                    view_type,
+                    view_id,
+                    dependent_layer_map,
+                    same_sh_max_resolution_flag,
+                    max_expected_width,
+                    max_expected_height,
+                })
+            })?;
+            layers.push(layer);
         }
 
-        let tlayer_map = reader.read_bits_u8(MAX_NUM_TLAYERS)?;
-
-        let (atlas_segment_id, priority_order, rendering_method) = if atlas_segment_present {
-            (
-                Some(reader.read_bits_u8(8)?),
-                Some(reader.read_bits_u8(8)?),
-                Some(reader.read_bits_u8(8)?),
-            )
-        } else {
-            (None, None, None)
-        };
-
-        let layer_type = reader.read_bits_u8(8)?;
-        let auxiliary_type = if layer_type == AUX_LAYER {
-            Some(reader.read_bits_u8(8)?)
-        } else {
-            None
-        };
-
-        let view_type = reader.read_bits_u8(8)?;
-        let view_id = if view_type == VIEW_EXPLICIT {
-            Some(reader.read_bits_u8(8)?)
-        } else {
-            None
-        };
-
-        let dependent_layer_map = if j > 0 {
-            Some(reader.read_bits(u32::from(j))?)
-        } else {
-            None
-        };
-
-        let same_sh_max_resolution_flag = reader.read_flag()?;
-        let (max_expected_width, max_expected_height) = if same_sh_max_resolution_flag {
-            (None, None)
-        } else {
-            (Some(reader.read_uvlc()?), Some(reader.read_uvlc()?))
-        };
-
-        reader.byte_align_zero()?;
-
-        layers.push(LcrEmbeddedLayer {
-            mlayer_index: j,
-            tlayer_map,
-            atlas_segment_id,
-            priority_order,
-            rendering_method,
-            layer_type,
-            auxiliary_type,
-            view_type,
-            view_id,
-            dependent_layer_map,
-            same_sh_max_resolution_flag,
-            max_expected_width,
-            max_expected_height,
-        });
-    }
-
-    Ok(LcrEmbeddedLayerInfo { mlayer_map, layers })
+        Ok(LcrEmbeddedLayerInfo { mlayer_map, layers })
+    })
 }
 
 #[cfg(test)]

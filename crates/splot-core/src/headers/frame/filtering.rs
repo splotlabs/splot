@@ -23,6 +23,7 @@
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
 use crate::headers::sequence::{CdefOnSkipTxfm, SuperblockSize};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `GDF_MIN_SIZE` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`): minimum size
 /// of GDF blocks when `gdf_unit_matches_sb_size` is `0`.
@@ -305,64 +306,111 @@ pub fn parse_deblocking_filter_params(
     read_allow_df_sub_pu: bool,
     mfh: Option<&MfhDeblockingView>,
 ) -> Result<DeblockingFilterParams> {
-    if coded_lossless {
-        return Ok(DeblockingFilterParams {
-            allow_df_sub_pu: false,
-            apply_deblocking_filter: [false; 4],
-            df_delta_q_present: [false; 4],
-            df_delta_q: [0; 4],
-        });
-    }
+    SyntaxReader::with_noop(reader, |sr| {
+        parse_deblocking_filter_params_with_reader(
+            sr,
+            coded_lossless,
+            num_planes,
+            df_par_bits_minus_2,
+            read_allow_df_sub_pu,
+            mfh,
+        )
+    })
+}
 
-    let allow_df_sub_pu = read_allow_df_sub_pu && reader.read_flag()?;
-
-    let mut apply_deblocking_filter = [false; 4];
-    if let Some(view) = mfh.filter(|view| view.mfh_deblocking_filter_update) {
-        apply_deblocking_filter[0] = view.mfh_apply_deblocking_filter[0];
-        apply_deblocking_filter[1] = view.mfh_apply_deblocking_filter[1];
-        if num_planes > 1 && (apply_deblocking_filter[0] || apply_deblocking_filter[1]) {
-            apply_deblocking_filter[2] = view.mfh_apply_deblocking_filter[2];
-            apply_deblocking_filter[3] = view.mfh_apply_deblocking_filter[3];
+pub(crate) fn parse_deblocking_filter_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coded_lossless: bool,
+    num_planes: u8,
+    df_par_bits_minus_2: u8,
+    read_allow_df_sub_pu: bool,
+    mfh: Option<&MfhDeblockingView>,
+) -> Result<DeblockingFilterParams> {
+    sr.in_struct("deblocking_filter_params", Some("5.18.7.5"), |sr| {
+        if coded_lossless {
+            sr.inferred_bool("allow_df_sub_pu", "CodedLossless", false);
+            return Ok(DeblockingFilterParams {
+                allow_df_sub_pu: false,
+                apply_deblocking_filter: [false; 4],
+                df_delta_q_present: [false; 4],
+                df_delta_q: [0; 4],
+            });
         }
-    } else {
-        apply_deblocking_filter[0] = reader.read_flag()?;
-        apply_deblocking_filter[1] = reader.read_flag()?;
-        if num_planes > 1 && (apply_deblocking_filter[0] || apply_deblocking_filter[1]) {
-            apply_deblocking_filter[2] = reader.read_flag()?;
-            apply_deblocking_filter[3] = reader.read_flag()?;
-        }
-    }
 
-    let df_par_bits = u32::from(df_par_bits_minus_2) + 2;
-    if df_par_bits > 32 {
-        return Err(Error::BitWidthTooLarge {
-            requested: df_par_bits,
-            max: 32,
-        });
-    }
-    let half = 1u32 << (df_par_bits - 1);
+        let allow_df_sub_pu = if read_allow_df_sub_pu {
+            sr.read_flag("allow_df_sub_pu")?
+        } else {
+            sr.inferred_bool("allow_df_sub_pu", "!read_allow_df_sub_pu", false);
+            false
+        };
 
-    let mut df_delta_q_present = [false; 4];
-    let mut df_delta_q = [0i32; 4];
-    for i in 0..4 {
-        if apply_deblocking_filter[i] {
-            df_delta_q_present[i] = reader.read_flag()?;
-            if df_delta_q_present[i] {
-                let raw = reader.read_bits(df_par_bits)?;
-                df_delta_q[i] = raw.wrapping_sub(half) as i32;
-            } else {
-                df_delta_q[i] = if i == 1 { df_delta_q[0] } else { 0 };
+        let mut apply_deblocking_filter = [false; 4];
+        if let Some(view) = mfh.filter(|view| view.mfh_deblocking_filter_update) {
+            apply_deblocking_filter[0] = view.mfh_apply_deblocking_filter[0];
+            apply_deblocking_filter[1] = view.mfh_apply_deblocking_filter[1];
+            sr.inferred_bool(
+                "apply_deblocking_filter[0]",
+                "mfh_deblocking_filter_update",
+                apply_deblocking_filter[0],
+            );
+            sr.inferred_bool(
+                "apply_deblocking_filter[1]",
+                "mfh_deblocking_filter_update",
+                apply_deblocking_filter[1],
+            );
+            if num_planes > 1 && (apply_deblocking_filter[0] || apply_deblocking_filter[1]) {
+                apply_deblocking_filter[2] = view.mfh_apply_deblocking_filter[2];
+                apply_deblocking_filter[3] = view.mfh_apply_deblocking_filter[3];
             }
         } else {
-            df_delta_q[i] = 0;
+            apply_deblocking_filter[0] = sr.read_flag("apply_deblocking_filter[0]")?;
+            apply_deblocking_filter[1] = sr.read_flag("apply_deblocking_filter[1]")?;
+            if num_planes > 1 && (apply_deblocking_filter[0] || apply_deblocking_filter[1]) {
+                apply_deblocking_filter[2] = sr.read_flag("apply_deblocking_filter[2]")?;
+                apply_deblocking_filter[3] = sr.read_flag("apply_deblocking_filter[3]")?;
+            }
         }
-    }
 
-    Ok(DeblockingFilterParams {
-        allow_df_sub_pu,
-        apply_deblocking_filter,
-        df_delta_q_present,
-        df_delta_q,
+        let df_par_bits = u32::from(df_par_bits_minus_2) + 2;
+        if df_par_bits > 32 {
+            let err = Error::BitWidthTooLarge {
+                requested: df_par_bits,
+                max: 32,
+            };
+            return sr.fail(sr.rel_bit(), Some("df_delta_q"), err);
+        }
+        let half = 1u32 << (df_par_bits - 1);
+
+        let mut df_delta_q_present = [false; 4];
+        let mut df_delta_q = [0i32; 4];
+        for i in 0..4 {
+            if apply_deblocking_filter[i] {
+                sr.in_loop_item("i", i, |sr| {
+                    df_delta_q_present[i] = sr.read_flag("df_delta_q_present")?;
+                    if df_delta_q_present[i] {
+                        let raw = sr.read_bits("df_delta_q", df_par_bits)?;
+                        df_delta_q[i] = raw.wrapping_sub(half) as i32;
+                    } else {
+                        df_delta_q[i] = if i == 1 { df_delta_q[0] } else { 0 };
+                        sr.inferred_i64(
+                            "df_delta_q",
+                            "!df_delta_q_present",
+                            i64::from(df_delta_q[i]),
+                        );
+                    }
+                    Ok(())
+                })?;
+            } else {
+                df_delta_q[i] = 0;
+            }
+        }
+
+        Ok(DeblockingFilterParams {
+            allow_df_sub_pu,
+            apply_deblocking_filter,
+            df_delta_q_present,
+            df_delta_q,
+        })
     })
 }
 
@@ -434,13 +482,24 @@ impl InterpolationFilter {
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
 /// ends before the `is_filter_switchable` bit or the `interpolation_filter` `f(2)` value.
 pub fn read_interpolation_filter(reader: &mut BitReader<'_>) -> Result<InterpolationFilter> {
-    let is_filter_switchable = reader.read_flag()?;
-    if is_filter_switchable {
-        Ok(InterpolationFilter::Switchable)
-    } else {
-        let code = reader.read_bits(2)?;
-        Ok(InterpolationFilter::from_fixed_code(code))
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    read_interpolation_filter_with_reader(&mut sr)
+}
+
+pub(crate) fn read_interpolation_filter_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<InterpolationFilter> {
+    sr.in_struct("read_interpolation_filter", Some("5.18.5.1"), |sr| {
+        let is_filter_switchable = sr.read_flag("is_filter_switchable")?;
+        if is_filter_switchable {
+            sr.absent("interpolation_filter", "is_filter_switchable");
+            Ok(InterpolationFilter::Switchable)
+        } else {
+            let code = sr.read_bits("interpolation_filter", 2)?;
+            Ok(InterpolationFilter::from_fixed_code(code))
+        }
+    })
 }
 
 /// Geometry inputs for the `gdf_per_block` gate of `gdf_params()` (AV2 v1.0.0
@@ -531,41 +590,56 @@ pub fn parse_gdf_params(
     filter: &CoreSeqFilterView,
     geometry: GdfGeometry<'_>,
 ) -> Result<GdfParams> {
-    let gdf_frame_enable = !coded_lossless
-        && filter.enable_gdf
-        && (filter.single_picture_header_flag || reader.read_flag()?);
-    if !gdf_frame_enable {
-        return Ok(GdfParams {
-            gdf_frame_enable: false,
-            gdf_per_block: None,
-            gdf_pic_qc_idx: None,
-            gdf_pic_scale_idx: None,
-        });
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_gdf_params_with_reader(&mut sr, coded_lossless, *filter, geometry)
+}
 
-    let gdf_per_block = if gdf_per_block_is_coded(*filter, geometry) {
-        reader.read_flag()?
-    } else {
-        false
-    };
+pub(crate) fn parse_gdf_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coded_lossless: bool,
+    filter: CoreSeqFilterView,
+    geometry: GdfGeometry<'_>,
+) -> Result<GdfParams> {
+    sr.in_struct("gdf_params", Some("5.18.7.9"), |sr| {
+        let gdf_frame_enable = if coded_lossless || !filter.enable_gdf {
+            sr.inferred_bool("gdf_frame_enable", "CodedLossless || !enable_gdf", false);
+            false
+        } else if filter.single_picture_header_flag {
+            sr.inferred_bool("gdf_frame_enable", "single_picture_header_flag", true);
+            true
+        } else {
+            sr.read_flag("gdf_frame_enable")?
+        };
+        if !gdf_frame_enable {
+            return Ok(GdfParams {
+                gdf_frame_enable: false,
+                gdf_per_block: None,
+                gdf_pic_qc_idx: None,
+                gdf_pic_scale_idx: None,
+            });
+        }
 
-    let gdf_pic_qc_idx = reader.read_bits_u8(2)?;
-    let gdf_pic_scale_idx = reader.read_bits_u8(2)?;
+        let gdf_per_block = if gdf_per_block_is_coded(filter, geometry) {
+            sr.read_flag("gdf_per_block")?
+        } else {
+            sr.inferred_bool("gdf_per_block", "!gdf_per_block_is_coded", false);
+            false
+        };
 
-    Ok(GdfParams {
-        gdf_frame_enable: true,
-        gdf_per_block: Some(gdf_per_block),
-        gdf_pic_qc_idx: Some(gdf_pic_qc_idx),
-        gdf_pic_scale_idx: Some(gdf_pic_scale_idx),
+        let gdf_pic_qc_idx = sr.read_bits_u8("gdf_pic_qc_idx", 2)?;
+        let gdf_pic_scale_idx = sr.read_bits_u8("gdf_pic_scale_idx", 2)?;
+
+        Ok(GdfParams {
+            gdf_frame_enable: true,
+            gdf_per_block: Some(gdf_per_block),
+            gdf_pic_qc_idx: Some(gdf_pic_qc_idx),
+            gdf_pic_scale_idx: Some(gdf_pic_scale_idx),
+        })
     })
 }
 
-/// Parses `cdef_params()` (AV2 v1.0.0 § 5.18.7.10,
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-10`).
-///
-/// `coded_lossless` is the frame `CodedLossless`; `num_planes` is `NumPlanes`; `filter`
-/// carries the § 5.4.10 `enable_cdef`, `cdef_on_skip_txfm`, and
-/// `single_picture_header_flag` flags.
+/// Parses `cdef_params()` (AV2 v1.0.0 § 5.18.7.10).
 ///
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
@@ -576,64 +650,119 @@ pub fn parse_cdef_params(
     num_planes: u8,
     filter: &CoreSeqFilterView,
 ) -> Result<CdefParams> {
-    let cdef_frame_enable = !coded_lossless
-        && filter.enable_cdef
-        && (filter.single_picture_header_flag || reader.read_flag()?);
-    if !cdef_frame_enable {
-        return Ok(CdefParams {
-            cdef_frame_enable: false,
-            cdef_damping: None,
-            cdef_strengths: None,
-            cdef_on_skip_txfm_frame_enable: None,
-            strengths: CdefStrengthSets::empty(),
-        });
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_cdef_params_with_reader(&mut sr, coded_lossless, num_planes, *filter)
+}
 
-    let cdef_damping = reader.read_bits_u8(2)? + 3;
-    let cdef_strengths = reader.read_bits_u8(3)? + 1;
-
-    let cdef_on_skip_txfm_frame_enable = match filter.cdef_on_skip_txfm {
-        CdefOnSkipTxfm::Adaptive => reader.read_flag()?,
-        CdefOnSkipTxfm::AlwaysOn => true,
-        CdefOnSkipTxfm::Disabled => false,
-    };
-
-    let mut strength_values = [CdefStrengthSet::default(); MAX_CDEF_STRENGTH_SETS];
-    for slot in strength_values.iter_mut().take(usize::from(cdef_strengths)) {
-        let (y_pri_strength, y_sec_strength) = read_cdef_strength(reader)?;
-        let (uv_pri_strength, uv_sec_strength) = if num_planes > 1 {
-            read_cdef_strength(reader)?
+pub(crate) fn parse_cdef_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coded_lossless: bool,
+    num_planes: u8,
+    filter: CoreSeqFilterView,
+) -> Result<CdefParams> {
+    sr.in_struct("cdef_params", Some("5.18.7.10"), |sr| {
+        let cdef_frame_enable = if coded_lossless || !filter.enable_cdef {
+            sr.inferred_bool("cdef_frame_enable", "CodedLossless || !enable_cdef", false);
+            false
+        } else if filter.single_picture_header_flag {
+            sr.inferred_bool("cdef_frame_enable", "single_picture_header_flag", true);
+            true
         } else {
-            (0, 0)
+            sr.read_flag("cdef_frame_enable")?
         };
-        *slot = CdefStrengthSet {
-            y_pri_strength,
-            y_sec_strength,
-            uv_pri_strength,
-            uv_sec_strength,
-        };
-    }
-    let strengths = CdefStrengthSets {
-        values: strength_values,
-        len: cdef_strengths,
-    };
+        if !cdef_frame_enable {
+            return Ok(CdefParams {
+                cdef_frame_enable: false,
+                cdef_damping: None,
+                cdef_strengths: None,
+                cdef_on_skip_txfm_frame_enable: None,
+                strengths: CdefStrengthSets::empty(),
+            });
+        }
 
-    Ok(CdefParams {
-        cdef_frame_enable: true,
-        cdef_damping: Some(cdef_damping),
-        cdef_strengths: Some(cdef_strengths),
-        cdef_on_skip_txfm_frame_enable: Some(cdef_on_skip_txfm_frame_enable),
-        strengths,
+        let cdef_damping = sr.read_bits_u8("cdef_damping_minus_3", 2)? + 3;
+        let cdef_strengths = sr.read_bits_u8("cdef_strengths_minus_1", 3)? + 1;
+
+        let cdef_on_skip_txfm_frame_enable = match filter.cdef_on_skip_txfm {
+            CdefOnSkipTxfm::Adaptive => sr.read_flag("cdef_on_skip_txfm_frame_enable")?,
+            CdefOnSkipTxfm::AlwaysOn => {
+                sr.inferred_bool(
+                    "cdef_on_skip_txfm_frame_enable",
+                    "CdefOnSkipTxfm == ALWAYS_ON",
+                    true,
+                );
+                true
+            }
+            CdefOnSkipTxfm::Disabled => {
+                sr.inferred_bool(
+                    "cdef_on_skip_txfm_frame_enable",
+                    "CdefOnSkipTxfm == DISABLED",
+                    false,
+                );
+                false
+            }
+        };
+
+        let mut strength_values = [CdefStrengthSet::default(); MAX_CDEF_STRENGTH_SETS];
+        for (i, slot) in strength_values
+            .iter_mut()
+            .take(usize::from(cdef_strengths))
+            .enumerate()
+        {
+            *slot = sr.in_loop_item("i", i, |sr| {
+                let (y_pri_strength, y_sec_strength) = read_cdef_strength(
+                    sr,
+                    "cdef_y_pri_strength_zero",
+                    "cdef_y_pri_strength",
+                    "cdef_y_sec_strength",
+                )?;
+                let (uv_pri_strength, uv_sec_strength) = if num_planes > 1 {
+                    read_cdef_strength(
+                        sr,
+                        "cdef_uv_pri_strength_zero",
+                        "cdef_uv_pri_strength",
+                        "cdef_uv_sec_strength",
+                    )?
+                } else {
+                    (0, 0)
+                };
+                Ok(CdefStrengthSet {
+                    y_pri_strength,
+                    y_sec_strength,
+                    uv_pri_strength,
+                    uv_sec_strength,
+                })
+            })?;
+        }
+        let strengths = CdefStrengthSets {
+            values: strength_values,
+            len: cdef_strengths,
+        };
+
+        Ok(CdefParams {
+            cdef_frame_enable: true,
+            cdef_damping: Some(cdef_damping),
+            cdef_strengths: Some(cdef_strengths),
+            cdef_on_skip_txfm_frame_enable: Some(cdef_on_skip_txfm_frame_enable),
+            strengths,
+        })
     })
 }
 
-fn read_cdef_strength(reader: &mut BitReader<'_>) -> Result<(u8, u8)> {
-    let pri = if reader.read_flag()? {
+fn read_cdef_strength<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    pri_zero_name: &'static str,
+    pri_name: &'static str,
+    sec_name: &'static str,
+) -> Result<(u8, u8)> {
+    let pri = if sr.read_flag(pri_zero_name)? {
+        sr.inferred_u64(pri_name, "pri_strength_zero", 0);
         0
     } else {
-        reader.read_bits_u8(4)?
+        sr.read_bits_u8(pri_name, 4)?
     };
-    let mut sec = reader.read_bits_u8(2)?;
+    let mut sec = sr.read_bits_u8(sec_name, 2)?;
     if sec == 3 {
         sec = 4;
     }

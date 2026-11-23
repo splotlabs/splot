@@ -40,6 +40,7 @@ pub mod stream;
 pub mod stream_reader;
 pub mod symbol;
 pub mod symbol_encoder;
+pub mod syntax;
 pub mod tables;
 #[cfg(test)]
 mod test_support;
