@@ -2227,9 +2227,10 @@ fn bru_gdf_core(
         core.lr_params = None;
     }
     if let Some(quant) = core.quantization_params.as_mut() {
-        quant.base_q_idx = match bit_depth {
-            BitDepth::Eight => 200,
-            _ => 224,
+        quant.base_q_idx = if bit_depth == BitDepth::Eight {
+            200
+        } else {
+            224
         };
     }
     let mut gdf = switchable_core().gdf_params.unwrap();

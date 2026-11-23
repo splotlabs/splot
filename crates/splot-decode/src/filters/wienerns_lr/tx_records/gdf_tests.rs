@@ -84,6 +84,32 @@ fn multi_block_bru_leaf_gdf_and_ccso_reads_stay_entropy_synchronized() {
     use splot_core::symbol::{CdfUpdateMode, Symbol};
     use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 
+    struct SyncDecoder {
+        gdf_state: GdfState,
+        ccso_state: CcsoState,
+        visited: Vec<bool>,
+    }
+
+    impl<'payload> LeafDecoder<'payload> for SyncDecoder {
+        type Command = ();
+        type Error = crate::DecodeError;
+
+        fn decode_leaf<const ACTIVE: bool>(
+            &mut self,
+            work_unit: &mut DecodeTileWorkUnit,
+            symbols: &mut SymbolDecoder<'payload>,
+            frontier: &DecodeBlockFrontier,
+            _neighbours: LeafNeighbours<'_>,
+        ) -> crate::Result<(GeneralIntraLeafMode, ())> {
+            self.visited.push(ACTIVE);
+            self.gdf_state
+                .read_for_block(work_unit, symbols, frontier, ByteOffset::new(0))?;
+            self.ccso_state
+                .read_for_block(work_unit, symbols, frontier, ByteOffset::new(0))?;
+            Ok((GeneralIntraLeafMode::chroma(0), ()))
+        }
+    }
+
     let fixture = include_bytes!(
         "../../../../../../tests/conformance/vectors/valid/\
          syn-gdf-per-block-intra-128x128-q120.ivf"
@@ -171,32 +197,6 @@ fn multi_block_bru_leaf_gdf_and_ccso_reads_stay_entropy_synchronized() {
         std::array::from_fn(|_| Vec::new()),
     )
     .unwrap();
-
-    struct SyncDecoder {
-        gdf_state: GdfState,
-        ccso_state: CcsoState,
-        visited: Vec<bool>,
-    }
-
-    impl<'payload> LeafDecoder<'payload> for SyncDecoder {
-        type Command = ();
-        type Error = crate::DecodeError;
-
-        fn decode_leaf<const ACTIVE: bool>(
-            &mut self,
-            work_unit: &mut DecodeTileWorkUnit,
-            symbols: &mut SymbolDecoder<'payload>,
-            frontier: &DecodeBlockFrontier,
-            _neighbours: LeafNeighbours<'_>,
-        ) -> crate::Result<(GeneralIntraLeafMode, ())> {
-            self.visited.push(ACTIVE);
-            self.gdf_state
-                .read_for_block(work_unit, symbols, frontier, ByteOffset::new(0))?;
-            self.ccso_state
-                .read_for_block(work_unit, symbols, frontier, ByteOffset::new(0))?;
-            Ok((GeneralIntraLeafMode::chroma(0), ()))
-        }
-    }
 
     let mut cursor = GeneralIntraMultiblockCursor::new(
         &work_unit,
