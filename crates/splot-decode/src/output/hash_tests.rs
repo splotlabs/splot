@@ -72,6 +72,15 @@ const OUTPUT_EFFECT_CI_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-output-ci-2frame-64x64.ivf");
 const STANDALONE_OLK_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-standalone-olk-64x64.ivf");
+const OLK_LEADING_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-frame-olk-leading-64x64.ivf");
+const OLK_FWDKF_SAME_TU_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-olk-fwdkf-same-tu-64x64-q160.ivf"
+);
+const SEF_FAMILIES_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-frame-sef-families-64x64.ivf");
+const TIP_FAMILIES_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-frame-tip-families-64x64.ivf");
 const BRIDGE_CELU_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
 const SCALED_BRIDGE_FIXTURE: &[u8] =
@@ -230,6 +239,70 @@ fn standalone_open_loop_key_matches_expected_output_hash() {
         report.frames[0].hashes[0].digest_hex,
         "7ccdd8e95f70849d93650136562854419f79379ab897edca10fba785a61d46ab"
     );
+}
+
+fn ivf_without_first_record(ivf: &[u8]) -> Vec<u8> {
+    let first_size = u32::from_le_bytes(ivf[32..36].try_into().unwrap()) as usize;
+    let frame_count = u32::from_le_bytes(ivf[24..28].try_into().unwrap());
+    let mut cut = Vec::with_capacity(ivf.len() - 12 - first_size);
+    cut.extend_from_slice(&ivf[..24]);
+    cut.extend_from_slice(&(frame_count - 1).to_le_bytes());
+    cut.extend_from_slice(&ivf[28..32]);
+    cut.extend_from_slice(&ivf[32 + 12 + first_size..]);
+    cut
+}
+
+#[test]
+fn open_loop_key_random_access_discards_leading_frames() {
+    let cases: [(&str, &[u8], &[&str]); 4] = [
+        (
+            "olk-leading",
+            OLK_LEADING_FIXTURE,
+            &["7ccdd8e95f70849d93650136562854419f79379ab897edca10fba785a61d46ab"],
+        ),
+        (
+            "olk-fwdkf-same-tu",
+            OLK_FWDKF_SAME_TU_FIXTURE,
+            &[
+                "f8a9692d07d1f6f9711bc661a9b2a0d63b47b520e7b9366fb27ab127cc2fcb5a",
+                "ae1a987bfc609ba9cb699c89b1e2facd446a8a4ab59be567185920c565fb1be1",
+                "4e54da1b51c6b0df758c80e5178444faf9bea5543e3c5b99291ec542256c6473",
+                "b5f1d6adb7a1c606f84b6946636c3de7292397056c387319c6e12f0d55a82860",
+                "fc941ba33f12d006ed9654e8c479baa539ee89a102ef296a65da888204869f10",
+                "2037c7801f61edda9b805b71e95e0af1971c0d25f8d2d339d2c2e3d215a5b283",
+                "da65f3972ee762de9b20a6252a3795828ed7bc2c470e43948a441edb1881bb7a",
+            ],
+        ),
+        (
+            "sef-families",
+            SEF_FAMILIES_FIXTURE,
+            &["28a9c7060cb79bf8f4255a943cf6c1dfeacf398f05f4ba6da9de0f698d68f793"],
+        ),
+        (
+            "tip-families",
+            TIP_FAMILIES_FIXTURE,
+            &[
+                "28a9c7060cb79bf8f4255a943cf6c1dfeacf398f05f4ba6da9de0f698d68f793",
+                "d3d55e8f2d10b3f778884bbdb39fe1fb0a8c0abf02cf80b55af308cc0558aef9",
+                "4b022e92f03609965450d9db8c938ba78600f2ba8dc5e45e20f52bc6eb94802d",
+            ],
+        ),
+    ];
+
+    for (name, fixture, expected) in cases {
+        let cut = ivf_without_first_record(fixture);
+        for threads in [ThreadCount::from(1usize), ThreadCount::from(2usize)] {
+            let report = context(threads)
+                .decode_hash_report_bytes(&cut, DecodeOptions::default())
+                .unwrap();
+            let actual: Vec<&str> = report
+                .frames
+                .iter()
+                .map(|frame| frame.hashes[0].digest_hex.as_str())
+                .collect();
+            assert_eq!(actual, expected, "{name} on {threads:?}");
+        }
+    }
 }
 
 #[test]

@@ -1782,6 +1782,11 @@ description = "AVMenc open-GOP stream containing a closed-loop key, open-loop ke
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-frame-olk-leading-ra-64x64.ivf"
+description = "Minimal 164-byte open random-access IVF derived from syn-frame-olk-leading-64x64.ivf by dropping the initial closed-loop key record and updating only the IVF frame count. Decoding starts at the open-loop key frame followed by three leading tile-group frames, which must be discarded (§ 7.4.4); splot and avmdec produce the same 6,144-byte raw I420 SHA-256 7ccdd8e95f70849d93650136562854419f79379ab897edca10fba785a61d46ab; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-frame-switch-64x64.ivf"
 description = "Minimal AVMenc stream containing a closed-loop key, regular tile-group frame, and OBU_SWITCH frame. It exercises switch-frame parsing, reconstruction, reference refresh, output scheduling, and reset state; fixed splot and both AVM decoders produce the same 18,432-byte raw I420 SHA-256 606263b14593f7391fab93e5829360d9b962e10057b722f0b5d84bfb84648674; validates clean."
 expect = "clean"
