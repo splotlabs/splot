@@ -32,23 +32,34 @@ pub struct DecodeContext {
     session: crate::pipeline::DecodeSession,
 }
 
+use splot_core::simd::SelectedBackend;
+
 impl DecodeContext {
-    /// Creates a decode context and starts its row scheduler.
+    /// Creates a decode context, validates its SIMD policy, and starts its row scheduler.
     ///
-    /// The configured frame-pipelining depth is resolved once here against the
-    /// thread count, so no decode path re-resolves it.
+    /// Both the frame-pipelining depth and SIMD backend policy are resolved once
+    /// here, so no decode path re-resolves them.
     ///
     /// # Errors
-    /// Returns [`crate::DecodeError::Pool`] if a worker thread cannot start.
+    /// Returns [`crate::DecodeError::UnsupportedBackend`] if the requested SIMD
+    /// policy cannot run on this host, or [`crate::DecodeError::Pool`] if a
+    /// worker thread cannot start.
     pub fn new(runtime: DecodeRuntimeConfig) -> Result<Self> {
+        let backend = splot_core::simd::resolve_backend(runtime.simd_policy)?;
         let threads = runtime.thread_count.resolve();
         let frame_delay = runtime.frame_delay.resolve(threads);
         let rows = crate::pipeline::row_scheduler(threads)?;
         Ok(Self {
             runtime,
             threads,
-            session: crate::pipeline::DecodeSession::new(frame_delay, rows),
+            session: crate::pipeline::DecodeSession::new(frame_delay, rows, backend),
         })
+    }
+
+    /// The concrete SIMD backend selected when this context opened.
+    #[must_use]
+    pub const fn selected_backend(&self) -> SelectedBackend {
+        self.session.backend().kind()
     }
 
     /// The resolved, non-zero requested frame-pipelining policy.

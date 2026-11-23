@@ -310,7 +310,10 @@ fn digest_line(name: &str) -> String {
     let (recorder, decoded) = splot_parallel::run_on_thread("neighbour-state", || {
         RECORDER.set(Some(Recorder::default()));
         let options = crate::DecodeOptions::default();
-        let session = crate::pipeline::DecodeSession::new(core::num::NonZeroUsize::MIN, None);
+        let backend =
+            splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto).unwrap();
+        let session =
+            crate::pipeline::DecodeSession::new(core::num::NonZeroUsize::MIN, None, backend);
         let mut source =
             crate::bitstream::byte_stream::ReaderUnits::new(bytes.as_slice(), options.limits());
         let decoded =

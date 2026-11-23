@@ -29,6 +29,8 @@ use crate::support::decode_buffers::DecodeBuffers;
 /// between decode calls, as dav2d keeps its frame contexts.
 pub(crate) struct DecodeSession {
     frame_delay: NonZeroUsize,
+    /// Immutable concrete SIMD backend validated when the session opened.
+    backend: splot_core::simd::ResolvedBackend,
     /// The row scheduler of a multi-threaded context, which the split inter
     /// frames run on.
     rows: Option<Arc<splot_parallel::RowScheduler>>,
@@ -44,6 +46,7 @@ impl core::fmt::Debug for DecodeSession {
         formatter
             .debug_struct("DecodeSession")
             .field("frame_delay", &self.frame_delay)
+            .field("backend", &self.backend.kind())
             .finish_non_exhaustive()
     }
 }
@@ -52,9 +55,11 @@ impl DecodeSession {
     pub(crate) fn new(
         frame_delay: NonZeroUsize,
         rows: Option<Arc<splot_parallel::RowScheduler>>,
+        backend: splot_core::simd::ResolvedBackend,
     ) -> Self {
         Self {
             frame_delay,
+            backend,
             rows,
             retained: Mutex::new(None),
             detach_held: false,
@@ -67,11 +72,17 @@ impl DecodeSession {
     pub(crate) fn detaching_held(
         frame_delay: NonZeroUsize,
         rows: Option<Arc<splot_parallel::RowScheduler>>,
+        backend: splot_core::simd::ResolvedBackend,
     ) -> Self {
         Self {
             detach_held: true,
-            ..Self::new(frame_delay, rows)
+            ..Self::new(frame_delay, rows, backend)
         }
+    }
+
+    /// The concrete SIMD backend locked for this session.
+    pub(crate) const fn backend(&self) -> splot_core::simd::ResolvedBackend {
+        self.backend
     }
 
     /// The row scheduler, or `None` when the decode runs on one thread.

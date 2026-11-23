@@ -460,6 +460,49 @@ fn a_picture_reports_the_type_of_the_frame_it_shows() {
     );
 }
 
+#[test]
+fn decoder_validates_simd_policy_once_and_retains_it_across_flush() {
+    use splot_decode::{SelectedBackend, SimdPolicy};
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let err = Decoder::new(DecoderSettings::default().with_simd_policy(SimdPolicy::Neon))
+            .unwrap_err();
+        assert!(
+            matches!(err, DecodeError::UnsupportedBackend { .. }),
+            "{err}"
+        );
+
+        if !splot_core::simd::detect_capabilities().has_avx512() {
+            let err = Decoder::new(DecoderSettings::default().with_simd_policy(SimdPolicy::Avx512))
+                .unwrap_err();
+            assert!(
+                matches!(err, DecodeError::UnsupportedBackend { .. }),
+                "{err}"
+            );
+        }
+    }
+
+    let expected_units = units(MULTIREF);
+    let expected = batch_raw(MULTIREF);
+    let mut decoder = Decoder::new(DecoderSettings::default()).unwrap();
+    let initial = decoder.selected_backend();
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(initial, SelectedBackend::Avx2);
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(initial, SelectedBackend::Neon);
+
+    let first = decode(&mut decoder, &expected_units, |_| DataProps::default());
+    assert_eq!(raw_of(&with_film_grain(&first)), expected);
+    assert_eq!(decoder.selected_backend(), initial);
+
+    decoder.flush();
+    assert_eq!(decoder.selected_backend(), initial);
+    let second = decode(&mut decoder, &expected_units, |_| DataProps::default());
+    assert_eq!(raw_of(&with_film_grain(&second)), expected);
+    assert_eq!(decoder.selected_backend(), initial);
+}
+
 struct ChunkedSliceReader<'a> {
     bytes: &'a [u8],
     offset: usize,
