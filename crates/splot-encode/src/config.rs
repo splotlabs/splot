@@ -272,7 +272,7 @@ impl Config {
     /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
     /// [`Error::InvalidCrop`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
-    /// [`Error::InvalidMetadata`],
+    /// [`Error::InvalidMasteringDisplay`], [`Error::InvalidMetadata`],
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
     /// [`Error::PaddingWithoutCbr`] or [`Error::Preset`].

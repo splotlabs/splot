@@ -109,6 +109,19 @@ pub enum Error {
         what: &'static str,
     },
 
+    /// A mastering display field is outside its § 6.16.6 range and not 0.
+    #[error("mastering display {field} {value} is outside {min}..={max} (or 0 for unknown)")]
+    InvalidMasteringDisplay {
+        /// The offending field.
+        field: &'static str,
+        /// Its value.
+        value: u32,
+        /// Smallest non-zero valid value.
+        min: u32,
+        /// Largest valid value.
+        max: u32,
+    },
+
     /// A metadata payload that its syntax cannot carry.
     #[error("metadata: {what}")]
     InvalidMetadata {
