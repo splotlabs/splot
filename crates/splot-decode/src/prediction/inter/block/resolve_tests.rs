@@ -85,6 +85,7 @@ fn resolve_without_neighbours(
         grid: &mut grid,
         ref_mv_bank: &mut None,
         warp_param_bank: &mut WarpParamBank::new(),
+        ibc_local: None,
         core: &core,
         temporal: None,
         order_hints: OrderHintMvContext::new(1, &order_hints, 0),

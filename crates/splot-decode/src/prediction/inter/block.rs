@@ -430,6 +430,8 @@ pub(crate) fn derive_inter_block_setup(
         allow_bawp,
         allow_warpmv_mode,
         allow_intrabc: crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(core),
+        allow_local_intrabc:
+            crate::filters::wienerns_lr::intrabc_records::frame_allows_local_intrabc(core),
         frame_is_switch,
         current_order_hint,
         temporal_first_frame: frame_temporal_first(
@@ -1232,6 +1234,7 @@ pub(super) struct InterLeafSink<'a> {
     pub(super) mv_grid: &'a mut NeighbourMvGrid,
     filter_records: &'a mut tile::TileFilterRecords,
     slots: &'a mut Vec<tile::LeafSlot>,
+    pub(super) sb_has_intrabc: bool,
 }
 
 /// Decodes one leaf and stores its record as the row's next entry.
@@ -1368,6 +1371,7 @@ fn decode_block(
             ref mut mv_grid,
             ref mut filter_records,
             ref mut slots,
+            ref mut sb_has_intrabc,
             ..
         } = *sink;
         let mut prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip::default());
@@ -1500,6 +1504,7 @@ fn decode_block(
                 non_inter_flag_syntax(Some(prelude.skip_flag), frame_mv_precision(core)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
+            *sb_has_intrabc = true;
             let (sub_x, sub_y) = sequence.general.chroma_format_idc.subsampling();
             return Ok(store(
                 GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
@@ -2033,6 +2038,7 @@ fn finish_inter_leaf(
         ref mut mv_grid,
         ref mut filter_records,
         ref mut slots,
+        sb_has_intrabc: _,
     } = *sink;
     let lossless = work_unit
         .coeff_frame_facts()

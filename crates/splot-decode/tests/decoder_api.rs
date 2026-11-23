@@ -68,6 +68,17 @@ const BRU_GDF_LR_8BIT: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-lr-8bit.ivf");
 const BRU_GDF_MULTITILE_8BIT: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-multitile-8bit.ivf");
+const BRU_LOCAL_INTRABC_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-8bit.ivf");
+const BRU_LOCAL_INTRABC_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-10bit.ivf");
+const BRU_LOCAL_INTRABC_MULTITILE_8BIT: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-multitile-8bit.ivf"
+);
+const BRU_LOCAL_INTRABC_LR_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-lr-8bit.ivf");
+const BRU_LOCAL_INTRABC_GDF_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-gdf-8bit.ivf");
 
 const FIXTURES: &[&[u8]] = &[
     MULTIREF,
@@ -841,5 +852,34 @@ fn bru_gdf_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
             ("gdf-lr-8bit-truncated", BRU_GDF_LR_8BIT),
         ],
         "BRU+GDF",
+    );
+}
+
+#[test]
+fn bru_local_intrabc_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
+    let bru_intrabc_fixtures = [
+        ("syn-bru-local-intrabc-8bit", BRU_LOCAL_INTRABC_8BIT),
+        ("syn-bru-local-intrabc-10bit", BRU_LOCAL_INTRABC_10BIT),
+        (
+            "syn-bru-local-intrabc-multitile-8bit",
+            BRU_LOCAL_INTRABC_MULTITILE_8BIT,
+        ),
+        ("syn-bru-local-intrabc-lr-8bit", BRU_LOCAL_INTRABC_LR_8BIT),
+        ("syn-bru-local-intrabc-gdf-8bit", BRU_LOCAL_INTRABC_GDF_8BIT),
+    ];
+
+    assert_bru_batch_chunked_streaming(&bru_intrabc_fixtures, "BRU+local-IntraBC");
+    assert_bru_flush_recovery(
+        &[
+            ("local-intrabc-8bit-truncated", BRU_LOCAL_INTRABC_8BIT),
+            ("local-intrabc-10bit-truncated", BRU_LOCAL_INTRABC_10BIT),
+            (
+                "local-intrabc-multitile-truncated",
+                BRU_LOCAL_INTRABC_MULTITILE_8BIT,
+            ),
+            ("local-intrabc-lr-truncated", BRU_LOCAL_INTRABC_LR_8BIT),
+            ("local-intrabc-gdf-truncated", BRU_LOCAL_INTRABC_GDF_8BIT),
+        ],
+        "BRU+local-IntraBC",
     );
 }

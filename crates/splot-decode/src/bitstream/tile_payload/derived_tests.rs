@@ -496,8 +496,17 @@ fn derived_boundary_rejects_backward_reference_update_frames() {
         FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
     );
 
-    inter.bru_inactive = Some(false);
+    inter.bru_inactive = Some(true);
     core.inter = Some(inter.clone());
+    let inactive_err =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
+    assert_unsupported_error(
+        &inactive_err,
+        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+    );
+
+    inter.bru_inactive = Some(false);
+    core.inter = Some(inter);
     assert!(core.gdf_params.is_some());
     core.gdf_params = core.gdf_params.map(|mut gdf| {
         gdf.gdf_frame_enable = true;
@@ -516,12 +525,14 @@ fn derived_boundary_rejects_backward_reference_update_frames() {
         gdf
     });
     core.allow_intrabc = Some(true);
-    let error =
-        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
-    assert_unsupported_error(
-        &error,
-        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
-    );
+    let with_intrabc =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).err();
+    assert!(!matches!(
+        with_intrabc,
+        Some(FrameCandidateTileBoundaryError::Unsupported {
+            reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate
+        })
+    ));
 
     core.allow_intrabc = Some(false);
     assert!(core.lr_params.is_some());

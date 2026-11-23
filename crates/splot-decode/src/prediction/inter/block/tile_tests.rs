@@ -65,6 +65,8 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         temporal: Vec::new(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         filter_records: TileFilterRecords::default(),
+        full_sb_row: false,
+        last_intrabc_sb: None,
         motion_folded: false,
         failure: ReconRowFailure::Terminal(malformed_tile_error(offset)),
     };
@@ -308,6 +310,8 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
         temporal: Vec::new(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         filter_records: TileFilterRecords::default(),
+        full_sb_row: false,
+        last_intrabc_sb: None,
         motion_folded: false,
         failure: ReconRowFailure::None,
     };
@@ -338,6 +342,8 @@ fn out_of_order_units_publish_only_their_contiguous_prefix() {
         temporal: Vec::new(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         filter_records: TileFilterRecords::default(),
+        full_sb_row: false,
+        last_intrabc_sb: None,
         motion_folded: false,
         failure: ReconRowFailure::None,
     };
@@ -491,6 +497,8 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
             temporal: Vec::new(),
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             filter_records: core::mem::take(&mut records),
+            full_sb_row: false,
+            last_intrabc_sb: None,
             motion_folded: false,
             failure: ReconRowFailure::None,
         };

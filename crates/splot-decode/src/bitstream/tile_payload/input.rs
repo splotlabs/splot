@@ -145,11 +145,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             });
         }
         let use_bru = core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true);
-        let unsupported_bru_tools = core.allow_intrabc == Some(true);
-        if use_bru
-            && (unsupported_bru_tools
-                || core.inter.as_ref().and_then(|inter| inter.bru_inactive) != Some(false))
-        {
+        if use_bru && core.inter.as_ref().and_then(|inter| inter.bru_inactive) != Some(false) {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
                 reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
             });
@@ -474,9 +470,8 @@ pub(crate) enum FrameCandidateTileUnsupportedReason {
     CandidateNotFrame,
     IncompleteFrameHeader,
     NonIntraFrame,
-    /// A `use_bru == 1` frame that allows IntraBC (or is a `bru_inactive` header
-    /// without `use_bru` copy routing): the § 5.20.4.1 `update_ibc_buffers`
-    /// reset of non-active superblocks is not applied.
+    /// A `use_bru == 1` frame whose `bru_inactive != 0` header belongs on the
+    /// § 7.2 inactive-frame copy path rather than tile decoding.
     BackwardReferenceUpdate,
 }
 

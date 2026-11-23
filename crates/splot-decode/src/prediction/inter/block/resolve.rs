@@ -86,23 +86,61 @@ pub(super) fn resolve_parsed_leaves(
     row: &mut ReconRow,
     state: &mut MvResolutionState<'_>,
 ) -> Result<()> {
+    let local_ibc_end = row.local_ibc_sb_end().min(row.superblocks.len());
+    if state.ibc_local.is_some() && local_ibc_end > 0 {
+        resolve_parsed_leaves_inner::<true>(
+            &row.superblocks[..local_ibc_end],
+            &mut row.entries,
+            &mut row.slots,
+            state,
+        )?;
+        if local_ibc_end < row.superblocks.len() {
+            resolve_parsed_leaves_inner::<false>(
+                &row.superblocks[local_ibc_end..],
+                &mut row.entries,
+                &mut row.slots,
+                state,
+            )?;
+        }
+        return Ok(());
+    }
+    resolve_parsed_leaves_inner::<false>(&row.superblocks, &mut row.entries, &mut row.slots, state)
+}
+
+fn resolve_parsed_leaves_inner<const LOCAL_IBC: bool>(
+    superblocks: &[super::tile::ReconSuperblock],
+    entries: &mut [super::tile::ReconRowEntry],
+    slots: &mut [LeafSlot],
+    state: &mut MvResolutionState<'_>,
+) -> Result<()> {
     let sb_h4 = state.sb_h4;
     let is_intra = state.core.frame_is_intra == Some(true);
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, is_intra);
     debug_assert_eq!(intrabc_sb_h4, sb_h4);
-    for superblock in &row.superblocks {
+    for superblock in superblocks {
         let [r, c] = superblock.origin;
+        if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
+            ibc.begin_superblock(r, superblock.bru_inactive);
+        }
         if let Some(bank) = state.ref_mv_bank.as_mut() {
             bank.reset_for_leaf(state.grid, r, c, intrabc_sb_h4, !is_intra);
         }
         state
             .warp_param_bank
             .reset_for_leaf(state.grid, r, c, sb_h4);
-        let entries = row
-            .entries
+        let sb_entries = entries
             .get_mut(superblock.entries.clone())
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        for entry in entries {
+        for entry in sb_entries {
+            if LOCAL_IBC && matches!(entry.state, EntryState::OutOfFrame) {
+                if let Some(ibc) = state.ibc_local.as_mut()
+                    && let Some((mi_row, mi_col, n4w, n4h)) =
+                        entry.publication.luma_tree_block(superblock.origin)
+                {
+                    ibc.record_out_of_frame(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                }
+                continue;
+            }
             if let EntryState::Intra(_) = entry.state {
                 if let Some((mi_row, mi_col, n4w, n4h)) =
                     entry.publication.luma_tree_block(superblock.origin)
@@ -111,19 +149,51 @@ pub(super) fn resolve_parsed_leaves(
                     if let Some(bank) = state.ref_mv_bank.as_mut() {
                         bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
                     }
+                    if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
+                        ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                        ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    }
                 }
                 continue;
             }
-            let Some(slot) = entry.slot_mut(&mut row.slots) else {
+            let Some(slot) = entry.slot_mut(slots) else {
                 continue;
             };
             match slot {
-                LeafSlot::PendingInter(command) => *slot = LeafSlot::Inter(command.resolve(state)?),
+                LeafSlot::PendingInter(command) => {
+                    let luma_block = if LOCAL_IBC {
+                        entry.publication.luma_tree_block(superblock.origin)
+                    } else {
+                        None
+                    };
+                    if LOCAL_IBC
+                        && let Some(ibc) = state.ibc_local.as_mut()
+                        && let Some((mi_row, mi_col, n4w, n4h)) = luma_block
+                    {
+                        ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    }
+                    *slot = LeafSlot::Inter(command.resolve(state)?);
+                    if LOCAL_IBC
+                        && let Some(ibc) = state.ibc_local.as_mut()
+                        && let Some((mi_row, mi_col, n4w, n4h)) = luma_block
+                    {
+                        ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    }
+                }
                 LeafSlot::PendingIntrabc(_) => {
                     let LeafSlot::PendingIntrabc(block) = core::mem::replace(slot, LeafSlot::Spent)
                     else {
                         return Err(invalid_inter_tile_scheduling_state());
                     };
+                    if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
+                        ibc.enter_leaf(
+                            block.frontier.r,
+                            block.frontier.c,
+                            block.n4w,
+                            block.n4h,
+                            superblock.bru_inactive,
+                        );
+                    }
                     *slot = LeafSlot::Intrabc(resolve_pending_intrabc(
                         block,
                         state,
@@ -220,12 +290,15 @@ fn resolve_pending_intrabc(
         subsampling,
         state.tile_offset,
     )?;
+    #[cfg(test)]
+    crate::filters::wienerns_lr::recon::record_bru_intrabc_block();
     crate::filters::wienerns_lr::intrabc_mv_valid::check_intrabc_block_vector(
         state.core,
         &frontier,
         (n4w, n4h),
         (sb_h4, allow_extra_ibc_range),
         info,
+        state.ibc_local.as_deref(),
         state.tile_offset,
     )?;
     let command = intrabc::IntrabcReconCommand::new(
@@ -397,6 +470,8 @@ pub(super) struct MvResolutionState<'a> {
     pub(super) grid: &'a mut NeighbourMvGrid,
     pub(super) ref_mv_bank: &'a mut Option<RefMvBank>,
     pub(super) warp_param_bank: &'a mut WarpParamBank,
+    pub(super) ibc_local:
+        Option<&'a mut crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>,
     pub(super) core: &'a FrameHeaderCore,
     pub(super) temporal: Option<&'a TemporalMvContext>,
     pub(super) order_hints: OrderHintMvContext<'a>,

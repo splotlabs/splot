@@ -1593,6 +1593,10 @@ pub(crate) struct BruLrFrameAudit {
     pub(crate) gdf_per_block: bool,
     pub(crate) gdf_enabled_units: usize,
     pub(crate) gdf_total_units: usize,
+    pub(crate) allow_intrabc: bool,
+    pub(crate) allow_local_intrabc: bool,
+    pub(crate) allow_global_intrabc: bool,
+    pub(crate) intrabc_block_count: usize,
     pub(crate) superblock_modes: Vec<(usize, usize, Option<u8>)>,
     pub(crate) pre_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     pub(crate) post_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
@@ -1602,6 +1606,14 @@ pub(crate) struct BruLrFrameAudit {
 std::thread_local! {
     static BRU_LR_AUDIT_SINK: core::cell::RefCell<Option<Vec<BruLrFrameAudit>>> =
         const { core::cell::RefCell::new(None) };
+    static BRU_INTRABC_BLOCKS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn record_bru_intrabc_block() {
+    if has_bru_lr_audit_sink() {
+        BRU_INTRABC_BLOCKS.with(|count| count.set(count.get() + 1));
+    }
 }
 
 #[cfg(test)]
@@ -1654,6 +1666,11 @@ fn record_bru_lr_audit(
         (0, 0),
         crate::filters::gdf::GdfBlockGrid::enabled_unit_counts,
     );
+    let intrabc_block_count = BRU_INTRABC_BLOCKS.with(|count| count.replace(0));
+    let allow_intrabc = super::intrabc_records::frame_allows_intrabc(core);
+    let allow_local_intrabc = super::intrabc_records::frame_allows_local_intrabc(core);
+    let allow_global_intrabc = core.frame_is_intra != Some(false)
+        && core.intrabc.and_then(|params| params.allow_global_intrabc) == Some(true);
     let record = BruLrFrameAudit {
         use_bru: core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true),
         bru_inactive: core.inter.as_ref().and_then(|inter| inter.bru_inactive) == Some(true),
@@ -1664,6 +1681,10 @@ fn record_bru_lr_audit(
         gdf_per_block,
         gdf_enabled_units,
         gdf_total_units,
+        allow_intrabc,
+        allow_local_intrabc,
+        allow_global_intrabc,
+        intrabc_block_count,
         superblock_modes,
         pre_bru_blocks,
         post_bru_blocks: post_bru_blocks.to_vec(),
@@ -1677,16 +1698,18 @@ fn record_bru_lr_audit(
 
 #[cfg(test)]
 pub(crate) fn with_bru_lr_audit<R>(f: impl FnOnce() -> R) -> (R, Vec<BruLrFrameAudit>) {
-    struct ResetGuard(Option<Vec<BruLrFrameAudit>>);
+    struct ResetGuard(Option<Vec<BruLrFrameAudit>>, usize);
     impl Drop for ResetGuard {
         fn drop(&mut self) {
             BRU_LR_AUDIT_SINK.with(|sink| {
                 *sink.borrow_mut() = self.0.take();
             });
+            BRU_INTRABC_BLOCKS.with(|count| count.set(self.1));
         }
     }
     let previous = BRU_LR_AUDIT_SINK.with(|sink| sink.borrow_mut().replace(Vec::new()));
-    let _guard = ResetGuard(previous);
+    let prev_intrabc = BRU_INTRABC_BLOCKS.with(|count| count.replace(0));
+    let _guard = ResetGuard(previous, prev_intrabc);
     let result = f();
     let captured = BRU_LR_AUDIT_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default());
     (result, captured)

@@ -41,8 +41,8 @@ pub(super) fn decode_tile_boundary_error(
         } => unsupported_with_spec(
             "backward_reference_update",
             Some(offset),
-            "decode runtime does not decode use_bru == 1 frames with IntraBC",
-            "5.20.4.1",
+            "decode runtime requires active use_bru == 1 frames with bru_inactive == 0",
+            "5.20.2.1",
         ),
         FrameCandidateTileBoundaryError::Unsupported { .. }
         | FrameCandidateTileBoundaryError::Boundary(_) => unsupported(

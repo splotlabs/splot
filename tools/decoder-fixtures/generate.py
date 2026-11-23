@@ -1169,6 +1169,114 @@ BRU_GDF_FIXTURES = [
 ]
 
 
+def _bru_intrabc_glyph(lx, ly, salt):
+    bx = (math.floor(lx / 4.0) + math.floor(ly * 3.0) + salt) % 7
+    val = 128 + 55 * math.sin(lx * 1.15 + salt) * math.cos(ly * 1.15 - salt)
+    if int(round(lx)) % 16 in (1, 14) or int(round(ly)) % 16 in (1, 14):
+        val += 60
+    elif bx < 2:
+        val -= 75
+    return max(20.0, min(235.0, val))
+
+
+def _bru_intrabc_sample_stripe(t, x, y, plane, bit_depth):
+    shift = bit_depth - 8
+    if plane == 1:
+        return int(round(128 + 16 * math.sin(x * 0.05 + y * 0.06))) << shift
+    if plane == 2:
+        return int(round(128 + 16 * math.cos(x * 0.05 - y * 0.07))) << shift
+    val = 128 + 24 * math.sin(x * 0.06 + y * 0.07)
+    if t in (1, 2) and 196 <= x < 252 and 68 <= y < 124:
+        val = _bru_intrabc_glyph(x - 196, y - 68, t * 3)
+    elif t == 3 and 4 <= y < 60 and 196 <= x < 316:
+        sx = (x - 196) % 16 + (0.5 if x >= 256 else 0.0)
+        val = _bru_intrabc_glyph(sx, (y - 4) % 16, 7)
+    elif t == 4:
+        if 4 <= y < 60 and 196 <= x < 316:
+            val = _bru_intrabc_glyph((x - 196) % 16, (y - 4) % 16, 7)
+        if 68 <= y < 124 and 132 <= x < 252:
+            val = _bru_intrabc_glyph((x - 132) % 16, (y - 68) % 16, 19)
+    elif t == 5 and 68 <= y < 124 and 132 <= x < 252:
+        val = _bru_intrabc_glyph(((x - 132) % 16) + 0.25, ((y - 68) % 16) + 0.5, 19)
+    return int(round(val)) << shift
+
+
+def _bru_intrabc_sample_multitile(t, x, y, plane):
+    if plane == 1:
+        return int(round(128 + 16 * math.sin(x * 0.05 + y * 0.06)))
+    if plane == 2:
+        return int(round(128 + 16 * math.cos(x * 0.05 - y * 0.07)))
+    val = 128 + 24 * math.sin(x * 0.06 + y * 0.07)
+    if t in (1, 2) and 70 <= x < 124 and 70 <= y < 124:
+        val = _bru_intrabc_glyph(x - 70, y - 70, t * 3)
+    elif t in (3, 4):
+        if 4 <= y < 120 and 128 <= x < 248:
+            sub_x = (x - 128) % 16 + (0.5 if x >= 192 else 0.0)
+            val = _bru_intrabc_glyph(sub_x, (y - 4) % 16, 11 if t == 3 else 17)
+        elif t == 4 and 66 <= x < 126 and 4 <= y < 60:
+            val = _bru_intrabc_glyph((x - 66) % 16, (y - 4) % 16, 23)
+    elif t == 5 and 66 <= x < 126 and 66 <= y < 126:
+        val = _bru_intrabc_glyph((x - 66) % 16, (y - 66) % 16, 29)
+    return int(round(val))
+
+
+def _bru_intrabc_sample_lr(t, x, y, plane):
+    if plane == 0:
+        val = 128 + 30 * math.sin(x * 0.06 + y * 0.07) + 15 * math.cos(x * 0.11 - y * 0.09)
+    elif plane == 1:
+        val = 128 + 16 * math.sin(x * 0.05 + y * 0.06)
+    else:
+        val = 128 + 16 * math.cos(x * 0.05 - y * 0.07)
+    if t in (1, 2) and 196 <= x < 252 and 68 <= y < 124:
+        val = _bru_lr_rich_checker(x, y, plane, t * 3, 75)
+    elif t == 3:
+        if 4 <= y < 60 and 196 <= x < 316 and plane == 0:
+            sx = (x - 196) % 16 + (0.5 if x >= 256 else 0.0)
+            val = _bru_intrabc_glyph(sx, (y - 4) % 16, 7)
+        elif 4 <= y < 60 and 132 <= x < 192:
+            val = _bru_lr_rich_checker(x, y, plane, 7, 90)
+    elif t == 4:
+        if 4 <= y < 60 and 196 <= x < 316 and plane == 0:
+            val = _bru_intrabc_glyph((x - 196) % 16, (y - 4) % 16, 7)
+        if 68 <= y < 124 and 132 <= x < 252:
+            val = _bru_lr_rich_checker(x, y, plane, 13, 90)
+    elif t == 5 and 68 <= y < 124 and 196 <= x < 316 and plane == 0:
+        val = _bru_intrabc_glyph(((x - 196) % 16) + 0.25, ((y - 68) % 16) + 0.5, 19)
+    return int(round(val))
+
+
+def _bru_intrabc_sample_gdf(t, x, y, plane):
+    if plane > 0:
+        return _bru_intrabc_sample_stripe(t, x, y, plane, 8)
+    val = _bru_intrabc_sample_stripe(t, x, y, 0, 8)
+    if t in (3, 4) and 4 <= y < 60 and 132 <= x < 192:
+        r = math.hypot(x - 160, y - 32)
+        ring = 75 if (8 <= r < 12 or 18 <= r < 22) else -45
+        edge = 65 if ((x * 2 + y) % 17 < 7) else -55
+        val = 128 + (ring + edge) // 2
+    return int(round(val))
+
+
+BRU_INTRABC_FIXTURES = [
+    ("syn-bru-local-intrabc-8bit", 320, 128, 8, lambda t, x, y, p: _bru_intrabc_sample_stripe(t, x, y, p, 8),
+     ["--cpu-used=0", "--qp=140", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0", "--enable-gdf=0"]),
+    ("syn-bru-local-intrabc-10bit", 320, 128, 10, lambda t, x, y, p: _bru_intrabc_sample_stripe(t, x, y, p, 10),
+     ["--cpu-used=0", "--qp=140", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0", "--enable-gdf=0"]),
+    ("syn-bru-local-intrabc-multitile-8bit", 256, 256, 8, _bru_intrabc_sample_multitile,
+     ["--cpu-used=2", "--qp=140", "--tile-columns=1", "--tile-rows=1",
+      "--disable-loopfilters-across-tiles=1", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0", "--enable-gdf=0"]),
+    ("syn-bru-local-intrabc-lr-8bit", 320, 128, 8, _bru_intrabc_sample_lr,
+     ["--cpu-used=1", "--qp=165", "--enable-restoration=1", "--enable-wiener-nonsep=1",
+      "--enable-pc-wiener=1", "--enable-gdf=0"]),
+    ("syn-bru-local-intrabc-gdf-8bit", 320, 128, 8, _bru_intrabc_sample_gdf,
+     ["--cpu-used=1", "--qp=140", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0", "--enable-gdf=1", "--gdf-unit-matches-sb=1"]),
+]
+
+
 def _run_bru_fixture_batch(fixtures, fixed_flags, label, args):
     avmenc = find("avmenc")
     avmdec = find("avmdec")
@@ -1186,7 +1294,7 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args):
         encode = [
             avmenc, "--codec=av2", "--ivf", "-D", "--passes=1",
             "--lag-in-frames=0", "--kf-min-dist=9999", "--kf-max-dist=9999",
-            "--enable-bru=1", "--enable-intrabc=0", "--sb-size=64",
+            "--enable-bru=1", "--sb-size=64",
             *fixed_flags, f"--bit-depth={bd}", f"--input-bit-depth={bd}", "--i420",
             "--threads=1", "--end-usage=q", "--quiet", "--disable-warning-prompt", *flags,
         ]
@@ -1204,7 +1312,7 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args):
 def cmd_bru_lr_fixtures(args):
     _run_bru_fixture_batch(
         BRU_LR_FIXTURES,
-        ["--enable-gdf=0", "--enable-restoration=1"],
+        ["--enable-intrabc=0", "--enable-gdf=0", "--enable-restoration=1"],
         "BRU+LR",
         args,
     )
@@ -1213,8 +1321,17 @@ def cmd_bru_lr_fixtures(args):
 def cmd_bru_gdf_fixtures(args):
     _run_bru_fixture_batch(
         BRU_GDF_FIXTURES,
-        ["--enable-gdf=1", "--gdf-unit-matches-sb=1"],
+        ["--enable-intrabc=0", "--enable-gdf=1", "--gdf-unit-matches-sb=1"],
         "BRU+GDF",
+        args,
+    )
+
+
+def cmd_bru_intrabc_fixtures(args):
+    _run_bru_fixture_batch(
+        BRU_INTRABC_FIXTURES,
+        ["--tune-content=screen", "--enable-intrabc=1", "--enable-intrabc-ext=1"],
+        "BRU+IntraBC",
         args,
     )
 
@@ -1233,6 +1350,9 @@ def main():
     g = sub.add_parser("bru-gdf-fixtures"); g.add_argument("--stage", required=True)
     g.add_argument("--only", help="regenerate one fixture id")
     g.set_defaults(fn=cmd_bru_gdf_fixtures)
+    i = sub.add_parser("bru-intrabc-fixtures"); i.add_argument("--stage", required=True)
+    i.add_argument("--only", help="regenerate one fixture id")
+    i.set_defaults(fn=cmd_bru_intrabc_fixtures)
     args = p.parse_args()
     args.fn(args)
 

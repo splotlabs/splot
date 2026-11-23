@@ -1624,12 +1624,15 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     resolve_states
         .try_reserve(geometry.tiles.len())
         .map_err(|_| inter_allocation!("inter admission resolve banks"))?;
-    resolve_states.extend(
-        geometry
-            .tiles
-            .iter()
-            .map(|_| TileResolveState::new(&sequence)),
-    );
+    for tile_geo in &geometry.tiles {
+        resolve_states.push(TileResolveState::new(
+            &sequence,
+            &core,
+            tile_geo.mi_rows.clone(),
+            tile_geo.mi_cols.clone(),
+            params.sb_h4,
+        ));
+    }
     let mut tiles = core::mem::take(&mut reusable.tiles);
     tiles.clone_from(&geometry.tiles);
     let mut sealed = progress

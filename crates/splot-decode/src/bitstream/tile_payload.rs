@@ -103,7 +103,6 @@ pub(crate) use partition::PartitionDecisionError;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
 pub(crate) use partition_traversal::BRU_ACTIVE;
-#[cfg(test)]
 pub(crate) use partition_traversal::BRU_INACTIVE;
 pub(crate) use partition_traversal::LrUnitRestorationType;
 #[cfg(test)]

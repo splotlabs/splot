@@ -1163,6 +1163,12 @@ pub(crate) fn frame_allows_intrabc(core: &FrameHeaderCore) -> bool {
             .is_some_and(|inter| inter.allow_intrabc == Some(true))
 }
 
+/// Whether `frame_allows_intrabc` holds with the local area enabled (§ 5.18.3.4).
+pub(crate) fn frame_allows_local_intrabc(core: &FrameHeaderCore) -> bool {
+    frame_allows_intrabc(core)
+        && core.intrabc.and_then(|params| params.allow_local_intrabc) != Some(false)
+}
+
 pub(crate) fn max_bvp_drl_bits_minus_1(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
