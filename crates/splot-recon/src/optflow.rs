@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use fearless_simd::{i16x8, i16x16, i32x8, mask16x16, prelude::*, u8x16, u16x8, u16x16, u64x2};
+use splot_core::simd::SimdBackend;
 
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
@@ -60,35 +61,15 @@ pub(crate) fn derive_optflow_mv_deltas(
     Ok(core::mem::take(&mut scratch.deltas))
 }
 
-/// Derives the AV2 § 7.13.3.9 optical-flow deltas of each `unit_size` square
-/// of a `width` x `height` block into reusable buffers, from its two
-/// predictions: prediction `i` starts at `starts[i]` in `preds[i]`, its rows
-/// `stride` samples apart. Each § 7.13.3.11 gradient unit derives its
-/// § 7.13.3.10 differences, gradients and § 7.13.3.12 sums in registers.
-///
-/// `scratch` retains its allocation between calls. The returned slice holds
-/// one entry per unit in raster order; it is empty after an error. A unit
-/// whose `suw` and `svw` are zero takes a zero delta without a solve.
-///
-/// # Errors
-///
-/// Returns [`ReconError::ZeroDimension`] for an empty block,
-/// [`ReconError::InvalidOptflowUnitSize`] unless both dimensions are
-/// multiples of 8 and the unit size is 8, or 4 in an 8x8 block,
-/// [`ReconError::BufferLengthMismatch`] when `stride` is below `width` or a
-/// prediction ends before the block's last sample, or the arithmetic errors
-/// of the solve.
-#[expect(clippy::too_many_arguments)]
-pub fn derive_optflow_mv_deltas_into<'a, P: WindowSample>(
+#[inline]
+fn prepare_optflow_deltas<P: WindowSample>(
     preds: [&[P]; 2],
     starts: [usize; 2],
-    stride: usize,
-    [width, height]: [usize; 2],
-    unit_size: usize,
+    (stride, [width, height], unit_size): (usize, [usize; 2], usize),
     bit_depth: BitDepth,
     distances: [i32; 2],
-    scratch: &'a mut OptflowScratch,
-) -> Result<&'a [[[i32; 2]; 2]]> {
+    scratch: &mut OptflowScratch,
+) -> Result<Option<Weights>> {
     scratch.deltas.clear();
     if width == 0 {
         return Err(ReconError::ZeroDimension {
@@ -136,7 +117,7 @@ pub fn derive_optflow_mv_deltas_into<'a, P: WindowSample>(
         .deltas
         .resize((width / unit_size) * (height / unit_size), [[0; 2]; 2]);
     if distances.contains(&0) {
-        return Ok(&scratch.deltas);
+        return Ok(None);
     }
     let mut weights = Weights {
         distances: reduce_distances(distances),
@@ -146,9 +127,90 @@ pub fn derive_optflow_mv_deltas_into<'a, P: WindowSample>(
     if P::bytes(&[]).is_some() {
         weights.downshift = 0;
     }
+    Ok(Some(weights))
+}
+
+/// Derives the AV2 § 7.13.3.9 optical-flow deltas of each `unit_size` square
+/// of a `width` x `height` block into reusable buffers, from its two
+/// predictions: prediction `i` starts at `starts[i]` in `preds[i]`, its rows
+/// `stride` samples apart. Each § 7.13.3.11 gradient unit derives its
+/// § 7.13.3.10 differences, gradients and § 7.13.3.12 sums in registers.
+///
+/// `scratch` retains its allocation between calls. The returned slice holds
+/// one entry per unit in raster order; it is empty after an error. A unit
+/// whose `suw` and `svw` are zero takes a zero delta without a solve.
+///
+/// # Errors
+///
+/// Returns [`ReconError::ZeroDimension`] for an empty block,
+/// [`ReconError::InvalidOptflowUnitSize`] unless both dimensions are
+/// multiples of 8 and the unit size is 8, or 4 in an 8x8 block,
+/// [`ReconError::BufferLengthMismatch`] when `stride` is below `width` or a
+/// prediction ends before the block's last sample, or the arithmetic errors
+/// of the solve.
+#[expect(clippy::too_many_arguments)]
+pub fn derive_optflow_mv_deltas_into<'a, P: WindowSample>(
+    preds: [&[P]; 2],
+    starts: [usize; 2],
+    stride: usize,
+    [width, height]: [usize; 2],
+    unit_size: usize,
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+    scratch: &'a mut OptflowScratch,
+) -> Result<&'a [[[i32; 2]; 2]]> {
+    let Some(weights) = prepare_optflow_deltas(
+        preds,
+        starts,
+        (stride, [width, height], unit_size),
+        bit_depth,
+        distances,
+        scratch,
+    )?
+    else {
+        return Ok(&scratch.deltas);
+    };
     let block = (preds, starts, stride, [width, height], unit_size);
     if let Err(error) =
         baseline_simd!(simd => block_deltas(simd, block, weights, &mut scratch.deltas))
+    {
+        scratch.deltas.clear();
+        return Err(error);
+    }
+    Ok(&scratch.deltas)
+}
+
+/// Typed [`derive_optflow_mv_deltas_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation and solve errors as [`derive_optflow_mv_deltas_into`].
+#[expect(clippy::too_many_arguments)]
+pub fn derive_optflow_mv_deltas_into_with<'a, B: SimdBackend, P: WindowSample>(
+    backend: B,
+    preds: [&[P]; 2],
+    starts: [usize; 2],
+    stride: usize,
+    [width, height]: [usize; 2],
+    unit_size: usize,
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+    scratch: &'a mut OptflowScratch,
+) -> Result<&'a [[[i32; 2]; 2]]> {
+    let Some(weights) = prepare_optflow_deltas(
+        preds,
+        starts,
+        (stride, [width, height], unit_size),
+        bit_depth,
+        distances,
+        scratch,
+    )?
+    else {
+        return Ok(&scratch.deltas);
+    };
+    let block = (preds, starts, stride, [width, height], unit_size);
+    let narrow = backend.narrow();
+    if let Err(error) =
+        narrow.vectorize(|| block_deltas(narrow.token(), block, weights, &mut scratch.deltas))
     {
         scratch.deltas.clear();
         return Err(error);
@@ -386,23 +448,22 @@ fn sample_pair<S: Simd, P: WindowSample>(
     first.combine(second).min(u16x16::splat(simd, max))
 }
 
-/// Derives one 8x8 optical-flow delta from strided predictors.
-///
-/// # Errors
-///
-/// Returns [`ReconError::BufferLengthMismatch`] when either predictor does not
-/// contain the requested 8x8 region, or the same arithmetic errors as
-/// [`derive_optflow_mv_deltas_into`].
-#[doc(hidden)]
-pub fn derive_optflow_mv_delta_8x8_strided_into(
-    pred0: &[u16],
-    start0: usize,
-    pred1: &[u16],
-    start1: usize,
+struct ValidatedStrided8x8<'a> {
+    pred0: &'a [u16],
+    pred1: &'a [u16],
+    distances: [i32; 2],
+    downshift: u32,
+    max_sample: u16,
+}
+
+#[inline]
+fn validate_strided_8x8<'a>(
+    (pred0, start0): (&'a [u16], usize),
+    (pred1, start1): (&'a [u16], usize),
     stride: usize,
     bit_depth: BitDepth,
     distances: [i32; 2],
-) -> Result<[[i32; 2]; 2]> {
+) -> Result<Option<ValidatedStrided8x8<'a>>> {
     if stride < 8 {
         return Err(ReconError::BufferLengthMismatch {
             expected: 8,
@@ -428,15 +489,88 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
         },
     )?;
     if distances.contains(&0) {
-        return Ok([[0; 2]; 2]);
+        return Ok(None);
     }
 
-    let distances = reduce_distances(distances);
-    let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    let max_sample = bit_depth.max_sample();
+    Ok(Some(ValidatedStrided8x8 {
+        pred0,
+        pred1,
+        distances: reduce_distances(distances),
+        downshift: u32::from(bit_depth.bits().saturating_sub(8)),
+        max_sample: bit_depth.max_sample(),
+    }))
+}
+
+/// Derives one 8x8 optical-flow delta from strided predictors.
+///
+/// # Errors
+///
+/// Returns [`ReconError::BufferLengthMismatch`] when either predictor does not
+/// contain the requested 8x8 region, or the same arithmetic errors as
+/// [`derive_optflow_mv_deltas_into`].
+#[doc(hidden)]
+pub fn derive_optflow_mv_delta_8x8_strided_into(
+    pred0: &[u16],
+    start0: usize,
+    pred1: &[u16],
+    start1: usize,
+    stride: usize,
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+) -> Result<[[i32; 2]; 2]> {
+    let Some(v) = validate_strided_8x8(
+        (pred0, start0),
+        (pred1, start1),
+        stride,
+        bit_depth,
+        distances,
+    )?
+    else {
+        return Ok([[0; 2]; 2]);
+    };
     baseline_simd!(simd => strided_8x8_delta(
-        simd, pred0, pred1, stride, distances, downshift, max_sample,
+        simd, v.pred0, v.pred1, stride, v.distances, v.downshift, v.max_sample,
     ))
+}
+
+/// Typed [`derive_optflow_mv_delta_8x8_strided_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation and solve errors as [`derive_optflow_mv_delta_8x8_strided_into`].
+#[doc(hidden)]
+#[expect(clippy::too_many_arguments)]
+pub fn derive_optflow_mv_delta_8x8_strided_into_with<B: SimdBackend>(
+    backend: B,
+    pred0: &[u16],
+    start0: usize,
+    pred1: &[u16],
+    start1: usize,
+    stride: usize,
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+) -> Result<[[i32; 2]; 2]> {
+    let Some(v) = validate_strided_8x8(
+        (pred0, start0),
+        (pred1, start1),
+        stride,
+        bit_depth,
+        distances,
+    )?
+    else {
+        return Ok([[0; 2]; 2]);
+    };
+    let narrow = backend.narrow();
+    narrow.vectorize(|| {
+        strided_8x8_delta(
+            narrow.token(),
+            v.pred0,
+            v.pred1,
+            stride,
+            v.distances,
+            v.downshift,
+            v.max_sample,
+        )
+    })
 }
 
 /// [`derive_optflow_mv_delta_8x8_strided_into`] over its validated spans.
@@ -517,6 +651,17 @@ fn strided_sample_out_of_range(
     }
 }
 
+#[inline]
+fn unit_8x8_u8_params(distances: [i32; 2], sad_threshold: Option<u32>) -> ([i32; 2], u32) {
+    let threshold = sad_threshold.unwrap_or(0);
+    let reduced = if distances.contains(&0) {
+        [0; 2]
+    } else {
+        reduce_distances(distances)
+    };
+    (reduced, threshold)
+}
+
 /// The § 7.13.3.8 refinement of an eight-bit 8x8 optical-flow unit whose two
 /// predictions are `rows`, eight little-endian samples per row: `None` when
 /// their SAD is below `sad_threshold`, else the § 7.13.3.12 delta of
@@ -531,13 +676,24 @@ pub fn optflow_unit_8x8_u8(
     distances: [i32; 2],
     sad_threshold: Option<u32>,
 ) -> Result<Option<[[i32; 2]; 2]>> {
-    let threshold = sad_threshold.unwrap_or(0);
-    let reduced = if distances.contains(&0) {
-        [0; 2]
-    } else {
-        reduce_distances(distances)
-    };
+    let (reduced, threshold) = unit_8x8_u8_params(distances, sad_threshold);
     baseline_simd!(simd => unit_8x8(simd, &rows, reduced, threshold))
+}
+
+/// Typed [`optflow_unit_8x8_u8`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same arithmetic errors as [`optflow_unit_8x8_u8`].
+#[doc(hidden)]
+pub fn optflow_unit_8x8_u8_with<B: SimdBackend>(
+    backend: B,
+    rows: [[u64; 8]; 2],
+    distances: [i32; 2],
+    sad_threshold: Option<u32>,
+) -> Result<Option<[[i32; 2]; 2]>> {
+    let (reduced, threshold) = unit_8x8_u8_params(distances, sad_threshold);
+    let narrow = backend.narrow();
+    narrow.vectorize(|| unit_8x8(narrow.token(), &rows, reduced, threshold))
 }
 
 /// [`optflow_unit_8x8_u8`] of its eight-byte rows and reduced `distances`:
@@ -602,33 +758,75 @@ pub fn optflow_unit_8x8_u16(
     let threshold = sad_threshold.unwrap_or(0);
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
     let max = bit_depth.max_sample();
-    baseline_simd!(simd => {
-        let load = |rows: &[[u16; 8]; 8]| {
-            rows.map(|row| u16x8::load_array(simd, row).min(u16x8::splat(simd, max)))
-        };
-        let (first, second) = (load(&rows[0]), load(&rows[1]));
-        let sad = first.iter().zip(&second).fold(0, |sum, (a, b)| {
-            sum + u32::from((a.max(*b) - a.min(*b)).reduce_sum())
-        });
-        if sad >> downshift < threshold {
-            return Ok(None);
-        }
-        if distances.contains(&0) {
-            return Ok(Some([[0; 2]; 2]));
-        }
-        let distances = reduce_distances(distances);
-        let rows: [(i16x8<_>, i16x8<_>); 8] = core::array::from_fn(|row| {
-            weighted_difference_row(first[row].bitcast(), second[row].bitcast(), distances, downshift)
-        });
-        let (weighted, difference) = (rows.map(|row| row.0), rows.map(|row| row.1));
-        let changed = difference.iter().fold(u16x8::splat(simd, 0), |changed, row| {
+    baseline_simd!(simd => unit_8x8_u16_simd(simd, &rows, downshift, max, distances, threshold))
+}
+
+/// Typed [`optflow_unit_8x8_u16`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same arithmetic errors as [`optflow_unit_8x8_u16`].
+#[doc(hidden)]
+pub fn optflow_unit_8x8_u16_with<B: SimdBackend>(
+    backend: B,
+    rows: [[[u16; 8]; 8]; 2],
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+    sad_threshold: Option<u32>,
+) -> Result<Option<[[i32; 2]; 2]>> {
+    let threshold = sad_threshold.unwrap_or(0);
+    let downshift = u32::from(bit_depth.bits().saturating_sub(8));
+    let max = bit_depth.max_sample();
+    let narrow = backend.narrow();
+    narrow.vectorize(|| {
+        unit_8x8_u16_simd(narrow.token(), &rows, downshift, max, distances, threshold)
+    })
+}
+
+#[inline]
+fn unit_8x8_u16_simd<S: Simd>(
+    simd: S,
+    rows: &[[[u16; 8]; 8]; 2],
+    downshift: u32,
+    max: u16,
+    distances: [i32; 2],
+    threshold: u32,
+) -> Result<Option<[[i32; 2]; 2]>> {
+    let load = |rows: &[[u16; 8]; 8]| {
+        rows.map(|row| u16x8::load_array(simd, row).min(u16x8::splat(simd, max)))
+    };
+    let (first, second) = (load(&rows[0]), load(&rows[1]));
+    let sad = first.iter().zip(&second).fold(0, |sum, (a, b)| {
+        sum + u32::from((a.max(*b) - a.min(*b)).reduce_sum())
+    });
+    if sad >> downshift < threshold {
+        return Ok(None);
+    }
+    if distances.contains(&0) {
+        return Ok(Some([[0; 2]; 2]));
+    }
+    let distances = reduce_distances(distances);
+    let rows: [(i16x8<_>, i16x8<_>); 8] = core::array::from_fn(|row| {
+        weighted_difference_row(
+            first[row].bitcast(),
+            second[row].bitcast(),
+            distances,
+            downshift,
+        )
+    });
+    let (weighted, difference) = (rows.map(|row| row.0), rows.map(|row| row.1));
+    let changed = difference
+        .iter()
+        .fold(u16x8::splat(simd, 0), |changed, row| {
             changed | row.bitcast::<u16x8<_>>()
         });
-        if changed.reduce_max() == 0 {
-            return Ok(Some([[0; 2]; 2]));
-        }
-        solve_sums(whole_8x8(rows_8x8_sums(simd, &weighted, &difference)), distances).map(Some)
-    })
+    if changed.reduce_max() == 0 {
+        return Ok(Some([[0; 2]; 2]));
+    }
+    solve_sums(
+        whole_8x8(rows_8x8_sums(simd, &weighted, &difference)),
+        distances,
+    )
+    .map(Some)
 }
 
 /// The § 7.13.3.9 `weighted` and `difference` rows of predictor sample pairs
@@ -1417,5 +1615,130 @@ mod tests {
                 max: 255,
             })
         ));
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                let stride = 20usize;
+                let (w, h) = (16usize, 16usize);
+                let pred0_8: Vec<u8> = (0..stride * h)
+                    .map(|i| ((i * 17 + (i / stride) * 5 + 3) % 256) as u8)
+                    .collect();
+                let pred1_8: Vec<u8> = (0..stride * h)
+                    .map(|i| ((i * 23 + (i / stride) * 11 + 7) % 256) as u8)
+                    .collect();
+                let mut compat_scratch = OptflowScratch::default();
+                let mut typed_scratch = OptflowScratch::default();
+                let compat_u8 = derive_optflow_mv_deltas_into(
+                    [&pred0_8[..], &pred1_8[..]],
+                    [0; 2],
+                    stride,
+                    [w, h],
+                    8,
+                    BitDepth::Eight,
+                    [2, -1],
+                    &mut compat_scratch,
+                )
+                .unwrap();
+                let typed_u8 = derive_optflow_mv_deltas_into_with(
+                    backend,
+                    [&pred0_8[..], &pred1_8[..]],
+                    [0; 2],
+                    stride,
+                    [w, h],
+                    8,
+                    BitDepth::Eight,
+                    [2, -1],
+                    &mut typed_scratch,
+                )
+                .unwrap();
+                assert_eq!(typed_u8, compat_u8);
+
+                let pred0_10: Vec<u16> = (0..stride * h)
+                    .map(|i| ((i * 61 + (i / stride) * 13 + 9) % 1024) as u16)
+                    .collect();
+                let pred1_10: Vec<u16> = (0..stride * h)
+                    .map(|i| ((i * 79 + (i / stride) * 19 + 15) % 1024) as u16)
+                    .collect();
+                let compat_u16 = derive_optflow_mv_deltas_into(
+                    [&pred0_10[..], &pred1_10[..]],
+                    [0; 2],
+                    stride,
+                    [w, h],
+                    8,
+                    BitDepth::Ten,
+                    [1, -2],
+                    &mut compat_scratch,
+                )
+                .unwrap();
+                let typed_u16 = derive_optflow_mv_deltas_into_with(
+                    backend,
+                    [&pred0_10[..], &pred1_10[..]],
+                    [0; 2],
+                    stride,
+                    [w, h],
+                    8,
+                    BitDepth::Ten,
+                    [1, -2],
+                    &mut typed_scratch,
+                )
+                .unwrap();
+                assert_eq!(typed_u16, compat_u16);
+
+                let strided_compat = derive_optflow_mv_delta_8x8_strided_into(
+                    &pred0_10,
+                    2,
+                    &pred1_10,
+                    3,
+                    stride,
+                    BitDepth::Ten,
+                    [1, -1],
+                )
+                .unwrap();
+                let strided_typed = derive_optflow_mv_delta_8x8_strided_into_with(
+                    backend,
+                    &pred0_10,
+                    2,
+                    &pred1_10,
+                    3,
+                    stride,
+                    BitDepth::Ten,
+                    [1, -1],
+                )
+                .unwrap();
+                assert_eq!(strided_typed, strided_compat);
+
+                let rows_u8: [[u64; 8]; 2] = core::array::from_fn(|p| {
+                    core::array::from_fn(|r| {
+                        let base = r * 8 + p * 31;
+                        u64::from_le_bytes(core::array::from_fn(|c| ((base + c * 19) % 256) as u8))
+                    })
+                });
+                assert_eq!(
+                    optflow_unit_8x8_u8_with(backend, rows_u8, [2, -1], Some(16)).unwrap(),
+                    optflow_unit_8x8_u8(rows_u8, [2, -1], Some(16)).unwrap(),
+                );
+
+                let rows_u16: [[[u16; 8]; 8]; 2] = core::array::from_fn(|p| {
+                    core::array::from_fn(|r| {
+                        core::array::from_fn(|c| ((r * 37 + c * 53 + p * 41) % 1024) as u16)
+                    })
+                });
+                assert_eq!(
+                    optflow_unit_8x8_u16_with(backend, rows_u16, BitDepth::Ten, [1, -2], Some(8))
+                        .unwrap(),
+                    optflow_unit_8x8_u16(rows_u16, BitDepth::Ten, [1, -2], Some(8)).unwrap(),
+                );
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }
