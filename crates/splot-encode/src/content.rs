@@ -39,8 +39,8 @@ pub enum ChromaSamplePosition {
 }
 
 /// The colour volume of the mastering display (`metadata_hdr_mdcv()`,
-/// § 6.16.6), in the integer units of SMPTE ST 2086. A value outside the
-/// range the specification gives for it means unknown.
+/// § 6.16.6), in the integer units of SMPTE ST 2086. Each field is in its
+/// § 6.16.6 range, or 0 for unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MasteringDisplay {
     /// CIE 1931 `(x, y)` of the green, blue and red primaries, in units of
@@ -52,6 +52,58 @@ pub struct MasteringDisplay {
     pub luminance_max: u32,
     /// Nominal minimum luminance in units of 0.0001 cd/m².
     pub luminance_min: u32,
+}
+
+impl MasteringDisplay {
+    /// Checks each field against its § 6.16.6 range (allowing 0 for unknown)
+    /// and the rule that a maximum of 50000 forbids a minimum of 50000.
+    pub(crate) fn validate(&self) -> Result<()> {
+        const PRIMARY_X: [&str; 3] = [
+            "primary_chromaticity_x[0]",
+            "primary_chromaticity_x[1]",
+            "primary_chromaticity_x[2]",
+        ];
+        const PRIMARY_Y: [&str; 3] = [
+            "primary_chromaticity_y[0]",
+            "primary_chromaticity_y[1]",
+            "primary_chromaticity_y[2]",
+        ];
+        let check = |field, value: u32, min, max| {
+            if value != 0 && !(min..=max).contains(&value) {
+                return Err(Error::InvalidMasteringDisplay {
+                    field,
+                    value,
+                    min,
+                    max,
+                });
+            }
+            Ok(())
+        };
+        for (i, &(x, y)) in self.primaries.iter().enumerate() {
+            check(PRIMARY_X[i], u32::from(x), 5, 37_000)?;
+            check(PRIMARY_Y[i], u32::from(y), 5, 42_000)?;
+        }
+        check(
+            "white_point_chromaticity_x",
+            u32::from(self.white_point.0),
+            5,
+            37_000,
+        )?;
+        check(
+            "white_point_chromaticity_y",
+            u32::from(self.white_point.1),
+            5,
+            42_000,
+        )?;
+        check("luminance_max", self.luminance_max, 50_000, 100_000_000)?;
+        check("luminance_min", self.luminance_min, 1, 50_000)?;
+        if (self.luminance_max, self.luminance_min) == (50_000, 50_000) {
+            return Err(Error::InvalidContentDescription {
+                what: "a mastering display maximum of 50000 needs another minimum",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// The description of the source content. The default describes nothing, and
@@ -104,7 +156,7 @@ impl ContentDescription {
     pub const UNSPECIFIED: u8 = 2;
 
     /// Checks the description against the chroma format `chroma` and the
-    /// § 6.16.6 rule that a display maximum of 50000 forbids that minimum.
+    /// § 6.16.6 mastering display rules.
     pub(crate) fn validate(&self, chroma: PixelFormat) -> Result<()> {
         let invalid = |what| Err(Error::InvalidContentDescription { what });
         match (self.chroma_sample_position, chroma) {
@@ -124,11 +176,8 @@ impl ContentDescription {
         if matches!(self.sample_aspect_ratio, Some((0, _) | (_, 0))) {
             return invalid("a sample aspect ratio has nonzero terms");
         }
-        if self
-            .mastering_display
-            .is_some_and(|display| (display.luminance_max, display.luminance_min) == (50000, 50000))
-        {
-            return invalid("a mastering display maximum of 50000 needs another minimum");
+        if let Some(display) = self.mastering_display {
+            display.validate()?;
         }
         Ok(())
     }
