@@ -503,12 +503,13 @@ fn derived_boundary_rejects_backward_reference_update_frames() {
         gdf.gdf_frame_enable = true;
         gdf
     });
-    let error =
-        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
-    assert_unsupported_error(
-        &error,
-        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
-    );
+    let with_gdf = FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).err();
+    assert!(!matches!(
+        with_gdf,
+        Some(FrameCandidateTileBoundaryError::Unsupported {
+            reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate
+        })
+    ));
 
     core.gdf_params = core.gdf_params.map(|mut gdf| {
         gdf.gdf_frame_enable = false;

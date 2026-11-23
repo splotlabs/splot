@@ -344,6 +344,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 mi_rows,
                 mi_cols,
                 self.filter_records.bru_modes.as_deref(),
+                self.gdf_grid.as_ref(),
                 pre_bru_blocks,
                 &lr_source_blocks,
             );
@@ -1191,6 +1192,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 self.bit_depth,
                 self.disable_loopfilters_across_tiles,
                 chain.gdf_reference,
+                self.filter_records.bru_modes.as_deref(),
             )?;
         }
         let mut filtered = frame.into_filtered();
@@ -1587,6 +1589,10 @@ pub(crate) struct BruLrFrameAudit {
     pub(crate) disable_loopfilters_across_tiles: bool,
     pub(crate) lr_uses_lr: bool,
     pub(crate) plane_restoration_types: [splot_core::headers::frame::FrameRestorationType; 3],
+    pub(crate) gdf_frame_enable: bool,
+    pub(crate) gdf_per_block: bool,
+    pub(crate) gdf_enabled_units: usize,
+    pub(crate) gdf_total_units: usize,
     pub(crate) superblock_modes: Vec<(usize, usize, Option<u8>)>,
     pub(crate) pre_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     pub(crate) post_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
@@ -1604,12 +1610,14 @@ fn has_bru_lr_audit_sink() -> bool {
 }
 
 #[cfg(test)]
+#[expect(clippy::too_many_arguments)]
 fn record_bru_lr_audit(
     core: &splot_core::headers::frame::FrameHeaderCore,
     disable_loopfilters_across_tiles: bool,
     mi_rows: usize,
     mi_cols: usize,
     bru_modes: Option<&crate::filters::bru::BruModeMap>,
+    gdf_grid: Option<&crate::filters::gdf::GdfBlockGrid>,
     pre_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     post_bru_blocks: &[crate::bitstream::tile_payload::WienerNsLrSourceBlock],
 ) {
@@ -1628,18 +1636,34 @@ fn record_bru_lr_audit(
         core.lr_params
             .as_ref()
             .map_or([FrameRestorationType::None; 3], |lr| {
-                [
-                    lr.planes[0].restoration_type,
-                    lr.planes[1].restoration_type,
-                    lr.planes[2].restoration_type,
-                ]
+                core::array::from_fn(|plane| {
+                    lr.planes
+                        .get(plane)
+                        .map_or(FrameRestorationType::None, |cfg| cfg.restoration_type)
+                })
             });
+    let gdf_frame_enable = core
+        .gdf_params
+        .as_ref()
+        .is_some_and(|gdf| gdf.gdf_frame_enable);
+    let gdf_per_block = core
+        .gdf_params
+        .as_ref()
+        .is_some_and(|gdf| gdf.gdf_frame_enable && gdf.gdf_per_block == Some(true));
+    let (gdf_enabled_units, gdf_total_units) = gdf_grid.map_or(
+        (0, 0),
+        crate::filters::gdf::GdfBlockGrid::enabled_unit_counts,
+    );
     let record = BruLrFrameAudit {
         use_bru: core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true),
         bru_inactive: core.inter.as_ref().and_then(|inter| inter.bru_inactive) == Some(true),
         disable_loopfilters_across_tiles,
         lr_uses_lr: core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
         plane_restoration_types,
+        gdf_frame_enable,
+        gdf_per_block,
+        gdf_enabled_units,
+        gdf_total_units,
         superblock_modes,
         pre_bru_blocks,
         post_bru_blocks: post_bru_blocks.to_vec(),

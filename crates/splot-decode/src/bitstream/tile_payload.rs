@@ -111,6 +111,8 @@ pub(crate) use partition_traversal::TilePartitionCall;
 pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
+#[cfg(test)]
+pub(crate) use partition_traversal::tests::make_work_unit_at as make_test_work_unit_at;
 pub(crate) use partition_traversal::{
     ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication,
     GeneralIntraLeafMode, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError, LeafDecoder,
@@ -447,6 +449,12 @@ pub(crate) struct DecodeTileWorkUnit {
 impl DecodeTileWorkUnit {
     pub(crate) const fn bru_tile_active(&self) -> Option<bool> {
         self.bru_tile_active
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_bru_tile_active(mut self, active: bool) -> Self {
+        self.bru_tile_active = Some(active);
+        self
     }
 
     pub(crate) const fn payload_index(&self) -> usize {

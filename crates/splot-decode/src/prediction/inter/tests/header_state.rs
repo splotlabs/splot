@@ -1643,7 +1643,7 @@ fn out_of_range_primary_reference_is_a_malformed_source_diagnostic() {
     assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
 }
 
-fn repack_frame_obu(
+pub(super) fn repack_frame_obu(
     bytes: &[u8],
     target_frame_index: usize,
     mutate_payload: impl FnOnce(&[u8]) -> Vec<u8>,

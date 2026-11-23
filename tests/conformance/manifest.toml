@@ -1347,6 +1347,26 @@ description = "Matching syn-bru-lr-multitile-cross-8bit with --disable-loopfilte
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-gdf-block-8bit.ivf"
+description = "Six 8-bit 256x128 frames (4x2 SB64), avmenc --enable-bru=1 --enable-gdf=1 --gdf-unit-matches-sb=1 --enable-restoration=0 --enable-intrabc=0 --qp=165: partial BRU inter frames activate per-block GDF (gdf_per_block == 1 with mixed enabled/disabled units across shifted restoration stripes), followed by a reference consumer; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-gdf-block-10bit.ivf"
+description = "Six 10-bit 256x128 frames matching syn-bru-gdf-block-8bit (--bit-depth=10 --input-bit-depth=10 --qp=165): partial BRU inter frames exercise 10-bit per-block GDF gating across active and inactive superblocks, followed by a reference consumer; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-gdf-lr-8bit.ivf"
+description = "Six 8-bit 256x128 frames (4x2 SB64), avmenc --enable-bru=1 --enable-gdf=1 --gdf-unit-matches-sb=1 --enable-restoration=1 --enable-wiener-nonsep=1 --enable-pc-wiener=1 --qp=165: partial BRU inter frames combine active loop restoration and active per-block GDF in the same shifted stripes, followed by a reference consumer; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-gdf-multitile-8bit.ivf"
+description = "Six 8-bit 256x256 frames in 2x2 tiles (--tile-columns=1 --tile-rows=1 --disable-loopfilters-across-tiles=1) with avmenc --enable-bru=1 --enable-gdf=1 --gdf-unit-matches-sb=1 --enable-restoration=0 --qp=165: partial BRU superblocks apply per-block GDF within isolated tile bounds, followed by a reference consumer; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-intra-64x64-10bit.ivf"
 description = "10-bit intra key frame at 64x64 (bit_depth_idc path); validates clean."
 expect = "clean"

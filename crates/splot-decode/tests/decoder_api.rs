@@ -60,6 +60,14 @@ const BRU_LR_MULTITILE_CROSS_8BIT: &[u8] =
 const BRU_LR_MULTITILE_ISOLATED_8BIT: &[u8] = include_bytes!(
     "../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-isolated-8bit.ivf"
 );
+const BRU_GDF_BLOCK_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-block-8bit.ivf");
+const BRU_GDF_BLOCK_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-block-10bit.ivf");
+const BRU_GDF_LR_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-lr-8bit.ivf");
+const BRU_GDF_MULTITILE_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-multitile-8bit.ivf");
 
 const FIXTURES: &[&[u8]] = &[
     MULTIREF,
@@ -82,6 +90,10 @@ const FIXTURES: &[&[u8]] = &[
     BRU_LR_PCWIENER_10BIT,
     BRU_LR_MULTITILE_CROSS_8BIT,
     BRU_LR_MULTITILE_ISOLATED_8BIT,
+    BRU_GDF_BLOCK_8BIT,
+    BRU_GDF_BLOCK_10BIT,
+    BRU_GDF_LR_8BIT,
+    BRU_GDF_MULTITILE_8BIT,
 ];
 
 /// The payload of each non-empty IVF frame record: one temporal unit each.
@@ -705,30 +717,8 @@ fn stream_decode_until_error(decoder: &mut Decoder, units: &[Vec<u8>]) -> bool {
     }
 }
 
-#[test]
-fn bru_lr_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
-    let bru_lr_fixtures = [
-        ("syn-bru-lr-stripe-wienerns-8bit", BRU_LR_WIENERNS_8BIT),
-        ("syn-bru-lr-stripe-wienerns-10bit", BRU_LR_WIENERNS_10BIT),
-        ("syn-bru-lr-stripe-pcwiener-8bit", BRU_LR_PCWIENER_8BIT),
-        ("syn-bru-lr-stripe-pcwiener-10bit", BRU_LR_PCWIENER_10BIT),
-        (
-            "syn-bru-lr-multitile-cross-8bit",
-            BRU_LR_MULTITILE_CROSS_8BIT,
-        ),
-        (
-            "syn-bru-lr-multitile-isolated-8bit",
-            BRU_LR_MULTITILE_ISOLATED_8BIT,
-        ),
-    ];
-
-    assert_ne!(
-        batch_raw(BRU_LR_MULTITILE_CROSS_8BIT),
-        batch_raw(BRU_LR_MULTITILE_ISOLATED_8BIT),
-        "multitile cross-tile and isolated BRU+LR streams must produce distinct pixels"
-    );
-
-    for (name, bytes) in bru_lr_fixtures {
+fn assert_bru_batch_chunked_streaming(fixtures: &[(&str, &[u8])], kind: &str) {
+    for &(name, bytes) in fixtures {
         let stream_units = units(bytes);
         let expected = batch_raw(bytes);
         for threads in [1, 3, 12] {
@@ -769,15 +759,14 @@ fn bru_lr_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
             assert_eq!(
                 raw_of(&pics_again),
                 expected,
-                "{name} repeated flush/drain at {threads} threads"
+                "{name} ({kind}) repeated flush/drain at {threads} threads"
             );
         }
     }
+}
 
-    for (name, bytes) in [
-        ("pcwiener-truncated", BRU_LR_PCWIENER_8BIT),
-        ("wienerns-truncated", BRU_LR_WIENERNS_8BIT),
-    ] {
+fn assert_bru_flush_recovery(cases: &[(&str, &[u8])], kind: &str) {
+    for &(name, bytes) in cases {
         let mut corrupted_units = units(bytes);
         let cut = corrupted_units[3].len() / 2;
         corrupted_units[3].truncate(cut.max(4));
@@ -785,7 +774,7 @@ fn bru_lr_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
             let mut dec = decoder(threads, threads.min(4));
             assert!(
                 stream_decode_until_error(&mut dec, &corrupted_units),
-                "{name}: truncated frame 3 BRU+LR payload must error at {threads} threads"
+                "{name}: truncated frame 3 {kind} payload must error at {threads} threads"
             );
             dec.flush();
             dec.drain();
@@ -800,4 +789,57 @@ fn bru_lr_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
             );
         }
     }
+}
+
+#[test]
+fn bru_lr_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
+    let bru_lr_fixtures = [
+        ("syn-bru-lr-stripe-wienerns-8bit", BRU_LR_WIENERNS_8BIT),
+        ("syn-bru-lr-stripe-wienerns-10bit", BRU_LR_WIENERNS_10BIT),
+        ("syn-bru-lr-stripe-pcwiener-8bit", BRU_LR_PCWIENER_8BIT),
+        ("syn-bru-lr-stripe-pcwiener-10bit", BRU_LR_PCWIENER_10BIT),
+        (
+            "syn-bru-lr-multitile-cross-8bit",
+            BRU_LR_MULTITILE_CROSS_8BIT,
+        ),
+        (
+            "syn-bru-lr-multitile-isolated-8bit",
+            BRU_LR_MULTITILE_ISOLATED_8BIT,
+        ),
+    ];
+
+    assert_ne!(
+        batch_raw(BRU_LR_MULTITILE_CROSS_8BIT),
+        batch_raw(BRU_LR_MULTITILE_ISOLATED_8BIT),
+        "multitile cross-tile and isolated BRU+LR streams must produce distinct pixels"
+    );
+
+    assert_bru_batch_chunked_streaming(&bru_lr_fixtures, "BRU+LR");
+    assert_bru_flush_recovery(
+        &[
+            ("pcwiener-truncated", BRU_LR_PCWIENER_8BIT),
+            ("wienerns-truncated", BRU_LR_WIENERNS_8BIT),
+        ],
+        "BRU+LR",
+    );
+}
+
+#[test]
+fn bru_gdf_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
+    let bru_gdf_fixtures = [
+        ("syn-bru-gdf-block-8bit", BRU_GDF_BLOCK_8BIT),
+        ("syn-bru-gdf-block-10bit", BRU_GDF_BLOCK_10BIT),
+        ("syn-bru-gdf-lr-8bit", BRU_GDF_LR_8BIT),
+        ("syn-bru-gdf-multitile-8bit", BRU_GDF_MULTITILE_8BIT),
+    ];
+
+    assert_bru_batch_chunked_streaming(&bru_gdf_fixtures, "BRU+GDF");
+    assert_bru_flush_recovery(
+        &[
+            ("gdf-block-8bit-truncated", BRU_GDF_BLOCK_8BIT),
+            ("gdf-block-10bit-truncated", BRU_GDF_BLOCK_10BIT),
+            ("gdf-lr-8bit-truncated", BRU_GDF_LR_8BIT),
+        ],
+        "BRU+GDF",
+    );
 }

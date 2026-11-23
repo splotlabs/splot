@@ -208,6 +208,12 @@ impl GdfBlockGrid {
         }
         Some(start..stop)
     }
+
+    #[cfg(test)]
+    pub(crate) fn enabled_unit_counts(&self) -> (usize, usize) {
+        let enabled = self.values.iter().filter(|&&value| value != 0).count();
+        (enabled, self.values.len())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -278,6 +284,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     bit_depth: BitDepth,
     disable_loopfilters_across_tiles: bool,
     reference: Option<GdfReferenceContext>,
+    bru_modes: Option<&crate::filters::bru::BruModeMap>,
 ) -> Result<()> {
     let Some(config) = gdf_config(core, block_grid, bit_depth, reference)? else {
         return Ok(());
@@ -290,6 +297,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
         (block_grid, lossless_grid),
         bit_depth,
         disable_loopfilters_across_tiles,
+        bru_modes,
     )
 }
 
@@ -326,6 +334,7 @@ pub(crate) fn error_stripe(
         (block_grid, None),
         bit_depth,
         disable_loopfilters_across_tiles,
+        None,
     )
 }
 
@@ -333,6 +342,7 @@ pub(crate) fn error_stripe(
 /// inside `-GDF_ERROR_BASE..GDF_ERROR_BASE`.
 pub(crate) const GDF_ERROR_BASE: u16 = 1024;
 
+#[expect(clippy::too_many_arguments)]
 fn apply_stripe_config<T: ReconSample>(
     config: GdfConfig,
     core: &FrameHeaderCore,
@@ -348,6 +358,7 @@ fn apply_stripe_config<T: ReconSample>(
     ),
     bit_depth: BitDepth,
     disable_loopfilters_across_tiles: bool,
+    bru_modes: Option<&crate::filters::bru::BruModeMap>,
 ) -> Result<()> {
     let (width, stride, frame_height, y) = (
         post_lr_luma.width(),
@@ -394,6 +405,8 @@ fn apply_stripe_config<T: ReconSample>(
     };
     let segment_count = tile_columns.map_or(1, |starts| starts.len().saturating_sub(1));
     let stripe_row = gdf_stripe_row(core, y, frame_height)?;
+    let mi_row = y / MI_SIZE;
+    let tile_mi_row_end = tile_end.div_ceil(MI_SIZE);
     with_reusable_scratch(&GDF_SCRATCH, |scratch| {
         for segment_index in 0..segment_count {
             let (segment_x, segment_width) = if let Some(starts) = tile_columns {
@@ -408,46 +421,98 @@ fn apply_stripe_config<T: ReconSample>(
                 .ok_or_else(gdf_state_error)?;
             let mut next_x = segment_x;
             while next_x < segment_end {
-                let run = if config.per_block {
-                    block_grid
-                        .and_then(|grid| grid.enabled_run(stripe_row, next_x, segment_end))
-                        .ok_or_else(gdf_state_error)?
+                let active = if let Some(modes) = bru_modes {
+                    let range =
+                        bru_active_run(modes, mi_row, tile_mi_row_end, next_x, segment_end)?;
+                    next_x = range.end;
+                    range
                 } else {
+                    next_x = segment_end;
                     segment_x..segment_end
                 };
-                next_x = run.end;
-                if run.is_empty() {
+                if active.is_empty() {
                     continue;
                 }
-                let run_block = GdfBlock {
-                    x: run.start,
-                    y,
-                    width: run.len(),
-                    height,
-                    frame_width: width,
-                    frame_height,
-                    base_stride: stride,
-                    bit_depth,
-                    qp_idx: config.qp_idx,
-                    ref_dst_idx: config.ref_dst_idx,
-                    pix_scale: config.pix_scale,
-                    max_sample: config.max_sample,
-                };
-                let bounds = source_bounds(core, &run_block, disable_loopfilters_across_tiles)?;
-                let sources = (deblocked_luma, separate_cdef_luma, cdef_overlap);
-                if let Some(grid) = lossless_grid {
-                    let samples = post_lr_luma.samples_mut();
-                    keep_lossless_spans(grid, &run_block, samples, &mut scratch.lossless, false)?;
-                }
-                filter_run_tiles(sources, &bounds, &run_block, post_lr_luma, scratch)?;
-                if let Some(grid) = lossless_grid {
-                    let samples = post_lr_luma.samples_mut();
-                    keep_lossless_spans(grid, &run_block, samples, &mut scratch.lossless, true)?;
+                let mut active_x = active.start;
+                while active_x < active.end {
+                    let run = if config.per_block {
+                        block_grid
+                            .and_then(|grid| grid.enabled_run(stripe_row, active_x, active.end))
+                            .ok_or_else(gdf_state_error)?
+                    } else {
+                        active.start..active.end
+                    };
+                    active_x = run.end;
+                    if run.is_empty() {
+                        continue;
+                    }
+                    let run_block = GdfBlock {
+                        x: run.start,
+                        y,
+                        width: run.len(),
+                        height,
+                        frame_width: width,
+                        frame_height,
+                        base_stride: stride,
+                        bit_depth,
+                        qp_idx: config.qp_idx,
+                        ref_dst_idx: config.ref_dst_idx,
+                        pix_scale: config.pix_scale,
+                        max_sample: config.max_sample,
+                    };
+                    let bounds = source_bounds(core, &run_block, disable_loopfilters_across_tiles)?;
+                    let sources = (deblocked_luma, separate_cdef_luma, cdef_overlap);
+                    if let Some(grid) = lossless_grid {
+                        let samples = post_lr_luma.samples_mut();
+                        keep_lossless_spans(
+                            grid,
+                            &run_block,
+                            samples,
+                            &mut scratch.lossless,
+                            false,
+                        )?;
+                    }
+                    filter_run_tiles(sources, &bounds, &run_block, post_lr_luma, scratch)?;
+                    if let Some(grid) = lossless_grid {
+                        let samples = post_lr_luma.samples_mut();
+                        keep_lossless_spans(
+                            grid,
+                            &run_block,
+                            samples,
+                            &mut scratch.lossless,
+                            true,
+                        )?;
+                    }
                 }
             }
         }
         Ok(())
     })
+}
+
+fn bru_active_run(
+    modes: &crate::filters::bru::BruModeMap,
+    mi_row: usize,
+    tile_mi_row_end: usize,
+    x: usize,
+    end: usize,
+) -> Result<core::ops::Range<usize>> {
+    let sb_w = modes.sb_samples();
+    let sb_end = |col_x: usize| ((col_x / sb_w + 1) * sb_w).min(end);
+    let active = |col_x: usize| {
+        modes
+            .lr_stripe_active(mi_row, col_x / MI_SIZE, tile_mi_row_end)
+            .ok_or_else(gdf_state_error)
+    };
+    let mut start = x;
+    while start < end && !active(start)? {
+        start = sb_end(start);
+    }
+    let mut stop = start;
+    while stop < end && active(stop)? {
+        stop = sb_end(stop);
+    }
+    Ok(start..stop)
 }
 
 /// Filters the run `run` in column tiles of at most [`simd::TILE_COLS`]
