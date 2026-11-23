@@ -147,8 +147,12 @@ pub(crate) fn collect_bru_lr_audit(
     Vec<Arc<FrameHeaderCore>>,
     Vec<crate::filters::wienerns_lr::recon::BruLrFrameAudit>,
 )> {
-    let session =
-        DecodeSession::detaching_held(NonZeroUsize::MIN, row_scheduler(NonZeroUsize::MIN)?);
+    let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)?;
+    let session = DecodeSession::detaching_held(
+        NonZeroUsize::MIN,
+        row_scheduler(NonZeroUsize::MIN)?,
+        backend,
+    );
     let (headers, audits) = splot_parallel::run_on_thread("splot-driver", || {
         crate::filters::wienerns_lr::recon::with_bru_lr_audit(|| {
             let mut source =
