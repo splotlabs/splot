@@ -8,6 +8,7 @@
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::u8x16;
 use fearless_simd::{Level, Simd, SimdBase, dispatch, u8x32, u16x8, u16x16};
+use splot_core::simd::SimdBackend;
 
 use crate::intra_dc_math::{IntraLaneSample, validate_output_shape, validate_sample_type};
 #[cfg(test)]
@@ -87,17 +88,77 @@ impl<'a, T: ReconSample> IntraSmoothEdges<'a, T> {
     }
 }
 
-/// Writes rectangular AV2 §7.13.2.13 smooth prediction into caller storage.
-///
-/// `output` points at the top-left destination sample and `stride_samples` is
-/// the distance between adjacent output rows. Samples outside the predicted
-/// rectangle are left unchanged.
-///
-/// # Errors
-/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
-/// wrong edge lengths, out-of-range edge samples or predictions, a too-small
-/// stride, or a too-small output buffer.
-pub fn predict_intra_smooth_rect_into<T: ReconSample>(
+#[derive(Clone, Copy)]
+struct BaselineSmooth;
+
+#[derive(Clone, Copy)]
+struct TypedSmooth<B: SimdBackend>(B);
+
+trait SmoothRunner: Copy {
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2>;
+
+    fn smooth<P: IntraLaneSample>(
+        self,
+        size: IntraRectBlockSize,
+        mode: IntraSmoothMode,
+        lanes: &[[u16; LANE_LEN]; 2],
+        corners: [u16; 2],
+        output: &mut [P],
+        stride: usize,
+    );
+}
+
+impl SmoothRunner for BaselineSmooth {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        Level::baseline().as_avx2()
+    }
+
+    #[inline]
+    fn smooth<P: IntraLaneSample>(
+        self,
+        size: IntraRectBlockSize,
+        mode: IntraSmoothMode,
+        lanes: &[[u16; LANE_LEN]; 2],
+        corners: [u16; 2],
+        output: &mut [P],
+        stride: usize,
+    ) {
+        dispatch!(
+            Level::baseline(),
+            simd => smooth_lanes(simd, size, mode, lanes, corners, output, stride)
+        );
+    }
+}
+
+impl<B: SimdBackend> SmoothRunner for TypedSmooth<B> {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        self.0.narrow().avx2_token()
+    }
+
+    #[inline]
+    fn smooth<P: IntraLaneSample>(
+        self,
+        size: IntraRectBlockSize,
+        mode: IntraSmoothMode,
+        lanes: &[[u16; LANE_LEN]; 2],
+        corners: [u16; 2],
+        output: &mut [P],
+        stride: usize,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            smooth_lanes(narrow.token(), size, mode, lanes, corners, output, stride);
+        });
+    }
+}
+
+fn predict_intra_smooth_rect_into_with_runner<R: SmoothRunner, T: ReconSample>(
+    runner: R,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     mode: IntraSmoothMode,
@@ -119,8 +180,70 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
     let (left, above) = (edges.left_samples(), edges.above_samples());
     lanes[..size.height()].copy_from_slice(&left[..size.height()]); // splot-copy-ok: smooth left lanes
     let corners = [above[size.width()], left[size.height()]];
-    predict_edges(size, mode, &lanes, above, corners, output, stride_samples);
+    predict_edges(
+        runner,
+        size,
+        mode,
+        &lanes,
+        above,
+        corners,
+        output,
+        stride_samples,
+    );
     Ok(())
+}
+
+/// Writes rectangular AV2 §7.13.2.13 smooth prediction into caller storage.
+///
+/// `output` points at the top-left destination sample and `stride_samples` is
+/// the distance between adjacent output rows. Samples outside the predicted
+/// rectangle are left unchanged.
+///
+/// # Errors
+/// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
+/// wrong edge lengths, out-of-range edge samples or predictions, a too-small
+/// stride, or a too-small output buffer.
+pub fn predict_intra_smooth_rect_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    mode: IntraSmoothMode,
+    edges: IntraSmoothEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_smooth_rect_into_with_runner(
+        BaselineSmooth,
+        bit_depth,
+        size,
+        mode,
+        edges,
+        output,
+        stride_samples,
+    )
+}
+
+/// Typed [`predict_intra_smooth_rect_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_smooth_rect_into`].
+pub fn predict_intra_smooth_rect_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    mode: IntraSmoothMode,
+    edges: IntraSmoothEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_smooth_rect_into_with_runner(
+        TypedSmooth(backend),
+        bit_depth,
+        size,
+        mode,
+        edges,
+        output,
+        stride_samples,
+    )
 }
 
 /// Largest sample whose § 7.13.2.13 lane terms fit `u16`: every stage below
@@ -257,17 +380,9 @@ pub struct IntraSmoothFrameRequest {
 }
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
-    /// Writes the § 7.13.2.13 prediction of one block in place, reading its
-    /// edges straight from the frame.
-    ///
-    /// Returns `Ok(false)` without writing when the block cannot be predicted
-    /// in place (see [`Self::with_intra_block_frame`]).
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] for a sample type that cannot represent the bit
-    /// depth or an absent plane.
-    pub fn predict_intra_smooth_in_frame(
+    fn predict_intra_smooth_in_frame_with_runner<R: SmoothRunner>(
         &mut self,
+        runner: R,
         plane: PlaneId,
         x: usize,
         y: usize,
@@ -286,6 +401,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             let above = if request.above { above } else { &[] };
             let (above, corners) = frame_edges(request, &mut left, left_len, above, &mut fill);
             predict_edges(
+                runner,
                 request.size,
                 request.mode,
                 &left,
@@ -297,6 +413,40 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             Ok::<_, ReconError>(())
         })?;
         Ok(predicted.is_some())
+    }
+
+    /// Writes the § 7.13.2.13 prediction of one block in place, reading its
+    /// edges straight from the frame.
+    ///
+    /// Returns `Ok(false)` without writing when the block cannot be predicted
+    /// in place (see [`Self::with_intra_block_frame`]).
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for a sample type that cannot represent the bit
+    /// depth or an absent plane.
+    pub fn predict_intra_smooth_in_frame(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        request: IntraSmoothFrameRequest,
+    ) -> Result<bool> {
+        self.predict_intra_smooth_in_frame_with_runner(BaselineSmooth, plane, x, y, request)
+    }
+
+    /// Typed [`Self::predict_intra_smooth_in_frame`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::predict_intra_smooth_in_frame`].
+    pub fn predict_intra_smooth_in_frame_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        request: IntraSmoothFrameRequest,
+    ) -> Result<bool> {
+        self.predict_intra_smooth_in_frame_with_runner(TypedSmooth(backend), plane, x, y, request)
     }
 }
 
@@ -345,12 +495,14 @@ fn frame_edges<'a, T: ReconSample>(
 /// Writes the § 7.13.2.13 prediction of a block from `LeftCol[0..h)` in
 /// `left`, `AboveRow[0..w)` in `above`, and `[AboveRow[w], LeftCol[h]]`, for
 /// samples of at most [`MAX_LANE_SAMPLE`].
+#[expect(clippy::too_many_arguments)]
 #[expect(
     clippy::inline_always,
     reason = "measured: the call costs more than its body saves"
 )]
 #[inline(always)]
-fn predict_edges<T: ReconSample>(
+fn predict_edges<R: SmoothRunner, T: ReconSample>(
+    runner: R,
     size: IntraRectBlockSize,
     mode: IntraSmoothMode,
     left: &[T; LANE_LEN],
@@ -369,13 +521,14 @@ fn predict_edges<T: ReconSample>(
             mode,
             corners: [right, bottom].map(|sample| sample.to_u16() as u8),
         };
-        predict_smooth_u8(block, left, above, output, stride);
+        predict_smooth_u8(runner, block, left, above, output, stride);
     } else if let (Some(left), Some(above), Some(output)) = (
         T::u16_slice(left),
         T::u16_slice(above),
         T::u16_slice_mut(output),
     ) {
         predict_smooth_lanes(
+            runner,
             size,
             mode,
             left,
@@ -416,8 +569,10 @@ fn above_lanes<T: Copy>(above: &[T], width: usize, lanes: &mut [T; LANE_LEN]) {
 /// log2(h))`, adding `bottomLeft * h` inside the `Round2` gives `Round2(top *
 /// (h - 1 - i) + bottomLeft * (i + 1), log2(h))`, and each `x + Round2((y - x) *
 /// s, 6)` blend is `Round2(x * (64 - s) + y * s, 6)`, so no lane goes negative.
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
-fn predict_smooth_lanes(
+fn predict_smooth_lanes<R: SmoothRunner>(
+    runner: R,
     size: IntraRectBlockSize,
     mode: IntraSmoothMode,
     left: &[u16],
@@ -431,7 +586,7 @@ fn predict_smooth_lanes(
     };
     let mut lanes = [*left, [0; LANE_LEN]];
     above_lanes(above, size.width(), &mut lanes[1]);
-    dispatch!(Level::baseline(), simd => smooth_lanes(simd, size, mode, &lanes, corners, output, stride));
+    runner.smooth(size, mode, &lanes, corners, output, stride);
 }
 
 #[inline]
@@ -517,7 +672,8 @@ struct SmoothBlockU8 {
 /// the first `w` samples of `above`, through the AVX2 rounding-multiply kernel
 /// when the baseline has it.
 #[inline]
-fn predict_smooth_u8(
+fn predict_smooth_u8<R: SmoothRunner>(
+    runner: R,
     block: SmoothBlockU8,
     left: &[u8; LANE_LEN],
     above: &[u8],
@@ -534,7 +690,7 @@ fn predict_smooth_u8(
         return;
     };
     #[cfg(target_arch = "x86_64")]
-    if let Some(token) = Level::baseline().as_avx2() {
+    if let Some(token) = runner.avx2_token() {
         return smooth_u8_avx2(token, block, left, above, output, stride);
     }
     let mut lanes = [left.map(u16::from), [0; LANE_LEN]];
@@ -544,7 +700,7 @@ fn predict_smooth_u8(
     }
     above_lanes(&row, width, &mut lanes[1]);
     let corners = corners.map(u16::from);
-    dispatch!(Level::baseline(), simd => smooth_lanes(simd, size, mode, &lanes, corners, output, stride));
+    runner.smooth(size, mode, &lanes, corners, output, stride);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -1296,5 +1452,133 @@ mod tests {
                 context: "smooth intra prediction output buffer length"
             })
         ));
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        use crate::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                for (log2_w, log2_h) in [(2, 2), (3, 3), (4, 3), (5, 4)] {
+                    let size = rect_size(log2_w, log2_h);
+                    let stride = size.width() + 4;
+                    for mode in [
+                        IntraSmoothMode::Smooth,
+                        IntraSmoothMode::SmoothVertical,
+                        IntraSmoothMode::SmoothHorizontal,
+                    ] {
+                        let left8: Vec<u8> =
+                            (0..=size.height()).map(|i| (i * 23 + 7) as u8).collect();
+                        let above8: Vec<u8> =
+                            (0..=size.width()).map(|i| (i * 31 + 11) as u8).collect();
+                        let edges8 = IntraSmoothEdges::new(&left8[..], &above8[..]);
+                        let mut compat8 = vec![3u8; stride * size.height()];
+                        let mut typed8 = Vec::from(compat8.as_slice());
+                        predict_intra_smooth_rect_into(
+                            BitDepth::Eight,
+                            size,
+                            mode,
+                            edges8,
+                            &mut compat8,
+                            stride,
+                        )
+                        .unwrap();
+                        predict_intra_smooth_rect_into_with(
+                            backend,
+                            BitDepth::Eight,
+                            size,
+                            mode,
+                            edges8,
+                            &mut typed8,
+                            stride,
+                        )
+                        .unwrap();
+                        assert_eq!(typed8, compat8);
+
+                        let left10: Vec<u16> = (0..=size.height())
+                            .map(|i| (i as u16 * 71 + 9) % 1024)
+                            .collect();
+                        let above10: Vec<u16> = (0..=size.width())
+                            .map(|i| (i as u16 * 97 + 13) % 1024)
+                            .collect();
+                        let edges10 = IntraSmoothEdges::new(&left10[..], &above10[..]);
+                        let mut compat10 = vec![5u16; stride * size.height()];
+                        let mut typed10 = Vec::from(compat10.as_slice());
+                        predict_intra_smooth_rect_into(
+                            BitDepth::Ten,
+                            size,
+                            mode,
+                            edges10,
+                            &mut compat10,
+                            stride,
+                        )
+                        .unwrap();
+                        predict_intra_smooth_rect_into_with(
+                            backend,
+                            BitDepth::Ten,
+                            size,
+                            mode,
+                            edges10,
+                            &mut typed10,
+                            stride,
+                        )
+                        .unwrap();
+                        assert_eq!(typed10, compat10);
+                    }
+                }
+
+                let coded = PlaneSize::new(32, 32).unwrap();
+                let visible = PlaneRect::new(0, 0, 32, 32).unwrap();
+                let info = DecodedFrameInfo::new(
+                    OutputIndex::new(0),
+                    BitDepth::Eight,
+                    PixelFormat::Yuv420,
+                    coded,
+                    visible,
+                )
+                .unwrap();
+                let mut ws_compat = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
+                let mut ws_typed = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
+                let init_plane: Vec<u8> =
+                    (0..32 * 32).map(|i| ((i * 17 + 11) % 256) as u8).collect();
+                ws_compat
+                    .write_rect(PlaneId::Y, visible, &init_plane, 32)
+                    .unwrap();
+                ws_typed
+                    .write_rect(PlaneId::Y, visible, &init_plane, 32)
+                    .unwrap();
+                let req = IntraSmoothFrameRequest {
+                    size: rect_size(3, 3),
+                    mode: IntraSmoothMode::Smooth,
+                    above: true,
+                    left: true,
+                    above_right: true,
+                    below_left: true,
+                    bit_depth: BitDepth::Eight,
+                };
+                assert!(
+                    ws_compat
+                        .predict_intra_smooth_in_frame(PlaneId::Y, 8, 8, req)
+                        .unwrap()
+                );
+                assert!(
+                    ws_typed
+                        .predict_intra_smooth_in_frame_with(backend, PlaneId::Y, 8, 8, req)
+                        .unwrap()
+                );
+                assert_eq!(
+                    ws_typed.plane(PlaneId::Y).unwrap().samples(),
+                    ws_compat.plane(PlaneId::Y).unwrap().samples()
+                );
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

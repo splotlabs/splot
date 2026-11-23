@@ -77,7 +77,8 @@ mod plane;
 mod plane_buf;
 mod plane_pool;
 pub use mhccp::{
-    MHCCP_BITS, MhccpEdge, MhccpPredictor, PredictedSample, derive_mhccp_params, mul_fixed32_adapt,
+    MHCCP_BITS, MhccpEdge, MhccpPredictor, PredictedSample, derive_mhccp_params,
+    derive_mhccp_params_with, mul_fixed32_adapt,
 };
 pub use plane_buf::{LentRows, PLANE_ALIGNMENT, PlaneBuf, plane_buf};
 pub use plane_pool::PlanePool;
@@ -97,7 +98,9 @@ mod workspace;
 mod y4m;
 
 pub use blend_mask::{
-    blend_diff_weighted_u8, blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
+    blend_diff_weighted_u8, blend_diff_weighted_u8_with, blend_diff_weighted_wide,
+    blend_diff_weighted_wide_with, blend_mask_u8, blend_mask_u8_with, blend_mask_wide,
+    blend_mask_wide_with,
 };
 pub use cdef_filter::{
     CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
@@ -139,16 +142,22 @@ pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput, visible_byte_len};
 pub use intra::{
     IntraDcEdge, IntraDcEdges, IntraRectBlockSize, IntraSquareBlockSize,
     SquareIntraPredictionBlock, SquareIntraPredictionRows, average_intra_predictions,
-    predict_intra_dc_rect_into, predict_intra_dc_rect_value, predict_intra_dc_square,
-    predict_intra_dc_square_into, predict_intra_dc_square_value, predict_intra_palette_into,
+    average_intra_predictions_with, predict_intra_dc_rect_into, predict_intra_dc_rect_value,
+    predict_intra_dc_square, predict_intra_dc_square_into, predict_intra_dc_square_value,
+    predict_intra_palette_into, predict_intra_palette_into_with,
 };
-pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_into};
+pub use intra_basic::{
+    IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_into,
+    predict_intra_paeth_rect_into_with,
+};
 pub use intra_dc_math::resolve_divisor;
 pub use intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
     predict_intra_dc_value_from_edge_sums,
 };
-pub use intra_dip::{IntraDipEdge, IntraDipEdges, predict_intra_dip_rect_into};
+pub use intra_dip::{
+    IntraDipEdge, IntraDipEdges, predict_intra_dip_rect_into, predict_intra_dip_rect_into_with,
+};
 pub use intra_directional::{IntraCardinalDirection, predict_intra_cardinal_directional_rect_into};
 pub use intra_directional_angle::{
     IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleEdges,
@@ -161,11 +170,12 @@ pub use intra_directional_angle::{
     predict_intra_middle_directional_angle_rect_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_into,
 };
-pub use intra_ibp_angular::apply_ibp_dr_blend_rect;
-pub use intra_ibp_dc::predict_intra_ibp_dc_rect_into;
+pub use intra_edge_filter::apply_intra_edge_filter_with;
+pub use intra_ibp_angular::{apply_ibp_dr_blend_rect, apply_ibp_dr_blend_rect_with};
+pub use intra_ibp_dc::{predict_intra_ibp_dc_rect_into, predict_intra_ibp_dc_rect_into_with};
 pub use intra_smooth::{
     IntraSmoothEdge, IntraSmoothEdges, IntraSmoothFrameRequest, IntraSmoothMode,
-    predict_intra_smooth_rect_into,
+    predict_intra_smooth_rect_into, predict_intra_smooth_rect_into_with,
 };
 pub use inverse_transform::{InverseTransform1dType, inverse_transform_1d};
 pub use inverse_transform_2d::{
