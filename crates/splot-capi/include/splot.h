@@ -34,9 +34,6 @@
 // it failed earlier.
 #define SPLOT_ESTATE -5
 
-// The requested runtime policy or feature is unsupported on this host.
-#define SPLOT_ENOTSUP -6
-
 // Chroma layout of a picture.
 typedef enum SplotPixelLayout {
   // Luma only.
@@ -63,18 +60,6 @@ typedef enum SplotFrameType {
   SPLOT_FRAME_TYPE_SWITCH = 4,
 } SplotFrameType;
 
-// Startup SIMD execution policy mirrored onto [`SplotSettings::simd_policy`].
-typedef enum SplotSimdPolicy {
-  // Picks the verified default backend for this host (`0`).
-  SPLOT_SIMD_POLICY_AUTO = 0,
-  // Requires x86-64 AVX2 (`1`).
-  SPLOT_SIMD_POLICY_AVX2 = 1,
-  // Requires the full Ice Lake AVX-512 feature bundle (`2`).
-  SPLOT_SIMD_POLICY_AVX512 = 2,
-  // Requires AArch64 NEON (`3`).
-  SPLOT_SIMD_POLICY_NEON = 3,
-} SplotSimdPolicy;
-
 // An open decoder.
 typedef struct SplotDecoder SplotDecoder;
 
@@ -89,10 +74,8 @@ typedef struct SplotSettings {
   // 1 leaves film grain out of the pictures; [`splot_apply_grain`] adds it
   // to a picture later. 0 applies it.
   uint8_t skip_film_grain;
-  // Startup SIMD policy ([`SplotSimdPolicy`]; 0 is `SPLOT_SIMD_POLICY_AUTO`).
-  uint8_t simd_policy;
   // Reserved; keep zero.
-  uint8_t reserved[30];
+  uint8_t reserved[31];
 } SplotSettings;
 
 // Caller data that goes with one temporal unit to the pictures it codes.
@@ -171,9 +154,8 @@ void splot_default_settings(struct SplotSettings *settings);
 // Opens a decoder and stores it in `*out`.
 //
 // Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a
-// `skip_film_grain` above 1, an invalid `simd_policy`, or nonzero reserved bytes,
-// [`SPLOT_ENOTSUP`] when the host cannot satisfy `simd_policy`, or
-// [`SPLOT_EDECODE`] when the worker pool cannot start.
+// `skip_film_grain` above 1 or nonzero reserved bytes, or [`SPLOT_EDECODE`]
+// when the worker pool cannot start.
 //
 // # Safety
 // `out` is null or writable; `settings` is null or points to a

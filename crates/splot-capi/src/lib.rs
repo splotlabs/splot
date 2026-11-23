@@ -34,7 +34,7 @@ use core::ptr;
 use splot_core::headers::content_interpretation::DerivedColorInfo;
 use splot_decode::{
     BitDepth, DataProps, Decoder, DecoderSettings, FrameDelay, FrameType, Picture, PictureSamples,
-    PixelFormat, PlaneId, PlaneRef, SendStatus, SimdPolicy, ThreadCount,
+    PixelFormat, PlaneId, PlaneRef, SendStatus, ThreadCount,
 };
 
 /// The call succeeded.
@@ -54,22 +54,6 @@ pub const SPLOT_EDECODE: c_int = -4;
 /// The decoder takes no more data until [`splot_flush`]: it is draining, or
 /// it failed earlier.
 pub const SPLOT_ESTATE: c_int = -5;
-/// The requested runtime policy or feature is unsupported on this host.
-pub const SPLOT_ENOTSUP: c_int = -6;
-
-/// Startup SIMD execution policy mirrored onto [`SplotSettings::simd_policy`].
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SplotSimdPolicy {
-    /// Picks the verified default backend for this host (`0`).
-    Auto = 0,
-    /// Requires x86-64 AVX2 (`1`).
-    Avx2 = 1,
-    /// Requires the full Ice Lake AVX-512 feature bundle (`2`).
-    Avx512 = 2,
-    /// Requires AArch64 NEON (`3`).
-    Neon = 3,
-}
 
 /// An open decoder.
 pub struct SplotDecoder {
@@ -90,10 +74,8 @@ pub struct SplotSettings {
     /// 1 leaves film grain out of the pictures; [`splot_apply_grain`] adds it
     /// to a picture later. 0 applies it.
     pub skip_film_grain: u8,
-    /// Startup SIMD policy ([`SplotSimdPolicy`]; 0 is `SPLOT_SIMD_POLICY_AUTO`).
-    pub simd_policy: u8,
     /// Reserved; keep zero.
-    pub reserved: [u8; 30],
+    pub reserved: [u8; 31],
 }
 
 /// Caller data that goes with one temporal unit to the pictures it codes.
@@ -209,8 +191,7 @@ pub unsafe extern "C" fn splot_default_settings(settings: *mut SplotSettings) {
             n_threads: 0,
             max_frame_delay: 0,
             skip_film_grain: 0,
-            simd_policy: SplotSimdPolicy::Auto as u8,
-            reserved: [0; 30],
+            reserved: [0; 31],
         };
     }
 }
@@ -218,9 +199,8 @@ pub unsafe extern "C" fn splot_default_settings(settings: *mut SplotSettings) {
 /// Opens a decoder and stores it in `*out`.
 ///
 /// Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a
-/// `skip_film_grain` above 1, an invalid `simd_policy`, or nonzero reserved bytes,
-/// [`SPLOT_ENOTSUP`] when the host cannot satisfy `simd_policy`, or
-/// [`SPLOT_EDECODE`] when the worker pool cannot start.
+/// `skip_film_grain` above 1 or nonzero reserved bytes, or [`SPLOT_EDECODE`]
+/// when the worker pool cannot start.
 ///
 /// # Safety
 /// `out` is null or writable; `settings` is null or points to a
@@ -238,13 +218,6 @@ pub unsafe extern "C" fn splot_open(
     if settings.skip_film_grain > 1 || settings.reserved.iter().any(|&byte| byte != 0) {
         return SPLOT_EINVAL;
     }
-    let simd_policy = match settings.simd_policy {
-        0 => SimdPolicy::Auto,
-        1 => SimdPolicy::Avx2,
-        2 => SimdPolicy::Avx512,
-        3 => SimdPolicy::Neon,
-        _ => return SPLOT_EINVAL,
-    };
     let count = |value: u32| NonZeroUsize::new(value as usize);
     let settings = DecoderSettings::default()
         .with_threads(count(settings.n_threads).map_or(ThreadCount::Auto, ThreadCount::Fixed))
@@ -252,8 +225,7 @@ pub unsafe extern "C" fn splot_open(
             count(settings.max_frame_delay)
                 .map_or(FrameDelay::Auto, |depth| FrameDelay::from(depth.get())),
         )
-        .with_skip_film_grain(settings.skip_film_grain == 1)
-        .with_simd_policy(simd_policy);
+        .with_skip_film_grain(settings.skip_film_grain == 1);
     match Decoder::new(settings) {
         Ok(decoder) => {
             *out = Box::into_raw(Box::new(SplotDecoder {
@@ -262,7 +234,7 @@ pub unsafe extern "C" fn splot_open(
             }));
             SPLOT_OK
         }
-        Err(error) => error_code(&error),
+        Err(_) => SPLOT_EDECODE,
     }
 }
 
@@ -455,7 +427,6 @@ pub unsafe extern "C" fn splot_close(decoder: *mut *mut SplotDecoder) {
 fn error_code(error: &splot_decode::DecodeError) -> c_int {
     match error {
         splot_decode::DecodeError::State { .. } => SPLOT_ESTATE,
-        splot_decode::DecodeError::UnsupportedBackend { .. } => SPLOT_ENOTSUP,
         _ => SPLOT_EDECODE,
     }
 }

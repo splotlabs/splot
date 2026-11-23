@@ -83,8 +83,7 @@ fn pictures(ivf: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> 
         n_threads: 0,
         max_frame_delay: 0,
         skip_film_grain: 1,
-        simd_policy: 99,
-        reserved: [1; 30],
+        reserved: [1; 31],
     };
     let mut decoder = ptr::null_mut();
     unsafe {
@@ -201,7 +200,6 @@ fn the_new_fields_keep_the_struct_layouts() {
     use core::mem::offset_of;
     assert_eq!(size_of::<SplotSettings>(), 40);
     assert_eq!(offset_of!(SplotSettings, skip_film_grain), 8);
-    assert_eq!(offset_of!(SplotSettings, simd_policy), 9);
     assert_eq!(
         offset_of!(SplotPicture, internal),
         offset_of!(SplotPicture, has_film_grain) + 4 * size_of::<usize>()
@@ -255,14 +253,11 @@ fn null_and_bad_arguments_are_refused() {
     let mut decoder = ptr::null_mut();
     unsafe {
         assert_eq!(splot_open(&raw mut decoder, ptr::null()), SPLOT_EINVAL);
-        for (skip_film_grain, simd_policy, reserved) in
-            [(0, 0, [1; 30]), (2, 0, [0; 30]), (0, 4, [0; 30])]
-        {
+        for (skip_film_grain, reserved) in [(0, [1; 31]), (2, [0; 31])] {
             let settings = SplotSettings {
                 n_threads: 1,
                 max_frame_delay: 1,
                 skip_film_grain,
-                simd_policy,
                 reserved,
             };
             assert_eq!(
@@ -270,54 +265,6 @@ fn null_and_bad_arguments_are_refused() {
                 SPLOT_EINVAL
             );
             assert!(decoder.is_null());
-        }
-
-        let mut neon_settings = core::mem::MaybeUninit::<SplotSettings>::uninit();
-        splot_default_settings(neon_settings.as_mut_ptr());
-        let mut neon_settings = neon_settings.assume_init();
-        neon_settings.n_threads = 1;
-        #[cfg(target_arch = "x86_64")]
-        {
-            neon_settings.simd_policy = SplotSimdPolicy::Neon as u8;
-            assert_eq!(
-                splot_open(&raw mut decoder, &raw const neon_settings),
-                SPLOT_ENOTSUP
-            );
-            assert!(decoder.is_null());
-
-            if !splot_core::simd::detect_capabilities().has_avx512() {
-                neon_settings.simd_policy = SplotSimdPolicy::Avx512 as u8;
-                assert_eq!(
-                    splot_open(&raw mut decoder, &raw const neon_settings),
-                    SPLOT_ENOTSUP
-                );
-                assert!(decoder.is_null());
-            }
-
-            neon_settings.simd_policy = SplotSimdPolicy::Avx2 as u8;
-            assert_eq!(
-                splot_open(&raw mut decoder, &raw const neon_settings),
-                SPLOT_OK
-            );
-            assert!(!decoder.is_null());
-            splot_close(&raw mut decoder);
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            neon_settings.simd_policy = SplotSimdPolicy::Avx2 as u8;
-            assert_eq!(
-                splot_open(&raw mut decoder, &raw const neon_settings),
-                SPLOT_ENOTSUP
-            );
-            assert!(decoder.is_null());
-
-            neon_settings.simd_policy = SplotSimdPolicy::Neon as u8;
-            assert_eq!(
-                splot_open(&raw mut decoder, &raw const neon_settings),
-                SPLOT_OK
-            );
-            assert!(!decoder.is_null());
-            splot_close(&raw mut decoder);
         }
         let mut picture = core::mem::zeroed::<SplotPicture>();
         let released = core::mem::zeroed::<SplotPicture>();

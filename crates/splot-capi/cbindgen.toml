@@ -15,4 +15,4 @@ prefix_with_name = true
 rename_variants = "ScreamingSnakeCase"
 
 [export]
-include = ["SplotPixelLayout", "SplotFrameType", "SplotSimdPolicy"]
+include = ["SplotPixelLayout", "SplotFrameType"]
