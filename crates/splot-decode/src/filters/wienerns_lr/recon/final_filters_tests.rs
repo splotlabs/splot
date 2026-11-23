@@ -2215,3 +2215,264 @@ fn bru_lr_kernels_follow_shifted_stripes_across_normal_reversed_chroma_and_tiles
         "tile 1 col 1 row 30 (stripeRow=32 active) must be filtered"
     );
 }
+
+fn bru_gdf_core(
+    with_lr: bool,
+    per_block: bool,
+    bit_depth: BitDepth,
+    width: usize,
+) -> FrameHeaderCore {
+    let mut core = bru_lr_core(LrUnitRestorationType::WienerNonsep, width, &[]);
+    if !with_lr {
+        core.lr_params = None;
+    }
+    if let Some(quant) = core.quantization_params.as_mut() {
+        quant.base_q_idx = match bit_depth {
+            BitDepth::Eight => 200,
+            _ => 224,
+        };
+    }
+    let mut gdf = switchable_core().gdf_params.unwrap();
+    gdf.gdf_frame_enable = true;
+    gdf.gdf_per_block = Some(per_block);
+    gdf.gdf_pic_qc_idx = Some(0);
+    gdf.gdf_pic_scale_idx = Some(3);
+    core.gdf_params = Some(gdf);
+    core
+}
+
+fn bru_gdf_contrasting_workspace<T: splot_recon::ReconSample + TryFrom<u16>>(
+    bit_depth: BitDepth,
+    width: usize,
+    height: usize,
+) -> CurrentFrameWorkspace<T> {
+    let zero = T::try_from(0u16).ok().unwrap();
+    let shift = bit_depth.bits().saturating_sub(8);
+    let mut workspace = crate::test_support::yuv420_workspace_with(bit_depth, width, height, zero);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = workspace.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let jump = if (plane == PlaneId::Y && (56..64).contains(&y))
+                    || (plane != PlaneId::Y && (28..32).contains(&y))
+                {
+                    90
+                } else {
+                    0
+                };
+                let val8 = ((24 + (x * 13 + y * 19 + ((x ^ y) & 7) * 11 + jump)) % 200 + 24) as u16;
+                let sample = T::try_from(val8 << shift).ok().unwrap();
+                workspace
+                    .set_reconstructed_sample(plane, x, y, sample)
+                    .unwrap();
+            }
+        }
+    }
+    workspace
+}
+
+fn run_bru_gdf_frame<T: splot_recon::ReconSample + TryFrom<u16>>(
+    bit_depth: BitDepth,
+    with_lr: bool,
+    with_gdf: bool,
+    per_block: bool,
+    gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
+    bru_modes: Arc<crate::filters::bru::BruModeMap>,
+) -> Result<splot_recon::DecodedFrame<T>> {
+    let (width, height) = (128, 128);
+    let mut core = bru_gdf_core(with_lr, per_block, bit_depth, width);
+    if !with_gdf {
+        core.gdf_params = None;
+    }
+    let mut sink = WienerNsLrReconSink::for_final_filtering(
+        bru_gdf_contrasting_workspace::<T>(bit_depth, width, height),
+        width,
+        height,
+        bit_depth,
+    );
+    sink.tx_skip_grid = Some(
+        crate::filters::wienerns_lr::WienerNsLrTxSkipGrid::new(
+            height / MI_SIZE,
+            width / MI_SIZE,
+            vec![0; (height / MI_SIZE) * (width / MI_SIZE)],
+        )
+        .unwrap(),
+    );
+    sink.gdf_grid = gdf_grid;
+    sink.gdf_reference =
+        Some(crate::filters::gdf::GdfReferenceContext::from_reference_list(10, &[0], &[8]));
+    sink.filter_records.bru_modes = Some(bru_modes);
+    if with_lr {
+        let (blocks, filters) =
+            bru_lr_blocks_and_filters(LrUnitRestorationType::WienerNonsep, width, &[(0, 32)]);
+        sink.filter_records.lr_source_blocks = blocks;
+        sink.filter_records.lr_unit_filters = filters;
+    }
+    let (frame, _) = sink.into_filtered_frame(
+        Arc::new(core),
+        false,
+        crate::filters::deblock::DeblockQuantDeltas::ZERO,
+        None,
+    )?;
+    frame.ok_or_else(super::super::lr_pipeline_state_error)
+}
+
+fn plane_rect_samples_t<T: splot_recon::ReconSample>(
+    frame: &splot_recon::DecodedFrame<T>,
+    plane: PlaneId,
+    x_range: core::ops::Range<usize>,
+    y_range: core::ops::Range<usize>,
+) -> Vec<T> {
+    let view = match plane {
+        PlaneId::Y => frame.y(),
+        PlaneId::U => frame.u().unwrap(),
+        PlaneId::V => frame.v().unwrap(),
+    };
+    let stride = view.stride_samples();
+    let samples = view.samples();
+    let mut out = Vec::new();
+    for y in y_range {
+        out.extend_from_slice(&samples[y * stride + x_range.start..y * stride + x_range.end]);
+    }
+    out
+}
+
+fn check_bru_gdf_bit_depth<
+    T: splot_recon::ReconSample + TryFrom<u16> + PartialEq + core::fmt::Debug,
+>(
+    bit_depth: BitDepth,
+) {
+    let set_row_modes = |map: &crate::filters::bru::BruModeMap, r0: u8, r1: u8| {
+        for c in [0usize, 16] {
+            map.set(0, c, r0);
+            map.set(16, c, r1);
+        }
+    };
+    let raw_modes = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+    set_row_modes(
+        &raw_modes,
+        crate::bitstream::tile_payload::BRU_ACTIVE,
+        crate::bitstream::tile_payload::BRU_INACTIVE,
+    );
+    let raw =
+        run_bru_gdf_frame::<T>(bit_depth, false, false, false, None, raw_modes.clone()).unwrap();
+
+    let normal =
+        run_bru_gdf_frame::<T>(bit_depth, false, true, false, None, raw_modes.clone()).unwrap();
+    assert_ne!(
+        plane_rect_samples_t(&normal, PlaneId::Y, 0..128, 52..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 52..56),
+        "{bit_depth:?}: MI row 13 (y=52..56, stripeRow=0) must be GDF-filtered"
+    );
+    assert_eq!(
+        plane_rect_samples_t(&normal, PlaneId::Y, 0..128, 56..64),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 56..64),
+        "{bit_depth:?}: MI rows 14..15 (y=56..64, stripeRow=16) must stay untouched"
+    );
+    assert_eq!(
+        plane_rect_samples_t(&normal, PlaneId::Y, 0..128, 64..128),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 64..128),
+        "{bit_depth:?}: inactive SB row 1 must stay untouched"
+    );
+    for chroma in [PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            plane_rect_samples_t(&normal, chroma, 0..64, 0..64),
+            plane_rect_samples_t(&raw, chroma, 0..64, 0..64),
+            "{bit_depth:?} {chroma:?}: GDF must leave chroma untouched"
+        );
+    }
+
+    let rev_modes = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+    set_row_modes(
+        &rev_modes,
+        crate::bitstream::tile_payload::BRU_INACTIVE,
+        crate::bitstream::tile_payload::BRU_ACTIVE,
+    );
+    let reversed = run_bru_gdf_frame::<T>(bit_depth, false, true, false, None, rev_modes).unwrap();
+    assert_eq!(
+        plane_rect_samples_t(&reversed, PlaneId::Y, 0..128, 0..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 0..56),
+        "{bit_depth:?}: reversed rows 0..56 (stripeRow=0) must stay untouched"
+    );
+    assert_ne!(
+        plane_rect_samples_t(&reversed, PlaneId::Y, 0..128, 56..64),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 56..64),
+        "{bit_depth:?}: reversed rows 56..64 (stripeRow=16) must filter using SB row 1 mode"
+    );
+    for chroma in [PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            plane_rect_samples_t(&reversed, chroma, 0..64, 0..64),
+            plane_rect_samples_t(&raw, chroma, 0..64, 0..64),
+            "{bit_depth:?} {chroma:?}: reversed GDF must leave chroma untouched"
+        );
+    }
+
+    let grid = crate::filters::gdf::GdfBlockGrid::new(64, 2, 2, vec![0, 1, 1, 1]).unwrap();
+    let per_block =
+        run_bru_gdf_frame::<T>(bit_depth, false, true, true, Some(grid), raw_modes.clone())
+            .unwrap();
+    assert_eq!(
+        plane_rect_samples_t(&per_block, PlaneId::Y, 0..64, 0..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..64, 0..56),
+        "{bit_depth:?}: per-block GDF bit 0 in active stripe must stay untouched"
+    );
+    assert_ne!(
+        plane_rect_samples_t(&per_block, PlaneId::Y, 64..128, 0..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 64..128, 0..56),
+        "{bit_depth:?}: per-block GDF bit 1 in active stripe must filter"
+    );
+    assert_eq!(
+        plane_rect_samples_t(&per_block, PlaneId::Y, 0..128, 56..128),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 56..128),
+        "{bit_depth:?}: per-block GDF bit 1 in inactive stripe must stay untouched"
+    );
+
+    let lr_only =
+        run_bru_gdf_frame::<T>(bit_depth, true, false, false, None, raw_modes.clone()).unwrap();
+    let lr_and_gdf = run_bru_gdf_frame::<T>(bit_depth, true, true, false, None, raw_modes).unwrap();
+    assert_ne!(
+        plane_rect_samples_t(&lr_and_gdf, PlaneId::Y, 0..128, 52..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 52..56),
+        "{bit_depth:?}: LR+GDF active stripe must differ from raw"
+    );
+    assert_ne!(
+        plane_rect_samples_t(&lr_and_gdf, PlaneId::Y, 0..128, 52..56),
+        plane_rect_samples_t(&lr_only, PlaneId::Y, 0..128, 52..56),
+        "{bit_depth:?}: LR+GDF active stripe must apply GDF after LR"
+    );
+    assert_eq!(
+        plane_rect_samples_t(&lr_and_gdf, PlaneId::Y, 0..128, 56..128),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 56..128),
+        "{bit_depth:?}: LR+GDF inactive stripe must stay untouched"
+    );
+}
+
+#[test]
+fn bru_gdf_shifted_stripes_gate_frame_wide_per_block_lr_and_ten_bit() {
+    check_bru_gdf_bit_depth::<u8>(BitDepth::Eight);
+    check_bru_gdf_bit_depth::<u16>(BitDepth::Ten);
+}
+
+#[test]
+fn bru_gdf_unset_mode_fails_closed() {
+    let map = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+    map.set(0, 0, crate::bitstream::tile_payload::BRU_ACTIVE);
+    assert!(
+        run_bru_gdf_frame::<u8>(BitDepth::Eight, false, true, false, None, map.clone()).is_err()
+    );
+
+    let skip_first_grid =
+        crate::filters::gdf::GdfBlockGrid::new(64, 2, 2, vec![0, 0, 0, 0]).unwrap();
+    assert!(
+        run_bru_gdf_frame::<u8>(
+            BitDepth::Eight,
+            false,
+            true,
+            true,
+            Some(skip_first_grid),
+            map.clone()
+        )
+        .is_err()
+    );
+    assert!(run_bru_gdf_frame::<u16>(BitDepth::Ten, true, true, false, None, map).is_err());
+}

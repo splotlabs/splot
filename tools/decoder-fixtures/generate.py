@@ -10,6 +10,7 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py hashes [--out oracle.json]
   python3 tools/decoder-fixtures/generate.py coverage-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
 
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
 .ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo). AVM decoder
@@ -1099,14 +1100,83 @@ BRU_LR_FIXTURES = [
 ]
 
 
-def cmd_bru_lr_fixtures(args):
+def _bru_gdf_sharp_shape(dx, dy, phase):
+    r = math.hypot(dx - 32, dy - 32)
+    ring = 70 if (10 <= r < 14 or 20 <= r < 24) else -45
+    edge = 60 if ((dx * 2 + dy + phase * 5) % 19 < 7) else -50
+    return 128 + (ring + edge) // 2
+
+
+def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth):
+    shift = bit_depth - 8
+    if plane > 0:
+        return (128 + int(24 * math.sin(x * 0.08 + y * 0.06))) << shift
+    val = 128 + int(28 * math.sin(x * 0.05) + 18 * math.cos(y * 0.07))
+    if t in (1, 2) and 8 <= x < 56 and 8 <= y < 56:
+        val = _bru_gdf_sharp_shape(x, y, t)
+    elif t == 3 and 2 <= x < 126 and 66 <= y < 126:
+        val = _bru_gdf_sharp_shape(x % 64, y - 64, 7)
+    elif t == 4 and 66 <= x < 190 and 2 <= y < 62:
+        val = _bru_gdf_sharp_shape(x % 64, y, 13)
+    elif t == 5 and 76 <= x < 120 and 72 <= y < 118:
+        val = _bru_gdf_sharp_shape(x - 64, y - 64, 19)
+    return int(round(val)) << shift
+
+
+def _bru_gdf_sample_lr(t, x, y, plane):
+    if plane > 0:
+        return _bru_lr_sample_wns(t, x, y, plane, 8)
+    val = _bru_lr_sample_wns(t, x, y, 0, 8)
+    if t == 3 and 2 <= x < 62 and 66 <= y < 126:
+        val = _bru_gdf_sharp_shape(x, y - 64, 7)
+    elif t == 4 and 66 <= x < 126 and 2 <= y < 62:
+        val = _bru_gdf_sharp_shape(x - 64, y, 13)
+    return int(round(val))
+
+
+def _bru_gdf_sample_multitile(t, x, y, plane):
+    if plane > 0:
+        return 128 + int(24 * math.sin(x * 0.08 + y * 0.06))
+    val = 128 + int(28 * math.sin(x * 0.05) + 18 * math.cos(y * 0.07))
+    if t in (1, 2) and 70 <= x < 126 and 70 <= y < 126:
+        val = _bru_gdf_sharp_shape(x - 64, y - 64, t * 3)
+    elif t == 3:
+        if 66 <= x < 127 and 65 <= y < 126:
+            val = _bru_gdf_sharp_shape(x - 64, y - 64, 9)
+        elif 130 <= x < 190 and 2 <= y < 62:
+            val = _bru_gdf_sharp_shape(x - 128, y, 11)
+    elif t == 4:
+        if 66 <= x < 126 and 130 <= y < 190:
+            val = _bru_gdf_sharp_shape(x - 64, y - 128, 15)
+        elif 66 <= x < 126 and 2 <= y < 62:
+            val = _bru_gdf_sharp_shape(x - 64, y, 17)
+    elif t == 5 and 74 <= x < 124 and 74 <= y < 124:
+        val = _bru_gdf_sharp_shape(x - 64, y - 64, 23)
+    return int(round(val))
+
+
+BRU_GDF_FIXTURES = [
+    ("syn-bru-gdf-block-8bit", 256, 128, 8, lambda t, x, y, p: _bru_gdf_sample_stripe(t, x, y, p, 8),
+     ["--cpu-used=1", "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]),
+    ("syn-bru-gdf-block-10bit", 256, 128, 10, lambda t, x, y, p: _bru_gdf_sample_stripe(t, x, y, p, 10),
+     ["--cpu-used=1", "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]),
+    ("syn-bru-gdf-lr-8bit", 256, 128, 8, _bru_gdf_sample_lr,
+     ["--cpu-used=0", "--qp=165", "--enable-restoration=1", "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]),
+    ("syn-bru-gdf-multitile-8bit", 256, 256, 8, _bru_gdf_sample_multitile,
+     ["--cpu-used=1", "--qp=165", "--tile-columns=1", "--tile-rows=1",
+      "--disable-loopfilters-across-tiles=1", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0"]),
+]
+
+
+def _run_bru_fixture_batch(fixtures, fixed_flags, label, args):
     avmenc = find("avmenc")
     avmdec = find("avmdec")
     stage = args.stage
     os.makedirs(stage, exist_ok=True)
-    selected = [row for row in BRU_LR_FIXTURES if args.only is None or row[0] == args.only]
+    selected = [row for row in fixtures if args.only is None or row[0] == args.only]
     if not selected:
-        sys.exit(f"error: unknown BRU+LR fixture id: {args.only}")
+        sys.exit(f"error: unknown {label} fixture id: {args.only}")
     for fid, w, h, bd, sample_fn, flags in selected:
         y4m = os.path.join(stage, f"{fid}.y4m")
         ivf = os.path.join(stage, f"{fid}.ivf")
@@ -1116,8 +1186,8 @@ def cmd_bru_lr_fixtures(args):
         encode = [
             avmenc, "--codec=av2", "--ivf", "-D", "--passes=1",
             "--lag-in-frames=0", "--kf-min-dist=9999", "--kf-max-dist=9999",
-            "--enable-bru=1", "--enable-gdf=0", "--enable-intrabc=0", "--sb-size=64",
-            "--enable-restoration=1", f"--bit-depth={bd}", f"--input-bit-depth={bd}", "--i420",
+            "--enable-bru=1", "--enable-intrabc=0", "--sb-size=64",
+            *fixed_flags, f"--bit-depth={bd}", f"--input-bit-depth={bd}", "--i420",
             "--threads=1", "--end-usage=q", "--quiet", "--disable-warning-prompt", *flags,
         ]
         run_checked([*encode, "-o", ivf, y4m])
@@ -1128,7 +1198,25 @@ def cmd_bru_lr_fixtures(args):
         os.remove(repeat_ivf)
         run_checked([avmdec, "--i420", "--rawvideo", "-o", raw, ivf])
         print(f"  {fid}: src={sha(y4m)} ivf={ivf_sha} avm_raw={sha(raw)} size={os.path.getsize(ivf)}")
-    print(f"staged {len(selected)} BRU+LR fixtures in {stage}")
+    print(f"staged {len(selected)} {label} fixtures in {stage}")
+
+
+def cmd_bru_lr_fixtures(args):
+    _run_bru_fixture_batch(
+        BRU_LR_FIXTURES,
+        ["--enable-gdf=0", "--enable-restoration=1"],
+        "BRU+LR",
+        args,
+    )
+
+
+def cmd_bru_gdf_fixtures(args):
+    _run_bru_fixture_batch(
+        BRU_GDF_FIXTURES,
+        ["--enable-gdf=1", "--gdf-unit-matches-sb=1"],
+        "BRU+GDF",
+        args,
+    )
 
 
 def main():
@@ -1142,6 +1230,9 @@ def main():
     b = sub.add_parser("bru-lr-fixtures"); b.add_argument("--stage", required=True)
     b.add_argument("--only", help="regenerate one fixture id")
     b.set_defaults(fn=cmd_bru_lr_fixtures)
+    g = sub.add_parser("bru-gdf-fixtures"); g.add_argument("--stage", required=True)
+    g.add_argument("--only", help="regenerate one fixture id")
+    g.set_defaults(fn=cmd_bru_gdf_fixtures)
     args = p.parse_args()
     args.fn(args)
 
