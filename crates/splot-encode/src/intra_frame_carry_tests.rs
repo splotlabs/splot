@@ -652,6 +652,22 @@ fn open_loop_key_streams_decode_alike_on_any_thread_count() {
             .flat_map(|packet| packet.data.clone())
             .collect();
         assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
+        let start = packets
+            .iter()
+            .position(|packet| {
+                obu_types(core::slice::from_ref(packet)).contains(&ObuType::OpenLoopKey)
+            })
+            .unwrap();
+        let ra_units: Vec<u8> = packets[start..]
+            .iter()
+            .flat_map(|packet| packet.data.clone())
+            .collect();
+        let frame_bytes = expected.len() / 26;
+        assert_same_samples(
+            &decode(&ra_units),
+            &expected[12 * frame_bytes..],
+            &format!("{case:?}: random access"),
+        );
         if case == OPEN_LOOP_CASES[0] {
             let other: Vec<u8> = open_loop_stream(case, qp, 2, false)
                 .1

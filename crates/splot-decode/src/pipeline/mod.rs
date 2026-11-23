@@ -1047,6 +1047,7 @@ fn decode_frames_in_order(
         return emission_queue.flush(frames, emit);
     }
 
+    let mut discard_leading_frames = key_envelope.header.obu_type == ObuType::OpenLoopKey;
     *obu_storage = recycle(leading_buffer);
     let mut decoding_initial_tu = true;
     loop {
@@ -1088,6 +1089,20 @@ fn decode_frames_in_order(
             break;
         };
         let next_candidate = &next_candidate;
+        if discard_leading_frames && next_candidate.obu_type().is_leading_frame() {
+            let mut obu_buffer = recycle(core::mem::take(obu_storage));
+            let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
+            let (prefix_obus, _) = stream.inter_envelope(obus, next_candidate)?;
+            if prefix_obus
+                .iter()
+                .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter)
+            {
+                decoding_initial_tu = false;
+                in_band_long_term_prelude.begin_frame(true);
+            }
+            *obu_storage = recycle(obu_buffer);
+            continue;
+        }
         match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
@@ -1102,6 +1117,7 @@ fn decode_frames_in_order(
                     .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
                 if first_picture_in_tu {
                     decoding_initial_tu = false;
+                    discard_leading_frames = false;
                 }
                 in_band_long_term_prelude.begin_frame(first_picture_in_tu);
                 let flushed =
@@ -1246,6 +1262,7 @@ fn decode_frames_in_order(
                     .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
                 if first_picture_in_tu {
                     decoding_initial_tu = false;
+                    discard_leading_frames = false;
                 }
                 in_band_long_term_prelude.begin_frame(first_picture_in_tu);
                 let flushed =
@@ -1599,6 +1616,9 @@ fn decode_frames_in_order(
                     .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
                 if first_picture_in_tu {
                     decoding_initial_tu = false;
+                    discard_leading_frames = false;
+                } else if decoding_initial_tu && next_candidate.obu_type() == ObuType::OpenLoopKey {
+                    discard_leading_frames = true;
                 }
                 in_band_long_term_prelude.begin_frame(first_picture_in_tu);
                 if !starts_new_sequence {

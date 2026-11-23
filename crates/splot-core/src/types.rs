@@ -317,6 +317,16 @@ impl ObuType {
         )
     }
 
+    /// `true` for leading frame OBU types (`OBU_LEADING_TILE_GROUP`,
+    /// `OBU_LEADING_SEF`, `OBU_LEADING_TIP`; AV2 v1.0.0 § 2, § 7.4.4).
+    #[must_use]
+    pub const fn is_leading_frame(self) -> bool {
+        matches!(
+            self,
+            Self::LeadingTileGroup | Self::LeadingSef | Self::LeadingTip
+        )
+    }
+
     /// `true` if `obu_xlayer_id` must equal [`GLOBAL_XLAYER_ID`] for this type
     /// (AV2 v1.0.0 § 5.2.2 / § 6.2.2: `OBU_MSDO`, `OBU_TEMPORAL_DELIMITER`).
     #[must_use]
