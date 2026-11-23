@@ -132,7 +132,8 @@ fn avm_decodes_compound_types_like_splot() {
     }));
     let config = config(136, 72, BitDepth::Eight, 6, 200);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-    let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    let (units, ..) =
+        super::carry::planned_stream_frames(&config, coder, noisy_panning_frame, 200, 9);
     let avm = avm_decode(
         &avmdec,
         std::slice::from_ref(&units),
@@ -262,7 +263,7 @@ fn interintra_preset() -> &'static PresetParams {
         interintra: true,
         interintra_search: 1,
         tcq_type_trellis: false,
-        ..fast_p6()
+        ..*Preset::new(6).unwrap().params()
     }))
 }
 
@@ -320,7 +321,8 @@ fn avm_decodes_interintra_like_splot() {
     config.threads = splot_parallel::ThreadCount::from(1);
     let coder = IntraFrameCoder::with_preset(&config, interintra_preset()).unwrap();
     crate::tile_writer::CODED_WEDGE_INTERINTRA.set(0);
-    let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    let (units, ..) =
+        super::carry::planned_stream_frames(&config, coder, noisy_panning_frame, 200, 9);
     assert!(
         crate::tile_writer::CODED_WEDGE_INTERINTRA.get() > 0,
         "no wedge inter-intra leaf"
