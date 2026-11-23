@@ -2261,12 +2261,23 @@ fn effective_quantizer_deltas_include_frame_and_sequence_offsets() {
 }
 
 #[test]
-fn tip_output_disables_saved_cdf_blending() {
-    assert!(super::cdf_blending_enabled(true, None));
-    assert!(super::cdf_blending_enabled(true, Some(TipFrameMode::AsRef)));
+fn tip_output_and_bru_inactive_disable_saved_cdf_blending() {
+    assert!(super::cdf_blending_enabled(true, None, false));
+    assert!(super::cdf_blending_enabled(
+        true,
+        Some(TipFrameMode::AsRef),
+        false
+    ));
     assert!(!super::cdf_blending_enabled(
         true,
-        Some(TipFrameMode::AsOutput)
+        Some(TipFrameMode::AsOutput),
+        false
+    ));
+    assert!(!super::cdf_blending_enabled(true, None, true));
+    assert!(!super::cdf_blending_enabled(
+        true,
+        Some(TipFrameMode::AsRef),
+        true
     ));
 }
 

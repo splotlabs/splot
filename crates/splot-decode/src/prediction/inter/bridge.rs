@@ -81,12 +81,14 @@ pub(crate) fn reconstruct<T: ReconSample>(
     Ok(workspace.freeze()?)
 }
 
-/// Builds the § 7.23 saved motion field for bridge blocks: every covered 8x8 cell
-/// references the bridge source with a zero motion vector (§ 5.20.5.2).
+/// Builds the § 7.2 / § 7.23 saved motion field for bridge and `bru_inactive`
+/// frames: every covered 8x8 cell references the selected source with a zero
+/// motion vector (§ 5.20.5.2, § 7.2).
 pub(crate) fn motion_field(
     frame_size: FrameSize,
     current_order_hint: u32,
     reference_order_hint: u32,
+    ref_order_hints: &[Option<u32>],
 ) -> Option<TemporalMotionField> {
     let width = usize::try_from(frame_size.width).ok()?;
     let height = usize::try_from(frame_size.height).ok()?;
@@ -97,7 +99,7 @@ pub(crate) fn motion_field(
         mi_cols,
         true,
         (width, height),
-        &[Some(reference_order_hint)],
+        ref_order_hints,
     )?;
     field.record_block(TemporalMotionBlock::new(
         0,
@@ -200,5 +202,20 @@ mod tests {
         let visible: Vec<_> = bridge.y().visible_rows().flatten().copied().collect();
         assert_ne!(visible, &[0, 1, 4, 5, 8, 9]);
         Ok(())
+    }
+
+    #[test]
+    fn bru_inactive_motion_field_preserves_full_ref_order_hints_and_nonzero_bru_ref() {
+        let hints = [Some(10), Some(20), Some(30)];
+        let field = motion_field(FrameSize::new(16, 16), 25, 20, &hints).expect("motion field");
+        let expected_meta = TemporalMotionField::new_with_metadata(4, 4, true, (16, 16), &hints)
+            .expect("expected metadata")
+            .metadata();
+        assert_eq!(field.metadata(), expected_meta);
+        for y8 in 0..2 {
+            for x8 in 0..2 {
+                assert_eq!(field.stored_cell(y8, x8), Some([1, 0, 0, 1, 0, 0]));
+            }
+        }
     }
 }

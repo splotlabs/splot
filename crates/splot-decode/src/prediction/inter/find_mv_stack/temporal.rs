@@ -518,6 +518,15 @@ impl TemporalMotionField {
     }
 
     #[cfg(test)]
+    pub(in crate::prediction::inter) fn stored_cell(
+        &self,
+        y8: usize,
+        x8: usize,
+    ) -> Option<[u8; 6]> {
+        self.row(y8)?.get(x8).copied()
+    }
+
+    #[cfg(test)]
     fn set_cell(&mut self, y8: usize, x8: usize, cell: TemporalMotionCell) {
         if let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8)
             && let TemporalMotionStorage::Contiguous(cells) = &mut self.storage

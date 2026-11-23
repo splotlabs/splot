@@ -36,7 +36,7 @@ const SB256_INTRA_RAW_SHA256: &str =
 /// Film grain fixtures with the SHA-256 of their
 /// `avmdec --i420 --rawvideo --skip-film-grain` output: an 8-bit key frame,
 /// and a 10-bit key frame with two inter frames.
-const FILM_GRAIN_SKIPPED: [(&[u8], &str); 2] = [
+const FILM_GRAIN_SKIPPED: [(&[u8], &str); 3] = [
     (
         include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf"),
         "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53",
@@ -46,6 +46,12 @@ const FILM_GRAIN_SKIPPED: [(&[u8], &str); 2] = [
             "../../../tests/conformance/vectors/valid/syn-3frame-filmgrain-inter-64x64-10bit.ivf"
         ),
         "5e4da3a2658836d7f15696188ecf895b16992d6fd033d30e4c62f579b81cdf89",
+    ),
+    (
+        include_bytes!(
+            "../../../tests/conformance/vectors/valid/syn-bru-inactive-filmgrain-8bit.ivf"
+        ),
+        "6571db3ede2a79b9568e602483e1f38b266f7b4cfe3408e9e0f011c33c39791b",
     ),
 ];
 

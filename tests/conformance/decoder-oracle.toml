@@ -1815,6 +1815,24 @@ ivf_sha256 = "48bb63a41d08b97eb96771f7ac5f166264c4ab2fe8927fed944c0d956f27e1cc"
 avm_raw_sha256 = "a894a9c40453e6c032e84bd0e2e1ca9d91cca050d90249da8150ef772214b4c2"
 
 [[fixture]]
+id = "syn-bru-inactive-refresh-8bit"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "b16b780f52f30ab4e50d80bed6780eafdb164b5ca4ebe21a59f25899ad7d15de"
+avm_raw_sha256 = "6571db3ede2a79b9568e602483e1f38b266f7b4cfe3408e9e0f011c33c39791b"
+
+[[fixture]]
+id = "syn-bru-inactive-refresh-10bit"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "20f9e21ace7a0ac6102219de33f254a50f81ffc1a705f1e07a1cd1066b91ac43"
+avm_raw_sha256 = "fbae8b856fcf1f17d459898cd16a5a4fef99fcf21c603c5de52bb6b29346506a"
+
+[[fixture]]
+id = "syn-bru-inactive-filmgrain-8bit"
+features = ["container.ivf", "film_grain.present", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "c90b26676210eaa6b75c7e9ebd43af8fdbeb97c9943f7267ebe6ab1dc0351bc0"
+avm_raw_sha256 = "8d29f35416c17ac8fc27f7448022d03e9e50b177d48f96810e4facc2ca5f2e3e"
+
+[[fixture]]
 id = "syn-bru-multitile-256x128-q220"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "cb175cf114226aac8011d28159bbca0e2f2ecc24898530416fc39eb36bb3c7d6"
