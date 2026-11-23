@@ -258,6 +258,11 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
         .map(|leaf| (leaf, ()))
     }
 
+    #[inline]
+    fn wants_out_of_frame_partitions(&self) -> bool {
+        self.sink.params.allow_local_intrabc
+    }
+
     fn on_out_of_frame_partition(&mut self, publication: DecodedLeafPublication) {
         if self.sink.params.allow_local_intrabc {
             self.entries
@@ -680,7 +685,7 @@ fn finish_tile_symbols(symbols: SymbolDecoder<'_>, tile_offset: ByteOffset) -> R
 struct TileResolveState {
     ref_mv_bank: Option<super::super::find_mv_stack::RefMvBank>,
     warp_param_bank: super::super::find_mv_stack::WarpParamBank,
-    ibc_local: Option<crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>,
+    ibc_local: Option<Box<crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>>,
 }
 
 impl TileResolveState {
@@ -694,11 +699,11 @@ impl TileResolveState {
             if crate::filters::wienerns_lr::intrabc_records::frame_allows_local_intrabc(core) {
                 let sdp_intra = sequence.partition.is_some_and(|p| p.enable_sdp)
                     && core.frame_is_intra == Some(true);
-                Some(
+                Some(Box::new(
                     crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState::new(
                         tile_cols, sb_h4, sdp_intra,
                     )?,
-                )
+                ))
             } else {
                 None
             };
@@ -731,7 +736,7 @@ impl TileResolveState {
                 grid,
                 ref_mv_bank: &mut self.ref_mv_bank,
                 warp_param_bank: &mut self.warp_param_bank,
-                ibc_local: self.ibc_local.as_mut(),
+                ibc_local: self.ibc_local.as_deref_mut(),
                 core: context.core,
                 temporal: frame_uses_temporal_mvs(context.core).then_some(temporal_context),
                 order_hints: temporal_context.order_hint_mv_context(),

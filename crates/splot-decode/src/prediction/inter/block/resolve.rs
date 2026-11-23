@@ -86,13 +86,24 @@ pub(super) fn resolve_parsed_leaves(
     row: &mut ReconRow,
     state: &mut MvResolutionState<'_>,
 ) -> Result<()> {
+    if state.ibc_local.is_some() {
+        resolve_parsed_leaves_inner::<true>(row, state)
+    } else {
+        resolve_parsed_leaves_inner::<false>(row, state)
+    }
+}
+
+fn resolve_parsed_leaves_inner<const LOCAL_IBC: bool>(
+    row: &mut ReconRow,
+    state: &mut MvResolutionState<'_>,
+) -> Result<()> {
     let sb_h4 = state.sb_h4;
     let is_intra = state.core.frame_is_intra == Some(true);
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, is_intra);
     debug_assert_eq!(intrabc_sb_h4, sb_h4);
     for superblock in &row.superblocks {
         let [r, c] = superblock.origin;
-        if let Some(ibc) = state.ibc_local.as_mut() {
+        if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
             ibc.begin_superblock(r, superblock.bru_inactive);
         }
         if let Some(bank) = state.ref_mv_bank.as_mut() {
@@ -106,7 +117,7 @@ pub(super) fn resolve_parsed_leaves(
             .get_mut(superblock.entries.clone())
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         for entry in entries {
-            if let EntryState::OutOfFrame = entry.state {
+            if LOCAL_IBC && matches!(entry.state, EntryState::OutOfFrame) {
                 if let Some(ibc) = state.ibc_local.as_mut()
                     && let Some((mi_row, mi_col, n4w, n4h)) =
                         entry.publication.luma_tree_block(superblock.origin)
@@ -123,26 +134,32 @@ pub(super) fn resolve_parsed_leaves(
                     if let Some(bank) = state.ref_mv_bank.as_mut() {
                         bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
                     }
-                    if let Some(ibc) = state.ibc_local.as_mut() {
+                    if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
                         ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
                         ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
                     }
                 }
                 continue;
             }
-            let luma_block = entry.publication.luma_tree_block(superblock.origin);
             let Some(slot) = entry.slot_mut(&mut row.slots) else {
                 continue;
             };
             match slot {
                 LeafSlot::PendingInter(command) => {
-                    if let Some(ibc) = state.ibc_local.as_mut()
+                    let luma_block = if LOCAL_IBC {
+                        entry.publication.luma_tree_block(superblock.origin)
+                    } else {
+                        None
+                    };
+                    if LOCAL_IBC
+                        && let Some(ibc) = state.ibc_local.as_mut()
                         && let Some((mi_row, mi_col, n4w, n4h)) = luma_block
                     {
                         ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
                     }
                     *slot = LeafSlot::Inter(command.resolve(state)?);
-                    if let Some(ibc) = state.ibc_local.as_mut()
+                    if LOCAL_IBC
+                        && let Some(ibc) = state.ibc_local.as_mut()
                         && let Some((mi_row, mi_col, n4w, n4h)) = luma_block
                     {
                         ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
@@ -153,7 +170,7 @@ pub(super) fn resolve_parsed_leaves(
                     else {
                         return Err(invalid_inter_tile_scheduling_state());
                     };
-                    if let Some(ibc) = state.ibc_local.as_mut() {
+                    if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
                         ibc.enter_leaf(
                             block.frontier.r,
                             block.frontier.c,

@@ -57,6 +57,7 @@ impl IbcBuffers {
     /// § 5.20.4.1 `update_ibc_buffers(miRow, miCol)`. Returns whether `cur`
     /// moved to a different buffer; when `sb64` holds and the old buffer's
     /// superblock is `BRU_INACTIVE`, all four buffer-valid entries are cleared.
+    #[inline]
     pub(crate) fn update(
         &mut self,
         mi_row: usize,
@@ -97,7 +98,12 @@ impl IbcBuffers {
     }
 }
 
-/// The leaf-order state that `check_valid_local_ibc` reads.
+/// Sentinel `cur_sb_row` before the first `begin_superblock` call, chosen so
+/// `mi_row.wrapping_sub(UNINITIALIZED_SB_ROW) >= sb_h4` for all frame coords.
+const UNINITIALIZED_SB_ROW: usize = usize::MAX / 2;
+
+/// The leaf-order state that `check_valid_local_ibc` reads in unit tests.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(crate) struct LocalAreaState<'a> {
     /// `enable_sdp && FrameIsIntra`.
@@ -146,7 +152,7 @@ impl TileLocalIbcState {
             sdp_intra,
             tile_col_start,
             row_words,
-            cur_sb_row: usize::MAX,
+            cur_sb_row: UNINITIALIZED_SB_ROW,
             cur_bru_inactive: false,
             buffers: IbcBuffers::start_sb_row_at(0, tile_col_start, sb_h4 == 16),
             coded,
@@ -156,6 +162,7 @@ impl TileLocalIbcState {
     /// Resets row-scoped `IBCCoded` flags and `IbcBuffers` when entering a new
     /// superblock row; stays a no-op within the same superblock row so
     /// transitions still inspect the previous buffer's `cur_bru_inactive`.
+    #[inline]
     pub(crate) fn begin_superblock(&mut self, sb_row: usize, bru_inactive: bool) {
         if sb_row != self.cur_sb_row {
             self.cur_sb_row = sb_row;
@@ -167,6 +174,7 @@ impl TileLocalIbcState {
 
     /// Runs the § 5.20.4.1 `update_ibc_buffers` and `IBCCoded` marks before a
     /// decoded luma-tree leaf executes block-vector validation.
+    #[inline]
     pub(crate) fn enter_leaf(
         &mut self,
         mi_row: usize,
@@ -181,6 +189,7 @@ impl TileLocalIbcState {
 
     /// Runs the § 5.20.9 2x2-grouped 64x64 chunk `update_ibc_buffers` walk for
     /// blocks wider or taller than 64 luma samples (`n4w > 16 || n4h > 16`).
+    #[inline]
     pub(crate) fn finish_large_leaf(
         &mut self,
         mi_row: usize,
@@ -234,19 +243,18 @@ impl TileLocalIbcState {
     }
 
     /// Returns `IBCCoded[mi_row][mi_col]` inside the active superblock row.
+    #[inline]
     pub(crate) fn is_coded(&self, mi_row: usize, mi_col: usize) -> bool {
-        let Some(row) = mi_row.checked_sub(self.cur_sb_row) else {
-            return false;
-        };
-        let Some(col) = mi_col.checked_sub(self.tile_col_start) else {
-            return false;
-        };
-        if row >= self.sb_h4 || col >= self.row_words.saturating_mul(64) {
+        let row = mi_row.wrapping_sub(self.cur_sb_row);
+        let col = mi_col.wrapping_sub(self.tile_col_start);
+        let word = col >> 6;
+        if row >= self.sb_h4 || word >= self.row_words {
             return false;
         }
-        ((self.coded[row * self.row_words + (col >> 6)] >> (col & 63)) & 1) == 1
+        ((self.coded[row * self.row_words + word] >> (col & 63)) & 1) == 1
     }
 
+    #[inline]
     fn update_buffer(&mut self, mi_row: usize, mi_col: usize, bru_inactive: bool) {
         let old_inactive = self.cur_bru_inactive;
         if self.buffers.update(mi_row, mi_col, |_, _| old_inactive) {
@@ -254,6 +262,7 @@ impl TileLocalIbcState {
         }
     }
 
+    #[inline]
     fn mark_coded(&mut self, mi_row: usize, mi_col: usize, n4w: usize, n4h: usize) {
         let Some(row0) = mi_row.checked_sub(self.cur_sb_row) else {
             return;
@@ -266,6 +275,20 @@ impl TileLocalIbcState {
             .saturating_add(n4w)
             .min(self.row_words.saturating_mul(64));
         if row0 >= row_end || col0 >= col_end {
+            return;
+        }
+        let bit = col0 & 63;
+        let width = col_end - col0;
+        if bit + width <= 64 {
+            let mask = if width == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << width) - 1) << bit
+            };
+            let word = col0 >> 6;
+            for r in row0..row_end {
+                self.coded[r * self.row_words + word] |= mask;
+            }
             return;
         }
         for r in row0..row_end {
@@ -313,8 +336,16 @@ pub(crate) struct IntrabcMvBlock {
     pub(crate) allow_extra_ibc_range: bool,
 }
 
+#[derive(Clone, Copy)]
+struct LocalAreaRef<'a, F> {
+    sdp_intra: bool,
+    buffers: &'a IbcBuffers,
+    coded: F,
+}
+
 /// § 6.19.5.4 `is_offset_mv_valid(dx, dy)` of the block vector `mv`
 /// (`[row, col]` in 1/8 samples).
+#[cfg(test)]
 pub(crate) fn is_offset_mv_valid(
     block: &IntrabcMvBlock,
     local: Option<&LocalAreaState<'_>>,
@@ -325,16 +356,33 @@ pub(crate) fn is_offset_mv_valid(
         i64::from(mv[0]) + i64::from(dy) * 8,
         i64::from(mv[1]) + i64::from(dx) * 8,
     ];
-    is_mv_valid_wide(block, local, offset)
+    is_mv_valid_wide(
+        block,
+        local.map(|state| LocalAreaRef {
+            sdp_intra: state.sdp_intra,
+            buffers: state.buffers,
+            coded: state.coded,
+        }),
+        offset,
+    )
 }
 
 /// § 6.19.7.12 `is_mv_valid(mv)` for a block that codes `use_intrabc`.
+#[cfg(test)]
 pub(crate) fn is_mv_valid(
     block: &IntrabcMvBlock,
     local: Option<&LocalAreaState<'_>>,
     mv: [i32; 2],
 ) -> bool {
-    is_mv_valid_wide(block, local, mv.map(i64::from))
+    is_mv_valid_wide(
+        block,
+        local.map(|state| LocalAreaRef {
+            sdp_intra: state.sdp_intra,
+            buffers: state.buffers,
+            coded: state.coded,
+        }),
+        mv.map(i64::from),
+    )
 }
 
 /// The source edges `[srcTopEdge, srcLeftEdge, srcBottomEdge, srcRightEdge]`
@@ -381,9 +429,10 @@ pub(crate) fn source_within_tile(
         && right <= tile[3] as i64
 }
 
-fn is_mv_valid_wide(
+#[inline]
+fn is_mv_valid_wide<F: Fn(usize, usize) -> bool + Copy>(
     block: &IntrabcMvBlock,
-    local: Option<&LocalAreaState<'_>>,
+    local: Option<LocalAreaRef<'_, F>>,
     mv: [i64; 2],
 ) -> bool {
     let bottom_border = i64::from(mv[0] & 7 != 0);
@@ -403,16 +452,16 @@ fn is_mv_valid_wide(
         return false;
     }
     if block.allow_local_intrabc {
-        let valid = local.is_some_and(|state| {
-            let chroma = block.chroma.filter(|_| !state.sdp_intra);
+        let valid = local.is_some_and(|area| {
+            let chroma = block.chroma.filter(|_| !area.sdp_intra);
             let ((row, col), (w, h)) = chroma.unwrap_or((block.mi, block.size));
             let top = row as i64 * MI_SIZE + delta_row;
             let left = col as i64 * MI_SIZE + delta_col;
             let bottom = top + h as i64 - 1 + bottom_border;
             let right = left + w as i64 - 1 + right_border;
             let act = (row as i64, col as i64);
-            check_valid_local_ibc(state, act, left, top)
-                && check_valid_local_ibc(state, act, right, bottom)
+            check_valid_local_ibc(area.buffers, area.coded, act, left, top)
+                && check_valid_local_ibc(area.buffers, area.coded, act, right, bottom)
         });
         if valid {
             return true;
@@ -446,17 +495,23 @@ fn is_mv_valid_wide(
 }
 
 /// § 6.19.7.12 `check_valid_local_ibc(x, y)`; `act` is `(actRow, actCol)`.
-fn check_valid_local_ibc(state: &LocalAreaState<'_>, act: (i64, i64), x: i64, y: i64) -> bool {
+#[inline]
+fn check_valid_local_ibc<F: Fn(usize, usize) -> bool>(
+    buffers: &IbcBuffers,
+    coded: F,
+    act: (i64, i64),
+    x: i64,
+    y: i64,
+) -> bool {
     if x >= act.1 * MI_SIZE && y >= act.0 * MI_SIZE {
         return false;
     }
     let (Ok(x), Ok(y)) = (usize::try_from(x), usize::try_from(y)) else {
         return false;
     };
-    if !(state.coded)(y >> 2, x >> 2) {
+    if !coded(y >> 2, x >> 2) {
         return false;
     }
-    let buffers = state.buffers;
     let buf = (y >> IBC_BUFFER_SIZE_LOG2, x >> IBC_BUFFER_SIZE_LOG2);
     let buf_idx = buffers.index(buf);
     let in_current = buf == buffers.cur;
@@ -467,7 +522,7 @@ fn check_valid_local_ibc(state: &LocalAreaState<'_>, act: (i64, i64), x: i64, y:
         let mask = (1 << IBC_BUFFER_SIZE_LOG2) - 1;
         let colo_y = (y & mask) | (buffers.cur.0 << IBC_BUFFER_SIZE_LOG2);
         let colo_x = (x & mask) | (buffers.cur.1 << IBC_BUFFER_SIZE_LOG2);
-        if (state.coded)(colo_y >> 2, colo_x >> 2) {
+        if coded(colo_y >> 2, colo_x >> 2) {
             return false;
         }
     }
@@ -512,17 +567,28 @@ pub(crate) fn check_intrabc_block_vector(
             && params.and_then(|p| p.allow_global_intrabc) == Some(true),
         allow_extra_ibc_range,
     };
-    let mv = [info.block_mv.row, info.block_mv.col];
-    let coded_fn = |row, col| local.is_some_and(|state| state.is_coded(row, col));
-    let local_state = local.map(|state| LocalAreaState {
-        sdp_intra: state.sdp_intra,
-        buffers: &state.buffers,
-        coded: &coded_fn,
-    });
-    if !is_mv_valid(&block, local_state.as_ref(), mv) {
+    let mv = [i64::from(info.block_mv.row), i64::from(info.block_mv.col)];
+    let (mv_ok, offset_ok) = if let Some(state) = local {
+        let local_area = Some(LocalAreaRef {
+            sdp_intra: state.sdp_intra,
+            buffers: &state.buffers,
+            coded: |r, c| state.is_coded(r, c),
+        });
+        (
+            is_mv_valid_wide(&block, local_area, mv),
+            !info.morph_pred || is_mv_valid_wide(&block, local_area, [mv[0] - 8, mv[1] - 8]),
+        )
+    } else {
+        type NoCoded = fn(usize, usize) -> bool;
+        (
+            is_mv_valid_wide::<NoCoded>(&block, None, mv),
+            !info.morph_pred || is_mv_valid_wide::<NoCoded>(&block, None, [mv[0] - 8, mv[1] - 8]),
+        )
+    };
+    if !mv_ok {
         return Err(intrabc_invalid_block_vector_error(tile_offset));
     }
-    if info.morph_pred && !is_offset_mv_valid(&block, local_state.as_ref(), mv, (-1, -1)) {
+    if !offset_ok {
         return Err(crate::pipeline::malformed_tile_payload(
             tile_offset,
             "6.19.5.4",
