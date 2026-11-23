@@ -1799,54 +1799,102 @@ fn bru_inactive_truncated_header_and_trailing_bits_are_malformed_source_and_reco
         assert_eq!(issue.spec_section(), Some("5.19"));
         assert_eq!(issue.frame_index(), Some(5));
 
-        let mut decoder = crate::Decoder::new(crate::DecoderSettings::default()).unwrap();
-        let mut reader = splot_core::stream_reader::TemporalUnitReader::new(&bad_tail[..]);
-        while let Some(unit) = reader.next_unit().unwrap() {
-            if let splot_core::stream_reader::StreamUnit::IvfFrame { payload, .. } = unit
-                && !payload.is_empty()
-            {
-                let _ = decoder
-                    .send_data(payload, crate::DataProps::default())
-                    .unwrap();
-            }
-        }
-        decoder.drain();
-        let mut saw_malformed = false;
-        loop {
-            match decoder.get_picture() {
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(DecodeError::MalformedSource { issue }) => {
-                    assert_eq!(issue.spec_section(), Some("5.19"));
-                    saw_malformed = true;
-                    break;
+        for (threads, frame_delay) in [(1usize, 1usize), (2, 2), (4, 4)] {
+            let settings = crate::DecoderSettings::default()
+                .with_threads(crate::ThreadCount::from(threads))
+                .with_frame_delay(crate::FrameDelay::from(frame_delay));
+            let mut decoder = crate::Decoder::new(settings).unwrap();
+            let mut reader = splot_core::stream_reader::TemporalUnitReader::new(&bad_tail[..]);
+            let mut saw_malformed = false;
+            let poll_bad = |decoder: &mut crate::Decoder| -> bool {
+                loop {
+                    match decoder.get_picture() {
+                        Ok(Some(_)) => {}
+                        Ok(None) => return false,
+                        Err(DecodeError::MalformedSource { issue }) => {
+                            assert_eq!(issue.spec_section(), Some("5.19"));
+                            return true;
+                        }
+                        Err(other) => panic!("unexpected error ({label}): {other}"),
+                    }
                 }
-                Err(other) => panic!("unexpected error ({label}): {other}"),
+            };
+            'feed: while let Some(unit) = reader.next_unit().unwrap() {
+                let splot_core::stream_reader::StreamUnit::IvfFrame { payload, .. } = unit else {
+                    continue;
+                };
+                if payload.is_empty() {
+                    continue;
+                }
+                loop {
+                    match decoder.send_data(payload, crate::DataProps::default()) {
+                        Ok(crate::SendStatus::Accepted) => {
+                            if poll_bad(&mut decoder) {
+                                saw_malformed = true;
+                                break 'feed;
+                            }
+                            break;
+                        }
+                        Ok(crate::SendStatus::Full) => {
+                            if poll_bad(&mut decoder) {
+                                saw_malformed = true;
+                                break 'feed;
+                            }
+                            std::thread::yield_now();
+                        }
+                        Err(DecodeError::MalformedSource { issue }) => {
+                            assert_eq!(issue.spec_section(), Some("5.19"));
+                            saw_malformed = true;
+                            break 'feed;
+                        }
+                        Err(other) => panic!("unexpected send error ({label}): {other}"),
+                    }
+                }
             }
-        }
-        assert!(saw_malformed, "streaming decoder missed error ({label})");
+            if !saw_malformed {
+                decoder.drain();
+                saw_malformed = poll_bad(&mut decoder);
+            }
+            assert!(
+                saw_malformed,
+                "streaming decoder missed error ({label}, threads={threads}, delay={frame_delay})"
+            );
 
-        decoder.flush();
-        let mut intact_reader =
-            splot_core::stream_reader::TemporalUnitReader::new(BRU_INACTIVE_REFRESH_8BIT_FIXTURE);
-        let mut recovered = 0usize;
-        while let Some(unit) = intact_reader.next_unit().unwrap() {
-            if let splot_core::stream_reader::StreamUnit::IvfFrame { payload, .. } = unit
-                && !payload.is_empty()
-            {
-                let _ = decoder
+            decoder.flush();
+            let mut intact_reader = splot_core::stream_reader::TemporalUnitReader::new(
+                BRU_INACTIVE_REFRESH_8BIT_FIXTURE,
+            );
+            let mut recovered = 0usize;
+            while let Some(unit) = intact_reader.next_unit().unwrap() {
+                let splot_core::stream_reader::StreamUnit::IvfFrame { payload, .. } = unit else {
+                    continue;
+                };
+                if payload.is_empty() {
+                    continue;
+                }
+                while decoder
                     .send_data(payload, crate::DataProps::default())
-                    .unwrap();
+                    .unwrap()
+                    == crate::SendStatus::Full
+                {
+                    while decoder.get_picture().unwrap().is_some() {
+                        recovered += 1;
+                    }
+                    std::thread::yield_now();
+                }
                 while decoder.get_picture().unwrap().is_some() {
                     recovered += 1;
                 }
             }
+            decoder.drain();
+            while decoder.get_picture().unwrap().is_some() {
+                recovered += 1;
+            }
+            assert_eq!(
+                recovered, 8,
+                "recovery after flush failed ({label}, threads={threads}, delay={frame_delay})"
+            );
         }
-        decoder.drain();
-        while decoder.get_picture().unwrap().is_some() {
-            recovered += 1;
-        }
-        assert_eq!(recovered, 8, "recovery after flush failed ({label})");
     }
 }
 
