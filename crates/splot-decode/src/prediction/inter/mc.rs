@@ -15,7 +15,7 @@ use splot_recon::{
     subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8, subpel_put_block,
 };
 
-use super::Mv;
+use super::MotionVector;
 use super::mv_scaling::PlaneScaling;
 use super::reference::{
     ReferenceSamples, compound_last_row, subpel_last_reference_row, subpel_last_row,
@@ -39,7 +39,6 @@ pub(crate) use optflow::{
     refine_tip_units,
 };
 use refinemv::TipSearchScratch;
-pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
     let sub_x = pixel_format.subsampling_x() as u32;
@@ -69,7 +68,6 @@ pub(super) const fn optflow_unit_size(luma_w: usize, luma_h: usize) -> usize {
     if luma_w <= 8 && luma_h <= 8 { 4 } else { 8 }
 }
 
-#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct McBlockRect {
     pub(crate) luma_x: usize,
@@ -199,7 +197,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
     pub(crate) const fn single(
         reference: ReferenceSamples<'a, T>,
         rect: McBlockRect,
-        mv: Mv,
+        mv: MotionVector,
         interp: InterpolationFilter,
     ) -> Self {
         Self {
@@ -218,8 +216,8 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         reference0: ReferenceSamples<'a, T>,
         reference1: ReferenceSamples<'a, T>,
         rect: McBlockRect,
-        mv0: Mv,
-        mv1: Mv,
+        mv0: MotionVector,
+        mv1: MotionVector,
         interp: InterpolationFilter,
         blend: CompoundBlend,
     ) -> Self {
@@ -239,7 +237,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
     pub(crate) const fn single_warp(
         reference: ReferenceSamples<'a, T>,
         rect: McBlockRect,
-        mv: Mv,
+        mv: MotionVector,
         interp: InterpolationFilter,
         warp_params: [i32; 6],
     ) -> Self {
@@ -336,18 +334,18 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
 enum InterPrediction<'a, T: ReconSample> {
     Single {
         reference: ReferenceSamples<'a, T>,
-        mv: Mv,
+        mv: MotionVector,
     },
     SingleWarp {
         reference: ReferenceSamples<'a, T>,
-        mv: Mv,
+        mv: MotionVector,
         warp_params: [i32; 6],
     },
     CompoundAverage {
         reference0: ReferenceSamples<'a, T>,
         reference1: ReferenceSamples<'a, T>,
-        mv0: Mv,
-        mv1: Mv,
+        mv0: MotionVector,
+        mv1: MotionVector,
         blend: CompoundBlend,
         optflow_distances: Option<[i32; 2]>,
         warp_params: [Option<[i32; 6]>; 2],
@@ -358,8 +356,8 @@ pub(crate) struct CompoundMcBlock<'a, T: ReconSample> {
     reference0: ReferenceSamples<'a, T>,
     reference1: ReferenceSamples<'a, T>,
     rect: McBlockRect,
-    mv0: Mv,
-    mv1: Mv,
+    mv0: MotionVector,
+    mv1: MotionVector,
     interp: InterpolationFilter,
     blend: CompoundBlend,
     optflow_distances: Option<[i32; 2]>,
@@ -403,7 +401,7 @@ impl<T: Send + 'static> Drop for RecycledMcSamples<T> {
 /// Predicts `block` into `sink`; a compound block that refines its motion
 /// derives it first into a scratch of its own.
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: InterBlockParams<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
@@ -419,7 +417,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
 
 /// Predicts a block that does not refine its motion into `sink`.
 pub(crate) fn predict_inter_block<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &InterBlockParams<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
@@ -458,10 +456,10 @@ pub(crate) fn predict_inter_block<T: ReconSample>(
 }
 
 pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     rect: McBlockRect,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
     has_chroma: bool,
     offset: ByteOffset,
@@ -517,7 +515,7 @@ pub(super) fn unscaled_put<T: ReconSample>(
     rect: McBlockRect,
     plane: PlaneId,
     (sub_x, sub_y): (u32, u32),
-    mv: Mv,
+    mv: MotionVector,
     reference: ReferenceSamples<'_, T>,
 ) -> Option<UnscaledPut> {
     let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
@@ -547,9 +545,9 @@ pub(super) fn luma_view<T: ReconSample>(
 }
 
 fn motion_compensate_planes<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     has_chroma: bool,
-    mut predict: impl FnMut(&mut WorkspaceSink<'_, '_, T>, PlaneId, u32, u32) -> Result<()>,
+    mut predict: impl FnMut(&mut CurrentFrameSurface<'_, '_, T>, PlaneId, u32, u32) -> Result<()>,
 ) -> Result<()> {
     for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
         if plane != PlaneId::Y && !has_chroma {
@@ -564,7 +562,7 @@ fn motion_compensate_planes<T: ReconSample>(
 /// goes to [`compound_mask::predict`]. Only a warp plane that the frame edge
 /// clips goes through a temporary first.
 pub(super) fn predict_compound_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
@@ -611,10 +609,10 @@ pub(super) fn predict_compound_into<T: ReconSample>(
 }
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     block: &InterBlockParams<'_, T>,
-    mv: Mv,
+    mv: MotionVector,
     warp_params: [i32; 6],
     offset: ByteOffset,
 ) -> Result<()> {
@@ -646,13 +644,13 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn predict_plane<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
     sub_x: u32,
     sub_y: u32,
@@ -697,14 +695,14 @@ fn predict_plane<T: ReconSample>(
     Ok(sink.write_rect(plane, target, &staged, params.w)?)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn plane_prediction<T: ReconSample>(
     info: DecodedFrameInfo,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
     sub_x: u32,
     sub_y: u32,
@@ -726,9 +724,9 @@ pub(crate) fn plane_prediction<T: ReconSample>(
     Ok((view, rect, params))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn predict_warp_plane<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
@@ -877,7 +875,7 @@ fn predict_warp_plane<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn predict_compound_plane_output<T: ReconSample>(
     info: DecodedFrameInfo,
     block: &CompoundMcBlock<'_, T>,
@@ -1199,7 +1197,7 @@ struct TranslationalCompoundPlane<'a, T: ReconSample> {
     params: [SubpelPredictParams; 2],
 }
 
-#[allow(clippy::inline_always, reason = "per-plane result copy")]
+#[expect(clippy::inline_always, reason = "per-plane result copy")]
 #[inline(always)]
 fn compound_subpel_plane<'a, T: ReconSample>(
     block: &CompoundMcBlock<'a, T>,
@@ -1327,14 +1325,14 @@ fn compound_warp_plane_prediction<T: ReconSample>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn compound_ref_intermediate<T: ReconSample>(
     info: DecodedFrameInfo,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
     warp_params: Option<[i32; 6]>,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
     sub_x: u32,
     sub_y: u32,
@@ -1435,7 +1433,7 @@ fn compound_ref_intermediate<T: ReconSample>(
     Ok(scaling)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn write_compound_section(
     dst: &mut [i32],
     dst_w: usize,
@@ -1536,7 +1534,7 @@ fn ext_warp_units<E>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn ext_warp_unit_bounds(
     rect: McBlockRect,
     plane: PlaneId,

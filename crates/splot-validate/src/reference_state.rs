@@ -31,7 +31,7 @@ pub(crate) const NUM_REF_FRAMES: usize = 16;
 /// Only the reference-state subset required for later frame-header parsing and conformance
 /// checks is modeled; reconstruction-only state remains in the decoder runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub(crate) enum SlotState {
     /// The slot's state is not known to the validator: it was never established in this
     /// modeled run, or a frame whose refresh mask could not be parsed may have written
@@ -320,8 +320,8 @@ impl ReferenceStateTracker {
     /// Applies a completed frame's § 7.23 update to its extended layer's buffer.
     ///
     /// Called at the **grounded decode point** of a frame (the segmenter's coded-frame
-    /// boundary, with the no-trailing-delimiter end-of-bitstream flush), AFTER the
-    /// frame's facts are known and BEFORE any later frame's reference checks consult the
+    /// boundary, with the no-trailing-delimiter end-of-bitstream flush), after the
+    /// frame's facts are known and before any later frame's reference checks consult the
     /// buffer — matching § 7.23's "final step in decoding a frame" ordering.
     pub(crate) fn apply(&mut self, xlayer: ExtendedLayerId, update: &FrameRefUpdate) {
         let layer = self.layers.entry(xlayer).or_default();
@@ -386,7 +386,7 @@ impl ReferenceStateTracker {
     /// a proven-valid non-long-term slot (the spec's `-1`). Returns `None` when the slot is
     /// `Unknown` or `ProvenInvalid` — the long-term id is then undecidable, so a dependent
     /// judgment must drop to silence (the Unknown invariant).
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     pub(crate) fn slot_long_term_id(
         &self,
         xlayer: ExtendedLayerId,
@@ -403,7 +403,7 @@ impl ReferenceStateTracker {
     /// writing them into the caller-provided scratch buffers. Returns `None` when the
     /// layer has no buffer yet, or when any slot below `NumRefFrames` is `Unknown`: the
     /// § 5.18 reference loops read every such slot, so a parse against a partial buffer
-    /// could read later syntax at wrong bit positions. The parser then stops honestly.
+    /// could read later syntax at wrong bit positions. The parser then stops.
     ///
     /// A `ProvenInvalid` slot (and an `Unknown` slot at or above `NumRefFrames`)
     /// contributes `RefValid[i] = false`; a `Valid` slot contributes `true` plus its stored
@@ -482,7 +482,7 @@ impl ReferenceStateTracker {
 /// frame" sentinel, mapped to `None`; `>= 0` is a KEY frame's `long_term_id_plus_1 - 1`).
 /// A `None` for `long_term_id` (the frame's parse never reached the long-term field) is
 /// treated as the `-1` sentinel — the slot is then modeled as not a long-term frame — so a
-/// missing `LongTermId` does NOT poison: a frame's reference-state facts (order hint, dims)
+/// missing `LongTermId` does not poison: a frame's reference-state facts (order hint, dims)
 /// can be fully grounded while its `LongTermId` defaults to "not long-term", which is the
 /// only conformant value when `long_term_frame_id_bits == 0`.
 pub(crate) fn slot_facts(
@@ -525,7 +525,6 @@ pub(crate) fn is_key_or_switch(frame_type: FrameType) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use proptest::prelude::*;

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use core::ops::Range;
 
 use super::super::TileCoeffFrameFacts;
@@ -139,7 +137,6 @@ pub(crate) fn make_work_unit_at(
         mi_col_range,
         payload_range: 0..payload.len(),
         payload_index: 0,
-        test_tile_bytes: Box::leak(payload.to_vec().into_boxed_slice()),
         tile_byte_span: ByteSpan::new(ByteOffset::new(128), payload.len() as u64),
         tile_size: payload.len() as u64,
         coeff_frame_facts: TileCoeffFrameFacts {
@@ -172,6 +169,7 @@ struct CapturedLeaf {
 }
 
 fn run_first_superblock<'payload>(
+    payload: &'payload [u8],
     work_unit: &mut DecodeTileWorkUnit,
     frame: TilePartitionFrameFacts,
     limits: DecodeLimits,
@@ -184,8 +182,9 @@ fn run_first_superblock<'payload>(
     let mut mi_sizes =
         TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())
             .unwrap();
-    let mut cursor = GeneralIntraPartitionTreeCursor::new(
+    let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
         work_unit,
+        payload,
         frame,
         limits,
         TileTraversalStorage::default(),
@@ -239,9 +238,11 @@ fn assert_cursor_unsupported(
     frame: TilePartitionFrameFacts,
     expected: TilePartitionTraversalUnsupported,
 ) {
-    let work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
-    let err = GeneralIntraPartitionTreeCursor::new(
+    let payload = [0x00, 0x80];
+    let work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
+    let err = GeneralIntraPartitionTreeCursor::new_with_bytes(
         &work_unit,
+        &payload,
         frame,
         DecodeLimits::DEFAULT,
         TileTraversalStorage::default(),
@@ -450,10 +451,16 @@ fn sdp_cfl_allowed_state_propagates_to_chroma_children() {
 
 #[test]
 fn current_cursor_reaches_root_frontier_with_live_symbol_checkpoint() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
 
-    let (frontiers, mut output) =
-        run_first_superblock(&mut work_unit, frame(BLOCK_32X32), DecodeLimits::DEFAULT).unwrap();
+    let (frontiers, mut output) = run_first_superblock(
+        &payload,
+        &mut work_unit,
+        frame(BLOCK_32X32),
+        DecodeLimits::DEFAULT,
+    )
+    .unwrap();
     assert_eq!(frontiers.len(), 1, "expected one flat-partition leaf");
     let captured = &frontiers[0];
     let frontier = &captured.frontier;
@@ -514,12 +521,13 @@ fn child_call_geometry_follows_spec_order_for_four_way_partitions() {
 
 #[test]
 fn edge_implied_partition_consumes_no_symbol_before_first_child_frontier() {
-    let work_unit = make_work_unit(&[0xFF, 0xFF], CdfUpdateMode::Enabled);
+    let payload = [0xFF, 0xFF];
+    let work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_32X32);
     facts.mi_cols = 4;
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = SymbolDecoder::with_base_and_config(
-        work_unit.tile_bytes(),
+        &payload,
         work_unit.tile_byte_span().start,
         SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
     )
@@ -566,23 +574,16 @@ fn non_origin_tile_start_availability_uses_tile_bounds() {
 #[test]
 fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
     let sparse_context = context_of(256, BLOCK_128X128);
-    let work_unit = make_work_unit_at(
-        &[0xFF, 0x00, 0x80],
-        CdfUpdateMode::Enabled,
-        16..160,
-        16..160,
-    );
+    let payload = [0xFF, 0x00, 0x80];
+    let work_unit = make_work_unit_at(&payload, CdfUpdateMode::Enabled, 16..160, 16..160);
     let mut facts = frame(BLOCK_128X128);
     facts.mi_rows = 256;
     facts.mi_cols = 256;
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
     let config = SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled);
-    let mut symbols = SymbolDecoder::with_base_and_config(
-        work_unit.tile_bytes(),
-        work_unit.tile_byte_span().start,
-        config,
-    )
-    .unwrap();
+    let mut symbols =
+        SymbolDecoder::with_base_and_config(&payload, work_unit.tile_byte_span().start, config)
+            .unwrap();
 
     let decision = read_frontier_partition_decision(
         TilePartitionCall::root(16, 16, BlockSize::new(BLOCK_128X128).unwrap(), true),
@@ -600,10 +601,16 @@ fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
 
 #[test]
 fn chroma_offset_update_preserves_decode_block_has_chroma() {
-    let mut work_unit = make_work_unit(&[0x80], CdfUpdateMode::Enabled);
+    let payload = [0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
 
-    let (frontiers, _) =
-        run_first_superblock(&mut work_unit, frame(BLOCK_4X4), DecodeLimits::DEFAULT).unwrap();
+    let (frontiers, _) = run_first_superblock(
+        &payload,
+        &mut work_unit,
+        frame(BLOCK_4X4),
+        DecodeLimits::DEFAULT,
+    )
+    .unwrap();
     assert_eq!(frontiers.len(), 1, "expected one 4x4 leaf");
     let frontier = &frontiers[0].frontier;
 
@@ -661,12 +668,13 @@ fn extended_sdp_propagates_through_large_parent_to_eligible_child() {
 
 #[test]
 fn root_sdp_luma_partition_none_reaches_frontier() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_64X64);
     facts.enable_sdp = true;
 
     let (frontiers, output) =
-        run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(frontiers[0].frontier.b_size.index(), BLOCK_64X64);
     assert!(!frontiers[0].frontier.has_chroma);
@@ -675,12 +683,13 @@ fn root_sdp_luma_partition_none_reaches_frontier() {
 
 #[test]
 fn intra_extended_sdp_sequence_flag_is_inactive_for_traversal() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_32X32);
     facts.enable_extended_sdp = true;
 
     let (frontiers, output) =
-        run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(frontiers[0].frontier.b_size.index(), BLOCK_32X32);
     assert_eq!(output.symbols.symbol_count(), 1);
@@ -886,20 +895,15 @@ const SPLIT_16X8: TileCdfSelector = TileCdfSelector::DoSplit {
 /// so the first coded symbol is that child's `region_type`.
 fn walk_edge_superblock(
     enable_extended_sdp: bool,
-    symbols: &[(TileCdfSelector, u8)],
-    payload_len: Option<usize>,
-) -> (Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'static>) {
-    let mut sequence = symbols.to_vec();
-    sequence.push((TileCdfSelector::DeltaQ, 2));
-    let mut payload = encode_symbol_sequence(&sequence);
-    payload.truncate(payload_len.unwrap_or(payload.len()));
-    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Disabled);
+    payload: &[u8],
+) -> (Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'_>) {
+    let mut work_unit = make_work_unit(payload, CdfUpdateMode::Disabled);
     let mut facts = frame(BLOCK_64X64);
     facts.mi_rows = 2;
     facts.mi_cols = 8;
     facts.frame_is_intra = false;
     facts.enable_extended_sdp = enable_extended_sdp;
-    run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap()
+    run_first_superblock(payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap()
 }
 
 fn assert_walk_end(output: &mut GeneralIntraPartitionTreeOutput<'_>, walk_symbols: usize) {
@@ -941,7 +945,8 @@ fn walk_reads_mixed_region_type_between_partition_and_children() {
         (REGION_32X16, MIXED_REGION),
         (SPLIT_16X8, 0),
     ];
-    let (leaves, mut output) = walk_edge_superblock(true, &symbols, None);
+    let payload = delta_q_terminated(&symbols);
+    let (leaves, mut output) = walk_edge_superblock(true, &payload);
 
     let shapes: Vec<_> = leaves.iter().map(leaf_shape).collect();
     assert_eq!(
@@ -965,7 +970,8 @@ fn walk_reads_intra_region_type_then_luma_tree_then_chroma_block() {
         (SPLIT_16X8, 0),
         (SPLIT_16X8, 0),
     ];
-    let (leaves, mut output) = walk_edge_superblock(true, &symbols, None);
+    let payload = delta_q_terminated(&symbols);
+    let (leaves, mut output) = walk_edge_superblock(true, &payload);
 
     let shapes: Vec<_> = leaves.iter().map(leaf_shape).collect();
     assert_eq!(
@@ -990,7 +996,8 @@ fn walk_without_extended_sdp_reads_no_region_type() {
         (SPLIT_16X8, 0),
         (SPLIT_16X8, 0),
     ];
-    let (leaves, mut output) = walk_edge_superblock(false, &symbols, None);
+    let payload = delta_q_terminated(&symbols);
+    let (leaves, mut output) = walk_edge_superblock(false, &payload);
 
     let shapes: Vec<_> = leaves.iter().map(leaf_shape).collect();
     assert_eq!(
@@ -1002,31 +1009,37 @@ fn walk_without_extended_sdp_reads_no_region_type() {
 
 #[test]
 fn walk_region_type_past_tile_end_fails_the_symbol_exit_check() {
-    let (leaves, output) = walk_edge_superblock(true, &[(REGION_64X32, INTRA_REGION)], Some(0));
+    let (leaves, output) = walk_edge_superblock(true, &[]);
 
     assert!(leaves[0].symbol_count >= 1);
     assert!(output.symbols.exit_symbol().is_err());
 }
 
-/// Walks the first 32x32 superblock of an inter frame whose tile carries
-/// `bru_tile_active`, over `symbols` then a `DeltaQ = 2` marker.
-fn walk_bru_superblock(
-    bru_tile_active: bool,
-    symbols: &[(TileCdfSelector, u8)],
-) -> (Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'static>) {
+/// `symbols` then a `DeltaQ = 2` marker, entropy coded.
+fn delta_q_terminated(symbols: &[(TileCdfSelector, u8)]) -> Vec<u8> {
     let mut sequence = symbols.to_vec();
     sequence.push((TileCdfSelector::DeltaQ, 2));
-    let mut work_unit = make_work_unit(&encode_symbol_sequence(&sequence), CdfUpdateMode::Disabled);
+    encode_symbol_sequence(&sequence)
+}
+
+/// Walks the first 32x32 superblock of an inter frame whose tile carries
+/// `bru_tile_active`, over `payload`.
+fn walk_bru_superblock(
+    bru_tile_active: bool,
+    payload: &[u8],
+) -> (Vec<CapturedLeaf>, GeneralIntraPartitionTreeOutput<'_>) {
+    let mut work_unit = make_work_unit(payload, CdfUpdateMode::Disabled);
     work_unit.bru_tile_active = Some(bru_tile_active);
     let mut facts = frame(BLOCK_32X32);
     facts.frame_is_intra = false;
     facts.enable_extended_sdp = true;
-    run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap()
+    run_first_superblock(payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap()
 }
 
 #[test]
 fn bru_inactive_superblock_reads_mode_then_infers_partition_none() {
-    let (leaves, mut output) = walk_bru_superblock(true, &[(TileCdfSelector::BruMode, 0)]);
+    let payload = delta_q_terminated(&[(TileCdfSelector::BruMode, 0)]);
+    let (leaves, mut output) = walk_bru_superblock(true, &payload);
 
     assert_eq!(leaves.len(), 1);
     assert_eq!(leaves[0].symbol_count, 1);
@@ -1037,7 +1050,8 @@ fn bru_inactive_superblock_reads_mode_then_infers_partition_none() {
 
 #[test]
 fn bru_support_superblock_is_not_active() {
-    let (leaves, mut output) = walk_bru_superblock(true, &[(TileCdfSelector::BruMode, 1)]);
+    let payload = delta_q_terminated(&[(TileCdfSelector::BruMode, 1)]);
+    let (leaves, mut output) = walk_bru_superblock(true, &payload);
 
     assert!(!leaves[0].frontier.bru_active());
     assert_walk_end(&mut output, 1);
@@ -1055,7 +1069,8 @@ fn bru_active_superblock_reads_its_partition() {
             0,
         ),
     ];
-    let (leaves, mut output) = walk_bru_superblock(true, &symbols);
+    let payload = delta_q_terminated(&symbols);
+    let (leaves, mut output) = walk_bru_superblock(true, &payload);
 
     assert_eq!(leaves.len(), 1);
     assert_eq!(leaves[0].symbol_count, 2);
@@ -1065,7 +1080,8 @@ fn bru_active_superblock_reads_its_partition() {
 
 #[test]
 fn inactive_bru_tile_reads_no_mode_symbol() {
-    let (leaves, mut output) = walk_bru_superblock(false, &[]);
+    let payload = delta_q_terminated(&[]);
+    let (leaves, mut output) = walk_bru_superblock(false, &payload);
 
     assert_eq!(leaves[0].symbol_count, 0);
     assert!(!leaves[0].frontier.bru_active());
@@ -1074,11 +1090,13 @@ fn inactive_bru_tile_reads_no_mode_symbol() {
 
 #[test]
 fn bru_mode_past_tile_end_fails_the_symbol_exit_check() {
-    let mut work_unit = make_work_unit(&[], CdfUpdateMode::Disabled);
+    let payload: [u8; 0] = [];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Disabled);
     work_unit.bru_tile_active = Some(true);
     let mut facts = frame(BLOCK_32X32);
     facts.frame_is_intra = false;
-    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+    let (_, output) =
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert!(output.symbols.symbol_count() >= 1);
     assert!(output.symbols.exit_symbol().is_err());
@@ -1086,13 +1104,15 @@ fn bru_mode_past_tile_end_fails_the_symbol_exit_check() {
 
 #[test]
 fn read_lr_gate_precedes_partition_symbol_reads() {
-    let work_unit = make_work_unit(&[], CdfUpdateMode::Enabled);
+    let payload: [u8; 0] = [];
+    let work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let before = work_unit.cdf().tile_cdfs().clone();
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = TilePartitionLoopRestorationState::UnsupportedReadLrSyntax;
 
-    let err = GeneralIntraPartitionTreeCursor::new(
+    let err = GeneralIntraPartitionTreeCursor::new_with_bytes(
         &work_unit,
+        &payload,
         facts,
         DecodeLimits::DEFAULT,
         TileTraversalStorage::default(),
@@ -1114,13 +1134,14 @@ fn assert_frame_level_lr_symbol_precedes_partition_read(
     row: TileCdfSelector,
     cdf_update_message: &'static str,
 ) {
-    let mut work_unit = make_work_unit(&[0x00, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let before = lr_unit_symbol_row(&mut work_unit, row);
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = loop_restoration;
 
     let (frontiers, output) =
-        run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
     assert_eq!(frontiers.len(), 1, "expected one leaf");
     let captured = &frontiers[0];
 
@@ -1155,7 +1176,8 @@ fn frame_level_lr_symbol_precedes_partition_read() {
 
 #[test]
 fn frame_level_lr_invalid_cdf_preserves_syntax_origin() {
-    let mut work_unit = make_work_unit(&[0x00, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     work_unit
         .cdf_mut()
         .tile_cdfs_mut()
@@ -1165,6 +1187,7 @@ fn frame_level_lr_invalid_cdf_preserves_syntax_origin() {
     facts.loop_restoration = frame_level_wiener_ns(256);
 
     let error = expect_tree_error(run_first_superblock(
+        &payload,
         &mut work_unit,
         facts,
         DecodeLimits::DEFAULT,
@@ -1224,7 +1247,7 @@ fn switchable_luma_selection_controls_current_source_output() {
             frame_level_luma_lr(TilePartitionLoopRestorationPlaneTool::Switchable, true, 256);
 
         let (frontiers, output) =
-            run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+            run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
         assert_eq!(frontiers[0].symbol_count, expected_symbols + 1);
         assert_eq!(output.symbols.symbol_count(), expected_symbols + 1);
@@ -1280,7 +1303,8 @@ fn switchable_luma_without_frame_filter_reads_unit_wiener_filter() {
         256,
     );
 
-    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+    let (_, output) =
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(output.symbols.symbol_count(), 4);
     assert_eq!(output.storage.unit_filters.len(), 1);
@@ -1308,13 +1332,15 @@ fn switchable_lr_rejects_chroma_before_symbol_read() {
         [0, 128, 0],
     );
 
-    let work_unit = make_work_unit(&[], CdfUpdateMode::Enabled);
+    let payload: [u8; 0] = [];
+    let work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let before = work_unit.cdf().tile_cdfs().clone();
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = TilePartitionLoopRestorationState::Frame(invalid_state);
 
-    let err = GeneralIntraPartitionTreeCursor::new(
+    let err = GeneralIntraPartitionTreeCursor::new_with_bytes(
         &work_unit,
+        &payload,
         facts,
         DecodeLimits::DEFAULT,
         TileTraversalStorage::default(),
@@ -1333,12 +1359,13 @@ fn switchable_lr_rejects_chroma_before_symbol_read() {
 
 #[test]
 fn inactive_frame_level_wiener_ns_advances_current_cursor_without_source_output() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = frame_level_wiener_ns(256);
 
     let (frontiers, output) =
-        run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(frontiers[0].symbol_count, 2);
     assert_eq!(output.symbols.symbol_count(), 2);
@@ -1349,11 +1376,13 @@ fn inactive_frame_level_wiener_ns_advances_current_cursor_without_source_output(
 
 #[test]
 fn current_cursor_retains_active_frame_level_wiener_ns_source_blocks() {
-    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0xFF, 0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = frame_level_wiener_ns(256);
 
-    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+    let (_, output) =
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(output.storage.active_source_blocks.len(), 5);
     assert_eq!(
@@ -1383,11 +1412,13 @@ fn current_cursor_retains_active_frame_level_wiener_ns_source_blocks() {
 
 #[test]
 fn current_cursor_retains_active_frame_level_pc_wiener_source_blocks() {
-    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0xFF, 0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = frame_level_pc_wiener(256);
 
-    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+    let (_, output) =
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(output.storage.active_source_blocks.len(), 5);
     assert!(
@@ -1432,11 +1463,13 @@ fn wiener_ns_unit_filter_reads_use_bank_for_merged_units_after_bank_growth() {
 
 #[test]
 fn active_lr_source_blocks_track_stripe_bounds() {
-    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0xFF, 0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_64X64);
     facts.loop_restoration = frame_level_wiener_ns(256);
 
-    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+    let (_, output) =
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(output.storage.active_source_blocks.len(), 5);
     let second_stripe = output
@@ -1452,13 +1485,14 @@ fn active_lr_source_blocks_track_stripe_bounds() {
 
 #[test]
 fn active_lr_source_bounds_clamp_to_tile_when_loopfilters_across_tiles_disabled() {
-    let mut work_unit =
-        make_work_unit_at(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled, 0..32, 0..32);
+    let payload = [0xFF, 0x00, 0x80];
+    let mut work_unit = make_work_unit_at(&payload, CdfUpdateMode::Enabled, 0..32, 0..32);
     let mut facts = frame(BLOCK_32X32);
     facts.disable_loopfilters_across_tiles = true;
     facts.loop_restoration = frame_level_wiener_ns(256);
 
-    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+    let (_, output) =
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(output.storage.active_source_blocks.len(), 3);
     assert_eq!(output.storage.active_source_blocks[0].luma_end_x, 127);
@@ -1467,12 +1501,14 @@ fn active_lr_source_bounds_clamp_to_tile_when_loopfilters_across_tiles_disabled(
 
 #[test]
 fn current_cursor_honors_zero_step_limit_before_lr_symbol() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let before = work_unit.cdf().tile_cdfs().clone();
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = frame_level_wiener_ns(256);
 
     let err = expect_tree_error(run_first_superblock(
+        &payload,
         &mut work_unit,
         facts,
         DecodeLimits::unlimited().with_max_tile_partition_steps(DecodeLimitThreshold::Max(0)),
@@ -1505,7 +1541,8 @@ fn current_cursor_retains_sdp_chroma_lr_source_blocks() {
     facts.enable_sdp = true;
     facts.loop_restoration = frame_level_chroma_wiener_ns(256);
 
-    let (_, output) = run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+    let (_, output) =
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert!(!output.storage.active_source_blocks.is_empty());
     assert!(
@@ -1519,12 +1556,13 @@ fn current_cursor_retains_sdp_chroma_lr_source_blocks() {
 
 #[test]
 fn current_cursor_advances_every_covered_inactive_wiener_ns_unit() {
-    let mut work_unit = make_work_unit(&[0x00; 12], CdfUpdateMode::Enabled);
+    let payload = [0x00; 12];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_128X128);
     facts.loop_restoration = frame_level_wiener_ns(64);
 
     let (frontiers, output) =
-        run_first_superblock(&mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
+        run_first_superblock(&payload, &mut work_unit, facts, DecodeLimits::DEFAULT).unwrap();
 
     assert_eq!(frontiers[0].symbol_count, 5);
     assert_eq!(output.symbols.symbol_count(), 5);
@@ -1533,11 +1571,13 @@ fn current_cursor_advances_every_covered_inactive_wiener_ns_unit() {
 
 #[test]
 fn frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let mut facts = frame(BLOCK_32X32);
     facts.loop_restoration = frame_level_wiener_ns(0);
 
     let err = expect_tree_error(run_first_superblock(
+        &payload,
         &mut work_unit,
         facts,
         DecodeLimits::DEFAULT,
@@ -1555,11 +1595,17 @@ fn frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read() {
 
 #[test]
 fn disabled_cdf_update_preserves_rows_while_advancing_symbols() {
-    let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Disabled);
+    let payload = [0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Disabled);
     let before = work_unit.cdf().tile_cdfs().clone();
 
-    let (_, output) =
-        run_first_superblock(&mut work_unit, frame(BLOCK_32X32), DecodeLimits::DEFAULT).unwrap();
+    let (_, output) = run_first_superblock(
+        &payload,
+        &mut work_unit,
+        frame(BLOCK_32X32),
+        DecodeLimits::DEFAULT,
+    )
+    .unwrap();
 
     assert_eq!(output.symbols.symbol_count(), 1);
     assert_eq!(work_unit.cdf().tile_cdfs(), &before);
@@ -1570,10 +1616,12 @@ fn unsupported_gates_are_explicit() {
     let mut extended_sdp = frame(BLOCK_32X32);
     extended_sdp.enable_extended_sdp = true;
     extended_sdp.frame_is_intra = false;
-    let work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0x00, 0x80];
+    let work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     assert!(
-        GeneralIntraPartitionTreeCursor::new(
+        GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work_unit,
+            &payload,
             extended_sdp,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default()
@@ -1591,8 +1639,9 @@ fn unsupported_gates_are_explicit() {
     let mut inter = frame(BLOCK_32X32);
     inter.frame_is_intra = false;
     assert!(
-        GeneralIntraPartitionTreeCursor::new(
+        GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work_unit,
+            &payload,
             inter,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default()
@@ -1636,8 +1685,10 @@ fn arithmetic_and_invalid_subsize_errors_are_typed() {
 
 #[test]
 fn max_tile_partition_steps_limit_bounds_frontier_steps() {
-    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0xFF, 0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let err = expect_tree_error(run_first_superblock(
+        &payload,
         &mut work_unit,
         frame(BLOCK_32X32),
         DecodeLimits::unlimited().with_max_tile_partition_steps(DecodeLimitThreshold::Max(1)),
@@ -1654,8 +1705,10 @@ fn max_tile_partition_steps_limit_bounds_frontier_steps() {
 
 #[test]
 fn max_tile_count_limit_does_not_bound_frontier_steps() {
-    let mut work_unit = make_work_unit(&[0xFF, 0x00, 0x80], CdfUpdateMode::Enabled);
+    let payload = [0xFF, 0x00, 0x80];
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Enabled);
     let (frontiers, _) = run_first_superblock(
+        &payload,
         &mut work_unit,
         frame(BLOCK_32X32),
         DecodeLimits::unlimited()

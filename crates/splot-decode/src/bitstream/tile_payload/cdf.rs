@@ -248,7 +248,7 @@ impl TileCdfSubset {
         )
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -977,7 +977,7 @@ fn default_tile_cdf_rows(base_q_idx: u32) -> &'static TileCdfRows {
 }
 
 impl TileCdfRows {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]

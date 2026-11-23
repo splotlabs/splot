@@ -23,7 +23,7 @@ pub(crate) const CCTX_MTX: [[i32; 2]; 6] = [
 ];
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: ReconSample>(
     u_block: CoeffBlock<'_>,
     u_prediction: &[T],
@@ -55,7 +55,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
     Ok((u_out, v_out))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
     u_block: CoeffBlock<'_>,
     u_prediction: &[T],
@@ -143,7 +143,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
     surface: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut super::ResidualScratch,
@@ -265,7 +265,6 @@ pub(super) fn apply_cross_chroma_transform(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::super::{DCT_DCT, LumaCoeffBlock};
     use super::*;

@@ -10,7 +10,7 @@ use fearless_simd::{
 /// The widest luma motion-compensated block: a 256x256 superblock side.
 const MAX_MC_LUMA_DIM: usize = 256;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn blend_compound_average<T: ReconSample>(
     pred0: &[i32],
     pred1: &[i32],
@@ -104,7 +104,7 @@ fn blend_rows<T: ReconSample>(
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn blend_compound_diff_weighted<T: ReconSample>(
     pred0: &[i32],
     pred1: &[i32],
@@ -207,7 +207,7 @@ pub(super) fn blend_compound_diff_weighted<T: ReconSample>(
 
 #[cfg(test)]
 /// The § 7.13.3.30 blend of one row with the mask values `masks`.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "the mask iterator must fuse with the blend loop"
 )]
@@ -260,7 +260,7 @@ pub(super) fn clip_samples_into<T: ReconSample>(
 /// Clamps each sample to `0..=max_sample` and stores it. When `max_sample`
 /// fits the storage type, the store is a plain `u8` or `u16` write, so the
 /// caller's loop vectorizes.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "the loop must fuse with the caller's iterator"
 )]
@@ -301,7 +301,7 @@ fn difference_weight(left: i32, right: i32, diff_round: u32, inverse: bool) -> u
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn blend_compound_wedge<T: ReconSample>(
     pred0: &[i32],
     pred1: &[i32],
@@ -679,7 +679,7 @@ fn masked_row<S: Simd, T: ReconSample>(
 /// decoder caller is the TIP grid, which rejects scaled references, so each
 /// start is the sample position plus one per-cell offset; a scaled
 /// reference is an error.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn blend_implicit_mask_region<T: ReconSample>(
     preds: [&[i32]; 2],
     pred_stride: usize,

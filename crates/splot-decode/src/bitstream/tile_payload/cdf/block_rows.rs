@@ -300,7 +300,7 @@ macro_rules! block_row_slice {
 }
 
 impl BlockCdfRows {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]

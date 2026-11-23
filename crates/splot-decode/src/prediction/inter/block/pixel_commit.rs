@@ -14,11 +14,10 @@
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
+use splot_recon::{BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
-use super::super::mc::WorkspaceSink;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
 use super::tile::{ReconRow, ReconRowBuffers};
@@ -27,7 +26,7 @@ use crate::Result;
 use crate::bitstream::tile_payload::TileBlockDecodedState;
 
 /// Commits one parsed row into the frame, in tile order.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn replay_recon_row<T: ReconSample>(
     mut row: ReconRow,
     tile_offset: splot_core::span::ByteOffset,
@@ -148,7 +147,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         }
                         ReconCommandMut::Inter(command) => scratch.reconstruct(
                             command,
-                            &mut WorkspaceSink::Frame(workspace),
+                            &mut CurrentFrameSurface::Frame(workspace),
                             block_decoded,
                             &mut folded,
                             &residual_blocks,

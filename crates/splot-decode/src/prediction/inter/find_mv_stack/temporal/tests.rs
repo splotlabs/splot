@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::super::warp_sub_mv_at;
 use super::tip_field::TIP_AVERAGE_WEIGHTS;
 use super::*;
 use splot_parallel::{ThreadCount, WorkerPool};
 
 /// Whole-field projection of one source, for direct unit tests.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn project_whole_temporal_motion_field(
     source: &TemporalMotionField,
     source_order_hint: u32,
@@ -89,7 +87,10 @@ fn projected_temporal_reset_reports_allocation_failure() {
 
 #[test]
 fn compact_temporal_motion_preserves_every_warp_shape() {
-    let mvs = [Mv { row: 9, col: -7 }, Mv { row: -5, col: 3 }];
+    let mvs = [
+        MotionVector { row: 9, col: -7 },
+        MotionVector { row: -5, col: 3 },
+    ];
     let first = [1 << 16, 0, 2 << 16, 0, 1 << 16, -(1 << 16)];
     let second = [1 << 16, 0, -(3 << 16), 0, 1 << 16, 2 << 16];
     for warp_params in [
@@ -123,7 +124,7 @@ fn odd_origin_warp_block_stores_round2_cells_sampled_at_its_own_rows() {
         32,
         4,
         [Some(2), None],
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         [Some(params), None],
     );
     let refs = BlockRefs {
@@ -196,7 +197,18 @@ fn whole_field_round_trips_published_band_cells() {
     );
 
     assert_eq!(rebuilt.cell(0, 0), expected);
-    let clear = TemporalMotionBlock::new(0, 0, 2, 2, 4, 4, 1, [None; 2], [Mv::ZERO; 2], [None; 2]);
+    let clear = TemporalMotionBlock::new(
+        0,
+        0,
+        2,
+        2,
+        4,
+        4,
+        1,
+        [None; 2],
+        [MotionVector::ZERO; 2],
+        [None; 2],
+    );
     first.record_blocks(&[]).unwrap();
     let denied = first.record_blocks(&[clear, clear]);
     assert_eq!(rebuilt.cell(0, 0), expected);
@@ -221,14 +233,14 @@ fn whole_field_round_trips_published_band_cells() {
         4,
         1,
         [Some(0), None],
-        [Mv { row: 8, col: -12 }, Mv::ZERO],
+        [MotionVector { row: 8, col: -12 }, MotionVector::ZERO],
         [None; 2],
     );
     first.record_blocks(&[clear, marked]).unwrap();
     let cell = TemporalMotionCell::load(first.row(0).unwrap()[0]);
     assert_eq!(
         cell.mvs.map(uncompress_tmvp_mv),
-        [Mv { row: 8, col: -12 }; 2]
+        [MotionVector { row: 8, col: -12 }; 2]
     );
     first.record_blocks(&[marked, clear]).unwrap();
     assert_eq!(first.row(0).unwrap().as_ptr(), address);
@@ -276,7 +288,7 @@ fn recycled_band_resets_every_cell_to_no_reference() {
         16,
         4,
         [Some(2), None],
-        [Mv { row: 8, col: -12 }, Mv::ZERO],
+        [MotionVector { row: 8, col: -12 }, MotionVector::ZERO],
         [None; 2],
     );
     let mut band = TemporalMotionBand::vacant(layout, &metadata);
@@ -373,7 +385,7 @@ fn skipped_clear_records_of_whole_cell_intra_leaves_leave_the_field_unchanged() 
             .map(|[row, col, h, w]| {
                 let is_inter = next(2) == 0;
                 let block = if is_inter {
-                    let mv = |next: &mut dyn FnMut(u32) -> usize| Mv {
+                    let mv = |next: &mut dyn FnMut(u32) -> usize| MotionVector {
                         row: 1 + next(255) as i32,
                         col: -1 - next(255) as i32,
                     };
@@ -400,7 +412,7 @@ fn skipped_clear_records_of_whole_cell_intra_leaves_leave_the_field_unchanged() 
                         mi_cols,
                         4,
                         [None; 2],
-                        [Mv::ZERO; 2],
+                        [MotionVector::ZERO; 2],
                         [None; 2],
                     )
                 };
@@ -429,19 +441,19 @@ fn spatial_derivation_uses_reference_trajectories() {
     candidate.set(
         0,
         0,
-        Mv {
+        MotionVector {
             row: -10,
             col: -192,
         },
     );
     let mut dst = TrajectoryMotionField::new(2, 2).unwrap();
-    dst.set(0, 0, Mv { row: 12, col: 240 });
+    dst.set(0, 0, MotionVector { row: 12, col: 240 });
     let mut context = tip_context(4, vec![Some(0), Some(9)], 2, 2);
     context.trajectories = Some(TrajectoryState::from_fields(&[candidate, dst]));
 
     assert_eq!(
-        context.derive_spatial_mv(1, 0, Mv { row: -12, col: -67 }, 0, 0),
-        Some(Mv { row: 10, col: 365 })
+        context.derive_spatial_mv(1, 0, MotionVector { row: -12, col: -67 }, 0, 0),
+        Some(MotionVector { row: 10, col: 365 })
     );
 }
 
@@ -451,21 +463,24 @@ fn compound_spatial_derivation_uses_both_reference_trajectories() {
     candidate.set(
         0,
         0,
-        Mv {
+        MotionVector {
             row: -10,
             col: -192,
         },
     );
     let mut dst0 = TrajectoryMotionField::new(2, 2).unwrap();
-    dst0.set(0, 0, Mv { row: 12, col: 240 });
+    dst0.set(0, 0, MotionVector { row: 12, col: 240 });
     let mut dst1 = TrajectoryMotionField::new(2, 2).unwrap();
-    dst1.set(0, 0, Mv { row: -8, col: 100 });
+    dst1.set(0, 0, MotionVector { row: -8, col: 100 });
     let mut context = tip_context(4, vec![Some(0), Some(9), Some(6)], 2, 2);
     context.trajectories = Some(TrajectoryState::from_fields(&[candidate, dst0, dst1]));
 
     assert_eq!(
-        context.derive_compound_spatial_mvs([1, 2], 0, Mv { row: -12, col: -67 }, 0, 0,),
-        Some([Mv { row: 10, col: 365 }, Mv { row: -10, col: 225 }])
+        context.derive_compound_spatial_mvs([1, 2], 0, MotionVector { row: -12, col: -67 }, 0, 0,),
+        Some([
+            MotionVector { row: 10, col: 365 },
+            MotionVector { row: -10, col: 225 }
+        ])
     );
 }
 
@@ -474,8 +489,8 @@ fn spatial_derivation_projects_references_on_the_same_side() {
     let context = tip_context(10, vec![Some(8), Some(6)], 2, 2);
 
     assert_eq!(
-        context.derive_spatial_mv(0, 1, Mv { row: 8, col: 12 }, 0, 0),
-        Some(Mv { row: 4, col: 6 })
+        context.derive_spatial_mv(0, 1, MotionVector { row: 8, col: 12 }, 0, 0),
+        Some(MotionVector { row: 4, col: 6 })
     );
 }
 
@@ -493,8 +508,8 @@ fn spatial_derivation_projects_a_restricted_candidate_as_past() {
     let context = OrderHintMvContext::new(4, &hints, restricted);
 
     assert_eq!(
-        context.derive_spatial_mv(0, 2, Mv { row: -80, col: 32 }),
-        Some(Mv { row: -3, col: 1 })
+        context.derive_spatial_mv(0, 2, MotionVector { row: -80, col: 32 }),
+        Some(MotionVector { row: -3, col: 1 })
     );
 }
 
@@ -502,20 +517,20 @@ fn spatial_derivation_projects_a_restricted_candidate_as_past() {
 fn trajectory_derivation_clamps_to_the_motion_vector_domain() {
     assert_eq!(
         derive_mv_from_trajectories(
-            Mv {
+            MotionVector {
                 row: MV_LIMIT,
                 col: -MV_LIMIT,
             },
-            Mv {
+            MotionVector {
                 row: MV_LIMIT,
                 col: -MV_LIMIT,
             },
-            Mv {
+            MotionVector {
                 row: -MV_LIMIT,
                 col: MV_LIMIT,
             },
         ),
-        Mv {
+        MotionVector {
             row: MV_LIMIT,
             col: -MV_LIMIT,
         }
@@ -611,7 +626,10 @@ fn metadata_constructor_resolves_block_references() {
             2,
             4,
             block_hints,
-            [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
+            [
+                MotionVector { row: 8, col: 16 },
+                MotionVector { row: 24, col: 32 },
+            ],
             [None; 2],
         );
         let mut field =
@@ -629,12 +647,16 @@ fn carried_slots_match_per_block_resolution_for_every_reference_pair() {
     let field_hints = [Some(1), None, Some(3), Some(1), Some(6), None, Some(9)];
     let raw_hints = [1, 5, 3, 1, 6, 2, 9];
     let lists = || (0..raw_hints.len()).map(Some).chain([None]);
-    let near = Mv { row: 8, col: -24 };
-    let far = Mv { row: 4096, col: 8 };
+    let near = MotionVector { row: 8, col: -24 };
+    let far = MotionVector { row: 4096, col: 8 };
     let mut blocks = Vec::new();
     for ref0 in lists() {
         for ref1 in lists() {
-            for mvs in [[near, Mv { row: -40, col: 16 }], [far, near], [near, far]] {
+            for mvs in [
+                [near, MotionVector { row: -40, col: 16 }],
+                [far, near],
+                [near, far],
+            ] {
                 for _ in 0..2 {
                     blocks.push((ref0.map(|r| raw_hints[r]), ref1.map(|r| raw_hints[r]), mvs));
                 }
@@ -679,29 +701,29 @@ fn carried_slots_match_per_block_resolution_for_every_reference_pair() {
 fn merged_neighbour_records_write_the_same_field() {
     let (mi_rows, mi_cols) = (4, 11);
     let hints = [Some(2), Some(6)];
-    let mv = Mv { row: 8, col: -12 };
-    let record = |mi_col: usize, n4w: usize, mvs: [Mv; 2]| {
+    let mv = MotionVector { row: 8, col: -12 };
+    let record = |mi_col: usize, n4w: usize, mvs: [MotionVector; 2]| {
         TemporalMotionBlock::new(
             0, mi_col, n4w, 2, mi_rows, mi_cols, 4, hints, mvs, [None; 2],
         )
     };
     let blocks = [
-        record(0, 2, [mv, Mv::ZERO]),
-        record(2, 2, [mv, Mv::ZERO]),
-        record(4, 2, [Mv::ZERO, mv]),
-        record(6, 2, [Mv::ZERO, mv]),
-        record(8, 2, [Mv::ZERO, mv]),
-        record(10, 1, [Mv::ZERO, mv]),
+        record(0, 2, [mv, MotionVector::ZERO]),
+        record(2, 2, [mv, MotionVector::ZERO]),
+        record(4, 2, [MotionVector::ZERO, mv]),
+        record(6, 2, [MotionVector::ZERO, mv]),
+        record(8, 2, [MotionVector::ZERO, mv]),
+        record(10, 1, [MotionVector::ZERO, mv]),
     ];
     let mut merged = Vec::new();
     for block in blocks {
         TemporalMotionBlock::push_merged(&mut merged, 0, block);
     }
     assert_eq!(merged.len(), 2);
-    let mut kept = vec![record(0, 2, [mv, Mv::ZERO])];
-    TemporalMotionBlock::push_merged(&mut kept, 1, record(2, 2, [mv, Mv::ZERO]));
-    TemporalMotionBlock::push_merged(&mut kept, 0, record(4, 1, [mv, Mv::ZERO]));
-    TemporalMotionBlock::push_merged(&mut kept, 0, record(5, 2, [mv, Mv::ZERO]));
+    let mut kept = vec![record(0, 2, [mv, MotionVector::ZERO])];
+    TemporalMotionBlock::push_merged(&mut kept, 1, record(2, 2, [mv, MotionVector::ZERO]));
+    TemporalMotionBlock::push_merged(&mut kept, 0, record(4, 1, [mv, MotionVector::ZERO]));
+    TemporalMotionBlock::push_merged(&mut kept, 0, record(5, 2, [mv, MotionVector::ZERO]));
     assert_eq!(
         kept.len(),
         3,
@@ -741,9 +763,9 @@ fn single_reference_motion_is_stored_in_both_slots() {
         let mut field = TemporalMotionField::new(2, 2).unwrap();
         field.set_reference_metadata(true, (8, 8), &[Some(7)]);
         let mut ref_order_hints = [None; 2];
-        let mut mvs = [Mv::ZERO; 2];
+        let mut mvs = [MotionVector::ZERO; 2];
         ref_order_hints[source_list] = Some(7);
-        mvs[source_list] = Mv { row: 8, col: -12 };
+        mvs[source_list] = MotionVector { row: 8, col: -12 };
 
         field.record_block(TemporalMotionBlock::new(
             0,
@@ -762,7 +784,7 @@ fn single_reference_motion_is_stored_in_both_slots() {
         assert_eq!(cell.ref_indices, [0; 2]);
         assert_eq!(
             cell.mvs.map(uncompress_tmvp_mv),
-            [Mv { row: 8, col: -12 }; 2]
+            [MotionVector { row: 8, col: -12 }; 2]
         );
     }
 }
@@ -787,7 +809,10 @@ fn compound_references_are_stored_in_temporal_slot_order() {
             2,
             4,
             input,
-            [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
+            [
+                MotionVector { row: 8, col: 16 },
+                MotionVector { row: 24, col: 32 },
+            ],
             [None; 2],
         ));
 
@@ -822,7 +847,10 @@ fn whole_block_record_writes_the_cells_of_its_8x8_records() {
             mi_cols,
             4,
             [Some(1), Some(6)],
-            [Mv { row: 8, col: -16 }, Mv { row: -24, col: 40 }],
+            [
+                MotionVector { row: 8, col: -16 },
+                MotionVector { row: -24, col: 40 },
+            ],
             [None; 2],
         )
     };
@@ -863,7 +891,7 @@ fn step_two_projection_samples_and_stores_on_the_even_grid() {
             TemporalMotionCell {
                 ref_indices: [0, INVALID_TEMPORAL_REF],
                 mvs: [
-                    compress_tmvp_mv(Mv { row: 0, col: -64 }),
+                    compress_tmvp_mv(MotionVector { row: 0, col: -64 }),
                     CompressedTemporalMv::ZERO,
                 ],
             },
@@ -916,7 +944,7 @@ fn backward_projection_preserves_source_to_current_direction() {
                         ref_indices: [INVALID_TEMPORAL_REF, 0],
                         mvs: [
                             CompressedTemporalMv::ZERO,
-                            compress_tmvp_mv(Mv { row: 10, col: 232 }),
+                            compress_tmvp_mv(MotionVector { row: 10, col: 232 }),
                         ],
                     },
                 );
@@ -943,7 +971,7 @@ fn backward_projection_preserves_source_to_current_direction() {
         output.cell(8, 25),
         Some(ProjectedTemporalMotionCell::new(
             true,
-            Mv {
+            MotionVector {
                 row: -10,
                 col: -232,
             },
@@ -984,7 +1012,11 @@ fn projection_records_zero_offset_reference() {
 
     assert_eq!(
         output.cell(0, 0),
-        Some(ProjectedTemporalMotionCell::new(true, Mv::ZERO, 0))
+        Some(ProjectedTemporalMotionCell::new(
+            true,
+            MotionVector::ZERO,
+            0
+        ))
     );
 }
 
@@ -994,7 +1026,7 @@ fn projection_records_zero_offset_reference() {
 fn projection_records_restricted_reference_with_zero_offset() {
     let hints = reference_order_hints(&[0, 1], &[true, true], &[2, u32::MAX]);
     let mut source = TemporalMotionField::new_with_metadata(4, 4, true, (16, 16), &hints).unwrap();
-    let mv = Mv { row: 8, col: -16 };
+    let mv = MotionVector { row: 8, col: -16 };
     source.record_block(TemporalMotionBlock::new(
         0,
         0,
@@ -1004,7 +1036,7 @@ fn projection_records_restricted_reference_with_zero_offset() {
         4,
         8,
         [Some(u32::MAX), None],
-        [mv, Mv::ZERO],
+        [mv, MotionVector::ZERO],
         [None; 2],
     ));
     let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
@@ -1074,12 +1106,15 @@ fn projection_replaces_only_for_the_mapped_target_reference_index() {
     };
 
     assert_eq!(project(Some(1)), (4, None));
-    assert_eq!(project(Some(0)), (1, Some(Mv::ZERO)));
+    assert_eq!(project(Some(0)), (1, Some(MotionVector::ZERO)));
 }
 
 #[test]
 fn zero_offset_projection_uses_the_zero_divisor_multiplier() {
-    assert_eq!(project_mv(Mv { row: 24, col: -40 }, 3, 0), Mv::ZERO);
+    assert_eq!(
+        project_mv(MotionVector { row: 24, col: -40 }, 3, 0),
+        MotionVector::ZERO
+    );
 }
 
 #[test]
@@ -1093,7 +1128,7 @@ fn projection_is_total_over_untrusted_integer_inputs() {
     ] {
         for denominator in [i32::MIN, -1, 0, MAX_FRAME_DISTANCE, i32::MAX] {
             let projected = project_mv(
-                Mv {
+                MotionVector {
                     row: i32::MIN,
                     col: i32::MAX,
                 },
@@ -1115,7 +1150,7 @@ fn tip_candidate_distinguishes_absent_from_present_invalid_cells() {
         future_offset: -2,
         ref_offset: 4,
     }));
-    let base = Mv { row: 3, col: -5 };
+    let base = MotionVector { row: 3, col: -5 };
     assert_eq!(context.tip_candidate(0, 0, base), Some([base; 2]));
 
     context.field = ProjectedTemporalMotionField::default();
@@ -1126,7 +1161,7 @@ fn tip_candidate_distinguishes_absent_from_present_invalid_cells() {
 fn bounded_tmvp_projection_matches_wide_projection() {
     let components = [-REFMVS_LIMIT, -1024, -1, 0, 1, 1024, REFMVS_LIMIT];
     for &component in &components {
-        let mv = Mv {
+        let mv = MotionVector {
             row: component,
             col: -component,
         };
@@ -1139,7 +1174,7 @@ fn bounded_tmvp_projection_matches_wide_projection() {
             }
         }
     }
-    let wide = Mv {
+    let wide = MotionVector {
         row: REFMVS_LIMIT + 1,
         col: -(REFMVS_LIMIT + 1),
     };
@@ -1154,7 +1189,7 @@ fn side_rejected_projection_still_extends_existing_trajectory() {
         Some(1),
         54,
         125,
-        Mv { row: 64, col: -256 },
+        MotionVector { row: 64, col: -256 },
         1,
         2,
         false,
@@ -1170,7 +1205,7 @@ fn side_rejected_projection_still_extends_existing_trajectory() {
         252,
         4,
         [Some(0), None],
-        [Mv { row: 36, col: -160 }, Mv::ZERO],
+        [MotionVector { row: 36, col: -160 }, MotionVector::ZERO],
         [None; 2],
     ));
     let mut output = ProjectedTemporalMotionField::new(112, 252).unwrap();
@@ -1190,15 +1225,22 @@ fn side_rejected_projection_still_extends_existing_trajectory() {
     );
 
     let fields = trajectories.into_fields();
-    assert_eq!(fields[5].cell(54, 123), Some(Mv { row: 68, col: -288 }));
+    assert_eq!(
+        fields[5].cell(54, 123),
+        Some(MotionVector { row: 68, col: -288 })
+    );
     assert!(output.cells.iter().all(|cell| !cell.valid));
 }
 
 #[test]
 fn sampling_gap_does_not_average_across_tmvp_units() {
     let mut context = tip_context(2, vec![Some(0)], 2, 36);
-    context.field.set(0, 14, Mv { row: 8, col: 16 }, 2, true);
-    context.field.set(0, 16, Mv { row: 24, col: 80 }, 4, true);
+    context
+        .field
+        .set(0, 14, MotionVector { row: 8, col: 16 }, 2, true);
+    context
+        .field
+        .set(0, 16, MotionVector { row: 24, col: 80 }, 4, true);
 
     context.fill_sampling_gaps(2, 16);
 
@@ -1216,7 +1258,9 @@ fn sampling_gap_scales_and_averages_only_valid_neighbours() {
         (2, 2, 12, -18, 4),
         (0, 4, -2048, 2047, 0),
     ] {
-        context.field.set(y8, x8, Mv { row, col }, offset, true);
+        context
+            .field
+            .set(y8, x8, MotionVector { row, col }, offset, true);
     }
 
     context.fill_sampling_gaps(2, 8);
@@ -1233,7 +1277,7 @@ fn sampling_gap_scales_and_averages_only_valid_neighbours() {
             context.field.cell(y8, x8),
             Some(ProjectedTemporalMotionCell::new(
                 true,
-                Mv { row, col },
+                MotionVector { row, col },
                 offset
             ))
         );
@@ -1260,16 +1304,21 @@ fn step_one_projection_uses_64_pixel_tmvp_unit_bounds() {
 #[test]
 fn tip_projection_fills_unsampled_units_and_adds_the_block_mv() {
     let mut context = tip_context(10, vec![Some(8), Some(12)], 4, 4);
-    context.field.set(0, 0, Mv { row: 8, col: -16 }, 4, true);
+    context
+        .field
+        .set(0, 0, MotionVector { row: 8, col: -16 }, 4, true);
 
     let references = context.tip_reference_pair().unwrap();
     assert!(context.prepare_tip(references, 2, 2, false).is_ok());
     assert_eq!(context.tip_references(), context.tip_reference_pair());
-    let expected = [Mv { row: 5, col: -6 }, Mv { row: -3, col: 10 }];
+    let expected = [
+        MotionVector { row: 5, col: -6 },
+        MotionVector { row: -3, col: 10 },
+    ];
     for y8 in 0..2 {
         for x8 in 0..2 {
             assert_eq!(
-                context.tip_candidate(y8, x8, Mv { row: 1, col: 2 }),
+                context.tip_candidate(y8, x8, MotionVector { row: 1, col: 2 }),
                 Some(expected)
             );
         }
@@ -1282,7 +1331,7 @@ fn tip_temporal_scaling_clamps_to_the_reference_mv_domain() {
     context.field.set(
         0,
         0,
-        Mv {
+        MotionVector {
             row: -256,
             col: 256,
         },
@@ -1296,7 +1345,7 @@ fn tip_temporal_scaling_clamps_to_the_reference_mv_domain() {
         context.field.cell(0, 0),
         Some(ProjectedTemporalMotionCell::new(
             true,
-            Mv {
+            MotionVector {
                 row: -REFMVS_LIMIT,
                 col: REFMVS_LIMIT,
             },
@@ -1308,11 +1357,16 @@ fn tip_temporal_scaling_clamps_to_the_reference_mv_domain() {
 #[test]
 fn tip_step_one_hole_fill_stays_within_64_pixel_tmvp_units() {
     let mut context = tip_context(10, vec![Some(8), Some(12)], 2, 32);
-    context.field.set(0, 7, Mv { row: 8, col: -16 }, 4, true);
+    context
+        .field
+        .set(0, 7, MotionVector { row: 8, col: -16 }, 4, true);
 
     let references = context.tip_reference_pair().unwrap();
     assert!(context.prepare_tip(references, 1, 8, true).is_ok());
-    assert_eq!(context.tip_candidate(0, 8, Mv::ZERO), Some([Mv::ZERO; 2]));
+    assert_eq!(
+        context.tip_candidate(0, 8, MotionVector::ZERO),
+        Some([MotionVector::ZERO; 2])
+    );
 }
 
 #[test]
@@ -1324,27 +1378,35 @@ fn tip_candidate_clamps_motion_field_coordinates_to_the_frame() {
         future_offset: 1,
         ref_offset: 1,
     };
-    let context =
-        TemporalMvContext::with_tip_sample(4, 4, references, 1, 1, Mv { row: 16, col: 32 })
-            .unwrap();
+    let context = TemporalMvContext::with_tip_sample(
+        4,
+        4,
+        references,
+        1,
+        1,
+        MotionVector { row: 16, col: 32 },
+    )
+    .unwrap();
 
     assert_eq!(
-        context.tip_candidate(usize::MAX, usize::MAX, Mv::ZERO),
-        context.tip_candidate(1, 1, Mv::ZERO)
+        context.tip_candidate(usize::MAX, usize::MAX, MotionVector::ZERO),
+        context.tip_candidate(1, 1, MotionVector::ZERO)
     );
 }
 
 #[test]
 fn tip_newly_averaged_sample_keeps_the_scaled_reference_offset() {
     let mut context = tip_context(10, vec![Some(6), Some(15)], 2, 32);
-    context.field.set(0, 14, Mv { row: 18, col: -36 }, 9, true);
+    context
+        .field
+        .set(0, 14, MotionVector { row: 18, col: -36 }, 9, true);
 
     let references = context.tip_reference_pair().unwrap();
     assert!(context.prepare_tip(references, 2, 16, true).is_ok());
     let cell = context.field.cell(0, 11).unwrap();
     assert_eq!(
         cell,
-        ProjectedTemporalMotionCell::new(true, Mv { row: 18, col: -36 }, 9)
+        ProjectedTemporalMotionCell::new(true, MotionVector { row: 18, col: -36 }, 9)
     );
 }
 
@@ -1353,7 +1415,9 @@ fn tip_averaging_never_inherits_the_previous_frame_between_sampled_cells() {
     let mut context = tip_context(10, vec![Some(6), Some(15)], 4, 8);
     for y8 in 0..2 {
         for x8 in 0..4 {
-            context.field.set(y8, x8, Mv { row: 18, col: -36 }, 9, true);
+            context
+                .field
+                .set(y8, x8, MotionVector { row: 18, col: -36 }, 9, true);
         }
     }
     let references = context.tip_reference_pair().unwrap();
@@ -1379,8 +1443,8 @@ fn divide_tip_average(value: i32, count: usize) -> i32 {
     splot_recon::math::round2_signed(i64::from(value) * weight, 16) as i32
 }
 
-/// The whole-field § 7.10.4 passes that the per-unit preparation replaced:
-/// scale every cell, fill holes, then average through a row scratch.
+/// The whole-field § 7.10.4 reference: scale every cell, fill holes, then average
+/// through a row scratch.
 fn reference_prepare_tip_field(
     field: &mut ProjectedTemporalMotionField,
     references: TipReferencePair,
@@ -1393,12 +1457,12 @@ fn reference_prepare_tip_field(
         *cell = if (index / width8).is_multiple_of(step) && (index % width8).is_multiple_of(step) {
             let projected = cell.valid.then(|| {
                 let mv = project_tmvp_mv(cell.mv(), references.ref_offset, cell.ref_offset());
-                Mv {
+                MotionVector {
                     row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                     col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                 }
             });
-            let mv = projected.unwrap_or(Mv::ZERO);
+            let mv = projected.unwrap_or(MotionVector::ZERO);
             ProjectedTemporalMotionCell::new(projected.is_some(), mv, references.ref_offset)
         } else {
             ProjectedTemporalMotionCell::default()
@@ -1464,12 +1528,12 @@ fn reference_prepare_tip_field(
                         field.cells[index] = if valid.is_empty() {
                             ProjectedTemporalMotionCell::default()
                         } else {
-                            let sum = |component: fn(Mv) -> i32| {
+                            let sum = |component: fn(MotionVector) -> i32| {
                                 valid.iter().map(|cell| component(cell.mv())).sum()
                             };
                             ProjectedTemporalMotionCell::new(
                                 true,
-                                Mv {
+                                MotionVector {
                                     row: divide_tip_average(sum(|mv| mv.row), valid.len()),
                                     col: divide_tip_average(sum(|mv| mv.col), valid.len()),
                                 },
@@ -1500,7 +1564,7 @@ fn unit_tip_preparation_matches_the_whole_field_passes() {
         let (height8, width8) = (1 + next(40) as usize, 1 + next(40) as usize);
         let mut field = ProjectedTemporalMotionField::new(height8 * 2, width8 * 2).unwrap();
         for cell in &mut field.cells {
-            let mv = Mv {
+            let mv = MotionVector {
                 row: next(5000) as i32 - 2500,
                 col: next(65_535) as i32 - 32_767,
             };
@@ -1571,7 +1635,11 @@ fn narrow_tip_preparation_matches_the_whole_field_passes() {
             } else {
                 [1, 31][next(2) as usize]
             };
-            *cell = ProjectedTemporalMotionCell::new(next(100) < density, Mv { row, col }, offset);
+            *cell = ProjectedTemporalMotionCell::new(
+                next(100) < density,
+                MotionVector { row, col },
+                offset,
+            );
         }
         let references = TipReferencePair {
             past_ref: 0,
@@ -1657,7 +1725,7 @@ fn trajectories_do_not_change_the_projected_motion_field() {
                 TemporalMotionCell {
                     ref_indices: [0, INVALID_TEMPORAL_REF],
                     mvs: [
-                        compress_tmvp_mv(Mv { row: 12, col: -40 }),
+                        compress_tmvp_mv(MotionVector { row: 12, col: -40 }),
                         CompressedTemporalMv::ZERO,
                     ],
                 },

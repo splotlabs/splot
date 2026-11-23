@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::annexb::parse_annex_b_obus_partial;
 use crate::headers::frame::GmType;
 use crate::headers::frame::global_motion::DEFAULT_WARP_PARAMS;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefStrengthSet, CdefStrengthSets, EncoderStreamParams, EncoderToolFlags,
-    FrameHeaderParseInput, FrameHeaderParseMode, FrameType, InterpolationFilter, MvPrecision,
-    SeqTiles, TxMode, build_encoder_sequence_header, parse_frame_header_core,
+    FrameHeaderParseInput, FrameType, InterpolationFilter, MvPrecision, SeqTiles, TxMode,
+    build_encoder_sequence_header, parse_frame_header_core,
 };
 use crate::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 
@@ -380,7 +378,6 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
         active_sequence: Some(&seq),
         mfh_record: None,
         reference_state: slots.view(),
-        mode: FrameHeaderParseMode::Core,
     };
     assert_eq!(
         parse_frame_header_core(&mut reader, &input).unwrap(),
@@ -416,7 +413,6 @@ fn show_existing_frame_obu_parses_complete() {
         active_sequence: Some(&seq),
         mfh_record: None,
         reference_state: slots.view(),
-        mode: FrameHeaderParseMode::Core,
     };
     let core =
         parse_frame_header_core(&mut BitReader::new(sef.payload, ByteOffset::new(0)), &input)
@@ -497,7 +493,6 @@ fn show_existing_frame_obu_codes_an_explicit_order_hint() {
         active_sequence: Some(&seq),
         mfh_record: None,
         reference_state: slots.view(),
-        mode: FrameHeaderParseMode::Core,
     };
     let obu =
         encode_show_existing_frame_obu(&view, 5, Some(9 + 256), None, (false, false)).unwrap();
@@ -1418,7 +1413,6 @@ fn assert_cut_header_fails(
         active_sequence: Some(seq),
         mfh_record: None,
         reference_state: *refs,
-        mode: FrameHeaderParseMode::Core,
     };
     let mut reader = BitReader::new(&payload[..cut], ByteOffset::new(0));
     assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
@@ -1507,7 +1501,6 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         active_sequence: Some(&seq),
         mfh_record: None,
         reference_state: slots.view(),
-        mode: FrameHeaderParseMode::Core,
     };
     let mut reader = BitReader::new(&payload[..cut], ByteOffset::new(0));
     assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
@@ -1932,7 +1925,6 @@ fn open_loop_key_headers_keep_the_other_slots() {
         active_sequence: Some(&seq),
         mfh_record: None,
         reference_state: slots.view(),
-        mode: FrameHeaderParseMode::Core,
     };
     assert_eq!(parse_frame_header_core(&mut reader, &input).unwrap(), *core);
     let mut w = BitWriter::new();

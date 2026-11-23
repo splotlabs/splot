@@ -22,8 +22,6 @@ use crate::util::is_valid_feature_id;
 
 /// Repo-relative path of the canonical matrix.
 const MATRIX_PATH: &str = "docs/IMPLEMENTATION-MATRIX.toml";
-/// Optional repo-relative path for the generated status render.
-const STATUS_DOC_PATH: &str = "docs/FEATURE-STATUS.md";
 /// Optional repo-relative path for the generated per-spec-section coverage render.
 const COVERAGE_DOC_PATH: &str = "docs/SPEC-COVERAGE.md";
 /// Optional repo-relative path for the generated writer coverage render.
@@ -1079,9 +1077,6 @@ pub(crate) fn run_check_feature_status(root: &Path) -> Result<()> {
     checker.scan_todos()?;
     checker.scan_tokens()?;
     checker.scan_diagnostics()?;
-    checker.check_status_doc(&matrix)?;
-    checker.check_coverage_doc(&matrix)?;
-    checker.check_writer_coverage_doc(&matrix)?;
 
     if checker.problems.is_empty() {
         eprintln!(
@@ -1306,54 +1301,6 @@ impl Checker {
         }
         Ok(())
     }
-
-    /// Verifies a committed generated document, when present, matches its render.
-    /// Generated markdown is optional; `check-doc-budget` rejects committing it.
-    fn check_generated_doc(&mut self, rel_path: &str, expected: &str, regen: &str) -> Result<()> {
-        let path = self.root.join(rel_path);
-        if !path.exists() {
-            eprintln!("{rel_path}: not committed; generate on demand with `{regen}`");
-            return Ok(());
-        }
-        let actual = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        if actual.trim_end() != expected.trim_end() {
-            self.problems.push(format!(
-                "{rel_path} is out of date; regenerate with `{regen}`"
-            ));
-        }
-        Ok(())
-    }
-
-    fn check_status_doc(&mut self, matrix: &Matrix) -> Result<()> {
-        let all: Vec<&Feature> = matrix.feature.iter().collect();
-        let expected = render_markdown(matrix, &all);
-        self.check_generated_doc(
-            STATUS_DOC_PATH,
-            &expected,
-            &format!("cargo xtask feature-status --format markdown --output {STATUS_DOC_PATH}"),
-        )
-    }
-
-    fn check_coverage_doc(&mut self, matrix: &Matrix) -> Result<()> {
-        let expected = coverage_markdown(matrix, &load_mirror_index(&self.root));
-        self.check_generated_doc(
-            COVERAGE_DOC_PATH,
-            &expected,
-            &format!("cargo xtask spec-coverage --format markdown --output {COVERAGE_DOC_PATH}"),
-        )
-    }
-
-    fn check_writer_coverage_doc(&mut self, matrix: &Matrix) -> Result<()> {
-        let expected = writer_coverage_markdown(matrix);
-        self.check_generated_doc(
-            WRITER_COVERAGE_DOC_PATH,
-            &expected,
-            &format!(
-                "cargo xtask writer-coverage --format markdown --output {WRITER_COVERAGE_DOC_PATH}"
-            ),
-        )
-    }
 }
 
 /// Returns `true` if `token` equals `id` followed by `.` and a non-empty suffix.
@@ -1503,7 +1450,6 @@ fn is_skipped_dir(path: &Path) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

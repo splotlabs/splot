@@ -5,9 +5,7 @@
 //! decoder's own first coefficient pass.
 
 use super::super::coeff_loop::base_level_pass::CoeffBaseFirstPassSummary;
-use super::super::coeff_loop::max_level::{
-    CoeffTransformClass, coeff_is_low_frequency, visible_max_level,
-};
+use super::super::coeff_loop::max_level::{coeff_is_low_frequency, visible_max_level};
 use super::super::coeff_loop::scan_walk::CoeffScanEntry;
 use super::{IntraTileSyntax, Result, TransformBlock, TxType, tx_log2};
 
@@ -45,7 +43,7 @@ impl ParityHiding {
         let (log2_w, _) = tx_log2(self.tx.tx_size)?;
         let log2_w = log2_w.min(5);
         let scan = super::coefficient_scan(&self.tx)?;
-        let tx_class = CoeffTransformClass::from_plane_tx_type(self.tx.tx_type as usize);
+        let tx_class = splot_recon::tx_class(self.tx.tx_type as usize);
         let first = scan.first().map_or(0, |&pos| usize::from(pos));
         let mut summary = CoeffBaseFirstPassSummary::default();
         for (pos, &level) in levels.get(..scan.len()).ok_or(SHORT)?.iter().enumerate() {
@@ -81,7 +79,6 @@ impl ParityHiding {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::super::super::coeff_loop::sign_symbol::{
         CoeffSignReadSource, derive_nonzero_coeff_sign_input,

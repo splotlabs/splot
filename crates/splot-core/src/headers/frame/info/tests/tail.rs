@@ -81,28 +81,6 @@ fn frame_header_core_eof_at_frame_size() {
 }
 
 #[test]
-fn frame_header_core_activation_prefix_mode_stops_at_prefix() {
-    let mut bits = Bits::default();
-    bits.uvlc(0); // cur_mfh_id == 0
-    bits.uvlc(1); // seq_header_id_in_frame_header
-    let data = bits.into_bytes();
-    let mut reader = BitReader::new(&data, ByteOffset::new(0));
-    let input = FrameHeaderParseInput {
-        obu_type: ObuType::ClosedLoopKey,
-        first_picture_in_tu: true,
-        active_sequence: None,
-        mfh_record: None,
-        reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::ActivationPrefix,
-    };
-    let core = parse_frame_header_core(&mut reader, &input).unwrap();
-    assert_eq!(core.status, FrameHeaderParseStatus::ActivationFieldsOnly);
-    assert_eq!(core.seq_header_id_in_frame_header, Some(1));
-    assert_eq!(core.frame_type, None);
-    assert_eq!(core.frame_size, None);
-}
-
-#[test]
 fn frame_header_core_without_sequence_is_activation_fields_only() {
     let mut bits = Bits::default();
     bits.uvlc(0); // cur_mfh_id == 0
@@ -115,7 +93,6 @@ fn frame_header_core_without_sequence_is_activation_fields_only() {
         active_sequence: None,
         mfh_record: None,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut reader, &input).unwrap();
     assert_eq!(core.status, FrameHeaderParseStatus::ActivationFieldsOnly);
@@ -135,7 +112,6 @@ fn frame_header_core_eof_at_cur_mfh_id() {
         active_sequence: None,
         mfh_record: None,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     assert!(matches!(
         parse_frame_header_core(&mut reader, &input),

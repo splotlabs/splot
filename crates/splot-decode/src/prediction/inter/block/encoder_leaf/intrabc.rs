@@ -10,12 +10,11 @@ use crate::filters::wienerns_lr::intrabc_records::{
     intrabc_use_coded, max_bvp_drl_bits_minus_1,
 };
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
-    DrlReorderMode, IntrabcStackGeometry, SpatialIntrabcProbes, SpatialScanGeometry,
+    IntrabcStackGeometry, SpatialIntrabcProbes, SpatialScanGeometry,
     capture_spatial_intrabc_probes, select_intrabc_ref_mv_from_candidates,
 };
 use crate::prediction::inter::find_mv_stack::NeighbourMotionValues;
 
-#[allow(clippy::wildcard_imports)]
 use super::*;
 
 /// The § 8.3.2 contexts of one IntraBC leaf: `use_intrabc`, `skip_txfm` and
@@ -109,7 +108,7 @@ impl EncoderInterTile {
             ref_frame: INTRABC_REF_FRAME,
             mode: SINGLE_MODE_NEWMV,
             ref_mv_idx: drl,
-            mvd: Mv::ZERO,
+            mvd: MotionVector::ZERO,
             interp: ReconInterpolationFilter::Bilinear,
             precision: Some(self.precision),
             use_amvd: false,
@@ -254,7 +253,10 @@ impl EncoderInterTile {
 
     /// The reference block vector of each `RefMvIdx` of the leaf at
     /// `frontier`, as the decoder's § 7.12 IntraBC stack resolves them.
-    pub(crate) fn intrabc_ref_mvs(&mut self, frontier: &DecodeBlockFrontier) -> Result<Vec<Mv>> {
+    pub(crate) fn intrabc_ref_mvs(
+        &mut self,
+        frontier: &DecodeBlockFrontier,
+    ) -> Result<Vec<MotionVector>> {
         let (n4w, n4h) = block_size4(frontier)?;
         let max = self.max_bvp_drl_bits_minus_1()?;
         let block = self.block(frontier, (INTRABC_REF_FRAME, None))?;
@@ -267,11 +269,6 @@ impl EncoderInterTile {
         };
         let spatial = probes.resolve(|row, col| grid.intrabc_mv_at(row, col));
         let bank = self.ref_mv_bank.as_ref().map(RefMvBank::intrabc_candidates);
-        let drl_reorder = match self.drl_reorder {
-            DrlReorder::Always => DrlReorderMode::Always,
-            DrlReorder::Constraint => DrlReorderMode::Constraint,
-            DrlReorder::Disabled => DrlReorderMode::Disabled,
-        };
         let stack = IntrabcStackGeometry {
             mi_row: frontier.r,
             mi_col: frontier.c,
@@ -289,7 +286,7 @@ impl EncoderInterTile {
                     stack,
                     &spatial,
                     self.ref_mv_bank.is_some(),
-                    drl_reorder,
+                    self.drl_reorder,
                     selection,
                 ))
             })
@@ -302,14 +299,14 @@ impl EncoderInterTile {
     pub(crate) fn predict_intrabc(
         &mut self,
         frontier: &DecodeBlockFrontier,
-        mv: Mv,
+        mv: MotionVector,
         morph: bool,
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
         let (n4w, n4h) = block_size4(frontier)?;
         let info = IntrabcInfo {
             morph_pred: morph,
-            block_mv: mv.into(),
+            block_mv: mv,
         };
         let avail = super::super::tile_neighbour_availability(
             frontier.r,
@@ -317,7 +314,7 @@ impl EncoderInterTile {
             self.tile_start.0,
             self.tile_start.1,
         );
-        let subsampling = chroma_subsampling(self.chroma);
+        let subsampling = self.chroma.subsampling();
         let prediction = super::super::intrabc::IntrabcReconPrediction::derive(
             &self.core,
             frontier,
@@ -345,7 +342,7 @@ impl EncoderInterTile {
     pub(crate) fn publish_intrabc(
         &mut self,
         frontier: &DecodeBlockFrontier,
-        mv: Mv,
+        mv: MotionVector,
         (morph, skip): (bool, bool),
     ) -> Result<()> {
         let block = self.block(frontier, (INTRABC_REF_FRAME, None))?;
@@ -376,7 +373,7 @@ impl EncoderInterTile {
             block.bw4,
             block.bh4,
             NeighbourMotionValues {
-                mv: [mv, Mv::ZERO],
+                mv: [mv, MotionVector::ZERO],
                 cwp_weight: mc::CWP_EQUAL,
                 stored_warp: None,
                 global_mv: [false, false],
@@ -404,7 +401,9 @@ impl EncoderInterTile {
     /// The IntraBC facts and the block vector of each 4x4 unit, for the
     /// debug rollback check.
     #[cfg(debug_assertions)]
-    pub(crate) fn intrabc_debug_state(&self) -> Option<(TileIntrabcPreludeState, Vec<Option<Mv>>)> {
+    pub(crate) fn intrabc_debug_state(
+        &self,
+    ) -> Option<(TileIntrabcPreludeState, Vec<Option<MotionVector>>)> {
         let state = self.intrabc.as_ref()?;
         let units = (0..self.mi_rows).flat_map(|r| (0..self.mi_cols).map(move |c| (r, c)));
         let mvs = units.map(|(r, c)| self.grid.intrabc_mv_at(r, c)).collect();

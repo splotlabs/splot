@@ -2,11 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::sequence::DrlReorder;
-pub(crate) use splot_recon::IDENTITY_WARP_PARAMS as DEFAULT_WARP_PARAMS;
+use splot_recon::IDENTITY_WARP_PARAMS;
 use splot_recon::math::round2_signed;
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
-use super::{Mv, mc::CWP_EQUAL};
+use super::{MotionVector, mc::CWP_EQUAL};
 use crate::tile::superblock_of;
 
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
@@ -294,7 +294,7 @@ pub(crate) fn mode_ctx_from_neighbours(
 }
 
 /// The § 7.11.2 `NewMvContext` of [`mode_ctx_from_neighbours`].
-#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[expect(clippy::inline_always, reason = "measured: per-leaf mode context")]
 #[inline(always)]
 pub(crate) fn new_mv_ctx_from_neighbours(
     block: &MvBlockContext,
@@ -314,7 +314,7 @@ pub(crate) fn new_mv_ctx_from_neighbours(
 
 /// The § 7.11.2 warp outputs of [`mode_ctx_from_neighbours`]; its
 /// `new_mv_context` is left 0.
-#[allow(clippy::inline_always, reason = "measured: per-leaf mode context")]
+#[expect(clippy::inline_always, reason = "measured: per-leaf mode context")]
 #[inline(always)]
 pub(crate) fn warp_ctx_from_neighbours(
     grid: &NeighbourMvGrid,
@@ -591,7 +591,7 @@ pub(crate) const fn ref_count_ctx(counts: u32, num_total_refs: usize, ref_idx: u
     (this >= next) as usize + (this > next) as usize
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: per-leaf neighbour contexts"
 )]
@@ -644,23 +644,23 @@ fn is_backward_ref_frame(cell: NeighbourFlags, backward: &[bool]) -> bool {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MvStack {
-    stack: FixedStack<(Mv, (i32, i32)), MAX_REF_MV_STACK_SIZE>,
+    stack: FixedStack<(MotionVector, (i32, i32)), MAX_REF_MV_STACK_SIZE>,
     warp: Option<WarpParamStack>,
 }
 
 impl MvStack {
     /// § 7.12.2 zero-initializes `RefStackMv`, so an index at or past
     /// `NumMvFound` reads the zero entry.
-    fn entry(&self, idx: usize) -> Option<&(Mv, (i32, i32))> {
+    fn entry(&self, idx: usize) -> Option<&(MotionVector, (i32, i32))> {
         self.stack.get(idx)
     }
 
-    pub(crate) fn candidate(&self, idx: usize) -> Mv {
-        self.entry(idx).map_or(Mv::ZERO, |entry| entry.0)
+    pub(crate) fn candidate(&self, idx: usize) -> MotionVector {
+        self.entry(idx).map_or(MotionVector::ZERO, |entry| entry.0)
     }
 
     /// The candidates in stack order.
-    pub(crate) fn candidates(&self) -> impl Iterator<Item = Mv> + '_ {
+    pub(crate) fn candidates(&self) -> impl Iterator<Item = MotionVector> + '_ {
         self.stack.iter().map(|&(mv, _)| mv)
     }
 
@@ -672,20 +672,24 @@ impl MvStack {
         self.warp
             .as_ref()
             .and_then(|warp| warp.slots.get(idx).copied())
-            .unwrap_or(DEFAULT_WARP_PARAMS)
+            .unwrap_or(IDENTITY_WARP_PARAMS)
     }
 }
 
 /// AV2 § 7.12.2.2 `get_warp_motion_vector()` for a block center. The identity
 /// model moves no sample, and the precision and border clamps keep zero.
-pub(crate) fn warp_predicted_mv(params: [i32; 6], block: &MvBlockContext, precision: u8) -> Mv {
+pub(crate) fn warp_predicted_mv(
+    params: [i32; 6],
+    block: &MvBlockContext,
+    precision: u8,
+) -> MotionVector {
     if params
         .iter()
-        .zip(DEFAULT_WARP_PARAMS)
+        .zip(IDENTITY_WARP_PARAMS)
         .fold(0, |diff, (&a, b)| diff | (a ^ b))
         == 0
     {
-        return Mv::ZERO;
+        return MotionVector::ZERO;
     }
     let x = block.mi_col as i32 * 4 + (block.bw4 as i32 * 4) / 2 - 1;
     let y = block.mi_row as i32 * 4 + (block.bh4 as i32 * 4) / 2 - 1;
@@ -707,14 +711,14 @@ pub(crate) fn warp_predicted_mv(params: [i32; 6], block: &MvBlockContext, precis
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CompoundMvCandidate {
-    pub(crate) mvs: [Mv; 2],
+    pub(crate) mvs: [MotionVector; 2],
     pub(crate) cwp_weight: i16,
 }
 
 impl Default for CompoundMvCandidate {
     fn default() -> Self {
         Self {
-            mvs: [Mv::ZERO; 2],
+            mvs: [MotionVector::ZERO; 2],
             cwp_weight: CWP_EQUAL,
         }
     }
@@ -891,8 +895,8 @@ const MAX_PR_NUM: usize = 16;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RefMvBankEntry {
     key: i32,
-    mv0: Mv,
-    mv1: Mv,
+    mv0: MotionVector,
+    mv1: MotionVector,
     cwp_weight: i16,
 }
 
@@ -900,8 +904,8 @@ impl Default for RefMvBankEntry {
     fn default() -> Self {
         Self {
             key: 0,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
+            mv0: MotionVector::ZERO,
+            mv1: MotionVector::ZERO,
             cwp_weight: CWP_EQUAL,
         }
     }
@@ -1029,13 +1033,13 @@ impl RefMvBank {
         self.update_unit_budget(mi_row, mi_col, n4w, n4h, sb_size4);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn update_for_block(
         &mut self,
         ref_frame0: i8,
         ref_frame1: Option<i8>,
-        mv: Mv,
-        mv1: Option<Mv>,
+        mv: MotionVector,
+        mv1: Option<MotionVector>,
         cwp_weight: i16,
         mi_row: usize,
         mi_col: usize,
@@ -1059,8 +1063,8 @@ impl RefMvBank {
         &mut self,
         ref_frame0: i8,
         ref_frame1: Option<i8>,
-        mv: Mv,
-        mv1: Option<Mv>,
+        mv: MotionVector,
+        mv1: Option<MotionVector>,
         cwp_weight: i16,
         from_within_sb: bool,
     ) {
@@ -1073,7 +1077,7 @@ impl RefMvBank {
         let entry = RefMvBankEntry {
             key: Self::bank_key(ref_frame0, ref_frame1),
             mv0: mv,
-            mv1: mv1.unwrap_or(Mv::ZERO),
+            mv1: mv1.unwrap_or(MotionVector::ZERO),
             cwp_weight,
         };
         bank_ring_update(
@@ -1143,7 +1147,7 @@ impl RefMvBank {
         }
     }
 
-    pub(crate) fn intrabc_candidates(&self) -> FixedStack<Mv, REF_MV_BANK_SIZE> {
+    pub(crate) fn intrabc_candidates(&self) -> FixedStack<MotionVector, REF_MV_BANK_SIZE> {
         let list = Self::list_index(INTRABC_REF_FRAME, None);
         let key = Self::bank_key(INTRABC_REF_FRAME, None);
         let count = self.sizes[list];
@@ -1285,12 +1289,12 @@ fn bank_ring_update<T: Copy>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn find_mv_stack(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    global_mv: Mv,
+    global_mv: MotionVector,
     bank: Option<(&RefMvBank, usize)>,
     warp_bank: &WarpParamBank,
     derive_wrl: bool,
@@ -1301,7 +1305,7 @@ pub(crate) fn find_mv_stack(
         grid,
         block,
         global_mv,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         bank,
         warp_bank,
         derive_wrl,
@@ -1312,12 +1316,12 @@ pub(crate) fn find_mv_stack(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn find_mv_stack_with_temporal(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    global_mv: Mv,
+    global_mv: MotionVector,
     global_warp_params: [i32; 6],
     bank: Option<(&RefMvBank, usize)>,
     warp_bank: &WarpParamBank,
@@ -1346,11 +1350,11 @@ pub(crate) fn find_mv_stack_with_temporal(
 /// The § 7.12.2 stack up to index `need`, which is all a caller may read: the
 /// bank, derived and extra candidates only append after the sort, so they are
 /// skipped once the spatial and temporal scans alone reach `need`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn find_mv_stack_upto(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    global_mv: Mv,
+    global_mv: MotionVector,
     global_warp_params: [i32; 6],
     bank: Option<(&RefMvBank, usize)>,
     warp_bank: &WarpParamBank,
@@ -1449,7 +1453,7 @@ pub(crate) fn find_mv_stack_upto(
         warp_bank.fill(block.ref_frame0, warp);
         warp.insert(global_warp_params);
         for _ in 0..2 {
-            warp.insert(DEFAULT_WARP_PARAMS);
+            warp.insert(IDENTITY_WARP_PARAMS);
         }
     }
 
@@ -1467,7 +1471,7 @@ pub(crate) fn find_mv_stack_upto(
 pub(crate) fn find_compound_mv_stack_with_temporal(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    global_mvs: [Mv; 2],
+    global_mvs: [MotionVector; 2],
     bank: Option<(&RefMvBank, usize)>,
     drl_reorder: DrlReorder,
     temporal: Option<&TemporalMvContext>,
@@ -1487,7 +1491,7 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
 pub(crate) fn find_compound_mv_stack_upto(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
-    global_mvs: [Mv; 2],
+    global_mvs: [MotionVector; 2],
     bank: Option<(&RefMvBank, usize)>,
     drl_reorder: DrlReorder,
     temporal: Option<&TemporalMvContext>,
@@ -1743,7 +1747,7 @@ fn insert_compound_mv_stack_entry(
 
 #[derive(Clone, Copy, Debug, Default)]
 struct MvStackEntry {
-    mv: Mv,
+    mv: MotionVector,
     weight: u32,
     offsets: (i32, i32),
 }
@@ -1799,7 +1803,7 @@ fn visit_mv_stack_column<'g>(
     }
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     clippy::too_many_arguments,
     reason = "measured: keeps the stack state in registers across probes"
@@ -1894,7 +1898,7 @@ enum StackInsert {
 fn insert_mv_stack_entry(
     entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
-    candidate_mv: Mv,
+    candidate_mv: MotionVector,
     weight: u32,
     offsets: (i32, i32),
 ) -> StackInsert {
@@ -2103,7 +2107,7 @@ pub(crate) fn warp_sub_mv_at(
     block_c: usize,
     rr: usize,
     cc: usize,
-) -> Mv {
+) -> MotionVector {
     let i8 = (rr.saturating_sub(block_r)) >> 1;
     let j8 = (cc.saturating_sub(block_c)) >> 1;
     let src_x = (block_c * 4 + j8 * 8 + 4) as i32;
@@ -2136,7 +2140,7 @@ impl WarpSubMvWalk {
     }
 
     /// The sub-MV of the next cell.
-    pub(super) fn next(&mut self) -> Mv {
+    pub(super) fn next(&mut self) -> MotionVector {
         let mv = rounded_warp_sub_mv(self.row, self.col);
         self.row += self.step_row;
         self.col += self.step_col;
@@ -2152,9 +2156,9 @@ const fn round_warp_projection(value: i64) -> i64 {
 }
 
 /// [`round_warp_projection`] of a projected sub-MV, clamped.
-fn rounded_warp_sub_mv(row: i64, col: i64) -> Mv {
+fn rounded_warp_sub_mv(row: i64, col: i64) -> MotionVector {
     let bound = (1 << 16) - 1;
-    Mv {
+    MotionVector {
         row: round_warp_projection(row).clamp(-bound, bound) as i32,
         col: round_warp_projection(col).clamp(-bound, bound) as i32,
     }
@@ -2175,7 +2179,7 @@ fn warp_motion_vector_at(
     block: &MvBlockContext,
     pos_row: i32,
     pos_col: i32,
-) -> Mv {
+) -> MotionVector {
     let y = pos_row * 4;
     let x = pos_col * 4;
     let (row, col) = projected_warp_mv(params, x, y);
@@ -2186,13 +2190,13 @@ fn warp_motion_vector_at(
     )
 }
 
-fn clip_and_clamp_projected_mv(block: &MvBlockContext, row: i64, col: i64) -> Mv {
+fn clip_and_clamp_projected_mv(block: &MvBlockContext, row: i64, col: i64) -> MotionVector {
     let bound = (1 << 16) - 1;
     let row = row.clamp(-bound, bound);
     let col = col.clamp(-bound, bound);
     clamp_mv(
         block,
-        Mv {
+        MotionVector {
             row: row as i32,
             col: col as i32,
         },
@@ -2217,7 +2221,7 @@ pub(crate) fn reduce_warp_model(params: &mut [i32; 6]) {
 
 /// Uses max then min, not `clamp`: `clamp` carries a min > max panic path
 /// that keeps this out of line, and these bounds are always ordered.
-fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
+fn clamp_mv(block: &MvBlockContext, mv: MotionVector) -> MotionVector {
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;
     let mi_row = block.mi_row as i32;
@@ -2230,7 +2234,7 @@ fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
     let col_low = -(mi_col + bw4) * MI_SIZE * 8 - MV_BORDER;
     let col_high = (mi_cols - mi_col) * MI_SIZE * 8 + MV_BORDER;
 
-    Mv {
+    MotionVector {
         row: mv.row.max(row_low).min(row_high),
         col: mv.col.max(col_low).min(col_high),
     }

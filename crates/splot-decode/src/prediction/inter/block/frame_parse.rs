@@ -269,7 +269,7 @@ pub(crate) struct TileParse(tile::ParsedTile);
 
 impl OpenTile {
     /// Runs tile `index` of `tiles` through its whole § 8.2 pass.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn parse(
         self,
         tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
@@ -380,7 +380,7 @@ pub(crate) struct PendingFilterAttach<T: ReconSample> {
 
 /// Runs the temporal prelude and builds the scheduled reconstruction from the
 /// half of the walk that is settled before the entropy pass reads a unit.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
     scratch: InterDecodeScratch<T>,
     reusable: &mut tile::ScheduledTileWorkspace<T>,

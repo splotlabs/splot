@@ -374,7 +374,7 @@ impl PreparedWarpPrediction {
 /// Filters one `N`-column strip of a translation block down all `height`
 /// rows from `[first_col, first_row, height, high]`, keeping the previous
 /// horizontal row in registers for the vertical taps.
-#[allow(
+#[expect(
     clippy::inline_always,
     clippy::too_many_arguments,
     reason = "measured warp hot path"
@@ -417,7 +417,7 @@ fn two_tap_strip<S, T, V, const N: usize>(
 /// than the row (a block clipped at the frame edge) takes a partial copy of
 /// the leading lanes: a full-width store would write past the block, into
 /// the next row when the stride equals the width.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn store_clipped_row<S, T, V, const N: usize>(
     simd: S,
@@ -483,7 +483,7 @@ pub fn warp_shear_is_valid(warp_params: [i32; 6]) -> bool {
 /// reference window. `is_compound` selects the § 7.13.3.16 `InterRound1`
 /// shift; the returned values are the unclipped `Round2(s, InterRound1)`
 /// predictors — single-reference writers finish with the § 4.8
-/// [`crate::math::clip1_predicted_samples`] clamp, compound callers blend
+/// `Clip1` clamp, compound callers blend
 /// the `Preds[refList]` intermediates first.
 ///
 /// # Errors
@@ -705,7 +705,7 @@ fn ext_warp_predict_scaled<T: ReconSample>(
 /// reference reads to `[firstX, lastX] x [firstY, lastY]`. `is_compound`
 /// selects the § 7.13.3.16 `InterRound1` shift; the 64 returned values are the
 /// unclipped `Round2(s, InterRound1)` predictors — single-reference writers
-/// finish with the § 4.8 [`crate::math::clip1_predicted_samples`] clamp,
+/// finish with the § 4.8 `Clip1` clamp,
 /// compound callers blend the `Preds[refList]` intermediates first.
 ///
 /// # Errors
@@ -896,7 +896,7 @@ const TWO_TAP_FIRST: usize = 3;
 ///
 /// Zero shear keeps the projected phase in `0..1 << WARPEDMODEL_PREC_BITS`,
 /// where those are the rows with `Round2(phase, WARPEDDIFF_PREC_BITS)` 0 or 64.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn two_tap_phase(phase: i32) -> Option<usize> {
     let rounded = phase + (1 << (WARPEDDIFF_PREC_BITS - 1));
@@ -910,7 +910,7 @@ fn two_tap_phase(phase: i32) -> Option<usize> {
 /// With taps `127` and `1`, `Round2(127 * a + b, InterRound0)` equals
 /// `16 * a + Round2(b - a, InterRound0)`, which keeps every 10-bit lane in
 /// `i16`; `high` selects which of the two samples carries the 127.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn two_tap_horizontal<S: Simd, V: SimdInt<S, Element = i16>>(
     load: impl Fn(usize) -> V,
@@ -965,7 +965,7 @@ fn two_tap_output<S: Simd>(
 /// `127 * main + side` is `128 * main + (side - main)`, and for `round1 >= 7`
 /// that rounds to `(main + ((side - main + 2^(round1 - 1)) >> 7)) >> (round1 - 7)`.
 /// Intermediates lie in `-6010..=22378`, so every step stays within `i16`.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn two_tap_vertical<S: Simd, V: SimdInt<S, Element = i16>>(
     top: V,
@@ -1146,7 +1146,7 @@ struct ProjectedCenter {
     sy4: i32,
 }
 
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn project_section_center(params: &WarpPredictBlockParams) -> Result<ProjectedCenter> {
     let src_x = checked_shift_left(
@@ -1220,7 +1220,7 @@ fn checked_shift_left(value: i32, shift: u8, context: &'static str) -> Result<i3
 ///
 /// Every clipped column lies in `start..start + 16`, so the index clamps
 /// saturate to `-16..=16` without changing a lane.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn clamped_columns<S: Simd>(
     simd: S,
@@ -1244,7 +1244,7 @@ fn clamped_columns<S: Simd>(
 }
 
 /// The 16 clipped samples of `source` at the [`clamped_columns`] of a row.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn clamped_span<S: Simd, T: ReconSample>(
     simd: S,
@@ -1302,7 +1302,7 @@ fn build_interior_intermediate<S: Simd, T: ReconSample>(
 
 /// Runs the § 7.13.3.19 horizontal pass for one intermediate row from its tap
 /// windows, whose column `col` uses the filter of phase `sx + alpha * (col - 4)`.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32) -> i16x8<S> {
     let sum = if alpha == 0 {
@@ -1316,7 +1316,7 @@ fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32
 /// The column sums of a sheared row, column `col` weighed by the filter of
 /// phase `sx + alpha * (col - 4)`: on x86 pair products of two columns per
 /// 256-bit multiply-add, elsewhere widened products per column.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn sheared_sum<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32) -> i32x8<S> {
     #[cfg(not(target_arch = "x86_64"))]
@@ -1352,7 +1352,7 @@ fn sheared_sum<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32) -
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn round_intermediate<S: Simd>(sum: i32x8<S>) -> i16x8<S> {
     let (low, high) = ((sum + (1i32 << (INTER_ROUND0 - 1))) >> INTER_ROUND0).split();
@@ -1369,7 +1369,7 @@ fn round_intermediate<S: Simd>(sum: i32x8<S>) -> i16x8<S> {
 /// its own window, so the products reduce with two more levels of pairwise
 /// adds instead of transposing the filters first.
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn column_dot_products<S: Simd>(simd: S, quads: [i32x8<S>; WARPED_BLOCK_SIZE / 2]) -> i32x8<S> {
     let pairs = [
@@ -1380,7 +1380,7 @@ fn column_dot_products<S: Simd>(simd: S, quads: [i32x8<S>; WARPED_BLOCK_SIZE / 2
 }
 
 /// The pair sums `[a0 + a1, a2 + a3, b0 + b1, b2 + b3]` of each 128-bit block.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn hadd_blocks<S: Simd>(simd: S, a: i32x8<S>, b: i32x8<S>) -> i32x8<S> {
     #[cfg(target_arch = "x86_64")]
@@ -1479,7 +1479,7 @@ type TapWeights<S> = [i16x16<S>; WARP_FILTER_TAPS / 2];
 type TapWeights<S> = [i16x8<S>; WARP_FILTER_TAPS];
 
 /// The [`TapWeights`] of eight per-column filters.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn column_weights<S: Simd>(simd: S, columns: [i16x8<S>; WARPED_BLOCK_SIZE]) -> TapWeights<S> {
     #[cfg(target_arch = "x86_64")]
@@ -1492,7 +1492,7 @@ fn column_weights<S: Simd>(simd: S, columns: [i16x8<S>; WARPED_BLOCK_SIZE]) -> T
 }
 
 /// The [`TapWeights`] of the filter of `phase` in every column.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn uniform_weights<S: Simd>(simd: S, phase: i32) -> TapWeights<S> {
     #[cfg(target_arch = "x86_64")]
@@ -1502,7 +1502,7 @@ fn uniform_weights<S: Simd>(simd: S, phase: i32) -> TapWeights<S> {
 }
 
 /// The column sums of `rows[t][c]` weighed by tap `t` of column `c`.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn tap_sum<S: Simd>(rows: [i16x8<S>; WARP_FILTER_TAPS], weights: &TapWeights<S>) -> i32x8<S> {
     #[cfg(target_arch = "x86_64")]
@@ -1525,7 +1525,7 @@ fn tap_sum<S: Simd>(rows: [i16x8<S>; WARP_FILTER_TAPS], weights: &TapWeights<S>)
 
 /// The vertical sum of output row `row`: on x86 each pair of intermediate
 /// rows interleaves into one multiply-add.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn rows_sum<S: Simd>(
     simd: S,
@@ -1563,7 +1563,7 @@ fn rows_sum<S: Simd>(
 /// The column sums of `rows[2p][c] * weights[p][2c] + rows[2p + 1][c] *
 /// weights[p][2c + 1]` over the four tap pairs `p`, one multiply-add each.
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn paired_sum<S: Simd>(
     rows: [i16x8<S>; WARP_FILTER_TAPS],
@@ -1576,7 +1576,7 @@ fn paired_sum<S: Simd>(
 }
 
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn interleave_columns<S: Simd>(a: i16x8<S>, b: i16x8<S>) -> i16x16<S> {
     let (low, high) = a.interleave(b);
@@ -1586,7 +1586,7 @@ fn interleave_columns<S: Simd>(a: i16x8<S>, b: i16x8<S>) -> i16x16<S> {
 /// One `Warped_Filters` row's tap pairs `2j, 2j + 1`, each repeated across
 /// the eight columns.
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn tap_pairs<S: Simd>(simd: S, taps: i16x8<S>) -> [i16x16<S>; WARP_FILTER_TAPS / 2] {
     let pairs = taps.bitcast::<i32x4<S>>().to_array();
@@ -1599,7 +1599,7 @@ fn tap_pairs<S: Simd>(simd: S, taps: i16x8<S>) -> [i16x16<S>; WARP_FILTER_TAPS /
 /// taps of every column. The regrouping is a 4x4 transpose of 32-bit tap
 /// pairs within each 128-bit half.
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn paired_column_taps<S: Simd>(
     simd: S,
@@ -1665,7 +1665,7 @@ fearless_simd::kernel!(
 /// at most 1023 and the reinterpretation preserves the value. Keeping the lanes
 /// 16-bit is what lets the multiply-adds take them without widening, the same
 /// narrowing the § 7.13.3.18 sub-pel taps already use.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn warp_source_lanes<S: Simd, T: ReconSample>(simd: S, source: &[T], start: usize) -> i16x8<S> {
     let Some(source) = source.get(start..start.wrapping_add(8)) else {
@@ -1687,7 +1687,7 @@ fn warp_source_lanes<S: Simd, T: ReconSample>(simd: S, source: &[T], start: usiz
 /// Window `t` is `source[first_col + t ..][..8]`. Reading the whole 16-sample
 /// span once and sliding it by lane leaves each window's values untouched, so
 /// the § 7.13.3.19 sum is unchanged; only the load shape differs.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn warp_span<S: Simd, T: ReconSample>(simd: S, source: &[T], first_col: usize) -> [i16x8<S>; 2] {
     let zero = i16x8::splat(simd, 0);
@@ -1706,7 +1706,7 @@ fn warp_span<S: Simd, T: ReconSample>(simd: S, source: &[T], first_col: usize) -
 }
 
 /// The eight windows `[lo, hi][t..t + 8]` of a 16-sample span.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn sliding_windows<S: Simd>(lo: i16x8<S>, hi: i16x8<S>) -> [i16x8<S>; 8] {
     [
@@ -1747,14 +1747,13 @@ static WARPED_TAPS: [[i16; WARP_FILTER_TAPS]; 512] = {
 /// A `Warped_Filters` row as `i16` lanes, indexed with one mask instead of a
 /// bounds check: setup-shear keeps every section phase inside the table, where
 /// the mask changes nothing.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn warp_taps<S: Simd>(simd: S, phase: i32) -> i16x8<S> {
     i16x8::load_array_ref(simd, &WARPED_TAPS[filter_index(phase)])
 }
 
 /// The `Warped_Filters` row of `phase`, masked into the padded table.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 fn filter_index(phase: i32) -> usize {
     const BIAS: i32 =

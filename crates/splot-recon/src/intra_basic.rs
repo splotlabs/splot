@@ -252,7 +252,6 @@ fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

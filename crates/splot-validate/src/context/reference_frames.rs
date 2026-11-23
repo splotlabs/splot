@@ -8,22 +8,22 @@ use super::*;
 impl ValidatorContext {
     /// Maintains the § 7.23 reference-frame buffer state for a frame-bearing `obu`.
     ///
-    /// § 7.23 runs at `decode_frame_wrapup`, the final step of decoding a frame, AFTER the
+    /// § 7.23 runs at `decode_frame_wrapup`, the final step of decoding a frame, after the
     /// frame is decoded. To keep later frames' reference checks consistent with that
     /// ordering, each frame's § 7.23 update is *deferred* in [`Self::pending_ref_update`]
     /// and committed at the next frame's coded-frame boundary (or the end-of-bitstream
     /// flush). The segmenter's `boundary` is the coded-frame-unit authority:
     ///
     /// - [`FrameBoundary::OpensNewUnit`]: this OBU opens a NEW coded frame. The previous
-    ///   frame is complete, so commit its pending update FIRST (its decode finished),
+    ///   frame is complete, so commit its pending update first (its decode finished),
     ///   then run this frame's reference checks against the post-update buffer, then
     ///   record this frame's own pending update.
-    /// - [`FrameBoundary::ContinuesUnit`]: a non-first tile group of the SAME coded
+    /// - [`FrameBoundary::ContinuesUnit`]: a non-first tile group of the same coded
     ///   frame. The frame's update was already derived from its first tile group; nothing
     ///   to do (no double-update, no premature commit).
     /// - [`FrameBoundary::Ambiguous`]: an unreadable frame delimiter — the OBU may open a
     ///   new coded frame or continue one. Commit any pending update (the prior frame is
-    ///   done either way) and poison ALL slots: an ambiguous boundary makes this frame's
+    ///   done either way) and poison all slots: an ambiguous boundary makes this frame's
     ///   refresh effect on the buffer unknowable (the Unknown invariant).
     ///
     /// A `None` boundary is a global frame-bearing OBU (the segmenter ignores globals);
@@ -84,7 +84,7 @@ impl ValidatorContext {
     }
 
     /// Derives the grounded § 7.23 [`FrameRefUpdate`] for a frame-bearing `obu` from its
-    /// parsed core, honestly poisoning when the frame's § 7.23 effect on the buffer cannot
+    /// parsed core, poisoning when the frame's § 7.23 effect on the buffer cannot
     /// be grounded.
     ///
     /// Only a frame whose `frame_header_info()` parse **completed** stages a § 7.23 update;

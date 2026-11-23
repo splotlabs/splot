@@ -3,8 +3,6 @@
 
 //! Watermark and published-prefix tests for [`super::FrameProgress`].
 
-#![allow(clippy::expect_used)]
-
 use splot_recon::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
 use super::{FROZEN, FrameProgress, PublishedFrame};

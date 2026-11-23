@@ -338,7 +338,6 @@ pub fn parse_multi_frame_header(reader: &mut BitReader<'_>) -> Result<MultiFrame
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;

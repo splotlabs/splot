@@ -347,7 +347,7 @@ fn celu_doh_global_frame_obu_does_not_poison_bits_accumulator() {
     data.extend(temporal_delimiter_obu()); // TU3: the test temporal unit
     data.extend(celu_seq_header_obu(0, 0, 1));
     data.extend(celu_output_clk_ref(0, 0, 1, 0)); // xlayer 0 -> bits 1
-    data.extend(celu_global_frame_obu()); // global frame-bearing OBU -> must NOT poison
+    data.extend(celu_global_frame_obu()); // global frame-bearing OBU -> must not poison
     data.extend(celu_seq_header_obu(1, 1, 2));
     data.extend(celu_output_clk_ref(1, 1, 2, 0)); // xlayer 1 -> bits 2
     data.extend(temporal_delimiter_obu());

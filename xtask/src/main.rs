@@ -326,11 +326,7 @@ enum DecoderFixturesCmd {
     /// orphan `.ivf` (no decode, no AVM). Wired into `cargo xtask ci`.
     Verify,
     /// Generate optional docs/decoder/DECODER-ORACLE-COVERAGE.md.
-    Coverage {
-        /// Verify the committed coverage doc is up to date instead of writing.
-        #[arg(long)]
-        check: bool,
-    },
+    Coverage,
 }
 
 fn main() -> Result<()> {
@@ -399,9 +395,7 @@ fn main() -> Result<()> {
             let root = workspace_root()?;
             match cmd {
                 DecoderFixturesCmd::Verify => decoder_fixtures::run_verify(&root),
-                DecoderFixturesCmd::Coverage { check } => {
-                    decoder_fixtures::run_coverage(&root, check)
-                }
+                DecoderFixturesCmd::Coverage => decoder_fixtures::run_coverage(&root),
             }
         }
         Task::CheckReferenceEvidence => {
@@ -529,7 +523,6 @@ fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
     decoder_support::run_check_decoder_support(&root)?;
     decoder_conformance_coverage::run_check_decoder_conformance_coverage(&root)?;
     decoder_fixtures::run_verify(&root)?;
-    decoder_fixtures::run_coverage(&root, true)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
     fixtures::check_fixtures(&root)?;
     dupehound::check_duplication(&root)?;
@@ -1025,27 +1018,9 @@ pub(crate) fn workspace_root() -> Result<PathBuf> {
 
 fn check_license_headers(root: &Path) -> Result<()> {
     let mut offenders = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .with_context(|| format!("failed to read directory {}", dir.display()))?;
-        for entry in entries {
-            let entry =
-                entry.with_context(|| format!("failed to read an entry in {}", dir.display()))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to stat {}", path.display()))?;
-            if file_type.is_dir() {
-                if !is_skipped_dir(&path) {
-                    stack.push(path);
-                }
-            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
-                && !has_spdx_header(&path)?
-            {
-                offenders.push(path);
-            }
+    for path in feature_status::collect_files(root, &["rs"])? {
+        if !has_spdx_header(&path)? {
+            offenders.push(path);
         }
     }
 
@@ -1061,13 +1036,6 @@ fn check_license_headers(root: &Path) -> Result<()> {
             offenders.len()
         )
     }
-}
-
-fn is_skipped_dir(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("target" | ".git")
-    )
 }
 
 fn has_spdx_header(path: &Path) -> Result<bool> {

@@ -241,15 +241,11 @@ impl LrGeometry {
     /// (AV2 § 6.4.1, mirror :340-346).
     #[must_use]
     pub const fn new(sb_size: SuperblockSize, chroma: ChromaFormatIdc) -> Self {
-        let (subsampling_x, subsampling_y) = match chroma {
-            ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (1, 1),
-            ChromaFormatIdc::Yuv444 => (0, 0),
-            ChromaFormatIdc::Yuv422 => (1, 0),
-        };
+        let (subsampling_x, subsampling_y) = chroma.subsampling();
         Self {
             sb_size,
-            subsampling_x,
-            subsampling_y,
+            subsampling_x: subsampling_x as u8,
+            subsampling_y: subsampling_y as u8,
         }
     }
 }
@@ -337,7 +333,7 @@ pub fn parse_lr_params(
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload
 /// ends mid-field before a modeled read completes.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn parse_lr_params_for_inter(
     reader: &mut BitReader<'_>,
     coded_lossless: bool,
@@ -396,15 +392,9 @@ pub fn parse_lr_params_for_inter(
                     let n = ceil_log2(num_ref_frames);
                     temporal_ref_index = reader.read_bits(n)? as usize;
                 }
-                if !temporal_pred_flag
-                    && DECODE_NUM_FILTER_CLASSES[DECODE_NUM_FILTER_CLASSES.len() - 1] > 1
-                {
+                if !temporal_pred_flag {
                     let idx = reader.read_bits_u8(3)?;
-                    let classes = DECODE_NUM_FILTER_CLASSES
-                        .get(usize::from(idx))
-                        .copied()
-                        .unwrap_or(1);
-                    num_filter_classes = Some(classes);
+                    num_filter_classes = Some(DECODE_NUM_FILTER_CLASSES[usize::from(idx)]);
                 }
             } else if frame_filters_on && num_ref_frames > 0 {
                 temporal_pred_flag = reader.read_flag()?;
@@ -832,7 +822,6 @@ fn read_tu(reader: &mut BitReader<'_>, mx: u32) -> Result<u32> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

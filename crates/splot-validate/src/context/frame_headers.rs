@@ -166,8 +166,8 @@ impl ValidatorContext {
     ///    declares no sequence header (`Provided(ExternalHlsSet::new())`, or one
     ///    declaring only operating point sets) cannot supply an active header, so it does
     ///    not suppress (precedent: [`ValidatorContext::validate_active_sequence_limits`]).
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::option_option)]
+    #[expect(clippy::too_many_arguments)]
+    #[expect(clippy::option_option)]
     pub(super) fn check_single_active_sequence_header(
         &self,
         obu: &ObuEnvelope<'_>,
@@ -251,7 +251,7 @@ impl ValidatorContext {
                 return None;
             }
             let Some(record) = self.hls.multi_frame_header(cur) else {
-                // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): declare external multi-frame
+                // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): let options declare external MFHs.
                 if matches!(options.external_hls, ExternalHlsMode::Disabled) {
                     report.push(frame_header_unavailable_mfh(cur, obu));
                 }

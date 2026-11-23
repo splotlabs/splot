@@ -60,7 +60,7 @@ pub(crate) trait CdfStorage: Copy {
     fn from_i32(value: i32) -> Self;
 
     /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn adapt_probabilities(cdf: &mut [Self], n: usize, rate: u32, symbol: usize) {
         adapt_probabilities_scalar(cdf, 0..n - 1, rate, symbol);
@@ -93,7 +93,7 @@ impl CdfStorage for u16 {
 
     /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
     /// read, so the arity match folds away.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn adapt_probabilities(cdf: &mut [u16], n: usize, rate: u32, symbol: usize) {
         match n {
@@ -120,7 +120,7 @@ impl CdfStorage for u16 {
 /// The two-sided § 8.2.6 step on `range`. The grow branch uses wrapping
 /// arithmetic: identical for in-range entries, and panic-free under overflow
 /// checks for trusted rows with hostile entries.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn adapt_probabilities_scalar<T: CdfStorage>(
     cdf: &mut [T],
@@ -146,7 +146,7 @@ fn adapt_probabilities_scalar<T: CdfStorage>(
 /// The § 8.2.6 step on the `L` entries from `first`, of which those below
 /// `probabilities` are probabilities. Equal to the scalar step for entries up
 /// to `CDF_PROB_SCALE`.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn adapt_probability_lanes<const L: usize>(
     cdf: &mut [u16],
@@ -168,7 +168,7 @@ fn adapt_probability_lanes<const L: usize>(
 
 /// Four, five or eight row entries in one register without a stack round trip.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn load_row_lanes(token: LaneToken, row: &[u16], len: usize) -> u16x8<LaneToken> {
     if len >= 8 {
@@ -184,7 +184,7 @@ fn load_row_lanes(token: LaneToken, row: &[u16], len: usize) -> u16x8<LaneToken>
 
 /// [`adapt_probability_lanes`] on the four or eight entries of `lanes`.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn adapt_row_lanes(
     token: LaneToken,
@@ -216,7 +216,7 @@ fn adapt_row_lanes(
 
 /// The lane token of this target, bound directly so the hot reads inline.
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn lane_token() -> Option<LaneToken> {
     Level::baseline().as_avx2()
@@ -241,7 +241,7 @@ fearless_simd::kernel!(
 
 /// `(range7 * b) >> 16` in each lane, the signed high half of the product.
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn mul_high(token: LaneToken, range7: u16, b: i16x8<LaneToken>) -> i16x8<LaneToken> {
     mul_high_avx2(token, i16x8::splat(token, range7 as i16), b)
@@ -303,7 +303,7 @@ const fn adaptation_rates(n_term: i32) -> [u8; RATE_STATES] {
 const RATE_BITS: u32 = 63;
 
 /// The state after a § 8.2.6 use of a row with rate entry `rate`.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 const fn counted(state: u16, rate: u32) -> u16 {
     state.wrapping_add((rate & !RATE_BITS) as u16)
@@ -312,7 +312,7 @@ const fn counted(state: u16, rate: u32) -> u16 {
 /// The [`adaptation_rates`] of an `N`-ary row, one constant per `n_term` so
 /// each crate inlining a read addresses its own copy directly instead of
 /// through the global offset table.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn arity_rates<const N: usize>() -> &'static [u8; RATE_STATES] {
     if N <= 3 {
@@ -350,7 +350,7 @@ const fn prob_inc_lanes<const N: usize>() -> [u16; 8] {
 /// boundary at or below `SymbolValue`: a predicted branch per boundary
 /// keeps the symbol off the range's dependency chain. Takes and returns
 /// the range and boundaries shifted left by 16, see [`SymbolDecoder`].
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn early_exit_search<T: CdfStorage, const N: usize>(
     cdf: &[T],
@@ -380,7 +380,7 @@ fn early_exit_search<T: CdfStorage, const N: usize>(
 /// memory round trip. Returns the number of lanes above and
 /// the lanes above, which for such rows are the lanes below the symbol.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn search_lanes<const N: usize>(
     token: LaneToken,
@@ -439,7 +439,7 @@ const fn row_lanes<const N: usize>() -> usize {
 /// they select [`adapt_lanes`] directly; lanes past the row's `N - 1`
 /// boundaries never count, so the symbol is at most `N - 1` without a clamp.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn row_search_lanes<const N: usize>(
     token: LaneToken,
@@ -463,7 +463,7 @@ fn row_search_lanes<const N: usize>(
 /// The § 8.2.6 step on the `N - 1` probabilities of the row `value` was
 /// loaded from, shrinking the lanes `below` the symbol.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn adapt_lanes<const N: usize>(
     token: LaneToken,
@@ -493,7 +493,7 @@ fn adapt_lanes<const N: usize>(
 
 /// The [`adaptation_rates`] entry of a trusted `N`-ary row's state
 /// (§ 8.2.6), masked into the table.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn trusted_rate<const N: usize>(state: u16) -> u32 {
     u32::from(arity_rates::<N>()[usize::from(state) & (RATE_STATES - 1)])
@@ -543,7 +543,7 @@ const fn probability_lanes<const N: usize>() -> u64 {
 }
 
 /// The [`word_entries`] of a row in one word.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn row_word<const N: usize>(cdf: &[u16]) -> u64 {
     cdf.iter()
@@ -553,7 +553,7 @@ fn row_word<const N: usize>(cdf: &[u16]) -> u64 {
 }
 
 /// Writes a row word back to the row.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn store_row_word<const N: usize>(cdf: &mut [u16], word: u64) {
     for (i, entry) in cdf.iter_mut().take(word_entries::<N>()).enumerate() {
@@ -800,7 +800,7 @@ impl<'a> SymbolDecoder<'a> {
 
     /// Tops the buffered window back up to [`DIF_BUFFER_BITS`] future bits,
     /// reading payload bits past the end as ones (inverted zero padding).
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn refill(&mut self) {
         let byte_index = usize::try_from(self.fed_bits / 8).unwrap_or(usize::MAX);
@@ -848,7 +848,7 @@ impl<'a> SymbolDecoder<'a> {
         self.frame_symbol_count
     }
 
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     const fn count_symbols(&mut self, n: u64) {
         if cfg!(any(debug_assertions, feature = "symbol-count")) {
@@ -1047,7 +1047,7 @@ impl<'a> SymbolDecoder<'a> {
     /// row returned, or from memory when `None`. Returns the symbol and the
     /// row's word after the read: a loop that reads one row repeatedly takes
     /// it from a register instead of waiting for its own store.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     pub fn read_trusted_carried<const L: usize>(
         &mut self,
@@ -1063,7 +1063,7 @@ impl<'a> SymbolDecoder<'a> {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_carried<const N: usize>(
         &mut self,
@@ -1085,7 +1085,7 @@ impl<'a> SymbolDecoder<'a> {
     /// [`Self::read_trusted`] of a slice row in the configured update mode.
     /// `None`, for the checked read, under [`CdfValidationMode::Validated`]
     /// or for a length no arity has.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     pub fn read_trusted_row(&mut self, cdf: &mut [u16]) -> Option<u32> {
         if self.config.cdf_validation == CdfValidationMode::Validated {
@@ -1094,7 +1094,7 @@ impl<'a> SymbolDecoder<'a> {
         self.read_trusted_len(cdf, self.config.cdf_update == CdfUpdateMode::Enabled)
     }
 
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_len(&mut self, cdf: &mut [u16], update: bool) -> Option<u32> {
         Some(match cdf.len() {
@@ -1110,7 +1110,7 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// [`Self::read_bool`] without its unreachable error path, for hot loops.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     pub fn read_bool_trusted(&mut self) -> bool {
         let scaled = self.scaled_bypass_value(1);
@@ -1135,7 +1135,7 @@ impl<'a> SymbolDecoder<'a> {
 
     /// Consumes the bits a [`Self::bypass_run`] has read: the remainder of
     /// their quotient becomes `SymbolValue`.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     pub const fn end_bypass_run(&mut self, run: BypassRun) {
         let bits = run.len.saturating_sub(run.left);
@@ -1153,7 +1153,7 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// [`Self::read_bool_trusted`] on a [`Self::bypass_run`].
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     pub fn read_bool_in(&mut self, run: &mut BypassRun) -> bool {
         if run.left == 0 {
@@ -1163,7 +1163,7 @@ impl<'a> SymbolDecoder<'a> {
         (run.quotient >> run.left) & 1 == 0
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: out of line it saves and reloads the decoder"
     )]
@@ -1181,7 +1181,7 @@ impl<'a> SymbolDecoder<'a> {
 
     /// The word, lane and early-exit searches agree only on rows that are
     /// non-decreasing and at most 32768, which the decoder's `rows_valid` asserts.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_arity<const N: usize>(&mut self, cdf: &mut [u16], update: bool) -> u32 {
         if cdf.len() <= N {
@@ -1222,7 +1222,7 @@ impl<'a> SymbolDecoder<'a> {
     /// `p >> rate` and `gap >> rate`, are ready before the symbol, which only
     /// selects them through [`LOWER_LANES`]: the lanes below the symbol
     /// shrink, the others grow; lanes without a probability stay.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_word<const N: usize>(
         &mut self,
@@ -1294,7 +1294,7 @@ impl<'a> SymbolDecoder<'a> {
     /// [`row_search_lanes`]. Branch-free on purpose: coefficient symbols
     /// mispredict too often for [`early_exit_search`] on some streams.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_lanes<const N: usize>(
         &mut self,
@@ -1318,7 +1318,7 @@ impl<'a> SymbolDecoder<'a> {
     /// Narrows the interval to `cur..prev` (§ 8.2.6, both shifted left by
     /// 16) and renormalizes. The interval is never empty for rows within the
     /// § 8.2.6 invariants; an empty one leaves an arbitrary state.
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn consume(&mut self, cur: u32, prev: u32) {
         let new_range = prev.wrapping_sub(cur);
@@ -1510,7 +1510,7 @@ pub(crate) struct CdfShape {
 /// (see [`CdfValidationMode::Trusted`]): the length bound that keeps every
 /// row and `PROB_INC` access in range, and the adaptation-rate bound that
 /// keeps the `PARA_ADJUSTMENT_LIST` lookup in range.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 pub(crate) fn trusted_cdf_shape<T: CdfStorage>(
     cdf: &[T],
@@ -1589,10 +1589,7 @@ fn symbol_max_bits_for_len(len: usize, base: ByteOffset) -> Result<i64> {
 
 #[inline]
 fn total_bits(len: usize) -> u64 {
-    match u64::try_from(len) {
-        Ok(bytes) => bytes.saturating_mul(8),
-        Err(_) => u64::MAX,
-    }
+    (len as u64).saturating_mul(8)
 }
 
 #[cfg(test)]
@@ -1606,7 +1603,7 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
 }
 
 /// Applies the AV2 § 8.2.6 adaptation step.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: usize) {
     let CdfShape {
@@ -1631,11 +1628,9 @@ pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: 
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "symbol_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "symbol_proptests.rs"]
 mod proptests;

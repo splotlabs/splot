@@ -393,7 +393,7 @@ fn quantize_kernel<S: Simd, const ERROR: bool>(
     (count, error.reduce_sum())
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "two callers; out of line it is a call per vector"
 )]

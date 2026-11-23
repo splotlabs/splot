@@ -7,7 +7,7 @@
 
 use std::ops::Range;
 
-use splot_recon::{PlaneId, ReconError};
+use splot_recon::{CurrentFrameSurface, PlaneId, ReconError};
 
 use super::*;
 
@@ -401,7 +401,7 @@ fn inter_tile_grid_error(
 }
 
 impl<'payload> TileParser<'payload> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -635,7 +635,7 @@ impl<'payload> TileParser<'payload> {
         if more {
             return Ok(());
         }
-        let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput { symbols, storage } =
+        let crate::bitstream::tile_payload::GeneralIntraPartitionTreeOutput { symbols, storage } =
             self.walk.finish()?.into_output();
         self.output.traversal = storage;
         finish_tile_symbols(symbols, tile_offset)
@@ -760,10 +760,6 @@ pub(super) enum EntryState {
 }
 
 /// A non-intra leaf's parse output or its resolved reconstruction command.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "nearly every slot is an inter command; boxing it costs an allocation per leaf"
-)]
 pub(super) enum LeafSlot {
     PendingInter(deferred_recon::PendingInterCommand),
     PendingIntrabc(PendingIntrabcBlock),
@@ -856,7 +852,7 @@ impl ReconRowEntry {
             mi_cols,
             current_order_hint,
             [None, None],
-            [Mv::ZERO; 2],
+            [MotionVector::ZERO; 2],
             [None, None],
         ))
     }
@@ -1087,7 +1083,7 @@ fn superblock_coefficient_capacity(sb_h4: usize, chroma: ChromaFormatIdc) -> Res
     let luma = side
         .checked_mul(side)
         .ok_or(crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
-    let (sx, sy) = chroma_subsampling(chroma);
+    let (sx, sy) = chroma.subsampling();
     let chroma = if chroma == ChromaFormatIdc::Monochrome {
         0
     } else {
@@ -1217,14 +1213,10 @@ fn poison_reused_surface<T: ReconSample>(surface: &mut splot_recon::OwnedFrameRe
 }
 
 #[cfg(not(debug_assertions))]
-#[expect(
-    clippy::inline_always,
-    reason = "empty in release; inlining removes the call the poison check costs"
-)]
 #[inline(always)]
 fn poison_reused_surface<T: ReconSample>(_surface: &mut splot_recon::OwnedFrameRect<T>) {}
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn precompute_recon_row<T: ReconSample>(
     mut ready: ReadyReconRow<T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
@@ -1245,7 +1237,7 @@ fn precompute_recon_row<T: ReconSample>(
     let Some(surface) = ready.surface.as_mut() else {
         return ready;
     };
-    let mut surface = mc::WorkspaceSink::OwnedRect(surface);
+    let mut surface = CurrentFrameSurface::OwnedRect(surface);
     ready.row = precompute_recon_row_on_surface(
         ready.row,
         ready.tile_offset,
@@ -1276,11 +1268,11 @@ fn precompute_recon_row<T: ReconSample>(
 /// entry precomputed past a skipped one would land writes that overlap it
 /// (mixed-region chroma residual) before it instead of after, reading
 /// prepublish samples as its residual base.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn precompute_recon_row_on_surface<T: ReconSample>(
     mut row: ReconRow,
     tile_offset: ByteOffset,
-    surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
+    surface: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
     temporal_context: &TemporalMvContext,
@@ -1899,7 +1891,7 @@ pub(crate) fn publish_tile_geometry(
 
 impl<'payload> TileParser<'payload> {
     /// Opens tile `index` of a scheduled frame of `tiles` tiles.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn scheduled(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -2002,7 +1994,7 @@ fn reset_tile_block_decoded(
     mi_col_end: usize,
     mi_row_end: usize,
 ) -> Result<()> {
-    let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
+    let (subsampling_x, subsampling_y) = chroma.subsampling();
     state
         .reset(
             if chroma == ChromaFormatIdc::Monochrome {
@@ -2106,7 +2098,7 @@ pub(crate) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn decode_tiles<T: ReconSample>(
     scratch: TileDecodeScratch<T>,
     frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,

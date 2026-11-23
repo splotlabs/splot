@@ -11,7 +11,7 @@ impl ValidatorContext {
     /// dependency-closed under the activated sequence header's maps. The pairing
     /// is the sequence header activated for `xlayer` and that header's § 6.4.1
     /// LCR association — the snapshot taken at the header's latest observation
-    /// (see [`ValidatorContext::lcr_associations`]), NOT a live resolution: a
+    /// (see [`ValidatorContext::lcr_associations`]), not a live resolution: a
     /// record redefined after the header is not the associated one. Only the
     /// `xId == xlayer` entry is constrained by this activation. Unresolved
     /// references are owned by the existing § 7.3.8.3 availability diagnostics,
@@ -115,7 +115,7 @@ impl ValidatorContext {
     ///
     /// The pairing is the sequence header activated for `xlayer` and that header's
     /// § 6.4.1 LCR association (the [`LcrAssociation::ptl`] snapshot taken at the
-    /// header's latest observation, NOT a live resolution — a record redefined after the
+    /// header's latest observation, not a live resolution — a record redefined after the
     /// header is not the associated one). The § 6.8.5 sentence keys the ceiling on the
     /// *local* LCR; the snapshot reads the local record's PTL for a local association and
     /// the global record's PTL for that xlayer for a global one. An association without
@@ -290,7 +290,11 @@ impl ValidatorContext {
             ));
         }
 
-        if let Some((lcr_bit_depth, lcr_chroma)) = rep.format {
+        if let Some(LcrFormatInfo {
+            bit_depth_idc: lcr_bit_depth,
+            chroma_format_idc: lcr_chroma,
+        }) = rep.format
+        {
             let header_bit_depth = u32::from(general.bit_depth_idc.get());
             if lcr_bit_depth != header_bit_depth {
                 mismatches.push((
@@ -329,15 +333,15 @@ impl ValidatorContext {
                 ),
             ));
         }
-        if let Some((lcr_left, lcr_right, lcr_top, lcr_bottom)) = rep.cropping {
+        if let Some(lcr) = rep.cropping {
             let crop = general.cropping_window;
             for (field, lcr_value, header_value, name) in [
-                (LcrRepInfoField::CropLeft, lcr_left, crop.left, "left"),
-                (LcrRepInfoField::CropRight, lcr_right, crop.right, "right"),
-                (LcrRepInfoField::CropTop, lcr_top, crop.top, "top"),
+                (LcrRepInfoField::CropLeft, lcr.left, crop.left, "left"),
+                (LcrRepInfoField::CropRight, lcr.right, crop.right, "right"),
+                (LcrRepInfoField::CropTop, lcr.top, crop.top, "top"),
                 (
                     LcrRepInfoField::CropBottom,
-                    lcr_bottom,
+                    lcr.bottom,
                     crop.bottom,
                     "bottom",
                 ),

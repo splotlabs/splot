@@ -9,8 +9,8 @@
 //! Feature tracking: `DECODE-INTER-MULTIREF-RUNTIME`.
 
 use splot_core::headers::frame::{
-    GlobalMotionRef, SavedGlobalMotionOrderHints, SavedGlobalMotionParams, SlotFrameFilterTaps,
-    WienerNsFrameFilterBank,
+    GlobalMotionRef, RESTRICTED_ORDER_HINT, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
+    SlotFrameFilterTaps, WienerNsFrameFilterBank,
 };
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::tile::InlineVec;
@@ -280,7 +280,7 @@ impl RuntimeReferenceBuffer {
         let mut restricted = Vec::new();
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if presence.is_present(current_layer, slot.embedded_layer_id) {
-                slot.order_hint = u32::MAX;
+                slot.order_hint = RESTRICTED_ORDER_HINT;
                 restricted.push(index);
             }
         }

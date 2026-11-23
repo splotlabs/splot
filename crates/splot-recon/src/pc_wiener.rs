@@ -442,7 +442,7 @@ where
 /// [`ReconError`] when the padded source cannot cover the classification
 /// region, and [`ReconError::PcWienerInvalidBounds`] for a span that breaks
 /// these rules.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub fn pc_wiener_classify_grid_padded_classes_into<'a, 'g, T, FT>(
     params: &PcWienerClassifyParams,
@@ -486,7 +486,7 @@ where
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn classify_grid_padded_mapped_into<'a, 'g, T, FT, O>(
     params: &PcWienerClassifyParams,
     cell_cols: usize,
@@ -706,7 +706,7 @@ fn validate_padded_u16_source<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn classify_grid_from_cache<'s, 'g, T, FR, FT, O>(
     params: &PcWienerClassifyParams,
     cell_cols: usize,
@@ -815,7 +815,7 @@ where
 
 /// Adds both outer pooled rows into the middle row. The last outer row
 /// becomes the first outer row of the next 6x6 window.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn window_rows<S: Simd>(simd: S, outer: &[u16], window: &mut [u16]) {
     let (a, b) = outer.split_at(outer.len() / 2);
@@ -834,7 +834,6 @@ fn window_rows<S: Simd>(simd: S, outer: &[u16], window: &mut [u16]) {
 /// Finishes the cells of a grid row from its window rows `window`, one per
 /// feature: cell `c` sums window columns `2c..2c + 3`, as one pair sum and
 /// one even lane.
-#[allow(clippy::inline_always)]
 #[inline(always)]
 fn classify_cells<S: Simd, O: ClassifiedCell>(
     simd: S,
@@ -976,7 +975,7 @@ impl PooledPlan {
 /// column, so it is exactly 3x3 pooled entries. A pooled feature is at most
 /// `4 * 2 * 1023` under § 6 Table 6.3's 10-bit cap, so three pooled rows still
 /// fit `i16` lanes.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn pooled_feature_row<'a, T: LumaSimdSource>(
     rows: [&'a [T]; 4],
@@ -1030,7 +1029,7 @@ fn pooled_feature_row<'a, T: LumaSimdSource>(
 /// Pools the `REACH - 2` feature columns from entry `start` into 16 entries
 /// of each plane (the upper half undefined for an 8-entry chunk), reading the rows
 /// zero-padded past their ends; `None` when a plane is short.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn pooled_chunk<'a, T: LumaSimdSource, const REACH: usize>(
     rows: [&'a [T]; 4],
@@ -1069,7 +1068,7 @@ fn zero_padded<T: Copy + Default, const N: usize>(samples: &[T]) -> [T; N] {
 
 /// Pools `REACH - 2` feature columns of two feature rows into 16 entries of
 /// each plane; `rows` are the four source rows of the pooled row.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn pooled_lanes<S: Simd, T: LumaSimdSource, const REACH: usize>(
     simd: S,
@@ -1095,7 +1094,6 @@ fn pooled_lanes<S: Simd, T: LumaSimdSource, const REACH: usize>(
 
 /// Twice the two-row sum of each feature at the first center of `rows`: the
 /// pooled entry of two clipped feature columns.
-#[allow(clippy::inline_always)]
 #[inline(always)]
 fn clipped_features<S: Simd, T: LumaSimdSource>(simd: S, rows: [&[T; 18]; 4]) -> [u16; 3] {
     const FIRST: [i16; 16] = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -1103,7 +1101,7 @@ fn clipped_features<S: Simd, T: LumaSimdSource>(simd: S, rows: [&[T; 18]; 4]) ->
         .map(|sums| <[i32; 8]>::from(sums)[0] as u16)
 }
 
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn pooled_sums<S: Simd, T: LumaSimdSource, const REACH: usize>(
     simd: S,
@@ -1123,7 +1121,7 @@ fn pooled_sums<S: Simd, T: LumaSimdSource, const REACH: usize>(
 
 /// § 7.20.4 `get_features` absolute second derivatives (vertical, anti-diagonal,
 /// diagonal) for sixteen consecutive centers `up[1..17]`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn second_derivative_lanes<S: Simd, T: LumaSimdSource>(
     simd: S,
@@ -1316,7 +1314,7 @@ impl ClassifiedCell for u8 {
     const SCALED: bool = true;
 
     /// [`rounded_lut_input`] in eight lanes, then the class of each.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured PC-Wiener classification hot path"
     )]
@@ -1361,7 +1359,7 @@ impl ClassifiedCell for u8 {
 }
 
 /// The columns of the 4x4 matrix whose rows are `rows`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 pub fn transpose4<S: Simd>([r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>; 4] {
     let wide = |rows: i32x4<S>| rows.bitcast::<i64x2<S>>();
@@ -1379,7 +1377,7 @@ pub fn transpose4<S: Simd>([r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>; 4] {
 /// negative `v` yields zero either way. `nf[i]` is `(f * N + h) >> s`, and
 /// adding `(offset + 2^13) << s` before that shift is exact, so the cache
 /// holds `((offset + 2^13) << s) + h` and one `>> (19 + s)` remains.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn rounded_lut_input(
     raw_features: [i32; PC_WIENER_NUM_FEATURES],
@@ -1400,7 +1398,7 @@ fn rounded_lut_input(
 ///
 /// `(x + ((1 << n) >> 1)) >> n` is `Round2` for every shift including zero,
 /// and `36 * 4 * 1023 * 3739` keeps the product inside `i32`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn normalized_features(
     raw_features: [i32; PC_WIENER_NUM_FEATURES],
@@ -1415,7 +1413,7 @@ fn normalized_features(
     })
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured PC-Wiener classification hot path"
 )]
@@ -2228,7 +2226,6 @@ fn checked_area(width: usize, height: usize, context: &'static str) -> Result<us
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
 #[path = "pc_wiener/tests.rs"]
 mod tests;
 

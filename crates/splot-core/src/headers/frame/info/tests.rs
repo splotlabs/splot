@@ -2226,7 +2226,7 @@ fn frame_header_core_inter_shared_tail_segmentation_on_stops_unmodeled() {
     let mut bits = Bits::default();
     minimal_inter_control_prefix(&mut bits);
     bits.f(90, 8); // base_q_idx
-    bits.bit(1); // segmentation_enabled = 1 -> honest stop right after this bit
+    bits.bit(1); // segmentation_enabled = 1 -> stop right after this bit
     bits.f(0, 8); // padding (never read)
     let data = bits.into_bytes();
     let (rv, roh, rw, rh) = one_valid_ref_64();

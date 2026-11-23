@@ -89,7 +89,7 @@ pub enum PayloadStatus<'a, T> {
     /// A frame-carrying OBU whose state-free prefix parsed, but whose remainder needs
     /// cross-OBU state the stateless dispatcher does not hold.
     ///
-    /// This is the honest result for the 11 frame-carrying OBU types (the tile-group
+    /// This is the result for the 11 frame-carrying OBU types (the tile-group
     /// family and the SEF / TIP / bridge family): their § 5.18.2 / § 5.19 activation
     /// prefix is parsed into `prefix`, and `blocked_on` names what the rest needs (the
     /// activated sequence header state). The richer state-aware surface is the
@@ -517,7 +517,6 @@ pub fn read_obu_header(input: &[u8], start: ByteOffset) -> Result<ObuHeader> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

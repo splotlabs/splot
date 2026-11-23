@@ -21,8 +21,8 @@
 //! structure before any bit is written (reject-before-write): a value the parser could not
 //! have produced — a width that overflows its `f(n)` field, a derived/inferred flag that
 //! disagrees with its gate, or an `Option` whose presence disagrees with the syntax — is
-//! rejected with a typed [`WriteError`]. With the `intrabc_params()` fields now surfaced on
-//! [`IntrabcParams`], the round-trip is **byte-exact**, not merely semantic.
+//! rejected with a typed [`WriteError`]. The round-trip is byte-exact, not merely semantic:
+//! [`IntrabcParams`] carries every `intrabc_params()` field.
 
 use crate::headers::frame::{FrameSize, IntrabcParams};
 use crate::write::bit_writer::BitWriter;
@@ -300,7 +300,6 @@ fn check_intrabc_encodable(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
@@ -591,7 +590,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod proptests {
     use super::*;
     use crate::bitio::BitReader;

@@ -12,13 +12,13 @@ use splot_recon::{
     inverse_transform_2d_outer_with_scratch, tx_class,
 };
 
-use super::super::coeff_loop::max_level::CoeffTransformClass;
 use super::{
     ADST_ADST, CoeffBlock, D67_PRED, D157_PRED, DCT_DCT, GeneralIntraResidualError, H_PRED,
     IST_4X4_HEIGHT, IST_8X8_HEIGHT, IST_8X8_HEIGHT_RED, LumaTransformTypeContext, SMOOTH_H_PRED,
     block_qm_level, current_quantizers, intra_secondary_transform_kernel,
     intra_secondary_transform_mode, invalid_reconstruction_state_error, resolve_block_qm,
 };
+use splot_recon::TransformClass;
 
 pub(super) struct ReconstructBlockSetup {
     pub(super) adjusted: usize,
@@ -119,7 +119,7 @@ pub(crate) fn resolve_secondary_inverse_transform(
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T: ReconSample>(
     block: CoeffBlock<'_>,
     prediction: &[T],
@@ -178,7 +178,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
 /// write reproduces, or a caller bit depth other than the frame's, whose
 /// out-of-range samples only the buffered write can reject — leaving the caller
 /// to reconstruct it through the staging buffer.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -269,7 +269,7 @@ const fn reconstruct_error(source: splot_recon::ReconError) -> GeneralIntraResid
 
 /// The fused transform and add of an intra block (see
 /// [`fused_residual_setup`]).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn fused_intra_setup(
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -299,7 +299,7 @@ fn fused_intra_setup(
 /// The fused transform and add of a block without a secondary transform,
 /// with its flat dequantization; `None` sends the block down the general
 /// path, which also reports a block of the wrong length.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 fn fused_residual_setup(
     block: CoeffBlock<'_>,
@@ -401,14 +401,13 @@ fn fused_transform(
 
 /// The § 7.14.4 `dq_denom` of a block of `pels` samples.
 fn dq_denom(pels: usize, use_tcq: bool, plane_tx_type: usize) -> u32 {
-    let tcq_two_d = use_tcq
-        && CoeffTransformClass::from_plane_tx_type(plane_tx_type) == CoeffTransformClass::TwoD;
+    let tcq_two_d = use_tcq && splot_recon::tx_class(plane_tx_type) == TransformClass::TwoD;
     1 << (u32::from(pels > 256) + u32::from(pels > 1024) + u32::from(tcq_two_d))
 }
 
 /// Adds an intra block's residual onto the prediction already written into
 /// the frame rows, the destination inter residuals are added into as well.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -485,7 +484,7 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 fn intra_residual_setup(
     block: CoeffBlock<'_>,
@@ -550,7 +549,7 @@ fn intra_residual<'s>(
     Ok(residual)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut super::ResidualScratch,
@@ -701,7 +700,7 @@ fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError
     Ok(1usize << log2_dim)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub(super) fn reconstruct_block_setup(
     prediction_len: usize,
@@ -783,7 +782,6 @@ pub(super) fn dequantize_coeff_block(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use splot_recon::inverse_transform_2d_outer;

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use crate::reference::buffer::RefSlots;
 
 use splot_core::headers::frame::{
@@ -15,8 +13,8 @@ use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize, ReconError, ReferenceSlot, SharedFrame,
+    BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat,
+    PlaneId, PlaneRect, PlaneSize, ReconError, ReferenceSlot, SharedFrame,
 };
 
 use super::block::{
@@ -554,7 +552,7 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
     ];
     let residual = super::InterResidual { block_range: 0..3 };
     super::add_inter_residual_to_workspace(
-        &mut super::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &u_quant,
@@ -617,7 +615,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
     }];
     let residual = super::InterResidual { block_range: 0..1 };
     super::add_inter_residual_to_workspace(
-        &mut super::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &residual,
         &residual_blocks,
         &quant,
@@ -2418,14 +2416,4 @@ fn tile_neighbour_availability_is_tile_bounded() {
     assert_eq!(tile_neighbour_availability(9, 16, 8, 16), (true, false));
     assert_eq!(tile_neighbour_availability(8, 17, 8, 16), (false, true));
     assert_eq!(tile_neighbour_availability(9, 17, 8, 16), (true, true));
-}
-
-#[test]
-fn floor_log2_matches_msb_index() {
-    use super::cross_frame::floor_log2;
-    assert_eq!(floor_log2(0), 0);
-    assert_eq!(floor_log2(1), 0);
-    assert_eq!(floor_log2(2), 1);
-    assert_eq!(floor_log2(64 * 64), 12);
-    assert_eq!(floor_log2(4095), 11);
 }

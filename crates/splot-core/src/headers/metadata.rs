@@ -917,7 +917,6 @@ fn parse_band_units(reader: &mut BitReader<'_>) -> Result<BandUnits> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

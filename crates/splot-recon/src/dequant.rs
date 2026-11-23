@@ -9,10 +9,9 @@
 //! `#s-7-14-2`): the `Ac_Qlookup` base table, the `qlookup` shift-extension
 //! function, the `MaxQ` derivation from the active decoded bit depth
 //! (§ 6.4.1 Table 6.3), `get_q` ([`quantizer_value`]) mapping a resolved
-//! quantizer index and a signed delta to a quantizer value, `get_qindex`
-//! ([`quantizer_index`]) resolving the per-block quantizer index from
-//! caller-supplied frame and segment facts, and the per-plane `get_dc_quant` /
-//! `get_ac_quant` composition ([`dc_quantizer`] / [`ac_quantizer`]).
+//! quantizer index and a signed delta to a quantizer value, and the per-plane
+//! `get_dc_quant` / `get_ac_quant` composition ([`dc_quantizer`] /
+//! [`ac_quantizer`]).
 //!
 //! Feature tracking: `RECON-DEQUANT-QUANTIZER-LOOKUP`,
 //! `RECON-DEQUANT-QUANTIZER-INDEX-RESOLUTION`.
@@ -130,7 +129,8 @@ pub fn quantizer_value(qindex: u32, delta: i32, bit_depth: BitDepth) -> u32 {
 /// them). Saturating `u32` add/subtract keeps all inputs total
 /// and panic-free.
 #[must_use]
-pub fn quantizer_index(
+#[cfg(test)]
+pub(crate) fn quantizer_index(
     base_q_idx: u32,
     current_q_index: u32,
     segment_alt_q_active: bool,
@@ -177,7 +177,7 @@ pub struct QuantizerDeltas {
 /// AV2 § 7.14.2 `get_dc_quant( plane )`: the DC quantizer value for a plane.
 ///
 /// Selects the plane's DC delta from `deltas` and applies [`quantizer_value`] to
-/// the resolved `qindex` (the [`quantizer_index`] output).
+/// the resolved `qindex` (the `get_qindex` output).
 #[must_use]
 pub fn dc_quantizer(
     plane: PlaneId,
@@ -197,7 +197,7 @@ pub fn dc_quantizer(
 ///
 /// The luma AC delta is 0 per § 7.14.2; chroma selects its AC delta from
 /// `deltas`. The result applies [`quantizer_value`] to the resolved `qindex`
-/// (the [`quantizer_index`] output).
+/// (the `get_qindex` output).
 #[must_use]
 pub fn ac_quantizer(
     plane: PlaneId,

@@ -116,7 +116,7 @@ impl Default for DecodeOptions {
 }
 
 /// Caller-provided resource limits for decode planning and runtime.
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLimits {
     max_input_bytes: DecodeLimitThreshold,
@@ -590,15 +590,23 @@ impl DecodeLimitCheck {
 }
 
 /// Typed local failure from a decode resource limit helper.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeLimitError {
     /// A measured value exceeded its configured threshold.
+    #[error(
+        "decode limit {} exceeded: actual {} {} is greater than {}",
+        .check.name(),
+        .check.actual(),
+        .check.unit(),
+        .check.threshold()
+    )]
     LimitExceeded {
         /// Failed check metadata.
         check: DecodeLimitCheck,
     },
     /// Checked arithmetic overflowed while deriving a measured value.
+    #[error("decode limit {name} overflow while deriving value with {op}: {left}, {right}")]
     ArithmeticOverflow {
         /// Limit being derived.
         name: DecodeLimitName,
@@ -610,6 +618,7 @@ pub enum DecodeLimitError {
         right: u64,
     },
     /// An accepted value cannot be represented as a host allocation length.
+    #[error("decode limit {name} value {actual} cannot fit in a host allocation length")]
     HostAllocationTooLarge {
         /// Limit being converted to a host allocation length.
         name: DecodeLimitName,
@@ -676,36 +685,6 @@ impl DecodeLimitError {
         }
     }
 }
-
-impl fmt::Display for DecodeLimitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::LimitExceeded { check } => write!(
-                f,
-                "decode limit {} exceeded: actual {} {} is greater than {}",
-                check.name(),
-                check.actual(),
-                check.unit(),
-                check.threshold()
-            ),
-            Self::ArithmeticOverflow {
-                name,
-                op,
-                left,
-                right,
-            } => write!(
-                f,
-                "decode limit {name} overflow while deriving value with {op}: {left}, {right}"
-            ),
-            Self::HostAllocationTooLarge { name, actual } => write!(
-                f,
-                "decode limit {name} value {actual} cannot fit in a host allocation length"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for DecodeLimitError {}
 
 /// Result alias for decode limit helpers.
 pub type DecodeLimitResult<T> = Result<T, DecodeLimitError>;

@@ -105,7 +105,7 @@ pub(crate) struct CoeffBrContext {
 }
 
 impl CoeffBrContext {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: plain inline leaves two out-of-line calls in the level loop"
     )]
@@ -130,7 +130,7 @@ impl CoeffBrContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn neighbour_mag<const CLASS: usize>(self, level: &LevelGrid) -> u32 {
         let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
@@ -192,7 +192,7 @@ pub(crate) struct CoeffBaseContext {
 }
 
 impl CoeffBaseContext {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "the coefficient loop calls this per coefficient; keep it inlined beside the encoder facade"
     )]
@@ -257,7 +257,7 @@ impl CoeffBaseContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn neighbour_mag<const CLASS: usize>(&self, level: &LevelGrid) -> u32 {
         let lf_limit = self.is_lf && !(self.is_hidden && self.c == 0);
@@ -281,7 +281,7 @@ impl CoeffBaseContext {
 
 /// The `dc_sign` context (§ 8.3.2) from the above and left context lines
 /// (see `coeff_state::DC_CATEGORY_SHIFT`) of a block at `x4, y4` of `w4` by `h4`.
-#[allow(clippy::inline_always, reason = "measured: once per coded DC")]
+#[expect(clippy::inline_always, reason = "measured: once per coded DC")]
 #[inline(always)]
 pub(crate) fn dc_sign_ctx(
     above: &[u8],
@@ -310,7 +310,7 @@ const fn dc_votes(word: u64) -> i32 {
 
 /// Net sign of the DC categories of the `len` context-line bytes from
 /// `start`, clamped to the line.
-#[allow(clippy::inline_always, reason = "measured: twice per coded DC")]
+#[expect(clippy::inline_always, reason = "measured: twice per coded DC")]
 #[inline(always)]
 fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
     let run = line.get(start..).unwrap_or_default();

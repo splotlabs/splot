@@ -7,12 +7,13 @@
 
 use splot_core::headers::content_interpretation::{
     AspectRatioInfo, ChromaSamplePosition as CodedChromaSamplePosition, ColorDescription,
-    ContentInterpretation,
+    ColorPrimariesTriple, ContentInterpretation, DerivedColorInfo,
 };
 use splot_core::headers::frame::{encode_content_interpretation_obu, encode_metadata_obu};
+pub use splot_core::headers::metadata::MetadataHdrCll as ContentLightLevel;
 use splot_core::headers::metadata::{
-    MetadataHdrCll, MetadataHdrMdcv, MetadataIccProfile, MetadataItutT35, MetadataPayload,
-    MetadataType, MetadataUserDataUnregistered,
+    MetadataHdrMdcv, MetadataIccProfile, MetadataItutT35, MetadataPayload, MetadataType,
+    MetadataUserDataUnregistered,
 };
 use splot_core::headers::sequence::TimingInfo;
 use splot_recon::PixelFormat;
@@ -53,16 +54,6 @@ pub struct MasteringDisplay {
     pub luminance_min: u32,
 }
 
-/// Upper bounds of the light level of the content (`metadata_hdr_cll()`,
-/// § 6.16.5) in cd/m²; 0 gives no bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContentLightLevel {
-    /// Maximum light level of any sample (MaxCLL).
-    pub max_cll: u16,
-    /// Maximum frame-average light level (MaxFALL).
-    pub max_fall: u16,
-}
-
 /// The description of the source content. The default describes nothing, and
 /// the stream then has no content interpretation or HDR metadata OBU. The
 /// encoder never guesses a value and never converts samples to match one.
@@ -86,7 +77,9 @@ pub struct ContentDescription {
     pub timing_info: bool,
     /// Mastering display colour volume of HDR content.
     pub mastering_display: Option<MasteringDisplay>,
-    /// Content light level of HDR content.
+    /// Content light level of HDR content: upper bounds in cd/m² of any
+    /// sample (MaxCLL) and of a frame average (MaxFALL), § 6.16.5; 0 gives
+    /// no bound.
     pub content_light_level: Option<ContentLightLevel>,
 }
 
@@ -145,14 +138,14 @@ impl ContentDescription {
     /// OBUs `mfh`, then the mastering display and content light level
     /// metadata OBUs. Empty when nothing is described and `mfh` is empty.
     pub(crate) fn obus(&self, frame_rate: (u32, u32), mfh: &[u8]) -> Result<Vec<u8>> {
-        let code_points = (
-            self.color_primaries,
-            self.transfer_characteristics,
-            self.matrix_coefficients,
-        );
-        let unspecified = (Self::UNSPECIFIED, Self::UNSPECIFIED, Self::UNSPECIFIED);
+        let code_points = ColorPrimariesTriple {
+            color_primaries: self.color_primaries,
+            transfer_characteristics: self.transfer_characteristics,
+            matrix_coefficients: self.matrix_coefficients,
+        };
         let mut content = ContentInterpretation::progressive();
-        content.color_description = (code_points != unspecified || self.full_range)
+        content.color_description = (code_points != DerivedColorInfo::UNSPECIFIED.code_points
+            || self.full_range)
             .then(|| ColorDescription::from_code_points(code_points, self.full_range));
         content.chroma_sample_position =
             self.chroma_sample_position
@@ -189,8 +182,8 @@ impl ContentDescription {
             let obu = encode_metadata_obu(MetadataType::HdrMdcv, payload, &[]);
             obus.extend(obu.map_err(crate::intra_frame::coding("mastering display"))?);
         }
-        if let Some(ContentLightLevel { max_cll, max_fall }) = self.content_light_level {
-            let payload = MetadataPayload::HdrCll(MetadataHdrCll { max_cll, max_fall });
+        if let Some(light_level) = self.content_light_level {
+            let payload = MetadataPayload::HdrCll(light_level);
             let obu = encode_metadata_obu(MetadataType::HdrCll, payload, &[]);
             obus.extend(obu.map_err(crate::intra_frame::coding("content light level"))?);
         }

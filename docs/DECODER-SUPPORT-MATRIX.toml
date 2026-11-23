@@ -73,17 +73,17 @@ notes = "Checks decoder section coverage, support-row links, Feature IDs, diagno
 
 [[row]]
 id = "decoder-status-drift-gate"
-name = "Decoder support drift gate"
+name = "Decoder support matrix gate"
 feature_id = "XTASK-DECODER-SUPPORT-STATUS"
 spec_sections = []
 parser_source = "n/a"
 decode_module = "xtask/src/decoder_support.rs"
 tier = "foundation"
 status = "supported"
-self_contained_tests = ["decoder_support::tests::check_decoder_support_detects_drift", "cargo xtask check-decoder-support"]
+self_contained_tests = ["decoder_support::tests::check_decoder_support_accepts_a_valid_matrix", "cargo xtask check-decoder-support"]
 diagnostics = []
 local_reference_evidence = []
-notes = "Generates docs/DECODER-SUPPORT-STATUS.md on demand and checks any committed render without invoking local reference tools."
+notes = "Generates docs/DECODER-SUPPORT-STATUS.md on demand and validates the matrix without invoking local reference tools."
 
 [[row]]
 id = "local-reference-evidence-manifest"
@@ -1970,7 +1970,7 @@ parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.
 decode_module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/max_level.rs; crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass.rs"
 tier = "tier1-intra"
 status = "partial"
-self_contained_tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/max_level_tests.rs::coefficient_transform_class_derives_from_plane_tx_type", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+self_contained_tests = ["crates/splot-recon/src/coefficient_scan.rs::tests::tx_class_maps_every_plane_tx_type", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
 notes = "Coefficient transform class is derived from the plane transform type for context, scan, and maximum-level calculations."

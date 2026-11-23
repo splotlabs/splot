@@ -15,11 +15,6 @@
 //! model is kept only where it beats both the zero model and the best
 //! translation, which blocks code as vectors without parameter bits.
 
-#![allow(
-    clippy::many_single_char_names,
-    reason = "model terms and point coordinates keep their geometric names"
-)]
-
 use splot_core::write::BitWriter;
 use splot_core::write::global_motion::write_global_param;
 use splot_recon::{
@@ -28,7 +23,7 @@ use splot_recon::{
 };
 
 use crate::global_motion::{
-    ALPHA_MAX, ALPHA_STEP, MIN_PAIRS, MIN_TEXTURE, PREC, TRANS_MAX, TRANS_STEP, sampler,
+    ALPHA_MAX, ALPHA_STEP, MIN_PAIRS, MIN_TEXTURE, PREC, Pair, TRANS_MAX, TRANS_STEP, sampler,
 };
 use crate::lookahead::BlockMotion;
 
@@ -53,9 +48,6 @@ pub(crate) struct LumaPair<'a> {
     pub(crate) height: usize,
     pub(crate) bit_depth: BitDepth,
 }
-
-/// A point and where its vector moves it, in luma samples.
-type Pair = [f64; 4];
 
 /// An affine `[m2, m3, m4, m5, tx, ty]`: `u = m2 x + m3 y + tx`,
 /// `v = m4 x + m5 y + ty`.
@@ -407,7 +399,6 @@ fn param_bits(params: &[i32; 6]) -> Option<u64> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

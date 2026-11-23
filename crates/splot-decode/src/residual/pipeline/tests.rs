@@ -901,7 +901,7 @@ fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
     let plan = GeneralIntraResidualPlan::rect(
         block_ctx,
         RectLumaPlan::Smooth {
-            mode: SupportedNonDcLumaMode::Smooth,
+            mode: IntraSmoothMode::Smooth,
             use_tcq: false,
         },
         None,
@@ -927,7 +927,7 @@ fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
     assert_eq!(
         unit.reconstruction,
         ResidualReconstructionPlan::Luma(RectLumaPlan::Smooth {
-            mode: SupportedNonDcLumaMode::Smooth,
+            mode: IntraSmoothMode::Smooth,
             use_tcq: false,
         })
     );
@@ -1076,7 +1076,7 @@ fn first_partition_handoff_rejects_invalid_transform_geometry() {
     let plan = GeneralIntraResidualPlan::rect(
         block_ctx,
         RectLumaPlan::Smooth {
-            mode: SupportedNonDcLumaMode::Smooth,
+            mode: IntraSmoothMode::Smooth,
             use_tcq: false,
         },
         None,
@@ -1354,7 +1354,7 @@ fn rect_luma_reconstruct_masks_tile_unavailable_above_edge() {
     let plans = [
         RectLumaPlan::Dc { use_tcq: false },
         RectLumaPlan::Smooth {
-            mode: SupportedNonDcLumaMode::SmoothVertical,
+            mode: IntraSmoothMode::SmoothVertical,
             use_tcq: false,
         },
     ];

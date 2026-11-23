@@ -334,7 +334,6 @@ impl Default for FrameProducts {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 

@@ -33,10 +33,10 @@ pub(crate) fn write_y4m_stream_to_writer(
         session,
         |header| preflight_y4m_source(header, frame_rate_override),
         |output| {
-            let (numerator, denominator) =
-                (output.frame_rate_numerator, output.frame_rate_denominator);
+            let rate = output.frame_rate;
             let frame_rate = || {
-                frame_rate_override.map_or_else(|| Y4mFrameRate::new(numerator, denominator), Ok)
+                frame_rate_override
+                    .map_or_else(|| Y4mFrameRate::new(rate.numerator, rate.denominator), Ok)
             };
             let grain = output.output_grain(options);
             match &output.ready_frame()? {

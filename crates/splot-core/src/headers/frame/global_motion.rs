@@ -11,7 +11,7 @@
 use crate::bitio::BitReader;
 use crate::error::{GlobalMotionErrorKind, Result};
 
-use super::get_ref_frames::{RESTRICTED_OH, get_relative_dist};
+use super::get_ref_frames::{RESTRICTED_OH, RESTRICTED_ORDER_HINT, get_relative_dist};
 use super::info::FrameType;
 
 /// `WARPEDMODEL_PREC_BITS` (AV2 v1.0.0 § 3): internal precision of warped motion models.
@@ -62,8 +62,9 @@ pub const REFS_PER_FRAME: usize = 7;
 /// One frame's § 7.23 `SavedGmParams[slot]` table.
 pub type SavedGlobalMotionParams = [[i32; 6]; REFS_PER_FRAME];
 
-/// One frame's § 7.23 `SavedOrderHints[slot]` table. `u32::MAX` represents
-/// `RESTRICTED_OH`, matching the rest of the frame-header reference-state API.
+/// One frame's § 7.23 `SavedOrderHints[slot]` table, with
+/// [`RESTRICTED_ORDER_HINT`] for `RESTRICTED_OH` as in the rest of the
+/// frame-header reference-state API.
 pub type SavedGlobalMotionOrderHints = [u32; REFS_PER_FRAME];
 
 /// Cross-frame § 7.23 state consumed by the inter `global_motion_params()` arm.
@@ -71,7 +72,7 @@ pub type SavedGlobalMotionOrderHints = [u32; REFS_PER_FRAME];
 pub struct GlobalMotionReferenceState<'a> {
     /// Current decoded `OrderHint`.
     pub order_hint: u32,
-    /// `RefOrderHint[slot]`; `u32::MAX` represents `RESTRICTED_OH`.
+    /// `RefOrderHint[slot]`; [`RESTRICTED_ORDER_HINT`] represents `RESTRICTED_OH`.
     pub ref_order_hint: &'a [u32],
     /// `RefNumTotalRefs[slot]`.
     pub ref_num_total_refs: &'a [u32],
@@ -180,7 +181,7 @@ pub struct GlobalMotionParams {
     pub stop: Option<GlobalMotionStop>,
     /// The per-reference warp models, indexed `0..REFS_PER_FRAME`. Populated only when the
     /// per-reference loop is reached (which requires the cross-frame `OrderHints` state);
-    /// at the honest stop every entry is the identity initialiser (mirror :7780-7788).
+    /// at the stop every entry is the identity initialiser (mirror :7780-7788).
     pub references: [GlobalMotionRef; REFS_PER_FRAME],
 }
 
@@ -227,7 +228,7 @@ pub struct GlobalMotionInput<'a> {
     /// `ref_frame_idx[ 0..NumTotalRefs ]` (the inter control region's reference map): the
     /// base-warp arm reads `ref_frame_idx[ our_ref ]` (mirror :7828).
     pub ref_frame_idx: &'a [u32],
-    /// Cross-frame state needed once `use_global_motion == 1`. `None` preserves an honest
+    /// Cross-frame state needed once `use_global_motion == 1`. `None` preserves a
     /// coverage stop for inspectors that do not model the § 7.23 reference buffer.
     pub reference_state: Option<GlobalMotionReferenceState<'a>>,
 }
@@ -429,7 +430,7 @@ fn reference_order_hint(
 }
 
 fn order_hint_to_spec(reader: &BitReader<'_>, raw: u32) -> Result<i32> {
-    if raw == u32::MAX {
+    if raw == RESTRICTED_ORDER_HINT {
         Ok(RESTRICTED_OH)
     } else {
         i32::try_from(raw)
@@ -437,8 +438,8 @@ fn order_hint_to_spec(reader: &BitReader<'_>, raw: u32) -> Result<i32> {
     }
 }
 
-/// `PrevGmParams` of a reference with order hint `ref_hint` (`u32::MAX` is
-/// `RESTRICTED_OH`) in a frame with order hint `order_hint` whose
+/// `PrevGmParams` of a reference with order hint `ref_hint`
+/// ([`RESTRICTED_ORDER_HINT`] is `RESTRICTED_OH`) in a frame with order hint `order_hint` whose
 /// `baseParams` and `baseDistance` are `base` (§ 5.18.9.1); `None` where the
 /// reference reads no model.
 pub(crate) fn base_prediction(
@@ -686,7 +687,6 @@ fn invalid_subexp_value(reader: &BitReader<'_>) -> crate::error::Error {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::super::tests::frame_for;
 use super::*;
 use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
@@ -10,8 +8,8 @@ use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
 const WIDTH: usize = 64;
 const HEIGHT: usize = 32;
 
-fn mv(row: i32, col: i32) -> Mv {
-    Mv { row, col }
+fn mv(row: i32, col: i32) -> MotionVector {
+    MotionVector { row, col }
 }
 
 fn reference<T: ReconSample>(
@@ -75,7 +73,7 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
     );
     let mut units = RefinedUnits::with_cells(cells.to_vec(), columns, unit_size, merge);
     predict_refined_block(
-        &mut WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         &block,
         &mut units,
         ByteOffset::new(0),
@@ -145,7 +143,7 @@ fn merged_runs_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
         }
     }
     assert!(fullpel_run_pairs(&cells, 6));
-    let cells_of = |mvs: &[[Mv; 2]]| {
+    let cells_of = |mvs: &[[MotionVector; 2]]| {
         mvs.iter()
             .map(|&mvs| MotionCell::from_refinemv(mvs))
             .collect::<Vec<_>>()
@@ -348,7 +346,7 @@ fn noisy_ramps<T: ReconSample>(
 /// The TIP units of 8x8 over the whole frame, and their per-unit cells.
 fn tip_grid_and_cells<T: ReconSample>(
     references: &[DecodedFrame<T>; 2],
-    mvs: &[[Mv; 2]],
+    mvs: &[[MotionVector; 2]],
     (threshold, refine, search): (Option<u32>, bool, bool),
     pool: Option<&splot_parallel::WorkerPool>,
 ) -> (TipUnits, Vec<MotionCell>) {
@@ -380,7 +378,7 @@ fn tip_grid_and_cells<T: ReconSample>(
         width,
         height,
     );
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     let grid = || {
         let mut units = TipUnits::default();
@@ -416,7 +414,7 @@ fn tip_grid_and_cells<T: ReconSample>(
 /// against its cells.
 fn check_tip_grid<T: ReconSample>(
     references: &[DecodedFrame<T>; 2],
-    mvs: &[[Mv; 2]],
+    mvs: &[[MotionVector; 2]],
     modes: (Option<u32>, bool, bool),
     pool: Option<&splot_parallel::WorkerPool>,
     label: &str,
@@ -436,9 +434,9 @@ fn check_tip_grid<T: ReconSample>(
 }
 
 /// `count` units that repeat four mirrored candidates, mostly full-pel.
-fn repeated_candidates(count: usize, s: &mut u64) -> Vec<[Mv; 2]> {
+fn repeated_candidates(count: usize, s: &mut u64) -> Vec<[MotionVector; 2]> {
     let mut component = || (lcg(s) % 21) as i32 * 8 - 80 + i32::from(lcg(s).is_multiple_of(6)) * 3;
-    let palette: Vec<[Mv; 2]> = (0..4)
+    let palette: Vec<[MotionVector; 2]> = (0..4)
         .map(|_| {
             let first = mv(component(), component());
             [first, mv(-first.row, -first.col)]
@@ -506,8 +504,8 @@ fn tip_motion_grids_match_per_unit_cells() {
 
 #[test]
 fn chroma_implicit_mask_reads_one_motion_cell_per_four_by_four_subblock() {
-    let onscreen = MotionCell::from_refinemv([Mv::ZERO; 2]);
-    let ref1_offscreen = MotionCell::from_refinemv([Mv::ZERO, mv(512, 0)]);
+    let onscreen = MotionCell::from_refinemv([MotionVector::ZERO; 2]);
+    let ref1_offscreen = MotionCell::from_refinemv([MotionVector::ZERO, mv(512, 0)]);
     let motion = CompoundMotionGrid {
         unit_size: 4,
         columns: 2,
@@ -572,7 +570,7 @@ fn edge_units_match_a_larger_storage<T: ReconSample + CompoundAverageOutput + Se
     {
         let rect = McBlockRect::from_luma_rect(x, y, bw, bh);
         let columns = bw / unit;
-        let candidates: Vec<[Mv; 2]> = (0..(columns * (bh / unit)) as i32)
+        let candidates: Vec<[MotionVector; 2]> = (0..(columns * (bh / unit)) as i32)
             .map(|i| [mv(row + 3 * i, col - 5), mv(row - 2 * i, col + 7)])
             .collect();
         let planes = [(w, h), (w + 48, h + 48)].map(|size| {
@@ -593,7 +591,7 @@ fn edge_units_match_a_larger_storage<T: ReconSample + CompoundAverageOutput + Se
             .expect("compound block");
             let mut workspace =
                 super::super::tests::workspace_for::<T>(bit_depth, format, size.0, size.1);
-            let mut sink = WorkspaceSink::Frame(&mut workspace);
+            let mut sink = CurrentFrameSurface::Frame(&mut workspace);
             let (mut units, mut mvs) = (TipUnits::default(), candidates.clone());
             let (grid, offset) = ((columns, unit), ByteOffset::new(0));
             refine_tip_units(&sink, &block, &mvs, &mut units, grid, offset).expect("units");

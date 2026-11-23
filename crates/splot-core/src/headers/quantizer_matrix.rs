@@ -310,7 +310,7 @@ fn user_defined_qm(
 /// Returns the raster positions `row * width + col` in scan order. The fundamental
 /// quantizer-matrix transforms are at most 8x8, so the spec's `Min(.., 32)` width/
 /// height clamps never apply.
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 pub(crate) fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
     let mut out = vec![0usize; width * height];
     let (w, h) = (width as i32, height as i32);
@@ -330,7 +330,6 @@ pub(crate) fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

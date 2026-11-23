@@ -41,14 +41,14 @@ use crate::types::ObuType;
 use super::global_motion::{
     DEFAULT_WARP_PARAMS, REFS_PER_FRAME, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
 };
-use super::{FrameHeaderPrefix, parse_frame_header_prefix};
+use super::{FrameHeaderPrefix, RESTRICTED_ORDER_HINT, parse_frame_header_prefix};
 
 mod seq_view;
 mod show_existing;
 mod status;
 
 pub use seq_view::{CoreSeqInterView, CoreSeqView, MfhFrameView};
-pub use status::{FrameHeaderParseMode, FrameHeaderParseStatus, FrameType, SefTrailingBits};
+pub use status::{FrameHeaderParseStatus, FrameType, SefTrailingBits};
 
 use seq_view::all_frames_mask;
 use show_existing::parse_show_existing_frame;
@@ -84,9 +84,8 @@ pub struct FrameReferenceStateView<'a> {
     /// § 7.7 `get_ref_frames()` scoring input: with **two or more** valid reference
     /// slots the implicit reference-map ranking depends on it, so the inter parser
     /// can only lift its at-most-one-valid-slot gate once the caller supplies it.
-    /// `None` (the [`Self::from_slots`] constructor) keeps the historical
-    /// at-most-one-valid-slot behavior — the unmodeled `RefBaseQIdx` makes a
-    /// multi-valid-slot derivation an honest `UnmodeledDerivation` stop.
+    /// `None` (the [`Self::from_slots`] constructor) limits the § 7.7 derivation to at
+    /// most one valid slot; more valid slots stop with `UnmodeledDerivation`.
     pub ref_base_q_idx: Option<&'a [u32]>,
     /// `[RefDeltaQUAc[i], RefDeltaQVAc[i]]` per reference slot (AV2 § 7.23), used by
     /// bridge and implicit-QP TIP output frames.
@@ -156,11 +155,10 @@ impl<'a> FrameReferenceStateView<'a> {
     ///
     /// The slices are parallel, one entry per reference slot. The caller (the validator's
     /// § 7.23 buffer model) owns the backing storage; the view borrows it for the parse.
-    /// A `cur_mfh_id == 0` / intra parse does not read these today — the constructor is
-    /// the forward-plumbing entry point for the § 5.18 inter reference paths.
+    /// A `cur_mfh_id == 0` / intra parse does not read these.
     ///
     /// Because `RefBaseQIdx` is left unmodeled, a § 7.7 derivation that finds **two or
-    /// more** valid slots stays an honest `UnmodeledDerivation` stop (the ranking needs
+    /// more** valid slots stays an `UnmodeledDerivation` stop (the ranking needs
     /// the per-slot quantizer). Use [`Self::from_slots_with_base_q_idx`] when the caller
     /// models `RefBaseQIdx` and needs the multi-valid-slot ranking.
     #[must_use]
@@ -305,7 +303,7 @@ pub struct FrameHeaderParseInput<'a> {
     /// `FirstPictureInTU` decoder state, used to derive `startCVS`.
     pub first_picture_in_tu: bool,
     /// The active sequence header this frame resolves to (`load_sequence_header()`),
-    /// or `None` when it is unavailable. Core mode needs a fully parsed sequence
+    /// or `None` when it is unavailable. The core parse needs a fully parsed sequence
     /// header (with its inter and screen-content configs) to read beyond the
     /// activation fields; otherwise the result is [`FrameHeaderParseStatus::ActivationFieldsOnly`].
     pub active_sequence: Option<&'a SequenceHeader>,
@@ -318,8 +316,6 @@ pub struct FrameHeaderParseInput<'a> {
     pub mfh_record: Option<&'a MultiFrameHeaderRecord>,
     /// Reference-frame buffer state (see [`FrameReferenceStateView`]).
     pub reference_state: FrameReferenceStateView<'a>,
-    /// Which parser path to take.
-    pub mode: FrameHeaderParseMode,
 }
 
 /// A state-aware core parse of `frame_header_info()` (AV2 v1.0.0 § 5.18.2).
@@ -499,7 +495,7 @@ pub struct FrameHeaderCore {
     pub inter: Option<crate::headers::frame::inter::InterControl>,
     /// `true` once the parse passes the § 5.18.2 `reset_qm()` call site (AV2 mirror
     /// `05-syntax-structures.md` :4279-4283) with its trigger condition satisfied — i.e. the
-    /// parse reached the point AFTER `restricted_prediction_switch`, the
+    /// parse reached the point after `restricted_prediction_switch`, the
     /// `num_key_ref_frames` / `ref_long_term_id[i]` list, and the SWITCH-restricted output
     /// flush, with `obu_type == OBU_RAS_FRAME || (obu_type == OBU_SWITCH &&
     /// restricted_prediction_switch)`. This is an explicit "reached reset_qm" fact: it stays
@@ -508,7 +504,7 @@ pub struct FrameHeaderCore {
     /// so a consumer can confirm the § 7.3.8.9 quantizer-matrix availability reset from the
     /// parsed bits alone rather than requiring the whole core parse to complete.
     /// `false` for every frame type whose `reset_qm()` trigger is not met, and for a RAS /
-    /// restricted SWITCH whose parse stops BEFORE the call site (truncated mid-prefix or
+    /// restricted SWITCH whose parse stops before the call site (truncated mid-prefix or
     /// mid-`ref_long_term_id` — the reset is then unconfirmed).
     pub reached_qm_reset: bool,
     /// Bits consumed by this parse (not necessarily the whole frame header).
@@ -574,7 +570,7 @@ fn get_disp_order_hint(
         let showable = implicit.get(index).copied()? || immediate.get(index).copied()?;
         if showable {
             let hint = hints.get(index).copied()?;
-            if hint != u32::MAX {
+            if hint != RESTRICTED_ORDER_HINT {
                 max_disp = max_disp.max(hint);
             }
         }
@@ -610,9 +606,7 @@ pub fn parse_frame_header_core(
         parse_frame_header_prefix(reader, input.obu_type, Some(input.first_picture_in_tu))?;
     let mut core = init_core_from_prefix(&prefix, input.obu_type, input.first_picture_in_tu);
 
-    if input.mode == FrameHeaderParseMode::Core
-        && let Some(seq) = input.active_sequence.and_then(CoreSeqView::from_sequence)
-    {
+    if let Some(seq) = input.active_sequence.and_then(CoreSeqView::from_sequence) {
         let mfh_view = if core.cur_mfh_id.is_zero() {
             None
         } else {
@@ -1104,7 +1098,7 @@ pub(crate) fn build_inter_seq_view(
 /// `IsBridge` early-return arm (mirror :4971/:5045). With the selected reference's
 /// § 7.23 quantizer state available, the zero-bit bridge `tile_info()` layout, inherited
 /// quantizer, and `film_grain_config()` are derived and the header completes. Missing
-/// reference facts remain an honest unsupported stop, with parsed bridge facts preserved.
+/// reference facts remain an unsupported stop, with parsed bridge facts preserved.
 fn parse_bridge_inter_path(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
@@ -1671,7 +1665,6 @@ fn read_refresh_frame_flags(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
 #[cfg(test)]

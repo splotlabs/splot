@@ -43,14 +43,14 @@ use neon as kernel;
 /// Whether the byte-lane kernels cover `block`: strips of 8 columns, the
 /// last overlapping the one before it, or 4 columns in pairs of rows with at
 /// most two horizontal tap pairs.
-#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[expect(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
 pub(super) fn fits<T>(block: &Block<'_, T>) -> bool {
     block.w >= 8 || (block.w == 4 && block.h.is_multiple_of(2) && pairs(block.horizontal) <= 2)
 }
 
 /// The tap pairs of a pass, zero for a skipped pass.
-#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[expect(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
 pub(super) fn pairs(taps: Option<&Taps>) -> usize {
     taps.map_or(0, |taps| taps.count)
@@ -76,7 +76,7 @@ pub(super) fn predict<T: ReconSample>(block: &Block<'_, T>, sink: &mut Sink<'_>)
 
 /// Stores the `Clip1` single-reference prediction of `block` into `output`
 /// rows `stride` apart.
-#[allow(clippy::inline_always, reason = "measured put hot path")]
+#[expect(clippy::inline_always, reason = "measured put hot path")]
 #[inline(always)]
 pub(super) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
     if block.horizontal.is_none() && block.vertical.is_none() && copy(block, output, stride) {
@@ -188,7 +188,7 @@ enum Path {
 }
 
 /// The [`Path`] of the compound pair `blocks`.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 fn path(blocks: [&Block<'_, u8>; 2]) -> Path {
     let (w, h) = (blocks[0].w, blocks[0].h);
@@ -277,7 +277,7 @@ pub(super) fn program(
 #[cfg(not(target_arch = "aarch64"))]
 #[cfg_attr(
     target_arch = "x86_64",
-    allow(dead_code, reason = "the AVX2 kernels decline to part of these")
+    expect(dead_code, reason = "the AVX2 kernels decline to part of these")
 )]
 mod generic {
     use super::super::ReferencePlaneView;

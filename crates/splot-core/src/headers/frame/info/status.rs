@@ -3,18 +3,6 @@
 
 //! Parse-result vocabulary for the AV2 § 5.18.2 frame-header core parser.
 
-/// Which parser path a caller selects for a frame header (AV2 v1.0.0 § 5.18).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum FrameHeaderParseMode {
-    /// Read only the activation/reference prefix of `frame_header_info()` — exactly
-    /// the fields [`super::parse_frame_header_prefix`] consumes.
-    ActivationPrefix,
-    /// Read the frame-header core control region for state-supported paths, stopping
-    /// with an explicit status before unmodeled syntax.
-    Core,
-}
-
 /// How much of `frame_header_info()` was consumed (AV2 § 5.18.2).
 ///
 /// The four `StoppedInside*` variants record EOF in modeled syntax; earlier parsed

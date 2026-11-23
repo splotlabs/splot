@@ -628,7 +628,7 @@ const fn group_base(group: usize, group_counts: [usize; 3]) -> usize {
 /// `m == 0` seeds zero, `m < numClasses` copies an earlier class of the frame
 /// bank, `m < numClasses + numRefFilters` copies the matched REFERENCE frame's
 /// retained taps (`RefFrameLrWienerNs`, 05:17763-17780), and the remainder
-/// translates a sampled PC-Wiener filter offset by BOTH group sizes.
+/// translates a sampled PC-Wiener filter offset by both group sizes.
 fn filter_match_coeff(
     plane_is_chroma: bool,
     match_index: usize,
@@ -681,7 +681,6 @@ fn translated_pc_wiener(match_index: usize, j: usize) -> i16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use crate::span::ByteOffset;
 

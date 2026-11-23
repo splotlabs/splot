@@ -8,11 +8,11 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
-use splot_recon::{BitDepth, DecodedFrameInfo, PlaneId, ReconSample};
+use splot_recon::{BitDepth, CurrentFrameSurface, DecodedFrameInfo, PlaneId, ReconSample};
 
 use super::super::find_mv_stack::{MvBlockContext, NeighbourFlagSyntax};
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
-use super::super::mc::{self, WorkspaceSink};
+use super::super::mc;
 use super::super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
     InterResidualBlock, PlacedInterBlock,
@@ -365,7 +365,7 @@ impl InterReconCommand {
     /// resolution pass runs ahead of reconstruction.
     fn derive_motion<T: ReconSample>(
         &self,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
         (tip_scratch, refined): (&mut TipReconstructScratch, &mut mc::RefinedUnits),
@@ -410,7 +410,7 @@ impl InterReconCommand {
     /// Reconstructs the samples of a block that does not refine its motion.
     fn reconstruct_from_motion<T: ReconSample>(
         &self,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
@@ -419,23 +419,25 @@ impl InterReconCommand {
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
         match sink {
-            WorkspaceSink::Frame(workspace) => super::prediction::reconstruct_placed_inter_block(
-                interintra_scratch,
-                workspace,
-                &self.placed,
-                residual_blocks,
-                residual_coeffs,
-                block_decoded,
-                (shared.ref_frame_idx, shared.ref_facts, &shared.held),
-                shared.reference,
-                self.qindex,
-                shared.luma_use_tcq,
-                shared.residual_use_ddt,
-                shared.bit_depth,
-                super::sequence_enables_ibp(shared.sequence),
-                shared.tile_offset,
-            )?,
-            sink @ (WorkspaceSink::Rect(_) | WorkspaceSink::OwnedRect(_)) => {
+            CurrentFrameSurface::Frame(workspace) => {
+                super::prediction::reconstruct_placed_inter_block(
+                    interintra_scratch,
+                    workspace,
+                    &self.placed,
+                    residual_blocks,
+                    residual_coeffs,
+                    block_decoded,
+                    (shared.ref_frame_idx, shared.ref_facts, &shared.held),
+                    shared.reference,
+                    self.qindex,
+                    shared.luma_use_tcq,
+                    shared.residual_use_ddt,
+                    shared.bit_depth,
+                    super::sequence_enables_ibp(shared.sequence),
+                    shared.tile_offset,
+                )?;
+            }
+            sink @ (CurrentFrameSurface::Rect(_) | CurrentFrameSurface::OwnedRect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
                     sink,
                     &self.placed,
@@ -458,7 +460,7 @@ impl InterReconCommand {
     /// one pass, deriving its § 7.22 records unless a motion pass already did.
     fn reconstruct_unit_block<T: ReconSample>(
         &self,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual: (&[InterResidualBlock], &[i32]),
         shared: &ReconShared<'_, T>,
@@ -513,10 +515,10 @@ impl InterReconCommand {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn reconstruct_ordered<T: ReconSample>(
         &mut self,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
@@ -568,7 +570,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     pub(super) fn derive_motion_logged(
         &mut self,
         command: &mut InterReconCommand,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
@@ -582,11 +584,11 @@ impl<T: ReconSample> InterReconScratch<T> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn reconstruct(
         &mut self,
         command: &mut InterReconCommand,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
@@ -606,7 +608,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn clipped_rect_is_inside_band(
     x: usize,
     y: usize,
@@ -643,7 +645,6 @@ fn clipped_rect_is_inside_band(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
 
     use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
     use splot_recon::{
@@ -654,7 +655,8 @@ mod tests {
     use super::{InterReconCommand, InterReconScratch};
     use crate::bitstream::tile_payload::LumaCoeffBlock;
     use crate::prediction::inter::{
-        BawpSyntax, InterBlock, InterResidual, InterResidualBlock, Mv, PlacedInterBlock, mc,
+        BawpSyntax, InterBlock, InterResidual, InterResidualBlock, MotionVector, PlacedInterBlock,
+        mc,
     };
 
     fn assert_send<T: Send>() {}
@@ -701,8 +703,8 @@ mod tests {
                 block: InterBlock {
                     ref_frame0: 0,
                     ref_frame1: None,
-                    mv: Mv::ZERO,
-                    mv1: Mv::ZERO,
+                    mv: MotionVector::ZERO,
+                    mv1: MotionVector::ZERO,
                     interp: InterpolationFilter::EightTap,
                     warp_params: [None, None],
                     bawp: BawpSyntax::default(),

@@ -11,8 +11,7 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film_grain};
 use splot_core::headers::frame::{
     CoreSeqQuantView, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
-    FrameHeaderParseMode, FrameHeaderParseStatus, FrameReferenceStateView, FrameType,
-    parse_frame_header_core,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     ChromaFormatIdc, CroppingWindow, ProfileIdc, SequenceHeader, parse_sequence_header,
@@ -79,16 +78,15 @@ pub(crate) struct PipelineFrame {
     pub(crate) ccso_header: Option<std::sync::Arc<FrameHeaderCore>>,
     pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
-    pub(crate) frame_rate_numerator: u32,
-    pub(crate) frame_rate_denominator: u32,
+    pub(crate) frame_rate: PipelineFrameRate,
     /// The caller data of the temporal unit that coded or showed this frame.
     pub(crate) props: crate::DataProps,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PipelineFrameRate {
-    pub(super) numerator: u32,
-    pub(super) denominator: u32,
+    pub(crate) numerator: u32,
+    pub(crate) denominator: u32,
 }
 
 impl PipelineFrameRate {
@@ -149,7 +147,6 @@ impl PipelineFrame {
 
 #[cfg(test)]
 impl PipelineDecodedFrame {
-    #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
         match self {
             Self::Eight(frame) => frame,
@@ -390,23 +387,7 @@ fn validate_profile_chroma(
     if profile.is_reserved() {
         return Err(SequenceProfileError::Reserved { profile_idc });
     }
-    let allowed = match profile_idc {
-        0..=2 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
-        ),
-        3 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv422
-        ),
-        4 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv444
-        ),
-        31 => true,
-        _ => false,
-    };
-    if allowed {
+    if profile.allows_chroma(chroma) {
         Ok(())
     } else {
         Err(SequenceProfileError::ChromaFormatMismatch {
@@ -465,7 +446,6 @@ pub(crate) fn parse_frame_core_with_reference(
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: *reference_state,
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map_err(|_| {
         unsupported_at(
@@ -577,7 +557,6 @@ pub(super) fn ensure_intra_header_complete(
 
 #[cfg(test)]
 mod sequence_profile_tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
     use crate::DecodeSourceIssueKind;

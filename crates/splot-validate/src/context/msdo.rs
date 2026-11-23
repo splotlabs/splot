@@ -20,7 +20,7 @@ pub(super) struct MsdoSubstreamMax {
     /// anchor when the violation is detected at sequence-header activation time.
     ///
     /// The § 6.8.2 MSDO↔global-LCR agreement uses the separate per-MSDO
-    /// [`ValidatorContext::msdo_agreement_snapshots`] accumulator (it must evaluate EVERY
+    /// [`ValidatorContext::msdo_agreement_snapshots`] accumulator (it must evaluate every
     /// MSDO in the CMVS, not just this live last-wins one), so the raw declaration-order
     /// aggregate / observation temporal unit are kept there rather than on this § 6.6 record.
     pub(super) offset: ByteOffset,
@@ -85,7 +85,7 @@ pub(super) struct MsdoSubStream {
 
 /// One sub-stream's § 6.6 PTL ceiling (`sub_stream_max_profile` / `sub_stream_max_level`
 /// / `sub_stream_max_tier`).
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct SubStreamCeiling {
     pub(super) max_profile: u8,

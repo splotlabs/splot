@@ -27,8 +27,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::annexb::AnnexBObuCursor;
 use crate::ivf::{
-    IVF_FRAME_HEADER_SIZE, IVF_HEADER_SIZE, IVF_SIGNATURE, IvfError, IvfHeader, IvfWarning,
-    parse_ivf_header,
+    IVF_FRAME_HEADER_SIZE, IVF_HEADER_SIZE_BYTES, IVF_SIGNATURE, IvfError, IvfHeader, IvfWarning,
+    declared_header_len, decode_frame_header, parse_ivf_header, short_frame_header,
 };
 use crate::leb128::read_leb128;
 use crate::span::ByteOffset;
@@ -43,8 +43,6 @@ pub const DEFAULT_MAX_UNIT_BYTES: usize = 256 * 1024 * 1024;
 /// only as bytes actually arrive, so a truncated unit that *declares* a large
 /// (but not present) size never forces an allocation near the per-unit cap.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
-
-const IVF_HEADER_SIZE_BYTES: usize = IVF_HEADER_SIZE as usize;
 
 /// One framed unit borrowed from the reader's reused buffer.
 ///
@@ -157,7 +155,7 @@ pub fn is_random_access_point(unit: &[u8]) -> bool {
 pub enum ReaderError {
     /// A non-EOF I/O error from the underlying reader.
     #[error("input read error: {0}")]
-    Io(io::Error),
+    Io(#[source] io::Error),
     /// A declared unit size exceeded the configured per-unit byte cap.
     #[error(
         "temporal unit at byte {offset} declares {declared} byte(s), exceeding the {cap}-byte cap"
@@ -171,7 +169,7 @@ pub enum ReaderError {
         cap: usize,
     },
     /// A terminal IVF container structural error (header or frame framing).
-    #[error("{0}")]
+    #[error(transparent)]
     Ivf(IvfError),
 }
 
@@ -504,9 +502,9 @@ impl<R: Read> TemporalUnitReader<R> {
             return Ok(());
         }
         self.buf.clear();
-        let got = self.read_into_buf(IVF_HEADER_SIZE_BYTES)?;
-        if got == IVF_HEADER_SIZE_BYTES {
-            let header_len = usize::from(u16::from_le_bytes([self.buf[6], self.buf[7]]));
+        self.read_into_buf(IVF_HEADER_SIZE_BYTES)?;
+        if let Some(wire) = self.buf.first_chunk::<IVF_HEADER_SIZE_BYTES>() {
+            let header_len = usize::from(declared_header_len(wire));
             if header_len > IVF_HEADER_SIZE_BYTES {
                 self.read_into_buf(header_len - IVF_HEADER_SIZE_BYTES)?;
             }
@@ -529,31 +527,20 @@ impl<R: Read> TemporalUnitReader<R> {
 
         self.buf.clear();
         let got = self.read_into_buf(IVF_FRAME_HEADER_SIZE)?;
-        if got < IVF_FRAME_HEADER_SIZE {
+        let Some(header) = self.buf.first_chunk::<IVF_FRAME_HEADER_SIZE>() else {
             self.done = true;
             if got == 0 {
                 return Ok(None);
             }
-            let needed = IVF_FRAME_HEADER_SIZE - got;
-            let offset = ByteOffset::new(self.pos);
-            if self.frame_index > 0 {
-                return Ok(Some(StreamUnit::IvfWarning(
-                    IvfWarning::TrailingPartialFrameHeader {
-                        frame_index: self.frame_index,
-                        offset,
-                        needed,
-                    },
-                )));
-            }
-            return Err(ReaderError::Ivf(IvfError::TruncatedFrameHeader {
-                frame_index: self.frame_index,
-                offset,
-                needed,
-            }));
-        }
-        let size = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
-        let b = &self.buf;
-        let pts = u64::from_le_bytes([b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11]]);
+            let warning = short_frame_header(
+                self.frame_index,
+                ByteOffset::new(self.pos),
+                IVF_FRAME_HEADER_SIZE - got,
+            )
+            .map_err(ReaderError::Ivf)?;
+            return Ok(Some(StreamUnit::IvfWarning(warning)));
+        };
+        let (size, pts) = decode_frame_header(header);
         let payload_offset = self.pos; // == frame header offset + 12
         if u64::from(size) > self.cap as u64 {
             self.done = true;
@@ -613,7 +600,6 @@ impl<R: Read + Seek> TemporalUnitReader<R> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::ivf::{IvfHeader, write_ivf_header};

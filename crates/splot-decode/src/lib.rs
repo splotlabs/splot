@@ -99,7 +99,7 @@ pub use hash_report::{
     DECODE_HASH_REPORT_BYTE_STREAM_ID, DECODE_HASH_REPORT_CONTRACT_ID,
     DECODE_HASH_REPORT_CONTRACT_VERSION, DECODE_HASH_REPORT_HASH_ALGORITHM_ID,
     DECODE_HASH_REPORT_RAW_INTERMEDIATE_OUTPUT_VARIANT, DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN,
-    DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport, DecodeOutputVariant,
+    DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOutputVariant,
 };
 pub use runtime::DecodeRuntimeConfig;
 pub use splot_core::headers::frame::FrameType;

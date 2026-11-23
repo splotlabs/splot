@@ -37,11 +37,11 @@ use splot_core::headers::film_grain::{FilmGrainObu, parse_film_grain};
 use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, CdefStrengthSets,
     DeblockingFilterParams, DeltaQParams, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
-    FrameHeaderParseMode, FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail,
-    FrameReferenceStateView, FrameType, GdfParams, InterControl, InterStop, InterpolationFilter,
-    LosslessInfo, LrParams, LrPlaneParams, MvPrecision, QuantizationParams, SefTrailingBits,
-    SegmentationParams, SetupQmParams, TileInfo, TipFrameMode, WienerNsFrameFilterBank,
-    WienerNsFrameFilterClass, parse_frame_header_core, parse_frame_header_prefix,
+    FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, FrameType,
+    GdfParams, InterControl, InterStop, InterpolationFilter, LosslessInfo, LrParams, LrPlaneParams,
+    MvPrecision, QuantizationParams, SefTrailingBits, SegmentationParams, SetupQmParams, TileInfo,
+    TipFrameMode, WienerNsFrameFilterBank, WienerNsFrameFilterClass, parse_frame_header_core,
+    parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -556,7 +556,7 @@ struct FrameInspectCache {
     prefix: Option<FrameHeaderPrefix>,
     /// The frame-header core parse against the resolved active sequence (AV2 § 5.18.2).
     core: Option<FrameHeaderCore>,
-    /// The § 5.19 `tile_group_obu()` structure parsed from the SAME reader continuation
+    /// The § 5.19 `tile_group_obu()` structure parsed from the same reader continuation
     /// as [`Self::core`], for the first tile group of an intra-complete coded frame.
     structure: Option<TileGroupStructure>,
 }
@@ -627,7 +627,6 @@ fn parse_inspect_core_and_structure(
         active_sequence,
         mfh_record,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     let Ok(core) = parse_frame_header_core(&mut reader, &input) else {
         return (None, None);
@@ -640,7 +639,7 @@ fn parse_inspect_core_and_structure(
 /// Parses the § 5.19 `tile_group_obu()` structure from the reader continuation left by
 /// [`parse_frame_header_core`]. Decidable only for a tile-group OBU whose frame header
 /// reached [`FrameHeaderParseStatus::IntraHeaderComplete`] on the intra path with a
-/// parsed `tile_info()`; `None` otherwise (the BRU-undecidable honest stop documented on
+/// parsed `tile_info()`; `None` otherwise (the BRU-undecidable stop documented on
 /// [`tile_group_structure_view`]).
 fn parse_inspect_tile_structure(
     reader: &mut BitReader<'_>,
@@ -714,7 +713,7 @@ struct FrameHeaderCopyView {
 }
 
 /// The § 5.19 `tile_group_obu()` structure after `frame_header()` for `--json` (AV2
-/// § 5.19). Surfaced only for the FIRST tile group of an intra-complete coded frame
+/// § 5.19). Surfaced only for the first tile group of an intra-complete coded frame
 /// (`status` records whether the structure parsed fully or truncated); `header_bytes` /
 /// `payload_size` record the `headerBytes` / unparsed § 5.20 payload boundary.
 #[derive(Serialize)]
@@ -802,15 +801,15 @@ fn resolve_inspect_sequence<'a>(
     sequences.get(&seq_id.get())
 }
 
-/// Surfaces the § 5.19 `tile_group_obu()` structure after `frame_header()` for the FIRST
+/// Surfaces the § 5.19 `tile_group_obu()` structure after `frame_header()` for the first
 /// tile group of an intra-complete coded frame (AV2 § 5.19). Decidable only when the
 /// frame header reaches [`FrameHeaderParseStatus::IntraHeaderComplete`] on the intra path
 /// (so `use_bru`/`bru_inactive` derive to 0 and the BRU arms are dead) with a parsed
-/// `tile_info()`; otherwise `None` (the BRU-undecidable honest stop).
+/// `tile_info()`; otherwise `None` (the BRU-undecidable stop).
 ///
-/// A CONTINUATION tile group (`is_first_tile_group == 0`) is deliberately NOT surfaced
-/// here: its § 5.19 structure derives from the first tile group of the SAME coded frame
-/// in the SAME layer triple, and that pairing is the validator's state — the
+/// A continuation tile group (`is_first_tile_group == 0`) is deliberately not surfaced
+/// here: its § 5.19 structure derives from the first tile group of the same coded frame
+/// in the same layer triple, and that pairing is the validator's state — the
 /// `(xlayer, mlayer, tlayer)` key plus the segmenter's `FrameBoundary` decisions
 /// (including the Ambiguous poison). A most-recent-first heuristic would mis-pair
 /// interleaved-layer streams and fabricate a false framing view, so the per-OBU
@@ -1156,7 +1155,7 @@ impl SegmentationParamsView {
 
 /// One `(qm_y[i], qm_u[i], qm_v[i])` level set for `--json` (AV2 § 5.18.6.2).
 #[derive(Serialize)]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 struct QmSetLevelsView {
     qm_y: u8,
     qm_u: u8,
@@ -1254,7 +1253,7 @@ impl DeblockingFilterParamsView {
 /// Parsed `gdf_params()` for `--json` (AV2 § 5.18.7.9). The per-frame fields are
 /// omitted when GDF is not frame-enabled.
 #[derive(Serialize)]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 struct GdfParamsView {
     gdf_frame_enable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1278,7 +1277,7 @@ impl GdfParamsView {
 
 /// One CDEF strength set for `--json` (AV2 § 5.18.7.10).
 #[derive(Serialize)]
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 struct CdefStrengthSetView {
     y_pri_strength: u8,
     y_sec_strength: u8,
@@ -1432,7 +1431,7 @@ impl LrParamsView {
 /// One plane's parsed `ccso_params()` state for `--json` (AV2 § 5.18.7.12).
 #[derive(Serialize)]
 // Field names are the AV2 § 5.18.7.12 syntax-element names and the stable `--json` key contract.
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 struct CcsoPlaneParamsView {
     ccso_planes: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

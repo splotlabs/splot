@@ -11,8 +11,8 @@ use fearless_simd::{
 
 use super::trajectory::BandGeometry;
 use super::{
-    Mv, ProjectedFieldBand, ProjectedTemporalMotionCell, StoredTemporalCell, TemporalMotionRows,
-    TemporalProjectionSource, TrajectoryBand,
+    MotionVector, ProjectedFieldBand, ProjectedTemporalMotionCell, StoredTemporalCell,
+    TemporalMotionRows, TemporalProjectionSource, TrajectoryBand,
 };
 
 const LANES: usize = 16;
@@ -110,9 +110,9 @@ impl LaneInts<'_> {
         self.get(row) as u32 as usize
     }
 
-    fn mv(self) -> Mv {
+    fn mv(self) -> MotionVector {
         let (row, col) = self.pair(MV);
-        Mv { row, col }
+        MotionVector { row, col }
     }
 }
 
@@ -449,7 +449,7 @@ impl<'a> ChunkWalk<'a> {
                         trajectories.extend_trajectories(source, end, source_slot, None, mv);
                     }
                     if EXTEND && bits & REVERSE != 0 {
-                        let back = Mv {
+                        let back = MotionVector {
                             row: -mv.row,
                             col: -mv.col,
                         };
@@ -471,8 +471,8 @@ impl<'a> ChunkWalk<'a> {
                     target.end_ref,
                     source_slot,
                     ints.cell(TRAJECTORY_CELL),
-                    Mv { row, col },
-                    || Mv {
+                    MotionVector { row, col },
+                    || MotionVector {
                         row: project_component(mv.row, target.end_factor),
                         col: project_component(mv.col, target.end_factor),
                     },
@@ -504,7 +504,7 @@ impl<'a> ChunkWalk<'a> {
 fn write_projection(
     output: &mut ProjectedFieldBand<'_>,
     target: &ProjectionTarget,
-    mv: Mv,
+    mv: MotionVector,
     index: usize,
 ) -> bool {
     let Some(output_cell) = output.cells.get_mut(index) else {
@@ -515,7 +515,7 @@ fn write_projection(
         return false;
     }
     let mv = if target.ref_offset < 0 {
-        Mv {
+        MotionVector {
             row: -mv.row,
             col: -mv.col,
         }
@@ -808,7 +808,6 @@ fn divide_by_64<S: Simd>(value: Lanes<S>) -> Lanes<S> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::super::{
         CompressedTemporalMv, MAX_FRAME_DISTANCE, MAX_SORTED_REFS, MotionFieldLayout,
@@ -925,7 +924,7 @@ mod tests {
                         assert_eq!(project_component(mv.row, end_factor), end.row);
                         assert_eq!(end_projected[lane], end.row);
                         let mv = if ref_offset < 0 {
-                            Mv {
+                            MotionVector {
                                 row: -mv.row,
                                 col: -mv.col,
                             }
@@ -1048,7 +1047,7 @@ mod tests {
                 let raw = usize::from(cell.ref_indices[side]);
                 let reference = raw.min(MAX_SORTED_REFS);
                 let mv = uncompress_tmvp_mv(cell.mvs[side]);
-                let lane_mv = Mv {
+                let lane_mv = MotionVector {
                     row: lanes.ints[MV].as_flattened()[lane],
                     col: lanes.ints[MV + 1].as_flattened()[lane],
                 };
@@ -1073,7 +1072,7 @@ mod tests {
                 assert_eq!(bits & INTERSECT != 0, intersects);
                 let expected = entry.and_then(|(offset, factor)| {
                     let mv = if offset < 0 {
-                        Mv {
+                        MotionVector {
                             row: -mv.row,
                             col: -mv.col,
                         }
@@ -1113,7 +1112,7 @@ mod tests {
                     };
                     let offset = offset.unwrap();
                     let observed_end = project_tmvp_mv(mv, offset.abs() - observed, offset.abs());
-                    let lane_end = Mv {
+                    let lane_end = MotionVector {
                         row: project_component(mv.row, target.end_factor),
                         col: project_component(mv.col, target.end_factor),
                     };
@@ -1132,7 +1131,7 @@ mod tests {
                 assert_eq!(bits & PROJECT != 0, expected.is_some(), "case {case}");
                 assert_eq!(walk >> lane & 1 == 1, expected.is_some() || intersects);
                 if let Some((projected, (pos_y8, pos_x8))) = expected {
-                    let lane_projected = Mv {
+                    let lane_projected = MotionVector {
                         row: lanes.ints[PROJECTED].as_flattened()[lane],
                         col: lanes.ints[PROJECTED + 1].as_flattened()[lane],
                     };

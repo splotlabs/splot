@@ -104,7 +104,7 @@ impl MiGrid<'_> {
     }
 
     /// The record `cell`, at mode-info (`row`, `col`) of plane `PLANE`, names.
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     pub(super) fn record<const PLANE: usize>(
         &self,

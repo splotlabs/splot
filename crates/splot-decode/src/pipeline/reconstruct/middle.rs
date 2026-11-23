@@ -39,7 +39,7 @@ pub(crate) struct TwoSidedMiddleEdgeFilters {
     pub left: OneSidedEdgeFilter,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -132,7 +132,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -255,7 +255,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -318,7 +318,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: u16,
@@ -642,7 +642,7 @@ fn build_two_sided_middle_idif_edge<T: ReconSample>(
     Ok(edge)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -722,7 +722,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn build_directional_middle_rect_edges<T: ReconSample>(
     left_neighbour: Option<&[T]>,
     above_neighbour: Option<&[T]>,

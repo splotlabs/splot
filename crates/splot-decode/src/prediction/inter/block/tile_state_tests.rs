@@ -3,8 +3,6 @@
 
 //! Inter tile-state construction and error-taxonomy tests.
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::bitstream::tile_payload::{
     LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,

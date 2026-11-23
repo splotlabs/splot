@@ -127,7 +127,7 @@ impl PlaneFacts {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "folds the subsampling shifts")]
+    #[expect(clippy::inline_always, reason = "folds the subsampling shifts")]
     #[inline(always)]
     fn paint_subsampled(
         &mut self,
@@ -156,7 +156,7 @@ impl PlaneFacts {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "keeps the rect in registers")]
+    #[expect(clippy::inline_always, reason = "keeps the rect in registers")]
     #[inline(always)]
     fn paint(&mut self, rect: Rect, width: usize) {
         match width {
@@ -170,7 +170,7 @@ impl PlaneFacts {
     }
 
     /// Writes one record's [`Rect`] of `N` cells per row.
-    #[allow(clippy::inline_always, reason = "one fixed-width store per row")]
+    #[expect(clippy::inline_always, reason = "one fixed-width store per row")]
     #[inline(always)]
     fn fill_rect<const N: usize>(&mut self, rect: Rect) {
         let [key, info, qindex] = rect.values;

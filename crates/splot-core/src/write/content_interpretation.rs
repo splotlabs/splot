@@ -194,7 +194,7 @@ fn write_aspect_ratio_info(scratch: &mut BitWriter, aspect: &AspectRatioInfo) ->
 ///
 /// The § 6.4.12 ranges the parser enforces map to writer rejects: a zero
 /// `num_units_in_display_tick` or `time_scale` is rejected up front (the `f(32)` primitive
-/// accepts any `u32`, so the non-zero bound is NOT enforced by the domain and is checked
+/// accepts any `u32`, so the non-zero bound is not enforced by the domain and is checked
 /// explicitly), the `uvlc()` bound caps `num_ticks_per_picture_minus_1` to the parser's
 /// `(1 << 32) - 2`, and the `num_ticks_per_picture_minus_1`-vs-`equal_picture_interval`
 /// presence gate is enforced. All three reject before any bit reaches `scratch`, so a

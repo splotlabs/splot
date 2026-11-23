@@ -10,14 +10,12 @@
 //! and a read past the watermark is refused instead of substituting a clamped
 //! row.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-
 use parking_lot::MutexGuard;
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, InterpolationFilter,
-    OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
+    BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo,
+    InterpolationFilter, OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize,
 };
 
 use super::{
@@ -26,9 +24,9 @@ use super::{
 };
 use crate::pipeline::frame_progress::PublishedFrame;
 use crate::pipeline::inflight::{FrameSlotWriter, RefFrameSlot};
-use crate::prediction::inter::Mv;
+use crate::prediction::inter::MotionVector;
 use crate::prediction::inter::mc::{
-    InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into,
+    InterBlockParams, McBlockRect, motion_compensate_inter_block_into,
 };
 use crate::{DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig};
 use parking_lot::Mutex;
@@ -182,7 +180,7 @@ fn block(
     InterBlockParams::single(
         reference,
         McBlockRect::from_luma_rect(0, luma_y, WIDTH, luma_h),
-        Mv::ZERO,
+        MotionVector::ZERO,
         InterpolationFilter::EightTap,
     )
     .with_chroma(false)
@@ -248,14 +246,14 @@ fn a_refused_banded_read_propagates_out_of_motion_compensation() {
     let mut output = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
 
     motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Frame(&mut output),
+        &mut CurrentFrameSurface::Frame(&mut output),
         block(banded, 96, 16),
         OFFSET,
     )
     .expect_err("a block below the watermark cannot be predicted");
 
     motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Frame(&mut output),
+        &mut CurrentFrameSurface::Frame(&mut output),
         block(banded, 0, 16),
         OFFSET,
     )
@@ -295,7 +293,7 @@ fn a_settled_frame_reads_the_same_bytes_through_the_banded_path() {
     let settled = settled_frame();
     let mut plain = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
     motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Frame(&mut plain),
+        &mut CurrentFrameSurface::Frame(&mut plain),
         block(ReferenceSamples::settled(&settled), 0, HEIGHT),
         OFFSET,
     )
@@ -304,7 +302,7 @@ fn a_settled_frame_reads_the_same_bytes_through_the_banded_path() {
     let mut forced = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
     let _guard = forced_band_scope();
     motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Frame(&mut forced),
+        &mut CurrentFrameSurface::Frame(&mut forced),
         block(ReferenceSamples::settled(&settled), 0, HEIGHT),
         OFFSET,
     )

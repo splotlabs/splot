@@ -393,7 +393,7 @@ trait EdgeSample: Copy + Default {
 }
 
 impl EdgeSample for u8 {
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn load16<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x16<S> {
         let bytes = fearless_simd::u8x16::from_slice(simd, &samples[at..at + LANES]);
@@ -401,7 +401,7 @@ impl EdgeSample for u8 {
         simd.combine_u16x8(low, high).bitcast()
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn store16<S: Simd>(simd: S, samples: &mut [Self], at: usize, values: i16x16<S>) {
         let (low, high) = simd.split_u16x16(values.bitcast());
@@ -409,7 +409,7 @@ impl EdgeSample for u8 {
             .store_slice(&mut samples[at..at + LANES]);
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn load_columns<S: Simd>(
         simd: S,
@@ -434,7 +434,7 @@ impl EdgeSample for u8 {
         out
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn store_columns<S: Simd>(
         simd: S,
@@ -468,7 +468,7 @@ impl EdgeSample for u8 {
 
 /// `s[-4..4]` of lines `pair[0]` and `pair[1]` across a vertical edge as one
 /// vector.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn line_pair<S: Simd>(simd: S, samples: &[u8], stride: usize, pair: [usize; 2]) -> u8x16<S> {
     let mut bytes = [0; LANES];
@@ -480,13 +480,13 @@ fn line_pair<S: Simd>(simd: S, samples: &[u8], stride: usize, pair: [usize; 2]) 
 }
 
 impl EdgeSample for u16 {
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn load16<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x16<S> {
         u16x16::from_slice(simd, &samples[at..at + LANES]).bitcast()
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn store16<S: Simd>(_simd: S, samples: &mut [Self], at: usize, values: i16x16<S>) {
         values
@@ -494,7 +494,7 @@ impl EdgeSample for u16 {
             .store_slice(&mut samples[at..at + LANES]);
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn load_columns<S: Simd>(
         simd: S,
@@ -510,7 +510,7 @@ impl EdgeSample for u16 {
         portable::transpose8(simd, rows)
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn store_columns<S: Simd>(
         simd: S,
@@ -711,7 +711,6 @@ fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
 /// [`portable_chunk`] for the window from `s[-8]` of the chunk's first line
 /// (vertical edges) or row (horizontal edges), whose widest `maxWidthPos`
 /// is `WIDEST`.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn portable_class<S: Simd, E: EdgeSample, const VERTICAL: bool, const WIDEST: usize>(
     simd: S,
@@ -762,10 +761,6 @@ fn portable_class<S: Simd, E: EdgeSample, const VERTICAL: bool, const WIDEST: us
         return;
     }
     let (mut halves, mut sides) = ([[zero; ROWS]; 2], [zero; ROWS]);
-    #[allow(
-        clippy::needless_range_loop,
-        reason = "iterators here measured 20% more instructions per decided chunk"
-    )]
     for j in REACH - read..REACH + read {
         (halves[0][j], halves[1][j]) = simd.split_i16x16(E::load16(simd, samples, j * stride));
     }
@@ -876,7 +871,7 @@ mod portable {
 
     impl<S: Simd> Ramp<S> {
         /// The ramp over lanes whose segment words `pattern` picks.
-        #[allow(
+        #[expect(
             clippy::inline_always,
             reason = "keeps the portable lanes in registers"
         )]
@@ -890,7 +885,7 @@ mod portable {
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
@@ -930,7 +925,7 @@ mod portable {
 
     /// The 8x8 byte transpose of lines packed `[l0 | l2]`, `[l1 | l3]`,
     /// `[l4 | l6]`, `[l5 | l7]`, as columns packed `[c0 | c1]` .. `[c6 | c7]`.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
@@ -956,7 +951,7 @@ mod portable {
     /// Loads `lines` across a vertical edge into `rows`: row `REACH + j`
     /// holds `s[j]` of each line, over `s[-8..8]` when `wide`, else over
     /// `s[-4..4]` (the other rows are left as they were).
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
@@ -990,7 +985,7 @@ mod portable {
     }
 
     /// Stores `rows` back to `lines` as [`load_lines`] loaded them.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
@@ -1020,7 +1015,7 @@ mod portable {
     }
 
     /// The [`DECISION_LINES`] of a row of 16 lines split into halves.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
@@ -1035,7 +1030,7 @@ mod portable {
     /// is `s[j]` of every line) can move: § 7.17.7.1 rounds every ramp step
     /// to zero when `|p1 - q1 + 3 * (q0 - p0)| <= 2`, as `W_Mult[w - 1] * w`
     /// stays below 128.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
@@ -1048,7 +1043,7 @@ mod portable {
 
     /// Looks the 8-entry `table` up by the compressed width index in each
     /// word of `index`.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
@@ -1063,7 +1058,7 @@ mod portable {
     /// `sides`: vector `REACH + j` holds `s[j]` of every [`DECISION_LINES`]
     /// line, over `s[-n..n]`, `n = Clip3(3, 8, widest + 1)`. Returns the widest
     /// width chosen and the segments' [`Ramp`], or `None` when every width is 0.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]
@@ -1158,7 +1153,7 @@ mod portable {
     /// `halves` (row `REACH + j` is `s[j]` of every line) over
     /// `s[-width..width]` by their [`Ramp::spread`]. Returns `false`, having
     /// changed nothing, when no line moves.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "keeps the portable lanes in registers"
     )]

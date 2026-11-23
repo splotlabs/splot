@@ -19,11 +19,11 @@ use crate::error::Result;
 pub const MAX_FILM_GRAIN: usize = 8;
 
 /// `CHROMA_FORMAT_420` (AV2 v1.0.0 § 6.4.2, chroma format table).
-const CHROMA_FORMAT_420: u32 = 0;
+pub(crate) const CHROMA_FORMAT_420: u32 = 0;
 /// `CHROMA_FORMAT_400` (monochrome).
-const CHROMA_FORMAT_400: u32 = 1;
+pub(crate) const CHROMA_FORMAT_400: u32 = 1;
 /// `CHROMA_FORMAT_444`.
-const CHROMA_FORMAT_444: u32 = 2;
+pub(crate) const CHROMA_FORMAT_444: u32 = 2;
 /// `CHROMA_FORMAT_422`.
 const CHROMA_FORMAT_422: u32 = 3;
 
@@ -129,8 +129,8 @@ pub struct FilmGrainModel {
 /// Out-of-range values (`> 3`, a § 6.13 conformance violation handled by the
 /// validator) fall back to `(false, false)`; `subX` / `subY` are not used by
 /// `film_grain_model()` itself, so the fallback only affects the preserved summary.
-const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
-    #[allow(clippy::match_same_arms)]
+pub(crate) const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
+    #[expect(clippy::match_same_arms)]
     match chroma_idc {
         CHROMA_FORMAT_420 | CHROMA_FORMAT_400 => (true, true),
         CHROMA_FORMAT_422 => (true, false),
@@ -315,7 +315,6 @@ fn parse_film_grain_model(reader: &mut BitReader<'_>, monochrome: bool) -> Resul
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

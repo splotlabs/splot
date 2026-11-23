@@ -24,7 +24,7 @@ use crate::bitstream::tile_payload::{
 const MI_SIZE: usize = 4;
 const MAX_DIP_EDGE_SAMPLES: usize = 80;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -158,7 +158,7 @@ pub(crate) fn predict_directional_noneighbour_into<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn dip_reference_edges<'a, T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     x: usize,
@@ -279,7 +279,7 @@ enum DipEdge {
     Left,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn collect_available_dip_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     direction: DipEdge,
@@ -345,7 +345,7 @@ fn neighbour_origin(
         .ok_or_else(invalid_directional_edge_state)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn paeth_reference_edges_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
@@ -406,7 +406,7 @@ fn paeth_reference_edges_into<T: ReconSample>(
     Ok(top_left)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -464,7 +464,6 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use splot_recon::PixelFormat;

@@ -494,9 +494,9 @@ fn c_picture(picture: Picture) -> SplotPicture {
         PixelFormat::Yuv444 => SplotPixelLayout::I444,
     };
     out.color = SplotColor {
-        primaries: color.primaries.0,
-        transfer: color.primaries.1,
-        matrix: color.primaries.2,
+        primaries: color.code_points.color_primaries,
+        transfer: color.code_points.transfer_characteristics,
+        matrix: color.code_points.matrix_coefficients,
         full_range: u8::from(color.full_range),
     };
     out.props = SplotDataProps {

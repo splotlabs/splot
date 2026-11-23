@@ -11,9 +11,7 @@
 //!   (no layout bits) or the explicit § 5.18.7.3 `tile_params()` bits, then the trailing
 //!   `context_update_tile_id` / `tile_size_bytes_minus_1` fields.
 //!
-//! Like the other config writers, this module is additive: it depends on the
-//! model/parser read-only and serializes a parsed [`TileInfo`] back to bits via
-//! [`BitWriter`]. The universal contract is semantic `read(write(x)) == x` for every
+//! Serializes a parsed [`TileInfo`] back to bits via [`BitWriter`]. The universal contract is semantic `read(write(x)) == x` for every
 //! model the parser can produce: `parse_tile_info(write_tile_info(info)) == info`.
 //!
 //! **Re-derive, never store raw bits.** The reuse eligibility and the per-axis grid are
@@ -26,7 +24,7 @@
 //! (reject-before-write).
 
 use crate::bitio::BitReader;
-use crate::headers::frame::{CoreSeqTileView, FrameSize, TileInfo};
+use crate::headers::frame::{CoreSeqTileView, FrameSize, TileInfo, uniform_eligible};
 use crate::headers::sequence::SuperblockSize;
 use crate::span::ByteOffset;
 use crate::tile::{
@@ -36,19 +34,6 @@ use crate::tile::{
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
 use crate::write::seq_tile::{compute_tile_grid, write_tile_params};
-
-/// `uniform_eligible(tileLog2, sbNum)` (AV2 v1.0.0 § 5.18.7.2,
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-2`): whether splitting `sbNum`
-/// superblocks into `1 << tileLog2` uniform tiles leaves the last tile at least one
-/// superblock wide. Recomputed identically to the parser's private `uniform_eligible`
-/// (it is not exported), so the writer evaluates the same `reuse_tile_info` gate.
-fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
-    let tile_log2 = u32::from(tile_log2).min(64);
-    let tile_num: i128 = 1 << tile_log2;
-    let tile_width = (i128::from(sb_num) + tile_num - 1) >> tile_log2;
-    let last_tile_width = i128::from(sb_num) - (tile_num - 1) * tile_width;
-    tile_width >= 1 && last_tile_width >= 1
-}
 
 /// The re-derived `tile_info()` grid the writer needs before emitting any bit: the frame
 /// `SbSize`, the `MiCols` / `MiRows` derived from the frame dimensions, and whether the

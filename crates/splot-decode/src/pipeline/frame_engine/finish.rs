@@ -48,7 +48,7 @@ pub(crate) struct FrameWalk<T: ReconSample> {
 /// How far one frame's samples got during its walk.
 ///
 /// Held inline: the stage moves once per frame, which costs less than boxing it.
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub(crate) enum WalkStage<T: ReconSample> {
     /// The filter stages are still owed; [`WalkedFrame::into_frontier`] starts them.
     Pending(WalkedFrame<T>),

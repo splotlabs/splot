@@ -41,7 +41,6 @@ pub(crate) use block_decoded_state::{TileBlockDecodedState, TileBlockDecodedStat
 pub(crate) use cdf::block_context::IntraJointMode;
 pub(crate) use cdf::block_context::{
     IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
-    SupportedNonDcLumaMode,
 };
 pub(crate) use cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 pub(crate) use cdf::{
@@ -112,8 +111,8 @@ pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
     ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication,
-    GeneralIntraLeafMode, GeneralIntraTreeWalkError, LeafDecoder, LeafNeighbours,
-    TileTraversalStorage,
+    GeneralIntraLeafMode, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError, LeafDecoder,
+    LeafNeighbours, TileTraversalStorage,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -121,8 +120,7 @@ pub(crate) use partition_traversal::{
 #[cfg(test)]
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{
-    GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, GeneralIntraMultiblockOutput,
-    TilePartitionFrontierError, chroma_subsampling,
+    GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, TilePartitionFrontierError,
 };
 
 #[derive(Clone, Debug)]
@@ -435,8 +433,6 @@ pub(crate) struct DecodeTileWorkUnit {
     mi_col_range: core::ops::Range<u32>,
     payload_range: core::ops::Range<usize>,
     payload_index: usize,
-    #[cfg(test)]
-    test_tile_bytes: &'static [u8],
     tile_byte_span: ByteSpan,
     tile_size: u64,
     coeff_frame_facts: TileCoeffFrameFacts,
@@ -451,10 +447,6 @@ impl DecodeTileWorkUnit {
         self.bru_tile_active
     }
 
-    #[cfg(test)]
-    pub(crate) const fn tile_bytes(&self) -> &'static [u8] {
-        self.test_tile_bytes
-    }
     pub(crate) const fn payload_index(&self) -> usize {
         self.payload_index
     }
@@ -772,8 +764,6 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             mi_col_range,
             payload_range: payload_start..payload_end,
             payload_index: 0,
-            #[cfg(test)]
-            test_tile_bytes: Box::leak(tile_bytes.to_vec().into_boxed_slice()),
             tile_byte_span,
             tile_size: tile.tile_size,
             coeff_frame_facts: input.frame.coeff_frame_facts,

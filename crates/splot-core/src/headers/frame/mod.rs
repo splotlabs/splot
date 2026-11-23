@@ -59,7 +59,7 @@ pub use filtering::{
     gdf_block_size, parse_cdef_params, parse_deblocking_filter_params, parse_gdf_params,
     read_interpolation_filter,
 };
-pub use get_ref_frames::{RESTRICTED_OH, RefIdxBuf, get_relative_dist};
+pub use get_ref_frames::{RESTRICTED_OH, RESTRICTED_ORDER_HINT, RefIdxBuf, get_relative_dist};
 pub use global_motion::{
     GlobalMotionInput, GlobalMotionParams, GlobalMotionRef, GlobalMotionReferenceState,
     GlobalMotionStop, GmType, REFS_PER_FRAME, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
@@ -67,9 +67,8 @@ pub use global_motion::{
     inverse_recenter, parse_global_motion_params, read_global_param, scale_warp_model,
 };
 pub use info::{
-    CoreSeqInterView, CoreSeqView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, MfhFrameView, SefTrailingBits,
-    parse_frame_header_core,
+    CoreSeqInterView, CoreSeqView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus,
+    FrameReferenceStateView, FrameType, MfhFrameView, SefTrailingBits, parse_frame_header_core,
 };
 pub(crate) use info::{init_core_from_prefix, parse_core_body};
 pub use inter::{
@@ -97,14 +96,14 @@ pub(crate) use restoration::{
     CCSO_INPUT_INTERVAL, RESTORATION_TILESIZE_MAX, default_restoration_size, lr_plane_tool_table,
 };
 pub use segmentation::{CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params};
-pub use size::FrameSize;
-pub(crate) use size::ceil_log2;
 #[cfg(test)]
 pub(crate) use size::parse_frame_size;
+pub use size::{FrameSize, ceil_log2, floor_log2};
 pub use tail::{
     FilmGrainConfig, FrameHeaderTail, FrameTailInput, TxMode, parse_film_grain_config,
     parse_intra_tail, read_tx_mode,
 };
+pub(crate) use tiling::uniform_eligible;
 pub use tiling::{CoreSeqTileView, TileInfo, parse_tile_info};
 
 /// A prefix-only parse of the AV2 frame header (AV2 v1.0.0 § 5.18.1 / § 5.18.2).
@@ -130,7 +129,7 @@ pub struct FrameHeaderPrefix {
     /// (AV2 § 5.18.2). `FirstPictureInTU` is decoder state the caller supplies.
     /// `None` only when the carried type is `OBU_CLOSED_LOOP_KEY` *and* the caller
     /// withheld `FirstPictureInTU` (the stateless dispatch front door): startCVS is
-    /// then genuinely unknown rather than fabricated `false`. For every non-CLK type
+    /// then unknown rather than fabricated `false`. For every non-CLK type
     /// the derivation does not consult `FirstPictureInTU`, so it is always
     /// `Some(false)` regardless of the input.
     pub starts_cvs: Option<bool>,
@@ -177,7 +176,7 @@ pub(crate) fn derive_is_regular(obu_type: ObuType) -> bool {
 /// pass `None` on the stateless dispatch front door that does not. Per AV2 § 5.18.2,
 /// `startCVS = obu_type == OBU_CLOSED_LOOP_KEY && FirstPictureInTU`, so the derivation
 /// consults the input *only* for `OBU_CLOSED_LOOP_KEY`: a non-CLK type is always
-/// `Some(false)`, and a CLK with a withheld input is `None` (genuinely unknown, not a
+/// `Some(false)`, and a CLK with a withheld input is `None` (unknown, not a
 /// fabricated `false`). The parser reads `cur_mfh_id` (unless this is a bridge frame,
 /// where it is inferred `0`) and, when `cur_mfh_id == 0`, `seq_header_id_in_frame_header`.
 /// It stops immediately afterward.
@@ -230,7 +229,6 @@ pub fn parse_frame_header_prefix(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;

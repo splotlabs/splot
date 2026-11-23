@@ -360,7 +360,7 @@ pub fn parse_tile_info(
 ///
 /// `lastTileWidth = sbNum - (tileNum - 1) * tileWidth` can be negative, so the
 /// arithmetic uses `i128` (the spec works on unbounded integers).
-pub(super) fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
+pub(crate) fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
     let tile_log2 = u32::from(tile_log2).min(64);
     let tile_num: i128 = 1 << tile_log2;
     let tile_width = (i128::from(sb_num) + tile_num - 1) >> tile_log2;
@@ -369,7 +369,6 @@ pub(super) fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

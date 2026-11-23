@@ -7,7 +7,9 @@
 //! Feature tracking: `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`.
 
 use super::base_symbol::CoeffBaseSymbolReadError;
-use super::max_level::{COEFF_BASE_RANGE, CoeffTransformClass, NUM_BASE_LEVELS};
+use splot_recon::TransformClass;
+
+use super::max_level::{COEFF_BASE_RANGE, NUM_BASE_LEVELS};
 use super::quant_state::next_tcq_state;
 
 const PHTHRESH: usize = 4;
@@ -40,7 +42,7 @@ impl CoeffBaseFirstPassSummary {
         (self.packed & SUMMARY_TCQ_MASK) as usize
     }
 
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient update")]
     #[inline(always)]
     pub(crate) fn update_after_level<const TCQ: bool, const PH: bool>(
         &mut self,
@@ -83,10 +85,10 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
 }
 
 /// The `tx_class` index of the context tables (2D, horizontal, vertical).
-pub(crate) const fn tx_class_index(tx_class: CoeffTransformClass) -> usize {
+pub(crate) const fn tx_class_index(tx_class: TransformClass) -> usize {
     match tx_class {
-        CoeffTransformClass::TwoD => 0,
-        CoeffTransformClass::Horizontal => 1,
-        CoeffTransformClass::Vertical => 2,
+        TransformClass::TwoD => 0,
+        TransformClass::Horizontal => 1,
+        TransformClass::Vertical => 2,
     }
 }

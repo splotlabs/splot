@@ -3,7 +3,7 @@
 
 use splot_recon::IDENTITY_WARP_PARAMS;
 
-use super::super::super::Mv;
+use super::super::super::MotionVector;
 use super::super::super::find_mv_stack::{MvBlockContext, reduce_warp_model};
 use super::super::resolve::WarpDeltaSyntax;
 use super::super::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
@@ -105,7 +105,8 @@ fn warp_geometry_rejects_zero_and_usize_max_as_typed_state() -> TestResult {
         (0, usize::MAX, 1, 1),
     ] {
         let mut params = original;
-        let Err(error) = set_warp_translation(&mut params, Mv::ZERO, mi_row, mi_col, n4w, n4h)
+        let Err(error) =
+            set_warp_translation(&mut params, MotionVector::ZERO, mi_row, mi_col, n4w, n4h)
         else {
             return Err("invalid translation geometry was accepted".into());
         };
@@ -123,7 +124,7 @@ fn maximum_av2_geometry_mv_and_slopes_produce_clamped_translation() -> TestResul
     let mut params = [0, 0, i32::MAX, i32::MIN, i32::MAX, i32::MIN];
     set_warp_translation(
         &mut params,
-        Mv {
+        MotionVector {
             row: (1 << 16) - 1,
             col: -(1 << 16) + 1,
         },
@@ -146,7 +147,7 @@ fn maximum_av2_local_least_squares_state_remains_total() -> TestResult {
     let mi = (MAX_AV2_DIMENSION - MAX_BLOCK_N4 * 4) / 4;
     let mid = warp_center(mi, MAX_BLOCK_N4)?;
     let source = mid * 8;
-    let mv = Mv {
+    let mv = MotionVector {
         row: (1 << 16) - 1,
         col: -(1 << 16) + 1,
     };
@@ -197,7 +198,7 @@ fn every_warp_delta_add_overflow_is_typed() -> TestResult {
                 deltas: Some(deltas),
                 six_param: true,
             },
-            Mv::ZERO,
+            MotionVector::ZERO,
             &block(),
         ) else {
             return Err("warp delta addition overflow was accepted".into());
@@ -217,7 +218,7 @@ fn rotzoom_negation_overflow_is_typed() -> TestResult {
             deltas: Some([0; 4]),
             six_param: false,
         },
-        Mv::ZERO,
+        MotionVector::ZERO,
         &block(),
     ) else {
         return Err("ROTZOOM negation overflow was accepted".into());
@@ -234,7 +235,7 @@ fn maximum_av2_warp_deltas_apply_without_error() -> TestResult {
             deltas: Some([14_336, -14_336, 14_336, -14_336]),
             six_param: true,
         },
-        Mv {
+        MotionVector {
             row: (1 << 16) - 1,
             col: -(1 << 16) + 1,
         },

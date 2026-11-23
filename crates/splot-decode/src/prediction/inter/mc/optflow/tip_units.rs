@@ -10,9 +10,6 @@ use super::super::refinemv::{TipFullpelViews, fullpel_candidates};
 use super::*;
 use crate::DecodeHeaderStateError;
 
-type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
-type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
-
 /// The refined units of one TIP block and the scratch that predicts them,
 /// kept by the caller so that no block allocates or zeroes them.
 #[derive(Debug, Default)]
@@ -31,7 +28,7 @@ impl core::fmt::Debug for GridProgram {
 
 impl TipUnits {
     /// The § 5.20.4 stored motion vectors of unit `index`.
-    pub(crate) fn stored_mvs(&self, index: usize) -> Option<[Mv; 2]> {
+    pub(crate) fn stored_mvs(&self, index: usize) -> Option<[MotionVector; 2]> {
         self.cells.get(index).copied().map(stored_mvs)
     }
 }
@@ -41,9 +38,9 @@ impl TipUnits {
 /// (8x8 units only), else the § 7.13.3.3 refine-MV search when the block
 /// searches, else the candidates.
 pub(crate) fn refine_tip_units<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
+    sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
-    candidates: &[[Mv; 2]],
+    candidates: &[[MotionVector; 2]],
     units: &mut TipUnits,
     (columns, unit_size): (usize, usize),
     offset: ByteOffset,
@@ -115,9 +112,9 @@ pub(crate) fn refine_tip_units<T: ReconSample>(
 /// result when the block searches, else its candidates.
 #[inline(never)]
 fn search_tip_units<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
+    sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
-    candidates: &[[Mv; 2]],
+    candidates: &[[MotionVector; 2]],
     cells: &mut Vec<MotionCell>,
     (columns, unit_size): (usize, usize),
     offset: ByteOffset,
@@ -142,9 +139,9 @@ fn search_tip_units<T: ReconSample>(
 /// Predicts every plane of the TIP block `block` from the units
 /// [`refine_tip_units`] refined from `candidates`.
 pub(crate) fn predict_tip_units<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
-    candidates: &mut Vec<[Mv; 2]>,
+    candidates: &mut Vec<[MotionVector; 2]>,
     units: &mut TipUnits,
     (columns, unit_size): (usize, usize),
     offset: ByteOffset,
@@ -168,7 +165,7 @@ pub(crate) fn predict_tip_units<T: ReconSample>(
 /// averages (§ 7.13.3.2) unscaled references (§ 7.10.1), so any other block
 /// is a state error.
 fn predict_grid<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     motion: &CompoundMotionGrid,
     program: &mut GridProgram,

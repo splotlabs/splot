@@ -142,7 +142,7 @@ pub(super) fn frame_annex_a_level_checks(
             );
         }
 
-        // TODO(spec: AV2-A-LEVELS-TIERS): the per-tile constraints in the same Annex A.4
+        // TODO(spec: AV2-A-LEVELS-TIERS): check the Annex A.4 per-tile width and area limits.
     }
 }
 
@@ -154,13 +154,13 @@ pub(super) fn check_ops_level_tier_value_space(
     ops: &OperatingPointSet,
     report: &mut ValidationReport,
 ) {
-    // TODO(spec: AV2-A-LEVELS-TIERS): this checks only the OPS-carried *value space*
+    // TODO(spec: AV2-A-LEVELS-TIERS): also check each ops_level_idx against the Annex A.4 limits.
     for payload in &ops.payloads {
         for entry in &payload.xlayer_entries {
             let Some(ptl) = entry.ptl_info.as_ref() else {
                 continue;
             };
-            if is_reserved_profile(ptl.seq_profile_idc.get()) {
+            if ptl.seq_profile_idc.is_reserved() {
                 report.push(
                     Diagnostic::error(
                         "annex-a/profile-reserved",
@@ -251,9 +251,8 @@ impl ValidatorContext {
 
         let profile_idc = general.seq_profile_idc.get();
         let level_idx = general.seq_level_idx.get();
-        let is_configurable = profile_idc == crate::annex_a::CONFIGURABLE_PROFILE_IDC;
 
-        if is_reserved_profile(profile_idc) {
+        if general.seq_profile_idc.is_reserved() {
             report.push(
                 Diagnostic::error(
                     "annex-a/profile-reserved",
@@ -265,7 +264,9 @@ impl ValidatorContext {
                 .with_spec_section("A.2")
                 .with_byte_offset(offset),
             );
-        } else if !is_configurable && !profile_allows_chroma(profile_idc, general.chroma_format_idc)
+        } else if !general
+            .seq_profile_idc
+            .allows_chroma(general.chroma_format_idc)
         {
             report.push(
                 Diagnostic::error(

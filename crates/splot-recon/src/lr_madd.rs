@@ -210,7 +210,6 @@ fn in_lane_weights(
 /// group's column on. The [`by_lane`] kernel runs it on AArch64, the
 /// [`filter16`] group kernel otherwise; returns `false` when a row, a class
 /// or the output is short.
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn filter_run<
     F: TapPairs,
@@ -354,7 +353,6 @@ pub(crate) trait TapPairs {
     ) -> Option<[u16; 16]>;
     /// The [`by_lane`] run kernel.
     #[cfg(target_arch = "aarch64")]
-    #[allow(clippy::too_many_arguments)]
     fn by_lane(
         t: fearless_simd::Neon,
         window: by_lane::Rows<'_>,
@@ -426,7 +424,7 @@ pub(crate) use by_lane_kernel;
 
 /// The 16 filtered samples of one row from padded `window` rows, each slice
 /// starting `RADIUS` columns left of the first sample.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: the row kernel must inline into its group loop"
 )]
@@ -445,7 +443,7 @@ pub(crate) fn filter16<F: TapPairs, T: LumaSimdSource, const ROWS: usize, const 
     lr_simd!(simd => portable::<_, F, T, ROWS, REACH>(simd, window, weights, max_sample))
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: the row kernel must inline into its group loop"
 )]
@@ -550,10 +548,6 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
 #[cfg(target_arch = "x86_64")]
 macro_rules! madd_avx2 {
     ($taps:ty, $rows:literal, $reach:literal) => {
-        #[allow(
-            clippy::inline_always,
-            reason = "measured: the row kernel must inline into its group loop"
-        )]
         #[inline(always)]
         fn avx2<
             T: $crate::wienerns_filter::LumaSimdSource,
@@ -691,7 +685,6 @@ pub(crate) mod by_lane {
     use super::{Classes, LaneClass as Class, LumaSimdSource, TapPairs};
 
     /// Filters a [`super::filter_run`] run.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     pub(crate) fn filter_run<
@@ -836,7 +829,6 @@ pub(crate) mod by_lane {
     }
 
     /// A uniform run: rows outer, groups inner.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     fn run<
@@ -900,7 +892,6 @@ pub(crate) mod by_lane {
 
     /// A run of groups whose cells take classes of their own: groups outer,
     /// rows inner, each group's weights loaded once.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     fn cells<F: TapPairs, T: LumaSimdSource, O: Store, const ROWS: usize, const REACH: usize>(

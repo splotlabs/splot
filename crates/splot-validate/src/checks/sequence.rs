@@ -21,8 +21,8 @@ use crate::diagnostic::{Diagnostic, ValidationReport};
 /// A child config that is intentionally bounded (`seg_info()` / `tile_params()`) is
 /// not a conformance error; the header is accepted in that case. A fully parsed
 /// header additionally has its § 5.2.1 payload tail (`obu_extension_flag` /
-/// `trailing_bits`) validated, so a truncated or malformed child config — which the
-/// general-only check used to miss — is now reported by `validate`.
+/// `trailing_bits`) validated, so a truncated or malformed child config is reported by
+/// `validate`.
 pub(super) struct SequenceHeaderSyntax;
 
 impl Check for SequenceHeaderSyntax {

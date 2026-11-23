@@ -141,7 +141,6 @@ pub fn parse_buffer_removal_timing(reader: &mut BitReader<'_>) -> Result<BufferR
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

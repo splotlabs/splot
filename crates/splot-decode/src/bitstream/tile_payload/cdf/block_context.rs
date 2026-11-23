@@ -3,6 +3,8 @@
 
 //! AV2 § 8.3.2 block-symbol CDF context derivation.
 
+use splot_recon::IntraSmoothMode;
+
 pub(crate) const NON_DIRECTIONAL_MODES_COUNT: usize = 5;
 
 /// An intra prediction mode: a § 6.19.5.5 `YMode` or non-CFL `UVMode` value.
@@ -41,7 +43,7 @@ pub enum IntraYMode {
 pub(crate) enum IntraYModeClass {
     Dc,
     Directional { base_angle: u16 },
-    Smooth(SupportedNonDcLumaMode),
+    Smooth(IntraSmoothMode),
     Paeth,
 }
 
@@ -82,21 +84,12 @@ impl IntraYMode {
             Self::D157 => IntraYModeClass::Directional { base_angle: 157 },
             Self::D203 => IntraYModeClass::Directional { base_angle: 203 },
             Self::D67 => IntraYModeClass::Directional { base_angle: 67 },
-            Self::Smooth => IntraYModeClass::Smooth(SupportedNonDcLumaMode::Smooth),
-            Self::SmoothVertical => IntraYModeClass::Smooth(SupportedNonDcLumaMode::SmoothVertical),
-            Self::SmoothHorizontal => {
-                IntraYModeClass::Smooth(SupportedNonDcLumaMode::SmoothHorizontal)
-            }
+            Self::Smooth => IntraYModeClass::Smooth(IntraSmoothMode::Smooth),
+            Self::SmoothVertical => IntraYModeClass::Smooth(IntraSmoothMode::SmoothVertical),
+            Self::SmoothHorizontal => IntraYModeClass::Smooth(IntraSmoothMode::SmoothHorizontal),
             Self::Paeth => IntraYModeClass::Paeth,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SupportedNonDcLumaMode {
-    Smooth,
-    SmoothVertical,
-    SmoothHorizontal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -537,7 +530,6 @@ pub(crate) fn txb_skip_ctx_luma(
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
 pub(crate) const fn v_txb_skip_ctx(
     above_nonzero: bool,
     left_nonzero: bool,

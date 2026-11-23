@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-use crate::test_support::refs_for;
+use crate::test_support::{Rng, refs_for};
 use proptest::prelude::*;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
@@ -24,18 +22,6 @@ use crate::tile_writer::{
     KeyFrameTileWriter, LeafChoice, PARTITIONS, Partition, PartitionTree, ResidualCoder,
     SuperblockDecision, TransformDecision,
 };
-
-/// A deterministic generator (xorshift64*).
-struct Rng(u64);
-
-impl Rng {
-    fn below(&mut self, n: u64) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
-    }
-}
 
 fn bits_f64(bits: Bits) -> f64 {
     bits.0 as f64 / 256.0

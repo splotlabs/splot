@@ -3,13 +3,12 @@
 
 //! Unit tests for general intra block reconstruction ([`super`]).
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext,
     SupportedChromaMode,
 };
+use splot_recon::CurrentFrameSurface;
 
 #[path = "reconstruct_tests/directional_edge.rs"]
 mod directional_edge;
@@ -77,7 +76,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
             )
             .unwrap();
         let result = reconstruct_inter_block_residual_rect_into(
-            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
+            &mut CurrentFrameSurface::Frame(&mut workspace),
             block,
             PlaneId::Y,
             0,
@@ -188,7 +187,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
 
     for workspace in [&mut full, &mut cropped] {
         reconstruct_inter_block_residual_rect_into(
-            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(workspace),
+            &mut CurrentFrameSurface::Frame(workspace),
             block.view(&quant),
             PlaneId::Y,
             0,
@@ -227,7 +226,7 @@ fn inter_residual_all_zero_is_noop() {
         .unwrap();
     let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
     reconstruct_inter_block_residual_rect_into(
-        &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         all_zero_luma_block().view(&[]),
         PlaneId::U,
         usize::MAX,
@@ -1506,7 +1505,7 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
     }
 }
 
-/// §7.13.2.1 NO-ABOVE FALLBACK GUARD for zone-1 directional luma: with no above
+/// §7.13.2.1 no-above fallback guard for zone-1 directional luma: with no above
 /// row and a real left edge, `AboveRow[i]` is synthesized from the block's
 /// top-left left neighbour (`left[0]`) before the D45/D67 one-sided projection.
 #[test]
@@ -2116,9 +2115,9 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     );
 }
 
-/// END-TO-END §7.13.2.9 useIBP — an 8x8 zone-1 `pAngle=45` `all_zero` leaf at
-/// (8, 8) with a REAL, NON-FLAT above row, left column, and a DISTINCT corner,
-/// the §7.13.2.7 edge filter a NO-OP (`OneSidedEdgeFilter::default()` on BOTH
+/// End-to-end §7.13.2.9 useIBP — an 8x8 zone-1 `pAngle=45` `all_zero` leaf at
+/// (8, 8) with a real, non-flat above row, left column, and a distinct corner,
+/// the §7.13.2.7 edge filter a no-op (`OneSidedEdgeFilter::default()` on both
 /// edges), `num4_far == 0`. The output is the §7.13.2.8 primary (zone-1 above)
 /// blended with the secondary (`secondAngle = 225`, zone-3 left) per §7.13.2.9.
 /// The expected 8x8 samples are computed offline from the VERBATIM AVM IDIF

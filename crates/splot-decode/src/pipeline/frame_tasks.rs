@@ -1600,14 +1600,12 @@ mod tests {
     use crate::test_support::decoded_frame;
     use splot_core::bitio::BitReader;
     use splot_core::headers::frame::{
-        FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
-        parse_frame_header_core,
+        FrameHeaderParseInput, FrameReferenceStateView, parse_frame_header_core,
     };
     use splot_core::types::ObuType;
     use splot_recon::{ReferenceSlot, SharedFrame};
 
     #[test]
-    #[allow(clippy::expect_used)]
     fn release_idle_frees_the_references_a_finished_split_frame_pins() {
         let data = [0xA0];
         let input = FrameHeaderParseInput {
@@ -1616,7 +1614,6 @@ mod tests {
             active_sequence: None,
             mfh_record: None,
             reference_state: FrameReferenceStateView::unknown(),
-            mode: FrameHeaderParseMode::Core,
         };
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let core = parse_frame_header_core(&mut reader, &input).expect("key core");
@@ -1641,7 +1638,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::expect_used)]
     fn each_sample_type_resets_its_own_parse_progress_after_readers_release() {
         let rows = RowScheduler::new(core::num::NonZeroUsize::MIN).expect("rows");
         let mut pools = RowPools::new(2, 1, &DecodeBuffers::new());

@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use super::MotionMode;
 use super::*;
 use crate::prediction::inter::read_mv::MV_PRECISION_ONE_PEL;
 use splot_core::headers::sequence::DrlReorder;
 use std::sync::Arc;
 
-const BLOCK0_MV: Mv = Mv { row: 0, col: 48 };
+const BLOCK0_MV: MotionVector = MotionVector { row: 0, col: 48 };
 pub(super) const N4_32: usize = 8;
 pub(super) const SB_H4_64: usize = 16;
 pub(super) const MI_DIM: usize = 16;
@@ -19,7 +17,7 @@ impl NeighbourMvGrid {
         Self::new_for_tile(0..mi_rows, 0..mi_cols).ok()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn record_block_with_newmv_lists(
         &mut self,
         r: usize,
@@ -30,7 +28,7 @@ impl NeighbourMvGrid {
         ref_frame1: i8,
         list0_is_newmv: bool,
         list1_is_newmv: bool,
-        mv: Mv,
+        mv: MotionVector,
         skip: bool,
         interp_filter: u8,
         use_amvd: bool,
@@ -76,7 +74,14 @@ pub(super) fn empty_grid() -> NeighbourMvGrid {
     NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap()
 }
 
-fn record_inter(grid: &mut NeighbourMvGrid, r: usize, c: usize, mode: bool, mv: Mv, skip: bool) {
+fn record_inter(
+    grid: &mut NeighbourMvGrid,
+    r: usize,
+    c: usize,
+    mode: bool,
+    mv: MotionVector,
+    skip: bool,
+) {
     record_inter_ref(grid, r, c, 0, mode, mv, skip);
 }
 
@@ -86,7 +91,7 @@ fn record_inter_ref(
     c: usize,
     ref_frame0: i8,
     mode: bool,
-    mv: Mv,
+    mv: MotionVector,
     skip: bool,
 ) {
     grid.record_block(
@@ -123,8 +128,8 @@ fn record_compound_ref(
         ref_frame1,
         false,
         false,
-        Mv::ZERO,
-        Mv::ZERO,
+        MotionVector::ZERO,
+        MotionVector::ZERO,
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -141,7 +146,7 @@ fn record_warp_inter(
     r: usize,
     c: usize,
     mode: bool,
-    mv: Mv,
+    mv: MotionVector,
     skip: bool,
 ) {
     grid.record_warp_block(
@@ -173,7 +178,7 @@ fn neighbour_mv_grid_translates_tile_coordinates() {
         0,
         None,
         false,
-        Mv { row: 4, col: 8 },
+        MotionVector { row: 4, col: 8 },
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -181,7 +186,7 @@ fn neighbour_mv_grid_translates_tile_coordinates() {
     );
     assert_eq!(
         grid.get(5, 9).map(|cell| cell.motion.mv),
-        Some(Mv { row: 4, col: 8 })
+        Some(MotionVector { row: 4, col: 8 })
     );
     assert_eq!(grid.get(6, 10).map(|cell| cell.motion.base_r), Some(5));
     assert_eq!(grid.get(3, 9), None);
@@ -198,7 +203,7 @@ fn skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default() {
     );
 
     let mut single = empty_grid();
-    record_inter_ref(&mut single, 0, 0, 2, false, Mv::ZERO, false);
+    record_inter_ref(&mut single, 0, 0, 2, false, MotionVector::ZERO, false);
     assert_eq!(
         block_neighbour_ctx(&single, &block).skip_mode_ref_pair((0, 1), None),
         (0, 1)
@@ -216,7 +221,7 @@ fn skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default() {
 fn compound_mode_context_reads_the_backward_reference_table() {
     let mut grid = empty_grid();
     let block = block_at(0, N4_32);
-    record_inter_ref(&mut grid, 0, 0, 0, false, Mv::ZERO, false);
+    record_inter_ref(&mut grid, 0, 0, 0, false, MotionVector::ZERO, false);
     let mut context = block_neighbour_ctx(&grid, &block);
     context.cell_count = 1;
 
@@ -251,7 +256,15 @@ fn skip_mode_reference_pair_skips_intrabc_neighbour_before_compound() {
 fn skip_mode_reference_pair_projects_tip_neighbour_to_sorted_tip_pair() {
     let mut grid = empty_grid();
     let block = block_at(0, N4_32);
-    record_inter_ref(&mut grid, 0, 0, TIP_REF_FRAME, false, Mv::ZERO, false);
+    record_inter_ref(
+        &mut grid,
+        0,
+        0,
+        TIP_REF_FRAME,
+        false,
+        MotionVector::ZERO,
+        false,
+    );
 
     assert_eq!(
         block_neighbour_ctx(&grid, &block).skip_mode_ref_pair((0, 1), Some((2, 0))),
@@ -271,8 +284,8 @@ fn recorded_skip_mode_contributes_to_the_next_block_context() {
         1,
         false,
         false,
-        Mv::ZERO,
-        Mv::ZERO,
+        MotionVector::ZERO,
+        MotionVector::ZERO,
         true,
         SWITCHABLE_FILTERS,
         false,
@@ -296,7 +309,7 @@ fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
         N4_32,
         N4_32,
         true,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -319,7 +332,7 @@ fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
 #[test]
 fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
     let mut grid = empty_grid();
-    let base_mv = Mv { row: 3, col: 4 };
+    let base_mv = MotionVector { row: 3, col: 4 };
     record_inter_ref(&mut grid, 0, 0, TIP_REF_FRAME, false, base_mv, false);
     let references = temporal::TipReferencePair {
         past_ref: 0,
@@ -334,7 +347,7 @@ fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
         references,
         3,
         3,
-        Mv { row: 16, col: 32 },
+        MotionVector { row: 16, col: 32 },
     )
     .unwrap();
     let expected = temporal.tip_candidate(3, 3, base_mv).unwrap();
@@ -344,7 +357,7 @@ fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
     let candidate = find_compound_mv_stack_with_temporal(
         &grid,
         &block,
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         None,
         DrlReorder::Disabled,
         Some(&temporal),
@@ -358,7 +371,7 @@ fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
 #[test]
 fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
     let mut grid = empty_grid();
-    let base_mv = Mv { row: 3, col: 4 };
+    let base_mv = MotionVector { row: 3, col: 4 };
     record_inter_ref(&mut grid, 0, 0, TIP_REF_FRAME, false, base_mv, false);
     let references = temporal::TipReferencePair {
         past_ref: 0,
@@ -373,20 +386,20 @@ fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
         references,
         3,
         3,
-        Mv { row: 16, col: 32 },
+        MotionVector { row: 16, col: 32 },
     )
     .unwrap();
     let expected = temporal.tip_candidate(3, 3, base_mv).unwrap();
     let block = block_at(0, N4_32);
     let (y8, x8) = (block.mi_row >> 1, block.mi_col >> 1);
-    let other_trajectory = Mv { row: 7, col: -9 };
+    let other_trajectory = MotionVector { row: 7, col: -9 };
     temporal
         .set_trajectory_sample(0, y8, x8, expected[0])
         .unwrap();
     temporal
         .set_trajectory_sample(1, y8, x8, other_trajectory)
         .unwrap();
-    let expected_derived = Mv {
+    let expected_derived = MotionVector {
         row: expected[1].row + expected[0].row - other_trajectory.row,
         col: expected[1].col + expected[0].col - other_trajectory.col,
     };
@@ -397,8 +410,8 @@ fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
         let candidate = find_mv_stack_with_temporal(
             &grid,
             &block,
-            Mv::ZERO,
-            DEFAULT_WARP_PARAMS,
+            MotionVector::ZERO,
+            IDENTITY_WARP_PARAMS,
             None,
             &WarpParamBank::new(),
             false,
@@ -418,7 +431,7 @@ fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
 #[test]
 fn single_mv_stack_derives_tip_neighbour_for_another_reference() {
     let mut grid = empty_grid();
-    let base_mv = Mv { row: 3, col: 4 };
+    let base_mv = MotionVector { row: 3, col: 4 };
     record_inter_ref(&mut grid, 0, 0, TIP_REF_FRAME, false, base_mv, false);
     let references = temporal::TipReferencePair {
         past_ref: 1,
@@ -433,14 +446,14 @@ fn single_mv_stack_derives_tip_neighbour_for_another_reference() {
         references,
         3,
         3,
-        Mv { row: 16, col: 32 },
+        MotionVector { row: 16, col: 32 },
     )
     .unwrap();
     let tip_mvs = temporal.tip_candidate(3, 3, base_mv).unwrap();
     temporal.set_order_hint_context(6, vec![Some(8), Some(4), None, Some(2)]);
     let mut block = block_at(0, N4_32);
     block.ref_frame0 = 3;
-    let expected = Mv {
+    let expected = MotionVector {
         row: tip_mvs[0].row * 2,
         col: tip_mvs[0].col * 2,
     };
@@ -448,8 +461,8 @@ fn single_mv_stack_derives_tip_neighbour_for_another_reference() {
     let stack = find_mv_stack_with_temporal(
         &grid,
         &block,
-        Mv::ZERO,
-        DEFAULT_WARP_PARAMS,
+        MotionVector::ZERO,
+        IDENTITY_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -475,8 +488,8 @@ fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
         1,
         false,
         false,
-        Mv { row: 0, col: -5 },
-        Mv { row: 0, col: 3 },
+        MotionVector { row: 0, col: -5 },
+        MotionVector { row: 0, col: 3 },
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -498,7 +511,7 @@ fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
         },
         0,
         0,
-        Mv::ZERO,
+        MotionVector::ZERO,
     )
     .unwrap();
     let mut block = block_at(0, N4_32);
@@ -507,8 +520,8 @@ fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
     let stack = find_mv_stack_with_temporal(
         &grid,
         &block,
-        Mv::ZERO,
-        DEFAULT_WARP_PARAMS,
+        MotionVector::ZERO,
+        IDENTITY_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -518,7 +531,7 @@ fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
         false,
     );
 
-    assert_eq!(stack.candidate(0), Mv { row: 0, col: -1 });
+    assert_eq!(stack.candidate(0), MotionVector { row: 0, col: -1 });
     assert_eq!(stack.candidate_offsets(0), (0, 0));
 }
 
@@ -526,8 +539,8 @@ fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
 fn tip_mv_stack_keeps_a_later_distinct_compound_candidate() {
     let mut grid = NeighbourMvGrid::new(64, 64).unwrap();
     let repeated = [
-        Mv { row: -224, col: 48 },
-        Mv {
+        MotionVector { row: -224, col: 48 },
+        MotionVector {
             row: -384,
             col: 128,
         },
@@ -563,8 +576,8 @@ fn tip_mv_stack_keeps_a_later_distinct_compound_candidate() {
         1,
         false,
         false,
-        Mv { row: -192, col: 48 },
-        Mv { row: -384, col: 0 },
+        MotionVector { row: -192, col: 48 },
+        MotionVector { row: -384, col: 0 },
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -586,7 +599,7 @@ fn tip_mv_stack_keeps_a_later_distinct_compound_candidate() {
         },
         0,
         0,
-        Mv::ZERO,
+        MotionVector::ZERO,
     )
     .unwrap();
     let block = MvBlockContext {
@@ -604,8 +617,8 @@ fn tip_mv_stack_keeps_a_later_distinct_compound_candidate() {
     let stack = find_mv_stack_with_temporal(
         &grid,
         &block,
-        Mv::ZERO,
-        DEFAULT_WARP_PARAMS,
+        MotionVector::ZERO,
+        IDENTITY_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -615,14 +628,14 @@ fn tip_mv_stack_keeps_a_later_distinct_compound_candidate() {
         false,
     );
 
-    assert_eq!(stack.candidate(0), Mv { row: -299, col: 86 });
-    assert_eq!(stack.candidate(1), Mv { row: -282, col: 25 });
+    assert_eq!(stack.candidate(0), MotionVector { row: -299, col: 86 });
+    assert_eq!(stack.candidate(1), MotionVector { row: -282, col: 25 });
 }
 
 #[test]
 fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
     let mut grid = empty_grid();
-    let base_mv = Mv { row: 3, col: 4 };
+    let base_mv = MotionVector { row: 3, col: 4 };
     grid.record_tip_block(
         0,
         0,
@@ -649,7 +662,7 @@ fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
         references,
         2,
         2,
-        Mv { row: 16, col: 32 },
+        MotionVector { row: 16, col: 32 },
     )
     .unwrap();
     let expected = temporal.tip_candidate(2, 2, base_mv).unwrap();
@@ -659,7 +672,7 @@ fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
     let candidate = find_compound_mv_stack_with_temporal(
         &grid,
         &block,
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         None,
         DrlReorder::Disabled,
         Some(&temporal),
@@ -680,12 +693,16 @@ fn compound_temporal_scan_skips_small_block_sample_without_underflow() {
         ref_offset: 1,
     };
     let temporal =
-        TemporalMvContext::with_tip_sample(MI_DIM, MI_DIM, references, 0, 0, Mv::ZERO).unwrap();
+        TemporalMvContext::with_tip_sample(MI_DIM, MI_DIM, references, 0, 0, MotionVector::ZERO)
+            .unwrap();
     let mut block = block_at(0, 0);
     block.bw4 = 1;
     block.bh4 = 1;
     block.ref_frame1 = Some(1);
-    let global_mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: -16 }];
+    let global_mvs = [
+        MotionVector { row: 8, col: 16 },
+        MotionVector { row: -8, col: -16 },
+    ];
 
     let candidate = find_compound_mv_stack_with_temporal(
         &empty_grid(),
@@ -714,7 +731,7 @@ fn beyond_tile_end_setup() -> (TemporalMvContext, NeighbourMvGrid, MvBlockContex
         references,
         5,
         5,
-        Mv { row: 16, col: 32 },
+        MotionVector { row: 16, col: 32 },
     )
     .unwrap();
     context.set_order_hint_context(6, vec![Some(8), Some(4), None, Some(2)]);
@@ -729,8 +746,8 @@ fn temporal_sample_scans_reject_positions_beyond_the_tile_end() {
     let stack = find_mv_stack_with_temporal(
         &grid,
         &block,
-        Mv::ZERO,
-        DEFAULT_WARP_PARAMS,
+        MotionVector::ZERO,
+        IDENTITY_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -747,7 +764,7 @@ fn temporal_sample_scans_reject_positions_beyond_the_tile_end() {
     let compound = find_compound_mv_stack_with_temporal(
         &grid,
         &block,
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         None,
         DrlReorder::Disabled,
         Some(&context),
@@ -758,7 +775,10 @@ fn temporal_sample_scans_reject_positions_beyond_the_tile_end() {
 #[test]
 fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
     let mut grid = empty_grid();
-    let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];
+    let mvs = [
+        MotionVector { row: 8, col: 16 },
+        MotionVector { row: -8, col: 24 },
+    ];
     let cwp_weight = 12;
     grid.record_compound_block(
         0,
@@ -786,7 +806,7 @@ fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
     let candidate = find_compound_mv_stack_with_temporal(
         &grid,
         &block,
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         None,
         DrlReorder::Disabled,
         None,
@@ -805,9 +825,9 @@ fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
 fn compound_mv_stack_pairs_single_ref_spatial_neighbours_in_probe_order() {
     let mut grid = empty_grid();
     let mvs = [
-        Mv { row: 16, col: -263 },
-        Mv { row: -24, col: 316 },
-        Mv { row: -24, col: 300 },
+        MotionVector { row: 16, col: -263 },
+        MotionVector { row: -24, col: 316 },
+        MotionVector { row: -24, col: 300 },
     ];
     for (row, col, ref_frame, mv) in [(15, 7, 0, mvs[0]), (7, 15, 1, mvs[1]), (7, 7, 1, mvs[2])] {
         grid.record_block(
@@ -832,7 +852,7 @@ fn compound_mv_stack_pairs_single_ref_spatial_neighbours_in_probe_order() {
     let stack = find_compound_mv_stack_with_temporal(
         &grid,
         &block,
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         None,
         DrlReorder::Disabled,
         None,
@@ -847,11 +867,14 @@ fn compound_mv_stack_pairs_single_ref_spatial_neighbours_in_probe_order() {
 #[test]
 fn compound_extra_search_adds_large_block_mixed_candidates() {
     let zero = CompoundMvCandidate {
-        mvs: [Mv::ZERO; 2],
+        mvs: [MotionVector::ZERO; 2],
         cwp_weight: CWP_EQUAL,
     };
     let temporal = CompoundMvCandidate {
-        mvs: [Mv { row: -8, col: 0 }, Mv { row: -9, col: 1 }],
+        mvs: [
+            MotionVector { row: -8, col: 0 },
+            MotionVector { row: -9, col: 1 },
+        ],
         cwp_weight: CWP_EQUAL,
     };
     let mut entries = FixedStack::from_entries([
@@ -870,16 +893,27 @@ fn compound_extra_search_adds_large_block_mixed_candidates() {
     block.bh4 = 16;
     block.ref_frame1 = Some(1);
 
-    compound_extra_search(&block, [Mv::ZERO; 2], &mut entries, &mut prune_count);
+    compound_extra_search(
+        &block,
+        [MotionVector::ZERO; 2],
+        &mut entries,
+        &mut prune_count,
+    );
 
     assert_eq!(entries.len(), 4);
     let entries = &entries[..];
     assert_eq!(entries[0].candidate, zero);
     assert_eq!(entries[1].candidate, temporal);
-    assert_eq!(entries[2].candidate.mvs, [Mv::ZERO, Mv { row: 0, col: 1 }]);
+    assert_eq!(
+        entries[2].candidate.mvs,
+        [MotionVector::ZERO, MotionVector { row: 0, col: 1 }]
+    );
     assert_eq!(
         entries[3].candidate.mvs,
-        [Mv { row: -8, col: 0 }, Mv { row: -9, col: 0 }]
+        [
+            MotionVector { row: -8, col: 0 },
+            MotionVector { row: -9, col: 0 }
+        ]
     );
 }
 
@@ -893,7 +927,7 @@ fn single_mv_storage_keeps_the_first_six_candidates() {
             insert_mv_stack_entry(
                 &mut entries,
                 &mut prune_count,
-                Mv { row: 0, col },
+                MotionVector { row: 0, col },
                 1,
                 (-1, col),
             ),
@@ -904,7 +938,7 @@ fn single_mv_storage_keeps_the_first_six_candidates() {
         insert_mv_stack_entry(
             &mut entries,
             &mut prune_count,
-            Mv { row: 0, col: 6 },
+            MotionVector { row: 0, col: 6 },
             1,
             (-1, 6),
         ),
@@ -926,13 +960,13 @@ fn single_mv_storage_merges_a_duplicate_into_a_full_stack() {
         insert_mv_stack_entry(
             &mut entries,
             &mut prune_count,
-            Mv { row: 0, col },
+            MotionVector { row: 0, col },
             1,
             (-1, col),
         );
     }
 
-    let duplicate = Mv { row: 0, col: 1 };
+    let duplicate = MotionVector { row: 0, col: 1 };
     assert_eq!(
         insert_mv_stack_entry(&mut entries, &mut prune_count, duplicate, 1, (-1, 9)),
         StackInsert::Updated
@@ -949,7 +983,7 @@ fn compound_mv_storage_keeps_the_first_six_candidates() {
 
     for col in 0..MAX_REF_MV_STACK_SIZE as i32 {
         let candidate = CompoundMvCandidate {
-            mvs: [Mv { row: 0, col }, Mv { row: 1, col }],
+            mvs: [MotionVector { row: 0, col }, MotionVector { row: 1, col }],
             cwp_weight: col as i16,
         };
         assert_eq!(
@@ -958,7 +992,10 @@ fn compound_mv_storage_keeps_the_first_six_candidates() {
         );
     }
     let overflow = CompoundMvCandidate {
-        mvs: [Mv { row: 0, col: 6 }, Mv { row: 1, col: 6 }],
+        mvs: [
+            MotionVector { row: 0, col: 6 },
+            MotionVector { row: 1, col: 6 },
+        ],
         cwp_weight: 6,
     };
     assert_eq!(
@@ -987,7 +1024,7 @@ fn warp_sample_storage_keeps_the_first_eight_samples() {
             0,
             None,
             false,
-            Mv {
+            MotionVector {
                 row: col as i32,
                 col: -(col as i32),
             },
@@ -1024,7 +1061,10 @@ fn warp_sample_storage_keeps_the_first_eight_samples() {
 #[test]
 fn single_ref_stack_admits_both_lists_from_same_ref_compound_neighbour() {
     let mut grid = empty_grid();
-    let mvs = [Mv { row: 8, col: 16 }, Mv { row: -8, col: 24 }];
+    let mvs = [
+        MotionVector { row: 8, col: 16 },
+        MotionVector { row: -8, col: 24 },
+    ];
     grid.record_compound_block(
         0,
         0,
@@ -1049,7 +1089,7 @@ fn single_ref_stack_admits_both_lists_from_same_ref_compound_neighbour() {
     let stack = find_mv_stack(
         &grid,
         &block_at(0, N4_32),
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1084,7 +1124,7 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
     let stack = find_mv_stack(
         &grid,
         &block0,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1092,7 +1132,11 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
         false,
     );
     assert_eq!(stack.stack.len(), 1, "only the zero global-MV fallback");
-    assert_eq!(stack.candidate(0), Mv::ZERO, "fallback candidate is zero");
+    assert_eq!(
+        stack.candidate(0),
+        MotionVector::ZERO,
+        "fallback candidate is zero"
+    );
 }
 
 #[test]
@@ -1107,7 +1151,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         0,
         None,
         false,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         0,
         false,
@@ -1122,7 +1166,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         0,
         None,
         false,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         1,
         false,
@@ -1147,7 +1191,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         0,
         None,
         false,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         1,
         false,
@@ -1162,7 +1206,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         1,
         None,
         false,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         0,
         false,
@@ -1226,7 +1270,7 @@ fn amvd_context_counts_same_reference_amvd_neighbours() {
         0,
         None,
         true,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         SWITCHABLE_FILTERS,
         true,
@@ -1241,7 +1285,7 @@ fn amvd_context_counts_same_reference_amvd_neighbours() {
         1,
         None,
         true,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         SWITCHABLE_FILTERS,
         true,
@@ -1279,7 +1323,7 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
     let stack = find_mv_stack(
         &grid,
         &block1,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1318,7 +1362,7 @@ fn block2_predicts_block0_mv_via_above_neighbour() {
     let stack = find_mv_stack(
         &grid,
         &block2,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1348,7 +1392,7 @@ fn block3_predicts_block0_mv_via_above_and_left() {
     let stack = find_mv_stack(
         &grid,
         &block3,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1374,7 +1418,7 @@ fn intra_neighbour_does_not_contribute() {
         -1,
         None,
         false,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -1395,7 +1439,7 @@ fn intra_neighbour_does_not_contribute() {
     let stack = find_mv_stack(
         &grid,
         &block1,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1405,7 +1449,7 @@ fn intra_neighbour_does_not_contribute() {
     assert_eq!(stack.stack.len(), 1, "intra neighbour not a candidate");
     assert_eq!(
         stack.candidate(0),
-        Mv::ZERO,
+        MotionVector::ZERO,
         "only the zero global fallback"
     );
 }
@@ -1422,7 +1466,7 @@ fn mismatched_reference_neighbour_does_not_contribute() {
     let stack = find_mv_stack(
         &grid,
         &block1,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1495,7 +1539,7 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
     let stack = find_mv_stack(
         &grid,
         &block3,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1504,21 +1548,42 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
     );
     assert_eq!(stack.stack.len(), 2, "deduped neighbour MV + zero fallback");
     assert_eq!(stack.candidate(0), BLOCK0_MV);
-    assert_eq!(stack.candidate(1), Mv::ZERO);
+    assert_eq!(stack.candidate(1), MotionVector::ZERO);
 }
 
 #[test]
 fn distinct_left_and_above_mvs_order_left_before_above() {
     let mut grid = empty_grid();
-    record_inter(&mut grid, 0, 0, true, Mv { row: 0, col: 64 }, true);
-    record_inter(&mut grid, 0, N4_32, true, Mv { row: 0, col: -32 }, true);
-    record_inter(&mut grid, N4_32, 0, true, Mv { row: 0, col: 32 }, true);
+    record_inter(
+        &mut grid,
+        0,
+        0,
+        true,
+        MotionVector { row: 0, col: 64 },
+        true,
+    );
+    record_inter(
+        &mut grid,
+        0,
+        N4_32,
+        true,
+        MotionVector { row: 0, col: -32 },
+        true,
+    );
+    record_inter(
+        &mut grid,
+        N4_32,
+        0,
+        true,
+        MotionVector { row: 0, col: 32 },
+        true,
+    );
     let block3 = block_at(N4_32, N4_32);
 
     let stack = find_mv_stack(
         &grid,
         &block3,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1527,22 +1592,22 @@ fn distinct_left_and_above_mvs_order_left_before_above() {
     );
     assert_eq!(
         stack.candidate(0),
-        Mv { row: 0, col: 32 },
+        MotionVector { row: 0, col: 32 },
         "slot 0 = the LEFT neighbour (block 2) MV"
     );
     assert_eq!(
         stack.candidate(1),
-        Mv { row: 0, col: -32 },
+        MotionVector { row: 0, col: -32 },
         "slot 1 = the ABOVE neighbour (block 1) MV"
     );
     assert_eq!(
         stack.candidate(2),
-        Mv { row: 0, col: 64 },
+        MotionVector { row: 0, col: 64 },
         "slot 2 = the corner MV"
     );
     assert_eq!(
         stack.candidate(3),
-        Mv::ZERO,
+        MotionVector::ZERO,
         "slot 3 = the zero global fallback"
     );
     assert_eq!(
@@ -1573,7 +1638,14 @@ fn empty_sb_grid() -> NeighbourMvGrid {
     NeighbourMvGrid::new(GRID_MI_DIM, GRID_MI_DIM).unwrap()
 }
 
-fn record_sb(grid: &mut NeighbourMvGrid, r: usize, c: usize, mode: bool, mv: Mv, skip: bool) {
+fn record_sb(
+    grid: &mut NeighbourMvGrid,
+    r: usize,
+    c: usize,
+    mode: bool,
+    mv: MotionVector,
+    skip: bool,
+) {
     grid.record_block(
         r,
         c,
@@ -1610,7 +1682,7 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
     let stack = find_mv_stack(
         &grid,
         &sb2,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1632,7 +1704,7 @@ fn undecoded_later_sb_column_yields_no_candidate() {
     let stack = find_mv_stack(
         &grid,
         &sb1,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1646,7 +1718,7 @@ fn undecoded_later_sb_column_yields_no_candidate() {
     );
     assert_eq!(
         stack.candidate(0),
-        Mv::ZERO,
+        MotionVector::ZERO,
         "only the zero global-MV fallback"
     );
 }
@@ -1662,7 +1734,7 @@ fn bottom_right_sb_predicts_from_decoded_above_and_left() {
     let stack = find_mv_stack(
         &grid,
         &sb3,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1721,7 +1793,7 @@ fn ref_count_ctx_compares_this_count_with_later_counts() {
 #[test]
 fn single_ref_ctx_counts_refs_above_two() {
     let mut grid = empty_grid();
-    record_inter_ref(&mut grid, 0, 0, 2, true, Mv::ZERO, true);
+    record_inter_ref(&mut grid, 0, 0, 2, true, MotionVector::ZERO, true);
     let block = block_at(0, N4_32);
     let nctx = block_neighbour_ctx(&grid, &block);
 
@@ -1758,7 +1830,7 @@ fn compound_group_idx_ctx_combines_left_masked_compound_probes() {
 #[test]
 fn compound_group_idx_ctx_combines_left_furthest_future_probes() {
     let mut grid = empty_grid();
-    record_inter_ref(&mut grid, 0, 0, 2, false, Mv::ZERO, false);
+    record_inter_ref(&mut grid, 0, 0, 2, false, MotionVector::ZERO, false);
     let nctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
 
     assert_eq!(nctx.compound_group_idx_ctx(false, Some(2)), 5);
@@ -1768,7 +1840,7 @@ fn compound_group_idx_ctx_combines_left_furthest_future_probes() {
 fn compound_group_idx_ctx_combines_two_nonzero_neighbours() {
     let mut grid = empty_grid();
     record_compound_ref(&mut grid, N4_32, 0, 0, 1, true);
-    record_inter_ref(&mut grid, 0, N4_32, 2, false, Mv::ZERO, false);
+    record_inter_ref(&mut grid, 0, N4_32, 2, false, MotionVector::ZERO, false);
     let nctx = block_neighbour_ctx(&grid, &block_at(N4_32, N4_32));
 
     assert_eq!(nctx.compound_group_idx_ctx(false, Some(2)), 4);
@@ -1778,7 +1850,7 @@ fn compound_group_idx_ctx_combines_two_nonzero_neighbours() {
 #[test]
 fn row_above_seed_walk_uses_tile_global_right_edge() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..32, 16..32).unwrap();
-    let expected = Mv { row: 4, col: -12 };
+    let expected = MotionVector { row: 4, col: -12 };
     grid.record_block(
         15,
         16,
@@ -1810,7 +1882,7 @@ fn warp_predicted_mv_projects_the_block_center() {
     let stack = find_mv_stack(
         &empty_grid(),
         &block,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &bank,
         true,
@@ -1824,7 +1896,7 @@ fn warp_predicted_mv_projects_the_block_center() {
             &block,
             super::super::read_mv::MV_PRECISION_EIGHTH_PEL,
         ),
-        Mv { row: -16, col: 24 },
+        MotionVector { row: -16, col: 24 },
         "a pure-translation model projects to its eighth-pel translation"
     );
     assert_eq!(
@@ -1833,7 +1905,7 @@ fn warp_predicted_mv_projects_the_block_center() {
             &block,
             super::super::read_mv::MV_PRECISION_EIGHTH_PEL,
         ),
-        Mv::ZERO,
+        MotionVector::ZERO,
         "identity default projects to zero"
     );
 
@@ -1843,7 +1915,7 @@ fn warp_predicted_mv_projects_the_block_center() {
     let stack = find_mv_stack(
         &empty_grid(),
         &block,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &bank,
         true,
@@ -1856,7 +1928,7 @@ fn warp_predicted_mv_projects_the_block_center() {
             &block,
             super::super::read_mv::MV_PRECISION_EIGHTH_PEL,
         ),
-        Mv { row: 0, col: 6 },
+        MotionVector { row: 0, col: 6 },
         "xc = 1024 * center_x(47) rounds to 6 eighth-pel at PREC-3"
     );
     assert_eq!(
@@ -1865,12 +1937,12 @@ fn warp_predicted_mv_projects_the_block_center() {
             &block,
             super::super::read_mv::MV_PRECISION_HALF_PEL,
         ),
-        Mv { row: 0, col: 6 },
+        MotionVector { row: 0, col: 6 },
         "non-eighth precisions round at PREC-2 then double"
     );
 }
 
-fn record_unit_inter(grid: &mut NeighbourMvGrid, r: usize, c: usize, mv: Mv) {
+fn record_unit_inter(grid: &mut NeighbourMvGrid, r: usize, c: usize, mv: MotionVector) {
     record_unit_inter_with_ref(grid, r, c, 0, mv);
 }
 
@@ -1879,7 +1951,7 @@ fn record_unit_inter_with_ref(
     r: usize,
     c: usize,
     ref_frame0: i8,
-    mv: Mv,
+    mv: MotionVector,
 ) {
     grid.record_block(
         r,
@@ -1901,11 +1973,11 @@ fn record_unit_inter_with_ref(
 #[test]
 fn constraint_reorder_promotes_max_weight_nearest_unless_temporal_first() {
     let mut grid = empty_grid();
-    let first_mv = Mv { row: 0, col: 8 };
-    let heavy_mv = Mv { row: 0, col: 40 };
+    let first_mv = MotionVector { row: 0, col: 8 };
+    let heavy_mv = MotionVector { row: 0, col: 40 };
     record_unit_inter(&mut grid, 11, 7, first_mv);
-    record_unit_inter(&mut grid, 7, 11, Mv { row: 0, col: 16 });
-    record_unit_inter(&mut grid, 8, 7, Mv { row: 0, col: 24 });
+    record_unit_inter(&mut grid, 7, 11, MotionVector { row: 0, col: 16 });
+    record_unit_inter(&mut grid, 8, 7, MotionVector { row: 0, col: 24 });
     record_unit_inter(&mut grid, 7, 8, heavy_mv);
     record_unit_inter(&mut grid, 12, 7, heavy_mv);
     record_unit_inter(&mut grid, 7, 12, heavy_mv);
@@ -1924,7 +1996,7 @@ fn constraint_reorder_promotes_max_weight_nearest_unless_temporal_first() {
     let sorted = find_mv_stack(
         &grid,
         &block,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1950,7 +2022,7 @@ fn constraint_reorder_promotes_max_weight_nearest_unless_temporal_first() {
     let unsorted = find_mv_stack(
         &grid,
         &block,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -1972,8 +2044,8 @@ fn constraint_reorder_promotes_max_weight_nearest_unless_temporal_first() {
 #[test]
 fn temporal_scan_duplicate_weight_can_promote_candidate() {
     let mut grid = empty_grid();
-    let first_mv = Mv { row: 0, col: 8 };
-    let temporal_mv = Mv { row: 0, col: 40 };
+    let first_mv = MotionVector { row: 0, col: 8 };
+    let temporal_mv = MotionVector { row: 0, col: 40 };
     record_unit_inter(&mut grid, 5, 3, first_mv);
     record_unit_inter(&mut grid, 3, 5, temporal_mv);
     let block = MvBlockContext {
@@ -1999,7 +2071,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         MI_DIM,
         2,
         [Some(0), None],
-        [temporal_mv, Mv::ZERO],
+        [temporal_mv, MotionVector::ZERO],
         [None, None],
     ));
     let mut other = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();
@@ -2026,8 +2098,8 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
     let stack = find_mv_stack_with_temporal(
         &grid,
         &block,
-        Mv::ZERO,
-        DEFAULT_WARP_PARAMS,
+        MotionVector::ZERO,
+        IDENTITY_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -2051,7 +2123,15 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
 #[test]
 fn same_side_spatial_projection_survives_disabled_temporal_scan() {
     let mut grid = empty_grid();
-    record_inter_ref(&mut grid, 0, 0, 1, false, Mv { row: 8, col: 12 }, false);
+    record_inter_ref(
+        &mut grid,
+        0,
+        0,
+        1,
+        false,
+        MotionVector { row: 8, col: 12 },
+        false,
+    );
     let block = block_at(0, N4_32);
     let frame_size = (MI_DIM * 4, MI_DIM * 4);
     let context = TemporalMvContext::from_references(
@@ -2076,8 +2156,8 @@ fn same_side_spatial_projection_survives_disabled_temporal_scan() {
     let stack = find_mv_stack_with_temporal(
         &grid,
         &block,
-        Mv::ZERO,
-        DEFAULT_WARP_PARAMS,
+        MotionVector::ZERO,
+        IDENTITY_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -2087,10 +2167,10 @@ fn same_side_spatial_projection_survives_disabled_temporal_scan() {
         false,
     );
 
-    assert_eq!(stack.candidate(0), Mv { row: 4, col: 6 });
+    assert_eq!(stack.candidate(0), MotionVector { row: 4, col: 6 });
 }
 
-pub(super) fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: Mv) {
+pub(super) fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: MotionVector) {
     grid.record_block(
         8,
         c,
@@ -2111,15 +2191,15 @@ pub(super) fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: M
 #[test]
 fn scan_col_adds_far_left_candidate_when_column_starts_new_block() {
     let mut grid = empty_grid();
-    let left_mv = Mv { row: 0, col: 16 };
-    let far_mv = Mv { row: 0, col: 48 };
+    let left_mv = MotionVector { row: 0, col: 16 };
+    let far_mv = MotionVector { row: 0, col: 48 };
     record_two_wide_column(&mut grid, 6, left_mv);
     record_two_wide_column(&mut grid, 4, far_mv);
 
     let stack = find_mv_stack(
         &grid,
         &block_at(8, 8),
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -2142,13 +2222,13 @@ fn scan_col_adds_far_left_candidate_when_column_starts_new_block() {
 #[test]
 fn scan_col_skips_undecoded_far_column() {
     let mut grid = empty_grid();
-    let left_mv = Mv { row: 0, col: 16 };
+    let left_mv = MotionVector { row: 0, col: 16 };
     record_two_wide_column(&mut grid, 6, left_mv);
 
     let stack = find_mv_stack(
         &grid,
         &block_at(8, 8),
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         false,
@@ -2176,8 +2256,8 @@ fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
         1,
         true,
         true,
-        Mv { row: 4, col: -8 },
-        Mv { row: -12, col: 16 },
+        MotionVector { row: 4, col: -8 },
+        MotionVector { row: -12, col: 16 },
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -2207,7 +2287,7 @@ fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
 #[test]
 fn extend_warp_uses_retained_compound_list1_mv() {
     let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
-    let mv1 = Mv { row: -24, col: 40 };
+    let mv1 = MotionVector { row: -24, col: 40 };
     grid.record_compound_block(
         8,
         0,
@@ -2217,7 +2297,7 @@ fn extend_warp_uses_retained_compound_list1_mv() {
         1,
         false,
         true,
-        Mv { row: 8, col: 16 },
+        MotionVector { row: 8, col: 16 },
         mv1,
         false,
         SWITCHABLE_FILTERS,
@@ -2242,7 +2322,7 @@ fn extend_warp_uses_retained_compound_list1_mv() {
 #[test]
 fn local_warp_samples_include_retained_compound_list1_mv() {
     let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
-    let mv1 = Mv { row: -24, col: 40 };
+    let mv1 = MotionVector { row: -24, col: 40 };
     grid.record_compound_block(
         0,
         8,
@@ -2252,7 +2332,7 @@ fn local_warp_samples_include_retained_compound_list1_mv() {
         1,
         false,
         true,
-        Mv { row: 8, col: 16 },
+        MotionVector { row: 8, col: 16 },
         mv1,
         false,
         SWITCHABLE_FILTERS,

@@ -4239,7 +4239,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/get_ref_frames.rs::tests", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::minimal_single_valid_slot_after_key_yields_one_ref", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::no_valid_slot_yields_zero_refs", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::equal_ref_counter_collapses_to_first_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::two_distinct_refs_rank_by_score", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::active_num_ref_frames_caps_the_result", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::check_res_drops_resolution_incompatible_reference", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::restricted_frame_appended_only_with_check_res", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::allowed_frames_mask_excludes_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::get_relative_dist_clamps_and_handles_sentinels", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::floor_log2_u64_matches_spec", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_one_valid_slot_reaches_shared_tail", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_no_valid_slot_reaches_shared_tail_with_zero_refs", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_two_valid_slots_stops_unmodeled"]
+tests = ["crates/splot-core/src/headers/frame/get_ref_frames.rs::tests", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::minimal_single_valid_slot_after_key_yields_one_ref", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::no_valid_slot_yields_zero_refs", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::equal_ref_counter_collapses_to_first_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::two_distinct_refs_rank_by_score", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::active_num_ref_frames_caps_the_result", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::check_res_drops_resolution_incompatible_reference", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::restricted_frame_appended_only_with_check_res", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::allowed_frames_mask_excludes_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::get_relative_dist_clamps_and_handles_sentinels", "crates/splot-core/src/headers/frame/size.rs::tests::floor_log2_matches_spec_definition", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_one_valid_slot_reaches_shared_tail", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_no_valid_slot_reaches_shared_tail_with_zero_refs", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_two_valid_slots_stops_unmodeled"]
 commands = ["cargo test -p splot-core get_ref_frames", "cargo test -p splot-core headers::frame::inter", "cargo test -p splot-core frame_header_core_inter_implicit_map"]
 fixtures = ["tests/conformance/vectors/valid/syn-key-inter-64x64.ivf"]
 diagnostics = []
@@ -8794,7 +8794,7 @@ module = "xtask/src/feature_status.rs"
 change_id = "spec-coverage-doc"
 owner = "automation"
 risk = "medium"
-notes = "Reports feature, spec-section and writer coverage from the matrix, with on-demand markdown output. `check-feature-status` validates the matrix and detects drift in committed generated renders."
+notes = "Reports feature, spec-section and writer coverage from the matrix, with on-demand markdown output. `check-feature-status` validates the matrix."
 
 [feature.status]
 mapped = "done"
@@ -17918,7 +17918,7 @@ tests = [
     "crates/splot-core/src/headers/frame/info/tests.rs::wrapped_display_order_hint_drives_implicit_reference_ranking",
     "crates/splot-core/src/headers/frame/info/tests.rs::display_order_hint_extends_past_the_coded_lsb_window",
     "crates/splot-decode/src/reference/buffer.rs::tests::reference_refresh_preserves_full_and_lsb_order_hints",
-    "crates/splot-decode/src/prediction/inter/tests.rs::floor_log2_matches_msb_index",
+    "crates/splot-core/src/headers/frame/size.rs::tests::floor_log2_matches_spec_definition",
     "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_with_base_q_idx_ranks_exact",
     "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_stops_unmodeled",
     "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_incomplete_ranking_inputs_stop_unmodeled",
@@ -19308,7 +19308,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/max_level_tests.rs::coefficient_transform_class_derives_from_plane_tx_type", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits"]
+tests = ["crates/splot-recon/src/coefficient_scan.rs::tests::tx_class_maps_every_plane_tx_type", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/max_level.rs",
@@ -21112,7 +21112,7 @@ module = "xtask/src/decoder_support.rs"
 change_id = "decoder-roadmap-matrix-boundary"
 owner = "automation"
 risk = "medium"
-notes = "cargo xtask decoder-support renders decoder support status; check-decoder-support validates the matrix and any committed render as part of cargo xtask ci. These commands do not invoke reference decoders."
+notes = "cargo xtask decoder-support renders decoder support status; check-decoder-support validates the matrix and its local-reference evidence links as part of cargo xtask ci. These commands do not invoke reference decoders."
 
 [feature.status]
 mapped = "done"
@@ -21135,7 +21135,7 @@ tests = [
     "xtask/src/decoder_support.rs::tests::reference_evidence_rejects_local_absolute_paths",
     "xtask/src/decoder_support.rs::tests::rendered_fields_reject_local_absolute_paths",
     "xtask/src/decoder_support.rs::tests::metadata_rejects_local_absolute_paths",
-    "xtask/src/decoder_support.rs::tests::check_decoder_support_detects_drift",
+    "xtask/src/decoder_support.rs::tests::check_decoder_support_accepts_a_valid_matrix",
 ]
 commands = [
     "cargo test -p xtask decoder_support --locked",
@@ -21447,7 +21447,7 @@ module = "xtask/src/decoder_conformance_coverage.rs"
 change_id = "decoder-full-conformance-contract"
 owner = "decoder"
 risk = "medium"
-notes = "decoder-conformance-coverage renders AV2 section-family coverage on demand. Its gate validates support/Feature/diagnostic links, local-reference pointers and any committed render, keeping partial and unsupported runtime coverage explicit without invoking reference decoders."
+notes = "decoder-conformance-coverage renders AV2 section-family coverage on demand. Its gate validates support/Feature/diagnostic links, and local-reference pointers, keeping partial and unsupported runtime coverage explicit without invoking reference decoders."
 
 [feature.status]
 mapped = "done"

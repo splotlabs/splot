@@ -235,7 +235,7 @@ fn unequal_digest_assertions_are_rejected() -> Result<()> {
     finish(root)
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[expect(clippy::unnecessary_wraps)]
 fn finish(root: PathBuf) -> Result<()> {
     let _ = std::fs::remove_dir_all(root);
     Ok(())

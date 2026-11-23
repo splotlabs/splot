@@ -39,16 +39,15 @@ use super::{
 use crate::filters::ccso::CcsoUnitGrid;
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
-pub use crate::prediction::inter::Bawp;
 use crate::prediction::inter::read_mv::AMVD_INDEX_TO_MVD;
+pub use crate::prediction::inter::{Bawp, MotionVector};
 
 use crate::prediction::inter::{
     CcsoGridHandle, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
-    EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterIntraPrediction,
-    InterReferenceState, MotionFieldHandle, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
-    SINGLE_MODE_NEWMV, TIP_REF_FRAME, TemporalMvContext, chroma_inter_tx_type,
-    encoder_motion_field, encoder_temporal_context, inter_residual_units,
-    resolve_initial_frame_cdfs,
+    EncoderSingleMotion, FrameCdfHandle, InterIntraPrediction, InterReferenceState,
+    MotionFieldHandle, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, TIP_REF_FRAME,
+    TemporalMvContext, chroma_inter_tx_type, encoder_motion_field, encoder_temporal_context,
+    inter_residual_units, resolve_initial_frame_cdfs,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
@@ -461,33 +460,6 @@ fn settled_state(
     Ok(state)
 }
 
-/// A motion vector in `1/8` luma samples (§ 7.12).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
-pub struct MotionVector {
-    /// Vertical component.
-    pub row: i32,
-    /// Horizontal component.
-    pub col: i32,
-}
-
-impl From<Mv> for MotionVector {
-    fn from(mv: Mv) -> Self {
-        Self {
-            row: mv.row,
-            col: mv.col,
-        }
-    }
-}
-
-impl From<MotionVector> for Mv {
-    fn from(mv: MotionVector) -> Self {
-        Self {
-            row: mv.row,
-            col: mv.col,
-        }
-    }
-}
-
 /// A single-reference `YMode` (§ 5.20.7.11).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum InterMode {
@@ -587,7 +559,7 @@ pub(super) struct InterLeafState {
 struct PlannedInter {
     leaf: LeafBlock,
     motion: EncoderMotion,
-    mvs: [Mv; 2],
+    mvs: [MotionVector; 2],
     residual: EncoderInterResidual,
     /// `use_intrabc`: an IntraBC block transforms without DDT (§ 7.15.4).
     use_intrabc: bool,
@@ -863,7 +835,6 @@ impl IntraTileSyntax {
         };
         let tile = &mut self.inter_state()?.tile;
         tile.motion_vector(&leaf.frontier, motion)
-            .map(MotionVector::from)
             .map_err(rule("motion vector"))
     }
 
@@ -884,16 +855,8 @@ impl IntraTileSyntax {
         };
         let drls = self.drl_count();
         let tile = &mut self.inter_state()?.tile;
-        let mvs: EncoderSingleMvs = tile
-            .single_mvs(&leaf.frontier, ref_frame, drls)
-            .map_err(rule("motion vector stack"))?;
-        let list = |mvs: Vec<Mv>| mvs.into_iter().map(MotionVector::from).collect();
-        Ok(SingleMvs {
-            global: mvs.global.into(),
-            near: list(mvs.near),
-            new_bases: list(mvs.new_bases),
-            stack: list(mvs.stack),
-        })
+        tile.single_mvs(&leaf.frontier, ref_frame, drls)
+            .map_err(rule("motion vector stack"))
     }
 
     /// Plans the inter leaf `leaf` under `prediction`: predicts it into the
@@ -938,7 +901,7 @@ impl IntraTileSyntax {
     pub(super) fn plan_motion_leaf(
         &mut self,
         leaf: &LeafBlock,
-        (motion, intrabc): (EncoderMotion, Option<(Mv, bool)>),
+        (motion, intrabc): (EncoderMotion, Option<(MotionVector, bool)>),
         (partition, split): (TxPartition, Option<usize>),
     ) -> Result<Vec<TransformBlock>> {
         let (mi_rows, mi_cols) = self.mi_dimensions();
@@ -960,12 +923,12 @@ impl IntraTileSyntax {
             Some((mv, morph)) => (state
                 .tile
                 .predict_intrabc(&leaf.frontier, mv, morph, workspace))
-            .map(|()| [mv, Mv::default()]),
+            .map(|()| [mv, MotionVector::default()]),
         }
         .map_err(rule("inter prediction"))?;
         let units = inter_residual_units(&leaf.frontier, chroma, self.tools.lossless)
             .map_err(rule("inter residual"))?;
-        let (sub_x, sub_y) = super::super::tile_frontier::chroma_subsampling(chroma);
+        let (sub_x, sub_y) = chroma.subsampling();
         let mut blocks: Vec<TransformBlock> = units
             .into_iter()
             .filter(|&(plane, x, y, ..)| {
@@ -1218,11 +1181,7 @@ impl IntraTileSyntax {
         let state = self.inter_ref()?;
         let motion = state.planned.as_ref().ok_or(NO_INTER_LEAF)?.motion;
         self.put_mode_symbols(leaf, motion, symbols)?;
-        Ok(motion
-            .coded_mvds()
-            .into_iter()
-            .map(MotionVector::from)
-            .collect())
+        Ok(motion.coded_mvds())
     }
 
     /// Prices into `symbols` the mode syntax and the motion vector difference
@@ -1251,8 +1210,7 @@ impl IntraTileSyntax {
         (modes, base): (InterModes, MotionVector),
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
-        let motion =
-            EncoderMotion::Single(self.single_motion_over(leaf, modes, Some(base.into()))?);
+        let motion = EncoderMotion::Single(self.single_motion_over(leaf, modes, Some(base))?);
         self.write_motion_modes(leaf, motion, symbols)
     }
 
@@ -1303,11 +1261,7 @@ impl IntraTileSyntax {
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
         self.put_mode_symbols(leaf, motion, symbols)?;
-        let mvds: Vec<MotionVector> = motion
-            .coded_mvds()
-            .into_iter()
-            .map(MotionVector::from)
-            .collect();
+        let mvds = motion.coded_mvds();
         let coding = self
             .inter_ref()?
             .tile
@@ -1532,7 +1486,7 @@ impl IntraTileSyntax {
             .map_err(|_| EncoderSyntaxError::Unsupported("reference index"))?;
         self.inter_ref()?
             .tile
-            .with_luma_subpel(ref_frame, rect, (mv.into(), filter), read)
+            .with_luma_subpel(ref_frame, rect, (mv, filter), read)
             .map_err(rule("sub-pixel prediction"))
     }
 
@@ -1659,7 +1613,7 @@ impl IntraTileSyntax {
         &mut self,
         leaf: &LeafBlock,
         modes: InterModes,
-        base: Option<Mv>,
+        base: Option<MotionVector>,
     ) -> Result<EncoderSingleMotion> {
         let tip = modes.ref_frame == self.reference_count();
         if tip && (modes.mode == InterMode::Global || !self.tip_allowed(leaf)?) {
@@ -1689,7 +1643,7 @@ impl IntraTileSyntax {
             } else {
                 modes.drl
             },
-            mvd: Mv::default(),
+            mvd: MotionVector::default(),
             interp: modes.filter,
             precision: modes.precision.filter(|_| mode == SINGLE_MODE_NEWMV),
             use_amvd: modes.amvd && mode == SINGLE_MODE_NEWMV,
@@ -1707,7 +1661,7 @@ impl IntraTileSyntax {
                     .motion_vector(&leaf.frontier, motion)
                     .map_err(rule("motion vector"))?,
             };
-            let mvd = Mv {
+            let mvd = MotionVector {
                 row: modes.mv.row - base.row,
                 col: modes.mv.col - base.col,
             };
@@ -1739,7 +1693,6 @@ impl IntraTileSyntax {
         Ok(motion)
     }
 
-    /// Whether the frame is an inter frame.
     pub(super) fn inter_frame(&self) -> bool {
         self.inter
             .as_ref()
@@ -1748,7 +1701,10 @@ impl IntraTileSyntax {
 
     /// Takes the planned IntraBC leaf `leaf` and returns its block vector
     /// and `morph_pred`.
-    pub(super) fn take_planned_intrabc(&mut self, leaf: &LeafBlock) -> Result<(Mv, bool)> {
+    pub(super) fn take_planned_intrabc(
+        &mut self,
+        leaf: &LeafBlock,
+    ) -> Result<(MotionVector, bool)> {
         let state = self.inter_state()?;
         match state.planned.take() {
             Some(planned) if planned.use_intrabc && planned.leaf == *leaf => {

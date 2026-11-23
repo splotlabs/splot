@@ -449,7 +449,6 @@ pub(crate) fn duplicate_columns(src: &[i32], dst: &mut [i32]) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::inverse_transform::InverseTransform1dType;
@@ -458,7 +457,7 @@ mod tests {
         InverseTransform2dDim::Kernel(InverseTransform1dType::Dct)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn params(
         log2_width: u32,
         log2_height: u32,

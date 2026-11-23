@@ -32,14 +32,6 @@ pub enum Y4mError {
         /// Frame-rate denominator.
         denominator: u32,
     },
-    /// The decoded frame format has no repository-owned Y4M tag mapping.
-    #[error("unsupported Y4M frame format: {}-bit {pixel_format:?}", .bit_depth.bits())]
-    UnsupportedFrameFormat {
-        /// Decoded sample bit depth.
-        bit_depth: BitDepth,
-        /// Decoded output pixel format.
-        pixel_format: PixelFormat,
-    },
     /// A frame did not match the stream header format.
     #[error("Y4M stream/frame mismatch: expected {}x{} {}-bit {:?}, got {}x{} {}-bit {:?}",
         .expected.visible_luma_size().width(), .expected.visible_luma_size().height(),
@@ -120,20 +112,16 @@ pub enum Y4mChromaTag {
 
 impl Y4mChromaTag {
     /// Derives the pinned Y4M chroma tag for an AV2-derived output format.
-    ///
-    /// # Errors
-    /// Returns [`Y4mError::UnsupportedFrameFormat`] for modeled formats that do
-    /// not have a repository-owned Y4M tag mapping.
-    pub fn from_format(bit_depth: BitDepth, pixel_format: PixelFormat) -> Y4mResult<Self> {
+    pub const fn from_format(bit_depth: BitDepth, pixel_format: PixelFormat) -> Self {
         match (bit_depth, pixel_format) {
-            (BitDepth::Eight, PixelFormat::Monochrome) => Ok(Self::Mono),
-            (BitDepth::Ten, PixelFormat::Monochrome) => Ok(Self::Mono10),
-            (BitDepth::Eight, PixelFormat::Yuv420) => Ok(Self::Yuv420),
-            (BitDepth::Ten, PixelFormat::Yuv420) => Ok(Self::Yuv420P10),
-            (BitDepth::Eight, PixelFormat::Yuv422) => Ok(Self::Yuv422),
-            (BitDepth::Ten, PixelFormat::Yuv422) => Ok(Self::Yuv422P10),
-            (BitDepth::Eight, PixelFormat::Yuv444) => Ok(Self::Yuv444),
-            (BitDepth::Ten, PixelFormat::Yuv444) => Ok(Self::Yuv444P10),
+            (BitDepth::Eight, PixelFormat::Monochrome) => Self::Mono,
+            (BitDepth::Ten, PixelFormat::Monochrome) => Self::Mono10,
+            (BitDepth::Eight, PixelFormat::Yuv420) => Self::Yuv420,
+            (BitDepth::Ten, PixelFormat::Yuv420) => Self::Yuv420P10,
+            (BitDepth::Eight, PixelFormat::Yuv422) => Self::Yuv422,
+            (BitDepth::Ten, PixelFormat::Yuv422) => Self::Yuv422P10,
+            (BitDepth::Eight, PixelFormat::Yuv444) => Self::Yuv444,
+            (BitDepth::Ten, PixelFormat::Yuv444) => Self::Yuv444P10,
         }
     }
 
@@ -163,31 +151,21 @@ pub struct Y4mFrameFormat {
 
 impl Y4mFrameFormat {
     /// Creates a Y4M frame format from visible luma size and decoded format.
-    ///
-    /// # Errors
-    /// Returns [`Y4mError::UnsupportedFrameFormat`] if no pinned chroma tag
-    /// exists for the supplied format.
-    pub fn new(
+    pub const fn new(
         visible_luma_size: PlaneSize,
         bit_depth: BitDepth,
         pixel_format: PixelFormat,
-    ) -> Y4mResult<Self> {
-        let chroma_tag = Y4mChromaTag::from_format(bit_depth, pixel_format)?;
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             visible_luma_size,
             bit_depth,
             pixel_format,
-            chroma_tag,
-        })
+            chroma_tag: Y4mChromaTag::from_format(bit_depth, pixel_format),
+        }
     }
 
     /// Derives a Y4M frame format from a decoded frame's visible output format.
-    ///
-    /// # Errors
-    /// Returns [`Y4mError::UnsupportedFrameFormat`] if no pinned chroma tag
-    /// exists for the frame's bit depth and pixel format.
-    pub fn from_frame<T: ReconSample>(frame: &DecodedFrame<T>) -> Y4mResult<Self> {
+    pub fn from_frame<T: ReconSample>(frame: &DecodedFrame<T>) -> Self {
         Self::new(
             frame.visible_luma_rect().size(),
             frame.bit_depth(),
@@ -233,15 +211,8 @@ impl Y4mStreamHeader {
     }
 
     /// Derives stream header metadata from a decoded frame and frame rate.
-    ///
-    /// # Errors
-    /// Returns [`Y4mError::UnsupportedFrameFormat`] if no pinned chroma tag
-    /// exists for the frame's bit depth and pixel format.
-    pub fn from_frame<T: ReconSample>(
-        frame: &DecodedFrame<T>,
-        frame_rate: Y4mFrameRate,
-    ) -> Y4mResult<Self> {
-        Ok(Self::new(Y4mFrameFormat::from_frame(frame)?, frame_rate))
+    pub fn from_frame<T: ReconSample>(frame: &DecodedFrame<T>, frame_rate: Y4mFrameRate) -> Self {
+        Self::new(Y4mFrameFormat::from_frame(frame), frame_rate)
     }
 
     /// Returns the frame format committed by this stream header.
@@ -332,15 +303,14 @@ impl<W: Write> Y4mWriter<W> {
     /// to append it.
     ///
     /// # Errors
-    /// Returns [`Y4mError::UnsupportedFrameFormat`] if no pinned chroma tag
-    /// exists for the frame's format, or [`Y4mError::Io`] if the
-    /// caller-provided writer fails while receiving the stream header.
+    /// Returns [`Y4mError::Io`] if the caller-provided writer fails while
+    /// receiving the stream header.
     pub fn from_frame<T: ReconSample>(
         writer: W,
         frame: &DecodedFrame<T>,
         frame_rate: Y4mFrameRate,
     ) -> Y4mResult<Self> {
-        Self::new(writer, Y4mStreamHeader::from_frame(frame, frame_rate)?)
+        Self::new(writer, Y4mStreamHeader::from_frame(frame, frame_rate))
     }
 
     /// Returns the number of accepted frames written after the stream header.
@@ -365,11 +335,10 @@ impl<W: Write> Y4mWriter<W> {
     ///
     /// # Errors
     /// Returns [`Y4mError::StreamParameterMismatch`] if the frame format differs
-    /// from the stream header, [`Y4mError::UnsupportedFrameFormat`] if no pinned
-    /// chroma tag exists for the frame, or [`Y4mError::Io`] if the
-    /// caller-provided writer fails.
+    /// from the stream header, or [`Y4mError::Io`] if the caller-provided
+    /// writer fails.
     pub fn write_frame<T: ReconSample>(&mut self, frame: &DecodedFrame<T>) -> Y4mResult<()> {
-        let actual = Y4mFrameFormat::from_frame(frame)?;
+        let actual = Y4mFrameFormat::from_frame(frame);
         let expected = self.frame_format;
         if actual != expected {
             return Err(Y4mError::StreamParameterMismatch { expected, actual });
@@ -388,7 +357,6 @@ impl<W: Write> Y4mWriter<W> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{DecodedFrameInfo, FramePlanes, OutputIndex, Plane, PlaneRect};
@@ -562,7 +530,7 @@ mod tests {
         ];
 
         for (bit_depth, pixel_format, tag) in cases {
-            let format = Y4mFrameFormat::new(luma_size, bit_depth, pixel_format).unwrap();
+            let format = Y4mFrameFormat::new(luma_size, bit_depth, pixel_format);
             let header = Y4mStreamHeader::new(format, frame_rate());
             let expected = format!("YUV4MPEG2 W2 H2 F24000:1001 Ip A0:0 {tag}\n");
             assert_eq!(header_bytes(header), expected.as_bytes());
@@ -581,7 +549,7 @@ mod tests {
             plane(storage, 6, visible, (0_u8..24).collect()),
         );
 
-        let header = Y4mStreamHeader::from_frame(&frame, frame_rate()).unwrap();
+        let header = Y4mStreamHeader::from_frame(&frame, frame_rate());
         assert_eq!(
             header_bytes(header),
             b"YUV4MPEG2 W2 H2 F24000:1001 Ip A0:0 Cmono\n"
@@ -742,8 +710,8 @@ mod tests {
             assert!(matches!(
                 err,
                 Y4mError::StreamParameterMismatch { expected, actual }
-                    if expected == Y4mFrameFormat::from_frame(&first).unwrap()
-                        && actual == Y4mFrameFormat::from_frame(&mismatch).unwrap()
+                    if expected == Y4mFrameFormat::from_frame(&first)
+                        && actual == Y4mFrameFormat::from_frame(&mismatch)
             ));
         }
 

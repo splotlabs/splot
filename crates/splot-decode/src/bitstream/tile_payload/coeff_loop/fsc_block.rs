@@ -17,7 +17,9 @@ use super::super::coeff_state::{
     CoeffBlockLines, LEVEL_STRIDE, TileCoeffContextState, TileCoeffStateError,
 };
 use super::branch::NonZeroCoeffBlockStart;
-use super::max_level::{COEFF_BASE_RANGE, CoeffTransformClass, NUM_BASE_LEVELS};
+use splot_recon::TransformClass;
+
+use super::max_level::{COEFF_BASE_RANGE, NUM_BASE_LEVELS};
 use super::ordinary_pass::CoeffOrdinaryPassError;
 use super::quant_state::{
     CoeffQuantStateAccumulator, CoeffQuantStateConfig, CoeffQuantStateWriteError,
@@ -59,7 +61,7 @@ pub(crate) fn decode_fsc_transform_block(
 ) -> Result<usize, CoeffFscBranchError> {
     let tx = start.tx();
     let seg_eob = start.coeff_count();
-    let scan = grid_scan(CoeffTransformClass::TwoD, tx, seg_eob)?;
+    let scan = grid_scan(TransformClass::TwoD, tx, seg_eob)?;
     let eob = start.eob_read();
     let bob = seg_eob.checked_sub(eob).ok_or_else(|| {
         CoeffOrdinaryPassError::from(super::CoeffLoopContextError::FscScanWalkEobOutOfRange {

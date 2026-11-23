@@ -4,7 +4,7 @@
 //! End-to-end CLI tests: run the built `splot` binary against the committed
 //! fixtures in `tests/fixtures/` and assert on exit codes and output.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 mod common;
 use common::{splot, temp_input};

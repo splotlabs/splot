@@ -8,8 +8,8 @@ use libfuzzer_sys::fuzz_target;
 use splot_decode::{
     DECODE_HASH_REPORT_BYTE_STREAM_ID, DECODE_HASH_REPORT_CONTRACT_ID,
     DECODE_HASH_REPORT_CONTRACT_VERSION, DECODE_HASH_REPORT_HASH_ALGORITHM_ID,
-    DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN, DecodeContext, DecodeHashPixelFormat, DecodeOptions,
-    DecodeOutputVariant, DecodeRuntimeConfig,
+    DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN, DecodeContext, DecodeOptions,
+    DecodeOutputVariant, DecodeRuntimeConfig, PixelFormat,
 };
 use splot_parallel::ThreadCount;
 
@@ -73,7 +73,7 @@ fn assert_minimal_hash_report_shape(report: &splot_decode::DecodeHashReport) {
     assert_eq!(frame.chroma_width, Some(32));
     assert_eq!(frame.chroma_height, Some(32));
     assert_eq!(frame.bit_depth, 8);
-    assert_eq!(frame.pixel_format, DecodeHashPixelFormat::Yuv420);
+    assert_eq!(frame.pixel_format, PixelFormat::Yuv420);
     assert_eq!(frame.hashes.len(), 1);
 
     let hash = &frame.hashes[0];

@@ -25,7 +25,6 @@ use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 use super::coeff_loop::fsc_block::{CoeffFscBranchError, decode_fsc_transform_block};
-use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranchError;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchModeToTxfmBaseConfig, CoeffOrdinaryBranchTxSetBaseConfig,
@@ -42,6 +41,7 @@ use super::coeff_state::{
     CUL_LEVEL_MASK, CoeffBlockLines, TileCoeffContextState, TileCoeffStateError,
 };
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
+use splot_recon::TransformClass;
 
 pub(crate) mod cctx;
 mod luma_transform_partition;
@@ -814,7 +814,7 @@ pub(crate) fn luma_tx_partition_allows(
     Ok((allow_horz || allow_vert).then_some((allow_horz, allow_vert)))
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn read_luma_tx_partition_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -939,7 +939,6 @@ pub(crate) fn block_size_table_usize(
 
 /// One transform block of a plane residual (§ 5.20.7.27), at plane sample
 /// position `(x, y)`.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PlaneCoeffBlock {
     pub(crate) plane: usize,
@@ -962,7 +961,7 @@ pub(crate) struct PlaneCoeffBlock {
 }
 
 /// Reads `all_zero` and, for a nonzero block, its coefficients into `arena`.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: the caller's descriptor stays in its frame"
 )]
@@ -1029,7 +1028,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 }
 
 /// The § 8.3.2 `all_zero` CDF of the transform block at `[x4, y4, w4, h4]` (plane 4x4 units).
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn txb_skip_selector(
     context: &TileCoeffContextState,
     plane: usize,
@@ -1055,7 +1054,7 @@ pub(crate) fn txb_skip_selector(
 
 /// The `all_zero` context of [`txb_skip_selector`] from the block's checked
 /// context spans: a `v_txb_skip` context for the V plane, else a `txb_skip` one.
-#[allow(clippy::inline_always, reason = "measured: once per transform block")]
+#[expect(clippy::inline_always, reason = "measured: once per transform block")]
 #[inline(always)]
 fn txb_skip_ctx(
     context: &TileCoeffContextState,
@@ -1162,7 +1161,7 @@ fn decode_nonzero_plane_coeffs(
         arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
         quant_end.map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
     } else {
-        let tx_class = CoeffTransformClass::from_plane_tx_type(plane_tx_type);
+        let tx_class = splot_recon::tx_class(plane_tx_type);
         let extent = scan_extent(tx_class, tx, eob);
         arena.resize(start_idx + extent, 0);
         let quant_end = decode_ordinary_transform_block(
@@ -1203,7 +1202,7 @@ fn staged_transform_tool_lossless_base_config(
     lossless: bool,
     metadata: TransformToolResidualMetadata,
 ) -> CoeffOrdinaryBranchTxSetBaseConfig {
-    let luma_tx_class = CoeffTransformClass::from_plane_tx_type(metadata.luma_tx_type);
+    let luma_tx_class = splot_recon::tx_class(metadata.luma_tx_type);
     let luma_transform_block = plane == 0;
     let parity_hiding = frame_facts.allow_parity_hiding
         && !lossless
@@ -1212,7 +1211,7 @@ fn staged_transform_tool_lossless_base_config(
     let use_tcq = frame_facts.allow_tcq
         && !lossless
         && luma_transform_block
-        && luma_tx_class == CoeffTransformClass::TwoD;
+        && luma_tx_class == TransformClass::TwoD;
     CoeffOrdinaryBranchTxSetBaseConfig {
         enable_chroma_dctonly: frame_facts.enable_chroma_dctonly,
         uv_mode,
@@ -1282,7 +1281,7 @@ pub(crate) const fn is_cctx_geometry_allowed(
     is_420 || plane_width < 32 || plane_height < 32
 }
 
-#[allow(clippy::inline_always, reason = "measured: once per nonzero block")]
+#[expect(clippy::inline_always, reason = "measured: once per nonzero block")]
 #[inline(always)]
 fn ensure_transform_tool_residual_handoff(
     cdfs: &mut TileCdfSubset,
@@ -1379,9 +1378,8 @@ fn ensure_transform_tool_residual_handoff(
 }
 
 /// Whether § 5.20.8.2 infers `DCT_DCT` instead of reading a transform type.
-#[allow(
+#[expect(
     clippy::inline_always,
-    clippy::fn_params_excessive_bools,
     reason = "a predicate on the per-block coefficient path"
 )]
 #[inline(always)]
@@ -1836,7 +1834,7 @@ const fn invalid_reconstruction_state_error(context: &'static str) -> GeneralInt
     GeneralIntraResidualError::InvalidReconstructionState { context }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     block: CoeffBlock<'_>,
     prediction: &[T],

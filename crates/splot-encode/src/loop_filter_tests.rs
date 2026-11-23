@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use splot_core::annexb::parse_annex_b_obus_partial;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
@@ -10,8 +8,7 @@ use splot_core::headers::frame::{
     build_key_frame_header,
 };
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
-    parse_frame_header_core,
+    FrameHeaderCore, FrameHeaderParseInput, FrameReferenceStateView, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::span::ByteOffset;
@@ -123,7 +120,6 @@ fn headers(unit: &[u8]) -> (SequenceHeader, FrameHeaderCore) {
             active_sequence: Some(&seq),
             mfh_record: None,
             reference_state: FrameReferenceStateView::unknown(),
-            mode: FrameHeaderParseMode::Core,
         },
     )
     .unwrap();

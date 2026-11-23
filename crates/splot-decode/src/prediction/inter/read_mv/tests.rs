@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
 use super::{
     MV_LOW, MV_PRECISION_EIGHT_PEL, MV_PRECISION_EIGHTH_PEL, MV_PRECISION_FOUR_PEL,
-    MV_PRECISION_ONE_PEL, MV_UPP, Mv, amvd_index_to_mvd, lower_mv_precision, mv_clamp_to_integer,
-    read_ns,
+    MV_PRECISION_ONE_PEL, MV_UPP, MotionVector, amvd_index_to_mvd, lower_mv_precision,
+    mv_clamp_to_integer, read_ns,
 };
 
 #[test]
@@ -69,25 +67,25 @@ fn amvd_index_table_matches_spec_values() {
 /// guard against a transposed or symmetric-masking implementation.
 #[test]
 fn lower_mv_precision_rounds_asymmetric_components_per_spec() {
-    let one_pel = lower_mv_precision(MV_PRECISION_ONE_PEL, Mv { row: 13, col: -27 });
-    assert_eq!(one_pel, Mv { row: 16, col: -24 });
+    let one_pel = lower_mv_precision(MV_PRECISION_ONE_PEL, MotionVector { row: 13, col: -27 });
+    assert_eq!(one_pel, MotionVector { row: 16, col: -24 });
 
-    let four_pel = lower_mv_precision(MV_PRECISION_FOUR_PEL, Mv { row: 17, col: -48 });
-    assert_eq!(four_pel, Mv { row: 32, col: -32 });
+    let four_pel = lower_mv_precision(MV_PRECISION_FOUR_PEL, MotionVector { row: 17, col: -48 });
+    assert_eq!(four_pel, MotionVector { row: 32, col: -32 });
 
-    let eight_pel = lower_mv_precision(MV_PRECISION_EIGHT_PEL, Mv { row: 63, col: -65 });
-    assert_eq!(eight_pel, Mv { row: 64, col: -64 });
+    let eight_pel = lower_mv_precision(MV_PRECISION_EIGHT_PEL, MotionVector { row: 63, col: -65 });
+    assert_eq!(eight_pel, MotionVector { row: 64, col: -64 });
 
-    let zero = lower_mv_precision(MV_PRECISION_ONE_PEL, Mv::ZERO);
-    assert_eq!(zero, Mv::ZERO);
+    let zero = lower_mv_precision(MV_PRECISION_ONE_PEL, MotionVector::ZERO);
+    assert_eq!(zero, MotionVector::ZERO);
 
-    let on_grid = lower_mv_precision(MV_PRECISION_ONE_PEL, Mv { row: -32, col: 8 });
-    assert_eq!(on_grid, Mv { row: -32, col: 8 });
+    let on_grid = lower_mv_precision(MV_PRECISION_ONE_PEL, MotionVector { row: -32, col: 8 });
+    assert_eq!(on_grid, MotionVector { row: -32, col: 8 });
 
-    let eighth_pel = lower_mv_precision(MV_PRECISION_EIGHTH_PEL, Mv { row: 5, col: -3 });
+    let eighth_pel = lower_mv_precision(MV_PRECISION_EIGHTH_PEL, MotionVector { row: 5, col: -3 });
     assert_eq!(
         eighth_pel,
-        Mv { row: 5, col: -3 },
+        MotionVector { row: 5, col: -3 },
         "radix 1 is the identity"
     );
 }

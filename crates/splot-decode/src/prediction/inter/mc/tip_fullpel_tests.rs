@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::super::optflow::LumaReference;
 use super::super::tests::{frame_for, workspace_for};
 use super::*;
@@ -13,8 +11,8 @@ use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
 const WIDTH: usize = 64;
 const HEIGHT: usize = 48;
 
-fn mv(row: i32, col: i32) -> Mv {
-    Mv { row, col }
+fn mv(row: i32, col: i32) -> MotionVector {
+    MotionVector { row, col }
 }
 
 /// A reference whose luma is a textured base plus `edits` of `(x, y, delta)`.
@@ -55,7 +53,7 @@ fn frame<T: ReconSample>(bit_depth: BitDepth, luma: Vec<u16>) -> DecodedFrame<T>
 #[derive(Clone, Copy)]
 struct Case {
     x: usize,
-    mv: Mv,
+    mv: MotionVector,
     search: bool,
     refine: bool,
     threshold: Option<u32>,
@@ -75,7 +73,7 @@ fn check<T: ReconSample>(references: &[DecodedFrame<T>; 2], case: Case) {
 fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, case: Case) {
     let bit_depth = references[0].info().bit_depth();
     let mut workspace = workspace_for::<T>(bit_depth, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     let rect = McBlockRect::from_luma_rect(case.x, y, 8, 8);
     let mvs = [case.mv; 2];
@@ -119,7 +117,7 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
 fn unit_block<T: ReconSample>(
     references: [ReferenceSamples<'_, T>; 2],
     rect: McBlockRect,
-    mvs: [Mv; 2],
+    mvs: [MotionVector; 2],
     case: Case,
 ) -> CompoundMcBlock<'_, T> {
     InterBlockParams::compound_average(
@@ -314,7 +312,7 @@ fn tip_fullpel_cells_read_only_the_published_prefix() {
     check_at(references, 8, case(mv(0, 0), true, true));
     check_at(references, 8, case(mv(0, 0), false, true));
     let mut workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let first = McBlockRect::from_luma_rect(16, 8, 8, 8);
     let past = McBlockRect::from_luma_rect(16, 16, 8, 8);
     let still = [mv(0, 0); 2];
@@ -365,7 +363,7 @@ fn luma_reference_refetches_views_past_the_published_prefix() {
 fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitDepth) {
     let references = [reference::<T>(bit_depth, &[]), ramp::<T>(bit_depth, 3)];
     let mut workspace = workspace_for::<T>(bit_depth, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     for reference in &references {
         let reference = ReferenceSamples::settled(reference);

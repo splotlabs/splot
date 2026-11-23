@@ -56,10 +56,6 @@ impl CdefPairSegment {
     }
 }
 
-#[allow(
-    clippy::inline_always,
-    reason = "keeps the CDEF byte pair dispatch in registers"
-)]
 #[inline(always)]
 pub(super) fn filter_byte_pair<S: SimdToken, Q: QuadLanes<S>, T: ReconSample>(
     simd: S,

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use super::*;
 use crate::DecodeUnsupportedReason;
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};

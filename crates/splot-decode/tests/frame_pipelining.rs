@@ -7,7 +7,7 @@
 //! parse, reconstruction, and filter path, so all configurations must produce
 //! identical bytes and diagnostics.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used)]
 
 use core::num::NonZeroU64;
 use parking_lot::{Condvar, Mutex};
@@ -385,8 +385,7 @@ fn reference_store_capped(bytes: u64) -> DecodeOptions {
 /// * The in-flight ring. `InflightRing::reserve` harvests only while the ring is
 ///   at capacity, and its capacity is the smaller of the resolved requested
 ///   frame delay and the worker count, so the ring holds that many of the most
-///   recent frames at every reclaim. This is
-///   SCALE-022's finding: the scheduled walk records a frame's reference update
+///   recent frames at every reclaim. The scheduled walk records a frame's reference update
 ///   from its parse products, so a frame the reference slots have dropped can
 ///   still be a selected reference of a reconstruction the driver has not run.
 ///   The two other depth knobs add nothing on top: the entropy-context limit
@@ -398,9 +397,8 @@ fn reference_store_capped(bytes: u64) -> DecodeOptions {
 /// * The output handoff. A pipelined hash report shares an emitted frame's
 ///   storage into a pool task, which keeps the driver's own entry alive through
 ///   the single-handle rule. That term is capped at
-///   `MAX_OUTSTANDING_HASH_FRAMES` in `output/hash.rs`; before that cap it was
-///   set by how far the pool trailed the driver, which is why a faster parse
-///   (SCALE-036) pushed this bound over by frames the pipeline never retained.
+///   `MAX_OUTSTANDING_HASH_FRAMES` in `output/hash.rs`; without the cap, the
+///   term would grow with how far the pool trails the driver.
 ///
 /// Peak live storage therefore stays inside the depth-one peak plus one decoded
 /// frame per effective pipeline-capacity slot plus the capped handoff.

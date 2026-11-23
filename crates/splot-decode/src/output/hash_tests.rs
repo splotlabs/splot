@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use std::num::NonZeroU64;
 
 use splot_core::span::ByteOffset;
 use splot_parallel::{FrameDelay, ThreadCount};
+use splot_recon::PixelFormat;
 
 use super::*;
 use crate::test_support::{MINIMAL_FIXTURE, empty_avmenc_ivf, minimal_fixture_with_timebase};
@@ -144,7 +143,7 @@ fn minimal_fixture_decodes_to_hash_report() {
     assert_eq!(frame.chroma_width, Some(32));
     assert_eq!(frame.chroma_height, Some(32));
     assert_eq!(frame.bit_depth, 8);
-    assert_eq!(frame.pixel_format, DecodeHashPixelFormat::Yuv420);
+    assert_eq!(frame.pixel_format, PixelFormat::Yuv420);
     assert_eq!(frame.hashes.len(), 1);
     assert_eq!(frame.hashes[0].digest_hex, EXPECTED_DIGEST);
 }
@@ -349,7 +348,7 @@ fn inter_444_fixture_matches_reference_output_hash() {
 
     assert_eq!(report.frames.len(), 2);
     for frame in report.frames {
-        assert_eq!(frame.pixel_format, DecodeHashPixelFormat::Yuv444);
+        assert_eq!(frame.pixel_format, PixelFormat::Yuv444);
         assert_eq!(
             (frame.chroma_width, frame.chroma_height),
             (Some(64), Some(64))
@@ -469,7 +468,7 @@ fn rect_chroma_chunks_444_fixture_matches_reference_output_hash() {
 
     assert_eq!(report.frames.len(), 1);
     let frame = &report.frames[0];
-    assert_eq!(frame.pixel_format, DecodeHashPixelFormat::Yuv444);
+    assert_eq!(frame.pixel_format, PixelFormat::Yuv444);
     assert_eq!(
         (frame.chroma_width, frame.chroma_height),
         (Some(128), Some(64))
@@ -485,12 +484,12 @@ fn ten_bit_d45_fixtures_match_reference_output_hashes() {
     let cases = [
         (
             TEN_BIT_D45_FIXTURE,
-            DecodeHashPixelFormat::Yuv420,
+            PixelFormat::Yuv420,
             TEN_BIT_D45_EXPECTED_DIGEST,
         ),
         (
             TEN_BIT_D45_MONO_FIXTURE,
-            DecodeHashPixelFormat::Monochrome,
+            PixelFormat::Monochrome,
             TEN_BIT_D45_MONO_EXPECTED_DIGEST,
         ),
     ];
@@ -546,7 +545,7 @@ fn monochrome_fixture_decodes_to_luma_only_hash_report() {
     assert_eq!(frame.visible_luma_height, 64);
     assert_eq!(frame.chroma_width, None);
     assert_eq!(frame.chroma_height, None);
-    assert_eq!(frame.pixel_format, DecodeHashPixelFormat::Monochrome);
+    assert_eq!(frame.pixel_format, PixelFormat::Monochrome);
     assert_eq!(frame.hashes[0].digest_hex, MONO_EXPECTED_DIGEST);
 }
 

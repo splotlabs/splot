@@ -188,7 +188,6 @@ pub(in crate::prediction::inter::block) fn project_temporal_band(
     })
 }
 
-#[allow(clippy::large_enum_variant)]
 enum TileReconRow<T: ReconSample> {
     Unresolved {
         row: ReconRow,
@@ -706,7 +705,7 @@ pub(super) const PARSE_AHEAD_ROWS: usize = 4;
 
 /// Parses one tile a few superblock rows at a time and replays each batch in
 /// order, once every reference row is settled.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn run_ordinary_tile<T: ReconSample>(
     parser: &mut TileParser<'_>,
     tile: &mut DecodeTileWorkUnit,
@@ -1005,9 +1004,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
             quant_deltas,
             {
-                let (x, y) = crate::bitstream::tile_payload::chroma_subsampling(
-                    self.recon.sequence.general.chroma_format_idc,
-                );
+                let (x, y) = self.recon.sequence.general.chroma_format_idc.subsampling();
                 (usize::from(x), usize::from(y))
             },
         );
@@ -1502,7 +1499,6 @@ fn superblock_row_batches_into(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_scheduled_motion(
     reusable: &mut ScheduledTileWorkspace<impl ReconSample>,
     tiles: &[GeometryTile],
@@ -1537,7 +1533,7 @@ fn prepare_scheduled_motion(
 }
 
 /// Resolves a parsed tile and turns each unit into owned admission state.
-#[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
     parked: super::super::InterDecodeScratch<T>,

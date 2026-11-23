@@ -8,6 +8,8 @@
 //! quantizers, dimensions, order hints, and layer eligibility. The inter parser supplies
 //! known state and stops when a required ranking input is unavailable.
 
+use super::size::floor_log2;
+
 /// `NUM_REF_FRAMES` (AV2 v1.0.0 § 3): the number of reference-frame buffer slots.
 pub(crate) const NUM_REF_FRAMES: usize = 16;
 
@@ -19,6 +21,10 @@ pub(crate) const REFS_PER_FRAME: u32 = 7;
 /// frame. § 7.7 excludes a slot whose `RefOrderHint` equals this from the scored set, then
 /// (when `checkRes && !IsBridge`) appends any remaining restricted slots at the end.
 pub const RESTRICTED_OH: i32 = -1;
+
+/// [`RESTRICTED_OH`] as stored in the unsigned `RefOrderHint` and `OrderHints`
+/// tables of the reference-state API.
+pub const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
 
 /// `DIST_WEIGHT_BITS` (AV2 v1.0.0 § 3): the scaling applied to `tDist` in the
 /// `maxDisp > OrderHint` scoring arm (§ 7.7).
@@ -310,13 +316,13 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         let mut score = if max_disp > input.order_hint {
             (t_dist << DIST_WEIGHT_BITS) + q as i32
         } else {
-            // TODO(spec: AV2-7.7-GET-REF-FRAMES): re-validate the tDist < 0 score against a
+            // TODO(spec: AV2-7.7-GET-REF-FRAMES): oracle-check tDist < 0 for multi-layer refs.
             let cap = DECAY_DIST_CAP;
             let lookup_idx = t_dist.clamp(0, cap) as usize;
             DIST_SCORE_LOOKUP[lookup_idx] + (t_dist - cap).max(0) + q as i32
         };
         let area = u64::from(slot.width).saturating_mul(u64::from(slot.height));
-        let ref_ratio = floor_log2_u32_from_u64(area) as i32;
+        let ref_ratio = floor_log2(area) as i32;
         score -= ref_ratio << 5;
 
         if new_score_or_dist(&ranked[..ranked_len], d, score, slot.mlayer_id) {
@@ -435,13 +441,6 @@ fn get_unmapped_ref(ranked: &[Ranked], q_thresh: u32) -> Option<usize> {
     None
 }
 
-/// `FloorLog2( value )` over a `u64` area product (§ 7.7 `refRatio`). `FloorLog2(0)` is `0` by
-/// the spec convention (the same convention [`super::size::ceil_log2`] uses for its degenerate
-/// inputs).
-fn floor_log2_u32_from_u64(value: u64) -> u32 {
-    if value < 2 { 0 } else { value.ilog2() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,7 +483,7 @@ mod tests {
     /// AV2 § 7.7 worked example — the minimal `syn-key-inter-64x64` inter frame.
     ///
     /// After the CLK key frame (`refresh_frame_flags == 255`, § 7.23 :14132 `first` rule),
-    /// ONLY slot 0 is `RefValid` (slots 1..15 take `(KEY) ? first(0) : 1 == 0`). The key
+    /// only slot 0 is `RefValid` (slots 1..15 take `(KEY) ? first(0) : 1 == 0`). The key
     /// stored `RefOrderHint[0] == 0`, `RefBaseQIdx[0] == 70` (the fixture's `base_q_idx`),
     /// `RefFrameWidth/Height[0] == 64`. The inter frame has `OrderHint == 1`, single spatial
     /// layer (`obu_mlayer_id == obu_tlayer_id == 0`), `AllowedFrames == -1`.
@@ -527,7 +526,7 @@ mod tests {
         assert!(res.ref_frame_idx.is_empty());
     }
 
-    /// AV2 § 7.7 `first_slot_with_ref` — two valid slots that store the SAME decoded frame
+    /// AV2 § 7.7 `first_slot_with_ref` — two valid slots that store the same decoded frame
     /// (equal `RefCounter`) collapse to one distinct reference (the lowest-indexed slot).
     ///
     /// Slots 0 and 3 both valid with `RefCounter == 5`; slot 3 is suppressed because slot 0
@@ -720,15 +719,5 @@ mod tests {
         assert_eq!(get_relative_dist(RESTRICTED_OH, RESTRICTED_OH), 0);
         assert_eq!(get_relative_dist(RESTRICTED_OH, 5), 127);
         assert_eq!(get_relative_dist(5, RESTRICTED_OH), -127);
-    }
-
-    /// FloorLog2 over the area product matches the spec convention (FloorLog2(0) == 0).
-    #[test]
-    fn floor_log2_u64_matches_spec() {
-        assert_eq!(floor_log2_u32_from_u64(0), 0);
-        assert_eq!(floor_log2_u32_from_u64(1), 0);
-        assert_eq!(floor_log2_u32_from_u64(2), 1);
-        assert_eq!(floor_log2_u32_from_u64(4096), 12);
-        assert_eq!(floor_log2_u32_from_u64(4095), 11);
     }
 }

@@ -7,8 +7,8 @@ use splot_core::bitio::BitReader;
 use std::sync::Arc;
 
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams, RefIdxBuf,
+    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus,
+    FrameReferenceStateView, FrameType, QuantizationParams, RESTRICTED_ORDER_HINT, RefIdxBuf,
     SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
@@ -16,9 +16,9 @@ use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, DecodedFrame, DecodedFrameInfo, InterpolationFilter as ReconInterpolationFilter,
-    IntraRectBlockSize, PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore,
-    ReferenceSlot,
+    BitDepth, CurrentFrameSurface, DecodedFrame, DecodedFrameInfo,
+    InterpolationFilter as ReconInterpolationFilter, IntraRectBlockSize, PlaneId as ReconPlaneId,
+    QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
@@ -56,13 +56,16 @@ const SPEC_TIP_TEMPORAL_SCALE: &str = "7.10.1";
 pub(crate) const SINGLE_MODE_NEARMV: u8 = 0;
 pub(crate) const SINGLE_MODE_GLOBALMV: u8 = 1;
 pub(crate) const SINGLE_MODE_NEWMV: u8 = 2;
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct Mv {
-    pub(crate) row: i32,
-    pub(crate) col: i32,
+/// A motion vector in `1/8` luma samples (§ 7.12).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct MotionVector {
+    /// Vertical component.
+    pub row: i32,
+    /// Horizontal component.
+    pub col: i32,
 }
 
-impl Mv {
+impl MotionVector {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> {
@@ -77,7 +80,7 @@ fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn walk_inter_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
@@ -190,7 +193,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
@@ -215,7 +218,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
 /// The entropy products of a TIP output frame, which parses no blocks: the
 /// initial CDFs pass through unchanged and the segment-id map is empty. They
 /// do not depend on the frame's samples, so a caller may publish them first.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn tip_output_products(
     core: &FrameHeaderCore,
     candidate: &DecodePlannedObu,
@@ -258,7 +261,7 @@ pub(crate) fn reconstruct_tip_output<T: ReconSample>(
     block::tip::reconstruct_output(scratch, planes, sequence, core, reference, geometry, offset)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_bridge_frame<T: ReconSample>(
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
@@ -779,7 +782,7 @@ impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
     /// [`mc::predict_inter_block`].
     pub(in crate::prediction::inter) fn predict_into(
         &self,
-        sink: &mut mc::WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
         offset: ByteOffset,
@@ -900,7 +903,7 @@ impl CompoundOrderHint {
     }
 
     const fn reference(value: u32) -> Self {
-        if value == u32::MAX {
+        if value == RESTRICTED_ORDER_HINT {
             Self::Restricted
         } else {
             Self::Value(value as i64)
@@ -943,9 +946,9 @@ fn compound_is_joint_context_from_order_hints(
     let one_restricted = first_order_hint.is_restricted() != second_order_hint.is_restricted();
     usize::from(same_side || first_dist != second_dist || one_restricted)
 }
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
@@ -1059,10 +1062,10 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
     v.plane == ReconPlaneId::V && u.x == v.x && u.y == v.y && u.tx_size == v.tx_size
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut ResidualScratch,
     [u, v]: [&InterResidualBlock; 2],
     residual_coeffs: &[i32],
@@ -1108,8 +1111,8 @@ fn inter_residual_log2(
 pub(crate) struct InterBlock {
     pub(crate) ref_frame0: i8,
     pub(crate) ref_frame1: Option<i8>,
-    pub(crate) mv: Mv,
-    pub(crate) mv1: Mv,
+    pub(crate) mv: MotionVector,
+    pub(crate) mv1: MotionVector,
     pub(crate) interp: ReconInterpolationFilter,
     /// Per-list § 7.13.3.23 warp models; slot 1 is only compound LOCALWARP and a
     /// `None` slot uses translational motion compensation.
@@ -1686,7 +1689,6 @@ fn parse_sef_or_tip_frame_core(
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: reference.header_view(),
-        mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut reader, &input).map_err(|error| {
         malformed_frame_header(envelope.offset, frame_index, SPEC_HEADER, error.to_string())
@@ -2033,7 +2035,6 @@ fn parse_inter_frame_core(
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: reference.header_view(),
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map_err(|error| DecodeError::MalformedSource {
         issue: DecodeSourceIssue::frame_header_conformance(
@@ -2298,7 +2299,7 @@ mod single_ref;
 pub use block::encoder_leaf::{Bawp, CompoundType};
 pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
-    EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, EncoderWarpMotion, EncoderWarpSource,
+    EncoderMotion, EncoderSingleMotion, EncoderWarpMotion, EncoderWarpSource,
     JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM, MvdCoding, chroma_inter_tx_type,
     encoder_motion_field, encoder_temporal_context,
 };
@@ -2309,7 +2310,7 @@ pub(crate) use block::{
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
     bounds_satisfied, deblock_tip_output, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
-pub(crate) use compound::CompoundYMode;
+pub use compound::CompoundMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,

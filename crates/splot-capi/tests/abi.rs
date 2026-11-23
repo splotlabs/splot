@@ -4,7 +4,8 @@
 //! Drives the C ABI the way a C host does and checks the pictures against
 //! the batch decoder's raw output.
 
-#![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(unsafe_code)]
+#![expect(clippy::unwrap_used, clippy::panic)]
 
 use core::ptr;
 

@@ -326,7 +326,6 @@ pub(super) fn filter_groups<O: ByteLaneOutput>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -171,7 +171,7 @@ fn filter_rolling<S: Simd, P: IntraLaneSample, const WIDE: bool>(
 
 /// AV2 §7.13.2.14 Filter corner process. Returns the three-tap top-left corner
 /// value `Round2(LeftCol[0] * 5 + AboveRow[-1] * 6 + AboveRow[0] * 5, 4)`,
-/// written by the caller into BOTH `AboveRow[-1]` and `LeftCol[-1]`. Transcribed
+/// written by the caller into both `AboveRow[-1]` and `LeftCol[-1]`. Transcribed
 /// VERBATIM from the committed spec mirror
 /// (`filter_intra_edge_corner_high`, `~/Devel/avm/av2/common/reconintra.c:1020-1028`):
 /// `s = left0 * 5 + above_neg1 * 6 + above0 * 5; out = (s + 8) >> 4`.

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
 
@@ -16,7 +14,7 @@ static LEFT_DC: [u8; 4] = [0; 4];
 
 fn source_config(
     plane: usize,
-    tx_class: CoeffTransformClass,
+    tx_class: TransformClass,
     is_hidden: bool,
     sum_abs1: u32,
 ) -> CoeffSignSourceDeriveConfig<'static> {
@@ -53,7 +51,7 @@ fn derives_dc_axis_hidden_and_zero_sources() {
     let dc = derive_nonzero_coeff_sign_input(
         entry(0, 0, 0),
         0,
-        source_config(0, CoeffTransformClass::TwoD, true, 3),
+        source_config(0, TransformClass::TwoD, true, 3),
     );
     assert_eq!(
         dc.source,
@@ -67,7 +65,7 @@ fn derives_dc_axis_hidden_and_zero_sources() {
     let horizontal_axis = derive_nonzero_coeff_sign_input(
         entry(2, 5, 0),
         1,
-        source_config(0, CoeffTransformClass::Horizontal, false, 0),
+        source_config(0, TransformClass::Horizontal, false, 0),
     );
     assert_eq!(
         horizontal_axis.source,
@@ -81,7 +79,7 @@ fn derives_dc_axis_hidden_and_zero_sources() {
     let vertical_axis = derive_nonzero_coeff_sign_input(
         entry(2, 0, 5),
         1,
-        source_config(0, CoeffTransformClass::Vertical, false, 0),
+        source_config(0, TransformClass::Vertical, false, 0),
     );
     assert_eq!(
         vertical_axis.source,
@@ -95,7 +93,7 @@ fn derives_dc_axis_hidden_and_zero_sources() {
     let zero = derive_nonzero_coeff_sign_input(
         entry(3, 1, 1),
         0,
-        source_config(0, CoeffTransformClass::TwoD, false, 0),
+        source_config(0, TransformClass::TwoD, false, 0),
     );
     assert_eq!(zero.source, CoeffSignReadSource::None);
 }

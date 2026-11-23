@@ -12,8 +12,8 @@ pub(crate) use tile::{
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, TipFrameMode, TxMode,
-    get_qindex,
+    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, RESTRICTED_ORDER_HINT,
+    TipFrameMode, TxMode, get_qindex,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
 use splot_core::span::ByteOffset;
@@ -26,10 +26,10 @@ use splot_recon::{
 };
 
 use super::find_mv_stack::{
-    BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, INTRABC_REF_FRAME,
-    MotionMode, MvBlockContext, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourGridMode,
-    NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
-    TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
+    BlockNeighbourContext, BlockPrecisionRecord, INTRABC_REF_FRAME, MotionMode, MvBlockContext,
+    NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourGridMode, NeighbourMvGrid, TIP_REF_FRAME,
+    TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
+    TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_upto, find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_upto,
     new_mv_ctx_from_neighbours, ref_count_ctx, warp_ctx_from_neighbours, warp_predicted_mv,
 };
@@ -40,7 +40,7 @@ use super::read_mv::{
 };
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
-    InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
+    InterResidualBlock, MotionFieldHandle, MotionFieldLayout, MotionVector, PlacedInterBlock,
     ReferenceMetadata, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
     SegmentIdMapHandle, mc,
 };
@@ -52,9 +52,9 @@ use crate::bitstream::tile_payload::{
     TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector, TileCdfSubset,
     TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
     TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
-    TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
-    current_segment_lossless, decode_general_intra_plane_coeffs, get_plane_residual_size,
-    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size, read_row, row_at,
+    TileSegmentIdStateError, TransformToolResidualPolicy, current_segment_lossless,
+    decode_general_intra_plane_coeffs, get_plane_residual_size, is_cctx_geometry_allowed,
+    neg_deinterleave, read_lossless_tx_size, read_row, row_at,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -99,7 +99,7 @@ fn global_motion_mv(
     logical_ref: i8,
     block: &MvBlockContext,
     precision: u8,
-) -> Mv {
+) -> MotionVector {
     warp_predicted_mv(
         global_motion_model(core, logical_ref).gm_params,
         block,
@@ -145,7 +145,7 @@ const H_WEDGE_ANGLES: u8 = 10;
 
 /// § 5.20.4 chroma subsampling as `(subsamplingX, subsamplingY)` in MI shifts.
 pub(super) fn block_chroma_subsampling(chroma: ChromaFormatIdc) -> (u32, u32) {
-    let (sub_x, sub_y) = chroma_subsampling(chroma);
+    let (sub_x, sub_y) = chroma.subsampling();
     (u32::from(sub_x), u32::from(sub_y))
 }
 const WEDGE_0: u8 = 0;
@@ -322,7 +322,7 @@ pub(crate) struct InterBlockFacts {
     pub(crate) residual_use_ddt: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn derive_inter_block_setup(
     work_units: &[DecodeTileWorkUnit],
     sequence: &SequenceHeader,
@@ -525,7 +525,7 @@ fn finish_frame_cdfs(
     products.cdf_output()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn decode_inter_blocks<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
@@ -814,7 +814,7 @@ fn scheduled_motion_field_inputs(
 ///
 /// The driver derives the TIP reference pair once and passes that exact pair to
 /// both the entropy pass and this prelude.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn frame_temporal_context<'a>(
     temporal_context: &'a mut TemporalMvContext,
     core: &FrameHeaderCore,
@@ -861,7 +861,7 @@ fn derived_tip_reference_pair(
 
 pub(super) use crate::tile::frame_superblock_h4;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_segment_id(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -918,7 +918,7 @@ fn read_segment_id(
 }
 
 /// [`read_enabled_segment_id`], zero without a call when segmentation is off.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     clippy::inline_always,
     reason = "measured: per block"
@@ -961,7 +961,7 @@ fn read_inter_segment_id(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
 fn read_enabled_segment_id(
     work_unit: &mut DecodeTileWorkUnit,
@@ -1075,7 +1075,7 @@ fn skip_segment_reference(
         let Some(&hint) = ref_order_hint.get(slot as usize) else {
             continue;
         };
-        if hint == u32::MAX {
+        if hint == RESTRICTED_ORDER_HINT {
             continue;
         }
         let distance = super::get_relative_dist(
@@ -1190,7 +1190,7 @@ fn frame_temporal_first(
 fn references_on_one_side(hints: impl Iterator<Item = u32>, current_order_hint: u32) -> bool {
     let mut has_past = false;
     let mut has_future = false;
-    for hint in hints.filter(|&hint| hint != u32::MAX) {
+    for hint in hints.filter(|&hint| hint != RESTRICTED_ORDER_HINT) {
         let dist = super::get_relative_dist(
             current_order_hint as i32,
             i32::try_from(hint).unwrap_or(i32::MAX),
@@ -1235,7 +1235,6 @@ pub(super) struct InterLeafSink<'a> {
 }
 
 /// Decodes one leaf and stores its record as the row's next entry.
-#[allow(clippy::too_many_arguments)]
 fn decode_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -1501,7 +1500,7 @@ fn decode_block(
                 non_inter_flag_syntax(Some(prelude.skip_flag), frame_mv_precision(core)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
-            let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
+            let (sub_x, sub_y) = sequence.general.chroma_format_idc.subsampling();
             return Ok(store(
                 GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
                 pending_intrabc_leaf(
@@ -1913,7 +1912,7 @@ fn decode_block(
             )?
         }
     } else {
-        Mv::ZERO
+        MotionVector::ZERO
     };
     let interp = if tip_ref {
         ReconInterpolationFilter::EightTapSharp
@@ -1985,8 +1984,8 @@ const fn parsed_inter_block(
     InterBlock {
         ref_frame0,
         ref_frame1,
-        mv: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
         interp,
         warp_params: [None, None],
         bawp: BawpSyntax {
@@ -2009,7 +2008,7 @@ const fn parsed_inter_block(
 /// The part every inter leaf shares once its mode info is read: the residual,
 /// the filter, IntraBC and neighbour-flag records, then the leaf's command,
 /// written once into its row slot.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn finish_inter_leaf(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,

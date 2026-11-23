@@ -75,7 +75,6 @@ impl From<usize> for ThreadCount {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn nz(n: usize) -> NonZeroUsize {

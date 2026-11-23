@@ -81,7 +81,7 @@ struct CflBlock {
     bit_depth: BitDepth,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -109,7 +109,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -543,7 +543,7 @@ impl LinearCfl<'_> {
 /// Builds the shared luma side of a block: the luma edges, `L` and
 /// `lumaAvg` (CfL, returned with where `L` starts in `luma_ac`) or the luma
 /// references in `luma_ac` and every plane's predictor (MHCCP).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
     workspace: &CurrentFrameWorkspace<T>,
     luma: &CflLuma<'_, P, F>,
@@ -1659,7 +1659,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
     /// Eight Q3 downsampled luma samples of chroma columns `x..x + 8`, the first one
     /// clamped when `clamp_first` and every 64th luma column when `periodic`;
     /// taps past the end of a row read its last sample.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: out of line it returns through memory"
     )]
@@ -1732,7 +1732,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
     /// plane: `[periodic, clamp_row0, clamp_col0]` as in [`Luma420Block`].
     /// With `above`, the luma tap rows of a row above the rectangle, `out`
     /// starts with that row. `false` leaves `out` and `left` unwritten.
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         clippy::inline_always,
         reason = "measured: out of line it costs more than the call it saves"

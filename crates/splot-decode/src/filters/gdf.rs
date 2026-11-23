@@ -3,7 +3,7 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, RESTRICTED_ORDER_HINT, get_relative_dist};
 use splot_core::tables::loop_restoration::{GDF_ALPHA, GDF_BIAS, GDF_WEIGHT};
 #[cfg(test)]
 use splot_core::tables::loop_restoration::{GDF_INTER_ERROR, GDF_INTRA_ERROR};
@@ -52,7 +52,6 @@ const GDF_COORDS: [(isize, isize); 18] = [
 
 pub(crate) const GDF_READ_RADIUS: usize = 7;
 const GDF_INTRA_REF_DST: usize = 0;
-const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
 
 fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Option<usize> {
     let local_y = y.checked_sub(tile_start)?;
@@ -161,8 +160,8 @@ impl GdfBlockGrid {
         rows: usize,
         cols: usize,
         values: Vec<u8>,
-    ) -> core::result::Result<Self, ()> {
-        let expected = rows.checked_mul(cols).ok_or(())?;
+    ) -> Option<Self> {
+        let expected = rows.checked_mul(cols)?;
         if block_size == 0
             || !block_size.is_multiple_of(MI_SIZE)
             || rows == 0
@@ -170,9 +169,9 @@ impl GdfBlockGrid {
             || values.len() != expected
             || values.iter().any(|&value| value > 1)
         {
-            return Err(());
+            return None;
         }
-        Ok(Self {
+        Some(Self {
             block_size,
             rows,
             cols,
@@ -267,7 +266,7 @@ pub(crate) fn is_active(
     gdf_config(core, block_grid, bit_depth, reference).map(|config| config.is_some())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn apply_stripe<T: ReconSample>(
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, T>,
@@ -299,7 +298,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
 /// `GDF_ERROR_BASE + err`: the stripe runs with `GdfPixScale = 1 << (12 -
 /// BitDepth)`, so the rounding keeps `err` exact, and a sample range wide
 /// enough that no `err` clips.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn error_stripe(
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, u16>,
@@ -1220,7 +1219,7 @@ fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn gdf_sample(
     base_luma: &[u16],
     source: &GdfSource<'_>,
@@ -1263,7 +1262,7 @@ fn gdf_sample(
 }
 
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
@@ -1284,7 +1283,7 @@ fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample_with_error<const SCALE: i32, const ERROR_LEN: usize>(
     base: i32,
@@ -1370,10 +1369,6 @@ const fn gdf_inter_ref_dst_idx_from_max_dist(max_dist: usize) -> usize {
     }
 }
 
-fn get_relative_dist(a: i32, b: i32) -> i32 {
-    (a - b).clamp(-127, 127)
-}
-
 #[cold]
 #[inline(never)]
 fn gdf_state_error() -> crate::error::DecodeError {
@@ -1396,7 +1391,6 @@ mod wide_tests;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::{
         ClassScratch, GDF_COORDS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
         GdfReferenceContext, GdfSource, GdfSourceRow, LoopRestorationSource, RESTRICTED_ORDER_HINT,
@@ -1450,10 +1444,10 @@ mod tests {
 
     #[test]
     fn per_block_grid_rejects_invalid_shape_and_values() {
-        assert!(GdfBlockGrid::new(0, 1, 1, vec![1]).is_err());
-        assert!(GdfBlockGrid::new(62, 1, 1, vec![1]).is_err());
-        assert!(GdfBlockGrid::new(64, 2, 2, vec![1, 0, 1]).is_err());
-        assert!(GdfBlockGrid::new(64, 1, 1, vec![2]).is_err());
+        assert!(GdfBlockGrid::new(0, 1, 1, vec![1]).is_none());
+        assert!(GdfBlockGrid::new(62, 1, 1, vec![1]).is_none());
+        assert!(GdfBlockGrid::new(64, 2, 2, vec![1, 0, 1]).is_none());
+        assert!(GdfBlockGrid::new(64, 1, 1, vec![2]).is_none());
     }
 
     #[test]

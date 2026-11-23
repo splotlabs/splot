@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
@@ -477,7 +476,7 @@ mod tests {
         assert_tile_roundtrip(&c, input);
     }
 
-    /// The frame is sized so BOTH tables are *load-bearing* at every `(tier, level)`: at a
+    /// The frame is sized so both tables are *load-bearing* at every `(tier, level)`: at a
     /// 32768x32768 frame with 64x64 superblocks, `sbCols == sbRows == 512`, so
     /// `minLog2TileCols = tile_log2(width_sf*16, 512) >= 1` (width-table-driven) and
     /// `minLog2Tiles = tile_log2(area_sf*576, 512*512)` strictly exceeds it

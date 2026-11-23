@@ -125,7 +125,6 @@ impl<T> InterIntraScratch<T> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn predict_interintra_planes<T: ReconSample>(
     scratch: &mut InterIntraScratch<T>,
     workspace: &CurrentFrameWorkspace<T>,

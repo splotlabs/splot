@@ -209,7 +209,7 @@ fn rap_replay_resend_in_rap_tu_by_undecodable_other_layer_does_not_satisfy() {
     data.extend(temporal_delimiter_obu());
     data.extend(seq_obu(3)); // resent -> the CLK's own reference is satisfied
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // CLK@xlayer 0 -> R0 = TU1
-    data.extend(seq_obu_layer(7, 1)); // seq(7) resent in TU1 ONLY by xlayer 1 (no RAP there)
+    data.extend(seq_obu_layer(7, 1)); // seq(7) resent in TU1 only by xlayer 1 (no RAP there)
     data.extend(temporal_delimiter_obu());
     data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
     let report = Validator::new(false).validate_bytes(&data);

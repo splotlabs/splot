@@ -198,7 +198,7 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
 
 /// `Round2Signed` per lane: a negative value adds one less before the
 /// arithmetic shift, so its half rounds away from zero.
-#[allow(clippy::inline_always, reason = "TIP field lane arithmetic")]
+#[expect(clippy::inline_always, reason = "TIP field lane arithmetic")]
 #[inline(always)]
 fn round2_signed<S: Simd>(value: i32x8<S>, shift: u32) -> i32x8<S> {
     (value + (1 << (shift - 1)) + (value >> 31)) >> shift

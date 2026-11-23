@@ -270,7 +270,7 @@ fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
     Ok(width.saturating_sub(1))
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: once or twice per nonzero block"
 )]

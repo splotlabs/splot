@@ -257,7 +257,7 @@ trait LaneBounds<S: SimdToken>: Copy {
 struct Reduced;
 
 impl<S: SimdToken> LaneBounds<S> for Reduced {
-    #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
     #[inline(always)]
     fn bounds(self, _simd: S, min: u16x8<S>, max: u16x8<S>) -> [u16; 2] {
         [min.reduce_min(), max.reduce_max()]
@@ -272,7 +272,6 @@ struct MinPos;
 
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
-    #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
     #[inline(always)]
     fn minpos_bounds(t: Avx2, min: u16x8<Avx2>, max: u16x8<Avx2>) -> [u16; 2] {
         use core::arch::x86_64::{
@@ -288,7 +287,7 @@ fearless_simd::kernel!(
 
 #[cfg(target_arch = "x86_64")]
 impl LaneBounds<Avx2> for MinPos {
-    #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
     #[inline(always)]
     fn bounds(self, simd: Avx2, min: u16x8<Avx2>, max: u16x8<Avx2>) -> [u16; 2] {
         minpos_bounds(simd, min, max)
@@ -297,7 +296,7 @@ impl LaneBounds<Avx2> for MinPos {
 
 /// The least and greatest lanes of `min` and `max` over lanes `0..8` and
 /// lanes `0..4` of the next eighth `next_min`/`next_max`.
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn window_bounds<S: SimdToken, R: LaneBounds<S>>(
     simd: S,
@@ -325,7 +324,6 @@ fn gather_luma<T: crate::ReconSample>(
     baseline_simd!(simd => gather_luma_with(simd, Reduced, samples, width, stride, pad, origin))
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn gather_luma_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
     simd: S,
@@ -376,7 +374,7 @@ fn gather_luma_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
 /// The 8-lane `u16` chunks at columns 0, 8, 16, 24 and
 /// `CDEF_SEGMENT_STRIDE - 8` of a row whose bytes from 0 are `head` and
 /// from 4 are `tail`.
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn byte_eighths<S: SimdToken>(simd: S, head: u8x32<S>, tail: u8x32<S>) -> [u16x8<S>; 5] {
     let (first, second) = simd.widen_u8x32(head);
@@ -387,7 +385,7 @@ fn byte_eighths<S: SimdToken>(simd: S, head: u8x32<S>, tail: u8x32<S>) -> [u16x8
 /// The least and greatest sample of each block's 12-column window from the
 /// column-wise least and greatest of a segment's rows at the chunk starts
 /// of [`byte_eighths`].
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn segment_bounds<S: SimdToken, R: LaneBounds<S>>(
     simd: S,
@@ -431,9 +429,9 @@ fn gather_pair<T: crate::ReconSample, const PACKED: bool>(
     ))
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample, const PACKED: bool>(
     simd: S,
     reduce: R,
@@ -515,7 +513,7 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample, const
 /// The larger plane window range of each block from the column-wise least
 /// and greatest of the two planes' rows at the chunk starts of
 /// [`pair_eighths`].
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn pair_ranges<S: SimdToken, R: LaneBounds<S>>(
     simd: S,
@@ -539,7 +537,7 @@ fn pair_ranges<S: SimdToken, R: LaneBounds<S>>(
 
 /// The 8-column chunks of a chroma row from columns 0, 8 and
 /// `PAIR_SPAN - 8` as `u16` lanes.
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn pair_eighths<S: SimdToken>(simd: S, row: &[u16; PAIR_SPAN]) -> [u16x8<S>; 3] {
     let eighth = |start: usize| u16x8::from_slice(simd, &row[start..start + 8]);
@@ -555,7 +553,8 @@ fn pair_eighths<S: SimdToken>(simd: S, row: &[u16; PAIR_SPAN]) -> [u16x8<S>; 3] 
 /// one lane all come from one plane, so the larger plane range bounds every
 /// tap difference. Returns `false` when `block` is not below
 /// [`CDEF_SEGMENT_BLOCKS`].
-pub fn cdef_filter_block_chroma_pair_segment(
+#[cfg(test)]
+pub(crate) fn cdef_filter_block_chroma_pair_segment(
     segment: &CdefPairSegment,
     block: usize,
     filter: &CdefBlockFilter,
@@ -580,7 +579,6 @@ pub fn cdef_filter_block_chroma_pair_segment(
     ))
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn pair_segment_with<S: SimdToken, Q: QuadLanes<S>>(
     simd: S,
@@ -661,7 +659,7 @@ trait QuadLanes<S: SimdToken>: Copy {
     fn pack(self, simd: S, pairs: [u16x16<S>; 2]) -> u8x32<S>;
     /// The inverse of [`QuadLanes::narrow`] for lanes that fit `i8`.
     fn widen(self, simd: S, lanes: i8x32<S>) -> [i16x16<S>; 2];
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn round_single(self, simd: S, taps: i8x32<S>, scale: i16) -> i8x32<S> {
         self.narrow(
@@ -671,13 +669,13 @@ trait QuadLanes<S: SimdToken>: Copy {
     }
 
     /// Extracts the first eight bytes from each padded 16-byte row.
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn padded_rows(self, simd: S, a: u64x4<S>, b: u64x4<S>) -> i8x32<S> {
         simd.unzip_low_u64x4(a, b).bitcast()
     }
     /// The direction and variance of a block's already centered luma rows.
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn direction(self, simd: S, rows: [i16x8<S>; 8]) -> (usize, i32) {
         cdef_direction_rows(simd, rows)
@@ -695,26 +693,26 @@ impl<S: SimdToken> QuadLanes<S> for Ordered {
     const ROWS: [usize; 4] = [0, 1, 2, 3];
     const QUAD: bool = false;
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn narrow(self, simd: S, [low, high]: [i16x16<S>; 2]) -> i8x32<S> {
         simd.saturating_narrow_i16x16(low, high)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn pack(self, simd: S, [low, high]: [u16x16<S>; 2]) -> u8x32<S> {
         simd.narrow_u16x16(low, high)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn widen(self, simd: S, lanes: i8x32<S>) -> [i16x16<S>; 2] {
         let (low, high) = simd.widen_i8x32(lanes);
         [low, high]
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn clamp(self, _simd: S, diff: i8x32<S>, _magnitude: u8x32<S>, clip: u8x32<S>) -> i8x32<S> {
         let clip = clip.bitcast::<i8x32<S>>();
@@ -730,7 +728,6 @@ struct InLane;
 
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn unpack_padded_rows(t: Avx2, a: u64x4<Avx2>, b: u64x4<Avx2>) -> i8x32<Avx2> {
         core::arch::x86_64::_mm256_unpacklo_epi64(a.into(), b.into()).simd_into(t)
@@ -739,7 +736,6 @@ fearless_simd::kernel!(
 
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn pack_quad(t: Avx2, low: i16x16<Avx2>, high: i16x16<Avx2>) -> i8x32<Avx2> {
         core::arch::x86_64::_mm256_packs_epi16(low.into(), high.into()).simd_into(t)
@@ -748,7 +744,6 @@ fearless_simd::kernel!(
 
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn pack_unsigned_quad(t: Avx2, low: u16x16<Avx2>, high: u16x16<Avx2>) -> u8x32<Avx2> {
         core::arch::x86_64::_mm256_packus_epi16(low.into(), high.into()).simd_into(t)
@@ -757,7 +752,6 @@ fearless_simd::kernel!(
 
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn unpack_quad(t: Avx2, lanes: i8x32<Avx2>) -> [i16x16<Avx2>; 2] {
         use core::arch::x86_64::{
@@ -775,7 +769,6 @@ fearless_simd::kernel!(
 #[cfg(target_arch = "x86_64")]
 fearless_simd::kernel!(
     /// The smaller of `magnitude` and `clip` with the sign of `diff`.
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn signed_min(
         t: Avx2,
@@ -793,43 +786,43 @@ impl QuadLanes<Avx2> for InLane {
     const ROWS: [usize; 4] = [0, 2, 1, 3];
     const QUAD: bool = true;
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn narrow(self, simd: Avx2, [low, high]: [i16x16<Avx2>; 2]) -> i8x32<Avx2> {
         pack_quad(simd, low, high)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn pack(self, simd: Avx2, [low, high]: [u16x16<Avx2>; 2]) -> u8x32<Avx2> {
         pack_unsigned_quad(simd, low, high)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn widen(self, simd: Avx2, lanes: i8x32<Avx2>) -> [i16x16<Avx2>; 2] {
         unpack_quad(simd, lanes)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn round_single(self, simd: Avx2, taps: i8x32<Avx2>, scale: i16) -> i8x32<Avx2> {
         round_single_avx2(simd, taps, scale)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn padded_rows(self, simd: Avx2, a: u64x4<Avx2>, b: u64x4<Avx2>) -> i8x32<Avx2> {
         unpack_padded_rows(simd, a, b)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn direction(self, simd: Avx2, rows: [i16x8<Avx2>; 8]) -> (usize, i32) {
         cdef_direction_avx2(simd, rows)
     }
 
-    #[allow(clippy::inline_always)]
+    #[expect(clippy::inline_always)]
     #[inline(always)]
     fn clamp(
         self,
@@ -852,7 +845,8 @@ impl QuadLanes<Avx2> for InLane {
 /// kernel of [`cdef_filter_block_interior_to`]. Returns `false` without
 /// writing when `block` is not below [`CDEF_SEGMENT_BLOCKS`], `out_stride` is
 /// below 8, or `out` cannot hold the block at `out_stride`.
-pub fn cdef_filter_block_segment<T: crate::ReconSample>(
+#[cfg(test)]
+pub(crate) fn cdef_filter_block_segment<T: crate::ReconSample>(
     segment: &CdefLumaSegment,
     block: usize,
     filter: &CdefBlockFilter,
@@ -886,7 +880,6 @@ pub fn cdef_filter_block_segment<T: crate::ReconSample>(
     ))
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     simd: S,
@@ -980,7 +973,6 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
 
 /// The 32-lane kernel of [`luma_segment_with`] alone, for a block of a
 /// bytes-only segment; `false` when the filter does not fit it.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     simd: S,
@@ -1119,7 +1111,7 @@ impl CdefFilterPlan {
     }
 
     /// [`cdef_window_mode`] of the filter for a window spanning `range`.
-    #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF per-block hot path")]
     #[inline(always)]
     fn mode(&self, range: i32) -> u8 {
         if range <= self.linear_max {
@@ -1173,7 +1165,7 @@ impl CdefUnitFilters {
 
     /// The luma and chroma filters of a block with § 7.18.2 direction
     /// `y_dir` and variance `var`.
-    #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF per-block hot path")]
     #[inline(always)]
     fn block(&self, y_dir: usize, var: i32) -> [CdefFilterPlan; 2] {
         let level = if var == 0 {
@@ -1210,8 +1202,8 @@ pub type CdefSegmentOutput<'a, T> = (
 
 /// AV2 § 7.18.2 and § 7.18.3 CDEF over the [`CDEF_SEGMENT_BLOCKS`] blocks of
 /// a gathered segment with the unit's `strengths`. Each block takes the
-/// direction and kernel of [`cdef_filter_block_segment`] and
-/// [`cdef_filter_block_chroma_pair_segment`]; a block whose window is flat
+/// direction and kernel of `cdef_filter_block_segment` and
+/// `cdef_filter_block_chroma_pair_segment`; a block whose window is flat
 /// filters to itself, and is written only for the planes `fill_flat` marks
 /// (luma, U, V). Returns `false` when the rows cannot hold the segment.
 #[inline(never)]
@@ -1231,7 +1223,6 @@ pub fn cdef_filter_segment<T: crate::ReconSample>(
     ))
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     simd: S,
@@ -1359,7 +1350,7 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
 
 /// Fills the first `side` samples of `side` rows of `rows`, `stride` apart,
 /// with `value`.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn fill_rows<T: crate::ReconSample>(
     rows: &mut [T],
@@ -1387,7 +1378,7 @@ pub fn cdef_publish_chroma_pair<T: crate::ReconSample>(
 /// Writes the interleaved chroma pair `output` into the four rows of the U
 /// and V `planes`. It loads `output` one 8-lane row at a time, as the
 /// kernels store it, so that each load forwards from one store.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn publish_pair<S: SimdToken, T: crate::ReconSample>(
     simd: S,
@@ -1405,7 +1396,7 @@ fn publish_pair<S: SimdToken, T: crate::ReconSample>(
 }
 
 /// [`store_quad`] of 16 `u16` lanes into `T` rows.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn store_lanes<S: SimdToken, T: crate::ReconSample>(
     simd: S,
@@ -1430,7 +1421,7 @@ fn store_lanes<S: SimdToken, T: crate::ReconSample>(
 }
 
 /// Stores the rows of a 4x4 block in their lane `order`, `stride` apart.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn store_quad<E: Copy>(
     lanes: [E; 16],

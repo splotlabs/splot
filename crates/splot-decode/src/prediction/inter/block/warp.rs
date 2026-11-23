@@ -7,10 +7,8 @@
 //! warp-delta parameter reads.
 
 use super::super::find_mv_stack::reduce_warp_model;
-#[allow(clippy::wildcard_imports)]
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_warp_inter_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -67,7 +65,7 @@ const fn ls_product(a: i32, b: i32) -> i32 {
 
 pub(super) fn local_warp_estimation(
     samples: &[[i32; 4]],
-    mv: Mv,
+    mv: MotionVector,
     mi_row: usize,
     mi_col: usize,
     n4w: usize,
@@ -154,7 +152,7 @@ pub(super) fn extend_warp_estimation(
     context: &ExtendWarpContext,
     stack: &super::super::find_mv_stack::MvStack,
     ref_mv_idx: usize,
-    mv: Mv,
+    mv: MotionVector,
 ) -> Result<[i32; 6]> {
     let ExtendWarpContext {
         delta,
@@ -252,7 +250,7 @@ pub(super) struct ParsedWarpSyntax {
     pub(super) source: WarpModelSource,
     pub(super) ref_mv_idx: usize,
     pub(super) ref_warp_idx: usize,
-    pub(super) mvd: Option<Mv>,
+    pub(super) mvd: Option<MotionVector>,
     pub(super) precision: BlockPrecisionRecord,
 }
 
@@ -261,10 +259,10 @@ pub(super) struct ParsedWarpSyntax {
 struct WarpNewmvTail {
     ref_mv_idx: usize,
     precision: BlockPrecisionRecord,
-    mvd: Mv,
+    mvd: MotionVector,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_warp_newmv_tail(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -347,7 +345,7 @@ pub(crate) fn mvd_sign_derivation_block_scope_allowed(
         }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn read_warp_extend_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -384,7 +382,7 @@ pub(crate) fn read_warp_extend_syntax(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn read_warp_newmv_delta_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -666,7 +664,7 @@ fn read_warp_delta_syntax(
 pub(super) fn apply_warp_delta(
     mut params: [i32; 6],
     delta: WarpDeltaSyntax,
-    mv: Mv,
+    mv: MotionVector,
     block_ctx: &MvBlockContext,
 ) -> Result<[i32; 6]> {
     if let Some(deltas) = delta.deltas {
@@ -760,7 +758,7 @@ pub(super) const fn warp_delta_scale(value: u8, negative: bool, high_precision: 
 
 pub(super) fn set_warp_translation(
     params: &mut [i32; 6],
-    mv: Mv,
+    mv: MotionVector,
     mi_row: usize,
     mi_col: usize,
     n4w: usize,

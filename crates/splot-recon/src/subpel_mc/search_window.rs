@@ -164,7 +164,7 @@ pub fn refinemv_area_sad_u8<T: ReconSample>(
 
 /// The § 7.13.3.6 search over the biased `center` SAD, kept when below
 /// `threshold`, and the SADs of the 24 neighbours in [`REFINEMV_NEIGHBORS`] order.
-#[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+#[expect(clippy::inline_always, reason = "per refine-MV unit search")]
 #[inline(always)]
 fn best_offset(
     center: impl FnOnce() -> u32,
@@ -686,7 +686,7 @@ pub(super) mod generic {
         [taps(16, 15, 23, false), taps(16, 15, 23, true)],
     ];
 
-    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[expect(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
     pub(super) fn load<S: Simd>(simd: S, bytes: &[u8], at: usize) -> u8x16<S> {
         bytes
@@ -698,7 +698,7 @@ pub(super) mod generic {
     }
 
     /// `Round2((16 - phase) * top + phase * bottom, 8)` of two horizontal rows.
-    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[expect(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
     fn blend<S: Simd>(simd: S, phase: u8, top: u16x8<S>, bottom: u16x8<S>) -> u16x8<S> {
         let weights = (
@@ -913,7 +913,7 @@ pub(super) mod generic {
     /// `Σ |a - b|` over every other row of the `w x h` areas (`w` 12 or 20)
     /// from `starts` in `planes` at `strides`: each row's masked absolute
     /// differences widened and summed in `u16` lanes.
-    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[expect(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
     pub(super) fn area_sad<S: Simd>(
         simd: S,

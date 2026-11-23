@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -18,7 +16,7 @@ use crate::preset::{Levels, PRESETS, Preset, PresetParams};
 use crate::rate_control::FrameType;
 use crate::rd::partition::search_partition;
 use crate::test_support::{
-    assert_same_samples, avm_decode, avm_decoder, decode, each_case, raw_bytes, refs_for,
+    Rng, assert_same_samples, avm_decode, avm_decoder, decode, each_case, raw_bytes, refs_for,
 };
 use crate::tile_writer::{
     CompoundModes, InterMode, InterModes, InterPrediction, LeafChoice, MotionVector, PARTITIONS,
@@ -1103,18 +1101,6 @@ pub(super) fn is_global(choice: &LeafChoice) -> bool {
             modes.mode == splot_decode::encoder_syntax::CompoundMode::GlobalGlobal
         }
         _ => false,
-    }
-}
-
-/// A small deterministic generator (xorshift64*).
-struct Rng(u64);
-
-impl Rng {
-    fn below(&mut self, n: u64) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
     }
 }
 

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use super::*;
 use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame};
@@ -98,8 +96,10 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
             )
             .unwrap(),
         )),
-        frame_rate_numerator: 1,
-        frame_rate_denominator: 1,
+        frame_rate: crate::pipeline::PipelineFrameRate {
+            numerator: 1,
+            denominator: 1,
+        },
         props: crate::DataProps::default(),
     }
 }

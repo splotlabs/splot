@@ -104,16 +104,14 @@ pub use cdef_filter::{
     CDEF_PAIR_SEGMENT_BLOCK_AREA, CDEF_PAIR_SEGMENT_STRIDE, CDEF_PAIR_STRIDE,
     CDEF_SEGMENT_BLOCK_AREA, CDEF_SEGMENT_BLOCKS, CDEF_SEGMENT_STRIDE, CDEF_UNAVAILABLE,
     CDEF_UV_DIR, CdefBlockFilter, CdefLumaSegment, CdefPairSegment, CdefSampleTaps,
-    CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, CdefUnitFilters, cdef_constrain,
-    cdef_direction, cdef_direction_padded, cdef_direction_segment,
-    cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
-    cdef_filter_block_chroma_pair_segment, cdef_filter_block_interior_to,
-    cdef_filter_block_interior_to_valid_stride, cdef_filter_block_segment, cdef_filter_sample,
-    cdef_filter_segment, cdef_publish_chroma_pair,
+    CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, CdefUnitFilters, cdef_direction,
+    cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
+    cdef_filter_block_chroma_pair, cdef_filter_block_interior_to,
+    cdef_filter_block_interior_to_valid_stride, cdef_filter_sample, cdef_filter_segment,
+    cdef_publish_chroma_pair,
 };
 pub use coefficient_scan::{
-    TransformClass, coefficient_scan_order, coefficient_scan_position, coefficient_scan_slice,
-    tx_class,
+    TransformClass, coefficient_scan_position, coefficient_scan_slice, tx_class,
 };
 pub use deblock_filter::{
     DeblockEdge, DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
@@ -123,8 +121,7 @@ pub use deblock_filter::{
     deblock_vertical_edges,
 };
 pub use dequant::{
-    QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
-    quantizer_value,
+    QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_value,
 };
 pub use dequant_process::{
     DequantBlockParams, QmDequant, QmFrameLevels, QmUserPlane, QmWeightIndex, dequant_coefficient,
@@ -180,11 +177,10 @@ pub use inverse_transform_2d_outer::{
 pub use loop_restoration::{
     LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
     LoopRestorationSourceSample, LoopRestorationSourceSampleValue, loop_restoration_source_sample,
-    loop_restoration_source_sample_value,
 };
 pub use optflow::{
-    OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas,
-    derive_optflow_mv_deltas_into, optflow_unit_8x8_u8, optflow_unit_8x8_u16,
+    OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas_into,
+    optflow_unit_8x8_u8, optflow_unit_8x8_u16,
 };
 pub use pc_wiener::{
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES,
@@ -215,18 +211,15 @@ pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
     BilinearOverlapCarry, CellPlacement, CompoundCells, CompoundPredictor, InterpolationFilter,
     REFINEMV_NEIGHBORS, REFINEMV_SEARCH_AREA, ReferencePlaneView, SUBPEL_FILTERS,
-    SubpelPredictParams, UnscaledPut, WindowSample, blend_compound_average_equal,
-    blend_compound_average_weighted, blend_compound_average_weighted_sample, refinemv_area_sad_u8,
-    refinemv_search_windows, subpel_compound_block, subpel_compound_cell, subpel_compound_cells,
-    subpel_predict_12x12_bilinear_overlap_into, subpel_predict_bilinear_u8, subpel_predict_block,
-    subpel_predict_block_compound_average_fast_pair_into,
-    subpel_predict_block_compound_average_fast_validated_strided_into,
-    subpel_predict_block_compound_average_into, subpel_predict_block_compound_average_strided_into,
+    SubpelPredictParams, UnscaledPut, WindowSample, blend_compound_average_weighted,
+    blend_compound_average_weighted_sample, refinemv_area_sad_u8, refinemv_search_windows,
+    subpel_compound_block, subpel_compound_cells, subpel_predict_12x12_bilinear_overlap_into,
+    subpel_predict_bilinear_u8, subpel_predict_block_compound_average_fast_validated_strided_into,
+    subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_average_unscaled_strided_into,
-    subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
-    subpel_predict_block_into, subpel_predict_block_strided_into,
-    subpel_predict_block_strided_into_u8, subpel_put_block,
+    subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
+    subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8, subpel_put_block,
 };
 pub use transform_params::{
     TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,

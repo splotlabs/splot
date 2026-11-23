@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::super::blend::{
     blend_compound_average, blend_compound_diff_weighted, diff_weighted_mask_into,
 };

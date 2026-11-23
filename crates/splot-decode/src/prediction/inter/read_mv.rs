@@ -4,7 +4,7 @@
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
-use super::{Mv, SPEC_MV, unsupported_at};
+use super::{MotionVector, SPEC_MV, unsupported_at};
 use crate::Result;
 use crate::bitstream::tile_payload::{MvCdfSelector, TileCdfSubset};
 
@@ -75,7 +75,7 @@ pub(crate) trait MvSymbols {
 }
 
 impl MvSymbols for SymbolDecoder<'_> {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -121,7 +121,7 @@ pub(crate) const fn mv_clamp_to_integer(v: i32) -> i32 {
     }
 }
 
-pub(crate) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
+pub(crate) fn lower_mv_precision(precision: u8, mv: MotionVector) -> MotionVector {
     if precision >= MV_PRECISION_EIGHTH_PEL {
         return mv;
     }
@@ -140,7 +140,7 @@ pub(crate) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
         }
         rounded
     };
-    Mv {
+    MotionVector {
         row: round(mv.row),
         col: round(mv.col),
     }
@@ -150,7 +150,7 @@ pub(crate) fn read_newmv_amvd_block_mvd<S: MvSymbols + ?Sized>(
     cdfs: &mut TileCdfSubset,
     symbols: &mut S,
     tile_offset: ByteOffset,
-) -> Result<Mv> {
+) -> Result<MotionVector> {
     let joint = symbols.symbol(cdfs, MvCdfSelector::AmvdJoint, tile_offset)?;
     let row = if matches!(joint, 2 | 3) {
         read_amvd_component(cdfs, symbols, 0, tile_offset)?
@@ -162,7 +162,7 @@ pub(crate) fn read_newmv_amvd_block_mvd<S: MvSymbols + ?Sized>(
     } else {
         0
     };
-    Ok(Mv { row, col })
+    Ok(MotionVector { row, col })
 }
 
 pub(crate) fn read_newmv_block_mvd_with_config(
@@ -170,7 +170,7 @@ pub(crate) fn read_newmv_block_mvd_with_config(
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
     config: MvReadConfig,
-) -> Result<Mv> {
+) -> Result<MotionVector> {
     let diff = read_newmv_block_mvd_magnitude_with_config(cdfs, symbols, tile_offset, config)?;
     apply_inter_mvd_signs(diff, symbols, tile_offset, config, false, 1)
 }
@@ -180,23 +180,23 @@ pub(crate) fn read_newmv_block_mvd_magnitude_with_config<S: MvSymbols + ?Sized>(
     symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
-) -> Result<Mv> {
+) -> Result<MotionVector> {
     validate_config(config, tile_offset)?;
     let (diff_row, diff_col) = read_shell_diff(cdfs, symbols, tile_offset, config)?;
-    Ok(Mv {
+    Ok(MotionVector {
         row: diff_row,
         col: diff_col,
     })
 }
 
 pub(crate) fn apply_inter_mvd_signs<S: MvSymbols + ?Sized>(
-    magnitude: Mv,
+    magnitude: MotionVector,
     symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
     derive_last_sign: bool,
     derive_threshold: usize,
-) -> Result<Mv> {
+) -> Result<MotionVector> {
     let [signed] = apply_inter_mvd_sign_vector_set(
         [magnitude],
         symbols,
@@ -209,14 +209,14 @@ pub(crate) fn apply_inter_mvd_signs<S: MvSymbols + ?Sized>(
 }
 
 pub(crate) fn apply_inter_mvd_sign_pair<S: MvSymbols + ?Sized>(
-    first: Mv,
-    second: Mv,
+    first: MotionVector,
+    second: MotionVector,
     symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
     derive_last_sign: bool,
     derive_threshold: usize,
-) -> Result<(Mv, Mv)> {
+) -> Result<(MotionVector, MotionVector)> {
     let [first, second] = apply_inter_mvd_sign_vector_set(
         [first, second],
         symbols,
@@ -229,13 +229,13 @@ pub(crate) fn apply_inter_mvd_sign_pair<S: MvSymbols + ?Sized>(
 }
 
 fn apply_inter_mvd_sign_vector_set<S: MvSymbols + ?Sized, const N: usize>(
-    mut vectors: [Mv; N],
+    mut vectors: [MotionVector; N],
     symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
     derive_last_sign: bool,
     derive_threshold: usize,
-) -> Result<[Mv; N]> {
+) -> Result<[MotionVector; N]> {
     let shift = u32::from(MV_PRECISION_EIGHTH_PEL - config.precision());
     let mut nonzero_count = 0usize;
     let mut sum = 0i32;
@@ -499,7 +499,7 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i32, tile_offset: ByteOffset) -> 
     i32::try_from(result).map_err(|_| mv_overflow(tile_offset))
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "constant selectors fold into a direct row read"
 )]

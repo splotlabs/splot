@@ -116,7 +116,6 @@ pub fn parse_seg_info(reader: &mut BitReader<'_>, num_segments: u8) -> Result<Se
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;

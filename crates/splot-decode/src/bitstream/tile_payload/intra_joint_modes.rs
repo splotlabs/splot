@@ -51,7 +51,7 @@ impl<T: Copy> MiGrid<T> {
     }
 
     /// A tile cell outside the window reads as the default value.
-    #[allow(clippy::inline_always, reason = "measured: per-block neighbour reads")]
+    #[expect(clippy::inline_always, reason = "measured: per-block neighbour reads")]
     #[inline(always)]
     pub(crate) fn cell(&self, row: usize, col: usize) -> Option<T> {
         let row = row.wrapping_sub(self.origin_row);
@@ -65,7 +65,7 @@ impl<T: Copy> MiGrid<T> {
     }
 
     /// [`SbRowWindow::plane_row`] of tile row `row`, the readable rows inline.
-    #[allow(clippy::inline_always, reason = "measured: per-block neighbour reads")]
+    #[expect(clippy::inline_always, reason = "measured: per-block neighbour reads")]
     #[inline(always)]
     fn plane_row(&self, row: usize) -> Option<usize> {
         let (lo, hi, bias) = self.readable;
@@ -127,7 +127,7 @@ impl<T: Copy> MiGrid<T> {
 
     /// Moves the window to a block at tile position `pos` and returns it
     /// tile-relative, or `None` outside the tile.
-    #[allow(clippy::inline_always, reason = "measured: once per recorded block")]
+    #[expect(clippy::inline_always, reason = "measured: once per recorded block")]
     #[inline(always)]
     fn enter_block(&mut self, (r, c): (usize, usize)) -> Option<(usize, usize)> {
         let r = r.checked_sub(self.origin_row)?;
@@ -340,7 +340,7 @@ impl IntraNeighbours {
     /// The facts at the left-bottom, above-right, left-top and above-left
     /// probes; `above_in_row` is whether the row above is in the block's
     /// superblock row, as the `NPos` selection requires (the left column is).
-    #[allow(clippy::inline_always, reason = "measured: once per intra luma leaf")]
+    #[expect(clippy::inline_always, reason = "measured: once per intra luma leaf")]
     #[inline(always)]
     pub(super) fn from_probes(probes: [IntraFacts; 4], above_in_row: bool) -> Self {
         let [left_bottom, above_right, left_top, above_left] = probes;
@@ -449,7 +449,6 @@ impl TileIntraFactsState {
         self.grid.window_violated()
     }
 
-    /// The grid.
     pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<IntraFacts> {
         &mut self.grid
     }

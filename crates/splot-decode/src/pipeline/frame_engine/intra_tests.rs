@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;

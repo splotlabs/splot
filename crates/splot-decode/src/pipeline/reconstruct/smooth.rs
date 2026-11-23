@@ -12,17 +12,17 @@ use super::sink::{
     IntraEdgeAvailability, noneighbour_above, noneighbour_left, predict_intra_block,
 };
 use crate::bitstream::tile_payload::{
-    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedNonDcLumaMode,
+    CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext,
     add_general_intra_coeff_block_residual_in_place,
 };
 
 const SMOOTH_EDGE_CAPACITY: usize = 65;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
-    mode: SupportedNonDcLumaMode,
+    mode: IntraSmoothMode,
     x: usize,
     y: usize,
     log2_width: u32,
@@ -35,16 +35,11 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
     availability: IntraEdgeAvailability,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let bit_depth = workspace.info().bit_depth();
-    let smooth_mode = match mode {
-        SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
-        SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
-        SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
-    };
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let request = IntraSmoothFrameRequest {
         size: IntraRectBlockSize::new(log2_w, log2_h)?,
-        mode: smooth_mode,
+        mode,
         above: availability.above,
         left: availability.left,
         above_right: num4_above_right > 0,
@@ -74,7 +69,7 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
         log2_width,
         log2_height,
         qindex,
-        smooth_mode,
+        mode,
         available_left_samples,
         available_above_samples,
         num4_above_right,
@@ -87,7 +82,7 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
 /// Reconstructs a smooth block whose edges the frame stores straight into
 /// the frame; `false` when [`CurrentFrameWorkspace::predict_intra_smooth_in_frame`]
 /// declines it.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -121,7 +116,7 @@ pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -301,7 +296,7 @@ fn smooth_prediction_edges<T: ReconSample>(
 
 /// Fills the `[left, above]` edges in place, so that no edge array moves
 /// after its sample stores.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn build_smooth_edges<T: ReconSample>(
     left_neighbour: Option<&[T]>,
     above_neighbour: Option<&[T]>,

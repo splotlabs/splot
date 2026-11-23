@@ -117,27 +117,6 @@ impl TileGroupLayout {
     }
 }
 
-/// Why [`parse_tile_group_structure`] could not be invoked / consumed because the
-/// `use_bru` / `bru_inactive` state is not derivable from the modeled (intra) path.
-///
-/// On the intra path both `use_bru` and `bru_inactive` are the § 5.18.2 defaults `0`
-/// (mirror :4127-4129): they are only reassigned inside the
-/// `if ( enable_bru && FrameType == INTER_FRAME && !is_tip_frame() && !IsBridge )` gate
-/// (mirror :4653-4669), which an intra frame never enters. So the `bru_inactive`
-/// early-return `trailing_bits()` arm (mirror :8453-8463) and the `use_bru`
-/// `bru_tile_active` loop (mirror :8495-8517) are both **dead** on the intra path, and
-/// the structure is fully decidable. This honest-stop reason exists for callers that
-/// cannot establish the intra precondition (e.g. an inter / TIP / bridge frame, or a
-/// frame whose header did not parse to completion).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum BruUndecidable {
-    /// The frame is not known to be intra-complete, so `use_bru` / `bru_inactive`
-    /// cannot be derived; the BRU arms (mirror :8453-8463 / :8495-8517) own the
-    /// remaining inter-path coverage (frame-header-inter-reference-paths).
-    NotIntraComplete,
-}
-
 /// A parse of the `tile_group_obu()` § 5.19 structure *after* the optional
 /// `frame_header()` (AV2 v1.0.0 § 5.19, mirror :8465-8527), on the intra path where
 /// `use_bru` / `bru_inactive` are the derived constants `0`.
@@ -170,7 +149,7 @@ pub struct TileGroupStructure {
     pub header_bytes: Option<u64>,
     /// `sz - headerBytes`: the byte length of the unparsed § 5.20 `tile_group_payload()`
     /// region (mirror :8525-8527), or `None` when `header_bytes` is unknown. The payload
-    /// bytes themselves are NOT parsed here (named residual: `AV2-5.20-TILE-GROUP-PAYLOAD`).
+    /// bytes themselves are not parsed here (named residual: `AV2-5.20-TILE-GROUP-PAYLOAD`).
     pub payload_size: Option<u64>,
 }
 
@@ -247,8 +226,7 @@ impl TileGroupStructureOutcome {
 /// `bru_inactive` early-return `trailing_bits()` arm (mirror :8453-8463) and the
 /// `use_bru` `bru_tile_active` loop (mirror :8495-8517) are dead on the intra path, so
 /// neither is read here. A caller that cannot establish the intra precondition must not
-/// call this and should record [`BruUndecidable::NotIntraComplete`] instead (the inter
-/// BRU arms are owned by `frame-header-inter-reference-paths`).
+/// call this (the inter BRU arms are owned by `frame-header-inter-reference-paths`).
 ///
 /// # Errors
 /// Never returns an error for a payload-bounds (EOF) condition — a truncation inside the
@@ -833,7 +811,6 @@ pub fn parse_frame_header_copy(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;
@@ -997,7 +974,7 @@ mod tests {
 
     #[test]
     fn record_frame_header_bits_huge_count_short_reader_is_eof_not_oom() {
-        // A huge num_frame_header_bits must NOT allocate ceil(n/8) bytes before any EOF check;
+        // A huge num_frame_header_bits must not allocate ceil(n/8) bytes before any EOF check;
         // that can OOM-abort instead of returning the
         // documented UnexpectedEof (no-panic rule). The remaining-bits check must precede the
         // allocation, so an empty / short reader yields a structured error and no blowup.

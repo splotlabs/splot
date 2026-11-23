@@ -13,7 +13,7 @@ pub(super) use std::num::NonZeroUsize;
 
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn apply_tip_filter_edge<T: ReconSample>(
     plane_ctx: &mut PlaneCtx<'_, '_, T>,
     x: usize,
@@ -57,7 +57,7 @@ pub(super) fn apply_tip_filter_edge<T: ReconSample>(
     apply_edge_samples(plane_ctx, PerpLine::new(x, y, dx, dy), lanes, params)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn choose_filter_width<T: ReconSample>(
     plane_ctx: &PlaneCtx<'_, '_, T>,
     x_p: usize,

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use splot_core::headers::frame::GmType;
 
 use super::super::super::find_mv_stack::NeighbourMvGrid;
@@ -41,7 +39,9 @@ fn rotzoom_core() -> FrameHeaderCore {
 /// The vectors `y_mode` resolves to with no neighbours, at a frame precision
 /// of a quarter sample and a block precision of one sample, with the global
 /// MVs of the block at both precisions.
-fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 2]) {
+fn resolve_without_neighbours(
+    y_mode: CompoundMode,
+) -> ([MotionVector; 2], [MotionVector; 2], [MotionVector; 2]) {
     let core = rotzoom_core();
     let block = MvBlockContext {
         mi_row: 8,
@@ -62,7 +62,7 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
         local_warp: false,
         ref_mv_idx: 0,
         independent_idx: y_mode.has_second_drl().then_some([0, 0]),
-        mvd: [Mv::ZERO; 2],
+        mvd: [MotionVector::ZERO; 2],
         joint: None,
         jmvd_scale_mode: 0,
         temporal_allowed: true,
@@ -112,7 +112,7 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
 /// quarter-sample global MV its second-DRL stack offers.
 #[test]
 fn near_newmv_near_list_takes_the_frame_precision_global_mv() {
-    let (mv, frame_global, block_global) = resolve_without_neighbours(CompoundYMode::NearNew);
+    let (mv, frame_global, block_global) = resolve_without_neighbours(CompoundMode::NearNew);
 
     assert_ne!(frame_global[0], block_global[0]);
     assert_eq!(mv[0], frame_global[0]);
@@ -122,7 +122,7 @@ fn near_newmv_near_list_takes_the_frame_precision_global_mv() {
 /// frame-precision pair, so `NEW_NEARMV` keeps it on its NEAR list.
 #[test]
 fn new_nearmv_near_list_takes_the_frame_precision_global_mv() {
-    let (mv, frame_global, block_global) = resolve_without_neighbours(CompoundYMode::NewNear);
+    let (mv, frame_global, block_global) = resolve_without_neighbours(CompoundMode::NewNear);
 
     assert_ne!(frame_global[1], block_global[1]);
     assert_eq!(mv[1], frame_global[1]);

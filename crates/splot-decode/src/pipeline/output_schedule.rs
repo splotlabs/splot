@@ -469,7 +469,6 @@ pub(super) fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
     use crate::pipeline::FrameCdfSubset;
@@ -508,8 +507,10 @@ mod tests {
                 crate::bitstream::tile_payload::FrameSegmentIdMap::new(1, width.div_ceil(4))
                     .unwrap(),
             )),
-            frame_rate_numerator: 1,
-            frame_rate_denominator: 1,
+            frame_rate: crate::pipeline::PipelineFrameRate {
+                numerator: 1,
+                denominator: 1,
+            },
             props: crate::DataProps::default(),
         })
     }

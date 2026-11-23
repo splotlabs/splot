@@ -98,6 +98,18 @@ impl PixelFormat {
         }
     }
 
+    /// Returns the stable label of decode hash reports: `monochrome`,
+    /// `yuv420`, `yuv422` or `yuv444`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Monochrome => "monochrome",
+            Self::Yuv420 => "yuv420",
+            Self::Yuv422 => "yuv422",
+            Self::Yuv444 => "yuv444",
+        }
+    }
+
     /// Returns whether AV2 § 6.4.1 `Monochrome` is true.
     pub const fn is_monochrome(self) -> bool {
         matches!(self, Self::Monochrome)
@@ -327,7 +339,6 @@ impl ReconSample for u16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

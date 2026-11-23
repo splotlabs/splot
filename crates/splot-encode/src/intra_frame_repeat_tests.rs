@@ -8,7 +8,7 @@ use super::*;
 use splot_core::annexb::parse_annex_b_obus_partial;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView, parse_frame_header_core,
+    FrameHeaderParseInput, FrameReferenceStateView, parse_frame_header_core,
 };
 use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::span::ByteOffset;
@@ -96,7 +96,6 @@ fn explicit_hints(units: &[Vec<u8>]) -> Vec<(u64, u32)> {
             active_sequence: Some(&seq),
             mfh_record: None,
             reference_state: FrameReferenceStateView::unknown(),
-            mode: FrameHeaderParseMode::Core,
         };
         let mut reader = BitReader::new(sef.payload, ByteOffset::new(0));
         let core = parse_frame_header_core(&mut reader, &input).unwrap();

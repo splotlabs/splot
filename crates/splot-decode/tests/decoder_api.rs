@@ -4,7 +4,7 @@
 //! Streaming `Decoder` tests: the pictures must match the batch raw output,
 //! carry each temporal unit's caller data, and share the decoder's storage.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, clippy::panic)]
 
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader, is_random_access_point};
 use splot_decode::{

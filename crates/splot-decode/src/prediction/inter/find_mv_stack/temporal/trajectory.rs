@@ -3,7 +3,7 @@
 
 use splot_recon::math::round2_signed_i32;
 
-use super::{Mv, REFMVS_LIMIT, project_no_constraint};
+use super::{MotionVector, REFMVS_LIMIT, project_no_constraint};
 #[cfg(test)]
 use super::{allocate_temporal_grid, temporal_grid_index};
 
@@ -32,7 +32,7 @@ impl PackedTrajectoryMv {
         col: 0,
     };
 
-    fn new(mv: Mv) -> Self {
+    fn new(mv: MotionVector) -> Self {
         let mv = clamp_mv(mv);
         Self {
             row: mv.row as i16,
@@ -41,8 +41,8 @@ impl PackedTrajectoryMv {
     }
 
     /// Stored vectors are clamped to `REFMVS_LIMIT`, so only `INVALID` has this row.
-    fn unpack(self) -> Option<Mv> {
-        (self.row != Self::INVALID.row).then_some(Mv {
+    fn unpack(self) -> Option<MotionVector> {
+        (self.row != Self::INVALID.row).then_some(MotionVector {
             row: i32::from(self.row),
             col: i32::from(self.col),
         })
@@ -113,7 +113,7 @@ impl TrajectoryMotionField {
     }
 
     #[cfg(test)]
-    pub(super) fn cell(&self, y8: usize, x8: usize) -> Option<Mv> {
+    pub(super) fn cell(&self, y8: usize, x8: usize) -> Option<MotionVector> {
         let index = temporal_grid_index(self.width8, self.height8, y8, x8)?;
         self.cells
             .get(index)
@@ -122,7 +122,7 @@ impl TrajectoryMotionField {
     }
 
     #[cfg(test)]
-    pub(super) fn set(&mut self, y8: usize, x8: usize, mv: Mv) {
+    pub(super) fn set(&mut self, y8: usize, x8: usize, mv: MotionVector) {
         if let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8)
             && let Some(cell) = self.cells.get_mut(index)
         {
@@ -172,7 +172,13 @@ impl TrajectoryState {
 
     /// Writes one reference's trajectory vector at a whole-field cell.
     #[cfg(test)]
-    pub(super) fn set_trajectory_cell(&mut self, reference: usize, y8: usize, x8: usize, mv: Mv) {
+    pub(super) fn set_trajectory_cell(
+        &mut self,
+        reference: usize,
+        y8: usize,
+        x8: usize,
+        mv: MotionVector,
+    ) {
         if reference >= self.reference_count {
             return;
         }
@@ -184,7 +190,12 @@ impl TrajectoryState {
     }
 
     /// Reads one reference's trajectory vector at a whole-field cell.
-    pub(super) fn trajectory_cell(&self, reference: usize, y8: usize, x8: usize) -> Option<Mv> {
+    pub(super) fn trajectory_cell(
+        &self,
+        reference: usize,
+        y8: usize,
+        x8: usize,
+    ) -> Option<MotionVector> {
         if reference >= self.reference_count {
             return None;
         }
@@ -440,7 +451,7 @@ impl OwnedTrajectoryFields {
     }
 
     /// One reference's trajectory vector at a whole-field cell of this band.
-    pub(super) fn cell(&self, reference: usize, y8: usize, x8: usize) -> Option<Mv> {
+    pub(super) fn cell(&self, reference: usize, y8: usize, x8: usize) -> Option<MotionVector> {
         self.rows.cell(&self.cells, reference, y8, x8)
     }
 }
@@ -463,7 +474,7 @@ impl GridRows {
         reference: usize,
         y8: usize,
         x8: usize,
-    ) -> Option<Mv> {
+    ) -> Option<MotionVector> {
         if reference >= self.reference_count || x8 >= self.width8 || y8 >= self.row_end {
             return None;
         }
@@ -493,7 +504,7 @@ impl GridRows {
         reference: usize,
         y8: usize,
         x8: usize,
-    ) -> Option<Mv> {
+    ) -> Option<MotionVector> {
         let dy = y8.checked_sub(self.row_base)? & 1;
         let dx = x8 & 1;
         if self.step != 2 || dy | dx == 0 {
@@ -519,7 +530,7 @@ impl GridRows {
                 count += 1;
             }
         }
-        PackedTrajectoryMv::new(Mv {
+        PackedTrajectoryMv::new(MotionVector {
             row: average(sum.row, count),
             col: average(sum.col, count),
         })
@@ -528,7 +539,7 @@ impl GridRows {
 }
 
 impl OwnedTrajectoryBand {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn new(
         width8: usize,
         height8: usize,
@@ -690,7 +701,7 @@ impl TrajectoryBand<'_> {
     /// than running off the grid, so callers carry that bound: the scan admits
     /// only references below it, and `observe_projection_at` inherits it from
     /// the reference tables its `source` and `end` are resolved through.
-    fn trajectory_mv(&self, reference: usize, index: usize) -> Option<Mv> {
+    fn trajectory_mv(&self, reference: usize, index: usize) -> Option<MotionVector> {
         debug_assert!(reference < self.reference_count);
         self.fields
             .get(index * self.reference_count + reference)
@@ -715,7 +726,7 @@ impl TrajectoryBand<'_> {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured trajectory hot path")]
+    #[expect(clippy::inline_always, reason = "measured trajectory hot path")]
     #[inline(always)]
     fn set_position(&mut self, reference: usize, at: Position, phase: usize, position: Position) {
         if let Some(slot) = self
@@ -765,7 +776,7 @@ impl TrajectoryBand<'_> {
         candidate.0 >= min_y && candidate.0 < max_y && candidate.1 >= min_x && candidate.1 < max_x
     }
 
-    fn sampled_position(&self, y8: usize, x8: usize, mv: Mv) -> Option<(usize, usize)> {
+    fn sampled_position(&self, y8: usize, x8: usize, mv: MotionVector) -> Option<(usize, usize)> {
         let y8 = project_no_constraint(y8, mv.row, self.height8)?;
         let x8 = project_no_constraint(x8, mv.col, self.width8)?;
         Some((self.round_step(y8), self.round_step(x8)))
@@ -774,7 +785,7 @@ impl TrajectoryBand<'_> {
     /// Writes one reference's trajectory vector at a band-relative cell.
     ///
     /// Carries [`Self::trajectory_mv`]'s reference bound for the same reason.
-    fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) -> Mv {
+    fn set_field_at(&mut self, reference: usize, index: usize, mv: MotionVector) -> MotionVector {
         debug_assert!(reference < self.reference_count);
         let mv = clamp_mv(mv);
         if let Some(slot) = self
@@ -798,7 +809,7 @@ impl TrajectoryBand<'_> {
         end: Option<usize>,
         y8: usize,
         x8: usize,
-        mv: Mv,
+        mv: MotionVector,
     ) -> Option<Position> {
         let end = end.filter(|&end| end < self.reference_count)?;
         if source >= self.reference_count || y8 >= self.height8 || x8 >= self.width8 {
@@ -816,7 +827,7 @@ impl TrajectoryBand<'_> {
                 .band_index(end_position.0, end_position.1)
                 .and_then(|index| self.position_slot(end, index))
         {
-            let back = Mv {
+            let back = MotionVector {
                 row: -mv.row,
                 col: -mv.col,
             };
@@ -837,7 +848,7 @@ impl TrajectoryBand<'_> {
     /// is tested against a trajectory's window.
     /// A vector that moves less than one 8x8 cell on both axes keeps the
     /// trajectory's stored sample position.
-    #[allow(clippy::inline_always, reason = "measured trajectory scan walk")]
+    #[expect(clippy::inline_always, reason = "measured trajectory scan walk")]
     #[inline(always)]
     pub(super) fn extend_trajectories(
         &mut self,
@@ -845,7 +856,7 @@ impl TrajectoryBand<'_> {
         to: usize,
         slot: usize,
         column: Option<usize>,
-        delta: Mv,
+        delta: MotionVector,
     ) {
         let Some(slots) = self.positions_at_slot(slot) else {
             return;
@@ -888,14 +899,14 @@ impl TrajectoryBand<'_> {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn observe_projection(
         &mut self,
         source: usize,
         end: Option<usize>,
         y8: usize,
         x8: usize,
-        mv: Mv,
+        mv: MotionVector,
         source_to_current: i32,
         reference_offset: i32,
         backward: bool,
@@ -943,7 +954,7 @@ impl TrajectoryBand<'_> {
     /// `source_slot` is the scanned cell's record for `source`, and `end_slot`
     /// the trajectory end's record for `end` when the end lies inside the
     /// position's window; `end_mv` is evaluated only for a recorded observation.
-    #[allow(clippy::too_many_arguments, clippy::inline_always)]
+    #[expect(clippy::too_many_arguments, clippy::inline_always)]
     #[inline(always)]
     pub(super) fn observe_projection_at(
         &mut self,
@@ -951,8 +962,8 @@ impl TrajectoryBand<'_> {
         end: Option<usize>,
         source_slot: usize,
         index: usize,
-        projected: Mv,
-        end_mv: impl FnOnce() -> Mv,
+        projected: MotionVector,
+        end_mv: impl FnOnce() -> MotionVector,
         position: Position,
         end_slot: Option<usize>,
     ) {
@@ -964,7 +975,7 @@ impl TrajectoryBand<'_> {
         self.set_field_at(
             source,
             index,
-            Mv {
+            MotionVector {
                 row: -projected.row,
                 col: -projected.col,
             },
@@ -980,15 +991,15 @@ impl TrajectoryBand<'_> {
 }
 
 /// Operands are stored (`REFMVS_LIMIT`) or decompressed (at most 2048) vectors.
-fn add_mv(a: Mv, b: Mv) -> Mv {
-    Mv {
+fn add_mv(a: MotionVector, b: MotionVector) -> MotionVector {
+    MotionVector {
         row: a.row + b.row,
         col: a.col + b.col,
     }
 }
 
-fn clamp_mv(mv: Mv) -> Mv {
-    Mv {
+fn clamp_mv(mv: MotionVector) -> MotionVector {
+    MotionVector {
         row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
         col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
     }
@@ -1005,13 +1016,12 @@ fn average(value: i32, count: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 
     #[test]
     fn trajectory_storage_stays_compact() {
-        assert_eq!(std::mem::size_of::<Mv>(), 8);
+        assert_eq!(std::mem::size_of::<MotionVector>(), 8);
         assert_eq!(std::mem::size_of::<PackedTrajectoryMv>(), 4);
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
@@ -1048,7 +1058,7 @@ mod tests {
             Some(0),
             1,
             1,
-            Mv { row: 16, col: 32 },
+            MotionVector { row: 16, col: 32 },
             2,
             4,
             false,
@@ -1056,21 +1066,30 @@ mod tests {
 
         assert_eq!(
             state.trajectory_cell(1, 1, 1),
-            Some(Mv { row: -8, col: -16 })
+            Some(MotionVector { row: -8, col: -16 })
         );
-        assert_eq!(state.trajectory_cell(0, 1, 1), Some(Mv { row: 8, col: 16 }));
+        assert_eq!(
+            state.trajectory_cell(0, 1, 1),
+            Some(MotionVector { row: 8, col: 16 })
+        );
     }
 
     #[test]
     fn zero_offset_projection_records_the_source_trajectory() {
         let mut state = TrajectoryState::new((8, 8), 1, 1, 8).unwrap();
 
-        state
-            .whole_band()
-            .unwrap()
-            .observe_projection(0, None, 1, 1, Mv::ZERO, 2, 0, false);
+        state.whole_band().unwrap().observe_projection(
+            0,
+            None,
+            1,
+            1,
+            MotionVector::ZERO,
+            2,
+            0,
+            false,
+        );
 
-        assert_eq!(state.trajectory_cell(0, 1, 1), Some(Mv::ZERO));
+        assert_eq!(state.trajectory_cell(0, 1, 1), Some(MotionVector::ZERO));
     }
 
     #[test]
@@ -1081,7 +1100,7 @@ mod tests {
             Some(1),
             1,
             7,
-            Mv { row: 0, col: 1120 },
+            MotionVector { row: 0, col: 1120 },
             2,
             5,
             false,
@@ -1089,11 +1108,11 @@ mod tests {
 
         assert_eq!(
             state.trajectory_cell(0, 1, 14),
-            Some(Mv { row: 0, col: -448 })
+            Some(MotionVector { row: 0, col: -448 })
         );
         assert_eq!(
             state.trajectory_cell(1, 1, 14),
-            Some(Mv { row: 0, col: 672 })
+            Some(MotionVector { row: 0, col: 672 })
         );
     }
 
@@ -1105,17 +1124,23 @@ mod tests {
             Some(1),
             1,
             1,
-            Mv { row: 0, col: 64 },
+            MotionVector { row: 0, col: 64 },
             2,
             4,
             false,
         );
-        state
-            .whole_band()
-            .unwrap()
-            .check_intersection(1, Some(2), 1, 2, Mv { row: 0, col: 64 });
+        state.whole_band().unwrap().check_intersection(
+            1,
+            Some(2),
+            1,
+            2,
+            MotionVector { row: 0, col: 64 },
+        );
 
-        assert_eq!(state.trajectory_cell(2, 1, 1), Some(Mv { row: 0, col: 96 }));
+        assert_eq!(
+            state.trajectory_cell(2, 1, 1),
+            Some(MotionVector { row: 0, col: 96 })
+        );
     }
 
     #[test]
@@ -1123,7 +1148,16 @@ mod tests {
         let mut state = TrajectoryState::new((2, 2), 1, 1, 8).unwrap();
         let mut band = state.whole_band().unwrap();
         let cells = band.cells;
-        band.observe_projection_at(0, None, 0, cells, Mv::ZERO, || Mv::ZERO, (0, 0), None);
+        band.observe_projection_at(
+            0,
+            None,
+            0,
+            cells,
+            MotionVector::ZERO,
+            || MotionVector::ZERO,
+            (0, 0),
+            None,
+        );
         assert_eq!(band.positions_at(0, (0, 0)), None);
     }
 
@@ -1156,26 +1190,29 @@ mod tests {
             mask: 0b101,
             epoch: state.scratch.epoch,
         };
-        state.set_trajectory_cell(0, 1, 1, Mv { row: 8, col: 16 });
-        state.set_trajectory_cell(0, 1, 3, Mv { row: 24, col: 32 });
+        state.set_trajectory_cell(0, 1, 1, MotionVector { row: 8, col: 16 });
+        state.set_trajectory_cell(0, 1, 3, MotionVector { row: 24, col: 32 });
 
         state
             .whole_band()
             .unwrap()
-            .check_intersection(0, Some(1), 1, 2, Mv::ZERO);
+            .check_intersection(0, Some(1), 1, 2, MotionVector::ZERO);
 
-        assert_eq!(state.trajectory_cell(1, 1, 1), Some(Mv { row: 8, col: 16 }));
+        assert_eq!(
+            state.trajectory_cell(1, 1, 1),
+            Some(MotionVector { row: 8, col: 16 })
+        );
         assert_eq!(
             state.trajectory_cell(1, 1, 3),
-            Some(Mv { row: 24, col: 32 })
+            Some(MotionVector { row: 24, col: 32 })
         );
     }
 
     #[test]
     fn trajectory_gap_fill_stays_within_tmvp_units() {
         let mut state = TrajectoryState::new((2, 36), 1, 2, 16).unwrap();
-        state.set_trajectory_cell(0, 0, 14, Mv { row: 8, col: 16 });
-        state.set_trajectory_cell(0, 0, 16, Mv { row: 24, col: 80 });
+        state.set_trajectory_cell(0, 0, 14, MotionVector { row: 8, col: 16 });
+        state.set_trajectory_cell(0, 0, 16, MotionVector { row: 24, col: 80 });
 
         assert_eq!(
             state.trajectory_cell(0, 0, 15),
@@ -1190,8 +1227,8 @@ mod tests {
     #[test]
     fn step_two_trajectory_uses_64_pixel_superblock_units() {
         let mut state = TrajectoryState::new((2, 36), 1, 2, 8).unwrap();
-        state.set_trajectory_cell(0, 0, 6, Mv { row: 8, col: 16 });
-        state.set_trajectory_cell(0, 0, 8, Mv { row: 24, col: 80 });
+        state.set_trajectory_cell(0, 0, 6, MotionVector { row: 8, col: 16 });
+        state.set_trajectory_cell(0, 0, 8, MotionVector { row: 24, col: 80 });
 
         assert_eq!(
             state.trajectory_cell(0, 0, 7),
@@ -1206,21 +1243,21 @@ mod tests {
     #[test]
     fn gap_cells_average_their_anchor_with_written_unit_neighbours() {
         let mut state = TrajectoryState::new((8, 36), 1, 2, 16).unwrap();
-        state.set_trajectory_cell(0, 0, 12, Mv { row: 8, col: 16 });
-        state.set_trajectory_cell(0, 0, 14, Mv { row: 24, col: 80 });
-        state.set_trajectory_cell(0, 2, 12, Mv { row: 40, col: 0 });
+        state.set_trajectory_cell(0, 0, 12, MotionVector { row: 8, col: 16 });
+        state.set_trajectory_cell(0, 0, 14, MotionVector { row: 24, col: 80 });
+        state.set_trajectory_cell(0, 2, 12, MotionVector { row: 40, col: 0 });
 
         assert_eq!(
             state.trajectory_cell(0, 0, 13),
-            Some(Mv { row: 16, col: 48 })
+            Some(MotionVector { row: 16, col: 48 })
         );
         assert_eq!(
             state.trajectory_cell(0, 1, 12),
-            Some(Mv { row: 24, col: 8 })
+            Some(MotionVector { row: 24, col: 8 })
         );
         assert_eq!(
             state.trajectory_cell(0, 1, 13),
-            Some(Mv { row: 24, col: 32 })
+            Some(MotionVector { row: 24, col: 32 })
         );
         assert_eq!(state.trajectory_cell(0, 1, 11), None);
     }

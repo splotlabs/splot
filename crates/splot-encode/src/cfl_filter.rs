@@ -89,7 +89,6 @@ fn fit_residual(luma: &[i32], chroma: &[u16], width: usize, height: usize) -> u1
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use splot_core::annexb::parse_annex_b_obus_partial;
     use splot_core::bitio::BitReader;

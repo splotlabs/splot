@@ -6,15 +6,15 @@
 use splot_core::headers::frame::FrameSize;
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, InterpolationFilter, OutputIndex,
-    PlaneRect, PlaneSize, ReconSample,
+    CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo,
+    InterpolationFilter, OutputIndex, PlaneRect, PlaneSize, ReconSample,
 };
 
 use crate::error::Result;
 
-use super::Mv;
+use super::MotionVector;
 use super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
-use super::mc::{InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into};
+use super::mc::{InterBlockParams, McBlockRect, motion_compensate_inter_block_into};
 use super::mv_scaling::PlaneScaling;
 use super::reference::HeldFrameSamples;
 
@@ -68,11 +68,11 @@ pub(crate) fn reconstruct<T: ReconSample>(
     .with_storage_luma_size(PlaneSize::new(storage_width, storage_height)?)?;
     let mut workspace = CurrentFrameWorkspace::new_recycled(info)?; // the § 7.23 copy below covers the whole frame rect
     motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         InterBlockParams::single(
             reference,
             McBlockRect::from_luma_rect(0, 0, storage_width, storage_height),
-            Mv::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTapSharp,
         )
         .with_chroma(!reference_info.pixel_format().is_monochrome()),
@@ -108,7 +108,7 @@ pub(crate) fn motion_field(
         mi_cols,
         current_order_hint,
         [Some(reference_order_hint), None],
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         [None; 2],
     ));
     Some(field)
