@@ -360,7 +360,7 @@ fn ibc_buffers_sb64_bru_inactive_reset_distinguishes_modes_and_sb_sizes() {
 
 #[test]
 fn tile_local_ibc_state_enforces_bru_reset_support_future_and_tile_bounds() {
-    let mut tile = TileLocalIbcState::new(0..96, 16, false).unwrap();
+    let mut tile = TileLocalIbcState::new(0..32, 0..96, 16, false).unwrap();
     tile.begin_superblock(0, true);
     tile.enter_leaf(0, 0, 16, 16, true);
     assert!(tile.is_coded(0, 0));
@@ -435,7 +435,7 @@ fn tile_local_ibc_state_enforces_bru_reset_support_future_and_tile_bounds() {
         "BRU_INACTIVE SB (0, 0) remains invalidated"
     );
 
-    let mut tile2 = TileLocalIbcState::new(16..64, 16, false).unwrap();
+    let mut tile2 = TileLocalIbcState::new(0..16, 16..64, 16, false).unwrap();
     tile2.begin_superblock(0, false);
     tile2.enter_leaf(0, 16, 16, 16, false);
     tile2.begin_superblock(0, false);
@@ -467,7 +467,7 @@ fn tile_local_ibc_state_enforces_bru_reset_support_future_and_tile_bounds() {
 
 #[test]
 fn tile_local_ibc_state_handles_large_leaves_out_of_frame_padding_and_colocated_collisions() {
-    let mut sb128 = TileLocalIbcState::new(0..56, 32, false).unwrap();
+    let mut sb128 = TileLocalIbcState::new(0..32, 0..56, 32, false).unwrap();
     sb128.begin_superblock(0, true);
     sb128.enter_leaf(0, 0, 32, 32, true);
     sb128.finish_large_leaf(0, 0, 32, 32, true);
@@ -478,7 +478,7 @@ fn tile_local_ibc_state_handles_large_leaves_out_of_frame_padding_and_colocated_
         "128x128 leaf updates buffers in 2x2 chunk order and SB128 ignores BRU_INACTIVE"
     );
 
-    let mut clipped = TileLocalIbcState::new(0..40, 32, false).unwrap();
+    let mut clipped = TileLocalIbcState::new(0..32, 0..40, 32, false).unwrap();
     clipped.begin_superblock(0, false);
     clipped.enter_leaf(0, 0, 16, 16, false);
     clipped.enter_leaf(0, 16, 16, 16, false);
@@ -486,7 +486,7 @@ fn tile_local_ibc_state_handles_large_leaves_out_of_frame_padding_and_colocated_
     assert!(clipped.is_coded(31, 31));
     assert_eq!(clipped.buffers().cur(), (1, 1));
 
-    let mut row = TileLocalIbcState::new(0..128, 16, false).unwrap();
+    let mut row = TileLocalIbcState::new(0..16, 0..128, 16, false).unwrap();
     row.begin_superblock(0, false);
     for col in [0, 16, 32, 48] {
         row.begin_superblock(0, false);

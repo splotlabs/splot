@@ -459,10 +459,11 @@ fn bru_local_intrabc_invalid_vectors_and_truncated_streams_fail_closed() {
     core.intrabc = None;
     let tile_info = core.tile_info.as_ref().expect("multitile tile_info");
     assert!(tile_info.mi_col_starts.len() >= 3);
+    let tile0_row_end = usize::try_from(tile_info.mi_row_starts[1]).unwrap();
     let tile0_end = usize::try_from(tile_info.mi_col_starts[1]).unwrap();
     let tile1_end = usize::try_from(tile_info.mi_col_starts[2]).unwrap();
 
-    let mut tile0 = TileLocalIbcState::new(0..tile0_end, 16, false).unwrap();
+    let mut tile0 = TileLocalIbcState::new(0..tile0_row_end, 0..tile0_end, 16, false).unwrap();
     tile0.begin_superblock(0, true);
     tile0.enter_leaf(0, 0, 16, 16, true);
     tile0.begin_superblock(0, false);
@@ -512,7 +513,8 @@ fn bru_local_intrabc_invalid_vectors_and_truncated_streams_fail_closed() {
         check_vector(None, (0, 18), (0, -2 * 4 * 8)),
     );
 
-    let mut tile1 = TileLocalIbcState::new(tile0_end..tile1_end, 16, false).unwrap();
+    let mut tile1 =
+        TileLocalIbcState::new(0..tile0_row_end, tile0_end..tile1_end, 16, false).unwrap();
     tile1.begin_superblock(0, false);
     tile1.enter_leaf(0, tile0_end, 2, 2, false);
     assert_conformance_fail(

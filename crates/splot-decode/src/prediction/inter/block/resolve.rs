@@ -86,22 +86,38 @@ pub(super) fn resolve_parsed_leaves(
     row: &mut ReconRow,
     state: &mut MvResolutionState<'_>,
 ) -> Result<()> {
-    if state.ibc_local.is_some() {
-        resolve_parsed_leaves_inner::<true>(row, state)
-    } else {
-        resolve_parsed_leaves_inner::<false>(row, state)
+    let local_ibc_end = row.local_ibc_sb_end().min(row.superblocks.len());
+    if state.ibc_local.is_some() && local_ibc_end > 0 {
+        resolve_parsed_leaves_inner::<true>(
+            &row.superblocks[..local_ibc_end],
+            &mut row.entries,
+            &mut row.slots,
+            state,
+        )?;
+        if local_ibc_end < row.superblocks.len() {
+            resolve_parsed_leaves_inner::<false>(
+                &row.superblocks[local_ibc_end..],
+                &mut row.entries,
+                &mut row.slots,
+                state,
+            )?;
+        }
+        return Ok(());
     }
+    resolve_parsed_leaves_inner::<false>(&row.superblocks, &mut row.entries, &mut row.slots, state)
 }
 
 fn resolve_parsed_leaves_inner<const LOCAL_IBC: bool>(
-    row: &mut ReconRow,
+    superblocks: &[super::tile::ReconSuperblock],
+    entries: &mut [super::tile::ReconRowEntry],
+    slots: &mut [LeafSlot],
     state: &mut MvResolutionState<'_>,
 ) -> Result<()> {
     let sb_h4 = state.sb_h4;
     let is_intra = state.core.frame_is_intra == Some(true);
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, is_intra);
     debug_assert_eq!(intrabc_sb_h4, sb_h4);
-    for superblock in &row.superblocks {
+    for superblock in superblocks {
         let [r, c] = superblock.origin;
         if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
             ibc.begin_superblock(r, superblock.bru_inactive);
@@ -112,11 +128,10 @@ fn resolve_parsed_leaves_inner<const LOCAL_IBC: bool>(
         state
             .warp_param_bank
             .reset_for_leaf(state.grid, r, c, sb_h4);
-        let entries = row
-            .entries
+        let sb_entries = entries
             .get_mut(superblock.entries.clone())
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        for entry in entries {
+        for entry in sb_entries {
             if LOCAL_IBC && matches!(entry.state, EntryState::OutOfFrame) {
                 if let Some(ibc) = state.ibc_local.as_mut()
                     && let Some((mi_row, mi_col, n4w, n4h)) =
@@ -141,7 +156,7 @@ fn resolve_parsed_leaves_inner<const LOCAL_IBC: bool>(
                 }
                 continue;
             }
-            let Some(slot) = entry.slot_mut(&mut row.slots) else {
+            let Some(slot) = entry.slot_mut(slots) else {
                 continue;
             };
             match slot {

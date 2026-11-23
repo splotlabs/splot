@@ -549,6 +549,8 @@ impl<'payload> TileParser<'payload> {
             temporal,
             residual_planes,
             filter_records,
+            full_sb_row: row_units,
+            last_intrabc_sb: None,
             motion_folded: false,
             failure: ReconRowFailure::None,
         };
@@ -602,6 +604,7 @@ impl<'payload> TileParser<'payload> {
                 mv_grid: &mut self.mv_grid,
                 filter_records: &mut row.filter_records,
                 slots: &mut row.slots,
+                sb_has_intrabc: false,
             },
             previous_segment_ids: context.previous_segment_ids,
             gdf_state: &mut self.output.gdf_state,
@@ -617,6 +620,7 @@ impl<'payload> TileParser<'payload> {
         loop {
             let first = block_context.entries.len();
             let origin = walk.next_origin();
+            block_context.sink.sb_has_intrabc = false;
             let next = walk.decode_next_superblock(tile, &mut block_context, &mut on_published);
             if let Some(superblock) =
                 ReconSuperblock::new(origin, first..block_context.entries.len()).map(|sb| {
@@ -626,6 +630,9 @@ impl<'payload> TileParser<'payload> {
                         )
                 })
             {
+                if block_context.sink.sb_has_intrabc {
+                    row.last_intrabc_sb = Some(row.superblocks.len());
+                }
                 row.superblocks.push(superblock);
             }
             if let (Ok(Some([sb_row, sb_col])), Some(modes)) = (&next, &context.params.bru_modes) {
@@ -680,34 +687,80 @@ fn finish_tile_symbols(symbols: SymbolDecoder<'_>, tile_offset: ByteOffset) -> R
         .map_err(|error| crate::pipeline::malformed_tile_payload(tile_offset, "8.2.4", error))
 }
 
+enum TileLocalIbcSlot {
+    Disabled,
+    Unallocated {
+        tile_rows: Range<usize>,
+        tile_cols: Range<usize>,
+        sb_h4: usize,
+        sdp_intra: bool,
+    },
+    Active(Box<crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>),
+}
+
+impl TileLocalIbcSlot {
+    fn ensure_active(
+        &mut self,
+    ) -> Result<Option<&mut crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>> {
+        match self {
+            Self::Disabled => Ok(None),
+            Self::Unallocated {
+                tile_rows,
+                tile_cols,
+                sb_h4,
+                sdp_intra,
+            } => {
+                let state = Box::new(
+                    crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState::new(
+                        tile_rows.clone(),
+                        tile_cols.clone(),
+                        *sb_h4,
+                        *sdp_intra,
+                    )?,
+                );
+                *self = Self::Active(state);
+                match self {
+                    Self::Active(state) => Ok(Some(state.as_mut())),
+                    Self::Disabled | Self::Unallocated { .. } => {
+                        Err(invalid_inter_tile_scheduling_state())
+                    }
+                }
+            }
+            Self::Active(state) => Ok(Some(state.as_mut())),
+        }
+    }
+}
+
 /// The § 7.12 banks one tile's resolve pass owns, alongside whichever
 /// neighbour grid the pass publishes its motion plane into.
 struct TileResolveState {
     ref_mv_bank: Option<super::super::find_mv_stack::RefMvBank>,
     warp_param_bank: super::super::find_mv_stack::WarpParamBank,
-    ibc_local: Option<Box<crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>>,
+    ibc_local: TileLocalIbcSlot,
 }
 
 impl TileResolveState {
     fn new(
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
+        tile_rows: Range<usize>,
         tile_cols: Range<usize>,
         sb_h4: usize,
-    ) -> Result<Self> {
+    ) -> Self {
         let ibc_local =
             if crate::filters::wienerns_lr::intrabc_records::frame_allows_local_intrabc(core) {
                 let sdp_intra = sequence.partition.is_some_and(|p| p.enable_sdp)
                     && core.frame_is_intra == Some(true);
-                Some(Box::new(
-                    crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState::new(
-                        tile_cols, sb_h4, sdp_intra,
-                    )?,
-                ))
+                TileLocalIbcSlot::Unallocated {
+                    tile_rows,
+                    tile_cols,
+                    sb_h4,
+                    sdp_intra,
+                }
             } else {
-                None
+                TileLocalIbcSlot::Disabled
             };
-        Ok(Self {
+        Self {
             ref_mv_bank: sequence
                 .inter
                 .as_ref()
@@ -715,7 +768,7 @@ impl TileResolveState {
                 .then(super::super::find_mv_stack::RefMvBank::new),
             warp_param_bank: super::super::find_mv_stack::WarpParamBank::new(),
             ibc_local,
-        })
+        }
     }
 
     /// Replays one parsed unit's § 7.12 work, in the leaf order the fused walk
@@ -730,13 +783,18 @@ impl TileResolveState {
         row: &mut ReconRow,
         tile_offset: ByteOffset,
     ) -> Result<()> {
+        let ibc_local = if row.local_ibc_sb_end() > 0 {
+            self.ibc_local.ensure_active()?
+        } else {
+            None
+        };
         resolve_parsed_leaves(
             row,
             &mut MvResolutionState {
                 grid,
                 ref_mv_bank: &mut self.ref_mv_bank,
                 warp_param_bank: &mut self.warp_param_bank,
-                ibc_local: self.ibc_local.as_deref_mut(),
+                ibc_local,
                 core: context.core,
                 temporal: frame_uses_temporal_mvs(context.core).then_some(temporal_context),
                 order_hints: temporal_context.order_hint_mv_context(),
@@ -941,6 +999,10 @@ pub(super) struct ReconRow {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// The unit's deblock and tx-skip records, published by its resolve.
     pub(super) filter_records: TileFilterRecords,
+    /// Whether this unit covers an entire superblock row of its tile.
+    pub(super) full_sb_row: bool,
+    /// Last superblock index in `superblocks` that contains an IntraBC leaf.
+    pub(super) last_intrabc_sb: Option<usize>,
     /// Whether the prepass derived the entire unit's motion list into
     /// `temporal` for the in-order commit to fold.
     pub(super) motion_folded: bool,
@@ -948,6 +1010,16 @@ pub(super) struct ReconRow {
 }
 
 impl ReconRow {
+    /// Exclusive superblock index bound requiring local IntraBC tracking.
+    #[inline]
+    pub(super) fn local_ibc_sb_end(&self) -> usize {
+        if self.full_sb_row {
+            self.last_intrabc_sb.map_or(0, |last| last + 1)
+        } else {
+            self.superblocks.len()
+        }
+    }
+
     /// Publishes the flags of the unit's luma-tree leaves onto `grid`, in leaf
     /// order, as the parser published them on its own grid.
     /// Each inter command takes its leaf index in `grid`.
@@ -2236,8 +2308,13 @@ pub(super) fn decode_tiles<T: ReconSample>(
             parse_state,
             NeighbourGridMode::MotionAndEdges,
         )?;
-        let mut resolve_state =
-            TileResolveState::new(sequence, context.core, tile_mi_cols.clone(), sb_h4)?;
+        let mut resolve_state = TileResolveState::new(
+            sequence,
+            context.core,
+            tile_mi_rows.clone(),
+            tile_mi_cols.clone(),
+            sb_h4,
+        );
         let mut commit = TileCommit::direct(
             ordered,
             workspace,

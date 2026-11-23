@@ -1628,9 +1628,10 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         resolve_states.push(TileResolveState::new(
             &sequence,
             &core,
+            tile_geo.mi_rows.clone(),
             tile_geo.mi_cols.clone(),
             params.sb_h4,
-        )?);
+        ));
     }
     let mut tiles = core::mem::take(&mut reusable.tiles);
     tiles.clone_from(&geometry.tiles);

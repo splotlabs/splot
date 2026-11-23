@@ -120,7 +120,8 @@ pub(crate) struct TileLocalIbcState {
     sb_h4: usize,
     sb64: bool,
     sdp_intra: bool,
-    tile_col_start: usize,
+    tile_rows: Range<usize>,
+    tile_cols: Range<usize>,
     row_words: usize,
     cur_sb_row: usize,
     cur_bru_inactive: bool,
@@ -130,8 +131,14 @@ pub(crate) struct TileLocalIbcState {
 
 impl TileLocalIbcState {
     /// Allocates one superblock-row `IBCCoded` bitset covering `tile_cols`,
-    /// aligned up to `sb_h4` for clipped rightmost superblocks.
-    pub(crate) fn new(tile_cols: Range<usize>, sb_h4: usize, sdp_intra: bool) -> Result<Self> {
+    /// aligned up to `sb_h4` for clipped rightmost superblocks, and retains the
+    /// tile bounds for block-vector validation.
+    pub(crate) fn new(
+        tile_rows: Range<usize>,
+        tile_cols: Range<usize>,
+        sb_h4: usize,
+        sdp_intra: bool,
+    ) -> Result<Self> {
         let sb_h4 = sb_h4.max(1);
         let tile_col_start = tile_cols.start;
         let cols_span = tile_cols.end.saturating_sub(tile_col_start);
@@ -150,7 +157,8 @@ impl TileLocalIbcState {
             sb_h4,
             sb64: sb_h4 == 16,
             sdp_intra,
-            tile_col_start,
+            tile_rows,
+            tile_cols,
             row_words,
             cur_sb_row: UNINITIALIZED_SB_ROW,
             cur_bru_inactive: false,
@@ -167,7 +175,7 @@ impl TileLocalIbcState {
         if sb_row != self.cur_sb_row {
             self.cur_sb_row = sb_row;
             self.coded.fill(0);
-            self.buffers = IbcBuffers::start_sb_row_at(sb_row, self.tile_col_start, self.sb64);
+            self.buffers = IbcBuffers::start_sb_row_at(sb_row, self.tile_cols.start, self.sb64);
             self.cur_bru_inactive = bru_inactive;
         }
     }
@@ -246,12 +254,14 @@ impl TileLocalIbcState {
     #[inline]
     pub(crate) fn is_coded(&self, mi_row: usize, mi_col: usize) -> bool {
         let row = mi_row.wrapping_sub(self.cur_sb_row);
-        let col = mi_col.wrapping_sub(self.tile_col_start);
+        let col = mi_col.wrapping_sub(self.tile_cols.start);
         let word = col >> 6;
         if row >= self.sb_h4 || word >= self.row_words {
             return false;
         }
-        ((self.coded[row * self.row_words + word] >> (col & 63)) & 1) == 1
+        self.coded
+            .get(row * self.row_words + word)
+            .is_some_and(|&bits| ((bits >> (col & 63)) & 1) == 1)
     }
 
     #[inline]
@@ -267,7 +277,7 @@ impl TileLocalIbcState {
         let Some(row0) = mi_row.checked_sub(self.cur_sb_row) else {
             return;
         };
-        let Some(col0) = mi_col.checked_sub(self.tile_col_start) else {
+        let Some(col0) = mi_col.checked_sub(self.tile_cols.start) else {
             return;
         };
         let row_end = row0.saturating_add(n4h).min(self.sb_h4);
@@ -277,6 +287,12 @@ impl TileLocalIbcState {
         if row0 >= row_end || col0 >= col_end {
             return;
         }
+        let Some(slice) = self
+            .coded
+            .get_mut(row0 * self.row_words..row_end * self.row_words)
+        else {
+            return;
+        };
         let bit = col0 & 63;
         let width = col_end - col0;
         if bit + width <= 64 {
@@ -286,13 +302,14 @@ impl TileLocalIbcState {
                 ((1u64 << width) - 1) << bit
             };
             let word = col0 >> 6;
-            for r in row0..row_end {
-                self.coded[r * self.row_words + word] |= mask;
+            for row in slice.chunks_exact_mut(self.row_words) {
+                if let Some(cell) = row.get_mut(word) {
+                    *cell |= mask;
+                }
             }
             return;
         }
-        for r in row0..row_end {
-            let row_base = r * self.row_words;
+        for row in slice.chunks_exact_mut(self.row_words) {
             let mut c = col0;
             while c < col_end {
                 let word = c >> 6;
@@ -303,7 +320,9 @@ impl TileLocalIbcState {
                 } else {
                     ((1u64 << take) - 1) << bit
                 };
-                self.coded[row_base + word] |= mask;
+                if let Some(cell) = row.get_mut(word) {
+                    *cell |= mask;
+                }
                 c += take;
             }
         }
@@ -543,9 +562,14 @@ pub(crate) fn check_intrabc_block_vector(
     local: Option<&TileLocalIbcState>,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let tile_info = core.tile_info.as_ref().ok_or_else(selectable_state_error)?;
-    let rows = tile_interval_for_block(&tile_info.mi_row_starts, frontier.r, n4h)?;
-    let cols = tile_interval_for_block(&tile_info.mi_col_starts, frontier.c, n4w)?;
+    let tile = if let Some(state) = local {
+        (state.tile_rows.clone(), state.tile_cols.clone())
+    } else {
+        let tile_info = core.tile_info.as_ref().ok_or_else(selectable_state_error)?;
+        let rows = tile_interval_for_block(&tile_info.mi_row_starts, frontier.r, n4h)?;
+        let cols = tile_interval_for_block(&tile_info.mi_col_starts, frontier.c, n4w)?;
+        (rows.0..rows.1, cols.0..cols.1)
+    };
     let chroma = if frontier.has_chroma {
         let geometry = frontier.chroma_ref_geometry();
         let size = geometry.size();
@@ -560,7 +584,7 @@ pub(crate) fn check_intrabc_block_vector(
         mi: (frontier.r, frontier.c),
         size: (n4w * 4, n4h * 4),
         chroma,
-        tile: (rows.0..rows.1, cols.0..cols.1),
+        tile,
         sb_size: sb_h4 * 4,
         allow_local_intrabc: frame_allows_local_intrabc(core),
         allow_global_intrabc: core.frame_is_intra != Some(false)
