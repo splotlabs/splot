@@ -17,6 +17,7 @@ use fearless_simd::{Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, i16x16, 
 #[cfg(target_arch = "aarch64")]
 use fearless_simd::{SimdCombine as _, i16x8, i32x4};
 
+use splot_core::simd::SimdBackend;
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
 use crate::coefficient_scan::TransformClass;
@@ -197,10 +198,47 @@ pub fn secondary_inverse_transform(
     secondary_inverse_transform_prefix(dequant, coded, params).map(|_| ())
 }
 
+/// Typed [`secondary_inverse_transform`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same shape, parameter, and buffer errors as [`secondary_inverse_transform`].
+pub fn secondary_inverse_transform_with<B: SimdBackend>(
+    backend: B,
+    dequant: &mut [i32],
+    params: &SecondaryInverseTransform,
+) -> Result<()> {
+    let coded = dequant.len();
+    secondary_inverse_transform_prefix_with(backend, dequant, coded, params).map(|_| ())
+}
+
 /// [`secondary_inverse_transform`] of a block whose samples from `coded` on
 /// are zero and may be unwritten: zeroes only the whole-row prefix that may
 /// be non-zero afterwards, and returns its length.
 pub(crate) fn secondary_inverse_transform_prefix(
+    dequant: &mut [i32],
+    coded: usize,
+    params: &SecondaryInverseTransform,
+) -> Result<usize> {
+    secondary_inverse_transform_prefix_with_runner(BaselineIst, dequant, coded, params)
+}
+
+/// Typed [`secondary_inverse_transform_prefix`] using caller-selected `backend`.
+pub(crate) fn secondary_inverse_transform_prefix_with<B: SimdBackend>(
+    backend: B,
+    dequant: &mut [i32],
+    coded: usize,
+    params: &SecondaryInverseTransform,
+) -> Result<usize> {
+    secondary_inverse_transform_prefix_with_runner(
+        TypedIst(backend.narrow()),
+        dequant,
+        coded,
+        params,
+    )
+}
+
+fn secondary_inverse_transform_prefix_with_runner<R: IstRunner>(
+    runner: R,
     dequant: &mut [i32],
     coded: usize,
     params: &SecondaryInverseTransform,
@@ -212,7 +250,9 @@ pub(crate) fn secondary_inverse_transform_prefix(
             *slot = coeff.clamp(-bound, bound - 1);
         }
     }
-    Ok(transform_into(&coefs, params, dequant, coded))
+    Ok(transform_into_with_runner(
+        runner, &coefs, params, dequant, coded,
+    ))
 }
 
 /// [`secondary_inverse_transform_prefix`] of the § 7.14.4 flat dequantization
@@ -226,8 +266,37 @@ pub(crate) fn secondary_inverse_transform_quant(
     params: &SecondaryInverseTransform,
     dequant: &mut [i32],
 ) -> Result<usize> {
-    let coefs = dequantized_inputs(quant, quantizers, params, dequant.len())?;
-    Ok(transform_into(&coefs, params, dequant, 0))
+    secondary_inverse_transform_quant_with_runner(BaselineIst, quant, quantizers, params, dequant)
+}
+
+/// Typed [`secondary_inverse_transform_quant`] using caller-selected `backend`.
+pub(crate) fn secondary_inverse_transform_quant_with<B: SimdBackend>(
+    backend: B,
+    quant: &[i32],
+    quantizers: (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    dequant: &mut [i32],
+) -> Result<usize> {
+    secondary_inverse_transform_quant_with_runner(
+        TypedIst(backend.narrow()),
+        quant,
+        quantizers,
+        params,
+        dequant,
+    )
+}
+
+fn secondary_inverse_transform_quant_with_runner<R: IstRunner>(
+    runner: R,
+    quant: &[i32],
+    quantizers: (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    dequant: &mut [i32],
+) -> Result<usize> {
+    let coefs = dequantized_inputs_with_runner(runner, quant, quantizers, params, dequant.len())?;
+    Ok(transform_into_with_runner(
+        runner, &coefs, params, dequant, 0,
+    ))
 }
 
 /// [`secondary_inverse_transform_quant`] of a block at least 16 wide into the
@@ -239,20 +308,251 @@ pub(crate) fn secondary_inverse_transform_quant_rows8(
     params: &SecondaryInverseTransform,
     rows: &mut [i32; 64],
 ) -> Result<usize> {
+    secondary_inverse_transform_quant_rows8_with_runner(
+        BaselineIst,
+        quant,
+        quantizers,
+        params,
+        rows,
+    )
+}
+
+/// Typed [`secondary_inverse_transform_quant_rows8`] using caller-selected `backend`.
+pub(crate) fn secondary_inverse_transform_quant_rows8_with<B: SimdBackend>(
+    backend: B,
+    quant: &[i32],
+    quantizers: (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    rows: &mut [i32; 64],
+) -> Result<usize> {
+    secondary_inverse_transform_quant_rows8_with_runner(
+        TypedIst(backend.narrow()),
+        quant,
+        quantizers,
+        params,
+        rows,
+    )
+}
+
+fn secondary_inverse_transform_quant_rows8_with_runner<R: IstRunner>(
+    runner: R,
+    quant: &[i32],
+    quantizers: (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    rows: &mut [i32; 64],
+) -> Result<usize> {
     if params.w < 16 {
         return Err(ReconError::SecondaryTransformInvalidShape {
             w: params.w,
             h: params.h,
         });
     }
-    let coefs = dequantized_inputs(quant, quantizers, params, params.w * params.h)?;
+    let coefs =
+        dequantized_inputs_with_runner(runner, quant, quantizers, params, params.w * params.h)?;
     let narrow = SecondaryInverseTransform { w: 8, ..*params };
-    Ok(transform_into(&coefs, &narrow, rows, 0))
+    Ok(transform_into_with_runner(runner, &coefs, &narrow, rows, 0))
+}
+
+trait IstRunner: Copy {
+    fn dequant_pow2(
+        self,
+        coefs: &mut [i32; IST_8X8_HEIGHT],
+        n: usize,
+        quantizers: (u32, u32, u32),
+        bound: i32,
+    );
+    fn ist_8x8(
+        self,
+        kernel: Option<&IstKernel>,
+        coefs: &[i32],
+        wide: bool,
+        bound: i32,
+        geom: (usize, usize),
+        dequant: &mut [i32],
+    );
+    fn ist_4x4(
+        self,
+        kernel: usize,
+        stx: usize,
+        coefs: &[i32],
+        wide: bool,
+        bound: i32,
+    ) -> [i32; IST_4X4_WIDTH];
+}
+
+#[derive(Clone, Copy)]
+struct BaselineIst;
+
+impl IstRunner for BaselineIst {
+    fn dequant_pow2(
+        self,
+        coefs: &mut [i32; IST_8X8_HEIGHT],
+        n: usize,
+        quantizers: (u32, u32, u32),
+        bound: i32,
+    ) {
+        baseline_simd!(simd => dequant_ist_pow2(simd, coefs, n, quantizers, bound));
+    }
+
+    fn ist_8x8(
+        self,
+        kernel: Option<&IstKernel>,
+        coefs: &[i32],
+        wide: bool,
+        bound: i32,
+        geom: (usize, usize),
+        dequant: &mut [i32],
+    ) {
+        baseline_simd!(simd => ist_8x8_simd(simd, kernel, coefs, wide, bound, geom, dequant));
+    }
+
+    fn ist_4x4(
+        self,
+        kernel: usize,
+        stx: usize,
+        coefs: &[i32],
+        wide: bool,
+        bound: i32,
+    ) -> [i32; IST_4X4_WIDTH] {
+        baseline_simd!(simd => ist_4x4_simd(simd, kernel, stx, coefs, wide, bound))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TypedIst<B: SimdBackend>(B);
+
+impl<B: SimdBackend> IstRunner for TypedIst<B> {
+    fn dequant_pow2(
+        self,
+        coefs: &mut [i32; IST_8X8_HEIGHT],
+        n: usize,
+        quantizers: (u32, u32, u32),
+        bound: i32,
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| dequant_ist_pow2(narrow.token(), coefs, n, quantizers, bound));
+    }
+
+    fn ist_8x8(
+        self,
+        kernel: Option<&IstKernel>,
+        coefs: &[i32],
+        wide: bool,
+        bound: i32,
+        geom: (usize, usize),
+        dequant: &mut [i32],
+    ) {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| {
+            ist_8x8_simd(narrow.token(), kernel, coefs, wide, bound, geom, dequant);
+        });
+    }
+
+    fn ist_4x4(
+        self,
+        kernel: usize,
+        stx: usize,
+        coefs: &[i32],
+        wide: bool,
+        bound: i32,
+    ) -> [i32; IST_4X4_WIDTH] {
+        let narrow = self.0.narrow();
+        narrow.vectorize(|| ist_4x4_simd(narrow.token(), kernel, stx, coefs, wide, bound))
+    }
+}
+
+#[inline]
+fn dequant_ist_pow2<S: Simd>(
+    simd: S,
+    coefs: &mut [i32; IST_8X8_HEIGHT],
+    n: usize,
+    (dc_quant, ac_quant, shift): (u32, u32, u32),
+    bound: i32,
+) {
+    let used = n.div_ceil(8);
+    for (k, chunk) in coefs
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .take(used)
+        .enumerate()
+    {
+        let first = if k == 0 { dc_quant } else { ac_quant };
+        let q2 = u32x8::load_array(
+            simd,
+            [
+                first, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant,
+            ],
+        );
+        crate::dequant_process::dequant_lanes(
+            simd,
+            i32x8::from_slice(simd, chunk),
+            q2,
+            shift,
+            bound,
+        )
+        .store_slice(chunk);
+    }
+}
+
+#[inline]
+fn ist_8x8_simd<S: Simd>(
+    simd: S,
+    kernel: Option<&IstKernel>,
+    coefs: &[i32],
+    wide: bool,
+    bound: i32,
+    (w, len): (usize, usize),
+    dequant: &mut [i32],
+) {
+    let zero = i32x8::splat(simd, 0);
+    let mut sums = [zero; 6];
+    let rows = if let Some(kernel) = kernel {
+        accumulate_kernel_pairs(simd, &kernel.pairs, coefs, wide, &mut sums);
+        raster_rows(simd, kernel.layout, sums.map(|s| clip(simd, s, bound)))
+    } else {
+        [zero; 8]
+    };
+    if let (8, Some(block)) = (w, dequant.first_chunk_mut::<64>()) {
+        for (row, &t) in block.as_chunks_mut::<8>().0.iter_mut().zip(&rows) {
+            t.store_array(row);
+        }
+    } else {
+        for (r, &t) in rows.iter().enumerate() {
+            if let Some(row) = dequant
+                .get_mut(r * w..len)
+                .and_then(<[i32]>::first_chunk_mut::<8>)
+            {
+                t.store_array(row);
+            }
+        }
+    }
+}
+
+#[inline]
+fn ist_4x4_simd<S: Simd>(
+    simd: S,
+    kernel: usize,
+    stx: usize,
+    coefs: &[i32],
+    wide: bool,
+    bound: i32,
+) -> [i32; IST_4X4_WIDTH] {
+    let mut sums = [i32x8::splat(simd, 0); IST_4X4_WIDTH / 8];
+    if let Some(pairs) = IST_4X4_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
+        accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
+    }
+    let mut clipped = [0i32; IST_4X4_WIDTH];
+    for (&t, out) in sums.iter().zip(clipped.as_chunks_mut::<8>().0) {
+        clip(simd, t, bound).store_slice(out);
+    }
+    clipped
 }
 
 /// The dequantized inputs of [`secondary_inverse_transform_quant`] into a
 /// `len`-sample `Dequant`.
-fn dequantized_inputs(
+fn dequantized_inputs_with_runner<R: IstRunner>(
+    runner: R,
     quant: &[i32],
     (dc_quant, ac_quant, dq_denom): (u32, u32, u32),
     params: &SecondaryInverseTransform,
@@ -265,15 +565,7 @@ fn dequantized_inputs(
     }
     if dq_denom.is_power_of_two() && scan.first() == Some(&0) {
         let shift = dq_denom.trailing_zeros();
-        baseline_simd!(simd => {
-            let used = params.n.div_ceil(8);
-            for (k, chunk) in coefs.as_chunks_mut::<8>().0.iter_mut().take(used).enumerate() {
-                let first = if k == 0 { dc_quant } else { ac_quant };
-                let q2 = u32x8::load_array(simd, [first, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant]);
-                crate::dequant_process::dequant_lanes(simd, i32x8::from_slice(simd, chunk), q2, shift, bound)
-                    .store_slice(chunk);
-            }
-        });
+        runner.dequant_pow2(&mut coefs, params.n, (dc_quant, ac_quant, shift), bound);
     } else {
         for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
             let q2 = if pos == 0 { dc_quant } else { ac_quant };
@@ -329,7 +621,8 @@ fn validated(
 /// its first `coded` entries and the output rows, with the outputs scattered
 /// into the top-left sub-block. Returns the written whole-row prefix.
 /// Adding 32768 maps the coefficients that fit in `i16` to `0..=65535`.
-fn transform_into(
+fn transform_into_with_runner<R: IstRunner>(
+    runner: R,
     coefs: &[i32; IST_8X8_HEIGHT],
     params: &SecondaryInverseTransform,
     dequant: &mut [i32],
@@ -367,40 +660,10 @@ fn transform_into(
             .get(usize::from(transpose))
             .and_then(|sets| sets.get(kernel))
             .and_then(|set| set.get(stx));
-        baseline_simd!(simd => {
-            let zero = i32x8::splat(simd, 0);
-            let mut sums = [zero; 6];
-            let rows = if let Some(kernel) = kernel {
-                accumulate_kernel_pairs(simd, &kernel.pairs, coefs, wide, &mut sums);
-                raster_rows(simd, kernel.layout, sums.map(|s| clip(simd, s, bound)))
-            } else {
-                [zero; 8]
-            };
-            if let (8, Some(block)) = (w, dequant.first_chunk_mut::<64>()) {
-                for (row, &t) in block.as_chunks_mut::<8>().0.iter_mut().zip(&rows) {
-                    t.store_array(row);
-                }
-            } else {
-                for (r, &t) in rows.iter().enumerate() {
-                    if let Some(row) = dequant.get_mut(r * w..len).and_then(<[i32]>::first_chunk_mut::<8>) {
-                        t.store_array(row);
-                    }
-                }
-            }
-        });
+        runner.ist_8x8(kernel, coefs, wide, bound, (w, len), dequant);
         return len;
     }
-    let clipped: [i32; IST_4X4_WIDTH] = baseline_simd!(simd => {
-        let mut sums = [i32x8::splat(simd, 0); IST_4X4_WIDTH / 8];
-        if let Some(pairs) = IST_4X4_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
-            accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
-        }
-        let mut clipped = [0i32; IST_4X4_WIDTH];
-        for (&t, out) in sums.iter().zip(clipped.as_chunks_mut::<8>().0) {
-            clip(simd, t, bound).store_slice(out);
-        }
-        clipped
-    });
+    let clipped = runner.ist_4x4(kernel, stx, coefs, wide, bound);
     let mut tile = [0i32; 64];
     for (&value, &pos) in clipped.iter().zip(&OUTPUTS_4X4[usize::from(transpose)]) {
         tile[usize::from(pos) & 63] = value;
@@ -874,5 +1137,116 @@ mod tests {
         assert_eq!(dequant[0], 102); // (128*102 + 64) >> 7 = 102
         assert_eq!(dequant[1], -45); // -((128*45 + 64) >> 7) = -45
         assert_eq!(dequant[4], -53); // -((128*53 + 64) >> 7) = -53
+    }
+
+    #[test]
+    fn typed_backend_variants_match_compatibility_routes() {
+        use splot_core::simd::{SimdPolicy, SimdScope, resolve_backend};
+
+        struct Probe<'a> {
+            params: &'a SecondaryInverseTransform,
+            quant: &'a [i32],
+            dequant_init: &'a [i32],
+            coded: usize,
+            quantizers: (u32, u32, u32),
+        }
+        impl
+            SimdScope<(
+                Vec<i32>,
+                (usize, Vec<i32>),
+                (usize, Vec<i32>),
+                (usize, [i32; 64]),
+            )> for Probe<'_>
+        {
+            fn run<B: SimdBackend>(
+                self,
+                backend: B,
+            ) -> (
+                Vec<i32>,
+                (usize, Vec<i32>),
+                (usize, Vec<i32>),
+                (usize, [i32; 64]),
+            ) {
+                let mut full = Vec::from(self.dequant_init);
+                secondary_inverse_transform_with(backend, &mut full, self.params).unwrap();
+
+                let mut pref = Vec::from(self.dequant_init);
+                let pref_len = secondary_inverse_transform_prefix_with(
+                    backend,
+                    &mut pref,
+                    self.coded,
+                    self.params,
+                )
+                .unwrap();
+
+                let mut q_out = vec![0i32; self.dequant_init.len()];
+                let q_len = secondary_inverse_transform_quant_with(
+                    backend,
+                    self.quant,
+                    self.quantizers,
+                    self.params,
+                    &mut q_out,
+                )
+                .unwrap();
+
+                let mut rows = [0i32; 64];
+                let r_len = if self.params.w >= 16 {
+                    secondary_inverse_transform_quant_rows8_with(
+                        backend,
+                        self.quant,
+                        self.quantizers,
+                        self.params,
+                        &mut rows,
+                    )
+                    .unwrap()
+                } else {
+                    0
+                };
+                (full, (pref_len, pref), (q_len, q_out), (r_len, rows))
+            }
+        }
+
+        let resolved = resolve_backend(SimdPolicy::Auto).expect("auto backend");
+        for (w, h, n, kernel, transpose) in [
+            (4usize, 4usize, 8usize, 0usize, false),
+            (8, 8, 24, 3, true),
+            (16, 8, 32, 5, false),
+        ] {
+            let p = params(w, h, n, kernel, 2, transpose);
+            let dequant_init: Vec<i32> = (0..w * h).map(|i| (i as i32 * 53) - 310).collect();
+            let quant: Vec<i32> = (0..(w * h).min(36))
+                .map(|i| (i as i32 * 19) - 100)
+                .collect();
+            let coded = (w * h).min(w * 2);
+            let quantizers = (96, 144, 2);
+
+            let mut c_full = dequant_init.clone();
+            secondary_inverse_transform(&mut c_full, &p).unwrap();
+            let mut c_pref = dequant_init.clone();
+            let c_pref_len = secondary_inverse_transform_prefix(&mut c_pref, coded, &p).unwrap();
+            let mut c_q = vec![0i32; w * h];
+            let c_q_len =
+                secondary_inverse_transform_quant(&quant, quantizers, &p, &mut c_q).unwrap();
+            let mut c_rows = [0i32; 64];
+            let c_r_len = if w >= 16 {
+                secondary_inverse_transform_quant_rows8(&quant, quantizers, &p, &mut c_rows)
+                    .unwrap()
+            } else {
+                0
+            };
+
+            let (t_full, (t_pref_len, t_pref), (t_q_len, t_q), (t_r_len, t_rows)) =
+                resolved.enter(Probe {
+                    params: &p,
+                    quant: &quant,
+                    dequant_init: &dequant_init,
+                    coded,
+                    quantizers,
+                });
+            assert_eq!(t_full, c_full);
+            assert_eq!((t_pref_len, t_pref), (c_pref_len, c_pref));
+            assert_eq!((t_q_len, t_q), (c_q_len, c_q));
+            assert_eq!((t_r_len, t_rows), (c_r_len, c_rows));
+        }
     }
 }

@@ -27,9 +27,141 @@ use core::arch::x86_64::{
 };
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, SimdInto as _};
+use splot_core::simd::SimdBackend;
 
 use crate::intra_dc_math::validate_sample_type;
 use crate::{BitDepth, ReconError, ReconSample, Result};
+
+trait ResidualRunner: Copy {
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool;
+    fn add_u16(self, prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]);
+    fn add_u16_in_place(self, samples: &mut [u16], residual: &[i32], max: i32);
+    fn add_u8(self, prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]);
+    fn add_constant_u8_rows(
+        self,
+        samples: &mut [u8],
+        geometry: (usize, usize, usize, usize),
+        adjust: (u8, u8),
+    );
+}
+
+#[derive(Clone, Copy)]
+struct BaselineResidual;
+
+impl ResidualRunner for BaselineResidual {
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
+        crate::workspace::u16_samples_exceed(samples, max_sample)
+    }
+
+    fn add_u16(self, prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
+        baseline_simd!(simd => add_residual_u16_lanes(simd, prediction, residual, max, out));
+    }
+
+    fn add_u16_in_place(self, samples: &mut [u16], residual: &[i32], max: i32) {
+        baseline_simd!(simd => add_residual_u16_in_place_lanes(simd, samples, residual, max));
+    }
+
+    #[expect(clippy::inline_always, reason = "per-row residual add hot path")]
+    #[inline(always)]
+    fn add_u8(self, prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]) {
+        baseline_simd!(simd => add_residual_u8_lanes(
+            simd,
+            #[cfg(target_arch = "x86_64")]
+            Level::baseline().as_avx2(),
+            prediction,
+            residual,
+            max,
+            out,
+        ));
+    }
+
+    fn add_constant_u8_rows(
+        self,
+        samples: &mut [u8],
+        geometry: (usize, usize, usize, usize),
+        adjust: (u8, u8),
+    ) {
+        baseline_simd!(simd => add_constant_u8_rows_lanes(simd, samples, geometry, adjust));
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TypedResidual<B: SimdBackend>(B);
+
+impl<B: SimdBackend> ResidualRunner for TypedResidual<B> {
+    #[inline]
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
+        crate::sample_range::u16_samples_exceed_with(self.0, samples, max_sample)
+    }
+
+    #[inline]
+    fn add_u16(self, prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
+        self.0
+            .vectorize(|| add_residual_u16_lanes(self.0.token(), prediction, residual, max, out));
+    }
+
+    #[inline]
+    fn add_u16_in_place(self, samples: &mut [u16], residual: &[i32], max: i32) {
+        self.0
+            .vectorize(|| add_residual_u16_in_place_lanes(self.0.token(), samples, residual, max));
+    }
+
+    #[expect(clippy::inline_always, reason = "per-row residual add hot path")]
+    #[inline(always)]
+    fn add_u8(self, prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]) {
+        self.0.vectorize(|| {
+            add_residual_u8_lanes(
+                self.0.token(),
+                #[cfg(target_arch = "x86_64")]
+                self.0.avx2_token(),
+                prediction,
+                residual,
+                max,
+                out,
+            );
+        });
+    }
+
+    #[inline]
+    fn add_constant_u8_rows(
+        self,
+        samples: &mut [u8],
+        geometry: (usize, usize, usize, usize),
+        adjust: (u8, u8),
+    ) {
+        self.0
+            .vectorize(|| add_constant_u8_rows_lanes(self.0.token(), samples, geometry, adjust));
+    }
+}
+
+fn validate_reconstruct_add_residual<T: ReconSample>(
+    prediction: &[T],
+    residual: &[i32],
+    bit_depth: BitDepth,
+    out: &[T],
+) -> Result<u16> {
+    validate_sample_type::<T>(bit_depth)?;
+    if prediction.len() != residual.len() || out.len() != prediction.len() {
+        return Err(ReconError::ReconstructLengthMismatch {
+            prediction_len: prediction.len(),
+            residual_len: residual.len(),
+            out_len: out.len(),
+        });
+    }
+    Ok(bit_depth.max_sample())
+}
+
+fn reconstruct_add_residual_with_runner<R: ResidualRunner, T: ReconSample>(
+    runner: R,
+    prediction: &[T],
+    residual: &[i32],
+    bit_depth: BitDepth,
+    out: &mut [T],
+) -> Result<()> {
+    let max_sample = validate_reconstruct_add_residual(prediction, residual, bit_depth, out)?;
+    validate_prediction_range(runner, prediction, max_sample)?;
+    add_residual_row(runner, prediction, residual, i32::from(max_sample), out)
+}
 
 /// Applies the AV2 § 7.14.3 residual-addition step to a block of predicted
 /// samples, writing `out`.
@@ -63,18 +195,27 @@ pub fn reconstruct_add_residual<T: ReconSample>(
     bit_depth: BitDepth,
     out: &mut [T],
 ) -> Result<()> {
-    validate_sample_type::<T>(bit_depth)?;
-    if prediction.len() != residual.len() || out.len() != prediction.len() {
-        return Err(ReconError::ReconstructLengthMismatch {
-            prediction_len: prediction.len(),
-            residual_len: residual.len(),
-            out_len: out.len(),
-        });
-    }
+    reconstruct_add_residual_with_runner(BaselineResidual, prediction, residual, bit_depth, out)
+}
 
-    let max_sample = bit_depth.max_sample();
-    validate_prediction_range(prediction, max_sample)?;
-    add_residual_row(prediction, residual, i32::from(max_sample), out)
+/// Applies [`reconstruct_add_residual`] using `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`reconstruct_add_residual`].
+pub fn reconstruct_add_residual_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    prediction: &[T],
+    residual: &[i32],
+    bit_depth: BitDepth,
+    out: &mut [T],
+) -> Result<()> {
+    reconstruct_add_residual_with_runner(
+        TypedResidual(backend.narrow()),
+        prediction,
+        residual,
+        bit_depth,
+        out,
+    )
 }
 
 /// Applies the AV2 § 7.14.3 residual-addition step of one contiguous prediction
@@ -110,6 +251,54 @@ pub(crate) fn add_block_residual_into_rows<T: ReconSample>(
     width: usize,
     height: usize,
 ) -> Result<()> {
+    add_block_residual_into_rows_with_runner(
+        BaselineResidual,
+        prediction,
+        residual,
+        bit_depth,
+        out,
+        out_stride,
+        width,
+        height,
+    )
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired in follow-up intra/inter PR")
+)]
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn add_block_residual_into_rows_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    prediction: &[T],
+    residual: &[i32],
+    bit_depth: BitDepth,
+    out: &mut [T],
+    out_stride: usize,
+    width: usize,
+    height: usize,
+) -> Result<()> {
+    add_block_residual_into_rows_with_runner(
+        TypedResidual(backend.narrow()),
+        prediction,
+        residual,
+        bit_depth,
+        out,
+        out_stride,
+        width,
+        height,
+    )
+}
+
+fn validate_add_block_residual<T: ReconSample>(
+    prediction_len: usize,
+    residual_len: usize,
+    bit_depth: BitDepth,
+    out_len: usize,
+    out_stride: usize,
+    width: usize,
+    height: usize,
+) -> Result<u16> {
     validate_sample_type::<T>(bit_depth)?;
     if width == 0 || height == 0 {
         return Err(ReconError::ZeroDimension {
@@ -122,10 +311,10 @@ pub(crate) fn add_block_residual_into_rows<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "residual destination sample count",
         })?;
-    if prediction.len() != samples || residual.len() != samples {
+    if prediction_len != samples || residual_len != samples {
         return Err(ReconError::ReconstructLengthMismatch {
-            prediction_len: prediction.len(),
-            residual_len: residual.len(),
+            prediction_len,
+            residual_len,
             out_len: samples,
         });
     }
@@ -135,20 +324,42 @@ pub(crate) fn add_block_residual_into_rows<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "residual destination row span",
         })?;
-    if out.len() < span {
+    if out_len < span {
         return Err(ReconError::BufferLengthMismatch {
             expected: span,
-            actual: out.len(),
+            actual: out_len,
         });
     }
+    Ok(bit_depth.max_sample())
+}
 
-    let max_sample = bit_depth.max_sample();
-    validate_prediction_range(prediction, max_sample)?;
+#[expect(clippy::too_many_arguments)]
+fn add_block_residual_into_rows_with_runner<R: ResidualRunner, T: ReconSample>(
+    runner: R,
+    prediction: &[T],
+    residual: &[i32],
+    bit_depth: BitDepth,
+    out: &mut [T],
+    out_stride: usize,
+    width: usize,
+    height: usize,
+) -> Result<()> {
+    let max_sample = validate_add_block_residual::<T>(
+        prediction.len(),
+        residual.len(),
+        bit_depth,
+        out.len(),
+        out_stride,
+        width,
+        height,
+    )?;
+    validate_prediction_range(runner, prediction, max_sample)?;
     let max = i32::from(max_sample);
     for row in 0..height {
         let source = row * width;
         let target = row * out_stride;
         add_residual_row(
+            runner,
             &prediction[source..source + width],
             &residual[source..source + width],
             max,
@@ -158,14 +369,8 @@ pub(crate) fn add_block_residual_into_rows<T: ReconSample>(
     Ok(())
 }
 
-/// Rejects a prediction sample the active bit depth cannot represent, scanning
-/// `u16` storage a lane group at a time.
-fn validate_prediction_range<T: ReconSample>(prediction: &[T], max_sample: u16) -> Result<()> {
-    if let Some(samples) = T::u16_slice(prediction)
-        && !crate::workspace::u16_samples_exceed(samples, max_sample)
-    {
-        return Ok(());
-    }
+#[cold]
+fn find_out_of_range_prediction<T: ReconSample>(prediction: &[T], max_sample: u16) -> Result<()> {
     for (sample_index, &pred) in prediction.iter().enumerate() {
         let value = pred.to_u16();
         if value > max_sample {
@@ -179,8 +384,24 @@ fn validate_prediction_range<T: ReconSample>(prediction: &[T], max_sample: u16) 
     Ok(())
 }
 
+/// Rejects a prediction sample the active bit depth cannot represent, scanning
+/// `u16` storage a lane group at a time.
+fn validate_prediction_range<R: ResidualRunner, T: ReconSample>(
+    runner: R,
+    prediction: &[T],
+    max_sample: u16,
+) -> Result<()> {
+    if let Some(samples) = T::u16_slice(prediction)
+        && !runner.u16_samples_exceed(samples, max_sample)
+    {
+        return Ok(());
+    }
+    find_out_of_range_prediction(prediction, max_sample)
+}
+
 /// Writes `Clip1(prediction + residual)` over one destination row.
-fn add_residual_row<T: ReconSample>(
+fn add_residual_row<R: ResidualRunner, T: ReconSample>(
+    runner: R,
     prediction: &[T],
     residual: &[i32],
     max: i32,
@@ -189,14 +410,15 @@ fn add_residual_row<T: ReconSample>(
     if let Some(prediction) = T::u16_slice(prediction)
         && let Some(out) = T::u16_slice_mut(out)
     {
-        add_residual_u16(prediction, residual, max, out);
+        let len = out.len().min(prediction.len()).min(residual.len());
+        runner.add_u16(&prediction[..len], &residual[..len], max, &mut out[..len]);
         return Ok(());
     }
     if max <= i32::from(u8::MAX)
         && let Some(prediction) = T::u8_slice(prediction)
         && let Some(out) = T::u8_slice_mut(out)
     {
-        add_residual_u8(Some(prediction), residual, max, out);
+        runner.add_u8(Some(prediction), residual, max, out);
         return Ok(());
     }
     for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
@@ -221,23 +443,37 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
     residual: &[i32],
     max: i32,
 ) -> Result<()> {
+    add_residual_in_place_with_runner(BaselineResidual, samples, residual, max)
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired in follow-up intra/inter PR")
+)]
+pub(crate) fn add_residual_in_place_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    samples: &mut [T],
+    residual: &[i32],
+    max: i32,
+) -> Result<()> {
+    add_residual_in_place_with_runner(TypedResidual(backend.narrow()), samples, residual, max)
+}
+
+fn add_residual_in_place_with_runner<R: ResidualRunner, T: ReconSample>(
+    runner: R,
+    samples: &mut [T],
+    residual: &[i32],
+    max: i32,
+) -> Result<()> {
     if let Some(samples) = T::u16_slice_mut(samples) {
         let len = samples.len().min(residual.len());
-        let (samples, residual) = (&mut samples[..len], &residual[..len]);
-        baseline_simd!(simd => {
-            let (groups, samples) = samples.as_chunks_mut::<8>();
-            let (residual_groups, residual) = residual.as_chunks::<8>();
-            for (group, residual) in groups.iter_mut().zip(residual_groups) {
-                *group = add_residual_lanes(simd, *group, residual, max);
-            }
-            add_residual_u16_tail(simd, None, residual, max, samples);
-        });
+        runner.add_u16_in_place(&mut samples[..len], &residual[..len], max);
         return Ok(());
     }
     if max <= i32::from(u8::MAX)
         && let Some(samples) = T::u8_slice_mut(samples)
     {
-        add_residual_u8(None, residual, max, samples);
+        runner.add_u8(None, residual, max, samples);
         return Ok(());
     }
     for (sample, &res) in samples.iter_mut().zip(residual) {
@@ -247,16 +483,19 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
     Ok(())
 }
 
-/// Adds the § 7.14.3 residual over `u16` storage in 8- and 4-lane groups.
-///
-/// Each lane repeats the scalar `Clip1(prediction + residual)` step with the
-/// same saturating `i32` addition, so every output sample is bit-identical;
-/// `Clip1` bounds the result to `0..=max`, which the `u16` storage represents
-/// exactly.
-fn add_residual_u16(prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
-    let len = out.len().min(prediction.len()).min(residual.len());
-    let (out, prediction, residual) = (&mut out[..len], &prediction[..len], &residual[..len]);
-    baseline_simd!(simd => add_residual_u16_lanes(simd, prediction, residual, max, out));
+#[inline]
+fn add_residual_u16_in_place_lanes<S: Simd>(
+    simd: S,
+    samples: &mut [u16],
+    residual: &[i32],
+    max: i32,
+) {
+    let (groups, samples) = samples.as_chunks_mut::<8>();
+    let (residual_groups, residual) = residual.as_chunks::<8>();
+    for (group, residual) in groups.iter_mut().zip(residual_groups) {
+        *group = add_residual_lanes(simd, *group, residual, max);
+    }
+    add_residual_u16_tail(simd, None, residual, max, samples);
 }
 
 #[inline]
@@ -314,19 +553,11 @@ fn add_residual_u16_tail<S: Simd>(
     out[start..len].copy_from_slice(&sum[..n]); // splot-copy-ok: the group's own lanes
 }
 
-/// `Clip1(prediction + residual)` over `u8` storage, sixteen, eight, then
-/// four lanes at a time, for `0 <= max <= 255`; `prediction` is `out` itself
-/// when `None`.
-#[expect(clippy::inline_always, reason = "per-row residual add hot path")]
-#[inline(always)]
-fn add_residual_u8(prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]) {
-    baseline_simd!(simd => add_residual_u8_lanes(simd, prediction, residual, max, out));
-}
-
 #[expect(clippy::inline_always, reason = "per-row residual add hot path")]
 #[inline(always)]
 fn add_residual_u8_lanes<S: Simd>(
     simd: S,
+    #[cfg(target_arch = "x86_64")] avx2: Option<Avx2>,
     prediction: Option<&[u8]>,
     residual: &[i32],
     max: i32,
@@ -349,7 +580,14 @@ fn add_residual_u8_lanes<S: Simd>(
                 ) else {
                     break;
                 };
-                let value = clip_add_u8(simd, pred, res, max);
+                let value = clip_add_u8(
+                    simd,
+                    #[cfg(target_arch = "x86_64")]
+                    avx2,
+                    pred,
+                    res,
+                    max,
+                );
                 slot.copy_from_slice(&value); // splot-copy-ok: one residual lane group
                 done += $lanes;
             }
@@ -366,9 +604,36 @@ fn add_residual_u8_lanes<S: Simd>(
         let (mut pred, mut res) = ([0u8; 4], [0i32; 4]);
         pred[..n].copy_from_slice(source); // splot-copy-ok: zero-padded lane group
         res[..n].copy_from_slice(&residual[done..len]); // splot-copy-ok: zero-padded lane group
-        let sum = clip_add_u8(simd, &pred, &res, max);
+        let sum = clip_add_u8(
+            simd,
+            #[cfg(target_arch = "x86_64")]
+            avx2,
+            &pred,
+            &res,
+            max,
+        );
         out[done..len].copy_from_slice(&sum[..n]); // splot-copy-ok: the group's own lanes
     }
+}
+
+fn constant_u8_adjust(residual: i32) -> (u8, u8) {
+    let magnitude = residual.unsigned_abs().min(255) as u8;
+    if residual < 0 {
+        (0, magnitude)
+    } else {
+        (magnitude, 0)
+    }
+}
+
+#[cfg(test)]
+fn add_residual_u8(prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]) {
+    BaselineResidual.add_u8(prediction, residual, max, out);
+}
+
+#[cfg(test)]
+fn add_residual_u16(prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
+    let len = out.len().min(prediction.len()).min(residual.len());
+    BaselineResidual.add_u16(&prediction[..len], &residual[..len], max, &mut out[..len]);
 }
 
 /// `Clip1(sample + residual)` over the 8-bit `width x height` block from
@@ -377,68 +642,90 @@ fn add_residual_u8_lanes<S: Simd>(
 /// zero-padded.
 pub(crate) fn add_constant_u8_rows(
     samples: &mut [u8],
-    (base, stride, width, height): (usize, usize, usize, usize),
+    geometry: (usize, usize, usize, usize),
     residual: i32,
 ) {
-    let magnitude = residual.unsigned_abs().min(255) as u8;
-    let (plus, minus) = if residual < 0 {
-        (0, magnitude)
-    } else {
-        (magnitude, 0)
-    };
-    baseline_simd!(simd => {
-        let (plus, minus) = (u8x16::splat(simd, plus), u8x16::splat(simd, minus));
-        let add = |v: [u8; 16]| -> [u8; 16] {
-            let v = simd.saturating_add_u8x16(u8x16::load_array(simd, v), plus);
-            simd.saturating_sub_u8x16(v, minus).into()
-        };
-        macro_rules! rows {
-            ($width:expr) => {
-                for row in 0..height {
-                    let Some(row) = samples.get_mut(base + row * stride..).and_then(|r| r.get_mut(..$width)) else {
-                        break;
-                    };
-                    let (groups, tail) = row.as_chunks_mut::<16>();
-                    for group in groups {
-                        *group = add(*group);
-                    }
-                    if !tail.is_empty() {
-                        let mut lanes = [0u8; 16];
-                        lanes[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded lane group
-                        let len = tail.len();
-                        tail.copy_from_slice(&add(lanes)[..len]); // splot-copy-ok: the group's own lanes
-                    }
-                }
-            };
-        }
-        match width {
-            4 => rows!(4),
-            8 => rows!(8),
-            16 => rows!(16),
-            32 => rows!(32),
-            _ => rows!(width),
-        }
-    });
+    BaselineResidual.add_constant_u8_rows(samples, geometry, constant_u8_adjust(residual));
 }
 
-/// One lane group of [`add_residual_u8`], `LANES <= 16`. The residual
+/// Applies [`add_constant_u8_rows`] using `backend`.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired in follow-up intra/inter PR")
+)]
+pub(crate) fn add_constant_u8_rows_with<B: SimdBackend>(
+    backend: B,
+    samples: &mut [u8],
+    geometry: (usize, usize, usize, usize),
+    residual: i32,
+) {
+    TypedResidual(backend.narrow()).add_constant_u8_rows(
+        samples,
+        geometry,
+        constant_u8_adjust(residual),
+    );
+}
+
+#[inline]
+fn add_constant_u8_rows_lanes<S: Simd>(
+    simd: S,
+    samples: &mut [u8],
+    (base, stride, width, height): (usize, usize, usize, usize),
+    (plus, minus): (u8, u8),
+) {
+    let (plus, minus) = (u8x16::splat(simd, plus), u8x16::splat(simd, minus));
+    let add = |v: [u8; 16]| -> [u8; 16] {
+        let v = simd.saturating_add_u8x16(u8x16::load_array(simd, v), plus);
+        simd.saturating_sub_u8x16(v, minus).into()
+    };
+    macro_rules! rows {
+        ($width:expr) => {
+            for row in 0..height {
+                let Some(row) = samples
+                    .get_mut(base + row * stride..)
+                    .and_then(|r| r.get_mut(..$width))
+                else {
+                    break;
+                };
+                let (groups, tail) = row.as_chunks_mut::<16>();
+                for group in groups {
+                    *group = add(*group);
+                }
+                if !tail.is_empty() {
+                    let mut lanes = [0u8; 16];
+                    lanes[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded lane group
+                    let len = tail.len();
+                    tail.copy_from_slice(&add(lanes)[..len]); // splot-copy-ok: the group's own lanes
+                }
+            }
+        };
+    }
+    match width {
+        4 => rows!(4),
+        8 => rows!(8),
+        16 => rows!(16),
+        32 => rows!(32),
+        _ => rows!(width),
+    }
+}
+
+/// One lane group of `add_residual_u8_lanes`, `LANES <= 16`. The residual
 /// saturates to `i16` and the sum saturates in `i16`: a residual past `i16`
 /// drives the `i32` sum past `0..=max` the same way, so every clipped value
 /// matches the saturating `i32` addition.
 #[inline]
 fn clip_add_u8<S: Simd, const LANES: usize>(
     simd: S,
+    #[cfg(target_arch = "x86_64")] avx2: Option<Avx2>,
     prediction: &[u8; LANES],
     residual: &[i32; LANES],
     max: i32,
 ) -> [u8; LANES] {
     let (pred, res) = (&prediction[..], &residual[..]);
     #[cfg(target_arch = "x86_64")]
-    if let (Some(token), Ok(pred), Some((lo, hi))) = (
-        Level::baseline().as_avx2(),
-        <&[u8; 16]>::try_from(pred),
-        res.split_at_checked(8),
-    ) {
+    if let (Some(token), Ok(pred), Some((lo, hi))) =
+        (avx2, <&[u8; 16]>::try_from(pred), res.split_at_checked(8))
+    {
         let sum = clip_add_u8x16_avx2(
             token,
             u8x16::from_slice(token, pred).into(),
@@ -452,11 +739,9 @@ fn clip_add_u8<S: Simd, const LANES: usize>(
         return out;
     }
     #[cfg(target_arch = "x86_64")]
-    if let (Some(token), Ok(pred), Ok(res)) = (
-        Level::baseline().as_avx2(),
-        <[u8; 8]>::try_from(pred),
-        <&[i32; 8]>::try_from(res),
-    ) {
+    if let (Some(token), Ok(pred), Ok(res)) =
+        (avx2, <[u8; 8]>::try_from(pred), <&[i32; 8]>::try_from(res))
+    {
         let sum = clip_add_u8x8_avx2(
             token,
             u64x2::from_slice(token, &[u64::from_le_bytes(pred), 0]).into(),
@@ -778,5 +1063,94 @@ mod tests {
             })
         ));
         assert_eq!(out, [0, 0]);
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                let res: Vec<i32> = (0..37).map(|i| (i * 29) % 181 - 90).collect();
+
+                let pred_u8: Vec<u8> = (0..37).map(|i| ((i * 41 + 3) % 251) as u8).collect();
+                let mut compat_u8 = vec![0u8; 37];
+                let mut typed_u8 = vec![0u8; 37];
+                reconstruct_add_residual(&pred_u8, &res, BitDepth::Eight, &mut compat_u8).unwrap();
+                reconstruct_add_residual_with(
+                    backend,
+                    &pred_u8,
+                    &res,
+                    BitDepth::Eight,
+                    &mut typed_u8,
+                )
+                .unwrap();
+                assert_eq!(typed_u8, compat_u8);
+
+                let pred_u16: Vec<u16> = (0..37).map(|i| ((i * 197 + 11) % 1020) as u16).collect();
+                let mut compat_u16 = vec![0u16; 37];
+                let mut typed_u16 = vec![0u16; 37];
+                reconstruct_add_residual(&pred_u16, &res, BitDepth::Ten, &mut compat_u16).unwrap();
+                reconstruct_add_residual_with(
+                    backend,
+                    &pred_u16,
+                    &res,
+                    BitDepth::Ten,
+                    &mut typed_u16,
+                )
+                .unwrap();
+                assert_eq!(typed_u16, compat_u16);
+
+                let block_u8: Vec<u8> = (0..24).map(|i| ((i * 53 + 9) % 251) as u8).collect();
+                let block_res: Vec<i32> = (0..24).map(|i| (i * 37) % 121 - 60).collect();
+                let mut rows_compat = vec![5u8; 3 * 12];
+                let mut rows_typed = vec![5u8; 3 * 12];
+                add_block_residual_into_rows(
+                    &block_u8,
+                    &block_res,
+                    BitDepth::Eight,
+                    &mut rows_compat,
+                    12,
+                    8,
+                    3,
+                )
+                .unwrap();
+                add_block_residual_into_rows_with(
+                    backend,
+                    &block_u8,
+                    &block_res,
+                    BitDepth::Eight,
+                    &mut rows_typed,
+                    12,
+                    8,
+                    3,
+                )
+                .unwrap();
+                assert_eq!(rows_typed, rows_compat);
+
+                let mut ip_compat = pred_u8.clone();
+                let mut ip_typed = pred_u8;
+                add_residual_in_place(&mut ip_compat, &res, 255).unwrap();
+                add_residual_in_place_with(backend, &mut ip_typed, &res, 255).unwrap();
+                assert_eq!(ip_typed, ip_compat);
+
+                let mut ip16_compat = pred_u16.clone();
+                let mut ip16_typed = pred_u16;
+                add_residual_in_place(&mut ip16_compat, &res, 1023).unwrap();
+                add_residual_in_place_with(backend, &mut ip16_typed, &res, 1023).unwrap();
+                assert_eq!(ip16_typed, ip16_compat);
+
+                let mut const_compat: Vec<u8> = (0..60).map(|i| ((i * 19) % 250) as u8).collect();
+                let mut const_typed = const_compat.clone();
+                add_constant_u8_rows(&mut const_compat, (2, 14, 11, 4), -23);
+                add_constant_u8_rows_with(backend, &mut const_typed, (2, 14, 11, 4), -23);
+                assert_eq!(const_typed, const_compat);
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

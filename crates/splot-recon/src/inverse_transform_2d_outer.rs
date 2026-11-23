@@ -22,11 +22,13 @@
 //! `Tx_Width` / `Tx_Height` of `txSz`), so no conversion tables are needed.
 
 use fearless_simd::{Simd, SimdBase as _, i32x4};
+use splot_core::simd::SimdBackend;
 
 #[cfg(test)]
 use crate::inverse_transform_2d::inverse_transform_2d;
 use crate::inverse_transform_2d::{
     InverseTransform2d, InverseTransform2dDim, inverse_transform_2d_with_scratch,
+    inverse_transform_2d_with_scratch_and_backend,
 };
 use crate::transform_params::{TransformPass, get_transform_1d_type, transform_shift};
 use crate::{BitDepth, ReconError, Result};
@@ -233,12 +235,68 @@ pub fn inverse_transform_2d_outer(
     )
 }
 
+/// Applies [`inverse_transform_2d_outer`] using `backend`.
+///
+/// # Errors
+/// Returns the same shape and buffer validation errors as
+/// [`inverse_transform_2d_outer`].
+pub fn inverse_transform_2d_outer_with<B: SimdBackend>(
+    backend: B,
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+) -> Result<()> {
+    inverse_transform_2d_outer_with_scratch_and_backend(
+        backend,
+        params,
+        dequant,
+        residual,
+        &mut [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+    )
+}
+
 /// [`inverse_transform_2d_outer`] with a caller-supplied 32x32 matrix-transform
 /// scratch block, whose contents need not be initialised.
 ///
 /// # Errors
 /// Returns the [`inverse_transform_2d_outer`] errors.
 pub fn inverse_transform_2d_outer_with_scratch(
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+    transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+) -> Result<()> {
+    inverse_transform_2d_outer_with_scratch_and_runner(
+        BaselineOuter,
+        params,
+        dequant,
+        residual,
+        transform_scratch,
+    )
+}
+
+/// [`inverse_transform_2d_outer_with_scratch`] using `backend`.
+///
+/// # Errors
+/// Returns the [`inverse_transform_2d_outer`] errors.
+pub fn inverse_transform_2d_outer_with_scratch_and_backend<B: SimdBackend>(
+    backend: B,
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+    transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+) -> Result<()> {
+    inverse_transform_2d_outer_with_scratch_and_runner(
+        TypedOuter(backend.narrow()),
+        params,
+        dequant,
+        residual,
+        transform_scratch,
+    )
+}
+
+fn inverse_transform_2d_outer_with_scratch_and_runner<R: OuterRunner>(
+    runner: R,
     params: &InverseTransform2dOuter,
     dequant: &[i32],
     residual: &mut [i32],
@@ -258,6 +316,7 @@ pub fn inverse_transform_2d_outer_with_scratch(
 
     if orig_pels == adj_pels {
         return inverse_transform_2d_outer_adjusted_inner(
+            runner,
             params,
             dequant,
             residual,
@@ -270,6 +329,7 @@ pub fn inverse_transform_2d_outer_with_scratch(
     let mut adjusted = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
     let adj = &mut adjusted[..adj_pels];
     inverse_transform_2d_outer_adjusted_inner(
+        runner,
         params,
         dequant,
         adj,
@@ -284,7 +344,7 @@ pub fn inverse_transform_2d_outer_with_scratch(
         if orig_w == adj_w {
             dst.copy_from_slice(src); // splot-copy-ok: § 7.15.4 sample duplication row
         } else {
-            duplicate_columns(src, dst);
+            runner.duplicate_columns(src, dst);
         }
     }
     Ok(())
@@ -309,6 +369,44 @@ pub fn inverse_transform_2d_outer_adjusted(
     residual: &mut [i32],
     transform_scratch: &mut [i32; 32 * 32],
 ) -> Result<()> {
+    inverse_transform_2d_outer_adjusted_with_runner(
+        BaselineOuter,
+        params,
+        dequant,
+        residual,
+        transform_scratch,
+    )
+}
+
+/// Applies [`inverse_transform_2d_outer_adjusted`] using `backend`.
+///
+/// # Errors
+/// Returns the same shape, buffer, and transform errors as
+/// [`inverse_transform_2d_outer_adjusted`].
+#[inline]
+pub fn inverse_transform_2d_outer_adjusted_with<B: SimdBackend>(
+    backend: B,
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+    transform_scratch: &mut [i32; 32 * 32],
+) -> Result<()> {
+    inverse_transform_2d_outer_adjusted_with_runner(
+        TypedOuter(backend.narrow()),
+        params,
+        dequant,
+        residual,
+        transform_scratch,
+    )
+}
+
+fn inverse_transform_2d_outer_adjusted_with_runner<R: OuterRunner>(
+    runner: R,
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+    transform_scratch: &mut [i32; 32 * 32],
+) -> Result<()> {
     let (adj_w, adj_h, _, _) = transform_dimensions(params)?;
     let adj_pels = adj_w * adj_h;
     if !is_row_prefix(dequant.len(), adj_w, adj_pels) || residual.len() != adj_pels {
@@ -319,6 +417,7 @@ pub fn inverse_transform_2d_outer_adjusted(
         });
     }
     inverse_transform_2d_outer_adjusted_inner(
+        runner,
         params,
         dequant,
         residual,
@@ -328,7 +427,88 @@ pub fn inverse_transform_2d_outer_adjusted(
     )
 }
 
-fn inverse_transform_2d_outer_adjusted_inner(
+trait OuterRunner: Copy {
+    fn idtx_shift(self, dequant: &[i32], coded: &mut [i32], down: u32);
+    fn inner_transform(
+        self,
+        inner: &InverseTransform2d,
+        dequant: &[i32],
+        residual: &mut [i32],
+        transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+    ) -> Result<()>;
+    fn apply_dpcm(self, res: &mut [i32], w: usize, h: usize, direction: DpcmDirection);
+    fn duplicate_columns(self, src: &[i32], dst: &mut [i32]);
+}
+
+#[derive(Clone, Copy)]
+struct BaselineOuter;
+
+impl OuterRunner for BaselineOuter {
+    fn idtx_shift(self, dequant: &[i32], coded: &mut [i32], down: u32) {
+        baseline_simd!(simd => idtx_shift_lanes(simd, dequant, coded, down));
+    }
+
+    fn inner_transform(
+        self,
+        inner: &InverseTransform2d,
+        dequant: &[i32],
+        residual: &mut [i32],
+        transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+    ) -> Result<()> {
+        inverse_transform_2d_with_scratch(inner, dequant, residual, transform_scratch)
+    }
+
+    fn apply_dpcm(self, res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
+        baseline_simd!(simd => apply_dpcm_lanes(simd, res, w, h, direction));
+    }
+
+    fn duplicate_columns(self, src: &[i32], dst: &mut [i32]) {
+        baseline_simd!(simd => duplicate_columns_lanes(simd, src, dst));
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TypedOuter<B: SimdBackend>(B);
+
+impl<B: SimdBackend> OuterRunner for TypedOuter<B> {
+    #[inline]
+    fn idtx_shift(self, dequant: &[i32], coded: &mut [i32], down: u32) {
+        self.0
+            .vectorize(|| idtx_shift_lanes(self.0.token(), dequant, coded, down));
+    }
+
+    #[inline]
+    fn inner_transform(
+        self,
+        inner: &InverseTransform2d,
+        dequant: &[i32],
+        residual: &mut [i32],
+        transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+    ) -> Result<()> {
+        inverse_transform_2d_with_scratch_and_backend(
+            self.0,
+            inner,
+            dequant,
+            residual,
+            transform_scratch,
+        )
+    }
+
+    #[inline]
+    fn apply_dpcm(self, res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
+        self.0
+            .vectorize(|| apply_dpcm_lanes(self.0.token(), res, w, h, direction));
+    }
+
+    #[inline]
+    fn duplicate_columns(self, src: &[i32], dst: &mut [i32]) {
+        self.0
+            .vectorize(|| duplicate_columns_lanes(self.0.token(), src, dst));
+    }
+}
+
+fn inverse_transform_2d_outer_adjusted_inner<R: OuterRunner>(
+    runner: R,
     params: &InverseTransform2dOuter,
     dequant: &[i32],
     residual: &mut [i32],
@@ -341,14 +521,9 @@ fn inverse_transform_2d_outer_adjusted_inner(
 
     if params.lossless && params.plane_tx_type_is_idtx {
         let shift = u32::from(adj_pels > 256) + u32::from(adj_pels > 1024);
-        let down = 3 - shift; // shift is 0..=2, so down is 1..=3.
+        let down = 3 - shift;
         let (coded, zero) = residual.split_at_mut(dequant.len());
-        baseline_simd!(simd => {
-            let (out, _) = coded.as_chunks_mut::<4>();
-            for (out, &coeff) in out.iter_mut().zip(dequant.as_chunks::<4>().0) {
-                *out = (i32x4::load_array(simd, coeff) >> down).into();
-            }
-        });
+        runner.idtx_shift(dequant, coded, down);
         zero.fill(0);
     } else {
         let inner = InverseTransform2d {
@@ -361,11 +536,11 @@ fn inverse_transform_2d_outer_adjusted_inner(
             col_shift: params.col_shift,
             bit_depth: params.bit_depth,
         };
-        inverse_transform_2d_with_scratch(&inner, dequant, residual, transform_scratch)?;
+        runner.inner_transform(&inner, dequant, residual, transform_scratch)?;
     }
 
     if let Some(direction) = params.dpcm {
-        apply_dpcm(residual, adj_w, adj_h, direction);
+        runner.apply_dpcm(residual, adj_w, adj_h, direction);
     }
     Ok(())
 }
@@ -396,56 +571,87 @@ fn transform_dimensions(params: &InverseTransform2dOuter) -> Result<(usize, usiz
     ))
 }
 
+#[inline]
+fn idtx_shift_lanes<S: Simd>(simd: S, dequant: &[i32], coded: &mut [i32], down: u32) {
+    let (out, _) = coded.as_chunks_mut::<4>();
+    for (out, &coeff) in out.iter_mut().zip(dequant.as_chunks::<4>().0) {
+        *out = (i32x4::load_array(simd, coeff) >> down).into();
+    }
+}
+
 /// AV2 § 7.15.4 DPCM cumulative sum over the `w * h` row-major `res` block,
 /// `w` a multiple of 4, in wrapping lane adds (so the primitive is total;
 /// conformant `Clip3`-bounded residuals never overflow): a vertical sum adds
 /// each row onto the next, a horizontal one takes each 4-lane group's
 /// prefix sum in two lane shifts and adds the previous group's last sum.
-fn apply_dpcm(res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
-    baseline_simd!(simd => {
-        let zero = i32x4::splat(simd, 0);
-        let rows = res.chunks_exact_mut(w).take(h);
-        let mut above = None::<&mut [i32]>;
-        for row in rows {
-            let groups = row.as_chunks_mut::<4>().0;
-            match direction {
-                DpcmDirection::Vertical => {
-                    if let Some(above) = &above {
-                        for (group, up) in groups.iter_mut().zip(above.as_chunks::<4>().0) {
-                            *group = (i32x4::load_array(simd, *group) + i32x4::load_array(simd, *up)).into();
-                        }
-                    }
-                }
-                DpcmDirection::Horizontal => {
-                    let mut carry = zero;
-                    for group in groups {
-                        let v = i32x4::load_array(simd, *group);
-                        let v = v + simd.slide_i32x4::<3>(zero, v);
-                        let v = v + simd.slide_i32x4::<2>(zero, v) + carry;
-                        carry = i32x4::splat(simd, v.as_array()[3]);
-                        *group = v.into();
+#[inline]
+fn apply_dpcm_lanes<S: Simd>(
+    simd: S,
+    res: &mut [i32],
+    w: usize,
+    h: usize,
+    direction: DpcmDirection,
+) {
+    let zero = i32x4::splat(simd, 0);
+    let rows = res.chunks_exact_mut(w).take(h);
+    let mut above = None::<&mut [i32]>;
+    for row in rows {
+        let groups = row.as_chunks_mut::<4>().0;
+        match direction {
+            DpcmDirection::Vertical => {
+                if let Some(above) = &above {
+                    for (group, up) in groups.iter_mut().zip(above.as_chunks::<4>().0) {
+                        *group =
+                            (i32x4::load_array(simd, *group) + i32x4::load_array(simd, *up)).into();
                     }
                 }
             }
-            above = Some(row);
+            DpcmDirection::Horizontal => {
+                let mut carry = zero;
+                for group in groups {
+                    let v = i32x4::load_array(simd, *group);
+                    let v = v + simd.slide_i32x4::<3>(zero, v);
+                    let v = v + simd.slide_i32x4::<2>(zero, v) + carry;
+                    carry = i32x4::splat(simd, v.as_array()[3]);
+                    *group = v.into();
+                }
+            }
         }
-    });
+        above = Some(row);
+    }
+}
+
+#[inline]
+fn duplicate_columns_lanes<S: Simd>(simd: S, src: &[i32], dst: &mut [i32]) {
+    let dst = dst.as_chunks_mut::<8>().0;
+    for (pair, &src) in dst.iter_mut().zip(src.as_chunks::<4>().0) {
+        let v = i32x4::load_array(simd, src);
+        let low: [i32; 4] = simd.zip_low_i32x4(v, v).into();
+        let high: [i32; 4] = simd.zip_high_i32x4(v, v).into();
+        let (first, second) = pair.split_at_mut(4);
+        first.copy_from_slice(&low); // splot-copy-ok: one duplicated lane group
+        second.copy_from_slice(&high); // splot-copy-ok: one duplicated lane group
+    }
 }
 
 /// The § 7.15.4 sample duplication of one adjusted row `src` (a multiple of
 /// 4 samples) into the twice as wide `dst`.
 pub(crate) fn duplicate_columns(src: &[i32], dst: &mut [i32]) {
-    baseline_simd!(simd => {
-        let dst = dst.as_chunks_mut::<8>().0;
-        for (pair, &src) in dst.iter_mut().zip(src.as_chunks::<4>().0) {
-            let v = i32x4::load_array(simd, src);
-            let low: [i32; 4] = simd.zip_low_i32x4(v, v).into();
-            let high: [i32; 4] = simd.zip_high_i32x4(v, v).into();
-            let (first, second) = pair.split_at_mut(4);
-            first.copy_from_slice(&low); // splot-copy-ok: one duplicated lane group
-            second.copy_from_slice(&high); // splot-copy-ok: one duplicated lane group
-        }
-    });
+    BaselineOuter.duplicate_columns(src, dst);
+}
+
+/// Applies [`duplicate_columns`] using `backend`.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired in follow-up intra/inter PR")
+)]
+pub(crate) fn duplicate_columns_with<B: SimdBackend>(backend: B, src: &[i32], dst: &mut [i32]) {
+    TypedOuter(backend.narrow()).duplicate_columns(src, dst);
+}
+
+#[cfg(test)]
+fn apply_dpcm(res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
+    BaselineOuter.apply_dpcm(res, w, h, direction);
 }
 
 #[cfg(test)]
@@ -1102,6 +1308,97 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                let idtx = InverseTransform2dDim::Identity;
+                let cases = [
+                    (
+                        params(3, 3, false, false, dct(), dct(), 7, 10, None),
+                        (0..64).map(|i| (i * 19) % 121 - 60).collect::<Vec<_>>(),
+                        64usize,
+                    ),
+                    (
+                        params(
+                            3,
+                            3,
+                            true,
+                            true,
+                            idtx,
+                            idtx,
+                            0,
+                            0,
+                            Some(DpcmDirection::Horizontal),
+                        ),
+                        (0..64).map(|i| (i * 23) % 80 - 40).collect::<Vec<_>>(),
+                        64usize,
+                    ),
+                    (
+                        params(
+                            3,
+                            3,
+                            true,
+                            true,
+                            idtx,
+                            idtx,
+                            0,
+                            0,
+                            Some(DpcmDirection::Vertical),
+                        ),
+                        (0..64).map(|i| (i * 31) % 80 - 40).collect::<Vec<_>>(),
+                        64usize,
+                    ),
+                    (
+                        params(6, 6, false, false, dct(), dct(), 7, 10, None),
+                        (0..1024).map(|i| (i * 13) % 101 - 50).collect::<Vec<_>>(),
+                        4096usize,
+                    ),
+                ];
+
+                for (tx, dequant, out_len) in &cases {
+                    let mut compat = vec![0i32; *out_len];
+                    let mut typed = vec![0i32; *out_len];
+                    inverse_transform_2d_outer(tx, dequant, &mut compat).unwrap();
+                    inverse_transform_2d_outer_with(backend, tx, dequant, &mut typed).unwrap();
+                    assert_eq!(typed, compat);
+                }
+
+                let tx64 = &cases[3].0;
+                let deq64 = &cases[3].1;
+                let mut adj_compat = [0i32; 1024];
+                let mut adj_typed = [0i32; 1024];
+                let mut scratch_a = [0i32; 32 * 32];
+                let mut scratch_b = [0i32; 32 * 32];
+                inverse_transform_2d_outer_adjusted(tx64, deq64, &mut adj_compat, &mut scratch_a)
+                    .unwrap();
+                inverse_transform_2d_outer_adjusted_with(
+                    backend,
+                    tx64,
+                    deq64,
+                    &mut adj_typed,
+                    &mut scratch_b,
+                )
+                .unwrap();
+                assert_eq!(adj_typed, adj_compat);
+
+                let src: Vec<i32> = (0..32).map(|i| i * 3 - 40).collect();
+                let mut dup_compat = [0i32; 64];
+                let mut dup_typed = [0i32; 64];
+                duplicate_columns(&src, &mut dup_compat);
+                duplicate_columns_with(backend, &src, &mut dup_typed);
+                assert_eq!(dup_typed, dup_compat);
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }
 
