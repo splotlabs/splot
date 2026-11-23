@@ -38,6 +38,8 @@ pub(crate) use partition_children::{ChildCallSink, child_calls, child_calls_into
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use state_publication::publish_intra_leaf_state;
 pub(crate) use tree_walk::BRU_ACTIVE;
+#[cfg(test)]
+pub(crate) use tree_walk::BRU_INACTIVE;
 use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{

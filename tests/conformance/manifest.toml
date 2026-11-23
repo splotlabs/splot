@@ -1317,6 +1317,36 @@ description = "Six 4:4:4 frames at 256x128 with two moving squares (--i444 --pro
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-lr-stripe-wienerns-8bit.ivf"
+description = "Six 8-bit 256x128 frames (4x2 SB64) with localized changing texture, avmenc --enable-bru=1 --enable-restoration=1 --enable-wiener-nonsep=1 --enable-pc-wiener=0 --enable-gdf=0 --enable-intrabc=0 --qp=140: frames 3-5 code use_bru == 1 with partial BRU superblock activity and active chroma Wiener-NS units across shifted restoration stripes; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-lr-stripe-wienerns-10bit.ivf"
+description = "Six 10-bit 256x128 frames matching syn-bru-lr-stripe-wienerns-8bit (--bit-depth=10 --input-bit-depth=10): frames 3-5 code use_bru == 1 with partial BRU superblock activity and active chroma Wiener-NS units across shifted restoration stripes; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-lr-stripe-pcwiener-8bit.ivf"
+description = "Six 8-bit 128x128 frames (2x2 SB64) with localized changing texture, avmenc --enable-bru=1 --enable-restoration=1 --enable-wiener-nonsep=0 --enable-pc-wiener=1 --enable-gdf=0 --enable-intrabc=0 --qp=175: frames 3 and 4 code use_bru == 1 with partial BRU superblocks and active luma PC-Wiener units across shifted stripes, followed by frame 5 consuming the updated reference; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-lr-stripe-pcwiener-10bit.ivf"
+description = "Six 10-bit 128x128 frames (2x2 SB64), avmenc --enable-bru=1 --enable-restoration=1 --enable-wiener-nonsep=0 --enable-pc-wiener=1 --enable-gdf=0 --enable-intrabc=0 --qp=195: frames 3 and 4 code use_bru == 1 with partial BRU superblocks and active luma PC-Wiener units across shifted stripes, followed by frame 5 consuming the updated reference; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-lr-multitile-cross-8bit.ivf"
+description = "Six 8-bit 256x256 frames in 2x2 tiles (--tile-columns=1 --tile-rows=1 --disable-loopfilters-across-tiles=0) with active tiles adjacent to tile borders: frames 3 and 4 code use_bru == 1 with partial BRU superblocks and active PC-Wiener units with cross-tile loop-restoration borders enabled; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-lr-multitile-isolated-8bit.ivf"
+description = "Matching syn-bru-lr-multitile-cross-8bit with --disable-loopfilters-across-tiles=1 so frames 3 and 4 apply BRU+LR within tile-isolated boundaries, producing distinct output hashes from cross-tile filtering; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-intra-64x64-10bit.ivf"
 description = "10-bit intra key frame at 64x64 (bit_depth_idc path); validates clean."
 expect = "clean"

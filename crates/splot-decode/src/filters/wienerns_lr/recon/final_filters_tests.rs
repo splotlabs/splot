@@ -1851,3 +1851,367 @@ fn luma_wiener_covers(
         end,
     )
 }
+
+fn bru_lr_core(
+    restoration_type: LrUnitRestorationType,
+    width: usize,
+    tile_rows: &[(usize, usize)],
+) -> FrameHeaderCore {
+    let mut core = switchable_core();
+    core.deblocking_filter_params = None;
+    core.cdef_params = None;
+    core.ccso_params = None;
+    core.gdf_params = None;
+    if tile_rows.len() <= 1 {
+        core.tile_info = None;
+    } else if let Some(tile) = core.tile_info.as_mut() {
+        let mut starts = vec![0u32];
+        starts.extend(tile_rows.iter().map(|&(_, end)| end as u32));
+        tile.tile_cols = 1;
+        tile.tile_rows = tile_rows.len() as u32;
+        tile.mi_col_starts =
+            splot_core::tile::TileStarts::from_iter_checked([0, (width / MI_SIZE) as u32]).unwrap();
+        tile.mi_row_starts = splot_core::tile::TileStarts::from_iter_checked(starts).unwrap();
+        tile.context_update_tile_id = 0;
+    }
+    let lr = core.lr_params.as_mut().unwrap();
+    lr.uses_lr = true;
+    lr.planes[0].restoration_type = match restoration_type {
+        LrUnitRestorationType::PcWiener => FrameRestorationType::PcWiener,
+        _ => FrameRestorationType::WienerNonsep,
+    };
+    if restoration_type == LrUnitRestorationType::PcWiener {
+        lr.planes[0].frame_filters_on = false;
+        lr.planes[0].num_filter_classes = None;
+        lr.planes[0].frame_filter_bank = None;
+    } else {
+        let luma = &mut lr.planes[0];
+        luma.frame_filters_on = true;
+        luma.num_filter_classes = Some(1);
+        if let Some(bank) = luma.frame_filter_bank.as_mut() {
+            bank.classes.truncate(1);
+            let len = bank.classes[0].coeffs.len().min(4);
+            bank.classes[0].coeffs[..len].copy_from_slice(&[16, -24, 32, -16][..len]);
+        }
+    }
+    for plane in &mut lr.planes[1..] {
+        plane.restoration_type = FrameRestorationType::WienerNonsep;
+        plane.frame_filters_on = false;
+        plane.num_filter_classes = None;
+        plane.frame_filter_bank = None;
+    }
+    core
+}
+
+fn bru_contrasting_workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
+    let mut workspace =
+        crate::test_support::yuv420_workspace_with(BitDepth::Eight, width, height, 0u8);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = workspace.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let jump = if (plane == PlaneId::Y && (56..64).contains(&y))
+                    || (plane != PlaneId::Y && (28..32).contains(&y))
+                {
+                    90
+                } else {
+                    0
+                };
+                let val = ((24 + (x * 13 + y * 19 + ((x ^ y) & 7) * 11 + jump)) % 200 + 24) as u8;
+                workspace
+                    .set_reconstructed_sample(plane, x, y, val)
+                    .unwrap();
+            }
+        }
+    }
+    workspace
+}
+
+fn bru_lr_blocks_and_filters(
+    restoration_type: LrUnitRestorationType,
+    width: usize,
+    tile_rows: &[(usize, usize)],
+) -> (Vec<WienerNsLrSourceBlock>, Vec<WienerNsLrUnitFilter>) {
+    let total_rows = tile_rows.last().map_or(0, |&(_, end)| end);
+    let mut blocks = Vec::new();
+    let mut filters = Vec::new();
+    let mut chroma_coeffs = [0i16; WIENER_NS_CHROMA_COEFFS];
+    chroma_coeffs[..5].copy_from_slice(&[12, -16, 20, -10, 6]);
+    for (tile_idx, &(tile_mi_start, tile_mi_end)) in tile_rows.iter().enumerate() {
+        let tile_mi_rows = tile_mi_end - tile_mi_start;
+        for plane in [PlaneId::U.index(), PlaneId::V.index()] {
+            filters.push(WienerNsLrUnitFilter {
+                plane,
+                unit_row: tile_idx,
+                unit_col: 0,
+                coeff_count: WIENER_NS_CHROMA_COEFFS,
+                coeffs: chroma_coeffs,
+            });
+        }
+        let u_filter_idx = filters.len() - 2;
+        let v_filter_idx = filters.len() - 1;
+        let mut local_row = 0;
+        while local_row < tile_mi_rows {
+            let run_end = tile_mi_rows.min(((local_row + 2) / 16 + 1) * 16 - 2);
+            let y_start = (tile_mi_start + local_row) * MI_SIZE;
+            let height = (run_end - local_row) * MI_SIZE;
+            let luma_stripe_start_y = y_start;
+            let luma_stripe_end_y = y_start + height - 1;
+            blocks.push(WienerNsLrSourceBlock {
+                restoration_type,
+                plane: PlaneId::Y.index(),
+                unit_row: tile_idx,
+                unit_col: 0,
+                unit_filter_index: None,
+                tile_mi_row_start: tile_mi_start,
+                tile_mi_row_end: tile_mi_end,
+                tile_mi_col_end: width / MI_SIZE,
+                x: 0,
+                y: y_start,
+                width,
+                height,
+                luma_start_x: 0,
+                luma_end_x: width - 1,
+                luma_start_y: 0,
+                luma_end_y: total_rows * MI_SIZE - 1,
+                luma_stripe_start_y,
+                luma_stripe_end_y,
+            });
+            for (plane, filter_idx) in [
+                (PlaneId::U.index(), u_filter_idx),
+                (PlaneId::V.index(), v_filter_idx),
+            ] {
+                blocks.push(WienerNsLrSourceBlock {
+                    restoration_type: LrUnitRestorationType::WienerNonsep,
+                    plane,
+                    unit_row: tile_idx,
+                    unit_col: 0,
+                    unit_filter_index: Some(filter_idx),
+                    tile_mi_row_start: tile_mi_start,
+                    tile_mi_row_end: tile_mi_end,
+                    tile_mi_col_end: width / MI_SIZE,
+                    x: 0,
+                    y: y_start >> 1,
+                    width: width >> 1,
+                    height: height >> 1,
+                    luma_start_x: 0,
+                    luma_end_x: width - 1,
+                    luma_start_y: 0,
+                    luma_end_y: total_rows * MI_SIZE - 1,
+                    luma_stripe_start_y,
+                    luma_stripe_end_y,
+                });
+            }
+            local_row = run_end;
+        }
+    }
+    (blocks, filters)
+}
+
+fn plane_rect_samples(
+    frame: &splot_recon::DecodedFrame<u8>,
+    plane: PlaneId,
+    x_range: core::ops::Range<usize>,
+    y_range: core::ops::Range<usize>,
+) -> Vec<u8> {
+    let view = match plane {
+        PlaneId::Y => frame.y(),
+        PlaneId::U => frame.u().unwrap(),
+        PlaneId::V => frame.v().unwrap(),
+    };
+    let stride = view.stride_samples();
+    let samples = view.samples();
+    let mut out = Vec::new();
+    for y in y_range {
+        out.extend_from_slice(&samples[y * stride + x_range.start..y * stride + x_range.end]);
+    }
+    out
+}
+
+fn unfiltered_reference(width: usize, height: usize) -> splot_recon::DecodedFrame<u8> {
+    let mut core = bru_lr_core(LrUnitRestorationType::WienerNonsep, width, &[]);
+    core.lr_params = None;
+    let sink = WienerNsLrReconSink::for_final_filtering(
+        bru_contrasting_workspace(width, height),
+        width,
+        height,
+        BitDepth::Eight,
+    );
+    sink.into_filtered_frame(
+        Arc::new(core),
+        false,
+        crate::filters::deblock::DeblockQuantDeltas::ZERO,
+        None,
+    )
+    .unwrap()
+    .0
+    .unwrap()
+}
+
+fn run_bru_lr_frame(
+    restoration_type: LrUnitRestorationType,
+    width: usize,
+    height: usize,
+    tile_rows: &[(usize, usize)],
+    bru_modes: Arc<crate::filters::bru::BruModeMap>,
+) -> Result<splot_recon::DecodedFrame<u8>> {
+    let core = bru_lr_core(restoration_type, width, tile_rows);
+    let mut sink = WienerNsLrReconSink::for_final_filtering(
+        bru_contrasting_workspace(width, height),
+        width,
+        height,
+        BitDepth::Eight,
+    );
+    sink.tx_skip_grid = Some(
+        crate::filters::wienerns_lr::WienerNsLrTxSkipGrid::new(
+            height / MI_SIZE,
+            width / MI_SIZE,
+            vec![0; (height / MI_SIZE) * (width / MI_SIZE)],
+        )
+        .unwrap(),
+    );
+    sink.filter_records.bru_modes = Some(bru_modes);
+    let (blocks, filters) = bru_lr_blocks_and_filters(restoration_type, width, tile_rows);
+    sink.filter_records.lr_source_blocks = blocks;
+    sink.filter_records.lr_unit_filters = filters;
+    let (frame, _) = sink.into_filtered_frame(
+        Arc::new(core),
+        false,
+        crate::filters::deblock::DeblockQuantDeltas::ZERO,
+        None,
+    )?;
+    frame.ok_or_else(super::super::lr_pipeline_state_error)
+}
+
+#[test]
+fn bru_lr_unset_mode_fails_closed_before_filtering() {
+    let map = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+    map.set(0, 0, crate::bitstream::tile_payload::BRU_ACTIVE);
+    assert!(
+        run_bru_lr_frame(
+            LrUnitRestorationType::WienerNonsep,
+            128,
+            128,
+            &[(0, 32)],
+            map
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn bru_lr_kernels_follow_shifted_stripes_across_normal_reversed_chroma_and_tiles() {
+    let raw = unfiltered_reference(128, 128);
+    let set_row_modes = |map: &crate::filters::bru::BruModeMap, r0: u8, r1: u8| {
+        for c in [0usize, 16] {
+            map.set(0, c, r0);
+            map.set(16, c, r1);
+        }
+    };
+
+    for tool in [
+        LrUnitRestorationType::WienerNonsep,
+        LrUnitRestorationType::PcWiener,
+    ] {
+        let normal_modes = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+        set_row_modes(&normal_modes, crate::bitstream::tile_payload::BRU_ACTIVE, 1);
+        let normal = run_bru_lr_frame(tool, 128, 128, &[(0, 32)], normal_modes).unwrap();
+
+        assert_ne!(
+            plane_rect_samples(&normal, PlaneId::Y, 0..128, 52..56),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 52..56),
+            "{tool:?}: MI row 13 (y=52..56, stripeRow=0) must be filtered"
+        );
+        assert_eq!(
+            plane_rect_samples(&normal, PlaneId::Y, 0..128, 56..64),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 56..64),
+            "{tool:?}: MI rows 14..16 (y=56..64, stripeRow=16) must remain untouched"
+        );
+        assert_eq!(
+            plane_rect_samples(&normal, PlaneId::Y, 0..128, 64..128),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 64..128),
+            "{tool:?}: inactive SB row 1 must remain untouched"
+        );
+        for chroma in [PlaneId::U, PlaneId::V] {
+            assert_ne!(
+                plane_rect_samples(&normal, chroma, 0..64, 26..28),
+                plane_rect_samples(&raw, chroma, 0..64, 26..28),
+                "{tool:?} {chroma:?}: chroma stripe row before y=28 must be filtered"
+            );
+            assert_eq!(
+                plane_rect_samples(&normal, chroma, 0..64, 28..64),
+                plane_rect_samples(&raw, chroma, 0..64, 28..64),
+                "{tool:?} {chroma:?}: chroma from y=28 onward must remain untouched"
+            );
+        }
+
+        let rev_modes = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+        set_row_modes(
+            &rev_modes,
+            crate::bitstream::tile_payload::BRU_INACTIVE,
+            crate::bitstream::tile_payload::BRU_ACTIVE,
+        );
+        let reversed = run_bru_lr_frame(tool, 128, 128, &[(0, 32)], rev_modes).unwrap();
+
+        assert_eq!(
+            plane_rect_samples(&reversed, PlaneId::Y, 0..128, 0..56),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 0..56),
+            "{tool:?}: reversed rows 0..56 (stripeRow=0) must stay untouched"
+        );
+        assert_ne!(
+            plane_rect_samples(&reversed, PlaneId::Y, 0..128, 56..64),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 56..64),
+            "{tool:?}: reversed rows 56..64 (stripeRow=16) must filter using SB row 1 mode"
+        );
+        for chroma in [PlaneId::U, PlaneId::V] {
+            assert_eq!(
+                plane_rect_samples(&reversed, chroma, 0..64, 0..28),
+                plane_rect_samples(&raw, chroma, 0..64, 0..28),
+                "{tool:?} {chroma:?}: reversed chroma rows 0..28 must stay untouched"
+            );
+            assert_ne!(
+                plane_rect_samples(&reversed, chroma, 0..64, 28..64),
+                plane_rect_samples(&raw, chroma, 0..64, 28..64),
+                "{tool:?} {chroma:?}: reversed chroma rows 28..64 must be filtered"
+            );
+        }
+    }
+
+    let raw_tall = unfiltered_reference(128, 192);
+    let tile_modes = Arc::new(crate::filters::bru::BruModeMap::new(48, 32, 16).unwrap());
+    tile_modes.set(0, 0, 1);
+    tile_modes.set(0, 16, 1);
+    tile_modes.set(16, 0, crate::bitstream::tile_payload::BRU_ACTIVE);
+    tile_modes.set(16, 16, 1);
+    tile_modes.set(32, 0, 1);
+    tile_modes.set(32, 16, crate::bitstream::tile_payload::BRU_ACTIVE);
+    let tiled = run_bru_lr_frame(
+        LrUnitRestorationType::WienerNonsep,
+        128,
+        192,
+        &[(0, 16), (16, 48)],
+        tile_modes,
+    )
+    .unwrap();
+
+    assert_ne!(
+        plane_rect_samples(&tiled, PlaneId::Y, 0..64, 116..120),
+        plane_rect_samples(&raw_tall, PlaneId::Y, 0..64, 116..120),
+        "tile 1 col 0 row 29 (y=116..120, stripeRow=16) must be filtered"
+    );
+    assert_eq!(
+        plane_rect_samples(&tiled, PlaneId::Y, 64..128, 116..120),
+        plane_rect_samples(&raw_tall, PlaneId::Y, 64..128, 116..120),
+        "tile 1 col 1 row 29 (stripeRow=16 inactive) must stay untouched"
+    );
+    assert_eq!(
+        plane_rect_samples(&tiled, PlaneId::Y, 0..64, 120..124),
+        plane_rect_samples(&raw_tall, PlaneId::Y, 0..64, 120..124),
+        "tile 1 col 0 row 30 (y=120..124, stripeRow=32 inactive) must stay untouched"
+    );
+    assert_ne!(
+        plane_rect_samples(&tiled, PlaneId::Y, 64..128, 120..124),
+        plane_rect_samples(&raw_tall, PlaneId::Y, 64..128, 120..124),
+        "tile 1 col 1 row 30 (stripeRow=32 active) must be filtered"
+    );
+}

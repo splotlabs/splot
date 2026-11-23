@@ -9,6 +9,7 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py find
   python3 tools/decoder-fixtures/generate.py hashes [--out oracle.json]
   python3 tools/decoder-fixtures/generate.py coverage-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
 
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
 .ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo). AVM decoder
@@ -17,7 +18,7 @@ remains strict. `coverage-fixtures` re-encodes the small capability-coverage
 fixtures (profiles, chroma formats, and one isolated intra tool each) so the corpus
 is reproducible; move vetted `.ivf` into vectors/valid/ by hand.
 """
-import argparse, hashlib, json, os, shutil, subprocess, sys
+import argparse, hashlib, json, math, os, shutil, subprocess, sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VALID = os.path.join(REPO, "tests/conformance/vectors/valid")
@@ -945,6 +946,191 @@ def cmd_coverage_fixtures(args):
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 
 
+def _bru_lr_write_y4m(path, w, h, bit_depth, sample_fn, num_frames=6):
+    chroma = "C420p10" if bit_depth == 10 else "C420"
+    max_val = (1 << bit_depth) - 1
+    shift = bit_depth - 8
+    cw, ch = w // 2, h // 2
+    with open(path, "wb") as f:
+        f.write(f"YUV4MPEG2 W{w} H{h} F30:1 Ip A1:1 {chroma}\n".encode())
+        for t in range(num_frames):
+            f.write(b"FRAME\n")
+            y_plane = bytearray()
+            u_plane = bytearray()
+            v_plane = bytearray()
+            for y in range(h):
+                for x in range(w):
+                    yv = max(16 << shift, min(235 << shift, int(sample_fn(t, x, y, 0)) & max_val))
+                    if bit_depth == 10:
+                        y_plane += yv.to_bytes(2, "little")
+                    else:
+                        y_plane.append(yv)
+            for y in range(ch):
+                for x in range(cw):
+                    uv = max(16 << shift, min(240 << shift, int(sample_fn(t, x * 2, y * 2, 1)) & max_val))
+                    vv = max(16 << shift, min(240 << shift, int(sample_fn(t, x * 2, y * 2, 2)) & max_val))
+                    if bit_depth == 10:
+                        u_plane += uv.to_bytes(2, "little")
+                        v_plane += vv.to_bytes(2, "little")
+                    else:
+                        u_plane.append(uv)
+                        v_plane.append(vv)
+            f.write(y_plane)
+            f.write(u_plane)
+            f.write(v_plane)
+
+
+def _bru_lr_rich_smooth(x, y, plane, phase):
+    if plane == 0:
+        bar = 28 if (((x + phase * 3) // 9 + (y + phase * 5) // 11) % 2 == 0) else -28
+        ring = 35 if (((x - 32) ** 2 + (y - 32) ** 2) % 97 < 48) else -25
+        return (128 + 52 * math.sin(x * 0.23 + y * 0.17 + phase * 1.1)
+                + 32 * math.cos(x * 0.41 - y * 0.31 + phase * 0.7)
+                + bar * 0.6 + ring * 0.5)
+    if plane == 1:
+        return 128 + 42 * math.sin(x * 0.19 - y * 0.13 + phase) + (18 if (x // 8 + y // 8) % 2 else -18)
+    return 128 + 42 * math.cos(x * 0.15 + y * 0.21 - phase) - (18 if (x // 6 - y // 10) % 2 else -18)
+
+
+def _bru_lr_rich_checker(x, y, plane, phase, amp=80):
+    if plane == 0:
+        step = amp * 0.45 if (((x + phase * 3) // 5 + (y + phase * 2) // 5) % 2 == 0) else -amp * 0.45
+        wave = amp * 0.5 * math.sin(x * 0.55 + y * 0.35 + phase) + amp * 0.3 * math.cos(x * 0.8 - y * 0.65)
+        return 128 + step + wave
+    if plane == 1:
+        return 128 + 55 * math.sin(x * 0.25 - y * 0.2 + phase)
+    return 128 + 55 * math.cos(x * 0.2 + y * 0.27 - phase)
+
+
+def _bru_lr_sample_pcw8(t, x, y, plane):
+    if plane == 0:
+        val = 128 + 38 * math.sin(x * 0.08 + y * 0.07) + 18 * math.cos(x * 0.13 - y * 0.11)
+    elif plane == 1:
+        val = 128 + 20 * math.sin(x * 0.07 + y * 0.06)
+    else:
+        val = 128 + 20 * math.cos(x * 0.06 - y * 0.08)
+    if t in (1, 2) and 8 <= x < 54 and 8 <= y < 54:
+        val = _bru_lr_rich_smooth(x, y, plane, t * 2 + 1)
+    elif t == 3 and 2 <= x < 62 and 64 <= y < 124:
+        val = _bru_lr_rich_smooth(x, y - 64, plane, 7)
+    elif t == 4 and 2 <= x < 62 and 4 <= y < 62:
+        val = _bru_lr_rich_smooth(x, y, plane, 13)
+    elif t == 5 and 12 <= x < 52 and 72 <= y < 112:
+        val = _bru_lr_rich_smooth(x, y - 64, plane, 19)
+    return int(round(val))
+
+
+def _bru_lr_sample_pcw10(t, x, y, plane):
+    if plane == 0:
+        val = 128 + 38 * math.sin(x * 0.08 + y * 0.07) + 18 * math.cos(x * 0.13 - y * 0.11)
+    elif plane == 1:
+        val = 128 + 20 * math.sin(x * 0.07 + y * 0.06)
+    else:
+        val = 128 + 20 * math.cos(x * 0.06 - y * 0.08)
+    if t in (1, 2) and 8 <= x < 54 and 8 <= y < 54:
+        val = _bru_lr_rich_checker(x, y, plane, t * 2 + 1, 75)
+    elif t == 3 and 2 <= x < 62 and 64 <= y < 125:
+        val = _bru_lr_rich_checker(x, y - 64, plane, 7, 85)
+    elif t == 4 and 2 <= x < 62 and 4 <= y < 62:
+        val = _bru_lr_rich_checker(x, y, plane, 13, 85)
+    elif t == 5 and 12 <= x < 52 and 72 <= y < 112:
+        val = _bru_lr_rich_checker(x, y - 64, plane, 19, 80)
+    return int(round(val)) << 2
+
+
+def _bru_lr_sample_wns(t, x, y, plane, bit_depth):
+    shift = bit_depth - 8
+    if plane == 0:
+        val = 128 + 30 * math.sin(x * 0.06 + y * 0.07) + 15 * math.cos(x * 0.11 - y * 0.09)
+    elif plane == 1:
+        val = 128 + 16 * math.sin(x * 0.05 + y * 0.06)
+    else:
+        val = 128 + 16 * math.cos(x * 0.05 - y * 0.07)
+    if t in (1, 2) and 8 <= x < 56 and 8 <= y < 56:
+        val = _bru_lr_rich_checker(x, y, plane, t * 3, 75)
+    elif t == 3 and 2 <= x < 126 and 65 <= y < 126:
+        val = _bru_lr_rich_checker(x, y, plane, 7, 90)
+    elif t == 4 and ((2 <= x < 62 and 2 <= y < 62) or (130 <= x < 190 and 2 <= y < 62)):
+        val = _bru_lr_rich_checker(x, y, plane, 13, 90)
+    elif t == 5 and 16 <= x < 112 and 72 <= y < 118:
+        val = _bru_lr_rich_checker(x, y, plane, 19, 85)
+    return int(round(val)) << shift
+
+
+def _bru_lr_sample_multitile(t, x, y, plane):
+    if plane == 0:
+        val = 128 + 38 * math.sin(x * 0.08 + y * 0.07) + 18 * math.cos(x * 0.13 - y * 0.11)
+    elif plane == 1:
+        val = 128 + 20 * math.sin(x * 0.07 + y * 0.06)
+    else:
+        val = 128 + 20 * math.cos(x * 0.06 - y * 0.08)
+    if t in (1, 2) and 70 <= x < 126 and 70 <= y < 126:
+        val = _bru_lr_rich_smooth(x - 64, y - 64, plane, t * 3)
+    elif t == 3:
+        if 66 <= x < 127 and 65 <= y < 126:
+            val = _bru_lr_rich_smooth(x - 64, y - 64, plane, 9)
+        elif 130 <= x < 188 and 6 <= y < 62:
+            val = _bru_lr_rich_smooth(x - 128, y, plane, 11)
+    elif t == 4:
+        if 66 <= x < 126 and 130 <= y < 188:
+            val = _bru_lr_rich_smooth(x - 64, y - 128, plane, 15)
+        elif 66 <= x < 126 and 6 <= y < 62:
+            val = _bru_lr_rich_smooth(x - 64, y, plane, 17)
+    elif t == 5 and 76 <= x < 122 and 76 <= y < 122:
+        val = _bru_lr_rich_smooth(x - 64, y - 64, plane, 23)
+    return int(round(val))
+
+
+BRU_LR_FIXTURES = [
+    ("syn-bru-lr-stripe-wienerns-8bit", 256, 128, 8, lambda t, x, y, p: _bru_lr_sample_wns(t, x, y, p, 8),
+     ["--cpu-used=1", "--qp=140", "--enable-wiener-nonsep=1", "--enable-pc-wiener=0"]),
+    ("syn-bru-lr-stripe-wienerns-10bit", 256, 128, 10, lambda t, x, y, p: _bru_lr_sample_wns(t, x, y, p, 10),
+     ["--cpu-used=1", "--qp=140", "--enable-wiener-nonsep=1", "--enable-pc-wiener=0"]),
+    ("syn-bru-lr-stripe-pcwiener-8bit", 128, 128, 8, _bru_lr_sample_pcw8,
+     ["--cpu-used=0", "--qp=175", "--enable-wiener-nonsep=0", "--enable-pc-wiener=1"]),
+    ("syn-bru-lr-stripe-pcwiener-10bit", 128, 128, 10, _bru_lr_sample_pcw10,
+     ["--cpu-used=0", "--qp=195", "--enable-wiener-nonsep=0", "--enable-pc-wiener=1"]),
+    ("syn-bru-lr-multitile-cross-8bit", 256, 256, 8, _bru_lr_sample_multitile,
+     ["--cpu-used=0", "--qp=175", "--tile-columns=1", "--tile-rows=1",
+      "--disable-loopfilters-across-tiles=0", "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]),
+    ("syn-bru-lr-multitile-isolated-8bit", 256, 256, 8, _bru_lr_sample_multitile,
+     ["--cpu-used=0", "--qp=175", "--tile-columns=1", "--tile-rows=1",
+      "--disable-loopfilters-across-tiles=1", "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]),
+]
+
+
+def cmd_bru_lr_fixtures(args):
+    avmenc = find("avmenc")
+    avmdec = find("avmdec")
+    stage = args.stage
+    os.makedirs(stage, exist_ok=True)
+    selected = [row for row in BRU_LR_FIXTURES if args.only is None or row[0] == args.only]
+    if not selected:
+        sys.exit(f"error: unknown BRU+LR fixture id: {args.only}")
+    for fid, w, h, bd, sample_fn, flags in selected:
+        y4m = os.path.join(stage, f"{fid}.y4m")
+        ivf = os.path.join(stage, f"{fid}.ivf")
+        repeat_ivf = os.path.join(stage, f"{fid}.repeat.ivf")
+        raw = os.path.join(stage, f"{fid}.avm.raw")
+        _bru_lr_write_y4m(y4m, w, h, bd, sample_fn)
+        encode = [
+            avmenc, "--codec=av2", "--ivf", "-D", "--passes=1",
+            "--lag-in-frames=0", "--kf-min-dist=9999", "--kf-max-dist=9999",
+            "--enable-bru=1", "--enable-gdf=0", "--enable-intrabc=0", "--sb-size=64",
+            "--enable-restoration=1", f"--bit-depth={bd}", f"--input-bit-depth={bd}", "--i420",
+            "--threads=1", "--end-usage=q", "--quiet", "--disable-warning-prompt", *flags,
+        ]
+        run_checked([*encode, "-o", ivf, y4m])
+        run_checked([*encode, "-o", repeat_ivf, y4m])
+        ivf_sha = sha(ivf)
+        if sha(repeat_ivf) != ivf_sha:
+            sys.exit(f"error: {fid} is not deterministic across two encodes")
+        os.remove(repeat_ivf)
+        run_checked([avmdec, "--i420", "--rawvideo", "-o", raw, ivf])
+        print(f"  {fid}: src={sha(y4m)} ivf={ivf_sha} avm_raw={sha(raw)} size={os.path.getsize(ivf)}")
+    print(f"staged {len(selected)} BRU+LR fixtures in {stage}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -953,6 +1139,9 @@ def main():
     c = sub.add_parser("coverage-fixtures"); c.add_argument("--stage", required=True)
     c.add_argument("--only", help="regenerate one fixture id")
     c.set_defaults(fn=cmd_coverage_fixtures)
+    b = sub.add_parser("bru-lr-fixtures"); b.add_argument("--stage", required=True)
+    b.add_argument("--only", help="regenerate one fixture id")
+    b.set_defaults(fn=cmd_bru_lr_fixtures)
     args = p.parse_args()
     args.fn(args)
 

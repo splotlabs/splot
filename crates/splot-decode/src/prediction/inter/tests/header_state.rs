@@ -2097,3 +2097,241 @@ fn bru_inactive_zero_remaining_trailing_bits_and_incompatible_refs_fail_closed()
         } if slot == bru_slot
     ));
 }
+
+#[test]
+fn bru_lr_vectors_exercise_partial_bru_shifted_stripes_and_reference_consumers() {
+    use crate::bitstream::tile_payload::{BRU_ACTIVE, LrUnitRestorationType};
+
+    let fixtures: [(&str, &[u8], LrUnitRestorationType, Option<bool>); 6] = [
+        (
+            "syn-bru-lr-stripe-wienerns-8bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-8bit.ivf"
+            ),
+            LrUnitRestorationType::WienerNonsep,
+            None,
+        ),
+        (
+            "syn-bru-lr-stripe-wienerns-10bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-10bit.ivf"
+            ),
+            LrUnitRestorationType::WienerNonsep,
+            None,
+        ),
+        (
+            "syn-bru-lr-stripe-pcwiener-8bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-8bit.ivf"
+            ),
+            LrUnitRestorationType::PcWiener,
+            None,
+        ),
+        (
+            "syn-bru-lr-stripe-pcwiener-10bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-10bit.ivf"
+            ),
+            LrUnitRestorationType::PcWiener,
+            None,
+        ),
+        (
+            "syn-bru-lr-multitile-cross-8bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-cross-8bit.ivf"
+            ),
+            LrUnitRestorationType::PcWiener,
+            Some(false),
+        ),
+        (
+            "syn-bru-lr-multitile-isolated-8bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-isolated-8bit.ivf"
+            ),
+            LrUnitRestorationType::PcWiener,
+            Some(true),
+        ),
+    ];
+
+    for (name, bytes, expected_unit_type, expected_isolated_tiles) in fixtures {
+        let (headers, audits) =
+            crate::pipeline::collect_bru_lr_audit(bytes, &DecodeOptions::default())
+                .expect("audit decode");
+        assert_eq!(headers.len(), 6, "{name}: expected 6 frames");
+        assert_eq!(audits.len(), 6, "{name}: expected 6 filter audits");
+
+        let mut bru_lr_indices = Vec::new();
+        let mut saw_shifted_crossing = false;
+        let mut saw_trimmed_span = false;
+        for (idx, audit) in audits.iter().enumerate() {
+            if let Some(isolated) = expected_isolated_tiles {
+                assert_eq!(
+                    audit.disable_loopfilters_across_tiles, isolated,
+                    "{name} f{idx}: tile-isolation flag mismatch"
+                );
+            }
+            if !audit.use_bru {
+                continue;
+            }
+            assert!(
+                !audit.bru_inactive,
+                "{name} f{idx}: expected active BRU frame"
+            );
+            let active_sbs = audit
+                .superblock_modes
+                .iter()
+                .filter(|(_, _, mode)| *mode == Some(BRU_ACTIVE))
+                .count();
+            let inactive_sbs = audit
+                .superblock_modes
+                .iter()
+                .filter(|(_, _, mode)| mode.is_some() && *mode != Some(BRU_ACTIVE))
+                .count();
+            assert!(
+                active_sbs > 0 && inactive_sbs > 0,
+                "{name} f{idx}: expected partial BRU"
+            );
+            if !audit.lr_uses_lr {
+                continue;
+            }
+            let expected_frame_rtype = match expected_unit_type {
+                LrUnitRestorationType::WienerNonsep => {
+                    splot_core::headers::frame::FrameRestorationType::WienerNonsep
+                }
+                LrUnitRestorationType::PcWiener => {
+                    splot_core::headers::frame::FrameRestorationType::PcWiener
+                }
+                LrUnitRestorationType::None => {
+                    splot_core::headers::frame::FrameRestorationType::None
+                }
+            };
+            assert!(
+                audit
+                    .plane_restoration_types
+                    .contains(&expected_frame_rtype)
+                    || audit
+                        .plane_restoration_types
+                        .contains(&splot_core::headers::frame::FrameRestorationType::Switchable),
+                "{name} f{idx}: expected plane restoration {expected_frame_rtype:?}, got {:?}",
+                audit.plane_restoration_types
+            );
+            let has_target_unit = audit
+                .pre_bru_blocks
+                .iter()
+                .any(|b| b.restoration_type == expected_unit_type);
+            if !has_target_unit {
+                continue;
+            }
+            bru_lr_indices.push(idx);
+            if audit.post_bru_blocks.iter().any(|b| {
+                b.restoration_type == expected_unit_type
+                    && ((b.y << usize::from(b.plane != 0))
+                        ..((b.y + b.height) << usize::from(b.plane != 0)))
+                        .contains(&56)
+            }) {
+                saw_shifted_crossing = true;
+            }
+            if audit.post_bru_blocks.len() < audit.pre_bru_blocks.len()
+                || audit
+                    .post_bru_blocks
+                    .iter()
+                    .map(|b| b.width * b.height)
+                    .sum::<usize>()
+                    < audit
+                        .pre_bru_blocks
+                        .iter()
+                        .map(|b| b.width * b.height)
+                        .sum::<usize>()
+            {
+                saw_trimmed_span = true;
+            }
+        }
+        assert!(
+            !bru_lr_indices.is_empty(),
+            "{name}: missing frame combining use_bru == 1 and active {expected_unit_type:?}"
+        );
+        assert!(
+            saw_shifted_crossing || saw_trimmed_span,
+            "{name}: expected shifted-stripe crossing or trimmed inactive LR span"
+        );
+        let first_idx = bru_lr_indices[0];
+        assert!(
+            first_idx + 1 < headers.len(),
+            "{name}: missing post-BRU consumer frame"
+        );
+        let refreshed_mask = headers[first_idx].refresh_frame_flags.unwrap_or(0);
+        assert_ne!(
+            refreshed_mask, 0,
+            "{name} f{first_idx}: expected reference refresh"
+        );
+        let consumer_refs = &headers[first_idx + 1]
+            .inter
+            .as_ref()
+            .expect("consumer inter control")
+            .ref_frame_idx;
+        assert!(
+            consumer_refs
+                .iter()
+                .any(|&slot| (refreshed_mask & (1u32 << slot)) != 0),
+            "{name} f{}: expected ref consumer to retain refreshed slot from f{first_idx}",
+            first_idx + 1
+        );
+    }
+
+    let cross_frames =
+        crate::pipeline::decode_frames_from_plan(fixtures[4].1, &DecodeOptions::default())
+            .expect("cross decode");
+    let isolated_frames =
+        crate::pipeline::decode_frames_from_plan(fixtures[5].1, &DecodeOptions::default())
+            .expect("isolated decode");
+    let cross_samples = match &cross_frames[3] {
+        crate::pipeline::PipelineDecodedFrame::Eight(f) => &**f,
+        crate::pipeline::PipelineDecodedFrame::Ten(_) => panic!("expected 8-bit frame"),
+    };
+    let isolated_samples = match &isolated_frames[3] {
+        crate::pipeline::PipelineDecodedFrame::Eight(f) => &**f,
+        crate::pipeline::PipelineDecodedFrame::Ten(_) => panic!("expected 8-bit frame"),
+    };
+    assert_ne!(
+        cross_samples, isolated_samples,
+        "multitile cross and isolated BRU+LR outputs must diverge across tile borders"
+    );
+}
+
+#[test]
+fn bru_lr_corrupt_and_truncated_tile_payloads_fail_closed() {
+    for fixture in [
+        include_bytes!(
+            "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-8bit.ivf"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-8bit.ivf"
+        )
+        .as_slice(),
+    ] {
+        let truncated =
+            repack_frame_obu(fixture, 3, |payload| payload[..payload.len() / 2].to_vec());
+        let err = crate::pipeline::decode_frames_from_plan(&truncated, &DecodeOptions::default())
+            .err()
+            .expect("truncated BRU+LR tile payload must fail");
+        assert!(
+            matches!(err, DecodeError::MalformedSource { .. }),
+            "expected MalformedSource for truncated BRU+LR tile payload, got {err}"
+        );
+
+        let flipped = repack_frame_obu(fixture, 3, |payload| {
+            let mut copy = payload.to_vec();
+            let last = copy.len() - 1;
+            copy[last] ^= 0xFF;
+            if last > 2 {
+                copy[last - 2] ^= 0x5A;
+            }
+            copy
+        });
+        assert!(
+            crate::pipeline::decode_frames_from_plan(&flipped, &DecodeOptions::default()).is_err(),
+            "corrupted BRU+LR tile payload must fail closed without panicking"
+        );
+    }
+}

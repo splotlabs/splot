@@ -315,6 +315,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> Result<OwnedFilterSetup<T>> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
+        let info = self.info;
+        let pixel_format = info.pixel_format();
+        let subsampling = (
+            usize::from(pixel_format.subsampling_x()),
+            usize::from(pixel_format.subsampling_y()),
+        );
         self.lossless_grid = lossless_grid(
             &core,
             (mi_rows, mi_cols),
@@ -322,7 +328,30 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             &self.filter_records.chroma_deblock_blocks,
             &mut self.filter_records.lossless_cells,
         )?;
-        if self.needs_lr_tx_skip_grid(&core) {
+        let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
+        #[cfg(test)]
+        let bru_lr_pre_blocks = has_bru_lr_audit_sink().then(|| lr_source_blocks.clone());
+        let lr_source_blocks = final_filters::filter_lr_source_blocks_for_bru(
+            lr_source_blocks,
+            self.filter_records.bru_modes.as_deref(),
+            subsampling,
+        )?;
+        #[cfg(test)]
+        if let Some(pre_bru_blocks) = bru_lr_pre_blocks {
+            record_bru_lr_audit(
+                &core,
+                disable_loopfilters_across_tiles,
+                mi_rows,
+                mi_cols,
+                self.filter_records.bru_modes.as_deref(),
+                pre_bru_blocks,
+                &lr_source_blocks,
+            );
+        }
+        let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
+        let (lr_source_blocks, lr_plane_ends) =
+            final_filters::lr_source_blocks_by_plane(lr_source_blocks);
+        if super::lr_uses_tx_skip(&core) && lr_plane_ends[0] > 0 {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
         let cdef_skip_grid = self.cdef_skip_grid(&core, mi_rows, mi_cols)?;
@@ -331,20 +360,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             &mut self.filter_records.cdef_strengths,
         )
         .map(|()| core::mem::take(&mut self.filter_records.cdef_strengths));
-        let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
-        let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
-        let (lr_source_blocks, lr_plane_ends) =
-            final_filters::lr_source_blocks_by_plane(lr_source_blocks);
         let mut stripes = core::mem::take(&mut self.filter_records.stripes);
         let mut ranges = core::mem::take(&mut stripes.ranges);
         crate::filters::gdf::stripe_ranges_into(&core, self.luma_height, &mut ranges)?;
         let mut stripe_lifecycles = core::mem::take(&mut stripes.lifecycles);
-        let info = self.info;
-        let pixel_format = info.pixel_format();
-        let subsampling = (
-            usize::from(pixel_format.subsampling_x()),
-            usize::from(pixel_format.subsampling_y()),
-        );
         let ccso_config = self
             .ccso_grid
             .as_ref()
@@ -1471,6 +1490,7 @@ impl StripeChain<'_> {
 }
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
+    #[cfg(test)]
     fn needs_lr_tx_skip_grid(&self, core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
         super::lr_uses_tx_skip(core)
             && self
@@ -1558,3 +1578,92 @@ fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
 
 mod final_filters;
 pub(crate) mod full_recon;
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct BruLrFrameAudit {
+    pub(crate) use_bru: bool,
+    pub(crate) bru_inactive: bool,
+    pub(crate) disable_loopfilters_across_tiles: bool,
+    pub(crate) lr_uses_lr: bool,
+    pub(crate) plane_restoration_types: [splot_core::headers::frame::FrameRestorationType; 3],
+    pub(crate) superblock_modes: Vec<(usize, usize, Option<u8>)>,
+    pub(crate) pre_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+    pub(crate) post_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static BRU_LR_AUDIT_SINK: core::cell::RefCell<Option<Vec<BruLrFrameAudit>>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn has_bru_lr_audit_sink() -> bool {
+    BRU_LR_AUDIT_SINK.with(|sink| sink.borrow().is_some())
+}
+
+#[cfg(test)]
+fn record_bru_lr_audit(
+    core: &splot_core::headers::frame::FrameHeaderCore,
+    disable_loopfilters_across_tiles: bool,
+    mi_rows: usize,
+    mi_cols: usize,
+    bru_modes: Option<&crate::filters::bru::BruModeMap>,
+    pre_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+    post_bru_blocks: &[crate::bitstream::tile_payload::WienerNsLrSourceBlock],
+) {
+    use splot_core::headers::frame::FrameRestorationType;
+
+    let mut superblock_modes = Vec::new();
+    if let Some(modes) = bru_modes {
+        let sb_h4 = (modes.sb_samples() / MI_SIZE).max(1);
+        for mi_row in (0..mi_rows).step_by(sb_h4) {
+            for mi_col in (0..mi_cols).step_by(sb_h4) {
+                superblock_modes.push((mi_row, mi_col, modes.mode(mi_row, mi_col)));
+            }
+        }
+    }
+    let plane_restoration_types =
+        core.lr_params
+            .as_ref()
+            .map_or([FrameRestorationType::None; 3], |lr| {
+                [
+                    lr.planes[0].restoration_type,
+                    lr.planes[1].restoration_type,
+                    lr.planes[2].restoration_type,
+                ]
+            });
+    let record = BruLrFrameAudit {
+        use_bru: core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true),
+        bru_inactive: core.inter.as_ref().and_then(|inter| inter.bru_inactive) == Some(true),
+        disable_loopfilters_across_tiles,
+        lr_uses_lr: core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
+        plane_restoration_types,
+        superblock_modes,
+        pre_bru_blocks,
+        post_bru_blocks: post_bru_blocks.to_vec(),
+    };
+    BRU_LR_AUDIT_SINK.with(|sink| {
+        if let Some(records) = sink.borrow_mut().as_mut() {
+            records.push(record);
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn with_bru_lr_audit<R>(f: impl FnOnce() -> R) -> (R, Vec<BruLrFrameAudit>) {
+    struct ResetGuard(Option<Vec<BruLrFrameAudit>>);
+    impl Drop for ResetGuard {
+        fn drop(&mut self) {
+            BRU_LR_AUDIT_SINK.with(|sink| {
+                *sink.borrow_mut() = self.0.take();
+            });
+        }
+    }
+    let previous = BRU_LR_AUDIT_SINK.with(|sink| sink.borrow_mut().replace(Vec::new()));
+    let _guard = ResetGuard(previous);
+    let result = f();
+    let captured = BRU_LR_AUDIT_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default());
+    (result, captured)
+}

@@ -145,11 +145,10 @@ impl<'a> FrameCandidateTileFacts<'a> {
             });
         }
         let use_bru = core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true);
-        let unsupported_bru_tools = core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr)
-            || core
-                .gdf_params
-                .as_ref()
-                .is_some_and(|gdf| gdf.gdf_frame_enable)
+        let unsupported_bru_tools = core
+            .gdf_params
+            .as_ref()
+            .is_some_and(|gdf| gdf.gdf_frame_enable)
             || core.allow_intrabc == Some(true);
         if use_bru
             && (unsupported_bru_tools
@@ -479,9 +478,10 @@ pub(crate) enum FrameCandidateTileUnsupportedReason {
     CandidateNotFrame,
     IncompleteFrameHeader,
     NonIntraFrame,
-    /// A `use_bru == 1` frame whose § 7.20.1 loop restoration or GDF runs, or that
-    /// allows IntraBC: the § 7.20.1 superblock gate and the § 5.20.4.1
-    /// `update_ibc_buffers` reset of non-active superblocks are not applied.
+    /// A `use_bru == 1` frame whose § 7.20.1 GDF runs, or that allows IntraBC
+    /// (or is a `bru_inactive` header without `use_bru` copy routing): the
+    /// § 7.20.1 GDF superblock gate and § 5.20.4.1 `update_ibc_buffers` reset
+    /// of non-active superblocks are not applied.
     BackwardReferenceUpdate,
 }
 
