@@ -47,6 +47,19 @@ const BRU_INTER_CONTROL: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inter-128x64-q220.ivf");
 const BRU_MULTITILE_CONTROL: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-multitile-256x128-q220.ivf");
+const BRU_LR_WIENERNS_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-8bit.ivf");
+const BRU_LR_WIENERNS_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-10bit.ivf");
+const BRU_LR_PCWIENER_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-8bit.ivf");
+const BRU_LR_PCWIENER_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-10bit.ivf");
+const BRU_LR_MULTITILE_CROSS_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-cross-8bit.ivf");
+const BRU_LR_MULTITILE_ISOLATED_8BIT: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-isolated-8bit.ivf"
+);
 
 const FIXTURES: &[&[u8]] = &[
     MULTIREF,
@@ -63,6 +76,12 @@ const FIXTURES: &[&[u8]] = &[
     BRU_INACTIVE_FILMGRAIN_8BIT,
     BRU_INTER_CONTROL,
     BRU_MULTITILE_CONTROL,
+    BRU_LR_WIENERNS_8BIT,
+    BRU_LR_WIENERNS_10BIT,
+    BRU_LR_PCWIENER_8BIT,
+    BRU_LR_PCWIENER_10BIT,
+    BRU_LR_MULTITILE_CROSS_8BIT,
+    BRU_LR_MULTITILE_ISOLATED_8BIT,
 ];
 
 /// The payload of each non-empty IVF frame record: one temporal unit each.
@@ -658,5 +677,127 @@ fn bru_inactive_film_grain_does_not_mutate_reference_or_double_apply() {
         let mut grained_dec = decoder(threads, threads.min(4));
         let grained_pics = decode(&mut grained_dec, &units, |_| DataProps::default());
         assert_eq!(raw_of(&grained_pics), grained_expected);
+    }
+}
+
+fn stream_decode_until_error(decoder: &mut Decoder, units: &[Vec<u8>]) -> bool {
+    for (index, unit) in units.iter().enumerate() {
+        let mut props = DataProps::default();
+        props.pts = i64::try_from(index).unwrap_or_default();
+        loop {
+            match decoder.send_data(unit, props) {
+                Ok(SendStatus::Full) => while let Ok(Some(_)) = decoder.get_picture() {},
+                Ok(SendStatus::Accepted) => break,
+                Err(_) => return true,
+            }
+            if decoder.get_picture().is_err() {
+                return true;
+            }
+        }
+    }
+    decoder.drain();
+    loop {
+        match decoder.get_picture() {
+            Ok(Some(_)) => {}
+            Ok(None) => return false,
+            Err(_) => return true,
+        }
+    }
+}
+
+#[test]
+fn bru_lr_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
+    let bru_lr_fixtures = [
+        ("syn-bru-lr-stripe-wienerns-8bit", BRU_LR_WIENERNS_8BIT),
+        ("syn-bru-lr-stripe-wienerns-10bit", BRU_LR_WIENERNS_10BIT),
+        ("syn-bru-lr-stripe-pcwiener-8bit", BRU_LR_PCWIENER_8BIT),
+        ("syn-bru-lr-stripe-pcwiener-10bit", BRU_LR_PCWIENER_10BIT),
+        (
+            "syn-bru-lr-multitile-cross-8bit",
+            BRU_LR_MULTITILE_CROSS_8BIT,
+        ),
+        (
+            "syn-bru-lr-multitile-isolated-8bit",
+            BRU_LR_MULTITILE_ISOLATED_8BIT,
+        ),
+    ];
+
+    assert_ne!(
+        batch_raw(BRU_LR_MULTITILE_CROSS_8BIT),
+        batch_raw(BRU_LR_MULTITILE_ISOLATED_8BIT),
+        "multitile cross-tile and isolated BRU+LR streams must produce distinct pixels"
+    );
+
+    for (name, bytes) in bru_lr_fixtures {
+        let stream_units = units(bytes);
+        let expected = batch_raw(bytes);
+        for threads in [1, 3, 12] {
+            let context =
+                DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads))).unwrap();
+            let mut batch_out = Vec::new();
+            context
+                .decode_raw_bytes(bytes, DecodeOptions::default(), &mut batch_out)
+                .unwrap();
+            assert_eq!(batch_out, expected, "{name} batch at {threads} threads");
+
+            let mut chunked_out = Vec::new();
+            let reader = ChunkedSliceReader {
+                bytes,
+                offset: 0,
+                pattern: &[1, 3, 7, 13, 2],
+                step: 0,
+            };
+            context
+                .decode_raw_reader(reader, DecodeOptions::default(), &mut chunked_out)
+                .unwrap();
+            assert_eq!(chunked_out, expected, "{name} chunked at {threads} threads");
+
+            let mut dec = decoder(threads, threads.min(4));
+            let pics = decode(&mut dec, &stream_units, |_| DataProps::default());
+            assert_eq!(pics.len(), 6, "{name}");
+            assert_eq!(
+                raw_of(&pics),
+                expected,
+                "{name} stream at {threads} threads"
+            );
+
+            dec.flush();
+            dec.drain();
+            assert!(dec.get_picture().unwrap().is_none());
+            dec.flush();
+            let pics_again = decode(&mut dec, &stream_units, |_| DataProps::default());
+            assert_eq!(
+                raw_of(&pics_again),
+                expected,
+                "{name} repeated flush/drain at {threads} threads"
+            );
+        }
+    }
+
+    for (name, bytes) in [
+        ("pcwiener-truncated", BRU_LR_PCWIENER_8BIT),
+        ("wienerns-truncated", BRU_LR_WIENERNS_8BIT),
+    ] {
+        let mut corrupted_units = units(bytes);
+        let cut = corrupted_units[3].len() / 2;
+        corrupted_units[3].truncate(cut.max(4));
+        for threads in [1, 3] {
+            let mut dec = decoder(threads, threads.min(4));
+            assert!(
+                stream_decode_until_error(&mut dec, &corrupted_units),
+                "{name}: truncated frame 3 BRU+LR payload must error at {threads} threads"
+            );
+            dec.flush();
+            dec.drain();
+            while matches!(dec.get_picture(), Ok(Some(_)) | Err(_)) {}
+            dec.flush();
+            let intact_units = units(bytes);
+            let recovered = decode(&mut dec, &intact_units, |_| DataProps::default());
+            assert_eq!(
+                raw_of(&recovered),
+                batch_raw(bytes),
+                "{name}: decoder must recover cleanly after flush at {threads} threads"
+            );
+        }
     }
 }

@@ -137,6 +137,46 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
     Ok(collected)
 }
 
+/// Decodes `bytes` serially on the driver thread while capturing per-frame BRU
+/// mode maps and pre/post BRU loop-restoration source-block spans.
+#[cfg(test)]
+pub(crate) fn collect_bru_lr_audit(
+    bytes: &[u8],
+    options: &DecodeOptions,
+) -> Result<(
+    Vec<Arc<FrameHeaderCore>>,
+    Vec<crate::filters::wienerns_lr::recon::BruLrFrameAudit>,
+)> {
+    let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)?;
+    let session = DecodeSession::detaching_held(
+        NonZeroUsize::MIN,
+        row_scheduler(NonZeroUsize::MIN)?,
+        backend,
+    );
+    let (headers, audits) = splot_parallel::run_on_thread("splot-driver", || {
+        crate::filters::wienerns_lr::recon::with_bru_lr_audit(|| {
+            let mut source =
+                crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
+            let mut headers = Vec::new();
+            emit_frames(
+                &mut source,
+                options,
+                &session,
+                |_| Ok(()),
+                |frame| {
+                    if let Some(core) = frame.ccso_header.as_ref() {
+                        headers.push(Arc::clone(core));
+                    }
+                    let _ = frame.ready_frame()?;
+                    Ok(())
+                },
+            )?;
+            Result::Ok(headers)
+        })
+    })?;
+    Ok((headers?, audits))
+}
+
 /// Decodes every temporal unit of `source` and passes each displayed frame
 /// to `emit` in display order.
 pub(crate) fn emit_frames(

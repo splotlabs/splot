@@ -307,6 +307,81 @@ fn lr_unit_filter_for_block<'a>(
     Ok(filter)
 }
 
+/// Splits `blocks` across AV2 § 7.20.1 shifted restoration stripes and
+/// superblock columns when `bru_modes` is `Some`, retaining only `BRU_ACTIVE`
+/// spans and failing closed if any covered superblock has no published mode.
+pub(crate) fn filter_lr_source_blocks_for_bru(
+    blocks: Vec<WienerNsLrSourceBlock>,
+    bru_modes: Option<&crate::filters::bru::BruModeMap>,
+    subsampling: (usize, usize),
+) -> Result<Vec<WienerNsLrSourceBlock>> {
+    let Some(modes) = bru_modes else {
+        return Ok(blocks);
+    };
+    let mut filtered = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        if block.plane >= 3 {
+            continue;
+        }
+        let (sub_x, sub_y) = if block.plane == 0 {
+            (0, 0)
+        } else {
+            subsampling
+        };
+        let sb_w = (modes.sb_samples() >> sub_x).max(1);
+        let block_end_x = block
+            .x
+            .checked_add(block.width)
+            .ok_or_else(super::lr_pipeline_state_error)?;
+        let block_end_y = block
+            .y
+            .checked_add(block.height)
+            .ok_or_else(super::lr_pipeline_state_error)?;
+        let mut cur_y = block.y;
+        while cur_y < block_end_y {
+            let cur_mi = (cur_y << sub_y) / MI_SIZE;
+            let stripe_end_mi = (((cur_mi + 2) >> 4) + 1) * 16 - 2;
+            let next_y = ((stripe_end_mi * MI_SIZE) >> sub_y).min(block_end_y);
+            if next_y <= cur_y {
+                return Err(super::lr_pipeline_state_error());
+            }
+            let mut cur_x = block.x;
+            let mut active_start: Option<usize> = None;
+            while cur_x < block_end_x {
+                let next_x = ((cur_x / sb_w + 1) * sb_w).min(block_end_x);
+                let mi_col = (cur_x << sub_x) / MI_SIZE;
+                let active = modes
+                    .lr_stripe_active(cur_mi, mi_col, block.tile_mi_row_end)
+                    .ok_or_else(super::lr_pipeline_state_error)?;
+                match (active, active_start) {
+                    (true, None) => active_start = Some(cur_x),
+                    (true, Some(_)) | (false, None) => {}
+                    (false, Some(start_x)) => {
+                        let mut sub = block;
+                        sub.x = start_x;
+                        sub.y = cur_y;
+                        sub.width = cur_x - start_x;
+                        sub.height = next_y - cur_y;
+                        filtered.push(sub);
+                        active_start = None;
+                    }
+                }
+                cur_x = next_x;
+            }
+            if let Some(start_x) = active_start {
+                let mut sub = block;
+                sub.x = start_x;
+                sub.y = cur_y;
+                sub.width = block_end_x - start_x;
+                sub.height = next_y - cur_y;
+                filtered.push(sub);
+            }
+            cur_y = next_y;
+        }
+    }
+    Ok(filtered)
+}
+
 /// Sorts LR source blocks by `(plane, y, x)` and returns the Y and U
 /// partition ends. The parse already merges each unit's rows per stripe,
 /// and blocks of other units, tiles or stripes never merge.
