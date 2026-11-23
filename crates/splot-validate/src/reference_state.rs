@@ -66,8 +66,8 @@ pub(crate) struct SlotFacts {
     pub(crate) implicit_output_frame: bool,
     /// `RefImmediateOutputFrame[ i ]` (§ 7.23).
     pub(crate) immediate_output_frame: bool,
-    /// Whether `RefFrameType[ i ] == INTER_FRAME` (§ 7.23).
-    pub(crate) frame_is_inter: bool,
+    /// `RefFrameType[ i ]` (§ 7.23).
+    pub(crate) frame_type: FrameType,
     /// `RefLongTermId[ i ]` (§ 7.23 :14113), the slot's modeled long-term id. `None` models
     /// the spec's `-1` sentinel ("not a long-term reference frame"); `Some(id)` is a KEY
     /// frame's `LongTermId = long_term_id_plus_1 - 1` (§ 5.18.2 mirror :4231-4239), the only
@@ -80,6 +80,13 @@ pub(crate) struct SlotFacts {
     /// `RefNumTotalRefs[ i ]`, `SavedOrderHints[ i ]` and `SavedGmParams[ i ]` (§ 7.23),
     /// read by the § 5.18.9.1 `global_motion_params()` base-warp selection.
     pub(crate) global_motion: (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams),
+}
+
+impl SlotFacts {
+    /// AV2 § 7.9 `is_ref_motion_field_eligible_by_frame_type`.
+    pub(crate) const fn is_motion_field_eligible_by_frame_type(&self) -> bool {
+        !matches!(self.frame_type, FrameType::Key | FrameType::IntraOnly)
+    }
 }
 
 /// One extended layer's reference buffer, matching its CVS reset scope (§ 7.3.6).
@@ -429,7 +436,7 @@ impl ReferenceStateTracker {
                     scratch.base_q_idx[i] = facts.base_q_idx;
                     scratch.chroma_ac_deltas[i] = [facts.delta_q_u_ac, facts.delta_q_v_ac];
                     scratch.counter[i] = layer.counters[i];
-                    scratch.frame_is_inter[i] = facts.frame_is_inter;
+                    scratch.frame_is_inter[i] = facts.frame_type == FrameType::Inter;
                     scratch.long_term_id[i] = facts.long_term_id;
                     scratch.order_hint_lsbs[i] = facts.order_hint_lsb;
                     scratch.implicit_output_frame[i] = facts.implicit_output_frame;
@@ -504,7 +511,7 @@ pub(crate) fn slot_facts(
         delta_q_v_ac: quantizer_deltas.1?,
         implicit_output_frame: output_flags.0?,
         immediate_output_frame: output_flags.1?,
-        frame_is_inter: frame_type? == FrameType::Inter,
+        frame_type: frame_type?,
         long_term_id: long_term_id.and_then(|id| u32::try_from(id).ok()),
         lr_frame_filter_class_counts: [0; 3],
         global_motion: IDENTITY_GLOBAL_MOTION,
@@ -543,7 +550,7 @@ mod tests {
             delta_q_v_ac: 0,
             implicit_output_frame: false,
             immediate_output_frame: false,
-            frame_is_inter: false,
+            frame_type: FrameType::Key,
             long_term_id: None,
             lr_frame_filter_class_counts: [0; 3],
             global_motion: IDENTITY_GLOBAL_MOTION,
@@ -555,6 +562,22 @@ mod tests {
         SlotFacts {
             long_term_id: Some(long_term_id),
             ..facts(order_hint)
+        }
+    }
+
+    #[test]
+    fn motion_field_eligibility_excludes_key_and_intra_only() {
+        for (frame_type, expected) in [
+            (FrameType::Key, false),
+            (FrameType::IntraOnly, false),
+            (FrameType::Inter, true),
+            (FrameType::Switch, true),
+        ] {
+            let slot = SlotFacts {
+                frame_type,
+                ..facts(1)
+            };
+            assert_eq!(slot.is_motion_field_eligible_by_frame_type(), expected);
         }
     }
 
