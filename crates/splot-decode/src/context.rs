@@ -211,7 +211,7 @@ impl DecodeContext {
         let backend = splot_core::simd::resolve_backend(runtime.simd_policy)?;
         let threads = runtime.thread_count.resolve();
         let frame_delay = runtime.frame_delay.resolve(threads);
-        let rows = crate::pipeline::row_scheduler(threads)?;
+        let rows = crate::pipeline::row_scheduler(threads, backend)?;
         Ok(Self {
             runtime,
             threads,

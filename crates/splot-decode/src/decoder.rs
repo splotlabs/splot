@@ -494,7 +494,7 @@ struct DriverLaunch {
     limits: DecodeLimits,
     skip_film_grain: bool,
     frame_delay: core::num::NonZeroUsize,
-    rows: Option<Arc<splot_parallel::RowScheduler>>,
+    rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
     resolved: ResolvedBackend,
 }
 
@@ -518,7 +518,7 @@ fn spawn_driver<B: SimdBackend>(
     limits: DecodeLimits,
     skip_film_grain: bool,
     frame_delay: core::num::NonZeroUsize,
-    rows: Option<Arc<splot_parallel::RowScheduler>>,
+    rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
     resolved: ResolvedBackend,
 ) -> Result<std::thread::JoinHandle<()>> {
     splot_parallel::spawn_thread("splot-driver", move || {
@@ -533,7 +533,7 @@ fn run_driver_session(
     limits: DecodeLimits,
     skip_film_grain: bool,
     frame_delay: core::num::NonZeroUsize,
-    rows: Option<Arc<splot_parallel::RowScheduler>>,
+    rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
     resolved: ResolvedBackend,
 ) {
     let options = DecodeOptions::new(limits).with_skip_film_grain(skip_film_grain);
@@ -591,7 +591,7 @@ impl Decoder {
             driver: Condvar::new(),
         });
         let driver = Arc::clone(&shared);
-        let rows = crate::pipeline::row_scheduler(threads)?;
+        let rows = crate::pipeline::row_scheduler(threads, resolved)?;
         let driver = resolved.enter(DriverLaunch {
             shared: driver,
             limits: settings.limits,
