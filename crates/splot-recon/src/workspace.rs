@@ -139,7 +139,7 @@ impl<B: SimdBackend> WorkspaceRunner for TypedWorkspace<B> {
     #[inline]
     fn copy_u16_to_u8(self, target: &mut [u8], samples: &[u16]) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| copy_u16_narrow_simd(narrow.token(), target, samples));
+        splot_core::with_simd!(narrow, simd => copy_u16_narrow_simd(simd, target, samples));
     }
 
     #[inline]

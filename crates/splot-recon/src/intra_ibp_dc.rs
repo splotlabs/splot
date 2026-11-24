@@ -84,13 +84,13 @@ impl<B: SimdBackend> IbpDcRunner for TypedIbpDc<B> {
         pred: &mut [P],
     ) -> Option<()> {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| ibp_dc_block(narrow.token(), block, edges, pred))
+        splot_core::with_simd!(narrow, simd => ibp_dc_block(simd, block, edges, pred))
     }
 
     #[inline]
     fn dc_frame<P: IntraLaneSample>(self, block: DcFrameBlock, samples: &mut [P]) -> Option<()> {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| dc_frame_block(narrow.token(), block, samples))
+        splot_core::with_simd!(narrow, simd => dc_frame_block(simd, block, samples))
     }
 }
 

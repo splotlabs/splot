@@ -164,16 +164,19 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
         PixelFormat::Yuv420,
     )
     .unwrap();
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        100,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            100,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("mismatched CCTX pair");
     assert!(matches!(
         error,
@@ -194,18 +197,21 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
     .unwrap();
 
     for (start, end) in [(1, 2), (1, 0)] {
-        let error = super::super::add_inter_residual_to_workspace(
-            &mut CurrentFrameSurface::Frame(&mut workspace),
-            &super::super::InterResidual {
-                block_range: start..end,
-            },
-            &[],
-            &[],
-            0,
-            false,
-            false,
-            BitDepth::Eight,
-        )
+        let error = crate::test_support::with_auto_backend!(backend => {
+            super::super::add_inter_residual_to_workspace(
+                backend,
+                &mut CurrentFrameSurface::Frame(&mut workspace),
+                &super::super::InterResidual {
+                    block_range: start..end,
+                },
+                &[],
+                &[],
+                0,
+                false,
+                false,
+                BitDepth::Eight,
+            )
+        })
         .unwrap_err();
 
         assert!(matches!(
@@ -236,16 +242,19 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
     )
     .unwrap();
 
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        0,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            0,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("invalid stored transform size");
 
     assert!(matches!(
@@ -287,16 +296,19 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
     )
     .unwrap();
 
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        0,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            0,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("invalid stored CCTX transform size");
 
     assert!(matches!(

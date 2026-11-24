@@ -15,16 +15,19 @@ fn secondary_mrl_blends_only_prediction_units_larger_than_4x4() {
                 .unwrap();
         let block_size = IntraRectBlockSize::new(log2_width, log2_height).unwrap();
         let mut actual_calls = 0;
-        let prediction = super::super::sink::build_mrl_luma_prediction(
-            &mut workspace,
-            block_size,
-            true,
-            |_, secondary, output| {
-                actual_calls += 1;
-                output.fill(if secondary { 150 } else { 76 });
-                Ok(())
-            },
-        )
+        let prediction = crate::test_support::with_auto_backend!(backend => {
+            super::super::sink::build_mrl_luma_prediction(
+                backend,
+                &mut workspace,
+                block_size,
+                true,
+                |_, secondary, output| {
+                    actual_calls += 1;
+                    output.fill(if secondary { 150 } else { 76 });
+                    Ok(())
+                },
+            )
+        })
         .unwrap();
         assert_eq!(actual_calls, calls);
         assert!(prediction.iter().all(|&sample| sample == expected));
@@ -61,44 +64,50 @@ fn middle_directional_clamps_right_edge_columns() {
                     left: have_left,
                 };
                 if let Some(mrl_index) = mrl_index {
-                    reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
-                        &mut workspace,
-                        all_zero_luma_block().view(&[]),
-                        113,
-                        264,
-                        16,
-                        3,
-                        3,
-                        0,
-                        mrl_index,
-                        mrl_index,
-                        false,
-                        true,
-                        false,
-                        None,
-                        availability,
-                    )
+                    crate::test_support::with_auto_backend!(backend => {
+                        reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+                            backend,
+                            &mut workspace,
+                            all_zero_luma_block().view(&[]),
+                            113,
+                            264,
+                            16,
+                            3,
+                            3,
+                            0,
+                            mrl_index,
+                            mrl_index,
+                            false,
+                            true,
+                            false,
+                            None,
+                            availability,
+                        )
+                    })
                     .unwrap();
                 } else {
-                    reconstruct_general_intra_middle_neighbour_rect_block_into(
-                        &mut workspace,
-                        all_zero_luma_block().view(&[]),
-                        113,
-                        PlaneId::Y,
-                        264,
-                        16,
-                        3,
-                        3,
-                        0,
-                        false,
-                        None,
-                        None,
-                        availability,
-                        TwoSidedMiddleEdgeFilters {
-                            above: OneSidedEdgeFilter::default(),
-                            left: OneSidedEdgeFilter::default(),
-                        },
-                    )
+                    crate::test_support::with_auto_backend!(backend => {
+                        reconstruct_general_intra_middle_neighbour_rect_block_into(
+                            backend,
+                            &mut workspace,
+                            all_zero_luma_block().view(&[]),
+                            113,
+                            PlaneId::Y,
+                            264,
+                            16,
+                            3,
+                            3,
+                            0,
+                            false,
+                            None,
+                            None,
+                            availability,
+                            TwoSidedMiddleEdgeFilters {
+                                above: OneSidedEdgeFilter::default(),
+                                left: OneSidedEdgeFilter::default(),
+                            },
+                        )
+                    })
                     .unwrap();
                 }
                 let mut output = Vec::new();
@@ -144,26 +153,29 @@ fn middle_directional_mrl_top_row_clamps_bottom_edge_rows() {
                     .unwrap();
             }
         }
-        reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
-            &mut workspace,
-            all_zero_luma_block().view(&[]),
-            157,
-            16,
-            0,
-            3,
-            3,
-            0,
-            3,
-            0,
-            true,
-            true,
-            false,
-            None,
-            IntraEdgeAvailability {
-                above: false,
-                left: true,
-            },
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+                backend,
+                &mut workspace,
+                all_zero_luma_block().view(&[]),
+                157,
+                16,
+                0,
+                3,
+                3,
+                0,
+                3,
+                0,
+                true,
+                true,
+                false,
+                None,
+                IntraEdgeAvailability {
+                    above: false,
+                    left: true,
+                },
+            )
+        })
         .unwrap();
         let mut output = Vec::new();
         for row in 0..6 {
@@ -270,32 +282,35 @@ fn chroma_d135_top_row_filters_available_left_edge() {
             .unwrap();
     }
 
-    reconstruct_general_intra_middle_neighbour_rect_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        135,
-        PlaneId::U,
-        32,
-        0,
-        6,
-        6,
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability {
-            above: false,
-            left: true,
-        },
-        TwoSidedMiddleEdgeFilters {
-            above: OneSidedEdgeFilter::default(),
-            left: OneSidedEdgeFilter {
-                strength: 3,
-                num_px: 65,
-                corner_opposite: None,
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_middle_neighbour_rect_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            135,
+            PlaneId::U,
+            32,
+            0,
+            6,
+            6,
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability {
+                above: false,
+                left: true,
             },
-        },
-    )
+            TwoSidedMiddleEdgeFilters {
+                above: OneSidedEdgeFilter::default(),
+                left: OneSidedEdgeFilter {
+                    strength: 3,
+                    num_px: 65,
+                    corner_opposite: None,
+                },
+            },
+        )
+    })
     .unwrap();
 
     assert_eq!(ws.reconstructed_sample(PlaneId::U, 33, 55).unwrap(), 513);

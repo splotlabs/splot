@@ -100,22 +100,20 @@ impl<B: SimdBackend> ResidualRunner for TypedResidual<B> {
 
     #[inline]
     fn add_u16(self, prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
-        self.0
-            .vectorize(|| add_residual_u16_lanes(self.0.token(), prediction, residual, max, out));
+        splot_core::with_simd!(self.0, simd => add_residual_u16_lanes(simd, prediction, residual, max, out));
     }
 
     #[inline]
     fn add_u16_in_place(self, samples: &mut [u16], residual: &[i32], max: i32) {
-        self.0
-            .vectorize(|| add_residual_u16_in_place_lanes(self.0.token(), samples, residual, max));
+        splot_core::with_simd!(self.0, simd => add_residual_u16_in_place_lanes(simd, samples, residual, max));
     }
 
     #[expect(clippy::inline_always, reason = "per-row residual add hot path")]
     #[inline(always)]
     fn add_u8(self, prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]) {
-        self.0.vectorize(|| {
+        splot_core::with_simd!(self.0, simd => {
             add_residual_u8_lanes(
-                self.0.token(),
+                simd,
                 #[cfg(target_arch = "x86_64")]
                 self.0.avx2_token(),
                 prediction,
@@ -133,8 +131,7 @@ impl<B: SimdBackend> ResidualRunner for TypedResidual<B> {
         geometry: (usize, usize, usize, usize),
         adjust: (u8, u8),
     ) {
-        self.0
-            .vectorize(|| add_constant_u8_rows_lanes(self.0.token(), samples, geometry, adjust));
+        splot_core::with_simd!(self.0, simd => add_constant_u8_rows_lanes(simd, samples, geometry, adjust));
     }
 }
 

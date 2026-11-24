@@ -162,8 +162,9 @@ impl IntrabcReconCommand {
         }
     }
 
-    pub(super) fn reconstruct<T: ReconSample>(
+    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -201,6 +202,7 @@ impl IntrabcReconCommand {
         }
         if let Some(residual) = self.residual.as_ref() {
             add_inter_residual_to_workspace(
+                backend,
                 &mut CurrentFrameSurface::Frame(workspace),
                 residual,
                 residual_blocks,

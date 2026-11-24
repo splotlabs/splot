@@ -3,6 +3,7 @@
 
 //! Per-transform-unit residual replanning.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
@@ -22,8 +23,9 @@ impl GeneralIntraResidualPlan {
     /// `quant` and `eob`, through the decoder's own kernel dispatch; a palette
     /// luma block predicts from its row-major `palette_map`.
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct_unit<T: ReconSample>(
+    pub(crate) fn reconstruct_unit<B: SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         index: usize,
         quant: &[i32],
         eob: usize,
@@ -45,6 +47,7 @@ impl GeneralIntraResidualPlan {
             },
         )?;
         plane.reconstruct(
+            backend,
             self.frame,
             scratch,
             workspace,
@@ -61,8 +64,9 @@ impl GeneralIntraResidualPlan {
     /// their row-major adjusted `quant` and `eob`, with cross-chroma transform
     /// `cctx_type`, through the decoder's paired reconstruction.
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct_cctx_pair<T: ReconSample>(
+    pub(crate) fn reconstruct_cctx_pair<B: SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         [u, v]: [(usize, &[i32], usize); 2],
         (plane_tx_type, cctx_type): (usize, usize),
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -84,6 +88,7 @@ impl GeneralIntraResidualPlan {
         let (u_plane, u_coeffs) = block(u, Some(cctx_type as u8))?;
         let (v_plane, v_coeffs) = block(v, None)?;
         super::chroma_pair::reconstruct_chroma_pair_or_planes(
+            backend,
             self.frame,
             scratch,
             workspace,

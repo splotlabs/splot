@@ -142,7 +142,7 @@ impl<B: SimdBackend> MhccpRunner for TypedMhccp<B> {
         bits: u32,
     ) -> (LumaSums, [[i32; 3]; N]) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| gather_mhccp_sums(narrow.token(), edges, chroma, bits))
+        splot_core::with_simd!(narrow, simd => gather_mhccp_sums(simd, edges, chroma, bits))
     }
 
     #[inline]
@@ -157,9 +157,9 @@ impl<B: SimdBackend> MhccpRunner for TypedMhccp<B> {
         strides: [usize; N],
     ) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
+        splot_core::with_simd!(narrow, simd => {
             predict_rows::<_, _, N, WIDE>(
-                narrow.token(),
+                simd,
                 bits,
                 predictors,
                 linear,

@@ -3,9 +3,10 @@
 
 //! Smooth intra prediction entries, edge assembly, and sentinel resolution.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothFrameRequest,
-    IntraSmoothMode, PlaneId, ReconSample, predict_intra_smooth_rect_into,
+    IntraSmoothMode, PlaneId, ReconSample, predict_intra_smooth_rect_into_with,
 };
 
 use super::sink::{
@@ -13,13 +14,17 @@ use super::sink::{
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext,
-    add_general_intra_coeff_block_residual_in_place,
+    add_general_intra_coeff_block_residual_in_place_with,
 };
 
 const SMOOTH_EDGE_CAPACITY: usize = 65;
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     mode: IntraSmoothMode,
@@ -47,6 +52,7 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
         bit_depth,
     };
     if reconstruct_smooth_in_frame(
+        backend,
         workspace,
         block,
         PlaneId::Y,
@@ -61,6 +67,7 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
     }
     let (available_left_samples, available_above_samples) = availability.available_sample_limits();
     reconstruct_general_intra_smooth_over_available_edges_into(
+        backend,
         workspace,
         block,
         PlaneId::Y,
@@ -80,11 +87,12 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSamp
 }
 
 /// Reconstructs a smooth block whose edges the frame stores straight into
-/// the frame; `false` when [`CurrentFrameWorkspace::predict_intra_smooth_in_frame`]
+/// the frame; `false` when [`CurrentFrameWorkspace::predict_intra_smooth_in_frame_with`]
 /// declines it.
 #[expect(clippy::too_many_arguments)]
 #[inline]
-pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
+pub(crate) fn reconstruct_smooth_in_frame<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -95,11 +103,12 @@ pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
 ) -> core::result::Result<bool, GeneralIntraResidualError> {
-    if !workspace.predict_intra_smooth_in_frame(plane_id, x, y, request)? {
+    if !workspace.predict_intra_smooth_in_frame_with(backend, plane_id, x, y, request)? {
         return Ok(false);
     }
     if block.eob != 0 {
-        add_general_intra_coeff_block_residual_in_place(
+        add_general_intra_coeff_block_residual_in_place_with(
+            backend,
             workspace,
             block,
             plane_id,
@@ -117,7 +126,11 @@ pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -152,6 +165,7 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
     };
     let edges = smooth_prediction_edges(workspace, request)?;
     predict_intra_block(
+        backend,
         workspace,
         block,
         plane_id,
@@ -163,7 +177,7 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
         luma_context,
         None,
         bit_depth,
-        |output, stride| predict_smooth_from_edges(request, &edges, output, stride),
+        |output, stride| predict_smooth_from_edges(backend, request, &edges, output, stride),
     )
 }
 
@@ -187,13 +201,25 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let edges = smooth_prediction_edges(workspace, request)?;
-    predict_smooth_from_edges(request, &edges, prediction, request.block_size.width())
+    let size = request.block_size;
+    let smooth_edges =
+        IntraSmoothEdges::new(&edges[0][..=size.height()], &edges[1][..=size.width()]);
+    splot_recon::predict_intra_smooth_rect_into(
+        request.bit_depth,
+        size,
+        request.mode,
+        smooth_edges,
+        prediction,
+        size.width(),
+    )?;
+    Ok(())
 }
 
 /// The `[left, above]` § 7.13.2.13 edges, sentinels included.
 type SmoothEdgeArrays<T> = [[T; SMOOTH_EDGE_CAPACITY]; 2];
 
-fn predict_smooth_from_edges<T: ReconSample>(
+fn predict_smooth_from_edges<B: SimdBackend, T: ReconSample>(
+    backend: B,
     request: SmoothIntraPredictionRequest,
     [left_edge, above_edge]: &SmoothEdgeArrays<T>,
     output: &mut [T],
@@ -202,7 +228,8 @@ fn predict_smooth_from_edges<T: ReconSample>(
     let size = request.block_size;
     let smooth_edges =
         IntraSmoothEdges::new(&left_edge[..=size.height()], &above_edge[..=size.width()]);
-    predict_intra_smooth_rect_into(
+    predict_intra_smooth_rect_into_with(
+        backend,
         request.bit_depth,
         size,
         request.mode,

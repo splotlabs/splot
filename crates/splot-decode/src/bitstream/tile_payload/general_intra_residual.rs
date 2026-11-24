@@ -15,8 +15,7 @@ use splot_core::tables::conversion::{
 use splot_recon::{
     BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, QM_OFFSET,
     QmDequant, QmFrameLevels, QmUserPlane, QuantizerDeltas, ReconError, ReconSample,
-    SecondaryInverseTransform, ac_quantizer, dc_quantizer,
-    reconstruct_transform_block_residual_with_secondary, tx_size_index,
+    SecondaryInverseTransform, ac_quantizer, dc_quantizer, tx_size_index,
 };
 
 use super::cdf::BlockCdfRows;
@@ -47,7 +46,7 @@ pub(crate) mod cctx;
 mod luma_transform_partition;
 pub(crate) mod reconstruct;
 
-pub(crate) use cctx::add_cctx_pair_residual_in_place;
+pub(crate) use cctx::add_cctx_pair_residual_in_place_with;
 #[cfg(test)]
 use cctx::apply_cross_chroma_transform;
 #[cfg(test)]
@@ -58,11 +57,13 @@ pub(crate) use luma_transform_partition::{
     LumaTransformPartitionContext, LumaTransformPartitionUnits,
 };
 use reconstruct::reconstruct_block_setup;
+#[cfg(test)]
+pub(crate) use reconstruct::reconstruct_general_intra_coeff_block_rect_with_prediction_into;
 pub(crate) use reconstruct::{
-    add_general_intra_coeff_block_residual_in_place,
-    reconstruct_general_intra_coeff_block_rect_into_frame,
-    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_inter_coeff_block_residual_rect_into,
+    add_general_intra_coeff_block_residual_in_place_with,
+    reconstruct_general_intra_coeff_block_rect_into_frame_with,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into_with,
+    reconstruct_inter_coeff_block_residual_rect_into_with,
 };
 
 const TX_4X4: usize = 0;
@@ -1835,7 +1836,11 @@ const fn invalid_reconstruction_state_error(context: &'static str) -> GeneralInt
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
+fn reconstruct_general_intra_block_rect_with_prediction_core<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,
@@ -1874,7 +1879,8 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     with_residual_scratch(|scratch| {
         let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
         let residual_scratch = &mut scratch.residual[..setup.samples];
-        reconstruct_transform_block_residual_with_secondary(
+        splot_recon::reconstruct_transform_block_residual_with_secondary_and_backend(
+            backend,
             prediction,
             block.quant,
             &setup.params,

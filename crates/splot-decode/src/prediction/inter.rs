@@ -24,8 +24,8 @@ use splot_recon::{
 use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
     CoeffBlock, FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap,
-    GeneralIntraResidualError, ResidualScratch, add_cctx_pair_residual_in_place,
-    reconstruct_inter_coeff_block_residual_rect_into, with_residual_scratch,
+    GeneralIntraResidualError, ResidualScratch, add_cctx_pair_residual_in_place_with,
+    reconstruct_inter_coeff_block_residual_rect_into_with, with_residual_scratch,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
@@ -81,7 +81,8 @@ fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> 
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn walk_inter_frame<T: ReconSample>(
+pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'_>,
@@ -172,6 +173,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         filter_inputs,
         segment_ids,
     } = decode_inter_blocks(
+        backend,
         scratch,
         tile_plan,
         sequence,
@@ -973,7 +975,11 @@ fn compound_is_joint_context_from_order_hints(
     usize::from(same_side || first_dist != second_dist || one_restricted)
 }
 #[expect(clippy::too_many_arguments)]
-pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
+pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
@@ -1001,6 +1007,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
                 let v_block = inter_residual_chroma_pair(blocks, index, block)
                     .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
                 reconstruct_inter_residual_chroma_cctx_pair(
+                    backend,
                     sink,
                     scratch,
                     [block, v_block],
@@ -1021,7 +1028,8 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             let coeffs = CoeffBlock::new(&block.coeffs, residual_coeffs)
                 .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
             let block_size = IntraRectBlockSize::new(log2_width as u8, log2_height as u8)?;
-            reconstruct_inter_coeff_block_residual_rect_into(
+            reconstruct_inter_coeff_block_residual_rect_into_with(
+                backend,
                 sink,
                 scratch,
                 coeffs,
@@ -1090,7 +1098,8 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 
 #[expect(clippy::too_many_arguments)]
 #[inline(never)]
-fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
+fn reconstruct_inter_residual_chroma_cctx_pair<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut ResidualScratch,
     [u, v]: [&InterResidualBlock; 2],
@@ -1111,7 +1120,8 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
         u8::try_from(log2_height).unwrap_or(u8::MAX),
     )?;
     let coeffs = crate::bitstream::tile_payload::CoeffBlock::new;
-    add_cctx_pair_residual_in_place(
+    add_cctx_pair_residual_in_place_with(
+        backend,
         sink,
         scratch,
         [
