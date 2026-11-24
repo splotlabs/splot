@@ -51,6 +51,7 @@ pub(crate) mod output_effects;
 mod output_schedule;
 mod runtime_support;
 mod stream_schedule;
+mod xlayer_state;
 
 use frame_lifecycle::*;
 pub(crate) use frame_lifecycle::{
@@ -70,6 +71,9 @@ pub(crate) use stream_schedule::ivf_inter_envelope;
 #[cfg(test)]
 pub(crate) use stream_schedule::require_minimal_obu_order;
 use stream_schedule::*;
+#[cfg(test)]
+use xlayer_state::{InBandLongTermFrame, InBandLongTermPrelude};
+use xlayer_state::{XLayerState, XLayerTable};
 
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
@@ -214,10 +218,34 @@ pub(crate) fn emit_frames(
 /// Shared samples retire only when another tracked frame accounts for their
 /// bytes; otherwise subtracting them would undercount `MaxReferenceStoreBytes`.
 /// Every call rescans readers skipped by earlier reclamation passes.
+pub(in crate::pipeline) trait FrameRetention {
+    fn retains(&self, frame_index: usize) -> bool;
+    fn forget(&mut self, frame_index: usize);
+}
+
+impl FrameRetention for XLayerTable {
+    fn retains(&self, frame_index: usize) -> bool {
+        XLayerTable::retains(self, frame_index)
+    }
+
+    fn forget(&mut self, frame_index: usize) {
+        XLayerTable::forget(self, frame_index);
+    }
+}
+
 fn reclaim_unowned_frames(
     frames: &mut FrameStore,
-    reference: &reference_buffer::RuntimeReferenceBuffer,
-    scheduler: &mut OutputScheduler,
+    xlayers: &mut XLayerTable,
+    emission: &output_schedule::EmissionQueue,
+    ring: &mut inflight::InflightRing,
+    retained_frame_bytes: &mut u64,
+) -> Result<()> {
+    reclaim_unowned_frames_with(frames, xlayers, emission, ring, retained_frame_bytes)
+}
+
+pub(in crate::pipeline) fn reclaim_unowned_frames_with(
+    frames: &mut FrameStore,
+    retention: &mut impl FrameRetention,
     emission: &output_schedule::EmissionQueue,
     ring: &mut inflight::InflightRing,
     retained_frame_bytes: &mut u64,
@@ -227,8 +255,7 @@ fn reclaim_unowned_frames(
         let Some(frame) = frames.entries[slot_index].frame.as_ref() else {
             continue;
         };
-        if reference.retains(frame_index)
-            || scheduler.retains(frame_index)
+        if retention.retains(frame_index)
             || emission.holds(frame_index)
             || ring.holds(frame_index)
             || !frame.frame.is_settled()
@@ -263,7 +290,7 @@ fn reclaim_unowned_frames(
                     "decode pipeline live-frame byte accounting underflowed",
                 )
             })?;
-        scheduler.forget(frame_index);
+        retention.forget(frame_index);
         frames.entries[slot_index].retired = Some(ring.keep_frame_planes(frame.frame));
     }
     Ok(())
@@ -275,21 +302,20 @@ fn reclaim_unowned_frames(
 /// error stands once nothing is in flight and every pool work has finished.
 #[expect(clippy::too_many_arguments)]
 fn admit_within_reference_store(
-    mut check: impl FnMut(u64) -> Result<()>,
+    mut check: impl FnMut(&XLayerTable, u64) -> Result<()>,
     options: &DecodeOptions,
     rows: Option<&DecoderRowScheduler>,
     pools: &mut frame_tasks::RowPools,
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
-    reference: &reference_buffer::RuntimeReferenceBuffer,
-    scheduler: &mut OutputScheduler,
+    xlayers: &mut XLayerTable,
     emission: &mut output_schedule::EmissionQueue,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
     let mut drained = false;
     loop {
-        match check(*retained_frame_bytes) {
+        match check(xlayers, *retained_frame_bytes) {
             Err(crate::DecodeError::Limit { .. }) if !drained => {}
             outcome => return outcome,
         }
@@ -299,16 +325,16 @@ fn admit_within_reference_store(
             }
             drained = true;
         }
-        charge_emitted_outputs(options, frames, scheduler, emission, &[], emit)?;
-        pools.retire_idle();
-        reclaim_unowned_frames(
+        charge_emitted_outputs(
+            options,
             frames,
-            reference,
-            scheduler,
+            xlayers.total_emitted_count(),
             emission,
-            ring,
-            retained_frame_bytes,
+            &[],
+            emit,
         )?;
+        pools.retire_idle();
+        reclaim_unowned_frames(frames, xlayers, emission, ring, retained_frame_bytes)?;
     }
 }
 
@@ -352,114 +378,6 @@ fn parse_olk_core_with_effects(
     )
 }
 
-#[derive(Default)]
-struct InBandLongTermPrelude {
-    frames: Vec<InBandLongTermFrame>,
-}
-
-struct InBandLongTermFrame {
-    obu_type: ObuType,
-    long_term_id: u32,
-    hidden: bool,
-    frame_index: usize,
-}
-
-impl InBandLongTermPrelude {
-    fn begin_frame(&mut self, first_picture_in_tu: bool) {
-        if first_picture_in_tu {
-            self.frames.clear();
-        }
-    }
-
-    fn validate_required(
-        &self,
-        core: &FrameHeaderCore,
-        reference: &reference_buffer::RuntimeReferenceBuffer,
-        offset: ByteOffset,
-    ) -> Result<()> {
-        self.validate_required_with(&core.ref_long_term_ids, offset, |id, frame_index| {
-            reference.retains_hidden_long_term_reference(id, frame_index)
-        })
-    }
-
-    fn validate_required_with(
-        &self,
-        required_ids: &[u32],
-        offset: ByteOffset,
-        mut is_retained: impl FnMut(u32, usize) -> bool,
-    ) -> Result<()> {
-        if required_ids.is_empty() {
-            return Ok(());
-        }
-        for &id in required_ids {
-            if !self.frames.iter().any(|frame| frame.long_term_id == id) {
-                return Err(unsupported_feature_at(
-                    "random_access_long_term_reference_missing",
-                    offset,
-                    "each ref_long_term_id must name a preceding in-band key frame in the random-access temporal unit",
-                    "7.3.9.1",
-                ));
-            }
-            if self
-                .frames
-                .iter()
-                .any(|frame| frame.long_term_id == id && !frame.hidden)
-            {
-                return Err(unsupported_feature_at(
-                    "random_access_long_term_reference_visible",
-                    offset,
-                    "in-band long-term reference key frames must disable immediate and implicit output",
-                    "7.3.9.1",
-                ));
-            }
-            if !self.frames.iter().any(|frame| {
-                frame.long_term_id == id && frame.hidden && is_retained(id, frame.frame_index)
-            }) {
-                return Err(unsupported_feature_at(
-                    "random_access_long_term_reference_slot_unavailable",
-                    offset,
-                    "an in-band long-term reference must remain in the same valid reference slot used by sequential decoding",
-                    "7.3.9.1",
-                ));
-            }
-        }
-        let mut saw_olk = false;
-        for frame in self
-            .frames
-            .iter()
-            .filter(|frame| required_ids.contains(&frame.long_term_id))
-        {
-            if frame.obu_type == ObuType::OpenLoopKey {
-                saw_olk = true;
-            } else if frame.obu_type == ObuType::ClosedLoopKey && saw_olk {
-                return Err(unsupported_feature_at(
-                    "random_access_long_term_reference_order",
-                    offset,
-                    "in-band long-term CLK references must precede all in-band long-term OLK references",
-                    "7.3.9.1",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn note_frame(&mut self, core: &FrameHeaderCore, frame_index: usize) {
-        if !matches!(core.obu_type, ObuType::ClosedLoopKey | ObuType::OpenLoopKey) {
-            return;
-        }
-        let Some(long_term_id) = core.long_term_id.and_then(|id| u32::try_from(id).ok()) else {
-            return;
-        };
-        self.frames.push(InBandLongTermFrame {
-            obu_type: core.obu_type,
-            long_term_id,
-            hidden: core.immediate_output_frame == Some(false)
-                && core.implicit_output_frame == Some(false),
-            frame_index,
-        });
-    }
-}
-
 fn parse_inter_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
@@ -491,9 +409,9 @@ fn parse_inter_core_with_effects(
 }
 /// Runs `$body` with `$t` bound to the sample type of `$sequence`: the one
 /// place the driver picks a bit depth.
-macro_rules! with_sample {
-    ($sequence:expr, $t:ident, $body:expr) => {
-        match $sequence.general.bit_depth_idc {
+macro_rules! with_sample_bit_depth {
+    ($bit_depth:expr, $t:ident, $body:expr) => {
+        match $bit_depth {
             BitDepthIdc::Eight => {
                 type $t = u8;
                 $body
@@ -503,6 +421,12 @@ macro_rules! with_sample {
                 $body
             }
         }
+    };
+}
+
+macro_rules! with_sample {
+    ($sequence:expr, $t:ident, $body:expr) => {
+        with_sample_bit_depth!($sequence.general.bit_depth_idc, $t, $body)
     };
 }
 
@@ -685,6 +609,7 @@ fn decode_key_frame_with_effects(
             ccso_grid: products.ccso_grid,
             segment_ids: products.segment_ids,
             frame_rate,
+            extended_layer_id: frame_envelope.header.extended_layer_id,
             embedded_layer_id: frame_envelope.header.embedded_layer_id,
             temporal_layer_id: frame_envelope.header.temporal_layer_id,
             props,
@@ -740,6 +665,7 @@ fn decode_key_frame_with_effects(
         ccso_grid,
         segment_ids,
         frame_rate,
+        extended_layer_id: frame_envelope.header.extended_layer_id,
         embedded_layer_id: frame_envelope.header.embedded_layer_id,
         temporal_layer_id: frame_envelope.header.temporal_layer_id,
         props,
@@ -929,308 +855,53 @@ fn decode_frames_in_order(
 ) -> Result<()> {
     options.temporal_layer_selection().validate()?;
     options.embedded_layer_selection().validate()?;
+    options.extended_layer_selection().validate()?;
     let InputScratch {
         records,
         obus: obu_storage,
     } = input_scratch;
     let mut stream = RuntimeStream::new(source, records, options);
-    let Some(leading_unit) = stream.first_unit()? else {
+    let Some(mut leading_unit) = stream.first_unit()? else {
         return Ok(());
     };
-    let key_candidate = stream.first_candidate()?;
-    let mut leading_buffer = recycle(core::mem::take(obu_storage));
-    let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
-    let ([_, sequence_envelope, key_envelope], _) = require_leading_frame_unit(leading_obus)?;
-    preflight(stream.ivf_header())?;
-    let frame_rate = stream.frame_rate();
-
-    let mut sequence = parse_sequence(sequence_envelope)?;
-    validate_sequence(&sequence, sequence_envelope.offset)?;
-    let mut film_grain_slots = FilmGrainSlots::new();
-    let leading_prefix = leading_prefix_obus(leading_obus)?;
-    film_grain_slots.update_from_obus(leading_prefix, &sequence)?;
-    let mut output_effect_state = OutputEffectState::new();
-    output_effect_state.observe_prefix(leading_prefix, &sequence)?;
-
-    let sequence_inter = sequence.inter.as_ref().ok_or_else(|| {
-        unsupported(
-            "missing_sequence_inter_config",
-            None,
-            "multi-frame decode requires the sequence inter config (NumRefFrames)",
-        )
-    })?;
-    let num_ref_frames = usize::from(sequence_inter.num_ref_frames);
-    let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
-    let mut scheduler = OutputScheduler::new(num_ref_frames);
-    let mut emission_queue = output_schedule::EmissionQueue::default();
-    let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
-    in_band_long_term_prelude.begin_frame(true);
-    let key_candidate = &key_candidate?;
-    let key_frame_index = key_candidate.ivf_frame().map(IvfFrameContext::frame_index);
-    let key_core = match key_envelope.header.obu_type {
-        ObuType::ClosedLoopKey => {
-            parse_key_core_with_effects(key_envelope, &sequence, &output_effect_state)?
-        }
-        ObuType::OpenLoopKey => with_sample!(sequence, T, {
-            let state = reference.state::<T>(frames)?;
-            parse_olk_core_with_effects(
-                key_envelope,
-                &sequence,
-                &state,
-                &output_effect_state,
-                true,
-            )?
-        }),
-        ObuType::RasFrame => with_sample!(sequence, T, {
-            let state = reference.state::<T>(frames)?;
-            let activation = inter::parse_inter_frame_activation(
-                key_envelope,
-                &sequence,
-                &state,
-                true,
-                key_frame_index,
-            )?;
-            in_band_long_term_prelude.validate_required(
-                &activation,
-                &reference,
-                key_envelope.offset,
-            )?;
-            parse_inter_core_with_effects(
-                key_envelope,
-                &sequence,
-                &state,
-                &output_effect_state,
-                true,
-                key_frame_index,
-            )?
-        }),
-        _ => {
-            return Err(unsupported_at(
-                "missing_random_access_frame",
-                key_envelope.offset,
-                "decode runtime requires a closed-loop key, open-loop key, or RAS random-access frame",
-            ));
-        }
-    };
-    if key_envelope.header.obu_type != ObuType::RasFrame {
-        ensure_intra_header_complete(&key_core, key_envelope.offset)?;
-    }
-    in_band_long_term_prelude.validate_required(&key_core, &reference, key_envelope.offset)?;
-    let key_user_qm = output_effect_state.prepare_frame(
-        key_envelope,
-        &key_core,
-        &sequence,
-        true,
-        key_frame_index,
-    )?;
-    let key_display_grain = film_grain_slots.active_for_core(
-        key_envelope,
-        &key_core,
-        &sequence,
-        key_envelope.offset,
-    )?;
-    output_effect_state.observe_suffix(suffix_after_candidate(leading_obus, key_candidate)?)?;
-    let key_output_effects =
-        output_effect_state.finish_frame(key_envelope.header.embedded_layer_id);
-    let mut retained_frame_bytes = 0;
-    ensure_retained_frame_byte_limits_for_core(
-        options.limits(),
-        retained_frame_bytes,
-        &key_core,
-        &sequence,
-        key_envelope.offset,
-    )?;
-    frames.reserve()?;
-    let mut shared_sequence = None;
-    let key_frame = if key_envelope.header.obu_type == ObuType::RasFrame {
-        with_sample!(sequence, T, {
-            let state = reference.state::<T>(frames)?;
-            ring.reserve(pools);
-            let _user_qm_scope =
-                crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
-            let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
-                frame_engine::intra::build_frame_qm_levels(&key_core),
-            );
-            if let Some(rows) =
-                rows.filter(|_| inter::splittable_inter_frame(ObuType::RasFrame, &key_core))
+    let mut xlayers = XLayerTable::new();
+    let mut skipped_unselected_leading = false;
+    let mut key_candidate = stream.first_candidate()?;
+    if key_candidate.is_err() {
+        let mut scan_buffer = recycle(core::mem::take(obu_storage));
+        if stream.unit_only_filtered_unselected_xlayer(&leading_unit, &mut scan_buffer) {
+            skipped_unselected_leading = true;
+            let filtered = stream.obus(&leading_unit, &mut scan_buffer)?;
+            xlayers.observe_global_obus(filtered, true)?;
+            *obu_storage = recycle(scan_buffer);
+            if let Some((candidate, unit)) =
+                stream.candidate(obu_storage, &mut || Ok(()), &mut |skipped| {
+                    xlayers.observe_skipped(skipped)
+                })?
             {
-                let core = frames.share_core(key_core.clone())?;
-                let (slot, core, products, motion_field) = push_split_inter::<T>(
-                    pools,
-                    rows,
-                    ring,
-                    frames,
-                    options,
-                    &sequence,
-                    &mut shared_sequence,
-                    key_candidate,
-                    &leading_unit,
-                    core,
-                    state,
-                    0,
-                )?;
-                let rate = key_output_effects.frame_rate(frame_rate);
-                PipelineFrame {
-                    frame: slot,
-                    display_grain: key_display_grain,
-                    output_effects: key_output_effects,
-                    frame_cdfs: products.frame_cdfs,
-                    motion_field,
-                    ccso_header: Some(core),
-                    ccso_grid: products.ccso_grid,
-                    segment_ids: products.segment_ids,
-                    frame_rate: rate,
-                    embedded_layer_id: key_envelope.header.embedded_layer_id,
-                    temporal_layer_id: key_envelope.header.temporal_layer_id,
-                    props: stream.props(),
-                }
-            } else {
-                let mut product_writers = frames.reserve_products()?;
-                let walk = walk_frame_with_backend::<T>(
-                    backend,
-                    &mut T::pools(pools).scratch,
-                    key_candidate,
-                    leading_unit.view(),
-                    key_envelope,
-                    frames.share_core(key_core.clone())?,
-                    &sequence,
-                    options,
-                    &frame_engine::FrameSetup::Inter(&state),
-                    T::BIT_DEPTH,
-                    &mut product_writers,
-                )?;
-                let ccso_header = Some(walk.core);
-                let frame = inflight::settle_walk_stage(
-                    backend,
-                    walk.stage,
-                    T::erase,
-                    rows,
-                    pools,
-                    ring,
-                    frames,
-                    0,
-                )?;
-                let rate = key_output_effects.frame_rate(frame_rate);
-                let (frame_cdfs, ccso_grid, segment_ids) = product_writers
-                    .settle(walk.frame_cdfs, walk.ccso_grid, walk.segment_ids)
-                    .into_parts();
-                PipelineFrame {
-                    frame,
-                    display_grain: key_display_grain,
-                    output_effects: key_output_effects,
-                    frame_cdfs,
-                    motion_field: frames.settle_motion(walk.motion_field)?,
-                    ccso_header,
-                    ccso_grid,
-                    segment_ids,
-                    frame_rate: rate,
-                    embedded_layer_id: key_envelope.header.embedded_layer_id,
-                    temporal_layer_id: key_envelope.header.temporal_layer_id,
-                    props: stream.props(),
-                }
+                leading_unit = unit;
+                key_candidate = Ok(candidate);
             }
-        })
+        } else {
+            *obu_storage = recycle(scan_buffer);
+        }
+    }
+    let mut leading_buffer = recycle(core::mem::take(obu_storage));
+    let key_candidate = if skipped_unselected_leading && key_candidate.is_err() {
+        *obu_storage = recycle(leading_buffer);
+        key_candidate?
     } else {
-        decode_key_frame_with_effects(
-            rows,
-            backend,
-            pools,
-            ring,
-            frames,
-            Some((&leading_unit, &mut shared_sequence)),
-            0,
-            leading_unit.view(),
-            options,
-            key_candidate,
-            key_envelope,
-            key_core.clone(),
-            &sequence,
-            frame_rate,
-            key_display_grain,
-            key_user_qm,
-            key_output_effects,
-            stream.props(),
-        )?
+        let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
+        require_leading_frame_unit(leading_obus)?;
+        preflight(stream.ivf_header())?;
+        *obu_storage = recycle(leading_buffer);
+        key_candidate?
     };
-    retained_frame_bytes =
-        ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
-    let key_update = frame_ref_update_from_core(
-        &key_core,
-        key_envelope.offset,
-        key_envelope.header.embedded_layer_id,
-        key_envelope.header.temporal_layer_id,
-    )?;
-    frames.push(key_frame)?;
-    let key_hint = key_update.order_hint;
-    let key_ordering = output_ordering(
-        key_hint,
-        key_envelope.header.embedded_layer_id,
-        sequence.general.max_mlayer_id,
-    );
-    let key_tu_limit = output_ordering(
-        key_hint,
-        EmbeddedLayerId::BASE,
-        sequence.general.max_mlayer_id,
-    );
-    let key_implicit = key_core.implicit_output_frame == Some(true);
-    let key_immediate = key_core.immediate_output_frame == Some(true);
-    if !stream.layer_filter().is_layer_output(
-        key_envelope.header.embedded_layer_id,
-        key_envelope.header.temporal_layer_id,
-    ) {
-        scheduler.suppress(0);
-    }
-    scheduler.refresh(
-        key_update.refresh_frame_flags,
-        0,
-        key_ordering,
-        key_implicit,
-        true,
-    );
-    charge_emitted_outputs(
-        options,
-        frames,
-        &scheduler,
-        &mut emission_queue,
-        scheduler.newly(),
-        emit,
-    )?;
-    reference.update(0, &key_update, is_key_or_switch(&key_core));
-    reference.note_frame(key_envelope.header.obu_type, true, &key_update);
-    in_band_long_term_prelude.note_frame(&key_core, 0);
-    scheduler.note_frame(
-        key_envelope.header.obu_type,
-        true,
-        key_tu_limit,
-        key_immediate,
-        key_implicit,
-    );
-    if key_immediate && !scheduler.already_emitted(0) {
-        scheduler.on_immediate(0, key_ordering);
-        charge_emitted_outputs(
-            options,
-            frames,
-            &scheduler,
-            &mut emission_queue,
-            scheduler.newly(),
-            emit,
-        )?;
-    }
-    reclaim_unowned_frames(
-        frames,
-        &reference,
-        &mut scheduler,
-        &emission_queue,
-        ring,
-        &mut retained_frame_bytes,
-    )?;
-    if output_frame_limit_reached(options, scheduler.emitted_count) {
-        return emission_queue.flush(frames, emit);
-    }
+    let frame_rate = stream.frame_rate();
+    let mut pending_first = Some((key_candidate, leading_unit));
+    let mut emission_queue = output_schedule::EmissionQueue::default();
+    let mut retained_frame_bytes = 0;
 
-    let mut discard_leading_frames = key_envelope.header.obu_type == ObuType::OpenLoopKey;
-    *obu_storage = recycle(leading_buffer);
-    let mut decoding_initial_tu = true;
     loop {
         if !frames.has_space() {
             ring.harvest_all(pools);
@@ -1239,8 +910,7 @@ fn decode_frames_in_order(
                 pools.retire_idle();
                 reclaim_unowned_frames(
                     frames,
-                    &reference,
-                    &mut scheduler,
+                    &mut xlayers,
                     &emission_queue,
                     ring,
                     &mut retained_frame_bytes,
@@ -1264,37 +934,29 @@ fn decode_frames_in_order(
             }
         }
         frames.reserve()?;
-        let candidate = stream.candidate(
-            obu_storage,
-            &mut || emission_queue.flush(frames, emit),
-            &mut |skipped_obus| {
-                if skipped_obus
-                    .iter()
-                    .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter)
-                {
-                    decoding_initial_tu = false;
-                    discard_leading_frames = false;
-                    in_band_long_term_prelude.begin_frame(true);
-                }
-                output_effect_state.observe_prefix(skipped_obus, &sequence)?;
-                film_grain_slots.update_from_obus(skipped_obus, &sequence)?;
-                Ok(())
-            },
-        )?;
+        let candidate = match pending_first.take() {
+            Some(first) => Some(first),
+            None => stream.candidate(
+                obu_storage,
+                &mut || emission_queue.flush(frames, emit),
+                &mut |skipped_obus| xlayers.observe_skipped(skipped_obus),
+            )?,
+        };
         let Some((next_candidate, unit)) = candidate else {
             break;
         };
         let next_candidate = &next_candidate;
-        if discard_leading_frames && next_candidate.obu_type().is_leading_frame() {
+        let candidate_xlayer = next_candidate.header().extended_layer_id;
+        if xlayers.is_discarding_leading_frames(candidate_xlayer)
+            && next_candidate.obu_type().is_leading_frame()
+        {
             let mut obu_buffer = recycle(core::mem::take(obu_storage));
             let obus = stream.obus(&unit, &mut obu_buffer)?;
             let (prefix_obus, _) = stream.inter_envelope(obus, next_candidate)?;
-            if prefix_obus
-                .iter()
-                .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter)
-            {
-                decoding_initial_tu = false;
-                in_band_long_term_prelude.begin_frame(true);
+            xlayers.observe_global_obus(prefix_obus, false)?;
+            xlayers.observe_other_non_global_prefix(prefix_obus, candidate_xlayer)?;
+            if let Some(layer) = xlayers.get_mut(candidate_xlayer) {
+                layer.begin_discarded_leading_frame();
             }
             *obu_storage = recycle(obu_buffer);
             continue;
@@ -1305,108 +967,153 @@ fn decode_frames_in_order(
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) =
                     stream.inter_envelope(obus, next_candidate)?;
-                let sef_emit_allowed = stream.layer_filter().is_layer_output(
+                let sef_emit_allowed = stream.layer_filter().is_layer_output_for(
+                    sef_envelope.header.extended_layer_id,
                     sef_envelope.header.embedded_layer_id,
                     sef_envelope.header.temporal_layer_id,
                 );
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
-                output_effect_state.observe_prefix(sef_prefix_obus, &sequence)?;
-                film_grain_slots.update_from_obus(sef_prefix_obus, &sequence)?;
-                let first_picture_in_tu = sef_prefix_obus
-                    .iter()
-                    .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
-                if first_picture_in_tu {
-                    decoding_initial_tu = false;
-                    discard_leading_frames = false;
+                xlayers.observe_global_obus(sef_prefix_obus, false)?;
+                xlayers.observe_other_non_global_prefix(sef_prefix_obus, candidate_xlayer)?;
+                let Some(layer) = xlayers.get_mut(candidate_xlayer) else {
+                    return Err(unsupported_at(
+                        "missing_random_access_frame",
+                        sef_envelope.offset,
+                        "decode runtime requires a closed-loop key, open-loop key, or RAS random-access frame",
+                    ));
+                };
+                XLayerTable::apply_non_global_prefix(
+                    sef_prefix_obus,
+                    candidate_xlayer,
+                    &layer.sequence,
+                    &mut layer.output_effect_state,
+                    &mut layer.film_grain_slots,
+                )?;
+                let first_picture_in_tu = layer.begin_coded_picture();
+                let flushed = layer
+                    .scheduler
+                    .prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                layer
+                    .reference
+                    .prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                let sef_core = {
+                    let bit_depth = layer.sequence.general.bit_depth_idc;
+                    with_sample_bit_depth!(bit_depth, T, {
+                        let state = layer.reference.state::<T>(frames)?;
+                        parse_inter_core_with_effects(
+                            sef_envelope,
+                            &layer.sequence,
+                            &state,
+                            &layer.output_effect_state,
+                            first_picture_in_tu,
+                            ivf_frame_index,
+                        )?
+                    })
+                };
+                let total_emitted = xlayers.total_emitted_count();
+                if sef_emit_allowed {
+                    let next_output_frame_count =
+                        checked_add(DecodeLimitName::MaxOutputFrames, total_emitted as u64, 1)?;
+                    ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
                 }
-                in_band_long_term_prelude.begin_frame(first_picture_in_tu);
-                let flushed =
-                    scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
                 charge_emitted_outputs(
                     options,
                     frames,
-                    &scheduler,
+                    total_emitted,
                     &mut emission_queue,
                     &flushed,
                     emit,
                 )?;
-                if output_frame_limit_reached(options, scheduler.emitted_count) {
+                if output_frame_limit_reached(options, total_emitted) {
+                    *obu_storage = recycle(obu_buffer);
                     break;
                 }
-                reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
-                let sef_core = with_sample!(sequence, T, {
-                    let state = reference.state::<T>(frames)?;
-                    parse_inter_core_with_effects(
+                let display_grain = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            sef_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    let _ = layer.output_effect_state.prepare_frame(
                         sef_envelope,
-                        &sequence,
-                        &state,
-                        &output_effect_state,
+                        &sef_core,
+                        &layer.sequence,
                         first_picture_in_tu,
                         ivf_frame_index,
-                    )?
-                });
-                if sef_emit_allowed {
-                    let next_output_frame_count = checked_add(
-                        DecodeLimitName::MaxOutputFrames,
-                        scheduler.emitted_count as u64,
-                        1,
                     )?;
-                    ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
-                }
-                let _ = output_effect_state.prepare_frame(
-                    sef_envelope,
-                    &sef_core,
-                    &sequence,
-                    first_picture_in_tu,
-                    ivf_frame_index,
-                )?;
-                let display_grain = film_grain_slots.active_for_core(
-                    sef_envelope,
-                    &sef_core,
-                    &sequence,
-                    sef_envelope.offset,
-                )?;
-                output_effect_state
-                    .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
-                let output_effects =
-                    output_effect_state.finish_frame(sef_envelope.header.embedded_layer_id);
-                let output_rate = output_effects.frame_rate(frame_rate);
-                let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
-                    unsupported_at(
-                        "sef_missing_frame_to_show_map_idx",
+                    layer.film_grain_slots.active_for_core(
+                        sef_envelope,
+                        &sef_core,
+                        &layer.sequence,
                         sef_envelope.offset,
-                        "show-existing-frame output requires frame_to_show_map_idx",
-                    )
-                })?;
-                let source_index = reference.frame_index_for_slot(slot)?;
-                if sef_core.derive_sef_order_hint == Some(true) {
-                    reference
-                        .mark_sef_derive_output(slot, scheduler.already_emitted(source_index))?;
-                }
-                reference.note_show_existing();
-                let source = frames.get(source_index).ok_or_else(|| {
-                    unsupported_at(
-                        "sef_reference_frame_unavailable",
-                        sef_envelope.offset,
-                        "show-existing-frame output requires its retained decoded frame",
-                    )
-                })?;
-                let sef_frame = PipelineFrame {
-                    display_grain,
-                    output_effects,
-                    frame_cdfs: source.frame_cdfs.clone(),
-                    motion_field: source.motion_field.clone(),
-                    ccso_header: source.ccso_header.clone(),
-                    ccso_grid: source.ccso_grid.clone(),
-                    segment_ids: source.segment_ids.clone(),
-                    frame_rate: output_rate,
-                    embedded_layer_id: sef_envelope.header.embedded_layer_id,
-                    temporal_layer_id: sef_envelope.header.temporal_layer_id,
-                    props: stream.props(),
-                    frame: inflight::PipelineFrameSlot::completed_recycled(
-                        source.wait_ready_frame()?,
-                        frames,
-                    )?,
+                    )?
+                };
+                xlayers.observe_suffix_for_xlayer(
+                    suffix_after_candidate(obus, next_candidate)?,
+                    candidate_xlayer,
+                )?;
+                let (sef_frame, ordering) = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            sef_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    let output_effects = layer
+                        .output_effect_state
+                        .finish_frame(sef_envelope.header.embedded_layer_id);
+                    let output_rate = output_effects.frame_rate(frame_rate);
+                    let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
+                        unsupported_at(
+                            "sef_missing_frame_to_show_map_idx",
+                            sef_envelope.offset,
+                            "show-existing-frame output requires frame_to_show_map_idx",
+                        )
+                    })?;
+                    let source_index = layer.reference.frame_index_for_slot(slot)?;
+                    if sef_core.derive_sef_order_hint == Some(true) {
+                        layer.reference.mark_sef_derive_output(
+                            slot,
+                            layer.scheduler.already_emitted(source_index),
+                        )?;
+                    }
+                    layer.reference.note_show_existing();
+                    let source = frames.get(source_index).ok_or_else(|| {
+                        unsupported_at(
+                            "sef_reference_frame_unavailable",
+                            sef_envelope.offset,
+                            "show-existing-frame output requires its retained decoded frame",
+                        )
+                    })?;
+                    let sef_frame = PipelineFrame {
+                        display_grain,
+                        output_effects,
+                        frame_cdfs: source.frame_cdfs.clone(),
+                        motion_field: source.motion_field.clone(),
+                        ccso_header: source.ccso_header.clone(),
+                        ccso_grid: source.ccso_grid.clone(),
+                        segment_ids: source.segment_ids.clone(),
+                        frame_rate: output_rate,
+                        extended_layer_id: sef_envelope.header.extended_layer_id,
+                        embedded_layer_id: sef_envelope.header.embedded_layer_id,
+                        temporal_layer_id: sef_envelope.header.temporal_layer_id,
+                        props: stream.props(),
+                        frame: inflight::PipelineFrameSlot::completed_recycled(
+                            source.wait_ready_frame()?,
+                            frames,
+                        )?,
+                    };
+                    let ordering = sef_core.display_order_hint().ok_or_else(|| {
+                        unsupported_at(
+                            "sef_missing_display_order_hint",
+                            sef_envelope.offset,
+                            "show-existing-frame output requires a derived display order hint",
+                        )
+                    })?;
+                    (sef_frame, ordering)
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -1416,52 +1123,54 @@ fn decode_frames_in_order(
                 let frame_index = frames.len();
                 frames.push(sef_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
-                let ordering = sef_core.display_order_hint().ok_or_else(|| {
-                    unsupported_at(
-                        "sef_missing_display_order_hint",
-                        sef_envelope.offset,
-                        "show-existing-frame output requires a derived display order hint",
-                    )
-                })?;
-                let sef_ordering = output_ordering(
-                    ordering,
-                    sef_envelope.header.embedded_layer_id,
-                    sequence.general.max_mlayer_id,
-                );
-                let sef_tu_limit = output_ordering(
-                    ordering,
-                    EmbeddedLayerId::BASE,
-                    sequence.general.max_mlayer_id,
-                );
-                scheduler.note_frame(
-                    next_candidate.obu_type(),
-                    first_picture_in_tu,
-                    sef_tu_limit,
-                    true,
-                    false,
-                );
-                if !sef_emit_allowed {
-                    scheduler.suppress(frame_index);
+                {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            sef_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    let sef_ordering = output_ordering(
+                        ordering,
+                        sef_envelope.header.embedded_layer_id,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    let sef_tu_limit = output_ordering(
+                        ordering,
+                        EmbeddedLayerId::BASE,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    layer.scheduler.note_frame(
+                        next_candidate.obu_type(),
+                        first_picture_in_tu,
+                        sef_tu_limit,
+                        true,
+                        false,
+                    );
+                    if !sef_emit_allowed {
+                        layer.scheduler.suppress(frame_index);
+                    }
+                    layer.scheduler.on_immediate(frame_index, sef_ordering);
                 }
-                scheduler.on_immediate(frame_index, sef_ordering);
+                let (newly, total_emitted) = xlayers.newly_and_total(candidate_xlayer);
                 charge_emitted_outputs(
                     options,
                     frames,
-                    &scheduler,
+                    total_emitted,
                     &mut emission_queue,
-                    scheduler.newly(),
+                    newly,
                     emit,
                 )?;
                 reclaim_unowned_frames(
                     frames,
-                    &reference,
-                    &mut scheduler,
+                    &mut xlayers,
                     &emission_queue,
                     ring,
                     &mut retained_frame_bytes,
                 )?;
                 *obu_storage = recycle(obu_buffer);
-                if output_frame_limit_reached(options, scheduler.emitted_count) {
+                if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
                     break;
                 }
             }
@@ -1476,125 +1185,258 @@ fn decode_frames_in_order(
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (inter_prefix_obus, inter_envelope) =
                     stream.inter_envelope(obus, next_candidate)?;
-                let inter_emit_allowed = stream.layer_filter().is_layer_output(
+                let inter_emit_allowed = stream.layer_filter().is_layer_output_for(
+                    inter_envelope.header.extended_layer_id,
                     inter_envelope.header.embedded_layer_id,
                     inter_envelope.header.temporal_layer_id,
                 );
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
-                output_effect_state.observe_prefix(inter_prefix_obus, &sequence)?;
-                film_grain_slots.update_from_obus(inter_prefix_obus, &sequence)?;
-                let first_picture_in_tu = inter_prefix_obus
-                    .iter()
-                    .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
-                if first_picture_in_tu {
-                    decoding_initial_tu = false;
-                    discard_leading_frames = false;
+                xlayers.observe_global_obus(inter_prefix_obus, false)?;
+                xlayers.observe_other_non_global_prefix(inter_prefix_obus, candidate_xlayer)?;
+                let initializing_layer = !xlayers.contains(candidate_xlayer);
+                if initializing_layer {
+                    if next_candidate.obu_type() != ObuType::RasFrame {
+                        return Err(unsupported_at(
+                            "missing_random_access_frame",
+                            inter_envelope.offset,
+                            "decode runtime requires a closed-loop key, open-loop key, or RAS random-access frame",
+                        ));
+                    }
+                    let sequence_envelope = inter_prefix_obus
+                        .iter()
+                        .rev()
+                        .find(|obu| {
+                            obu.header.obu_type == ObuType::SequenceHeader
+                                && obu.header.extended_layer_id == candidate_xlayer
+                        })
+                        .copied()
+                        .ok_or_else(|| {
+                            unsupported_at(
+                                "missing_sequence_header",
+                                inter_envelope.offset,
+                                "decode runtime requires a sequence header before the first RAS frame of an extended layer",
+                            )
+                        })?;
+                    let sequence = parse_sequence(sequence_envelope)?;
+                    validate_sequence(&sequence, sequence_envelope.offset)?;
+                    let num_ref_frames = usize::from(
+                        sequence
+                            .inter
+                            .as_ref()
+                            .ok_or_else(|| {
+                                unsupported(
+                                    "missing_sequence_inter_config",
+                                    None,
+                                    "multi-frame decode requires the sequence inter config (NumRefFrames)",
+                                )
+                            })?
+                            .num_ref_frames,
+                    );
+                    let mut output_effect_state = xlayers.create_effect_state(candidate_xlayer);
+                    let mut film_grain_slots = FilmGrainSlots::new();
+                    XLayerTable::apply_non_global_prefix(
+                        inter_prefix_obus,
+                        candidate_xlayer,
+                        &sequence,
+                        &mut output_effect_state,
+                        &mut film_grain_slots,
+                    )?;
+                    xlayers.validate_xlayer_lcr(
+                        candidate_xlayer,
+                        &sequence,
+                        &output_effect_state,
+                        sequence_envelope.offset,
+                        true,
+                    )?;
+                    let reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
+                    let scheduler = OutputScheduler::new(num_ref_frames);
+                    let mut prelude = xlayer_state::InBandLongTermPrelude::default();
+                    prelude.begin_frame(true);
+                    xlayers.insert(XLayerState::new(
+                        candidate_xlayer,
+                        sequence,
+                        reference,
+                        scheduler,
+                        output_effect_state,
+                        film_grain_slots,
+                        prelude,
+                        false,
+                    ));
+                    frames.ensure_capacity_for_layers(xlayers.len(), ring.capacity());
                 }
-                in_band_long_term_prelude.begin_frame(first_picture_in_tu);
-                let flushed =
-                    scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                    unsupported_at(
+                        "missing_random_access_frame",
+                        inter_envelope.offset,
+                        "decode runtime requires an active extended layer",
+                    )
+                })?;
+                if !initializing_layer {
+                    XLayerTable::apply_non_global_prefix(
+                        inter_prefix_obus,
+                        candidate_xlayer,
+                        &layer.sequence,
+                        &mut layer.output_effect_state,
+                        &mut layer.film_grain_slots,
+                    )?;
+                }
+                let first_picture_in_tu = if initializing_layer {
+                    true
+                } else {
+                    layer.begin_coded_picture()
+                };
+                let bit_depth = layer.sequence.general.bit_depth_idc;
+                let flushed = layer
+                    .scheduler
+                    .prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                let total_emitted = xlayers.total_emitted_count();
                 charge_emitted_outputs(
                     options,
                     frames,
-                    &scheduler,
+                    total_emitted,
                     &mut emission_queue,
                     &flushed,
                     emit,
                 )?;
-                if output_frame_limit_reached(options, scheduler.emitted_count) {
+                if output_frame_limit_reached(options, total_emitted) {
+                    *obu_storage = recycle(obu_buffer);
                     break;
                 }
-                reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                    unsupported_at(
+                        "missing_random_access_frame",
+                        inter_envelope.offset,
+                        "decode runtime requires an active extended layer",
+                    )
+                })?;
+                layer
+                    .reference
+                    .prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
                 if matches!(
                     next_candidate.obu_type(),
                     ObuType::Switch | ObuType::RasFrame
                 ) {
-                    let activation = with_sample!(sequence, T, {
-                        let state = reference.state::<T>(frames)?;
+                    let activation = with_sample_bit_depth!(bit_depth, T, {
+                        let state = layer.reference.state::<T>(frames)?;
                         inter::parse_inter_frame_activation(
                             inter_envelope,
-                            &sequence,
+                            &layer.sequence,
                             &state,
                             first_picture_in_tu,
                             ivf_frame_index,
                         )?
                     });
-                    if next_candidate.obu_type() == ObuType::RasFrame && decoding_initial_tu {
-                        in_band_long_term_prelude.validate_required(
+                    if next_candidate.obu_type() == ObuType::RasFrame && layer.decoding_initial_tu {
+                        layer.in_band_long_term_prelude.validate_required(
                             &activation,
-                            &reference,
+                            &layer.reference,
                             inter_envelope.offset,
                         )?;
                     }
                     let restricted = activation.restricted_prediction_switch;
                     if restricted == Some(true) {
-                        let presence = sequence.general.mlayer_dependency_map.presence_map();
-                        let slots = reference.restrict_references_for_switch(
+                        let presence = layer.sequence.general.mlayer_dependency_map.presence_map();
+                        let slots = layer.reference.restrict_references_for_switch(
                             inter_envelope.header.embedded_layer_id,
                             &presence,
                         );
-                        let emitted = scheduler.restrict_slots(&slots);
+                        let emitted = layer.scheduler.restrict_slots(&slots);
+                        let total_emitted = xlayers.total_emitted_count();
                         charge_emitted_outputs(
                             options,
                             frames,
-                            &scheduler,
+                            total_emitted,
                             &mut emission_queue,
                             &emitted,
                             emit,
                         )?;
-                        if output_frame_limit_reached(options, scheduler.emitted_count) {
+                        if output_frame_limit_reached(options, total_emitted) {
+                            *obu_storage = recycle(obu_buffer);
                             break;
                         }
                     }
                 }
                 let frame_index = frames.len();
-                let decoded = with_sample!(sequence, T, {
-                    let inter_state = reference.state::<T>(frames)?;
-                    let inter_core = parse_inter_core_with_effects(
-                        inter_envelope,
-                        &sequence,
-                        &inter_state,
-                        &output_effect_state,
-                        first_picture_in_tu,
-                        ivf_frame_index,
-                    )?;
-                    let inter_core = frames.share_core(inter_core)?;
-                    let user_qm = output_effect_state.prepare_frame(
-                        inter_envelope,
-                        &inter_core,
-                        &sequence,
-                        first_picture_in_tu,
-                        ivf_frame_index,
-                    )?;
-                    if inter_emit_allowed && frame_is_output(&inter_core) {
-                        let next_output_frame_count = checked_add(
-                            DecodeLimitName::MaxOutputFrames,
-                            scheduler.emitted_count as u64,
-                            1,
+                let (inter_core, user_qm) = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            inter_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    with_sample_bit_depth!(bit_depth, T, {
+                        let inter_state = layer.reference.state::<T>(frames)?;
+                        let inter_core = parse_inter_core_with_effects(
+                            inter_envelope,
+                            &layer.sequence,
+                            &inter_state,
+                            &layer.output_effect_state,
+                            first_picture_in_tu,
+                            ivf_frame_index,
                         )?;
-                        ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
-                    }
-                    admit_within_reference_store(
-                        |retained| {
-                            ensure_retained_frame_byte_limits_for_core(
-                                options.limits(),
-                                retained,
+                        if initializing_layer {
+                            layer.in_band_long_term_prelude.validate_required(
                                 &inter_core,
-                                &sequence,
+                                &layer.reference,
                                 inter_envelope.offset,
-                            )
-                        },
-                        options,
-                        rows,
-                        pools,
-                        ring,
-                        frames,
-                        &reference,
-                        &mut scheduler,
-                        &mut emission_queue,
-                        emit,
-                        &mut retained_frame_bytes,
+                            )?;
+                        }
+                        let inter_core = frames.share_core(inter_core)?;
+                        let user_qm = layer.output_effect_state.prepare_frame(
+                            inter_envelope,
+                            &inter_core,
+                            &layer.sequence,
+                            first_picture_in_tu,
+                            ivf_frame_index,
+                        )?;
+                        Result::Ok((inter_core, user_qm))
+                    })?
+                };
+                if inter_emit_allowed && frame_is_output(&inter_core) {
+                    let next_output_frame_count = checked_add(
+                        DecodeLimitName::MaxOutputFrames,
+                        xlayers.total_emitted_count() as u64,
+                        1,
                     )?;
+                    ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
+                }
+                admit_within_reference_store(
+                    |xlayers, retained| {
+                        let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
+                            unsupported_at(
+                                "missing_random_access_frame",
+                                inter_envelope.offset,
+                                "decode runtime requires an active extended layer",
+                            )
+                        })?;
+                        ensure_retained_frame_byte_limits_for_core(
+                            options.limits(),
+                            retained,
+                            &inter_core,
+                            &layer.sequence,
+                            inter_envelope.offset,
+                        )
+                    },
+                    options,
+                    rows,
+                    pools,
+                    ring,
+                    frames,
+                    &mut xlayers,
+                    &mut emission_queue,
+                    emit,
+                    &mut retained_frame_bytes,
+                )?;
+                let decoded = with_sample_bit_depth!(bit_depth, T, {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            inter_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    let inter_state = layer.reference.state::<T>(frames)?;
                     let split = rows.filter(|_| {
                         inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
                     });
@@ -1611,8 +1453,8 @@ fn decode_frames_in_order(
                             ring,
                             frames,
                             options,
-                            &sequence,
-                            &mut shared_sequence,
+                            &layer.sequence,
+                            &mut layer.shared_sequence,
                             next_candidate,
                             &unit,
                             inter_core,
@@ -1624,7 +1466,7 @@ fn decode_frames_in_order(
                         let (slot, finish, geometry, products, motion) =
                             frame_tasks::reserve_tip_output(
                                 &inter_core,
-                                &sequence,
+                                &layer.sequence,
                                 T::BIT_DEPTH,
                                 T::erase,
                                 frames,
@@ -1633,7 +1475,7 @@ fn decode_frames_in_order(
                             )?;
                         let publications = products.handles();
                         let entropy =
-                            inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
+                            inter::entropy_dependencies(&inter_core, &layer.sequence, &inter_state);
                         let motion_deps = inter_core
                             .inter
                             .as_ref()
@@ -1648,7 +1490,10 @@ fn decode_frames_in_order(
                             frame_tasks::TipFrameInputs {
                                 candidate: next_candidate.clone(),
                                 core: inter_core,
-                                sequence: share_sequence(&mut shared_sequence, &sequence),
+                                sequence: share_sequence(
+                                    &mut layer.shared_sequence,
+                                    &layer.sequence,
+                                ),
                                 reference: inter_state,
                                 geometry,
                                 products,
@@ -1663,12 +1508,12 @@ fn decode_frames_in_order(
                     } else {
                         ring.reserve(pools);
                         let setup = if inter_core.status
-                                == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
-                            {
-                                frame_engine::FrameSetup::Intra
-                            } else {
-                                frame_engine::FrameSetup::Inter(&inter_state)
-                            };
+                            == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
+                        {
+                            frame_engine::FrameSetup::Intra
+                        } else {
+                            frame_engine::FrameSetup::Inter(&inter_state)
+                        };
                         let mut product_writers = frames.reserve_products()?;
                         let walk = walk_frame_with_backend(
                             backend,
@@ -1677,7 +1522,7 @@ fn decode_frames_in_order(
                             unit.view(),
                             inter_envelope,
                             inter_core,
-                            &sequence,
+                            &layer.sequence,
                             options,
                             &setup,
                             T::BIT_DEPTH,
@@ -1708,16 +1553,36 @@ fn decode_frames_in_order(
                     }
                 });
                 let (inter_slot, inter_core, products, motion_field) = decoded;
-                let inter_display_grain = film_grain_slots.active_for_core(
-                    inter_envelope,
-                    &inter_core,
-                    &sequence,
-                    inter_envelope.offset,
+                let inter_display_grain = {
+                    let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            inter_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    layer.film_grain_slots.active_for_core(
+                        inter_envelope,
+                        &inter_core,
+                        &layer.sequence,
+                        inter_envelope.offset,
+                    )?
+                };
+                xlayers.observe_suffix_for_xlayer(
+                    suffix_after_candidate(obus, next_candidate)?,
+                    candidate_xlayer,
                 )?;
-                output_effect_state
-                    .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
-                let inter_output_effects =
-                    output_effect_state.finish_frame(inter_envelope.header.embedded_layer_id);
+                let inter_output_effects = xlayers
+                    .get_mut(candidate_xlayer)
+                    .ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            inter_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?
+                    .output_effect_state
+                    .finish_frame(inter_envelope.header.embedded_layer_id);
                 let inter_frame_rate = inter_output_effects.frame_rate(frame_rate);
                 let inter_update = frame_ref_update_from_core(
                     &inter_core,
@@ -1735,6 +1600,7 @@ fn decode_frames_in_order(
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate: inter_frame_rate,
+                    extended_layer_id: inter_envelope.header.extended_layer_id,
                     embedded_layer_id: inter_envelope.header.embedded_layer_id,
                     temporal_layer_id: inter_envelope.header.temporal_layer_id,
                     props: stream.props(),
@@ -1747,71 +1613,99 @@ fn decode_frames_in_order(
                 frames.push(inter_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = inter_update.order_hint;
-                let inter_ordering = output_ordering(
-                    inter_hint,
-                    inter_envelope.header.embedded_layer_id,
-                    sequence.general.max_mlayer_id,
-                );
-                let inter_tu_limit = output_ordering(
-                    inter_hint,
-                    EmbeddedLayerId::BASE,
-                    sequence.general.max_mlayer_id,
-                );
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
                 let inter_key_or_switch = is_key_or_switch(&inter_core);
-                if !inter_emit_allowed {
-                    scheduler.suppress(frame_index);
-                }
-                scheduler.refresh(
-                    inter_update.refresh_frame_flags,
-                    frame_index,
-                    inter_ordering,
-                    inter_implicit,
-                    inter_key_or_switch,
-                );
+                let (inter_ordering, inter_tu_limit) = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            inter_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    let inter_ordering = output_ordering(
+                        inter_hint,
+                        inter_envelope.header.embedded_layer_id,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    let inter_tu_limit = output_ordering(
+                        inter_hint,
+                        EmbeddedLayerId::BASE,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    if !inter_emit_allowed {
+                        layer.scheduler.suppress(frame_index);
+                    }
+                    layer.scheduler.refresh(
+                        inter_update.refresh_frame_flags,
+                        frame_index,
+                        inter_ordering,
+                        inter_implicit,
+                        inter_key_or_switch || initializing_layer,
+                    );
+                    (inter_ordering, inter_tu_limit)
+                };
+                let (newly_refresh, total_emitted) = xlayers.newly_and_total(candidate_xlayer);
                 charge_emitted_outputs(
                     options,
                     frames,
-                    &scheduler,
+                    total_emitted,
                     &mut emission_queue,
-                    scheduler.newly(),
+                    newly_refresh,
                     emit,
                 )?;
-                reference.update(frame_index, &inter_update, inter_key_or_switch);
-                reference.note_frame(
-                    next_candidate.obu_type(),
-                    first_picture_in_tu,
-                    &inter_update,
-                );
-                scheduler.note_frame(
-                    next_candidate.obu_type(),
-                    first_picture_in_tu,
-                    inter_tu_limit,
-                    inter_immediate,
-                    inter_implicit,
-                );
-                if inter_immediate && !scheduler.already_emitted(frame_index) {
-                    scheduler.on_immediate(frame_index, inter_ordering);
+                let trigger_immediate = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            inter_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    layer
+                        .reference
+                        .update(frame_index, &inter_update, inter_key_or_switch);
+                    layer.reference.note_frame(
+                        next_candidate.obu_type(),
+                        first_picture_in_tu,
+                        &inter_update,
+                    );
+                    layer.scheduler.note_frame(
+                        next_candidate.obu_type(),
+                        first_picture_in_tu,
+                        inter_tu_limit,
+                        inter_immediate,
+                        inter_implicit,
+                    );
+                    if inter_immediate && !layer.scheduler.already_emitted(frame_index) {
+                        layer.scheduler.on_immediate(frame_index, inter_ordering);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if trigger_immediate {
+                    let (newly_immediate, total_emitted) =
+                        xlayers.newly_and_total(candidate_xlayer);
                     charge_emitted_outputs(
                         options,
                         frames,
-                        &scheduler,
+                        total_emitted,
                         &mut emission_queue,
-                        scheduler.newly(),
+                        newly_immediate,
                         emit,
                     )?;
                 }
                 reclaim_unowned_frames(
                     frames,
-                    &reference,
-                    &mut scheduler,
+                    &mut xlayers,
                     &emission_queue,
                     ring,
                     &mut retained_frame_bytes,
                 )?;
                 *obu_storage = recycle(obu_buffer);
-                if output_frame_limit_reached(options, scheduler.emitted_count) {
+                if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
                     break;
                 }
             }
@@ -1833,14 +1727,22 @@ fn decode_frames_in_order(
                         .copied();
                     (sequence_envelope, prefix, frame)
                 };
-                let (key_sequence, key_sequence_offset) =
-                    if let Some(envelope) = key_sequence_envelope {
-                        let parsed = parse_sequence(envelope)?;
-                        validate_sequence(&parsed, envelope.offset)?;
-                        (parsed, envelope.offset)
-                    } else {
-                        (sequence.clone(), key_envelope.offset)
-                    };
+                let initializing_layer = !xlayers.contains(candidate_xlayer);
+                let (key_sequence, key_sequence_offset) = if let Some(envelope) =
+                    key_sequence_envelope
+                {
+                    let parsed = parse_sequence(envelope)?;
+                    validate_sequence(&parsed, envelope.offset)?;
+                    (parsed, envelope.offset)
+                } else if let Some(layer) = xlayers.get(candidate_xlayer) {
+                    (layer.sequence.clone(), key_envelope.offset)
+                } else {
+                    return Err(unsupported_at(
+                        "missing_sequence_header",
+                        key_envelope.offset,
+                        "decode runtime requires a sequence header before the first frame of an extended layer",
+                    ));
+                };
                 let key_num_ref_frames = usize::from(
                     key_sequence
                         .inter
@@ -1854,116 +1756,252 @@ fn decode_frames_in_order(
                         })?
                         .num_ref_frames,
                 );
-                if !starts_new_sequence && key_num_ref_frames != reference.len() {
+                if !starts_new_sequence
+                    && let Some(layer) = xlayers.get(candidate_xlayer)
+                    && key_num_ref_frames != layer.reference.len()
+                {
                     return Err(unsupported_at(
                         "olk_reference_buffer_size_change",
                         key_envelope.offset,
                         "open-loop-key sequence activation changed NumRefFrames inside the active coded video sequence",
                     ));
                 }
-                let first_picture_in_tu = key_prefix_obus
-                    .iter()
-                    .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
-                if first_picture_in_tu {
-                    decoding_initial_tu = false;
-                    discard_leading_frames = false;
-                } else if decoding_initial_tu && next_candidate.obu_type() == ObuType::OpenLoopKey {
-                    discard_leading_frames = true;
+                xlayers.observe_global_obus(key_prefix_obus, false)?;
+                xlayers.observe_other_non_global_prefix(key_prefix_obus, candidate_xlayer)?;
+                if initializing_layer {
+                    let mut output_effect_state = xlayers.create_effect_state(candidate_xlayer);
+                    let mut film_grain_slots = FilmGrainSlots::new();
+                    XLayerTable::apply_non_global_prefix(
+                        key_prefix_obus,
+                        candidate_xlayer,
+                        &key_sequence,
+                        &mut output_effect_state,
+                        &mut film_grain_slots,
+                    )?;
+                    xlayers.validate_xlayer_lcr(
+                        candidate_xlayer,
+                        &key_sequence,
+                        &output_effect_state,
+                        key_sequence_offset,
+                        true,
+                    )?;
+                    let reference =
+                        reference_buffer::RuntimeReferenceBuffer::new(key_num_ref_frames)?;
+                    let scheduler = OutputScheduler::new(key_num_ref_frames);
+                    let mut prelude = xlayer_state::InBandLongTermPrelude::default();
+                    prelude.begin_frame(true);
+                    xlayers.insert(XLayerState::new(
+                        candidate_xlayer,
+                        key_sequence.clone(),
+                        reference,
+                        scheduler,
+                        output_effect_state,
+                        film_grain_slots,
+                        prelude,
+                        next_candidate.obu_type() == ObuType::OpenLoopKey,
+                    ));
+                    frames.ensure_capacity_for_layers(xlayers.len(), ring.capacity());
+                } else {
+                    if let Some(seq_env) = key_sequence_envelope {
+                        let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
+                            unsupported_at(
+                                "missing_random_access_frame",
+                                key_envelope.offset,
+                                "decode runtime requires an active extended layer",
+                            )
+                        })?;
+                        xlayers.validate_xlayer_lcr(
+                            candidate_xlayer,
+                            &key_sequence,
+                            &layer.output_effect_state,
+                            seq_env.offset,
+                            false,
+                        )?;
+                    }
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            key_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    XLayerTable::apply_non_global_prefix(
+                        key_prefix_obus,
+                        candidate_xlayer,
+                        &key_sequence,
+                        &mut layer.output_effect_state,
+                        &mut layer.film_grain_slots,
+                    )?;
                 }
-                in_band_long_term_prelude.begin_frame(first_picture_in_tu);
-                if !starts_new_sequence {
-                    let flushed =
-                        scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                let first_picture_in_tu = if initializing_layer {
+                    true
+                } else {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            key_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    let first = layer.begin_coded_picture();
+                    if !first
+                        && layer.decoding_initial_tu
+                        && next_candidate.obu_type() == ObuType::OpenLoopKey
+                    {
+                        layer.discard_leading_frames = true;
+                    }
+                    first
+                };
+                if !starts_new_sequence && !initializing_layer {
+                    let flushed = {
+                        let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                            unsupported_at(
+                                "missing_random_access_frame",
+                                key_envelope.offset,
+                                "decode runtime requires an active extended layer",
+                            )
+                        })?;
+                        let flushed = layer
+                            .scheduler
+                            .prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                        layer
+                            .reference
+                            .prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                        flushed
+                    };
+                    let total_emitted = xlayers.total_emitted_count();
                     charge_emitted_outputs(
                         options,
                         frames,
-                        &scheduler,
+                        total_emitted,
                         &mut emission_queue,
                         &flushed,
                         emit,
                     )?;
-                    if output_frame_limit_reached(options, scheduler.emitted_count) {
+                    if output_frame_limit_reached(options, total_emitted) {
+                        *obu_storage = recycle(obu_buffer);
                         break;
                     }
-                    reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
                 }
-                output_effect_state.observe_prefix(key_prefix_obus, &key_sequence)?;
-                film_grain_slots.update_from_obus(key_prefix_obus, &key_sequence)?;
-                let key_core = if starts_new_sequence {
-                    parse_key_core_with_effects(key_envelope, &key_sequence, &output_effect_state)?
-                } else {
-                    with_sample!(key_sequence, T, {
-                        let state = reference.state::<T>(frames)?;
-                        parse_olk_core_with_effects(
+                let (key_core, key_user_qm, key_display_grain) = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            key_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    let key_core = if starts_new_sequence {
+                        parse_key_core_with_effects(
                             key_envelope,
                             &key_sequence,
-                            &state,
-                            &output_effect_state,
-                            first_picture_in_tu,
+                            &layer.output_effect_state,
                         )?
-                    })
-                };
-                if decoding_initial_tu {
-                    in_band_long_term_prelude.validate_required(
+                    } else {
+                        with_sample!(key_sequence, T, {
+                            let state = layer.reference.state::<T>(frames)?;
+                            parse_olk_core_with_effects(
+                                key_envelope,
+                                &key_sequence,
+                                &state,
+                                &layer.output_effect_state,
+                                first_picture_in_tu,
+                            )?
+                        })
+                    };
+                    if layer.decoding_initial_tu {
+                        layer.in_band_long_term_prelude.validate_required(
+                            &key_core,
+                            &layer.reference,
+                            key_envelope.offset,
+                        )?;
+                    }
+                    ensure_intra_header_complete(&key_core, key_envelope.offset)?;
+                    let key_user_qm = layer.output_effect_state.prepare_frame(
+                        key_envelope,
                         &key_core,
-                        &reference,
+                        &key_sequence,
+                        first_picture_in_tu,
+                        next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
+                    )?;
+                    let key_display_grain = layer.film_grain_slots.active_for_core(
+                        key_envelope,
+                        &key_core,
+                        &key_sequence,
                         key_envelope.offset,
                     )?;
-                }
-                ensure_intra_header_complete(&key_core, key_envelope.offset)?;
-                let key_user_qm = output_effect_state.prepare_frame(
-                    key_envelope,
-                    &key_core,
-                    &key_sequence,
-                    first_picture_in_tu,
-                    next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
-                )?;
-                let key_display_grain = film_grain_slots.active_for_core(
-                    key_envelope,
-                    &key_core,
-                    &key_sequence,
-                    key_envelope.offset,
-                )?;
-
-                if starts_new_sequence {
-                    let key_reference =
-                        reference_buffer::RuntimeReferenceBuffer::new(key_num_ref_frames)?;
-                    let flushed = scheduler.start_new_sequence(key_num_ref_frames);
+                    (key_core, key_user_qm, key_display_grain)
+                };
+                if starts_new_sequence && !initializing_layer {
+                    let (key_reference, flushed) = {
+                        let key_reference =
+                            reference_buffer::RuntimeReferenceBuffer::new(key_num_ref_frames)?;
+                        let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                            unsupported_at(
+                                "missing_random_access_frame",
+                                key_envelope.offset,
+                                "decode runtime requires an active extended layer",
+                            )
+                        })?;
+                        let flushed = layer.scheduler.start_new_sequence(key_num_ref_frames);
+                        (key_reference, flushed)
+                    };
                     charge_emitted_outputs(
                         options,
                         frames,
-                        &scheduler,
+                        xlayers.total_emitted_count(),
                         &mut emission_queue,
                         &flushed,
                         emit,
                     )?;
-                    reference = key_reference;
+                    if let Some(layer) = xlayers.get_mut(candidate_xlayer) {
+                        layer.reference = key_reference;
+                    }
                     reclaim_unowned_frames(
                         frames,
-                        &reference,
-                        &mut scheduler,
+                        &mut xlayers,
                         &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
-                    if output_frame_limit_reached(options, scheduler.emitted_count) {
+                    if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+                        *obu_storage = recycle(obu_buffer);
                         break;
                     }
                 }
-
-                sequence = key_sequence;
-                shared_sequence = None;
-                output_effect_state
-                    .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
-                let key_output_effects =
-                    output_effect_state.finish_frame(key_envelope.header.embedded_layer_id);
+                if !initializing_layer && let Some(layer) = xlayers.get_mut(candidate_xlayer) {
+                    layer.sequence = key_sequence;
+                    layer.shared_sequence = None;
+                }
+                xlayers.observe_suffix_for_xlayer(
+                    suffix_after_candidate(obus, next_candidate)?,
+                    candidate_xlayer,
+                )?;
+                let key_output_effects = xlayers
+                    .get_mut(candidate_xlayer)
+                    .ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            key_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?
+                    .output_effect_state
+                    .finish_frame(key_envelope.header.embedded_layer_id);
                 admit_within_reference_store(
-                    |retained| {
+                    |xlayers, retained| {
+                        let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
+                            unsupported_at(
+                                "missing_random_access_frame",
+                                key_envelope.offset,
+                                "decode runtime requires an active extended layer",
+                            )
+                        })?;
                         ensure_retained_frame_byte_limits_for_core(
                             options.limits(),
                             retained,
                             &key_core,
-                            &sequence,
+                            &layer.sequence,
                             key_envelope.offset,
                         )
                     },
@@ -1972,33 +2010,41 @@ fn decode_frames_in_order(
                     pools,
                     ring,
                     frames,
-                    &reference,
-                    &mut scheduler,
+                    &mut xlayers,
                     &mut emission_queue,
                     emit,
                     &mut retained_frame_bytes,
                 )?;
                 let frame_index = frames.len();
-                let key_frame = decode_key_frame_with_effects(
-                    rows,
-                    backend,
-                    pools,
-                    ring,
-                    frames,
-                    Some((&unit, &mut shared_sequence)),
-                    frame_index,
-                    unit.view(),
-                    options,
-                    next_candidate,
-                    key_envelope,
-                    key_core.clone(),
-                    &sequence,
-                    frame_rate,
-                    key_display_grain,
-                    key_user_qm,
-                    key_output_effects,
-                    stream.props(),
-                )?;
+                let key_frame = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            key_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    decode_key_frame_with_effects(
+                        rows,
+                        backend,
+                        pools,
+                        ring,
+                        frames,
+                        Some((&unit, &mut layer.shared_sequence)),
+                        frame_index,
+                        unit.view(),
+                        options,
+                        next_candidate,
+                        key_envelope,
+                        key_core.clone(),
+                        &layer.sequence,
+                        frame_rate,
+                        key_display_grain,
+                        key_user_qm,
+                        key_output_effects,
+                        stream.props(),
+                    )?
+                };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
                     retained_frame_bytes,
@@ -2013,70 +2059,106 @@ fn decode_frames_in_order(
                 frames.push(key_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
-                let key_ordering = output_ordering(
-                    key_hint,
-                    key_envelope.header.embedded_layer_id,
-                    sequence.general.max_mlayer_id,
-                );
-                let key_tu_limit = output_ordering(
-                    key_hint,
-                    EmbeddedLayerId::BASE,
-                    sequence.general.max_mlayer_id,
-                );
                 let key_implicit = key_core.implicit_output_frame == Some(true);
                 let key_immediate = key_core.immediate_output_frame == Some(true);
-                if !stream.layer_filter().is_layer_output(
+                let key_emit_allowed = stream.layer_filter().is_layer_output_for(
+                    key_envelope.header.extended_layer_id,
                     key_envelope.header.embedded_layer_id,
                     key_envelope.header.temporal_layer_id,
-                ) {
-                    scheduler.suppress(frame_index);
-                }
-                scheduler.refresh(
-                    key_update.refresh_frame_flags,
-                    frame_index,
-                    key_ordering,
-                    key_implicit,
-                    true,
                 );
+                let (key_ordering, key_tu_limit) = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            key_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    let key_ordering = output_ordering(
+                        key_hint,
+                        key_envelope.header.embedded_layer_id,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    let key_tu_limit = output_ordering(
+                        key_hint,
+                        EmbeddedLayerId::BASE,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    if !key_emit_allowed {
+                        layer.scheduler.suppress(frame_index);
+                    }
+                    layer.scheduler.refresh(
+                        key_update.refresh_frame_flags,
+                        frame_index,
+                        key_ordering,
+                        key_implicit,
+                        true,
+                    );
+                    (key_ordering, key_tu_limit)
+                };
+                let (newly_refresh, total_emitted) = xlayers.newly_and_total(candidate_xlayer);
                 charge_emitted_outputs(
                     options,
                     frames,
-                    &scheduler,
+                    total_emitted,
                     &mut emission_queue,
-                    scheduler.newly(),
+                    newly_refresh,
                     emit,
                 )?;
-                reference.update(frame_index, &key_update, is_key_or_switch(&key_core));
-                reference.note_frame(next_candidate.obu_type(), first_picture_in_tu, &key_update);
-                in_band_long_term_prelude.note_frame(&key_core, frame_index);
-                scheduler.note_frame(
-                    next_candidate.obu_type(),
-                    first_picture_in_tu,
-                    key_tu_limit,
-                    key_immediate,
-                    key_implicit,
-                );
-                if key_immediate && !scheduler.already_emitted(frame_index) {
-                    scheduler.on_immediate(frame_index, key_ordering);
+                let trigger_immediate = {
+                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
+                        unsupported_at(
+                            "missing_random_access_frame",
+                            key_envelope.offset,
+                            "decode runtime requires an active extended layer",
+                        )
+                    })?;
+                    layer
+                        .reference
+                        .update(frame_index, &key_update, is_key_or_switch(&key_core));
+                    layer.reference.note_frame(
+                        next_candidate.obu_type(),
+                        first_picture_in_tu,
+                        &key_update,
+                    );
+                    layer
+                        .in_band_long_term_prelude
+                        .note_frame(&key_core, frame_index);
+                    layer.scheduler.note_frame(
+                        next_candidate.obu_type(),
+                        first_picture_in_tu,
+                        key_tu_limit,
+                        key_immediate,
+                        key_implicit,
+                    );
+                    if key_immediate && !layer.scheduler.already_emitted(frame_index) {
+                        layer.scheduler.on_immediate(frame_index, key_ordering);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if trigger_immediate {
+                    let (newly_immediate, total_emitted) =
+                        xlayers.newly_and_total(candidate_xlayer);
                     charge_emitted_outputs(
                         options,
                         frames,
-                        &scheduler,
+                        total_emitted,
                         &mut emission_queue,
-                        scheduler.newly(),
+                        newly_immediate,
                         emit,
                     )?;
                 }
                 reclaim_unowned_frames(
                     frames,
-                    &reference,
-                    &mut scheduler,
+                    &mut xlayers,
                     &emission_queue,
                     ring,
                     &mut retained_frame_bytes,
                 )?;
                 *obu_storage = recycle(obu_buffer);
-                if output_frame_limit_reached(options, scheduler.emitted_count) {
+                if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
                     break;
                 }
             }
@@ -2090,22 +2172,26 @@ fn decode_frames_in_order(
         }
     }
 
-    if !output_frame_limit_reached(options, scheduler.emitted_count) {
-        let flushed = scheduler.flush_all();
-        charge_emitted_outputs(
-            options,
-            frames,
-            &scheduler,
-            &mut emission_queue,
-            &flushed,
-            emit,
-        )?;
+    if !output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+        for layer_pos in 0..xlayers.len() {
+            if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+                break;
+            }
+            let flushed = xlayers.flush_layer(layer_pos);
+            charge_emitted_outputs(
+                options,
+                frames,
+                xlayers.total_emitted_count(),
+                &mut emission_queue,
+                &flushed,
+                emit,
+            )?;
+        }
         emission_queue.flush(frames, emit)?;
         ring.harvest_all(pools);
         reclaim_unowned_frames(
             frames,
-            &reference,
-            &mut scheduler,
+            &mut xlayers,
             &emission_queue,
             ring,
             &mut retained_frame_bytes,

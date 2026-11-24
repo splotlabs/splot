@@ -213,9 +213,9 @@ pub use pc_wiener::{
     PC_WIENER_LUT_CLASSES, PcWienerClassification, PcWienerClassifyPaddedSource,
     PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource,
     PcWienerTxSkipLookup, PcWienerTxSkipRun, pc_wiener_classify_grid,
-    pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block,
-    pc_wiener_filter_block_padded, pc_wiener_filter_set_index, pc_wiener_subclass_table,
-    transpose4,
+    pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_classes_into_with,
+    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_block_padded_with,
+    pc_wiener_filter_set_index, pc_wiener_subclass_table, transpose4,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::{reconstruct_add_residual, reconstruct_add_residual_with};
@@ -272,11 +272,13 @@ pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CONFIG_UV,
     WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
     wiener_ns_chroma_luma_plane, wiener_ns_filter_chroma_block_padded_into,
+    wiener_ns_filter_chroma_block_padded_into_with,
 };
 pub use wienerns_filter::{
     WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WienerNsLumaFilter,
     WienerNsLumaPaddedSource, WienerNsLumaScratch, wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_luma_block_padded_cells_into_with, wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_luma_block_padded_into_with,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameRect, CurrentFrameRectRowsMut,

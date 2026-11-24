@@ -81,7 +81,12 @@ typedef struct SplotSettings {
   // transitive dependencies still decode. `0` emits all layers (default).
   uint8_t embedded_output_mask;
   // Reserved; keep zero.
-  uint8_t reserved[29];
+  uint8_t reserved0;
+  // Bitmask (`1..=0x7fffffff`) of extended layers (`1 << extended_layer_id`) to emit.
+  // `0` emits all extended layers (default). Bit 31 (`0x80000000`) is invalid.
+  uint32_t extended_output_mask;
+  // Reserved; keep zero.
+  uint8_t reserved[24];
 } SplotSettings;
 
 // Caller data that goes with one temporal unit to the pictures it codes.
@@ -142,6 +147,8 @@ typedef struct SplotPicture {
   uint8_t temporal_layer_id;
   // Embedded layer id (`obu_mlayer_id`, `0..=7`) of the picture.
   uint8_t embedded_layer_id;
+  // Extended layer id (`obu_xlayer_id`, `0..=30`) of the picture.
+  uint8_t extended_layer_id;
   // Reserved.
   size_t reserved[3];
   // The decoder's handle on the samples; do not touch.

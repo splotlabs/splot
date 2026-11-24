@@ -20,10 +20,11 @@ use splot_recon::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS,
     WIENER_NS_LUMA_TAP_RADIUS, WienerNsChromaFilter, WienerNsChromaPaddedSource,
     WienerNsChromaScratch, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
-    pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
+    pc_wiener_classify_grid_padded_classes_into_with, pc_wiener_filter_block_padded_with,
     pc_wiener_filter_set_index, pc_wiener_subclass_table,
-    wiener_ns_filter_chroma_block_padded_into, wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_chroma_block_padded_into_with,
+    wiener_ns_filter_luma_block_padded_cells_into_with,
+    wiener_ns_filter_luma_block_padded_into_with,
 };
 
 thread_local! {
@@ -1230,6 +1231,7 @@ impl StripeChain<'_> {
                     return Err(super::lr_pipeline_state_error());
                 }
                 self.compute_chroma_lr_block(
+                    backend,
                     plane_id,
                     &block,
                     lr_unit_filters,
@@ -1320,6 +1322,7 @@ impl StripeChain<'_> {
                     sub.x += x;
                     sub.width = end - x;
                     let subclass_map = self.luma_lr_cell_subclasses(
+                        backend,
                         &sub,
                         &window,
                         qindex,
@@ -1339,7 +1342,7 @@ impl StripeChain<'_> {
                     let padded_source =
                         PcWienerPaddedSource::from_rows(rows, col + x, sub.width, block.height)
                             .map_err(lr_window_error)?;
-                    pc_wiener_filter_block_padded(output, &params, &padded_source)
+                    pc_wiener_filter_block_padded_with(backend, output, &params, &padded_source)
                         .map_err(lr_window_error)
                 },
             )?;
@@ -1356,8 +1359,9 @@ impl StripeChain<'_> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn compute_chroma_lr_block<T: ReconSample>(
+    fn compute_chroma_lr_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         plane_id: PlaneId,
         block: &WienerNsLrSourceBlock,
         lr_unit_filters: &[WienerNsLrUnitFilter],
@@ -1479,7 +1483,8 @@ impl StripeChain<'_> {
                 }
                 .map_err(|error| lr_plane_window_error(&error, plane_id))?;
                 with_reusable_scratch(&WIENER_NS_CHROMA_SCRATCH, |scratch| {
-                    wiener_ns_filter_chroma_block_padded_into(
+                    wiener_ns_filter_chroma_block_padded_into_with(
+                        backend,
                         output,
                         &params,
                         &padded_source,
@@ -1568,6 +1573,7 @@ impl StripeChain<'_> {
                     }
                     let cell_subclass_map = if num_classes > 1 {
                         Some(self.luma_lr_cell_subclasses(
+                            backend,
                             &sub,
                             &window,
                             qindex,
@@ -1592,12 +1598,12 @@ impl StripeChain<'_> {
                     let source = &padded_source;
                     with_reusable_scratch(&WIENER_NS_LUMA_SCRATCH, |scratch| {
                         if let Some(cells) = cell_subclass_map {
-                            wiener_ns_filter_luma_block_padded_cells_into(
-                                output, &params, source, cells, scratch,
+                            wiener_ns_filter_luma_block_padded_cells_into_with(
+                                backend, output, &params, source, cells, scratch,
                             )
                         } else {
-                            wiener_ns_filter_luma_block_padded_into(
-                                output, &params, source, scratch,
+                            wiener_ns_filter_luma_block_padded_into_with(
+                                backend, output, &params, source, scratch,
                             )
                         }
                     })
@@ -1661,8 +1667,10 @@ impl StripeChain<'_> {
         }
     }
 
-    fn luma_lr_cell_subclasses<'a, T: ReconSample>(
+    #[expect(clippy::too_many_arguments)]
+    fn luma_lr_cell_subclasses<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         block: &WienerNsLrSourceBlock,
         window: &LrSourceRows<'_, T>,
         qindex: u32,
@@ -1711,7 +1719,8 @@ impl StripeChain<'_> {
             tile_end_y,
         };
         with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
-            pc_wiener_classify_grid_padded_classes_into::<T, _>(
+            pc_wiener_classify_grid_padded_classes_into_with::<B, T, _>(
+                backend,
                 &params,
                 cell_cols,
                 cell_rows,

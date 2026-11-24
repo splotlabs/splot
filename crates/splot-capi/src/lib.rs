@@ -33,9 +33,9 @@ use core::ptr;
 
 use splot_core::headers::content_interpretation::DerivedColorInfo;
 use splot_decode::{
-    BitDepth, DataProps, Decoder, DecoderSettings, EmbeddedLayerSelection, FrameDelay, FrameType,
-    Picture, PictureSamples, PixelFormat, PlaneId, PlaneRef, SendStatus, TemporalLayerSelection,
-    ThreadCount,
+    BitDepth, DataProps, Decoder, DecoderSettings, EmbeddedLayerSelection, ExtendedLayerSelection,
+    FrameDelay, FrameType, Picture, PictureSamples, PixelFormat, PlaneId, PlaneRef, SendStatus,
+    TemporalLayerSelection, ThreadCount,
 };
 
 /// The call succeeded.
@@ -82,7 +82,12 @@ pub struct SplotSettings {
     /// transitive dependencies still decode. `0` emits all layers (default).
     pub embedded_output_mask: u8,
     /// Reserved; keep zero.
-    pub reserved: [u8; 29],
+    pub reserved0: u8,
+    /// Bitmask (`1..=0x7fffffff`) of extended layers (`1 << extended_layer_id`) to emit.
+    /// `0` emits all extended layers (default). Bit 31 (`0x80000000`) is invalid.
+    pub extended_output_mask: u32,
+    /// Reserved; keep zero.
+    pub reserved: [u8; 24],
 }
 
 /// Caller data that goes with one temporal unit to the pictures it codes.
@@ -179,6 +184,8 @@ pub struct SplotPicture {
     pub temporal_layer_id: u8,
     /// Embedded layer id (`obu_mlayer_id`, `0..=7`) of the picture.
     pub embedded_layer_id: u8,
+    /// Extended layer id (`obu_xlayer_id`, `0..=30`) of the picture.
+    pub extended_layer_id: u8,
     /// Reserved.
     pub reserved: [usize; 3],
     /// The decoder's handle on the samples; do not touch.
@@ -204,7 +211,9 @@ pub unsafe extern "C" fn splot_default_settings(settings: *mut SplotSettings) {
             skip_film_grain: 0,
             temporal_output_mask: 0,
             embedded_output_mask: 0,
-            reserved: [0; 29],
+            reserved0: 0,
+            extended_output_mask: 0,
+            reserved: [0; 24],
         };
     }
 }
@@ -230,6 +239,8 @@ pub unsafe extern "C" fn splot_open(
     *out = ptr::null_mut();
     if settings.skip_film_grain > 1
         || settings.temporal_output_mask > 0x0F
+        || settings.reserved0 != 0
+        || (settings.extended_output_mask & (1u32 << 31)) != 0
         || settings.reserved.iter().any(|&byte| byte != 0)
     {
         return SPLOT_EINVAL;
@@ -244,6 +255,11 @@ pub unsafe extern "C" fn splot_open(
     } else {
         EmbeddedLayerSelection::All
     };
+    let extended_selection = if settings.extended_output_mask != 0 {
+        ExtendedLayerSelection::OutputMask(settings.extended_output_mask)
+    } else {
+        ExtendedLayerSelection::All
+    };
     let count = |value: u32| NonZeroUsize::new(value as usize);
     let settings = DecoderSettings::default()
         .with_threads(count(settings.n_threads).map_or(ThreadCount::Auto, ThreadCount::Fixed))
@@ -253,7 +269,8 @@ pub unsafe extern "C" fn splot_open(
         )
         .with_skip_film_grain(settings.skip_film_grain == 1)
         .with_temporal_layer_selection(temporal_selection)
-        .with_embedded_layer_selection(embedded_selection);
+        .with_embedded_layer_selection(embedded_selection)
+        .with_extended_layer_selection(extended_selection);
     match Decoder::new(settings) {
         Ok(decoder) => {
             *out = Box::into_raw(Box::new(SplotDecoder {
@@ -484,6 +501,7 @@ const fn empty_picture() -> SplotPicture {
         frame_type: SplotFrameType::None as u8,
         temporal_layer_id: 0,
         embedded_layer_id: 0,
+        extended_layer_id: 0,
         reserved: [0; 3],
         internal: ptr::null_mut(),
     }
@@ -544,6 +562,7 @@ fn c_picture(picture: Picture) -> SplotPicture {
     } as u8;
     out.temporal_layer_id = picture.temporal_layer_id().get();
     out.embedded_layer_id = picture.embedded_layer_id().get();
+    out.extended_layer_id = picture.extended_layer_id().get();
     out.internal = Box::into_raw(Box::new(picture)).cast();
     out
 }

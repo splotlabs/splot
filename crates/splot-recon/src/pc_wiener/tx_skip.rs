@@ -3,12 +3,13 @@
 
 //! § 7.20.4 `get_tx_skip` sums of the 6x6 windows of a classification grid.
 
-use fearless_simd::{SimdBase, mask8x16, prelude::*, u8x16};
+use fearless_simd::{Simd, SimdBase, mask8x16, prelude::*, u8x16};
 
 use super::{
     PC_WIENER_LEAD, PcWienerClassifyParams, PcWienerTxSkipRun, check_tx_skip_cells, coordinate_add,
     usize_to_isize,
 };
+use crate::lr_madd::{LrBackend, LrSimdOp};
 use crate::{ReconError, Result};
 
 /// Cells one vector covers.
@@ -33,7 +34,63 @@ pub(super) fn sums_stride(cell_cols: usize) -> usize {
 /// neighbor outside its block. A cell's sum then adds the rows of its six
 /// feature rows, each clipped to the stripe, then to the tile, which never
 /// decrease down the grid.
-pub(super) fn window_sums<'b, 'g, FT>(
+struct TxSkipColumnOp<'a> {
+    clipped: &'a mut [u8],
+    pre: usize,
+    cells: &'a [u8],
+    sums_row: &'a mut [u8],
+    weights: [u8; 3],
+    split_first: Option<isize>,
+}
+
+impl LrSimdOp<bool> for TxSkipColumnOp<'_> {
+    #[inline]
+    fn run<S: Simd>(self, simd: S) -> bool {
+        replicate_run(simd, self.clipped, self.pre, self.cells);
+        column_row(
+            simd,
+            self.clipped,
+            self.sums_row,
+            self.weights,
+            self.split_first,
+        )
+    }
+}
+
+struct TxSkipAddRowsOp<'a> {
+    rows: &'a [[u8; LANES]],
+    sums: &'a mut [[u8; LANES]],
+    y0: isize,
+    first_row: isize,
+    row_count: isize,
+    row_stride: usize,
+    phase_y: usize,
+}
+
+impl LrSimdOp<()> for TxSkipAddRowsOp<'_> {
+    #[inline]
+    fn run<S: Simd>(self, simd: S) {
+        for (cell_row, out) in self.sums.chunks_exact_mut(self.row_stride).enumerate() {
+            let base = (self.y0 >> 2) - self.first_row + cell_row as isize;
+            let row = |offset: isize| {
+                let start = (base + offset).clamp(0, self.row_count - 1) as usize * self.row_stride;
+                self.rows
+                    .get(start..start + self.row_stride)
+                    .unwrap_or_default()
+            };
+            let rows = [row(0), row(1), row(2)];
+            match self.phase_y {
+                0 => add_rows::<_, 4, 2, 0>(simd, rows, out),
+                1 => add_rows::<_, 3, 3, 0>(simd, rows, out),
+                2 => add_rows::<_, 2, 4, 0>(simd, rows, out),
+                _ => add_rows::<_, 1, 4, 1>(simd, rows, out),
+            }
+        }
+    }
+}
+
+pub(super) fn window_sums<'b, 'g, L, FT>(
+    backend: L,
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
@@ -42,6 +99,7 @@ pub(super) fn window_sums<'b, 'g, FT>(
     buffer: &'b mut Vec<u8>,
 ) -> Result<&'b [u8]>
 where
+    L: LrBackend,
     FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
 {
     let bound = |value: usize| usize_to_isize(value, "PC-Wiener tx-skip bounds");
@@ -99,35 +157,28 @@ where
             expected: len,
             actual: cells.len(),
         })?;
-        crate::lr_madd::lr_simd!(simd => replicate_run(simd, clipped, pre, &cells[..take]));
-        if crate::lr_madd::lr_simd!(simd => column_row(simd, clipped, sums_row, weights, split_blocks.then_some(first)))
-        {
+        if backend.run(TxSkipColumnOp {
+            clipped,
+            pre,
+            cells: &cells[..take],
+            sums_row,
+            weights,
+            split_first: split_blocks.then_some(first),
+        }) {
             check_tx_skip_cells(run, cells)?;
         }
     }
     let rows = column_sums.as_chunks::<LANES>().0;
     let row_stride = stride / LANES;
-    let phase_y = (y0 & 3) as usize;
-    let last_row = row_count as isize - 1;
-    for (cell_row, out) in sums
-        .as_chunks_mut::<LANES>()
-        .0
-        .chunks_exact_mut(row_stride)
-        .enumerate()
-    {
-        let base = (y0 >> 2) - first_row as isize + cell_row as isize;
-        let row = |offset: isize| {
-            let start = (base + offset).clamp(0, last_row) as usize * row_stride;
-            rows.get(start..start + row_stride).unwrap_or_default()
-        };
-        let rows = [row(0), row(1), row(2)];
-        crate::lr_madd::lr_simd!(simd => match phase_y {
-            0 => add_rows::<_, 4, 2, 0>(simd, rows, out),
-            1 => add_rows::<_, 3, 3, 0>(simd, rows, out),
-            2 => add_rows::<_, 2, 4, 0>(simd, rows, out),
-            _ => add_rows::<_, 1, 4, 1>(simd, rows, out),
-        });
-    }
+    backend.run(TxSkipAddRowsOp {
+        rows,
+        sums: sums.as_chunks_mut::<LANES>().0,
+        y0,
+        first_row: first_row as isize,
+        row_count: row_count as isize,
+        row_stride,
+        phase_y: (y0 & 3) as usize,
+    });
     Ok(sums)
 }
 
