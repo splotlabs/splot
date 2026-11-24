@@ -1285,61 +1285,66 @@ fn unsplit_luma_lr(
     .unwrap();
     let (width, height) = (block.width, block.height);
     let mut output = vec![0u16; width * height];
-    if block.restoration_type == LrUnitRestorationType::PcWiener {
-        let subclasses = chain
-            .luma_lr_cell_subclasses(
-                block,
-                &window,
-                qindex,
-                PC_WIENER_FULL_CLASSES,
+    crate::test_support::with_auto_backend!(backend => {
+        if block.restoration_type == LrUnitRestorationType::PcWiener {
+            let subclasses = chain
+                .luma_lr_cell_subclasses(
+                    backend,
+                    block,
+                    &window,
+                    qindex,
+                    PC_WIENER_FULL_CLASSES,
+                    filter_set_index,
+                    &mut cells,
+                )
+                .unwrap();
+            let params = PcWienerFilter {
+                width,
+                height,
+                output_stride: width,
+                bit_depth: BitDepth::Ten,
                 filter_set_index,
-                &mut cells,
+                subclass_block_size: MI_SIZE,
+                subclasses,
+            };
+            let (rows, col) = window.tail(PC_WIENER_FILTER_TAP_RADIUS).unwrap();
+            let source = PcWienerPaddedSource::from_rows(rows, col, width, height).unwrap();
+            pc_wiener_filter_block_padded_with(backend, &mut output, &params, &source).unwrap();
+        } else {
+            let num_classes = usize::from(plane.num_filter_classes.unwrap());
+            let coeffs = luma_lr_frame_coeffs(plane, num_classes).unwrap();
+            let subclasses = chain
+                .luma_lr_cell_subclasses(
+                    backend,
+                    block,
+                    &window,
+                    qindex,
+                    num_classes,
+                    filter_set_index,
+                    &mut cells,
+                )
+                .unwrap();
+            let params = WienerNsLumaFilter {
+                width,
+                height,
+                output_stride: width,
+                bit_depth: BitDepth::Ten,
+                coeffs_by_class: &coeffs,
+                subclasses: None,
+            };
+            let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
+            let source = WienerNsLumaPaddedSource::from_rows(rows, col, width, height).unwrap();
+            wiener_ns_filter_luma_block_padded_cells_into_with(
+                backend,
+                &mut output,
+                &params,
+                &source,
+                subclasses,
+                &mut WienerNsLumaScratch::default(),
             )
             .unwrap();
-        let params = PcWienerFilter {
-            width,
-            height,
-            output_stride: width,
-            bit_depth: BitDepth::Ten,
-            filter_set_index,
-            subclass_block_size: MI_SIZE,
-            subclasses,
-        };
-        let (rows, col) = window.tail(PC_WIENER_FILTER_TAP_RADIUS).unwrap();
-        let source = PcWienerPaddedSource::from_rows(rows, col, width, height).unwrap();
-        pc_wiener_filter_block_padded(&mut output, &params, &source).unwrap();
-    } else {
-        let num_classes = usize::from(plane.num_filter_classes.unwrap());
-        let coeffs = luma_lr_frame_coeffs(plane, num_classes).unwrap();
-        let subclasses = chain
-            .luma_lr_cell_subclasses(
-                block,
-                &window,
-                qindex,
-                num_classes,
-                filter_set_index,
-                &mut cells,
-            )
-            .unwrap();
-        let params = WienerNsLumaFilter {
-            width,
-            height,
-            output_stride: width,
-            bit_depth: BitDepth::Ten,
-            coeffs_by_class: &coeffs,
-            subclasses: None,
-        };
-        let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
-        let source = WienerNsLumaPaddedSource::from_rows(rows, col, width, height).unwrap();
-        wiener_ns_filter_luma_block_padded_cells_into(
-            &mut output,
-            &params,
-            &source,
-            subclasses,
-            &mut WienerNsLumaScratch::default(),
-        )
-        .unwrap();
-    }
+        }
+    });
     output
 }
 

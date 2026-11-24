@@ -30,6 +30,7 @@
 #[cfg(target_arch = "aarch64")]
 use super::WIENER_NS_CONFIG_Y_PAIRS;
 use super::{FlatChunks, LumaSubclassLayout, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS};
+use crate::lr_madd::{LrBackend, LrSimdOp};
 
 /// Distinct weight pairs: ten adjacent-tap pairs, then four interleaved ones.
 #[cfg(target_arch = "x86_64")]
@@ -161,8 +162,9 @@ pub(super) struct EightBitLuma {
 impl EightBitLuma {
     /// Narrows the padded rows `rows(i)` of a `width` x `height` block;
     /// returns whether every row is present and every sample at most 255.
-    pub(super) fn stage<'r, T: crate::ReconSample>(
+    pub(super) fn stage<'r, L: LrBackend, T: crate::ReconSample>(
         &mut self,
+        backend: L,
         rows: impl Fn(usize) -> Option<&'r [T]>,
         width: usize,
         height: usize,
@@ -188,19 +190,20 @@ impl EightBitLuma {
             .all(|(index, staged)| {
                 rows(index)
                     .and_then(|row| row.get(..padded_width))
-                    .is_some_and(|row| narrow_row(&mut staged[..padded_width], row))
+                    .is_some_and(|row| narrow_row(backend, &mut staged[..padded_width], row))
             })
     }
 
     /// Prepares the class weights of the staged block; returns whether the
     /// byte-lane kernel takes it.
-    pub(super) fn prepare(
+    pub(super) fn prepare<L: LrBackend>(
         &mut self,
+        backend: L,
         width: usize,
         coeffs_by_class: &[[i16; WIENER_NS_LUMA_COEFFS]],
         layout: LumaSubclassLayout<'_>,
     ) -> bool {
-        if !kernel_available()
+        if !kernel_available(backend)
             || width < MIN_WIDTH
             || coeffs_by_class.len() > MAX_CLASSES
             || matches!(layout, LumaSubclassLayout::Samples(_))
@@ -238,8 +241,10 @@ impl EightBitLuma {
     /// `width` columns, filling the vectors that `flat` marks; returns the
     /// columns done. A missing class or output stops early and leaves the
     /// rest to the general kernel.
-    pub(super) fn filter_cell_rows<O: ByteLaneOutput>(
+    #[expect(clippy::too_many_arguments)]
+    pub(super) fn filter_cell_rows<L: LrBackend, O: ByteLaneOutput>(
         &self,
+        backend: L,
         output: &mut [O],
         output_stride: usize,
         (first, end, origin): (usize, usize, usize),
@@ -248,7 +253,7 @@ impl EightBitLuma {
         flat: &FlatChunks<WIENER_NS_LUMA_TAP_RADIUS>,
     ) -> usize {
         #[cfg(target_arch = "x86_64")]
-        if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
+        if let Some(token) = backend.avx2_token() {
             return avx2::filter_cell_rows(
                 token,
                 self,
@@ -261,7 +266,7 @@ impl EightBitLuma {
             );
         }
         #[cfg(target_arch = "aarch64")]
-        if let Some(token) = fearless_simd::Level::baseline().as_neon() {
+        if let Some(token) = backend.neon_token() {
             return paired::filter_cell_rows(
                 token,
                 self,
@@ -274,6 +279,7 @@ impl EightBitLuma {
             );
         }
         let _ = (
+            backend,
             output,
             output_stride,
             first,
@@ -293,30 +299,46 @@ const MIN_WIDTH: usize = LANES;
 #[cfg(not(target_arch = "x86_64"))]
 const MIN_WIDTH: usize = 16;
 
-fn kernel_available() -> bool {
+fn kernel_available<L: LrBackend>(backend: L) -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        fearless_simd::Level::baseline().as_avx2().is_some()
+        backend.avx2_token().is_some()
     }
     #[cfg(target_arch = "aarch64")]
     {
-        fearless_simd::Level::baseline().as_neon().is_some()
+        backend.neon_token().is_some()
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
+        let _ = backend;
         false
     }
 }
 
+struct NarrowRowOp<'a> {
+    staged: &'a mut [u8],
+    row: &'a [u16],
+}
+
+impl LrSimdOp<bool> for NarrowRowOp<'_> {
+    #[inline]
+    fn run<S: fearless_simd::Simd>(self, simd: S) -> bool {
+        narrow_row_lanes(simd, self.staged, self.row)
+    }
+}
+
 /// Copies `row` into `staged` as bytes; returns `false` for a sample above 255.
-pub(crate) fn narrow_row<T: crate::ReconSample>(staged: &mut [u8], row: &[T]) -> bool {
+pub(crate) fn narrow_row<L: LrBackend, T: crate::ReconSample>(
+    backend: L,
+    staged: &mut [u8],
+    row: &[T],
+) -> bool {
     if let Some(row) = T::u8_slice(row) {
         let len = staged.len().min(row.len());
         staged[..len].copy_from_slice(&row[..len]); // splot-copy-ok: fixed-stride byte-lane kernel rows
         return true;
     }
-    T::u16_slice(row)
-        .is_some_and(|row| crate::lr_madd::lr_simd!(simd => narrow_row_lanes(simd, staged, row)))
+    T::u16_slice(row).is_some_and(|row| backend.run(NarrowRowOp { staged, row }))
 }
 
 /// Narrows `row` into `staged` 32 lanes at a time: whole chunks, an
@@ -385,6 +407,7 @@ impl ByteLaneOutput for u16 {
 mod tests {
     use super::super::WIENER_NS_CONFIG_Y_PAIRS;
     use super::*;
+    use crate::lr_madd::BaselineLr;
 
     /// Rows of every width 1..=64, in range and with one sample above 255
     /// at each position, narrow like the per-sample `as u8` oracle.
@@ -400,7 +423,7 @@ mod tests {
                     row[at] = 256 + at as u16;
                 }
                 let mut staged = vec![7u8; len + 1];
-                let fits = narrow_row(&mut staged[..len], &row);
+                let fits = narrow_row(BaselineLr, &mut staged[..len], &row);
                 assert_eq!(fits, spike.is_none(), "{len} {spike:?}");
                 if spike.is_none() {
                     let want: Vec<u8> = row.iter().map(|&sample| sample as u8).collect();
@@ -471,11 +494,16 @@ mod tests {
                     cols,
                 }
             };
-            assert!(luma.stage(|index| rows.get(index).map(Vec::as_slice), width, height));
-            let prepared = luma.prepare(width, &coeffs, layout);
+            assert!(luma.stage(
+                BaselineLr,
+                |index| rows.get(index).map(Vec::as_slice),
+                width,
+                height
+            ));
+            let prepared = luma.prepare(BaselineLr, width, &coeffs, layout);
             #[cfg(target_arch = "aarch64")]
             assert!(prepared, "case {case}");
-            if case == 1 && kernel_available() {
+            if case == 1 && kernel_available(BaselineLr) {
                 assert!(prepared);
             }
             if !prepared {
@@ -485,6 +513,7 @@ mod tests {
             for first in (0..height).step_by(4) {
                 let end = (first + 4).min(height);
                 let done = luma.filter_cell_rows(
+                    BaselineLr,
                     &mut output[first * width..],
                     width,
                     (first, end, first),
