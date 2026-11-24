@@ -14,7 +14,7 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
-use splot_core::types::{ObuType, TemporalLayerId};
+use splot_core::types::{EmbeddedLayerId, ObuType, TemporalLayerId};
 use splot_recon::{
     BitDepth, CurrentFrameSurface, DecodedFrame, DecodedFrameInfo,
     InterpolationFilter as ReconInterpolationFilter, IntraRectBlockSize, PlaneId as ReconPlaneId,
@@ -1321,6 +1321,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_is_intra_frame: RefSlots<bool>,
     pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
     pub(crate) ref_tlayer_id: RefSlots<u8>,
+    pub(crate) ref_mlayer_id: RefSlots<u8>,
     pub(crate) ref_num_total_refs: RefSlots<u32>,
     pub(crate) saved_global_motion_order_hints:
         RefSlots<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
@@ -1586,6 +1587,13 @@ impl ReferenceMetadata {
             .map(TemporalLayerId::from_bits)
     }
 
+    pub(crate) fn slot_mlayer_id(&self, slot: usize) -> Option<EmbeddedLayerId> {
+        self.ref_mlayer_id
+            .get(slot)
+            .copied()
+            .map(EmbeddedLayerId::from_bits)
+    }
+
     pub(crate) fn header_view(&self) -> FrameReferenceStateView<'_> {
         let view = FrameReferenceStateView::from_slots_with_base_q_idx(
             &self.ref_valid,
@@ -1610,10 +1618,15 @@ impl ReferenceMetadata {
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
         .with_lr_frame_filter_taps(self.lr_frame_filter_taps.as_deref().unwrap_or_default())
         .with_allowed_frames(self.allowed_frames);
-        if self.ref_tlayer_id.is_empty() {
+        let view = if self.ref_tlayer_id.is_empty() {
             view
         } else {
             view.with_tlayer_id_state(&self.ref_tlayer_id)
+        };
+        if self.ref_mlayer_id.is_empty() {
+            view
+        } else {
+            view.with_mlayer_id_state(&self.ref_mlayer_id)
         }
     }
 }
@@ -1625,7 +1638,7 @@ pub(crate) fn parse_inter_frame_activation(
     first_picture_in_tu: bool,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
-    validate_obu_tlayer(envelope, sequence, frame_index)?;
+    validate_obu_layer_ids(envelope, sequence, frame_index)?;
     if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
         parse_sef_or_tip_frame_core(
             envelope,
@@ -1655,7 +1668,7 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     mfh_record: Option<&MultiFrameHeaderRecord>,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
-    validate_obu_tlayer(envelope, sequence, frame_index)?;
+    validate_obu_layer_ids(envelope, sequence, frame_index)?;
     let mut core = if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
         parse_sef_or_tip_frame_core(
             envelope,
@@ -1754,6 +1767,7 @@ fn parse_sef_or_tip_frame_core(
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
+        obu_mlayer_id: envelope.header.embedded_layer_id,
         obu_tlayer_id: envelope.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(sequence),
@@ -2101,6 +2115,7 @@ fn parse_inter_frame_core(
     }
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
+        obu_mlayer_id: envelope.header.embedded_layer_id,
         obu_tlayer_id: envelope.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(sequence),
@@ -2454,7 +2469,7 @@ pub(crate) use frame_walk::{
     splittable_inter_frame,
 };
 use layer_dependencies::{
-    validate_inter_layer_dependencies, validate_obu_tlayer, validate_sef_layer_dependency,
+    validate_inter_layer_dependencies, validate_obu_layer_ids, validate_sef_layer_dependency,
 };
 pub(crate) use motion_field::MotionFieldHandle;
 

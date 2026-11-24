@@ -102,6 +102,13 @@ pub enum DecodeError {
         /// Why the requested temporal selection is invalid.
         reason: &'static str,
     },
+
+    /// Caller supplied an invalid embedded-layer selection.
+    #[error("invalid embedded-layer selection: {reason}")]
+    InvalidEmbeddedSelection {
+        /// Why the requested embedded selection is invalid.
+        reason: &'static str,
+    },
 }
 
 /// Why a [`crate::Decoder`] session refused a call.

@@ -192,7 +192,7 @@ impl OutputScheduler {
                 .iter()
                 .flatten()
                 .filter(|(_, held)| *held < ordering)
-                .min_by_key(|(_, held)| *held)
+                .min_by_key(|&&(frame_index, held)| (held, frame_index))
                 .copied();
             let Some((frame_index, _)) = next else {
                 return;
@@ -301,7 +301,7 @@ impl OutputScheduler {
                 .iter()
                 .flatten()
                 .filter(|(_, ordering)| limit.is_none_or(|limit| *ordering < limit))
-                .min_by_key(|(_, ordering)| *ordering)
+                .min_by_key(|&&(frame_index, ordering)| (ordering, frame_index))
                 .copied();
             let Some((frame_index, _)) = next else {
                 return newly;
@@ -336,7 +336,7 @@ impl OutputScheduler {
             let next = slots
                 .iter()
                 .filter_map(|&slot| self.pending.get(slot).copied().flatten())
-                .min_by_key(|(_, ordering)| *ordering);
+                .min_by_key(|&(frame_index, ordering)| (ordering, frame_index));
             let Some((frame_index, ordering)) = next else {
                 break;
             };
@@ -524,6 +524,7 @@ mod tests {
                 numerator: 1,
                 denominator: 1,
             },
+            embedded_layer_id: splot_core::types::EmbeddedLayerId::BASE,
             temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
             props: crate::DataProps::default(),
         })

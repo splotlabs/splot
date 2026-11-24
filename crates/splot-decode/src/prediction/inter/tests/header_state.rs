@@ -1972,6 +1972,7 @@ fn bru_inactive_zero_remaining_trailing_bits_and_incompatible_refs_fail_closed()
     };
     let obs_input = splot_core::headers::frame::FrameHeaderParseInput {
         obu_type: frame5_obu.header.obu_type,
+        obu_mlayer_id: frame5_obu.header.embedded_layer_id,
         obu_tlayer_id: frame5_obu.header.temporal_layer_id,
         first_picture_in_tu: true,
         active_sequence: Some(&sequence),

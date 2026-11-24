@@ -15,10 +15,9 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::tail::{FrameTailInput, parse_film_grain_config_with_reader};
 use crate::obu::parse_trailing_bits_with_reader;
 use crate::syntax::{SyntaxObserver, SyntaxReader};
-use crate::types::TemporalLayerId;
 
 use super::{
-    CoreSeqView, FRAME_HEADER_INFO_FEATURE, FrameHeaderCore, FrameHeaderParseStatus,
+    CoreSeqView, FRAME_HEADER_INFO_FEATURE, FrameHeaderCore, FrameHeaderParseStatus, FrameLayerIds,
     FrameReferenceStateView, SefTrailingBits, get_disp_order_hint,
 };
 
@@ -42,7 +41,7 @@ pub(super) fn parse_show_existing_frame<O: SyntaxObserver>(
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     reference_state: &FrameReferenceStateView<'_>,
-    obu_tlayer_id: TemporalLayerId,
+    layer_ids: FrameLayerIds,
 ) -> Result<()> {
     let frame_to_show_map_idx =
         sr.read_bits("frame_to_show_map_idx", ceil_log2(seq.num_ref_frames))?;
@@ -58,7 +57,7 @@ pub(super) fn parse_show_existing_frame<O: SyntaxObserver>(
             core.order_hint_lsb.unwrap_or(0),
             seq,
             reference_state,
-            obu_tlayer_id,
+            layer_ids,
         );
     } else if let Ok(index) = usize::try_from(frame_to_show_map_idx) {
         sr.absent("order_hint_lsb", "derive_sef_order_hint");

@@ -442,3 +442,80 @@ fn decode_rejects_invalid_and_conflicting_temporal_flags() {
         );
     }
 }
+
+#[test]
+fn decode_embedded_layer_and_output_mask_flags_match_decode_options() {
+    let input = conformance_vector("syn-mlayer2-crossref-8bit.obu");
+    let bytes = std::fs::read(&input).unwrap();
+    let context =
+        splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::default()).unwrap();
+
+    for (args_extra, selection) in [
+        (
+            &["--embedded-layer", "all"][..],
+            splot_decode::EmbeddedLayerSelection::All,
+        ),
+        (
+            &["--embedded-layer", "0"][..],
+            splot_decode::EmbeddedLayerSelection::BASE_ONLY,
+        ),
+        (
+            &["--embedded-layer", "1"][..],
+            splot_decode::EmbeddedLayerSelection::Target(
+                splot_core::types::EmbeddedLayerId::from_bits(1),
+            ),
+        ),
+        (
+            &["--embedded-output-mask", "2"][..],
+            splot_decode::EmbeddedLayerSelection::OutputMask(0b10),
+        ),
+        (
+            &["--embedded-output-mask", "0x3"][..],
+            splot_decode::EmbeddedLayerSelection::OutputMask(0b11),
+        ),
+    ] {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw"];
+        args.extend_from_slice(args_extra);
+        args.extend_from_slice(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "expected exit 0 for {args_extra:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut expected = Vec::new();
+        context
+            .decode_raw_bytes(
+                &bytes,
+                splot_decode::DecodeOptions::default().with_embedded_layer_selection(selection),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decode_rejects_invalid_and_conflicting_embedded_flags() {
+    let input = conformance_vector("syn-mlayer2-crossref-8bit.obu");
+    for extra in [
+        &["--embedded-layer", "0", "--embedded-output-mask", "2"][..],
+        &["--embedded-layer", "8"][..],
+        &["--embedded-output-mask", "0"][..],
+        &["--embedded-output-mask", "256"][..],
+    ] {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 for {extra:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

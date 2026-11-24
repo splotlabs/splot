@@ -618,6 +618,7 @@ fn decode_key_frame_with_effects(
             ccso_grid: products.ccso_grid,
             segment_ids: products.segment_ids,
             frame_rate,
+            embedded_layer_id: frame_envelope.header.embedded_layer_id,
             temporal_layer_id: frame_envelope.header.temporal_layer_id,
             props,
         });
@@ -670,6 +671,7 @@ fn decode_key_frame_with_effects(
         ccso_grid,
         segment_ids,
         frame_rate,
+        embedded_layer_id: frame_envelope.header.embedded_layer_id,
         temporal_layer_id: frame_envelope.header.temporal_layer_id,
         props,
     })
@@ -854,6 +856,7 @@ fn decode_frames_in_order(
     input_scratch: &mut InputScratch,
 ) -> Result<()> {
     options.temporal_layer_selection().validate()?;
+    options.embedded_layer_selection().validate()?;
     let InputScratch {
         records,
         obus: obu_storage,
@@ -955,7 +958,8 @@ fn decode_frames_in_order(
         key_envelope.offset,
     )?;
     output_effect_state.observe_suffix(suffix_after_candidate(leading_obus, key_candidate)?)?;
-    let key_output_effects = output_effect_state.finish_frame();
+    let key_output_effects =
+        output_effect_state.finish_frame(key_envelope.header.embedded_layer_id);
     let mut retained_frame_bytes = 0;
     ensure_retained_frame_byte_limits_for_core(
         options.limits(),
@@ -1004,6 +1008,7 @@ fn decode_frames_in_order(
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate: rate,
+                    embedded_layer_id: key_envelope.header.embedded_layer_id,
                     temporal_layer_id: key_envelope.header.temporal_layer_id,
                     props: stream.props(),
                 }
@@ -1045,6 +1050,7 @@ fn decode_frames_in_order(
                     ccso_grid,
                     segment_ids,
                     frame_rate: rate,
+                    embedded_layer_id: key_envelope.header.embedded_layer_id,
                     temporal_layer_id: key_envelope.header.temporal_layer_id,
                     props: stream.props(),
                 }
@@ -1083,10 +1089,10 @@ fn decode_frames_in_order(
     let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
-    if !stream
-        .layer_filter()
-        .is_temporal_output(key_envelope.header.temporal_layer_id)
-    {
+    if !stream.layer_filter().is_layer_output(
+        key_envelope.header.embedded_layer_id,
+        key_envelope.header.temporal_layer_id,
+    ) {
         scheduler.suppress(0);
     }
     scheduler.refresh(
@@ -1214,9 +1220,10 @@ fn decode_frames_in_order(
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) =
                     stream.inter_envelope(obus, next_candidate)?;
-                let sef_emit_allowed = stream
-                    .layer_filter()
-                    .is_temporal_output(sef_envelope.header.temporal_layer_id);
+                let sef_emit_allowed = stream.layer_filter().is_layer_output(
+                    sef_envelope.header.embedded_layer_id,
+                    sef_envelope.header.temporal_layer_id,
+                );
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(sef_prefix_obus, &sequence)?;
                 film_grain_slots.update_from_obus(sef_prefix_obus, &sequence)?;
@@ -1276,7 +1283,8 @@ fn decode_frames_in_order(
                 )?;
                 output_effect_state
                     .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
-                let output_effects = output_effect_state.finish_frame();
+                let output_effects =
+                    output_effect_state.finish_frame(sef_envelope.header.embedded_layer_id);
                 let output_rate = output_effects.frame_rate(frame_rate);
                 let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
                     unsupported_at(
@@ -1307,6 +1315,7 @@ fn decode_frames_in_order(
                     ccso_grid: source.ccso_grid.clone(),
                     segment_ids: source.segment_ids.clone(),
                     frame_rate: output_rate,
+                    embedded_layer_id: sef_envelope.header.embedded_layer_id,
                     temporal_layer_id: sef_envelope.header.temporal_layer_id,
                     props: stream.props(),
                     frame: inflight::PipelineFrameSlot::completed_recycled(
@@ -1372,9 +1381,10 @@ fn decode_frames_in_order(
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (inter_prefix_obus, inter_envelope) =
                     stream.inter_envelope(obus, next_candidate)?;
-                let inter_emit_allowed = stream
-                    .layer_filter()
-                    .is_temporal_output(inter_envelope.header.temporal_layer_id);
+                let inter_emit_allowed = stream.layer_filter().is_layer_output(
+                    inter_envelope.header.embedded_layer_id,
+                    inter_envelope.header.temporal_layer_id,
+                );
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(inter_prefix_obus, &sequence)?;
                 film_grain_slots.update_from_obus(inter_prefix_obus, &sequence)?;
@@ -1608,7 +1618,8 @@ fn decode_frames_in_order(
                 )?;
                 output_effect_state
                     .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
-                let inter_output_effects = output_effect_state.finish_frame();
+                let inter_output_effects =
+                    output_effect_state.finish_frame(inter_envelope.header.embedded_layer_id);
                 let inter_frame_rate = inter_output_effects.frame_rate(frame_rate);
                 let inter_update = frame_ref_update_from_core(
                     &inter_core,
@@ -1626,6 +1637,7 @@ fn decode_frames_in_order(
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate: inter_frame_rate,
+                    embedded_layer_id: inter_envelope.header.embedded_layer_id,
                     temporal_layer_id: inter_envelope.header.temporal_layer_id,
                     props: stream.props(),
                 };
@@ -1835,7 +1847,8 @@ fn decode_frames_in_order(
                 shared_sequence = None;
                 output_effect_state
                     .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
-                let key_output_effects = output_effect_state.finish_frame();
+                let key_output_effects =
+                    output_effect_state.finish_frame(key_envelope.header.embedded_layer_id);
                 admit_within_reference_store(
                     |retained| {
                         ensure_retained_frame_byte_limits_for_core(
@@ -1893,10 +1906,10 @@ fn decode_frames_in_order(
                 let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);
                 let key_immediate = key_core.immediate_output_frame == Some(true);
-                if !stream
-                    .layer_filter()
-                    .is_temporal_output(key_envelope.header.temporal_layer_id)
-                {
+                if !stream.layer_filter().is_layer_output(
+                    key_envelope.header.embedded_layer_id,
+                    key_envelope.header.temporal_layer_id,
+                ) {
                     scheduler.suppress(frame_index);
                 }
                 scheduler.refresh(

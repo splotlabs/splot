@@ -18,8 +18,9 @@ use splot_core::simd::SimdBackend;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOptions, DecodeOutputError,
-    DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, TemporalLayerId,
-    TemporalLayerSelection, TypedDecodeContext, Y4mFrameRate,
+    DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, EmbeddedLayerId,
+    EmbeddedLayerSelection, TemporalLayerId, TemporalLayerSelection, TypedDecodeContext,
+    Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -105,6 +106,23 @@ pub(crate) struct DecodeArgs {
         conflicts_with = "temporal_layer"
     )]
     temporal_output_mask: Option<TemporalLayerSelection>,
+    /// Embedded layer to decode and emit: `all` (default) or `0..=7`.
+    #[arg(
+        long,
+        value_name = "LAYER",
+        value_parser = parse_embedded_layer,
+        conflicts_with = "embedded_output_mask"
+    )]
+    embedded_layer: Option<EmbeddedLayerSelection>,
+    /// Bitmask (`1..=255` or `0x1..=0xff`) of embedded layers to emit;
+    /// transitive dependencies still decode.
+    #[arg(
+        long,
+        value_name = "MASK",
+        value_parser = parse_embedded_output_mask,
+        conflicts_with = "embedded_layer"
+    )]
+    embedded_output_mask: Option<EmbeddedLayerSelection>,
 }
 
 fn parse_temporal_layer(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
@@ -119,7 +137,19 @@ fn parse_temporal_layer(value: &str) -> core::result::Result<TemporalLayerSelect
     Ok(TemporalLayerSelection::Target(id))
 }
 
-fn parse_temporal_output_mask(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
+fn parse_embedded_layer(value: &str) -> core::result::Result<EmbeddedLayerSelection, String> {
+    if value.eq_ignore_ascii_case("all") {
+        return Ok(EmbeddedLayerSelection::All);
+    }
+    let id = value
+        .parse::<u8>()
+        .ok()
+        .and_then(EmbeddedLayerId::try_new)
+        .ok_or_else(|| "embedded layer must be 'all' or an integer in 0..=7".to_owned())?;
+    Ok(EmbeddedLayerSelection::Target(id))
+}
+
+fn parse_output_mask(value: &str, max: u8, name: &str) -> core::result::Result<u8, String> {
     let mask = if let Some(hex) = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
@@ -128,11 +158,27 @@ fn parse_temporal_output_mask(value: &str) -> core::result::Result<TemporalLayer
     } else {
         value.parse::<u8>()
     }
-    .map_err(|_| "temporal output mask must be an integer in 1..=15".to_owned())?;
-    if mask == 0 || mask > 0x0F {
-        return Err("temporal output mask must be non-zero within 1..=15".to_owned());
+    .map_err(|_| format!("{name} output mask must be an integer in 1..={max}"))?;
+    if mask == 0 || mask > max {
+        return Err(format!(
+            "{name} output mask must be non-zero within 1..={max}"
+        ));
     }
-    Ok(TemporalLayerSelection::OutputMask(mask))
+    Ok(mask)
+}
+
+fn parse_temporal_output_mask(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
+    Ok(TemporalLayerSelection::OutputMask(parse_output_mask(
+        value, 0x0F, "temporal",
+    )?))
+}
+
+fn parse_embedded_output_mask(value: &str) -> core::result::Result<EmbeddedLayerSelection, String> {
+    Ok(EmbeddedLayerSelection::OutputMask(parse_output_mask(
+        value,
+        u8::MAX,
+        "embedded",
+    )?))
 }
 
 fn parse_y4m_frame_rate(value: &str) -> core::result::Result<Y4mFrameRate, String> {
@@ -505,11 +551,16 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
         .temporal_layer
         .or(args.temporal_output_mask)
         .unwrap_or_default();
+    let embedded_layer_selection = args
+        .embedded_layer
+        .or(args.embedded_output_mask)
+        .unwrap_or_default();
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
         .with_y4m_frame_rate_override(args.frame_rate)
         .with_skip_film_grain(args.skip_film_grain)
-        .with_temporal_layer_selection(temporal_layer_selection);
+        .with_temporal_layer_selection(temporal_layer_selection)
+        .with_embedded_layer_selection(embedded_layer_selection);
     let input = open_decode_input(&args.input)
         .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
     let context = DecodeContext::new(

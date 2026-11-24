@@ -1710,6 +1710,7 @@ mod tests {
         let data = [0xA0];
         let input = FrameHeaderParseInput {
             obu_type: ObuType::ClosedLoopKey,
+            obu_mlayer_id: splot_core::types::EmbeddedLayerId::BASE,
             obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
             first_picture_in_tu: true,
             active_sequence: None,

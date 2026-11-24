@@ -121,7 +121,10 @@ fn non_base_temporal_obus_are_retained_but_not_selected_for_base_only() {
     let obus: Vec<_> = parsed_plan.obus().collect();
 
     assert_eq!(byte_plan, parsed_plan);
-    assert_eq!(parsed_plan.selected_layer(), DecodeLayerSelection::base());
+    assert_eq!(
+        parsed_plan.selected_layer(),
+        DecodeLayerSelection::default().with_temporal_selection(TemporalLayerSelection::BASE_ONLY)
+    );
     assert_eq!(parsed_plan.obu_count(), 4);
     assert_eq!(parsed_plan.frame_candidate_count(), 1);
     assert_eq!(parsed_plan.frame_candidates_all().count(), 1);
@@ -881,20 +884,12 @@ fn unsupported_layers_and_obu_types_are_typed() {
             DecodeUnsupportedReason::MultistreamSelection,
         ),
         (
-            extended_obu(0x90, 0x20).to_vec(),
-            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
-        ),
-        (
             [
                 obu(OBU_SEQUENCE_HEADER).as_slice(),
                 extended_obu(0x90, 0x01).as_slice(),
             ]
             .concat(),
             DecodeUnsupportedReason::NonBaseExtendedLayer,
-        ),
-        (
-            extended_obu(0x91, 0x20).to_vec(),
-            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
         ),
         (
             [
@@ -1005,4 +1000,47 @@ fn the_decode_pass_replans_the_planned_candidates_and_continuations() {
                 .eq(plan.obus().filter(|obu| obu.role().is_frame_continuation()))
         );
     }
+}
+
+#[test]
+fn non_base_embedded_obus_are_planned_and_filtered_with_continuations() {
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        &[0x03, OBU_CLOSED_LOOP_KEY | 0x80, 0x00, 0x80],
+        &[0x03, OBU_REGULAR_TILE_GROUP | 0x80, 0x20, 0x80],
+        &[0x03, OBU_REGULAR_TILE_GROUP | 0x80, 0x20, 0x00],
+    ]
+    .concat();
+
+    let all_plan = plan(&bytes);
+    assert_eq!(all_plan.frame_candidate_count(), 2);
+    let conts: Vec<_> =
+        tile_group_continuations(bytes.as_slice().into(), all_plan.obus().nth(3).unwrap())
+            .collect();
+    assert_eq!(conts.len(), 1);
+    assert_eq!(conts[0].header().embedded_layer_id.get(), 1);
+
+    let base_options =
+        DecodeOptions::default().with_embedded_layer_selection(EmbeddedLayerSelection::BASE_ONLY);
+    let base_plan = DecodeContext::plan_bytes(&bytes, base_options).unwrap();
+    let roles: Vec<_> = base_plan.obus().map(DecodePlannedObu::role).collect();
+    assert_eq!(
+        roles,
+        [
+            DecodePlannedObuRole::Global,
+            DecodePlannedObuRole::SelectedLayerState,
+            DecodePlannedObuRole::FrameCandidate,
+            DecodePlannedObuRole::UnselectedLayer,
+            DecodePlannedObuRole::UnselectedLayer,
+        ]
+    );
+
+    let filter = ActiveLayerFilter::new(
+        TemporalLayerSelection::Target(TemporalLayerId::from_bits(1)),
+        EmbeddedLayerSelection::Target(EmbeddedLayerId::from_bits(1)),
+    );
+    assert!(filter.is_layer_selected(EmbeddedLayerId::from_bits(0), TemporalLayerId::from_bits(0)));
+    assert!(!filter.is_layer_output(EmbeddedLayerId::from_bits(0), TemporalLayerId::from_bits(0)));
+    assert!(filter.is_layer_output(EmbeddedLayerId::from_bits(1), TemporalLayerId::from_bits(1)));
 }

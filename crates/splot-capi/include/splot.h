@@ -74,14 +74,12 @@ typedef struct SplotSettings {
   // 1 leaves film grain out of the pictures; [`splot_apply_grain`] adds it
   // to a picture later. 0 applies it.
   uint8_t skip_film_grain;
-  // Highest temporal layer to emit: `0` selects all layers (default); `1..=4`
-  // selects temporal layers `0..=(temporal_layer - 1)`. Mutually exclusive
-  // with a nonzero `temporal_output_mask`.
-  uint8_t temporal_layer;
   // Bitmask (`1..=15`) of temporal layers (`1 << temporal_layer_id`) to emit;
-  // transitive dependencies still decode. `0` uses `temporal_layer`.
-  // Mutually exclusive with a nonzero `temporal_layer`.
+  // transitive dependencies still decode. `0` emits all layers (default).
   uint8_t temporal_output_mask;
+  // Bitmask (`1..=255`) of embedded layers (`1 << embedded_layer_id`) to emit;
+  // transitive dependencies still decode. `0` emits all layers (default).
+  uint8_t embedded_output_mask;
   // Reserved; keep zero.
   uint8_t reserved[29];
 } SplotSettings;
@@ -142,6 +140,8 @@ typedef struct SplotPicture {
   uint8_t frame_type;
   // Temporal layer id (`obu_tlayer_id`, `0..=3`) of the picture.
   uint8_t temporal_layer_id;
+  // Embedded layer id (`obu_mlayer_id`, `0..=7`) of the picture.
+  uint8_t embedded_layer_id;
   // Reserved.
   size_t reserved[3];
   // The decoder's handle on the samples; do not touch.
@@ -164,9 +164,8 @@ void splot_default_settings(struct SplotSettings *settings);
 // Opens a decoder and stores it in `*out`.
 //
 // Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a
-// `skip_film_grain` above 1, invalid `temporal_layer` or
-// `temporal_output_mask`, both temporal selectors nonzero, or nonzero reserved
-// bytes, or [`SPLOT_EDECODE`] when the worker pool cannot start.
+// `skip_film_grain` above 1, `temporal_output_mask` above `15`, or nonzero
+// reserved bytes, or [`SPLOT_EDECODE`] when the worker pool cannot start.
 //
 // # Safety
 // `out` is null or writable; `settings` is null or points to a

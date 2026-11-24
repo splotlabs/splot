@@ -11852,3 +11852,215 @@ output_scope = "Complete 30,720-byte 5-frame raw I420 output"
 kind = "digest-equality"
 left = "avm-tlayer4-sparse-raw-sha256"
 right = "splot-tlayer4-sparse-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-mlayer2-crossref-8bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated a 2-embedded-layer 8-bit 64x64 stream with local LCR and cross-layer prediction across 3 temporal units; splot and avmdec decode all 6 frames byte-for-byte identically and splot isolates ML0-only, ML1-only, and prerequisite-only output modes."
+recorded_at = "2026-11-24"
+command = '''Encoded 3 temporal units of 64x64 8-bit moving I420 frames via AVM encoder API (AVME_SET_NUMBER_MLAYERS=2, profile 1 IOP 1, AV2E_SET_ENABLE_FLAG_MULTI_LAYER_LAG_TEST=1, local LCR with global ID zeroed) to Annex B. Validated clean with splot validate --strict and verified byte-exact parity against avmdec --all-layers --rawvideo --i420 --output-bit-depth=8.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-mlayer2-crossref-8bit.obu"
+sha256 = "7c8152d4ea70b60a9934fea0f6e609ff06b662102377208322b40a25f477bdd2"
+size_bytes = 1897
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically from a project-owned synthetic 64x64 8-bit moving I420 pattern using AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9 with two embedded layers and local LCR. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-mlayer2-crossref-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "8f798709cae451909159dde10c9581b07c373d6b6a71a6a43f450da11e018176"
+output_scope = "Complete 36,864-byte 6-frame 8-bit raw I420 output across ML0 and ML1"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding 8-bit embedded enhancement layers."
+command_summary = "splot decode --output-format raw on {fixture:input}."
+output_digest_id = "splot-mlayer2-crossref-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "8f798709cae451909159dde10c9581b07c373d6b6a71a6a43f450da11e018176"
+output_scope = "Complete 36,864-byte 6-frame 8-bit raw I420 output across ML0 and ML1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-mlayer2-crossref-8bit-raw-sha256"
+right = "splot-mlayer2-crossref-8bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-mlayer2-crossref-10bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated a 2-embedded-layer 10-bit 64x64 stream under Profile 2 IOP 2 with local LCR and cross-layer prediction; splot and avmdec decode all 6 frames byte-for-byte identically."
+recorded_at = "2026-11-24"
+command = '''Encoded 3 temporal units of 64x64 10-bit moving I420 frames via AVM encoder API (AVME_SET_NUMBER_MLAYERS=2, profile 2 IOP 2, AV2E_SET_ENABLE_FLAG_MULTI_LAYER_LAG_TEST=1, local LCR with global ID zeroed) to Annex B. Validated clean with splot validate --strict and verified byte-exact parity against avmdec --all-layers --rawvideo --i420 --output-bit-depth=10.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-mlayer2-crossref-10bit.obu"
+sha256 = "5e9110a00ed5c7cba80dc11dbc8af196ce8a0533054745e9b9e21a43539fcc8b"
+size_bytes = 2034
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically from a project-owned synthetic 64x64 10-bit moving I420 pattern using AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9 with two embedded layers and local LCR. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=10 decoded {fixture:input}."
+output_digest_id = "avm-mlayer2-crossref-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "22240aff68d5f8bcdd886248862456ebdc731b0a978520badece7509961774a3"
+output_scope = "Complete 73,728-byte 6-frame 10-bit raw I420 output across ML0 and ML1"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding 10-bit embedded enhancement layers."
+command_summary = "splot decode --output-format raw on {fixture:input}."
+output_digest_id = "splot-mlayer2-crossref-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "22240aff68d5f8bcdd886248862456ebdc731b0a978520badece7509961774a3"
+output_scope = "Complete 73,728-byte 6-frame 10-bit raw I420 output across ML0 and ML1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-mlayer2-crossref-10bit-raw-sha256"
+right = "splot-mlayer2-crossref-10bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-mlayer2-mixedres-8bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated a mixed-resolution 2-embedded-layer 8-bit stream with 128x128 ML0 and 256x256 ML1 frames; splot and avmdec decode all 6 frames byte-for-byte identically across alternating output dimensions."
+recorded_at = "2026-11-24"
+command = '''Encoded 3 temporal units of 256x256 8-bit moving I420 frames via AVM encoder API (AVME_SET_NUMBER_MLAYERS=2, profile 2, AVME_ONETWO scaling on ML0 and AVME_NORMAL on ML1, AV2E_SET_ENABLE_FLAG_MULTI_LAYER_LAG_TEST=1, local LCR with global ID zeroed) to Annex B. Validated clean with splot validate --strict and verified byte-exact parity against avmdec --all-layers --rawvideo --i420 --output-bit-depth=8.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-mlayer2-mixedres-8bit.obu"
+sha256 = "6c21b92903b82f4d05253aa976154f31819c3df28df1df7b4d21d6c6e92a1a63"
+size_bytes = 47845
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically from a project-owned synthetic 256x256 8-bit moving I420 pattern using AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9 with ONETWO resolution scaling across two embedded layers. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-mlayer2-mixedres-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "3c665784275db2a8c6c757f4253806ec76bddfda669f9fa51cfdada8904d7634"
+output_scope = "Complete 368,640-byte 6-frame 8-bit raw I420 output alternating 128x128 ML0 and 256x256 ML1"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding mixed-resolution embedded enhancement layers."
+command_summary = "splot decode --output-format raw on {fixture:input}."
+output_digest_id = "splot-mlayer2-mixedres-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "3c665784275db2a8c6c757f4253806ec76bddfda669f9fa51cfdada8904d7634"
+output_scope = "Complete 368,640-byte 6-frame 8-bit raw I420 output alternating 128x128 ML0 and 256x256 ML1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-mlayer2-mixedres-8bit-raw-sha256"
+right = "splot-mlayer2-mixedres-8bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-mlayer-tlayer-sparse-state"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated an 8-frame 64x64 8-bit stream combining 2 embedded layers, 2 temporal layers, OPS, and local LCR across 4 temporal units; splot and avmdec decode all 8 frames byte-for-byte identically across joint 2D layer selections."
+recorded_at = "2026-11-24"
+command = '''Encoded 4 temporal units of 64x64 8-bit moving I420 frames via AVM encoder API (AVME_SET_NUMBER_MLAYERS=2, AVME_SET_NUMBER_TLAYERS=2, profile 2, local LCR with global ID zeroed, OPS enabled, AVM_EFLAG_NO_UPD_ALL on ML1 TL1, AV2E_SET_ENABLE_FLAG_MULTI_LAYER_LAG_TEST=1) to Annex B. Validated clean with splot validate --strict and verified byte-exact parity against avmdec --all-layers --rawvideo --i420 --output-bit-depth=8.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-mlayer-tlayer-sparse-state.obu"
+sha256 = "b8d2264b9c151cfb0d5ace07bd2994c2a73f9cdd1f027b70a5c8c3608e78e9c6"
+size_bytes = 2460
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically from a project-owned synthetic 64x64 8-bit moving I420 pattern using AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9 with combined embedded and temporal layers. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-mlayer-tlayer-sparse-state-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "80f2b107ff4512837e25b724f380259077ad451f73e7cb2c046e64feee8062cc"
+output_scope = "Complete 49,152-byte 8-frame 8-bit raw I420 output across ML0, ML1, TL0, and TL1"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding combined embedded and temporal enhancement layers."
+command_summary = "splot decode --output-format raw on {fixture:input}."
+output_digest_id = "splot-mlayer-tlayer-sparse-state-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "80f2b107ff4512837e25b724f380259077ad451f73e7cb2c046e64feee8062cc"
+output_scope = "Complete 49,152-byte 8-frame 8-bit raw I420 output across ML0, ML1, TL0, and TL1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-mlayer-tlayer-sparse-state-raw-sha256"
+right = "splot-mlayer-tlayer-sparse-state-raw-sha256"

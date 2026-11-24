@@ -298,6 +298,7 @@ proptest! {
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let input = FrameHeaderParseInput {
             obu_type,
+            obu_mlayer_id: crate::types::EmbeddedLayerId::BASE,
             obu_tlayer_id: crate::types::TemporalLayerId::BASE,
             first_picture_in_tu: first_picture,
             active_sequence: None,

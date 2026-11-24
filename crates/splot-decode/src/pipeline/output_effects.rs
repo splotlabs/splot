@@ -13,6 +13,9 @@ use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
 };
 use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::layer_config_record::{
+    LayerConfigurationRecord, parse_layer_config_record,
+};
 use splot_core::headers::metadata::{
     MetadataGroupUnit, MetadataType, MetadataUnit, parse_metadata_group, parse_metadata_short,
 };
@@ -139,11 +142,13 @@ impl ActiveMetadata {
             && self.mlayer_map == other.mlayer_map
     }
 
-    fn applies_to_base(&self) -> bool {
+    fn applies_to_layer(&self, mlayer: EmbeddedLayerId) -> bool {
         match self.layer_idc {
             0 | LAYER_GLOBAL => true,
-            LAYER_CURRENT => self.source_mlayer.get() == 0,
-            LAYER_VALUES => self.mlayer_map.is_some_and(|map| map & 1 != 0),
+            LAYER_CURRENT => self.source_mlayer == mlayer,
+            LAYER_VALUES => self
+                .mlayer_map
+                .is_some_and(|map| map & (1u8 << mlayer.get()) != 0),
             _ => false,
         }
     }
@@ -170,8 +175,12 @@ pub(crate) struct OutputEffectState {
     qm_protected: u16,
     qm_seen_since_frame: u16,
     qm_obu_seen_since_frame: bool,
-    content_interpretation: Option<ContentInterpretation>,
-    ci_in_current_tu: Option<ContentInterpretation>,
+    content_interpretation: [Option<ContentInterpretation>; 8],
+    ci_in_current_tu: [Option<ContentInterpretation>; 8],
+    active_xlayer: ExtendedLayerId,
+    local_lcr_tu: Option<u64>,
+    local_lcr_in_cvs: bool,
+    global_lcr_xlayers: [Option<u32>; 8],
     brt_count: BrtCount,
     second_brt_offset: Option<ByteOffset>,
     ops_counts: BTreeMap<(ExtendedLayerId, u8), u8>,
@@ -187,8 +196,12 @@ impl OutputEffectState {
             qm_protected: 0,
             qm_seen_since_frame: 0,
             qm_obu_seen_since_frame: false,
-            content_interpretation: None,
-            ci_in_current_tu: None,
+            content_interpretation: [None; 8],
+            ci_in_current_tu: [None; 8],
+            active_xlayer: ExtendedLayerId::from_bits(0),
+            local_lcr_tu: None,
+            local_lcr_in_cvs: false,
+            global_lcr_xlayers: [None; 8],
             brt_count: BrtCount::None,
             second_brt_offset: None,
             ops_counts: BTreeMap::new(),
@@ -200,7 +213,7 @@ impl OutputEffectState {
     pub(crate) fn begin_temporal_unit(&mut self) {
         self.tu_index = self.tu_index.saturating_add(1);
         self.qm_protected = 0;
-        self.ci_in_current_tu = None;
+        self.ci_in_current_tu = [None; 8];
     }
 
     pub(crate) fn observe_prefix(
@@ -209,13 +222,17 @@ impl OutputEffectState {
         sequence: &SequenceHeader,
     ) -> Result<()> {
         for envelope in obus {
+            if !envelope.header.extended_layer_id.is_global() {
+                self.active_xlayer = envelope.header.extended_layer_id;
+            }
             match envelope.header.obu_type {
                 ObuType::TemporalDelimiter => self.begin_temporal_unit(),
+                ObuType::LayerConfigurationRecord => self.observe_lcr(*envelope)?,
                 ObuType::OperatingPointSet => self.observe_ops(*envelope)?,
                 ObuType::MultiFrameHeader => self.observe_mfh(*envelope, sequence)?,
                 ObuType::BufferRemovalTiming => self.observe_brt(*envelope)?,
                 ObuType::QuantizationMatrix => self.observe_qm(*envelope, sequence)?,
-                ObuType::ContentInterpretation => self.observe_ci(*envelope)?,
+                ObuType::ContentInterpretation => self.observe_ci(*envelope, sequence)?,
                 ObuType::MetadataShort | ObuType::MetadataGroup => {
                     self.observe_metadata(*envelope, false)?;
                 }
@@ -321,6 +338,7 @@ impl OutputEffectState {
                 ),
             });
         }
+        let mlayer_idx = usize::from(envelope.header.embedded_layer_id.get());
         let starts_cvs = first_picture_in_tu
             && (sequence.general.single_picture_header_flag
                 || matches!(
@@ -328,12 +346,19 @@ impl OutputEffectState {
                     ObuType::ClosedLoopKey | ObuType::OpenLoopKey
                 ));
         if starts_cvs {
+            if envelope.header.obu_type == ObuType::ClosedLoopKey {
+                self.local_lcr_in_cvs = self.local_lcr_tu == Some(self.tu_index);
+            }
+            self.validate_annex_a_lcr(envelope, sequence)?;
             self.reset_unprotected_qm();
             self.content_interpretation = self.ci_in_current_tu;
             self.metadata.retain(|unit| unit.tu_index == self.tu_index);
-        } else if let Some(content) = self.ci_in_current_tu {
+        } else if let Some(content) = self.ci_in_current_tu.get(mlayer_idx).copied().flatten() {
             if self
                 .content_interpretation
+                .get(mlayer_idx)
+                .copied()
+                .flatten()
                 .is_some_and(|active| active != content)
             {
                 return Err(unsupported_feature_at(
@@ -343,7 +368,9 @@ impl OutputEffectState {
                     "6.14",
                 ));
             }
-            self.content_interpretation = Some(content);
+            if let Some(slot) = self.content_interpretation.get_mut(mlayer_idx) {
+                *slot = Some(content);
+            }
         }
         if !starts_cvs
             && ((envelope.header.obu_type == ObuType::Switch
@@ -358,24 +385,78 @@ impl OutputEffectState {
         Ok(self.active_user_qms())
     }
 
-    pub(crate) fn finish_frame(&mut self) -> FrameOutputEffects {
+    fn validate_annex_a_lcr(
+        &self,
+        envelope: ObuEnvelope<'_>,
+        sequence: &SequenceHeader,
+    ) -> Result<()> {
+        if sequence.general.max_mlayer_id.get() == 0 {
+            return Ok(());
+        }
+        let profile = sequence.general.seq_profile_idc.get();
+        let has_global_lcr = sequence.general.seq_lcr_id.get() != 0
+            && self
+                .global_lcr_xlayers
+                .get(usize::from(sequence.general.seq_lcr_id.get()))
+                .copied()
+                .flatten()
+                .is_some_and(|map| {
+                    (map & (1u32 << u32::from(envelope.header.extended_layer_id.get()))) != 0
+                });
+        let satisfied = match profile {
+            1 | 3 | 4 => self.local_lcr_in_cvs,
+            2 => self.local_lcr_in_cvs || has_global_lcr,
+            _ => true,
+        };
+        if !satisfied {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::sequence_header_conformance(
+                    envelope.offset,
+                    "A.2",
+                    format!(
+                        "Annex A Table A.4: profile {profile} with max_mlayer_id {} requires an active layer configuration record",
+                        sequence.general.max_mlayer_id.get()
+                    ),
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_frame(&mut self, mlayer: EmbeddedLayerId) -> FrameOutputEffects {
+        let idx = usize::from(mlayer.get());
         let effects = FrameOutputEffects {
-            content_interpretation: self.content_interpretation,
+            content_interpretation: self.content_interpretation.get(idx).copied().flatten(),
             metadata: self
                 .metadata
                 .iter()
-                .filter(|unit| unit.applies_to_base())
+                .filter(|unit| unit.applies_to_layer(mlayer))
                 .map(|unit| unit.unit.clone())
                 .collect(),
         };
-        self.metadata
-            .retain(|unit| unit.persistence != MetadataPersistence::No);
+        self.metadata.retain(|unit| {
+            unit.persistence != MetadataPersistence::No || !unit.applies_to_layer(mlayer)
+        });
         self.brt_count = BrtCount::None;
         self.second_brt_offset = None;
         effects
     }
 
     fn observe_mfh(&mut self, envelope: ObuEnvelope<'_>, sequence: &SequenceHeader) -> Result<()> {
+        if envelope.header.embedded_layer_id > sequence.general.max_mlayer_id {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    None,
+                    "6.2.2",
+                    format!(
+                        "OBU mlayer_id {} exceeds max_mlayer_id {}",
+                        envelope.header.embedded_layer_id.get(),
+                        sequence.general.max_mlayer_id.get()
+                    ),
+                ),
+            });
+        }
         if envelope.header.temporal_layer_id > sequence.general.max_tlayer_id {
             return Err(DecodeError::MalformedSource {
                 issue: DecodeSourceIssue::frame_header_conformance(
@@ -452,6 +533,20 @@ impl OutputEffectState {
     }
 
     fn observe_qm(&mut self, envelope: ObuEnvelope<'_>, sequence: &SequenceHeader) -> Result<()> {
+        if envelope.header.embedded_layer_id > sequence.general.max_mlayer_id {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    None,
+                    "6.2.2",
+                    format!(
+                        "quantizer matrix mlayer_id {} exceeds max_mlayer_id {}",
+                        envelope.header.embedded_layer_id.get(),
+                        sequence.general.max_mlayer_id.get()
+                    ),
+                ),
+            });
+        }
         if envelope.header.temporal_layer_id > sequence.general.max_tlayer_id {
             return Err(DecodeError::MalformedSource {
                 issue: DecodeSourceIssue::frame_header_conformance(
@@ -521,7 +616,21 @@ impl OutputEffectState {
         Ok(())
     }
 
-    fn observe_ci(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
+    fn observe_ci(&mut self, envelope: ObuEnvelope<'_>, sequence: &SequenceHeader) -> Result<()> {
+        if envelope.header.embedded_layer_id > sequence.general.max_mlayer_id {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    None,
+                    "6.2.2",
+                    format!(
+                        "content interpretation mlayer_id {} exceeds max_mlayer_id {}",
+                        envelope.header.embedded_layer_id.get(),
+                        sequence.general.max_mlayer_id.get()
+                    ),
+                ),
+            });
+        }
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let content = parse_content_interpretation(&mut reader).map_err(|_| {
             unsupported_feature_at(
@@ -532,7 +641,8 @@ impl OutputEffectState {
             )
         })?;
         finish(&mut reader, envelope, "content_interpretation_tail", "5.15")?;
-        if let Some(existing) = self.ci_in_current_tu
+        let idx = usize::from(envelope.header.embedded_layer_id.get());
+        if let Some(existing) = self.ci_in_current_tu.get(idx).copied().flatten()
             && existing != content
         {
             return Err(unsupported_feature_at(
@@ -542,7 +652,39 @@ impl OutputEffectState {
                 "6.14",
             ));
         }
-        self.ci_in_current_tu = Some(content);
+        if let Some(slot) = self.ci_in_current_tu.get_mut(idx) {
+            *slot = Some(content);
+        }
+        Ok(())
+    }
+
+    fn observe_lcr(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
+        let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+        let record = parse_layer_config_record(&mut reader, envelope.header.extended_layer_id)
+            .map_err(|_| {
+                unsupported_feature_at(
+                    "layer_config_record_parse",
+                    envelope.offset,
+                    "decode requires a complete layer configuration record OBU",
+                    "5.8",
+                )
+            })?;
+        finish(&mut reader, envelope, "layer_config_record_tail", "5.8")?;
+        match record {
+            LayerConfigurationRecord::Global(info) => {
+                if let Some(slot) = self
+                    .global_lcr_xlayers
+                    .get_mut(usize::from(info.global_config_record_id))
+                {
+                    *slot = Some(info.xlayer_map);
+                }
+            }
+            LayerConfigurationRecord::Local(_) => {
+                self.local_lcr_tu = Some(self.tu_index);
+                self.local_lcr_in_cvs = true;
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -663,7 +805,7 @@ impl OutputEffectState {
             self.cancel_metadata(envelope.header.extended_layer_id, group.metadata_type);
             return;
         }
-        let mlayer_map = metadata_group_base_mlayer_map(envelope, &group);
+        let mlayer_map = metadata_group_mlayer_map(envelope, &group, self.active_xlayer);
         let (Some(layer_idc), Some(persistence), Some(unit)) =
             (group.muh_layer_idc, group.muh_persistence_idc, group.unit)
         else {
@@ -723,15 +865,16 @@ impl OutputEffectState {
     }
 
     fn reset_switch_qm(&mut self, envelope: ObuEnvelope<'_>, sequence: &SequenceHeader) {
+        let presence = sequence.general.mlayer_dependency_map.presence_map();
         for index in 0..NUM_CUSTOM_QMS {
             if self.qm_protected & (1 << index) != 0 {
                 continue;
             }
             let reset = self.qm[index].as_ref().is_none_or(|slot| {
                 slot.mlayer_id.is_none_or(|mlayer| {
-                    sequence.general.mlayer_dependency_map.depends_on(
-                        envelope.header.embedded_layer_id,
+                    presence.is_present(
                         EmbeddedLayerId::from_bits(mlayer),
+                        envelope.header.embedded_layer_id,
                     )
                 })
             });
@@ -835,12 +978,19 @@ fn build_user_qm_level(level: &QuantizerMatrixLevel) -> Option<FrameUserQmLevel>
     Some(FrameUserQmLevel { transforms })
 }
 
-fn metadata_group_base_mlayer_map(
+fn metadata_group_mlayer_map(
     envelope: ObuEnvelope<'_>,
     group: &MetadataGroupUnit,
+    active_xlayer: ExtendedLayerId,
 ) -> Option<u8> {
-    if envelope.header.extended_layer_id.is_global() && group.muh_xlayer_map? & 1 == 0 {
-        return None;
+    if envelope.header.extended_layer_id.is_global() {
+        let xlayer_map = group.muh_xlayer_map?;
+        let mask = 1u32 << u32::from(active_xlayer.get());
+        if xlayer_map & mask == 0 {
+            return None;
+        }
+        let slot = (xlayer_map & (mask - 1)).count_ones() as usize;
+        return group.muh_mlayer_maps.get(slot).copied();
     }
     group.muh_mlayer_maps.first().copied()
 }
@@ -1012,7 +1162,7 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(immediate.brt_count, BrtCount::Multiple);
-        let _ = immediate.finish_frame();
+        let _ = immediate.finish_frame(EmbeddedLayerId::BASE);
         assert_eq!(immediate.brt_count, BrtCount::None);
         assert_eq!(immediate.second_brt_offset, None);
 
@@ -1028,7 +1178,7 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(implicit.brt_count, BrtCount::Multiple);
-        let _ = implicit.finish_frame();
+        let _ = implicit.finish_frame(EmbeddedLayerId::BASE);
         assert_eq!(implicit.brt_count, BrtCount::None);
 
         let mut non_output = OutputEffectState::new();
@@ -1042,7 +1192,7 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(non_output.brt_count, BrtCount::One);
-        let _ = non_output.finish_frame();
+        let _ = non_output.finish_frame(EmbeddedLayerId::BASE);
         assert_eq!(non_output.brt_count, BrtCount::None);
     }
 
@@ -1208,7 +1358,7 @@ mod tests {
             hdr_cll(50),
         );
 
-        let effects = state.finish_frame();
+        let effects = state.finish_frame(EmbeddedLayerId::BASE);
         assert_eq!(
             effects
                 .metadata
@@ -1226,8 +1376,13 @@ mod tests {
     fn no_persistence_metadata_expires_after_frame_snapshot() {
         let mut state = OutputEffectState::new();
         state.store_metadata(metadata_envelope(0, 0), LAYER_CURRENT, 2, None, hdr_cll(10));
-        assert_eq!(state.finish_frame().metadata.len(), 1);
-        assert!(state.finish_frame().metadata.is_empty());
+        assert_eq!(state.finish_frame(EmbeddedLayerId::BASE).metadata.len(), 1);
+        assert!(
+            state
+                .finish_frame(EmbeddedLayerId::BASE)
+                .metadata
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1271,8 +1426,8 @@ mod tests {
             return;
         };
         let mut state = OutputEffectState::new();
-        state.content_interpretation = Some(active);
-        state.ci_in_current_tu = Some(current);
+        state.content_interpretation[0] = Some(active);
+        state.ci_in_current_tu[0] = Some(current);
 
         let result = state.prepare_frame(olk_envelope, &core, &sequence, false, None);
 
@@ -1372,5 +1527,179 @@ mod tests {
             Err(crate::DecodeError::UnsupportedFeature { unsupported })
                 if unsupported.reason() == "quantizer_matrix_tlayer_dependency"
         ));
+    }
+
+    #[test]
+    fn metadata_snapshot_scopes_to_mlayer_and_retains_other_layer_nonpersistent_units() {
+        let mut state = OutputEffectState::new();
+        let ml0 = metadata_envelope(0, 0);
+        let ml1 = metadata_envelope(0, 1);
+        state.store_metadata(ml0, LAYER_GLOBAL, 0, None, hdr_cll(10));
+        state.store_metadata(ml0, LAYER_CURRENT, 1, None, hdr_cll(20));
+        state.store_metadata(ml1, LAYER_CURRENT, 2, None, hdr_cll(30));
+        state.store_metadata(ml0, LAYER_VALUES, 1, Some(0b0000_0001), hdr_cll(40));
+        state.store_metadata(ml1, LAYER_VALUES, 2, Some(0b0000_0010), hdr_cll(50));
+
+        let collect_clls = |effects: FrameOutputEffects| -> Vec<u16> {
+            effects
+                .metadata
+                .iter()
+                .filter_map(|unit| match &unit.payload {
+                    MetadataPayload::HdrCll(cll) => Some(cll.max_cll),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        assert_eq!(
+            collect_clls(state.finish_frame(EmbeddedLayerId::BASE)),
+            vec![10, 20, 40]
+        );
+        assert_eq!(
+            collect_clls(state.finish_frame(EmbeddedLayerId::from_bits(1))),
+            vec![10, 30, 50]
+        );
+        assert_eq!(
+            collect_clls(state.finish_frame(EmbeddedLayerId::from_bits(1))),
+            vec![10]
+        );
+    }
+
+    #[test]
+    fn content_interpretation_is_scoped_per_embedded_layer() {
+        let Some((olk_envelope, sequence, core)) = olk_frame() else {
+            return;
+        };
+        let (Ok(ci0), Ok(ci1)) = (content(0), content(1)) else {
+            panic!("test CI payloads must parse");
+        };
+
+        let mut state = OutputEffectState::new();
+        state.content_interpretation[0] = Some(ci0);
+        state.content_interpretation[1] = Some(ci1);
+        state.ci_in_current_tu[1] = Some(ci1);
+
+        let mut ml1_env = olk_envelope;
+        ml1_env.header.embedded_layer_id = EmbeddedLayerId::from_bits(1);
+        assert!(
+            state
+                .prepare_frame(ml1_env, &core, &sequence, false, None)
+                .is_ok()
+        );
+        assert_eq!(
+            state
+                .finish_frame(EmbeddedLayerId::BASE)
+                .content_interpretation,
+            Some(ci0)
+        );
+        assert_eq!(
+            state
+                .finish_frame(EmbeddedLayerId::from_bits(1))
+                .content_interpretation,
+            Some(ci1)
+        );
+
+        state.begin_temporal_unit();
+        state.ci_in_current_tu[1] = Some(ci0);
+        let err = state.prepare_frame(ml1_env, &core, &sequence, false, None);
+        assert!(matches!(
+            err,
+            Err(crate::DecodeError::UnsupportedFeature { unsupported })
+                if unsupported.reason() == "content_interpretation_changed_in_cvs"
+        ));
+    }
+
+    #[test]
+    fn reset_switch_qm_respects_mlayer_presence_map_polarity() {
+        let Some((mut frame_envelope, mut sequence, _core)) = olk_frame() else {
+            return;
+        };
+        sequence.general.max_mlayer_id = EmbeddedLayerId::from_bits(1);
+        sequence.general.mlayer_dependency_map =
+            splot_core::headers::sequence::MLayerDependencyMap::default_for(
+                EmbeddedLayerId::from_bits(1),
+            );
+        let mk_slot = |mlayer| {
+            Some(QmSlot {
+                mlayer_id: Some(mlayer),
+                tlayer_id: Some(0),
+                num_planes: 3,
+                user: None,
+            })
+        };
+
+        let mut state = OutputEffectState::new();
+        state.qm[0] = mk_slot(0);
+        state.qm[1] = mk_slot(1);
+        state.qm_protected = 0;
+
+        frame_envelope.header.embedded_layer_id = EmbeddedLayerId::from_bits(1);
+        state.reset_switch_qm(frame_envelope, &sequence);
+        assert!(
+            state.qm[0].is_some(),
+            "ML1 switch must preserve ML0 QM slot"
+        );
+        assert!(state.qm[1].is_none(), "ML1 switch must clear ML1 QM slot");
+
+        state.qm[0] = mk_slot(0);
+        state.qm[1] = mk_slot(1);
+        frame_envelope.header.embedded_layer_id = EmbeddedLayerId::BASE;
+        state.reset_switch_qm(frame_envelope, &sequence);
+        assert!(state.qm[0].is_none(), "ML0 switch must clear ML0 QM slot");
+        assert!(
+            state.qm[1].is_none(),
+            "ML0 switch must invalidate dependent ML1 QM slot"
+        );
+    }
+
+    #[test]
+    fn validate_annex_a_lcr_enforces_table_a4_by_profile() {
+        const MLAYER_OBU: &[u8] = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-mlayer2-crossref-8bit.obu"
+        );
+        let obus = splot_core::annexb::parse_annex_b_obus(MLAYER_OBU).unwrap();
+        let lcr_obu = obus
+            .iter()
+            .find(|obu| obu.header.obu_type == ObuType::LayerConfigurationRecord)
+            .copied()
+            .unwrap();
+        let seq_obu = obus
+            .iter()
+            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader)
+            .copied()
+            .unwrap();
+        let frame_obu = obus
+            .iter()
+            .find(|obu| obu.header.obu_type == ObuType::ClosedLoopKey)
+            .copied()
+            .unwrap();
+        let mut reader = BitReader::new(seq_obu.payload, seq_obu.payload_offset());
+        let mut sequence =
+            splot_core::headers::sequence::parse_sequence_header(&mut reader).unwrap();
+
+        let mut state = OutputEffectState::new();
+        sequence.general.seq_profile_idc = splot_core::headers::sequence::ProfileIdc::from_bits(1);
+        assert!(matches!(
+            state.validate_annex_a_lcr(frame_obu, &sequence),
+            Err(crate::DecodeError::MalformedSource { issue })
+                if issue.spec_section() == Some("A.2")
+                    && issue.message().contains("Annex A Table A.4")
+        ));
+
+        sequence.general.seq_profile_idc = splot_core::headers::sequence::ProfileIdc::from_bits(2);
+        sequence.general.seq_lcr_id = splot_core::headers::sequence::LcrId::from_bits(1);
+        state.global_lcr_xlayers[1] = Some(0b10);
+        assert!(matches!(
+            state.validate_annex_a_lcr(frame_obu, &sequence),
+            Err(crate::DecodeError::MalformedSource { issue }) if issue.spec_section() == Some("A.2")
+        ));
+        state.global_lcr_xlayers[1] = Some(0b01);
+        assert!(state.validate_annex_a_lcr(frame_obu, &sequence).is_ok());
+
+        state.global_lcr_xlayers[1] = None;
+        state.observe_lcr(lcr_obu).unwrap();
+        assert!(state.local_lcr_in_cvs);
+        sequence.general.seq_profile_idc = splot_core::headers::sequence::ProfileIdc::from_bits(1);
+        assert!(state.validate_annex_a_lcr(frame_obu, &sequence).is_ok());
     }
 }

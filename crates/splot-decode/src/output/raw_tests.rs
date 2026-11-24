@@ -356,7 +356,10 @@ fn non_base_temporal_layer_is_selected_by_default_and_filtered_under_base_only()
         .filter(|obu| obu.role() == DecodePlannedObuRole::UnselectedLayer)
         .collect();
 
-    assert_eq!(base_plan.selected_layer(), DecodeLayerSelection::base());
+    assert_eq!(
+        base_plan.selected_layer(),
+        DecodeLayerSelection::default().with_temporal_selection(TemporalLayerSelection::BASE_ONLY)
+    );
     assert_eq!(base_plan.obu_count(), 5);
     assert_eq!(base_plan.frame_candidate_count(), 1);
     assert_eq!(unselected.len(), 1);
