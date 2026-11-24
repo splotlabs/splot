@@ -9,7 +9,7 @@ use core::{fmt, num::NonZeroU64};
 
 use splot_recon::Y4mFrameRate;
 
-use crate::{EmbeddedLayerSelection, TemporalLayerSelection};
+use crate::{EmbeddedLayerSelection, ExtendedLayerSelection, TemporalLayerSelection};
 
 const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
 
@@ -42,6 +42,7 @@ pub struct DecodeOptions {
     skip_film_grain: bool,
     temporal_layer_selection: TemporalLayerSelection,
     embedded_layer_selection: EmbeddedLayerSelection,
+    extended_layer_selection: ExtendedLayerSelection,
 }
 
 impl DecodeOptions {
@@ -53,6 +54,7 @@ impl DecodeOptions {
         skip_film_grain: false,
         temporal_layer_selection: TemporalLayerSelection::All,
         embedded_layer_selection: EmbeddedLayerSelection::All,
+        extended_layer_selection: ExtendedLayerSelection::All,
     };
 
     /// Creates decoder options from caller-provided resource limits.
@@ -65,6 +67,7 @@ impl DecodeOptions {
             skip_film_grain: false,
             temporal_layer_selection: TemporalLayerSelection::All,
             embedded_layer_selection: EmbeddedLayerSelection::All,
+            extended_layer_selection: ExtendedLayerSelection::All,
         }
     }
 
@@ -145,6 +148,22 @@ impl DecodeOptions {
         selection: EmbeddedLayerSelection,
     ) -> Self {
         self.embedded_layer_selection = selection;
+        self
+    }
+
+    /// Returns the caller-requested extended-layer selection policy.
+    #[must_use]
+    pub const fn extended_layer_selection(self) -> ExtendedLayerSelection {
+        self.extended_layer_selection
+    }
+
+    /// Returns a copy with the requested extended-layer selection policy.
+    #[must_use]
+    pub const fn with_extended_layer_selection(
+        mut self,
+        selection: ExtendedLayerSelection,
+    ) -> Self {
+        self.extended_layer_selection = selection;
         self
     }
 }

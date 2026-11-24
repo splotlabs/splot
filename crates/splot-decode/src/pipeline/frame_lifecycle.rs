@@ -19,7 +19,9 @@ use splot_core::headers::sequence::{
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
-use splot_core::types::{EmbeddedLayerId, ObuType, TemporalLayerId};
+#[cfg(test)]
+use splot_core::types::ObuType;
+use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, TemporalLayerId};
 #[cfg(test)]
 use splot_recon::DecodedFrame;
 use splot_recon::{PlaneRect, ReconError, SharedFrame};
@@ -79,6 +81,8 @@ pub(crate) struct PipelineFrame {
     pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
     pub(crate) frame_rate: PipelineFrameRate,
+    /// Extended layer id of the coded or show-existing frame OBU.
+    pub(crate) extended_layer_id: ExtendedLayerId,
     /// Embedded layer id of the coded or show-existing frame OBU.
     pub(crate) embedded_layer_id: EmbeddedLayerId,
     /// Temporal layer id of the coded or show-existing frame OBU.
@@ -193,6 +197,7 @@ impl FilmGrainSlots {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn update_from_obus(
         &mut self,
         obus: &[ObuEnvelope<'_>],
@@ -206,7 +211,7 @@ impl FilmGrainSlots {
         Ok(())
     }
 
-    fn update_from_obu(
+    pub(super) fn update_from_obu(
         &mut self,
         envelope: ObuEnvelope<'_>,
         sequence: &SequenceHeader,

@@ -109,6 +109,13 @@ pub enum DecodeError {
         /// Why the requested embedded selection is invalid.
         reason: &'static str,
     },
+
+    /// Caller supplied an invalid extended-layer selection.
+    #[error("invalid extended-layer selection: {reason}")]
+    InvalidExtendedSelection {
+        /// Why the requested extended selection is invalid.
+        reason: &'static str,
+    },
 }
 
 /// Why a [`crate::Decoder`] session refused a call.

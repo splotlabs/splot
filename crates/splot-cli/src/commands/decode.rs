@@ -19,8 +19,8 @@ use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOptions, DecodeOutputError,
     DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, EmbeddedLayerId,
-    EmbeddedLayerSelection, TemporalLayerId, TemporalLayerSelection, TypedDecodeContext,
-    Y4mFrameRate,
+    EmbeddedLayerSelection, ExtendedLayerId, ExtendedLayerSelection, TemporalLayerId,
+    TemporalLayerSelection, TypedDecodeContext, Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -123,6 +123,23 @@ pub(crate) struct DecodeArgs {
         conflicts_with = "embedded_layer"
     )]
     embedded_output_mask: Option<EmbeddedLayerSelection>,
+    /// Extended layer to decode and emit: `all` (default) or `0..=30`.
+    #[arg(
+        long,
+        value_name = "LAYER",
+        value_parser = parse_extended_layer,
+        conflicts_with = "extended_output_mask"
+    )]
+    extended_layer: Option<ExtendedLayerSelection>,
+    /// Bitmask (`1..=2147483647` or `0x1..=0x7fffffff`) of extended layers
+    /// to emit.
+    #[arg(
+        long,
+        value_name = "MASK",
+        value_parser = parse_extended_output_mask,
+        conflicts_with = "extended_layer"
+    )]
+    extended_output_mask: Option<ExtendedLayerSelection>,
 }
 
 fn parse_layer_arg(value: &str, max: u8, name: &str) -> core::result::Result<Option<u8>, String> {
@@ -153,14 +170,22 @@ fn parse_embedded_layer(value: &str) -> core::result::Result<EmbeddedLayerSelect
     )
 }
 
-fn parse_output_mask(value: &str, max: u8, name: &str) -> core::result::Result<u8, String> {
+fn parse_extended_layer(value: &str) -> core::result::Result<ExtendedLayerSelection, String> {
+    Ok(
+        parse_layer_arg(value, 30, "extended")?.map_or(ExtendedLayerSelection::All, |id| {
+            ExtendedLayerSelection::Target(ExtendedLayerId::from_bits(id))
+        }),
+    )
+}
+
+fn parse_output_mask(value: &str, max: u32, name: &str) -> core::result::Result<u32, String> {
     let mask = if let Some(hex) = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
     {
-        u8::from_str_radix(hex, 16)
+        u32::from_str_radix(hex, 16)
     } else {
-        value.parse::<u8>()
+        value.parse::<u32>()
     }
     .map_err(|_| format!("{name} output mask must be an integer in 1..={max}"))?;
     if mask == 0 || mask > max {
@@ -172,16 +197,22 @@ fn parse_output_mask(value: &str, max: u8, name: &str) -> core::result::Result<u
 }
 
 fn parse_temporal_output_mask(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
-    Ok(TemporalLayerSelection::OutputMask(parse_output_mask(
-        value, 0x0F, "temporal",
-    )?))
+    Ok(TemporalLayerSelection::OutputMask(
+        parse_output_mask(value, 0x0F, "temporal")? as u8,
+    ))
 }
 
 fn parse_embedded_output_mask(value: &str) -> core::result::Result<EmbeddedLayerSelection, String> {
-    Ok(EmbeddedLayerSelection::OutputMask(parse_output_mask(
+    Ok(EmbeddedLayerSelection::OutputMask(
+        parse_output_mask(value, u32::from(u8::MAX), "embedded")? as u8,
+    ))
+}
+
+fn parse_extended_output_mask(value: &str) -> core::result::Result<ExtendedLayerSelection, String> {
+    Ok(ExtendedLayerSelection::OutputMask(parse_output_mask(
         value,
-        u8::MAX,
-        "embedded",
+        0x7FFF_FFFF,
+        "extended",
     )?))
 }
 
@@ -559,12 +590,17 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
         .embedded_layer
         .or(args.embedded_output_mask)
         .unwrap_or_default();
+    let extended_layer_selection = args
+        .extended_layer
+        .or(args.extended_output_mask)
+        .unwrap_or_default();
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
         .with_y4m_frame_rate_override(args.frame_rate)
         .with_skip_film_grain(args.skip_film_grain)
         .with_temporal_layer_selection(temporal_layer_selection)
-        .with_embedded_layer_selection(embedded_layer_selection);
+        .with_embedded_layer_selection(embedded_layer_selection)
+        .with_extended_layer_selection(extended_layer_selection);
     let input = open_decode_input(&args.input)
         .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
     let context = DecodeContext::new(
