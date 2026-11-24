@@ -331,3 +331,156 @@ fn unsupported_forced_policies_fail_closed_in_decoder_and_context() {
         );
     }
 }
+
+fn assert_malformed_decode_errors(decoder: &mut Decoder, malformed: &[u8], label: &str) {
+    let mut saw_error = false;
+    if decoder.send_data(malformed, DataProps::default()).is_err() {
+        saw_error = true;
+    } else {
+        decoder.drain();
+        loop {
+            match decoder.get_picture() {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    saw_error = true;
+                    break;
+                }
+            }
+        }
+    }
+    assert!(saw_error, "expected decode failure for {label}");
+}
+
+struct ConcurrentCase<'a> {
+    name: &'a str,
+    bytes: &'a [u8],
+    units: Vec<Vec<u8>>,
+    expected: ContextOutputs,
+}
+
+#[test]
+fn concurrent_multi_context_and_decoder_sessions_preserve_parity() {
+    let auto_ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
+    let mut policies = vec![(SimdPolicy::Auto, auto_ctx.selected_backend())];
+    policies.extend(supported_forced_policies());
+
+    let cases: Vec<ConcurrentCase<'_>> = ["multiref", "opfl_refine", "lr_wienerns_8bit"]
+        .into_iter()
+        .map(|target| {
+            let &(_, bytes) = FIXTURES.iter().find(|&&(name, _)| name == target).unwrap();
+            ConcurrentCase {
+                name: target,
+                bytes,
+                units: extract_units(bytes),
+                expected: collect_context_outputs(&auto_ctx, bytes),
+            }
+        })
+        .collect();
+
+    std::thread::scope(|scope| {
+        for case in &cases {
+            let (name, bytes, units, expected) =
+                (case.name, case.bytes, &case.units, &case.expected);
+            for &threads in &[1usize, 3, 4] {
+                for &(policy, expected_backend) in &policies {
+                    scope.spawn(move || {
+                        let label = format!("{name} concurrent threads={threads} policy={policy}");
+                        let delay = threads.min(4);
+                        let ctx = DecodeContext::new(
+                            DecodeRuntimeConfig::new(ThreadCount::from(threads))
+                                .with_frame_delay(FrameDelay::from(delay))
+                                .with_simd_policy(policy),
+                        )
+                        .unwrap();
+                        assert_eq!(ctx.selected_backend(), expected_backend, "{label}");
+                        let actual = collect_context_outputs(&ctx, bytes);
+                        assert_eq!(actual.hash.frames, expected.hash.frames, "hash {label}");
+                        assert_eq!(actual.raw, expected.raw, "raw {label}");
+                        assert_eq!(actual.y4m, expected.y4m, "y4m {label}");
+
+                        let mut decoder = Decoder::new(
+                            DecoderSettings::default()
+                                .with_threads(ThreadCount::from(threads))
+                                .with_frame_delay(FrameDelay::from(delay))
+                                .with_simd_policy(policy),
+                        )
+                        .unwrap();
+                        assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
+                        let pics = decode_streaming(&mut decoder, units);
+                        assert_eq!(raw_from_pictures(&pics), expected.raw, "stream {label}");
+                        assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
+                    });
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn malformed_input_and_early_drop_preserve_backend_and_recover() {
+    let auto_ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
+    let mut policies = vec![(SimdPolicy::Auto, auto_ctx.selected_backend())];
+    policies.extend(supported_forced_policies());
+
+    let &(_, multiref_bytes) = FIXTURES.iter().find(|&&(n, _)| n == "multiref").unwrap();
+    let multiref_expected = collect_context_outputs(&auto_ctx, multiref_bytes);
+    let multiref_units = extract_units(multiref_bytes);
+    let truncated_unit = &multiref_units[0][..multiref_units[0].len() / 2];
+
+    let &(_, opfl_bytes) = FIXTURES.iter().find(|&&(n, _)| n == "opfl_refine").unwrap();
+    let opfl_expected = collect_context_outputs(&auto_ctx, opfl_bytes);
+    let opfl_units = extract_units(opfl_bytes);
+
+    let garbage: [u8; 4] = [0x01, 0x08, 0x05, 0x10];
+
+    for &(policy, expected_backend) in &policies {
+        for (case_name, bad_bytes) in [("garbage", &garbage[..]), ("truncated", truncated_unit)] {
+            let label = format!("{case_name} policy={policy}");
+            let mut decoder = Decoder::new(
+                DecoderSettings::default()
+                    .with_threads(ThreadCount::from(3))
+                    .with_frame_delay(FrameDelay::from(2))
+                    .with_simd_policy(policy),
+            )
+            .unwrap();
+            assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
+            assert_malformed_decode_errors(&mut decoder, bad_bytes, &label);
+            assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
+            decoder.flush();
+            assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
+            let recovered = decode_streaming(&mut decoder, &multiref_units);
+            assert_eq!(
+                raw_from_pictures(&recovered),
+                multiref_expected.raw,
+                "recovered {label}"
+            );
+            assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
+        }
+
+        {
+            let mut partial = Decoder::new(
+                DecoderSettings::default()
+                    .with_threads(ThreadCount::from(4))
+                    .with_frame_delay(FrameDelay::from(4))
+                    .with_simd_policy(policy),
+            )
+            .unwrap();
+            assert_eq!(partial.selected_backend(), expected_backend);
+            let _ = partial.send_data(&opfl_units[0], DataProps::default());
+            drop(partial);
+        }
+
+        let mut fresh = Decoder::new(
+            DecoderSettings::default()
+                .with_threads(ThreadCount::from(4))
+                .with_frame_delay(FrameDelay::from(4))
+                .with_simd_policy(policy),
+        )
+        .unwrap();
+        assert_eq!(fresh.selected_backend(), expected_backend);
+        let full = decode_streaming(&mut fresh, &opfl_units);
+        assert_eq!(raw_from_pictures(&full), opfl_expected.raw);
+        assert_eq!(fresh.selected_backend(), expected_backend);
+    }
+}
