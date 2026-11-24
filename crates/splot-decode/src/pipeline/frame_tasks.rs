@@ -169,8 +169,8 @@ impl DecoderWork {
             Self::Split16(frame) => frame.run_with_backend(narrow, claim, worker),
             Self::Tip8(frame) => frame.run_with_backend(narrow, claim, worker),
             Self::Tip16(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Finish8(frame) => frame.run(claim, worker),
-            Self::Finish16(frame) => frame.run(claim, worker),
+            Self::Finish8(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Finish16(frame) => frame.run_with_backend(narrow, claim, worker),
         }
     }
 }
@@ -574,9 +574,9 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(())
     }
 
-    fn frontier(&self, row: usize) -> Result<()> {
+    fn frontier<B: splot_core::simd::SimdBackend>(&self, backend: B, row: usize) -> Result<()> {
         let recon = self.recon_state()?;
-        let mut progress = recon.frontier(row)?;
+        let mut progress = recon.frontier(backend, row)?;
         self.closed_rows
             .fetch_max(progress.handed_rows, Ordering::AcqRel);
         let mut outcome = Ok(());
@@ -750,15 +750,17 @@ impl<T: SplitSample> SplitFrame<T> {
                 ATTACH => self.attach().map(|()| true),
                 RESOLVE => self.resolve(claim.row),
                 COMMIT => self.commit(backend, claim.row, worker).map(|()| true),
-                FRONTIER => self.frontier(claim.row).map(|()| true),
+                FRONTIER => self.frontier(backend, claim.row).map(|()| true),
                 PRECOMPUTE => self.precompute(backend, claim.row, worker).map(|()| true),
                 TILE => self.parse_tile(claim.row).map(|()| true),
                 PROJECT => self
                     .recon_state()
                     .and_then(|recon| recon.project(backend, claim.row))
                     .map(|()| true),
-                FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)
-                    .map(|()| true),
+                FILTER => {
+                    run_filter_stripe(backend, &self.filter_jobs, &self.filter_error, claim.row)
+                        .map(|()| true)
+                }
                 _ => self.output().map(|()| true),
             };
             match claim.stage {
@@ -1130,7 +1132,7 @@ impl<T: SplitSample> TipFrame<T> {
             })
     }
 
-    fn finish_frame(&self) -> Result<()> {
+    fn finish_frame<B: splot_core::simd::SimdBackend>(&self, backend: B) -> Result<()> {
         let (Some(core), Some(sequence)) = (self.core.get(), self.sequence.get()) else {
             return Err(inter::invalid_inter_tile_scheduling_state());
         };
@@ -1149,7 +1151,9 @@ impl<T: SplitSample> TipFrame<T> {
         if let Some(motion) = self.motion.lock().take() {
             motion.fail();
         }
-        finish.freeze_written(|workspace| inter::deblock_tip_output(workspace, sequence, core))?;
+        finish.freeze_written(|workspace| {
+            inter::deblock_tip_output(backend, workspace, sequence, core)
+        })?;
         self.spares.give(temporal, output);
         Ok(())
     }
@@ -1277,7 +1281,7 @@ impl<T: SplitSample> TipFrame<T> {
                 TIP_INIT => self.init(narrow),
                 TIP_PROJECT => self.project(narrow, claim.row),
                 TIP_BAND => self.band(narrow, claim.row),
-                _ => self.finish_frame(),
+                _ => self.finish_frame(narrow),
             };
             match claim.stage {
                 TIP_BAND => self.bands.finish(claim.row),
@@ -1438,13 +1442,13 @@ impl<T: SplitSample> FinishFrame<T> {
         Ok(())
     }
 
-    fn advance(&self, stripe: usize) -> Result<()> {
+    fn advance<B: splot_core::simd::SimdBackend>(&self, backend: B, stripe: usize) -> Result<()> {
         let job = self
             .frontier
             .lock()
             .as_mut()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?
-            .advance()?
+            .advance(backend)?
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
         *self
             .filter_jobs
@@ -1485,6 +1489,30 @@ impl<T: SplitSample> FinishFrame<T> {
         }
         self.wake.notify();
     }
+    fn run_with_backend<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        claim: Claim,
+        _worker: usize,
+    ) {
+        let narrow = backend.narrow();
+        let outcome = match claim.stage {
+            FINISH_INIT => self.init(),
+            FINISH_ADVANCE => self.advance(narrow, claim.row),
+            FINISH_FILTER => {
+                run_filter_stripe(narrow, &self.filter_jobs, &self.filter_error, claim.row)
+            }
+            _ => self.output(),
+        };
+        if claim.stage == FINISH_FILTER {
+            self.filter.finish(claim.row);
+        } else {
+            self.stages[claim.stage].finish(claim.row);
+        }
+        if let Err(error) = outcome {
+            self.fail(error);
+        }
+    }
 }
 
 impl<T: SplitSample> FrameWork for FinishFrame<T> {
@@ -1515,20 +1543,15 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
     }
 
     #[inline(never)]
-    fn run(&self, claim: Claim, _worker: usize) {
-        let outcome = match claim.stage {
-            FINISH_INIT => self.init(),
-            FINISH_ADVANCE => self.advance(claim.row),
-            FINISH_FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row),
-            _ => self.output(),
-        };
-        if claim.stage == FINISH_FILTER {
-            self.filter.finish(claim.row);
-        } else {
-            self.stages[claim.stage].finish(claim.row);
+    fn run(&self, claim: Claim, worker: usize) {
+        struct Scope<'a, T: SplitSample>(&'a FinishFrame<T>, Claim, usize);
+        impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
+            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
+                self.0.run_with_backend(backend.narrow(), self.1, self.2);
+            }
         }
-        if let Err(error) = outcome {
-            self.fail(error);
+        if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
+            backend.enter(Scope(self, claim, worker));
         }
     }
 
@@ -1726,18 +1749,31 @@ impl RowPools {
     /// Hands one walked frame's filter phase to the scheduler, or runs it inline.
     pub(crate) fn push_finish<T: SplitSample>(
         &mut self,
+        backend: splot_core::simd::ResolvedBackend,
         rows: Option<&DecoderRowScheduler>,
         finish: PendingFinish<T>,
         walked: super::frame_engine::finish::WalkedFrame<T>,
     ) -> Result<()> {
         let pools = T::pools(self);
         let Some(rows) = rows else {
-            let frontier =
-                walked.into_frontier(finish.progress_handle(), pools.inline_filter_shell.take());
-            match frontier.and_then(OwnedFilterFrontier::run_inline) {
-                Ok(filter) => pools.inline_filter_shell = Some(finish.run_owned_finish(filter)),
-                Err(error) => finish.fail(error),
+            struct Scope<'a, T: SplitSample>(
+                super::frame_engine::finish::WalkedFrame<T>,
+                PendingFinish<T>,
+                &'a mut Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
+            );
+            impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
+                fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
+                    let narrow = backend.narrow();
+                    let frontier = self
+                        .0
+                        .into_frontier(self.1.progress_handle(), self.2.take());
+                    match frontier.and_then(|frontier| frontier.run_inline(narrow)) {
+                        Ok(filter) => *self.2 = Some(self.1.run_owned_finish(filter)),
+                        Err(error) => self.1.fail(error),
+                    }
+                }
             }
+            backend.enter(Scope(walked, finish, &mut pools.inline_filter_shell));
             return Ok(());
         };
         let index = pools
@@ -1757,7 +1793,8 @@ impl RowPools {
 
 /// Runs filter stripe `stripe` of `jobs`; the first stripe error is kept in
 /// `error` to fail the frame's output.
-fn run_filter_stripe<T: SplitSample>(
+fn run_filter_stripe<B: splot_core::simd::SimdBackend, T: SplitSample>(
+    backend: B,
     jobs: &Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
     error: &Mutex<Option<DecodeError>>,
     stripe: usize,
@@ -1767,7 +1804,7 @@ fn run_filter_stripe<T: SplitSample>(
         .get_mut(stripe)
         .and_then(Option::take)
         .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-    if let Err(failure) = job.run() {
+    if let Err(failure) = job.run(backend) {
         error.lock().get_or_insert(failure);
     }
     Ok(())

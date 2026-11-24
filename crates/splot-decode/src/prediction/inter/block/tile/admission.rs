@@ -1192,15 +1192,20 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// row `row` and takes the filter stripes that frontier releases.
     ///
     /// The one caller that runs the final link receives the completed tile.
-    pub(crate) fn frontier(&self, row: usize) -> Result<ScheduledFrameProgress<T>> {
+    pub(crate) fn frontier<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        row: usize,
+    ) -> Result<ScheduledFrameProgress<T>> {
         let mut frontier = self.frontier.lock();
-        let mut progress = self.frontier_link(row, &mut frontier)?;
+        let mut progress = self.frontier_link(backend, row, &mut frontier)?;
         progress.handed_rows = self.help_hand_over(&mut frontier)?;
         Ok(progress)
     }
 
-    fn frontier_link(
+    fn frontier_link<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         row: usize,
         frontier: &mut ScheduledFrontier<T>,
     ) -> Result<ScheduledFrameProgress<T>> {
@@ -1240,7 +1245,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                         "the frontier read a row the spine had not sealed"
                     );
                     deblock
-                        .advance_source(rows, safe_mi_end.get(), self.recon.params.bit_depth)
+                        .advance_source(
+                            backend,
+                            rows,
+                            safe_mi_end.get(),
+                            self.recon.params.bit_depth,
+                        )
                         .map_err(|error| {
                             crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
                         })?;

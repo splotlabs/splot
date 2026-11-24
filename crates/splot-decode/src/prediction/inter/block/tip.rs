@@ -887,8 +887,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<
     let (output, temporal) = stages.finish()?;
     let mut progress =
         Arc::into_inner(progress).ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-    progress
-        .with_unpublished_workspace(|workspace| deblock_output(workspace, sequence, core))??;
+    progress.with_unpublished_workspace(|workspace| {
+        deblock_output(backend, workspace, sequence, core)
+    })??;
     let frame = progress.freeze()?;
     lease.temporal = temporal;
     decode_scratch.tip_output = output;
@@ -1349,7 +1350,8 @@ impl<T: ReconSample> TipOutputStages<T> {
 ///
 /// # Errors
 /// Returns the deblock diagnostic.
-pub(crate) fn deblock_output<T: ReconSample>(
+pub(crate) fn deblock_output<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1374,6 +1376,7 @@ pub(crate) fn deblock_output<T: ReconSample>(
             .as_ref()
             .is_some_and(|tools| tools.enable_tip_refinemv);
         crate::filters::deblock::deblock_tip_frame(
+            backend,
             workspace,
             output_prediction_unit_size(enable_tip_refinemv, interpolation_filter),
             quant,

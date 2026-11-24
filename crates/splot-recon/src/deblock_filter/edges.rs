@@ -11,6 +11,7 @@
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Level;
 use fearless_simd::{Bytes, Simd, SimdBase, i16x8, i16x16, u8x16, u16x8, u16x16, u64x4};
+use splot_core::simd::SimdBackend;
 use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
 
 use crate::intra_dc_math::validate_sample_type;
@@ -202,6 +203,71 @@ const fn chunk_writes(reach: usize) -> usize {
     }
 }
 
+#[derive(Clone, Copy)]
+struct BaselineDeblock;
+
+#[derive(Clone, Copy)]
+struct TypedDeblock<B: SimdBackend>(B);
+
+trait DeblockRunner: Copy {
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2>;
+
+    fn portable_chunk<E: EdgeSample, const VERTICAL: bool>(
+        self,
+        samples: &mut [E],
+        stride: usize,
+        first: usize,
+        edges: &[DeblockEdge; SEGMENTS],
+        max_sample: i16,
+    );
+}
+
+impl DeblockRunner for BaselineDeblock {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        Level::baseline().as_avx2()
+    }
+
+    #[inline]
+    fn portable_chunk<E: EdgeSample, const VERTICAL: bool>(
+        self,
+        samples: &mut [E],
+        stride: usize,
+        first: usize,
+        edges: &[DeblockEdge; SEGMENTS],
+        max_sample: i16,
+    ) {
+        baseline_simd!(simd => portable_chunk::<_, E, VERTICAL>(
+            simd, samples, stride, first, edges, max_sample,
+        ));
+    }
+}
+
+impl<B: SimdBackend> DeblockRunner for TypedDeblock<B> {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        self.0.avx2_token()
+    }
+
+    #[inline]
+    fn portable_chunk<E: EdgeSample, const VERTICAL: bool>(
+        self,
+        samples: &mut [E],
+        stride: usize,
+        first: usize,
+        edges: &[DeblockEdge; SEGMENTS],
+        max_sample: i16,
+    ) {
+        let narrow = self.0.narrow();
+        splot_core::with_simd!(narrow, simd => portable_chunk::<_, E, VERTICAL>(
+            simd, samples, stride, first, edges, max_sample,
+        ));
+    }
+}
+
 /// Filters the vertical edges (§ 7.17.1 pass 0) of `edges.len()` segments
 /// stacked down one column: segment `k` is the four sample rows from
 /// `first + 4 * k * stride`, with `first` the index of its first row's `q0`.
@@ -230,6 +296,31 @@ pub fn deblock_vertical_edges<T: ReconSample>(
     )
 }
 
+/// Filters vertical edges like [`deblock_vertical_edges`] using the caller's
+/// startup-selected static SIMD backend `backend`.
+///
+/// # Errors
+/// As [`deblock_vertical_edges`].
+pub fn deblock_vertical_edges_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    samples: &mut [T],
+    stride: usize,
+    first: usize,
+    edges: &[DeblockEdge],
+    bit_depth: BitDepth,
+) -> Result<()> {
+    deblock_vertical_edge_band_with(
+        backend,
+        samples,
+        stride,
+        first,
+        edges,
+        (edges.len(), 1),
+        &[true],
+        bit_depth,
+    )
+}
+
 /// [`deblock_vertical_edges`] over `live.len()` columns 4 samples apart
 /// whose edges are interleaved row by row: with `(segments, edge_stride)` =
 /// `runs`, segment `k` of column `c` is `edges[c + k * edge_stride]`, its
@@ -243,6 +334,57 @@ pub fn deblock_vertical_edges<T: ReconSample>(
 /// segments than the columns name or a row of `live` columns overlaps the
 /// next (`edge_stride < live.len()` with more than one segment).
 pub fn deblock_vertical_edge_band<T: ReconSample>(
+    samples: &mut [T],
+    stride: usize,
+    first: usize,
+    edges: &[DeblockEdge],
+    runs: (usize, usize),
+    live: &[bool],
+    bit_depth: BitDepth,
+) -> Result<()> {
+    deblock_vertical_edge_band_with_runner(
+        BaselineDeblock,
+        samples,
+        stride,
+        first,
+        edges,
+        runs,
+        live,
+        bit_depth,
+    )
+}
+
+/// Filters a vertical edge band like [`deblock_vertical_edge_band`] using
+/// the caller's startup-selected static SIMD backend `backend`.
+///
+/// # Errors
+/// As [`deblock_vertical_edge_band`].
+#[expect(clippy::too_many_arguments)]
+pub fn deblock_vertical_edge_band_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    samples: &mut [T],
+    stride: usize,
+    first: usize,
+    edges: &[DeblockEdge],
+    runs: (usize, usize),
+    live: &[bool],
+    bit_depth: BitDepth,
+) -> Result<()> {
+    deblock_vertical_edge_band_with_runner(
+        TypedDeblock(backend),
+        samples,
+        stride,
+        first,
+        edges,
+        runs,
+        live,
+        bit_depth,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn deblock_vertical_edge_band_with_runner<R: DeblockRunner, T: ReconSample>(
+    runner: R,
     samples: &mut [T],
     stride: usize,
     first: usize,
@@ -283,13 +425,13 @@ pub fn deblock_vertical_edge_band<T: ReconSample>(
     let runs = (edges, segments, edge_stride);
     if let Some(samples) = T::u8_slice_mut(samples) {
         #[cfg(target_arch = "x86_64")]
-        if let Some(token) = Level::baseline().as_avx2() {
+        if let Some(token) = runner.avx2_token() {
             avx2_u8::band(token, samples, stride, first, runs, live);
             return Ok(());
         }
-        band::<u8>(samples, stride, first, runs, live, max_sample);
+        band::<R, u8>(runner, samples, stride, first, runs, live, max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
-        band::<u16>(samples, stride, first, runs, live, max_sample);
+        band::<R, u16>(runner, samples, stride, first, runs, live, max_sample);
     } else {
         return Err(too_short(first, samples.len()));
     }
@@ -298,7 +440,8 @@ pub fn deblock_vertical_edge_band<T: ReconSample>(
 
 /// [`deblock_vertical_edge_band`] through [`run`], one live column at a
 /// time.
-fn band<E: Chunk>(
+fn band<R: DeblockRunner, E: Chunk>(
+    runner: R,
     samples: &mut [E],
     stride: usize,
     first: usize,
@@ -310,7 +453,7 @@ fn band<E: Chunk>(
         let column_edges = edges.get(column..).unwrap_or_default();
         let first = first + LINES * column;
         let runs = (column_edges, segments, edge_stride);
-        run::<E, true>(samples, stride, first, runs, max_sample);
+        run::<R, E, true>(runner, samples, stride, first, runs, max_sample);
     }
 }
 
@@ -323,6 +466,40 @@ fn band<E: Chunk>(
 /// As [`deblock_vertical_edges`], with [`ReconError::StrideTooSmall`] when a
 /// row is narrower than the run's columns.
 pub fn deblock_horizontal_edges<T: ReconSample>(
+    samples: &mut [T],
+    stride: usize,
+    first: usize,
+    edges: &[DeblockEdge],
+    bit_depth: BitDepth,
+) -> Result<()> {
+    deblock_horizontal_edges_with_runner(BaselineDeblock, samples, stride, first, edges, bit_depth)
+}
+
+/// Filters horizontal edges like [`deblock_horizontal_edges`] using the
+/// caller's startup-selected static SIMD backend `backend`.
+///
+/// # Errors
+/// As [`deblock_horizontal_edges`].
+pub fn deblock_horizontal_edges_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    samples: &mut [T],
+    stride: usize,
+    first: usize,
+    edges: &[DeblockEdge],
+    bit_depth: BitDepth,
+) -> Result<()> {
+    deblock_horizontal_edges_with_runner(
+        TypedDeblock(backend),
+        samples,
+        stride,
+        first,
+        edges,
+        bit_depth,
+    )
+}
+
+fn deblock_horizontal_edges_with_runner<R: DeblockRunner, T: ReconSample>(
+    runner: R,
     samples: &mut [T],
     stride: usize,
     first: usize,
@@ -347,13 +524,13 @@ pub fn deblock_horizontal_edges<T: ReconSample>(
     let runs = (edges, edges.len(), 1);
     if let Some(samples) = T::u8_slice_mut(samples) {
         #[cfg(target_arch = "x86_64")]
-        if let Some(token) = Level::baseline().as_avx2() {
+        if let Some(token) = runner.avx2_token() {
             avx2_u8::horizontal_run(token, samples, stride, first, edges);
             return Ok(());
         }
-        run::<u8, false>(samples, stride, first, runs, max_sample);
+        run::<R, u8, false>(runner, samples, stride, first, runs, max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
-        run::<u16, false>(samples, stride, first, runs, max_sample);
+        run::<R, u16, false>(runner, samples, stride, first, runs, max_sample);
     } else {
         return Err(too_short(first, samples.len()));
     }
@@ -531,7 +708,8 @@ impl EdgeSample for u16 {
 /// Runs the `count` validated segments `edges[k * edge_stride]`, `k <
 /// count`, in chunks of [`SEGMENTS`]. A last partial chunk filters a copy of
 /// its window, so no load or store leaves the run.
-fn run<E: Chunk, const VERTICAL: bool>(
+fn run<R: DeblockRunner, E: Chunk, const VERTICAL: bool>(
+    runner: R,
     samples: &mut [E],
     stride: usize,
     first: usize,
@@ -553,7 +731,7 @@ fn run<E: Chunk, const VERTICAL: bool>(
             [edge(k), edge(k + 1), edge(k + 2), edge(k + 3)]
         };
         if chunk.iter().fold(0, |any, edge| any | edge.0) != 0 {
-            E::chunk::<VERTICAL>(samples, stride, at, &chunk, max_sample);
+            E::chunk::<R, VERTICAL>(runner, samples, stride, at, &chunk, max_sample);
         }
         at += step;
     }
@@ -580,7 +758,8 @@ fn run<E: Chunk, const VERTICAL: bool>(
     } else {
         (REACH * ROWS, ROWS)
     };
-    E::chunk::<VERTICAL>(
+    E::chunk::<R, VERTICAL>(
+        runner,
         &mut window,
         window_stride,
         window_first,
@@ -617,7 +796,8 @@ const fn window_line<const VERTICAL: bool>(
 trait Chunk: EdgeSample {
     /// Filters the [`SEGMENTS`] edges at `first`, which need not lie in a
     /// run: the window is `first ± 8` across the edge and 16 lines along it.
-    fn chunk<const VERTICAL: bool>(
+    fn chunk<R: DeblockRunner, const VERTICAL: bool>(
+        runner: R,
         samples: &mut [Self],
         stride: usize,
         first: usize,
@@ -627,21 +807,21 @@ trait Chunk: EdgeSample {
 }
 
 impl Chunk for u8 {
-    fn chunk<const VERTICAL: bool>(
+    fn chunk<R: DeblockRunner, const VERTICAL: bool>(
+        runner: R,
         samples: &mut [Self],
         stride: usize,
         first: usize,
         edges: &[DeblockEdge; SEGMENTS],
         max_sample: i16,
     ) {
-        baseline_simd!(simd => portable_chunk::<_, Self, VERTICAL>(
-            simd, samples, stride, first, edges, max_sample,
-        ));
+        runner.portable_chunk::<Self, VERTICAL>(samples, stride, first, edges, max_sample);
     }
 }
 
 impl Chunk for u16 {
-    fn chunk<const VERTICAL: bool>(
+    fn chunk<R: DeblockRunner, const VERTICAL: bool>(
+        runner: R,
         samples: &mut [Self],
         stride: usize,
         first: usize,
@@ -649,7 +829,7 @@ impl Chunk for u16 {
         max_sample: i16,
     ) {
         #[cfg(target_arch = "x86_64")]
-        if !VERTICAL && let Some(token) = Level::baseline().as_avx2() {
+        if !VERTICAL && let Some(token) = runner.avx2_token() {
             let packed = edges.map(|edge| edge.0 as i64);
             avx2::horizontal_u16(
                 token,
@@ -662,9 +842,7 @@ impl Chunk for u16 {
             );
             return;
         }
-        baseline_simd!(simd => portable_chunk::<_, Self, VERTICAL>(
-            simd, samples, stride, first, edges, max_sample,
-        ));
+        runner.portable_chunk::<Self, VERTICAL>(samples, stride, first, edges, max_sample);
     }
 }
 
