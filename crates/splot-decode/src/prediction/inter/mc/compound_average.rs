@@ -3,8 +3,8 @@
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    CurrentFrameSurface, PlaneId, PlaneRect, ReconSample, UnscaledPut, subpel_compound_block,
-    subpel_predict_block_compound_average_unscaled_strided_into,
+    CurrentFrameSurface, PlaneId, PlaneRect, ReconSample, UnscaledPut, subpel_compound_block_with,
+    subpel_predict_block_compound_average_unscaled_strided_into_with,
 };
 
 use super::{
@@ -19,7 +19,8 @@ use crate::Result;
 /// are not uniform or one with a plane the frame edge clips, which the
 /// caller predicts through the general path. A declined block may have had
 /// planes written; the general path rewrites them.
-pub(super) fn predict_translational_direct<T: ReconSample>(
+pub(super) fn predict_translational_direct<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
@@ -40,7 +41,7 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
     let done = if scaled {
         [false; 2]
     } else {
-        match predict_unscaled(sink, block, (implicit_mask, cwp_weight), offset)? {
+        match predict_unscaled(backend, sink, block, (implicit_mask, cwp_weight), offset)? {
             Some(done) => done,
             None => return Ok(false),
         }
@@ -48,14 +49,22 @@ pub(super) fn predict_translational_direct<T: ReconSample>(
     if done[0] && (done[1] || !block.has_chroma) {
         return Ok(true);
     }
-    predict_planes(sink, block, (implicit_mask, cwp_weight), done, offset)
+    predict_planes(
+        backend,
+        sink,
+        block,
+        (implicit_mask, cwp_weight),
+        done,
+        offset,
+    )
 }
 
 /// The unscaled descriptor path: both references' windows of luma and of
 /// both chroma planes resolved once and stored by one recon call. Returns
 /// which of luma and chroma it stored, or `None` without writing when the
 /// weights of a plane are not uniform.
-fn predict_unscaled<T: ReconSample>(
+fn predict_unscaled<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     (implicit_mask, cwp_weight): (bool, i16),
@@ -110,7 +119,8 @@ fn predict_unscaled<T: ReconSample>(
     };
     let chroma = chroma
         .and_then(|puts| Some(([chroma_views(PlaneId::U)?, chroma_views(PlaneId::V)?], puts)));
-    Ok(Some(subpel_compound_block(
+    Ok(Some(subpel_compound_block_with(
+        backend,
         sink,
         block.interp,
         cwp_weight,
@@ -124,7 +134,8 @@ fn predict_unscaled<T: ReconSample>(
 /// Predicts the planes of `block` that `done` does not mark, each through
 /// its translational plane, when every one has uniform weights and a
 /// contiguous target; `false` without writing them otherwise.
-fn predict_planes<T: ReconSample>(
+fn predict_planes<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     (implicit_mask, cwp_weight): (bool, i16),
@@ -170,30 +181,36 @@ fn predict_planes<T: ReconSample>(
     for (plane, target, translation) in translations.into_iter().flatten() {
         if T::u16_slice(&[]).is_some() {
             sink.with_contiguous_u16_rect_mut(plane, target, |output, stride| {
-                predict_unscaled_or_two_call(&translation, cwp_weight, output, stride)
+                predict_unscaled_or_two_call(backend, &translation, cwp_weight, output, stride)
             })?;
         } else {
             sink.with_contiguous_u8_rect_mut(plane, target, |output, stride| {
-                predict_unscaled_or_two_call(&translation, cwp_weight, output, stride)
+                predict_unscaled_or_two_call(backend, &translation, cwp_weight, output, stride)
             })?;
         }
     }
     Ok(true)
 }
 
-pub(super) fn predict_unscaled_or_two_call<T: ReconSample, O: CompoundAverageOutput>(
+pub(super) fn predict_unscaled_or_two_call<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+    O: CompoundAverageOutput,
+>(
+    backend: B,
     translation: &TranslationalCompoundPlane<'_, T>,
     cwp_weight: i16,
     output: &mut [O],
     stride: usize,
 ) -> splot_recon::Result<()> {
     let ([view0, view1], [params0, params1]) = (&translation.plane.views, &translation.params);
-    if subpel_predict_block_compound_average_unscaled_strided_into(
-        view0, params0, view1, params1, cwp_weight, output, stride,
+    if subpel_predict_block_compound_average_unscaled_strided_into_with(
+        backend, view0, params0, view1, params1, cwp_weight, output, stride,
     )? {
         return Ok(());
     }
     predict_compound_average_into(
+        backend,
         &translation.plane,
         &translation.params,
         cwp_weight,

@@ -24,7 +24,8 @@ use super::reference::HeldFrameSamples;
 /// block to reference 0, zero motion vector, skip, and `EIGHTTAP_SHARP`. With bridge
 /// frame filters disabled by § 5.18.2, the resulting coded frame is a sharp-filtered,
 /// zero-motion prediction from the selected reference, including reference scaling.
-pub(crate) fn reconstruct<T: ReconSample>(
+pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     held: &HeldFrameSamples<'_, T>,
     frame_size: FrameSize,
     visible: PlaneRect,
@@ -68,6 +69,7 @@ pub(crate) fn reconstruct<T: ReconSample>(
     .with_storage_luma_size(PlaneSize::new(storage_width, storage_height)?)?;
     let mut workspace = CurrentFrameWorkspace::new_recycled(info)?; // the § 7.23 copy below covers the whole frame rect
     motion_compensate_inter_block_into(
+        backend,
         &mut CurrentFrameSurface::Frame(&mut workspace),
         InterBlockParams::single(
             reference,
@@ -137,13 +139,14 @@ mod tests {
             source.write_rect(plane, PlaneRect::new(0, 0, side, side)?, &samples, side)?;
         }
         let source = source.freeze()?;
-        let bridge = reconstruct(
+        let bridge = crate::test_support::with_auto_backend!(backend => reconstruct(
+            backend,
             &HeldFrameSamples::Settled(&source),
             FrameSize::new(10, 14),
             info.visible_luma_rect(),
             1,
             ByteOffset::new(0),
-        )?;
+        ))?;
         assert_eq!(bridge.coded_luma_size(), info.coded_luma_size());
         assert_eq!(bridge.info().storage_luma_size(), info.storage_luma_size());
         assert_eq!(bridge.info().visible_luma_rect(), info.visible_luma_rect());
@@ -151,20 +154,22 @@ mod tests {
             assert_eq!(bridge.plane(plane), source.plane(plane));
         }
 
-        let from_source = reconstruct(
+        let from_source = crate::test_support::with_auto_backend!(backend => reconstruct(
+            backend,
             &HeldFrameSamples::Settled(&source),
             FrameSize::new(8, 8),
             PlaneRect::new(0, 0, 8, 8)?,
             2,
             ByteOffset::new(0),
-        )?;
-        let from_bridge = reconstruct(
+        ))?;
+        let from_bridge = crate::test_support::with_auto_backend!(backend => reconstruct(
+            backend,
             &HeldFrameSamples::Settled(&bridge),
             FrameSize::new(8, 8),
             PlaneRect::new(0, 0, 8, 8)?,
             2,
             ByteOffset::new(0),
-        )?;
+        ))?;
         assert_eq!(from_bridge, from_source);
         Ok(())
     }
@@ -189,13 +194,14 @@ mod tests {
             ),
         )?;
 
-        let bridge = reconstruct(
+        let bridge = crate::test_support::with_auto_backend!(backend => reconstruct(
+            backend,
             &HeldFrameSamples::Settled(&source),
             FrameSize::new(2, 3),
             PlaneRect::new(0, 0, 2, 3)?,
             11,
             ByteOffset::new(0),
-        )?;
+        ))?;
 
         assert_eq!(bridge.output_index(), OutputIndex::new(11));
         assert_eq!(bridge.coded_luma_size(), PlaneSize::new(2, 3)?);

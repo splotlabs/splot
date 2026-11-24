@@ -576,7 +576,7 @@ impl EncoderInterTile {
         if is_tip(motion) {
             let mut records = core::mem::take(&mut self.tip_trial_records);
             records.clear();
-            let predicted = self.tip_motion(&placed, workspace, &mut records, true);
+            let predicted = self.tip_motion(backend, &placed, workspace, &mut records, true);
             self.tip_trial_records = records;
             predicted?;
             return Ok(mvs);
@@ -603,7 +603,8 @@ impl EncoderInterTile {
         }
         if refine.0 || placed.block.optflow_distances.is_some() {
             let mut units = core::mem::take(&mut self.refined);
-            let predicted = self.predict_refined(&placed, refine, workspace, &mut units, true);
+            let predicted =
+                self.predict_refined(backend, &placed, refine, workspace, &mut units, true);
             self.refined = units;
             predicted?;
             return Ok(mvs);
@@ -683,7 +684,7 @@ impl EncoderInterTile {
         if is_tip(motion) {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
             let mut records = core::mem::take(&mut self.tip_records);
-            let derived = self.tip_motion(&placed, workspace, &mut records, false);
+            let derived = self.tip_motion(backend, &placed, workspace, &mut records, false);
             self.tip_records = records;
             derived?;
         } else if let Some(compound) = refined {
@@ -696,7 +697,7 @@ impl EncoderInterTile {
             if refine.0 || placed.block.optflow_distances.is_some() {
                 let mut units = core::mem::take(&mut self.refined);
                 let derived = self
-                    .predict_refined(&placed, refine, workspace, &mut units, false)
+                    .predict_refined(backend, &placed, refine, workspace, &mut units, false)
                     .and_then(|()| self.append_compound_records(backend, &placed, Some(&units)));
                 self.refined = units;
                 derived?;
@@ -739,8 +740,9 @@ impl EncoderInterTile {
     /// The decoder's refined motion of the compound block `placed` with
     /// `(use_refinemv, refinemv_switchable, _)` into `units`; with `predict`,
     /// also its prediction into `workspace`.
-    fn predict_refined(
+    fn predict_refined<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         placed: &PlacedInterBlock,
         (use_refinemv, switchable, _): (bool, bool, bool),
         workspace: &mut CurrentFrameWorkspace<u16>,
@@ -748,6 +750,7 @@ impl EncoderInterTile {
         predict: bool,
     ) -> Result<()> {
         prediction::predict_refined_inter_block(
+            backend,
             &mut CurrentFrameSurface::Frame(workspace),
             units,
             placed,
@@ -765,8 +768,9 @@ impl EncoderInterTile {
     /// The decoder's § 7.11.3 TIP motion of `placed`, whose unit records it
     /// appends to `records`; with `predict`, also its prediction into
     /// `workspace`.
-    fn tip_motion(
+    fn tip_motion<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         placed: &PlacedInterBlock,
         workspace: &mut CurrentFrameWorkspace<u16>,
         records: &mut Vec<TemporalMotionBlock>,
@@ -786,6 +790,7 @@ impl EncoderInterTile {
             &self.reference,
         )?;
         super::tip::predict_block(
+            backend,
             &mut self.tip_scratch,
             &mut sink,
             Some(records),

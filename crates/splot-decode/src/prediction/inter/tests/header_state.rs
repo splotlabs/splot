@@ -2097,16 +2097,19 @@ fn bru_inactive_zero_remaining_trailing_bits_and_incompatible_refs_fail_closed()
     assert!(matches!(err, DecodeError::MalformedSource { .. }));
 
     let mut products = super::super::FrameProductWriters::fresh().unwrap();
-    let Err(err) = super::super::decode_bridge_frame(
-        &frame5_candidate,
-        frame5_obu,
-        std::sync::Arc::new(intact_core),
-        &sequence,
-        &DecodeOptions::default(),
-        &reference,
-        BitDepth::Eight,
-        &mut products,
-    ) else {
+    let Err(err) = crate::test_support::with_auto_backend!(backend => {
+        super::super::decode_bridge_frame(
+            backend,
+            &frame5_candidate,
+            frame5_obu,
+            std::sync::Arc::new(intact_core),
+            &sequence,
+            &DecodeOptions::default(),
+            &reference,
+            BitDepth::Eight,
+            &mut products,
+        )
+    }) else {
         panic!("missing reference slot decoded successfully");
     };
     assert!(matches!(

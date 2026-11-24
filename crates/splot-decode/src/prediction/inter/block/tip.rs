@@ -704,7 +704,8 @@ fn batch_candidates(
 /// with. A compound block goes through the plane pass of [`mc::predict_tip_units`];
 /// a single-reference block (§ 7.13.3.1 weight 16) puts each unit.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn predict_block<T: ReconSample>(
+pub(super) fn predict_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut TipReconstructScratch,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     mut records: Option<&mut Vec<TemporalMotionBlock>>,
@@ -742,6 +743,7 @@ pub(super) fn predict_block<T: ReconSample>(
             for (index, mvs) in candidates.iter().enumerate() {
                 let rect = plan.unit_rect(index);
                 mc::motion_compensate_single_block_into(
+                    backend,
                     sink,
                     prediction.reference0,
                     rect,
@@ -755,12 +757,21 @@ pub(super) fn predict_block<T: ReconSample>(
         return Ok(());
     };
     let units = &mut scratch.tip_units;
-    mc::refine_tip_units(sink, &block, &scratch.unit_mvs, units, grid, tile_offset)?;
+    mc::refine_tip_units(
+        backend,
+        sink,
+        &block,
+        &scratch.unit_mvs,
+        units,
+        grid,
+        tile_offset,
+    )?;
     if let Some(records) = records {
         push_batch_records(records, &plan, frame, |index| units.stored_mvs(index))?;
     }
     if predict {
         mc::predict_tip_units(
+            backend,
             sink,
             &block,
             &mut scratch.unit_mvs,
@@ -869,7 +880,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<
     let mut motion_field = None;
     for band in 0..stages.band_count() {
         motion_field = stages
-            .band(band, sequence, core, reference)?
+            .band(backend, band, sequence, core, reference)?
             .or(motion_field);
     }
     let motion_field = motion_field.ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
@@ -1202,8 +1213,9 @@ impl<T: ReconSample> TipOutputStages<T> {
     ///
     /// # Errors
     /// Returns the prediction's own diagnostic.
-    pub(crate) fn band(
+    pub(crate) fn band<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         index: usize,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
@@ -1230,7 +1242,9 @@ impl<T: ReconSample> TipOutputStages<T> {
         });
         let mut surface = splot_recon::CurrentFrameRect::from_bands(self.info, rect, [y, u, v])?;
         let mut sink = CurrentFrameSurface::Rect(&mut surface);
-        self.predict_band(&mut band, rect, &mut sink, sequence, core, reference)?;
+        self.predict_band(
+            backend, &mut band, rect, &mut sink, sequence, core, reference,
+        )?;
         self.fold(index, &mut band.records)?;
         Ok(
             (self.folded.load(core::sync::atomic::Ordering::Acquire) == self.output.rects.len())
@@ -1256,8 +1270,10 @@ impl<T: ReconSample> TipOutputStages<T> {
         Ok((rect, band))
     }
 
-    fn predict_band(
+    #[expect(clippy::too_many_arguments)]
+    fn predict_band<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         band: &mut TipOutputBand,
         rect: splot_recon::PlaneRect,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
@@ -1292,6 +1308,7 @@ impl<T: ReconSample> TipOutputStages<T> {
             placed.chroma_luma[0] = band_x as u32;
             placed.chroma_luma[2] = cols as u32;
             predict_block(
+                backend,
                 &mut band.scratch,
                 sink,
                 Some(&mut band.records),
@@ -1555,7 +1572,9 @@ mod tests {
         let mut workspace = tip_workspace()?;
         let sink = CurrentFrameSurface::Frame(&mut workspace);
         let offset = splot_core::span::ByteOffset::new(0);
-        mc::refine_tip_units(&sink, &block, &[zero], &mut units, (1, 8), offset)?;
+        crate::test_support::with_auto_backend!(backend => {
+            mc::refine_tip_units(backend, &sink, &block, &[zero], &mut units, (1, 8), offset)
+        })?;
         assert_eq!(units.stored_mvs(0), Some(zero));
         Ok(())
     }

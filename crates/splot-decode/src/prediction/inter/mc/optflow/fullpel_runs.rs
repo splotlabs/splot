@@ -18,7 +18,12 @@ use super::*;
 /// identically.
 #[expect(clippy::too_many_arguments)]
 #[inline(never)]
-pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
+pub(super) fn predict_fullpel_runs<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+    O: CompoundAverageOutput,
+>(
+    backend: B,
     prediction: &CompoundSubpelPlane<'_, T>,
     cells: &[MotionCell],
     refine: (&[[MotionVector; 2]], usize, usize),
@@ -74,6 +79,7 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
         {
             let run_cells = ((1 << run) - 1) << start;
             if O::predict_fast(
+                backend,
                 &prediction.views[0],
                 &params[0],
                 &prediction.views[1],
@@ -86,6 +92,7 @@ pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
             }
             if let Some((views, output, output_stride)) = &mut second
                 && O::predict_fast(
+                    backend,
                     &views[0],
                     &params[0],
                     &views[1],

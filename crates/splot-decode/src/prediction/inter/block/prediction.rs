@@ -114,6 +114,7 @@ pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T
     }
     let held = super::super::hold_inter_block_references(lists, reference, placed)?;
     held.predict_into(
+        backend,
         &mut CurrentFrameSurface::Frame(workspace),
         placed,
         rect,
@@ -196,7 +197,13 @@ pub(super) fn reconstruct_pure_inter_block<B: splot_core::simd::SimdBackend, T: 
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let held = super::super::hold_inter_block_references(lists, reference, placed)?;
-    held.predict_into(sink, placed, placed.motion_compensation_rect(), tile_offset)?;
+    held.predict_into(
+        backend,
+        sink,
+        placed,
+        placed.motion_compensation_rect(),
+        tile_offset,
+    )?;
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
             backend,
@@ -218,7 +225,8 @@ pub(super) fn reconstruct_pure_inter_block<B: splot_core::simd::SimdBackend, T: 
 /// unit into `units`, then `records` from it (§ 7.22), then with `predict`
 /// every plane from it into `sink`.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn predict_refined_inter_block<T: ReconSample>(
+pub(super) fn predict_refined_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     units: &mut mc::RefinedUnits,
     placed: &PlacedInterBlock,
@@ -235,10 +243,10 @@ pub(super) fn predict_refined_inter_block<T: ReconSample>(
         .with_switchable_refinemv(refinemv_switchable)
         .into_compound()
         .ok_or(crate::DecodeHeaderStateError::InvalidInterBlockModeState)?;
-    mc::refine_block_units(sink, &block, units, tile_offset)?;
+    mc::refine_block_units(backend, sink, &block, units, tile_offset)?;
     records(units)?;
     if predict {
-        mc::predict_refined_block(sink, &block, units, tile_offset)?;
+        mc::predict_refined_block(backend, sink, &block, units, tile_offset)?;
     }
     Ok(())
 }

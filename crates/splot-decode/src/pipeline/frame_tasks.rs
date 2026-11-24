@@ -1089,7 +1089,7 @@ impl<T: SplitSample> TipFrame<T> {
         Ok(())
     }
 
-    fn band(&self, index: usize) -> Result<()> {
+    fn band<B: splot_core::simd::SimdBackend>(&self, backend: B, index: usize) -> Result<()> {
         let (Some(core), Some(sequence)) = (self.core.get(), self.sequence.get()) else {
             return Err(inter::invalid_inter_tile_scheduling_state());
         };
@@ -1101,7 +1101,7 @@ impl<T: SplitSample> TipFrame<T> {
         let work = work
             .as_ref()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if let Some(field) = work.band(index, sequence, core, reference)?
+        if let Some(field) = work.band(backend, index, sequence, core, reference)?
             && let Some(motion) = self.motion.lock().take()
         {
             motion.publish(field);
@@ -1276,7 +1276,7 @@ impl<T: SplitSample> TipFrame<T> {
             let outcome = match claim.stage {
                 TIP_INIT => self.init(narrow),
                 TIP_PROJECT => self.project(narrow, claim.row),
-                TIP_BAND => self.band(claim.row),
+                TIP_BAND => self.band(narrow, claim.row),
                 _ => self.finish_frame(),
             };
             match claim.stage {

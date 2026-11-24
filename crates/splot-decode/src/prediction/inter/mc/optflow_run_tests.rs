@@ -72,12 +72,15 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
         HEIGHT,
     );
     let mut units = RefinedUnits::with_cells(cells.to_vec(), columns, unit_size, merge);
-    predict_refined_block(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &block,
-        &mut units,
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        predict_refined_block(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &block,
+            &mut units,
+            ByteOffset::new(0),
+        )
+    })
     .expect("refined prediction");
     let frame = workspace.freeze().expect("freeze");
     super::super::mc_planes(info.pixel_format())
@@ -278,10 +281,22 @@ fn fullpel_center_sad_matches_the_search_windows() {
                 .expect("compound block");
                 let rect = McBlockRect::from_luma_rect(x, y, unit + 8, unit + 8);
                 let mut luma = LumaReference::pair(info, &block, ByteOffset::new(0));
-                let ends = fullpel_center_ends_search(&mut luma, rect, candidates).expect("centre");
+                let ends = crate::test_support::with_auto_backend!(backend => {
+                    fullpel_center_ends_search(backend, &mut luma, rect, candidates)
+                })
+                .expect("centre");
                 let mut windows = [[0u8; 24 * 24]; 2];
-                search_windows(&mut luma, rect, candidates, true, windows.each_mut())
-                    .expect("windows");
+                crate::test_support::with_auto_backend!(backend => {
+                    search_windows(
+                        backend,
+                        &mut luma,
+                        rect,
+                        candidates,
+                        true,
+                        windows.each_mut(),
+                    )
+                })
+                .expect("windows");
                 if candidates.iter().any(|mv| (mv.row | mv.col) & 7 != 0) {
                     assert_eq!(ends, None, "{candidates:?}");
                     continue;
@@ -382,7 +397,10 @@ fn tip_grid_and_cells<T: ReconSample>(
     let offset = ByteOffset::new(0);
     let grid = || {
         let mut units = TipUnits::default();
-        refine_tip_units(&sink, &block, mvs, &mut units, (columns, 8), offset).expect("units");
+        crate::test_support::with_auto_backend!(backend => {
+            refine_tip_units(backend, &sink, &block, mvs, &mut units, (columns, 8), offset)
+        })
+        .expect("units");
         units
     };
     let grid = pool.map_or_else(grid, |pool| pool.install(grid));
@@ -392,16 +410,29 @@ fn tip_grid_and_cells<T: ReconSample>(
             (unit.rect, unit.mv0, unit.mv1) = (unit_rect(i), mvs[i][0], mvs[i][1]);
             unit.has_chroma = false;
             let mut luma = LumaReference::pair(sink.info(), &unit, offset);
-            super::super::refinemv::tip_refinemv_optflow_motion_cell(
-                &unit,
-                (unit.rect, [unit.mv0, unit.mv1]),
-                &mut super::super::TipSearchScratch::default(),
-                &mut luma,
-                &mut Default::default(),
-            )
+            crate::test_support::with_auto_backend!(backend => {
+                super::super::refinemv::tip_refinemv_optflow_motion_cell(
+                    backend,
+                    &unit,
+                    (unit.rect, [unit.mv0, unit.mv1]),
+                    &mut super::super::TipSearchScratch::default(),
+                    &mut luma,
+                    &mut Default::default(),
+                )
+            })
             .expect("refined cell")
             .map_or_else(
-                || tip_unit_motion_cell(&sink, &unit, (unit.rect, [unit.mv0, unit.mv1]), &mut luma),
+                || {
+                    crate::test_support::with_auto_backend!(backend => {
+                        tip_unit_motion_cell(
+                            backend,
+                            &sink,
+                            &unit,
+                            (unit.rect, [unit.mv0, unit.mv1]),
+                            &mut luma,
+                        )
+                    })
+                },
                 Ok,
             )
             .expect("unit cell")
@@ -518,18 +549,21 @@ fn chroma_implicit_mask_reads_one_motion_cell_per_four_by_four_subblock() {
     let pred0 = [16 * 100; 16];
     let pred1 = [16 * 200; 16];
     let mut output = [0u16; 16];
-    blend_implicit_mask_region(
-        [&pred0, &pred1],
-        4,
-        [0, 0, 4, 4],
-        &motion,
-        (0, 0),
-        [scaling; 2],
-        ImplicitMaskBlend::new(BitDepth::Eight, 4, 4),
-        (1, 1),
-        &mut output,
-        4,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        blend_implicit_mask_region(
+            backend,
+            [&pred0, &pred1],
+            4,
+            [0, 0, 4, 4],
+            &motion,
+            (0, 0),
+            [scaling; 2],
+            ImplicitMaskBlend::new(BitDepth::Eight, 4, 4),
+            (1, 1),
+            &mut output,
+            4,
+        )
+    })
     .expect("chroma blend");
 
     assert_eq!(output, [150; 16]);
@@ -594,9 +628,22 @@ fn edge_units_match_a_larger_storage<T: ReconSample + CompoundAverageOutput + Se
             let mut sink = CurrentFrameSurface::Frame(&mut workspace);
             let (mut units, mut mvs) = (TipUnits::default(), candidates.clone());
             let (grid, offset) = ((columns, unit), ByteOffset::new(0));
-            refine_tip_units(&sink, &block, &mvs, &mut units, grid, offset).expect("units");
-            predict_tip_units(&mut sink, &block, &mut mvs, &mut units, grid, offset)
-                .expect("predict");
+            crate::test_support::with_auto_backend!(backend => {
+                refine_tip_units(backend, &sink, &block, &mvs, &mut units, grid, offset)
+            })
+            .expect("units");
+            crate::test_support::with_auto_backend!(backend => {
+                predict_tip_units(
+                    backend,
+                    &mut sink,
+                    &block,
+                    &mut mvs,
+                    &mut units,
+                    grid,
+                    offset,
+                )
+            })
+            .expect("predict");
             super::super::mc_planes(format).map(|(plane, sub_x, sub_y)| {
                 let stride = workspace.plane(plane).expect("plane").stride_samples();
                 let samples = workspace.samples(plane).expect("samples");
