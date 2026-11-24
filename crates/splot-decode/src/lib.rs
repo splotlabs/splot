@@ -104,7 +104,7 @@ pub use hash_report::{
 pub use runtime::DecodeRuntimeConfig;
 pub use splot_core::headers::frame::FrameType;
 pub use splot_core::simd::{CpuCapabilities, SelectedBackend, SimdPolicy, UnsupportedBackendError};
-pub use splot_core::types::{EmbeddedLayerId, TemporalLayerId};
+pub use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, TemporalLayerId};
 pub use splot_parallel::{FrameDelay, ThreadCount};
 pub use splot_recon::Y4mFrameRate;
 pub use splot_recon::{
@@ -114,7 +114,7 @@ pub use stream_plan::{
     DecodeIvfFrameContext, DecodeLayerSelection, DecodeObuSourceKind, DecodePlannedObu,
     DecodePlannedObuRole, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamInput,
     DecodeStreamPlan, DecodeUnsupportedReason, DecodeUnsupportedStructure, EmbeddedLayerSelection,
-    TemporalLayerSelection,
+    ExtendedLayerSelection, TemporalLayerSelection,
 };
 
 mod limits;

@@ -197,6 +197,23 @@ impl FrameStore {
         }
     }
 
+    pub(super) fn ensure_capacity_for_layers(&mut self, layer_count: usize, depth: usize) {
+        if layer_count <= 1 {
+            return;
+        }
+        let target = 2 * MAX_REF_FRAMES * layer_count + depth + 1;
+        while self.entries.len() < target {
+            self.entries.push(FrameEntry {
+                index: 0,
+                frame: None,
+                motion: None,
+                products: None,
+                core: None,
+                retired: None,
+            });
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.count
     }

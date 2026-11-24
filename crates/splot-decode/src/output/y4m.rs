@@ -25,6 +25,7 @@ pub(crate) fn write_y4m_stream_to_writer(
     let mut target = Some(output);
     let mut writer = None;
     let mut sample_bit_depth = None;
+    let mut seen_xlayer = None;
     let frame_rate_override = options.y4m_frame_rate_override();
     let mut spare = GrainPlanes::default();
     crate::pipeline::emit_frames(
@@ -33,6 +34,7 @@ pub(crate) fn write_y4m_stream_to_writer(
         session,
         |header| preflight_y4m_source(header, frame_rate_override),
         |output| {
+            super::track_flat_output_xlayer(&mut seen_xlayer, output.extended_layer_id)?;
             let rate = output.frame_rate;
             let frame_rate = || {
                 frame_rate_override

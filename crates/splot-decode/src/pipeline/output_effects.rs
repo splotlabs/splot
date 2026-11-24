@@ -17,9 +17,9 @@ use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, parse_layer_config_record,
 };
 use splot_core::headers::metadata::{
-    MetadataGroupUnit, MetadataType, MetadataUnit, parse_metadata_group, parse_metadata_short,
+    MetadataType, MetadataUnit, parse_metadata_group, parse_metadata_short,
 };
-use splot_core::headers::operating_point_set::parse_operating_point_set;
+use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
 use splot_core::headers::quantizer_matrix::{
     FundamentalQmTransform, NUM_CUSTOM_QMS, QuantizerMatrixLevel, parse_quantizer_matrix,
 };
@@ -105,7 +105,7 @@ impl FrameOutputEffects {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MetadataPersistence {
+pub(crate) enum MetadataPersistence {
     Global,
     Basic,
     No,
@@ -114,7 +114,7 @@ enum MetadataPersistence {
 }
 
 impl MetadataPersistence {
-    const fn from_idc(idc: u8) -> Self {
+    pub(crate) const fn from_idc(idc: u8) -> Self {
         match idc {
             0 => Self::Global,
             1 => Self::Basic,
@@ -123,6 +123,19 @@ impl MetadataPersistence {
             _ => Self::Reserved,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum MetadataAction {
+    Cancel(MetadataType),
+    Store {
+        layer_idc: u8,
+        persistence_idc: u8,
+        source_mlayer: EmbeddedLayerId,
+        xlayer_map: Option<u32>,
+        mlayer_maps: Vec<u8>,
+        unit: MetadataUnit,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -180,6 +193,7 @@ pub(crate) struct OutputEffectState {
     active_xlayer: ExtendedLayerId,
     local_lcr_tu: Option<u64>,
     local_lcr_in_cvs: bool,
+    local_lcr_ids: u8,
     global_lcr_xlayers: [Option<u32>; 8],
     brt_count: BrtCount,
     second_brt_offset: Option<ByteOffset>,
@@ -189,7 +203,12 @@ pub(crate) struct OutputEffectState {
 }
 
 impl OutputEffectState {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::new_for_xlayer(ExtendedLayerId::from_bits(0))
+    }
+
+    pub(crate) fn new_for_xlayer(active_xlayer: ExtendedLayerId) -> Self {
         Self {
             mfh: std::array::from_fn(|_| None),
             qm: std::array::from_fn(|_| None),
@@ -198,9 +217,10 @@ impl OutputEffectState {
             qm_obu_seen_since_frame: false,
             content_interpretation: [None; 8],
             ci_in_current_tu: [None; 8],
-            active_xlayer: ExtendedLayerId::from_bits(0),
+            active_xlayer,
             local_lcr_tu: None,
             local_lcr_in_cvs: false,
+            local_lcr_ids: 0,
             global_lcr_xlayers: [None; 8],
             brt_count: BrtCount::None,
             second_brt_offset: None,
@@ -210,53 +230,76 @@ impl OutputEffectState {
         }
     }
 
+    pub(crate) fn set_tu_index(&mut self, tu_index: u64) {
+        self.tu_index = tu_index;
+    }
+
+    pub(crate) fn has_local_lcr_id(&self, id: u8) -> bool {
+        (1..=7).contains(&id) && (self.local_lcr_ids & (1u8 << id)) != 0
+    }
+
+    pub(crate) fn apply_global_lcr(&mut self, id: u8, xlayer_map: u32) {
+        if let Some(slot) = self.global_lcr_xlayers.get_mut(usize::from(id)) {
+            *slot = Some(xlayer_map);
+        }
+    }
+
+    pub(crate) fn apply_ops_record(&mut self, ops: &OperatingPointSet) {
+        if ops.reset_flag {
+            self.ops_counts
+                .retain(|(xlayer, _), _| *xlayer != ops.xlayer_id);
+        }
+        self.apply_ops_entry(ops.xlayer_id, ops.ops_id, ops.ops_cnt);
+    }
+
+    pub(crate) fn apply_ops_entry(&mut self, xlayer: ExtendedLayerId, ops_id: u8, ops_cnt: u8) {
+        if ops_cnt == 0 {
+            self.ops_counts.remove(&(xlayer, ops_id));
+        } else {
+            self.ops_counts.insert((xlayer, ops_id), ops_cnt);
+        }
+    }
+
     pub(crate) fn begin_temporal_unit(&mut self) {
         self.tu_index = self.tu_index.saturating_add(1);
         self.qm_protected = 0;
         self.ci_in_current_tu = [None; 8];
     }
 
-    pub(crate) fn observe_prefix(
+    pub(crate) fn observe_prefix_obu(
         &mut self,
-        obus: &[ObuEnvelope<'_>],
+        envelope: ObuEnvelope<'_>,
         sequence: &SequenceHeader,
     ) -> Result<()> {
-        for envelope in obus {
-            if !envelope.header.extended_layer_id.is_global() {
-                self.active_xlayer = envelope.header.extended_layer_id;
+        match envelope.header.obu_type {
+            ObuType::TemporalDelimiter => self.begin_temporal_unit(),
+            ObuType::LayerConfigurationRecord => self.observe_lcr(envelope)?,
+            ObuType::OperatingPointSet => self.observe_ops(envelope)?,
+            ObuType::MultiFrameHeader => self.observe_mfh(envelope, sequence)?,
+            ObuType::BufferRemovalTiming => self.observe_brt(envelope)?,
+            ObuType::QuantizationMatrix => self.observe_qm(envelope, sequence)?,
+            ObuType::ContentInterpretation => self.observe_ci(envelope, sequence)?,
+            ObuType::MetadataShort | ObuType::MetadataGroup => {
+                self.observe_metadata(envelope, false)?;
             }
-            match envelope.header.obu_type {
-                ObuType::TemporalDelimiter => self.begin_temporal_unit(),
-                ObuType::LayerConfigurationRecord => self.observe_lcr(*envelope)?,
-                ObuType::OperatingPointSet => self.observe_ops(*envelope)?,
-                ObuType::MultiFrameHeader => self.observe_mfh(*envelope, sequence)?,
-                ObuType::BufferRemovalTiming => self.observe_brt(*envelope)?,
-                ObuType::QuantizationMatrix => self.observe_qm(*envelope, sequence)?,
-                ObuType::ContentInterpretation => self.observe_ci(*envelope, sequence)?,
-                ObuType::MetadataShort | ObuType::MetadataGroup => {
-                    self.observe_metadata(*envelope, false)?;
-                }
-                _ => {}
-            }
+            _ => {}
         }
         Ok(())
     }
 
-    pub(crate) fn observe_suffix(&mut self, obus: &[ObuEnvelope<'_>]) -> Result<()> {
-        for envelope in obus {
-            match envelope.header.obu_type {
-                ObuType::Padding => {}
-                ObuType::MetadataShort | ObuType::MetadataGroup => {
-                    self.observe_metadata(*envelope, true)?;
-                }
-                _ => {
-                    return Err(unsupported_feature_at(
-                        "output_effect_suffix_order",
-                        envelope.offset,
-                        "coded-frame suffixes may contain only suffix metadata and padding",
-                        "7.3.3",
-                    ));
-                }
+    pub(crate) fn observe_suffix_obu(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
+        match envelope.header.obu_type {
+            ObuType::Padding => {}
+            ObuType::MetadataShort | ObuType::MetadataGroup => {
+                self.observe_metadata(envelope, true)?;
+            }
+            _ => {
+                return Err(unsupported_feature_at(
+                    "output_effect_suffix_order",
+                    envelope.offset,
+                    "coded-frame suffixes may contain only suffix metadata and padding",
+                    "7.3.3",
+                ));
             }
         }
         Ok(())
@@ -659,29 +702,16 @@ impl OutputEffectState {
     }
 
     fn observe_lcr(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
-        let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-        let record = parse_layer_config_record(&mut reader, envelope.header.extended_layer_id)
-            .map_err(|_| {
-                unsupported_feature_at(
-                    "layer_config_record_parse",
-                    envelope.offset,
-                    "decode requires a complete layer configuration record OBU",
-                    "5.8",
-                )
-            })?;
-        finish(&mut reader, envelope, "layer_config_record_tail", "5.8")?;
-        match record {
+        match parse_validated_lcr(envelope)? {
             LayerConfigurationRecord::Global(info) => {
-                if let Some(slot) = self
-                    .global_lcr_xlayers
-                    .get_mut(usize::from(info.global_config_record_id))
-                {
-                    *slot = Some(info.xlayer_map);
-                }
+                self.apply_global_lcr(info.global_config_record_id, info.xlayer_map);
             }
-            LayerConfigurationRecord::Local(_) => {
+            LayerConfigurationRecord::Local(info) => {
                 self.local_lcr_tu = Some(self.tu_index);
                 self.local_lcr_in_cvs = true;
+                if (1..=7).contains(&info.local_id) {
+                    self.local_lcr_ids |= 1u8 << info.local_id;
+                }
             }
             _ => {}
         }
@@ -689,27 +719,8 @@ impl OutputEffectState {
     }
 
     fn observe_ops(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
-        let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-        let ops = parse_operating_point_set(&mut reader, envelope.header.extended_layer_id)
-            .map_err(|_| {
-                unsupported_feature_at(
-                    "operating_point_set_parse",
-                    envelope.offset,
-                    "BRT resolution requires a complete operating point set OBU",
-                    "5.10",
-                )
-            })?;
-        finish(&mut reader, envelope, "operating_point_set_tail", "5.10")?;
-        if ops.reset_flag {
-            self.ops_counts
-                .retain(|(xlayer, _), _| *xlayer != ops.xlayer_id);
-        }
-        if ops.ops_cnt == 0 {
-            self.ops_counts.remove(&(ops.xlayer_id, ops.ops_id));
-        } else {
-            self.ops_counts
-                .insert((ops.xlayer_id, ops.ops_id), ops.ops_cnt);
-        }
+        let ops = parse_ops_obu(envelope)?;
+        self.apply_ops_record(&ops);
         Ok(())
     }
 
@@ -749,76 +760,65 @@ impl OutputEffectState {
     }
 
     fn observe_metadata(&mut self, envelope: ObuEnvelope<'_>, expected_suffix: bool) -> Result<()> {
-        let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-        match envelope.header.obu_type {
-            ObuType::MetadataShort => {
-                let short =
-                    parse_metadata_short(&mut reader, envelope.payload.len()).map_err(|_| {
-                        unsupported_feature_at(
-                            "metadata_short_parse",
-                            envelope.offset,
-                            "decode requires a complete metadata short OBU",
-                            "5.17.2",
-                        )
-                    })?;
-                if short.metadata_is_suffix != expected_suffix {
-                    return Err(metadata_order_error(envelope, expected_suffix));
-                }
-                finish(&mut reader, envelope, "metadata_short_tail", "5.17.2")?;
-                if short.muh_cancel_flag {
-                    self.cancel_metadata(envelope.header.extended_layer_id, short.metadata_type);
-                } else if let Some(unit) = short.unit {
-                    self.store_metadata(
-                        envelope,
-                        short.muh_layer_idc,
-                        short.muh_persistence_idc,
-                        None,
-                        unit,
-                    );
-                }
-            }
-            ObuType::MetadataGroup => {
-                let group = parse_metadata_group(&mut reader, envelope.header.extended_layer_id)
-                    .map_err(|_| {
-                        unsupported_feature_at(
-                            "metadata_group_parse",
-                            envelope.offset,
-                            "decode requires a complete metadata group OBU",
-                            "5.17.3",
-                        )
-                    })?;
-                if group.metadata_is_suffix != expected_suffix {
-                    return Err(metadata_order_error(envelope, expected_suffix));
-                }
-                finish(&mut reader, envelope, "metadata_group_tail", "5.17.3")?;
-                for group_unit in group.units {
-                    self.observe_metadata_group_unit(envelope, group_unit);
-                }
-            }
-            _ => {}
-        }
-        Ok(())
+        let xlayer = envelope.header.extended_layer_id;
+        parse_metadata_obu(envelope, expected_suffix, |action| {
+            self.apply_metadata_action(xlayer, action);
+        })
     }
 
-    fn observe_metadata_group_unit(&mut self, envelope: ObuEnvelope<'_>, group: MetadataGroupUnit) {
-        if group.muh_cancel_flag {
-            self.cancel_metadata(envelope.header.extended_layer_id, group.metadata_type);
-            return;
-        }
-        let mlayer_map = metadata_group_mlayer_map(envelope, &group, self.active_xlayer);
-        let (Some(layer_idc), Some(persistence), Some(unit)) =
-            (group.muh_layer_idc, group.muh_persistence_idc, group.unit)
-        else {
-            return;
-        };
-        self.store_metadata(envelope, layer_idc, persistence, mlayer_map, unit);
-    }
-
-    fn store_metadata(
+    pub(crate) fn apply_metadata_action(
         &mut self,
-        envelope: ObuEnvelope<'_>,
+        source_xlayer: ExtendedLayerId,
+        action: MetadataAction,
+    ) {
+        match action {
+            MetadataAction::Cancel(metadata_type) => {
+                self.cancel_metadata(source_xlayer, metadata_type);
+            }
+            MetadataAction::Store {
+                layer_idc,
+                persistence_idc,
+                source_mlayer,
+                xlayer_map,
+                mlayer_maps,
+                unit,
+            } => {
+                let mlayer_map = if source_xlayer.is_global() {
+                    let Some(map) = xlayer_map else {
+                        self.store_metadata_entry(
+                            layer_idc,
+                            persistence_idc,
+                            source_mlayer,
+                            mlayer_maps.first().copied(),
+                            unit,
+                        );
+                        return;
+                    };
+                    let mask = 1u32 << u32::from(self.active_xlayer.get());
+                    if map & mask == 0 {
+                        return;
+                    }
+                    let slot = (map & (mask - 1)).count_ones() as usize;
+                    mlayer_maps.get(slot).copied()
+                } else {
+                    mlayer_maps.first().copied()
+                };
+                self.store_metadata_entry(
+                    layer_idc,
+                    persistence_idc,
+                    source_mlayer,
+                    mlayer_map,
+                    unit,
+                );
+            }
+        }
+    }
+
+    fn store_metadata_entry(
+        &mut self,
         layer_idc: u8,
         persistence_idc: u8,
+        source_mlayer: EmbeddedLayerId,
         mlayer_map: Option<u8>,
         unit: MetadataUnit,
     ) {
@@ -826,7 +826,7 @@ impl OutputEffectState {
             unit,
             persistence: MetadataPersistence::from_idc(persistence_idc),
             layer_idc,
-            source_mlayer: envelope.header.embedded_layer_id,
+            source_mlayer,
             mlayer_map,
             tu_index: self.tu_index,
         };
@@ -847,8 +847,26 @@ impl OutputEffectState {
         self.metadata.push(active);
     }
 
-    fn cancel_metadata(&mut self, xlayer: ExtendedLayerId, metadata_type: MetadataType) {
-        if xlayer.is_global() || xlayer.get() == 0 {
+    #[cfg(test)]
+    fn store_metadata(
+        &mut self,
+        envelope: ObuEnvelope<'_>,
+        layer_idc: u8,
+        persistence_idc: u8,
+        mlayer_map: Option<u8>,
+        unit: MetadataUnit,
+    ) {
+        self.store_metadata_entry(
+            layer_idc,
+            persistence_idc,
+            envelope.header.embedded_layer_id,
+            mlayer_map,
+            unit,
+        );
+    }
+
+    pub(crate) fn cancel_metadata(&mut self, xlayer: ExtendedLayerId, metadata_type: MetadataType) {
+        if xlayer.is_global() || xlayer == self.active_xlayer {
             self.metadata.retain(|existing| {
                 existing.unit.metadata_type != metadata_type
                     || existing.persistence == MetadataPersistence::Global
@@ -978,21 +996,131 @@ fn build_user_qm_level(level: &QuantizerMatrixLevel) -> Option<FrameUserQmLevel>
     Some(FrameUserQmLevel { transforms })
 }
 
-fn metadata_group_mlayer_map(
-    envelope: ObuEnvelope<'_>,
-    group: &MetadataGroupUnit,
-    active_xlayer: ExtendedLayerId,
-) -> Option<u8> {
-    if envelope.header.extended_layer_id.is_global() {
-        let xlayer_map = group.muh_xlayer_map?;
-        let mask = 1u32 << u32::from(active_xlayer.get());
-        if xlayer_map & mask == 0 {
-            return None;
+pub(crate) fn parse_validated_lcr(envelope: ObuEnvelope<'_>) -> Result<LayerConfigurationRecord> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    let record = parse_layer_config_record(&mut reader, envelope.header.extended_layer_id)
+        .map_err(|_| {
+            unsupported_feature_at(
+                "layer_config_record_parse",
+                envelope.offset,
+                "decode requires a complete layer configuration record OBU",
+                "5.8",
+            )
+        })?;
+    finish(&mut reader, envelope, "layer_config_record_tail", "5.8")?;
+    if let LayerConfigurationRecord::Global(ref info) = record {
+        if info.global_config_record_id == 0 || info.global_config_record_id > 7 {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::sequence_header_conformance(
+                    envelope.offset,
+                    "6.8.2",
+                    format!(
+                        "global LCR lcr_global_config_record_id {} must be in 1..=7",
+                        info.global_config_record_id
+                    ),
+                ),
+            });
         }
-        let slot = (xlayer_map & (mask - 1)).count_ones() as usize;
-        return group.muh_mlayer_maps.get(slot).copied();
+        if info.xlayer_map == 0 || (info.xlayer_map & (1u32 << 31)) != 0 {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::sequence_header_conformance(
+                    envelope.offset,
+                    "6.8.2",
+                    "global LCR lcr_xlayer_map must be in 1..=(1 << 31) - 1".to_owned(),
+                ),
+            });
+        }
     }
-    group.muh_mlayer_maps.first().copied()
+    Ok(record)
+}
+
+pub(crate) fn parse_ops_obu(envelope: ObuEnvelope<'_>) -> Result<OperatingPointSet> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    let ops = parse_operating_point_set(&mut reader, envelope.header.extended_layer_id).map_err(
+        |_| {
+            unsupported_feature_at(
+                "operating_point_set_parse",
+                envelope.offset,
+                "BRT resolution requires a complete operating point set OBU",
+                "5.10",
+            )
+        },
+    )?;
+    finish(&mut reader, envelope, "operating_point_set_tail", "5.10")?;
+    Ok(ops)
+}
+
+pub(crate) fn parse_metadata_obu(
+    envelope: ObuEnvelope<'_>,
+    expected_suffix: bool,
+    mut on_action: impl FnMut(MetadataAction),
+) -> Result<()> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    let source_mlayer = envelope.header.embedded_layer_id;
+    match envelope.header.obu_type {
+        ObuType::MetadataShort => {
+            let short =
+                parse_metadata_short(&mut reader, envelope.payload.len()).map_err(|_| {
+                    unsupported_feature_at(
+                        "metadata_short_parse",
+                        envelope.offset,
+                        "decode requires a complete metadata short OBU",
+                        "5.17.2",
+                    )
+                })?;
+            if short.metadata_is_suffix != expected_suffix {
+                return Err(metadata_order_error(envelope, expected_suffix));
+            }
+            finish(&mut reader, envelope, "metadata_short_tail", "5.17.2")?;
+            if short.muh_cancel_flag {
+                on_action(MetadataAction::Cancel(short.metadata_type));
+            } else if let Some(unit) = short.unit {
+                on_action(MetadataAction::Store {
+                    layer_idc: short.muh_layer_idc,
+                    persistence_idc: short.muh_persistence_idc,
+                    source_mlayer,
+                    xlayer_map: None,
+                    mlayer_maps: Vec::new(),
+                    unit,
+                });
+            }
+        }
+        ObuType::MetadataGroup => {
+            let group = parse_metadata_group(&mut reader, envelope.header.extended_layer_id)
+                .map_err(|_| {
+                    unsupported_feature_at(
+                        "metadata_group_parse",
+                        envelope.offset,
+                        "decode requires a complete metadata group OBU",
+                        "5.17.3",
+                    )
+                })?;
+            if group.metadata_is_suffix != expected_suffix {
+                return Err(metadata_order_error(envelope, expected_suffix));
+            }
+            finish(&mut reader, envelope, "metadata_group_tail", "5.17.3")?;
+            for group_unit in group.units {
+                if group_unit.muh_cancel_flag {
+                    on_action(MetadataAction::Cancel(group_unit.metadata_type));
+                } else if let (Some(layer_idc), Some(persistence_idc), Some(unit)) = (
+                    group_unit.muh_layer_idc,
+                    group_unit.muh_persistence_idc,
+                    group_unit.unit,
+                ) {
+                    on_action(MetadataAction::Store {
+                        layer_idc,
+                        persistence_idc,
+                        source_mlayer,
+                        xlayer_map: group_unit.muh_xlayer_map,
+                        mlayer_maps: group_unit.muh_mlayer_maps,
+                        unit,
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn finish(

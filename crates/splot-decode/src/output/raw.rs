@@ -22,12 +22,14 @@ pub(crate) fn write_raw_stream_from_plan(
     writer: &mut (dyn Write + Send),
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
+    let mut seen_xlayer = None;
     crate::pipeline::emit_frames(
         source,
         options,
         session,
         |_| Ok(()),
         |output| {
+            super::track_flat_output_xlayer(&mut seen_xlayer, output.extended_layer_id)?;
             let frame = output.ready_frame()?;
             write_display_frame(&frame, output.output_grain(options), &mut spare, writer)
         },
