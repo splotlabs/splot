@@ -142,6 +142,7 @@ pub(super) fn frame_is_output(core: &FrameHeaderCore) -> bool {
 pub(super) struct OutputScheduler {
     pub(super) pending: Vec<Option<(usize, u32)>>,
     emitted: Vec<usize>,
+    suppressed: Vec<usize>,
     /// The frames the last `refresh` or `on_immediate` released, kept so the
     /// per-frame calls reuse one list.
     newly: Vec<usize>,
@@ -155,6 +156,7 @@ impl OutputScheduler {
         Self {
             pending: vec![None; num_slots],
             emitted: Vec::new(),
+            suppressed: Vec::new(),
             newly: Vec::new(),
             emitted_count: 0,
             open_loop_active: false,
@@ -162,11 +164,19 @@ impl OutputScheduler {
         }
     }
 
+    pub(super) fn suppress(&mut self, frame_index: usize) {
+        if !self.suppressed.contains(&frame_index) {
+            self.suppressed.push(frame_index);
+        }
+    }
+
     pub(super) fn emit(&mut self, frame_index: usize, newly: &mut Vec<usize>) {
         if !self.emitted.contains(&frame_index) {
             self.emitted.push(frame_index);
-            self.emitted_count += 1;
-            newly.push(frame_index);
+            if !self.suppressed.contains(&frame_index) {
+                self.emitted_count += 1;
+                newly.push(frame_index);
+            }
         }
         for slot in &mut self.pending {
             if slot.is_some_and(|(held, _)| held == frame_index) {
@@ -253,6 +263,8 @@ impl OutputScheduler {
 
     pub(super) fn forget(&mut self, frame_index: usize) {
         self.emitted.retain(|&emitted| emitted != frame_index);
+        self.suppressed
+            .retain(|&suppressed| suppressed != frame_index);
     }
 
     pub(super) fn already_emitted(&self, frame_index: usize) -> bool {
@@ -341,6 +353,7 @@ impl OutputScheduler {
     pub(super) fn start_new_sequence(&mut self, num_slots: usize) -> Vec<usize> {
         let newly = self.flush_all();
         self.pending = vec![None; num_slots];
+        self.suppressed.clear();
         self.open_loop_active = false;
         self.open_loop_order_hint = None;
         newly
@@ -511,6 +524,7 @@ mod tests {
                 numerator: 1,
                 denominator: 1,
             },
+            temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
             props: crate::DataProps::default(),
         })
     }

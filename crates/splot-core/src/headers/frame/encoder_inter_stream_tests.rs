@@ -374,6 +374,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
     assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
     let input = FrameHeaderParseInput {
         obu_type: ObuType::RegularTileGroup,
+        obu_tlayer_id: crate::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: Some(&seq),
         mfh_record: None,
@@ -409,6 +410,7 @@ fn show_existing_frame_obu_parses_complete() {
     let slots = Slots::after_key(17, 9, 7);
     let input = FrameHeaderParseInput {
         obu_type: ObuType::RegularSef,
+        obu_tlayer_id: crate::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: Some(&seq),
         mfh_record: None,
@@ -489,6 +491,7 @@ fn show_existing_frame_obu_codes_an_explicit_order_hint() {
     let slots = Slots::after_key(17, 9, 7);
     let input = FrameHeaderParseInput {
         obu_type: ObuType::RegularSef,
+        obu_tlayer_id: crate::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: Some(&seq),
         mfh_record: None,
@@ -1409,6 +1412,7 @@ fn assert_cut_header_fails(
     let cut = header.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
     let input = FrameHeaderParseInput {
         obu_type: ObuType::RegularTileGroup,
+        obu_tlayer_id: crate::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: Some(seq),
         mfh_record: None,
@@ -1497,6 +1501,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
     let cut = reused.bits.num_frame_header_bits().div_ceil(8) as usize - 1;
     let input = FrameHeaderParseInput {
         obu_type: ObuType::RegularTileGroup,
+        obu_tlayer_id: crate::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: Some(&seq),
         mfh_record: None,
@@ -1921,6 +1926,7 @@ fn open_loop_key_headers_keep_the_other_slots() {
     assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
     let input = FrameHeaderParseInput {
         obu_type: ObuType::OpenLoopKey,
+        obu_tlayer_id: crate::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: Some(&seq),
         mfh_record: None,

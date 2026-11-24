@@ -618,6 +618,7 @@ fn decode_key_frame_with_effects(
             ccso_grid: products.ccso_grid,
             segment_ids: products.segment_ids,
             frame_rate,
+            temporal_layer_id: frame_envelope.header.temporal_layer_id,
             props,
         });
     }
@@ -669,6 +670,7 @@ fn decode_key_frame_with_effects(
         ccso_grid,
         segment_ids,
         frame_rate,
+        temporal_layer_id: frame_envelope.header.temporal_layer_id,
         props,
     })
 }
@@ -851,17 +853,18 @@ fn decode_frames_in_order(
     frames: &mut FrameStore,
     input_scratch: &mut InputScratch,
 ) -> Result<()> {
+    options.temporal_layer_selection().validate()?;
     let InputScratch {
         records,
         obus: obu_storage,
     } = input_scratch;
-    let mut stream = RuntimeStream::new(source, records, options.limits());
+    let mut stream = RuntimeStream::new(source, records, options);
     let Some(leading_unit) = stream.first_unit()? else {
         return Ok(());
     };
     let key_candidate = stream.first_candidate()?;
     let mut leading_buffer = recycle(core::mem::take(obu_storage));
-    let leading_obus = RuntimeStream::obus(&leading_unit, &mut leading_buffer)?;
+    let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
     let ([_, sequence_envelope, key_envelope], _) = require_leading_frame_unit(leading_obus)?;
     preflight(stream.ivf_header())?;
     let frame_rate = stream.frame_rate();
@@ -870,7 +873,7 @@ fn decode_frames_in_order(
     validate_sequence(&sequence, sequence_envelope.offset)?;
     let mut film_grain_slots = FilmGrainSlots::new();
     let leading_prefix = leading_prefix_obus(leading_obus)?;
-    film_grain_slots.update_from_obus(leading_prefix)?;
+    film_grain_slots.update_from_obus(leading_prefix, &sequence)?;
     let mut output_effect_state = OutputEffectState::new();
     output_effect_state.observe_prefix(leading_prefix, &sequence)?;
 
@@ -945,7 +948,12 @@ fn decode_frames_in_order(
         true,
         key_frame_index,
     )?;
-    let key_display_grain = film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
+    let key_display_grain = film_grain_slots.active_for_core(
+        key_envelope,
+        &key_core,
+        &sequence,
+        key_envelope.offset,
+    )?;
     output_effect_state.observe_suffix(suffix_after_candidate(leading_obus, key_candidate)?)?;
     let key_output_effects = output_effect_state.finish_frame();
     let mut retained_frame_bytes = 0;
@@ -996,6 +1004,7 @@ fn decode_frames_in_order(
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate: rate,
+                    temporal_layer_id: key_envelope.header.temporal_layer_id,
                     props: stream.props(),
                 }
             } else {
@@ -1036,6 +1045,7 @@ fn decode_frames_in_order(
                     ccso_grid,
                     segment_ids,
                     frame_rate: rate,
+                    temporal_layer_id: key_envelope.header.temporal_layer_id,
                     props: stream.props(),
                 }
             }
@@ -1067,11 +1077,18 @@ fn decode_frames_in_order(
         &key_core,
         key_envelope.offset,
         key_envelope.header.embedded_layer_id,
+        key_envelope.header.temporal_layer_id,
     )?;
     frames.push(key_frame)?;
     let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
+    if !stream
+        .layer_filter()
+        .is_temporal_output(key_envelope.header.temporal_layer_id)
+    {
+        scheduler.suppress(0);
+    }
     scheduler.refresh(
         key_update.refresh_frame_flags,
         0,
@@ -1156,15 +1173,30 @@ fn decode_frames_in_order(
             }
         }
         frames.reserve()?;
-        let candidate =
-            stream.candidate(obu_storage, &mut || emission_queue.flush(frames, emit))?;
+        let candidate = stream.candidate(
+            obu_storage,
+            &mut || emission_queue.flush(frames, emit),
+            &mut |skipped_obus| {
+                if skipped_obus
+                    .iter()
+                    .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter)
+                {
+                    decoding_initial_tu = false;
+                    discard_leading_frames = false;
+                    in_band_long_term_prelude.begin_frame(true);
+                }
+                output_effect_state.observe_prefix(skipped_obus, &sequence)?;
+                film_grain_slots.update_from_obus(skipped_obus, &sequence)?;
+                Ok(())
+            },
+        )?;
         let Some((next_candidate, unit)) = candidate else {
             break;
         };
         let next_candidate = &next_candidate;
         if discard_leading_frames && next_candidate.obu_type().is_leading_frame() {
             let mut obu_buffer = recycle(core::mem::take(obu_storage));
-            let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
+            let obus = stream.obus(&unit, &mut obu_buffer)?;
             let (prefix_obus, _) = stream.inter_envelope(obus, next_candidate)?;
             if prefix_obus
                 .iter()
@@ -1179,12 +1211,15 @@ fn decode_frames_in_order(
         match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
-                let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
+                let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) =
                     stream.inter_envelope(obus, next_candidate)?;
+                let sef_emit_allowed = stream
+                    .layer_filter()
+                    .is_temporal_output(sef_envelope.header.temporal_layer_id);
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(sef_prefix_obus, &sequence)?;
-                film_grain_slots.update_from_obus(sef_prefix_obus)?;
+                film_grain_slots.update_from_obus(sef_prefix_obus, &sequence)?;
                 let first_picture_in_tu = sef_prefix_obus
                     .iter()
                     .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
@@ -1218,12 +1253,14 @@ fn decode_frames_in_order(
                         ivf_frame_index,
                     )?
                 });
-                let next_output_frame_count = checked_add(
-                    DecodeLimitName::MaxOutputFrames,
-                    scheduler.emitted_count as u64,
-                    1,
-                )?;
-                ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
+                if sef_emit_allowed {
+                    let next_output_frame_count = checked_add(
+                        DecodeLimitName::MaxOutputFrames,
+                        scheduler.emitted_count as u64,
+                        1,
+                    )?;
+                    ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
+                }
                 let _ = output_effect_state.prepare_frame(
                     sef_envelope,
                     &sef_core,
@@ -1231,8 +1268,12 @@ fn decode_frames_in_order(
                     first_picture_in_tu,
                     ivf_frame_index,
                 )?;
-                let display_grain =
-                    film_grain_slots.active_for_core(&sef_core, sef_envelope.offset)?;
+                let display_grain = film_grain_slots.active_for_core(
+                    sef_envelope,
+                    &sef_core,
+                    &sequence,
+                    sef_envelope.offset,
+                )?;
                 output_effect_state
                     .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
                 let output_effects = output_effect_state.finish_frame();
@@ -1266,6 +1307,7 @@ fn decode_frames_in_order(
                     ccso_grid: source.ccso_grid.clone(),
                     segment_ids: source.segment_ids.clone(),
                     frame_rate: output_rate,
+                    temporal_layer_id: sef_envelope.header.temporal_layer_id,
                     props: stream.props(),
                     frame: inflight::PipelineFrameSlot::completed_recycled(
                         source.wait_ready_frame()?,
@@ -1294,6 +1336,9 @@ fn decode_frames_in_order(
                     true,
                     false,
                 );
+                if !sef_emit_allowed {
+                    scheduler.suppress(frame_index);
+                }
                 scheduler.on_immediate(frame_index, ordering);
                 charge_emitted_outputs(
                     options,
@@ -1324,12 +1369,15 @@ fn decode_frames_in_order(
             | ObuType::RegularTip
             | ObuType::BridgeFrame => {
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
-                let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
+                let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (inter_prefix_obus, inter_envelope) =
                     stream.inter_envelope(obus, next_candidate)?;
+                let inter_emit_allowed = stream
+                    .layer_filter()
+                    .is_temporal_output(inter_envelope.header.temporal_layer_id);
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(inter_prefix_obus, &sequence)?;
-                film_grain_slots.update_from_obus(inter_prefix_obus)?;
+                film_grain_slots.update_from_obus(inter_prefix_obus, &sequence)?;
                 let first_picture_in_tu = inter_prefix_obus
                     .iter()
                     .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
@@ -1413,7 +1461,7 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         ivf_frame_index,
                     )?;
-                    if frame_is_output(&inter_core) {
+                    if inter_emit_allowed && frame_is_output(&inter_core) {
                         let next_output_frame_count = checked_add(
                             DecodeLimitName::MaxOutputFrames,
                             scheduler.emitted_count as u64,
@@ -1552,8 +1600,12 @@ fn decode_frames_in_order(
                     }
                 });
                 let (inter_slot, inter_core, products, motion_field) = decoded;
-                let inter_display_grain =
-                    film_grain_slots.active_for_core(&inter_core, inter_envelope.offset)?;
+                let inter_display_grain = film_grain_slots.active_for_core(
+                    inter_envelope,
+                    &inter_core,
+                    &sequence,
+                    inter_envelope.offset,
+                )?;
                 output_effect_state
                     .observe_suffix(suffix_after_candidate(obus, next_candidate)?)?;
                 let inter_output_effects = output_effect_state.finish_frame();
@@ -1562,6 +1614,7 @@ fn decode_frames_in_order(
                     &inter_core,
                     inter_envelope.offset,
                     inter_envelope.header.embedded_layer_id,
+                    inter_envelope.header.temporal_layer_id,
                 )?;
                 let inter_frame = PipelineFrame {
                     frame: inter_slot,
@@ -1573,6 +1626,7 @@ fn decode_frames_in_order(
                     ccso_grid: products.ccso_grid,
                     segment_ids: products.segment_ids,
                     frame_rate: inter_frame_rate,
+                    temporal_layer_id: inter_envelope.header.temporal_layer_id,
                     props: stream.props(),
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
@@ -1586,6 +1640,9 @@ fn decode_frames_in_order(
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
                 let inter_key_or_switch = is_key_or_switch(&inter_core);
+                if !inter_emit_allowed {
+                    scheduler.suppress(frame_index);
+                }
                 scheduler.refresh(
                     inter_update.refresh_frame_flags,
                     frame_index,
@@ -1641,7 +1698,7 @@ fn decode_frames_in_order(
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey => {
                 let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
-                let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
+                let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
                 {
                     let (sequence_envelope, prefix, frame) =
@@ -1711,7 +1768,7 @@ fn decode_frames_in_order(
                     reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
                 }
                 output_effect_state.observe_prefix(key_prefix_obus, &key_sequence)?;
-                film_grain_slots.update_from_obus(key_prefix_obus)?;
+                film_grain_slots.update_from_obus(key_prefix_obus, &key_sequence)?;
                 let key_core = if starts_new_sequence {
                     parse_key_core_with_effects(key_envelope, &key_sequence, &output_effect_state)?
                 } else {
@@ -1741,8 +1798,12 @@ fn decode_frames_in_order(
                     first_picture_in_tu,
                     next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
                 )?;
-                let key_display_grain =
-                    film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
+                let key_display_grain = film_grain_slots.active_for_core(
+                    key_envelope,
+                    &key_core,
+                    &key_sequence,
+                    key_envelope.offset,
+                )?;
 
                 if starts_new_sequence {
                     let key_reference =
@@ -1825,12 +1886,19 @@ fn decode_frames_in_order(
                     &key_core,
                     key_envelope.offset,
                     key_envelope.header.embedded_layer_id,
+                    key_envelope.header.temporal_layer_id,
                 )?;
                 frames.push(key_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);
                 let key_immediate = key_core.immediate_output_frame == Some(true);
+                if !stream
+                    .layer_filter()
+                    .is_temporal_output(key_envelope.header.temporal_layer_id)
+                {
+                    scheduler.suppress(frame_index);
+                }
                 scheduler.refresh(
                     key_update.refresh_frame_flags,
                     frame_index,

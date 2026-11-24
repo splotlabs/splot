@@ -11693,3 +11693,162 @@ output_scope = "Complete 3,104-byte raw I420 output at both thread counts"
 kind = "digest-equality"
 left = "avm-sb256-intra-raw-sha256"
 right = "splot-sb256-intra-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-tlayer2-dependent-8bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated an 8-bit 128x64 4-frame IVF stream with two temporal layers (0, 1, 0, 1) and two tile groups per frame; splot matches AVM byte-for-byte across all frames and temporal selection subsets."
+recorded_at = "2026-11-24"
+command = '''Encoded 4 deterministic moving 128x64 8-bit I420 frames via AVM encoder API (AVME_SET_NUMBER_TLAYERS=2, tlayer pattern [0,1,0,1], AV2E_SET_TILE_COLUMNS=1, AV2E_SET_NUM_TG=2, enable_ops=0, enable_lcr=0, lag=0, cpu-used=6, qp=120) wrapped in AV02 IVF and verified identical across two runs. Validated with splot validate --strict; decoded full output with avmdec --rawvideo --i420 --output-bit-depth=8 and compared against splot decode --output-format raw under default (all layers), --temporal-layer 0, and --temporal-output-mask 2.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-tlayer2-dependent-8bit.ivf"
+sha256 = "45a732423f3f141964b5fb07e24a0546f6a4ec48b0fe609ab3230a22c6a9e8bb"
+size_bytes = 2501
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically from a project-owned synthetic 128x64 8-bit moving I420 pattern using AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9 with two temporal layers and two tile groups per frame. Verified deterministic across two runs. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-tlayer2-dependent-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "03f7c2f971bce618c9952033b0c3221b3a79ea81f332c13e0b85cc1d55390dfb"
+output_scope = "Complete 49,152-byte 4-frame raw I420 output; per-frame slices equal TL0 (SHA-256 7fea1ecf07e102c2e8ed11cd63812701439cd0341a5e4ca84d7a1aac04142635) and TL1 (SHA-256 4ff60a6075f57e353f32220b8311f96d06c1995b031ed05df95e77059be10741)"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding temporal enhancement layers with selection parity."
+command_summary = "splot decode --output-format raw on {fixture:input} (all, --temporal-layer 0, --temporal-output-mask 2)."
+output_digest_id = "splot-tlayer2-dependent-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "03f7c2f971bce618c9952033b0c3221b3a79ea81f332c13e0b85cc1d55390dfb"
+output_scope = "Complete 49,152-byte 4-frame raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-tlayer2-dependent-8bit-raw-sha256"
+right = "splot-tlayer2-dependent-8bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-tlayer2-dependent-10bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated a 10-bit 64x64 4-frame IVF stream with two temporal layers (0, 1, 0, 1); splot matches AVM byte-for-byte across all frames and TL0 and TL1 selection modes."
+recorded_at = "2026-11-24"
+command = '''Encoded 4 deterministic moving 64x64 10-bit I420 frames via AVM encoder API (AVME_SET_NUMBER_TLAYERS=2, tlayer pattern [0,1,0,1], AV2E_SET_ENABLE_QM=0, enable_ops=0, enable_lcr=0, lag=0, cpu-used=6, qp=120) wrapped in AV02 IVF and verified deterministic across two runs. Validated with splot validate --strict; decoded full output with avmdec --rawvideo --i420 --output-bit-depth=10 and compared against splot decode --output-format raw.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-tlayer2-dependent-10bit.ivf"
+sha256 = "dec55a496b7d7395aaa38ba52a5c9b1f830bc1df926372f96a478c6034526617"
+size_bytes = 1432
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically from a project-owned synthetic 64x64 10-bit moving I420 pattern using AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9 with two temporal layers. Verified deterministic across two runs. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --rawvideo --i420 --output-bit-depth=10 decoded {fixture:input}."
+output_digest_id = "avm-tlayer2-dependent-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "2dba95f537ff163df9ff77be59f12418e14dbaa338a86a3e47f57ef8a99cb6ec"
+output_scope = "Complete 49,152-byte 4-frame 10-bit raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding 10-bit temporal enhancement layers."
+command_summary = "splot decode --output-format raw on {fixture:input}."
+output_digest_id = "splot-tlayer2-dependent-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "2dba95f537ff163df9ff77be59f12418e14dbaa338a86a3e47f57ef8a99cb6ec"
+output_scope = "Complete 49,152-byte 4-frame 10-bit raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-tlayer2-dependent-10bit-raw-sha256"
+right = "splot-tlayer2-dependent-10bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-tlayer4-sparse-dependencies"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated a 4-temporal-layer (0..=3) stream rewritten with a sparse SequenceHeader TLayerDependencyMap (TL2 and TL3 exclude TL1); splot and AVM decode all 5 frames byte-for-byte identically and splot skips unselected TL1 under OutputMask(0b0100) and OutputMask(0b1000)."
+recorded_at = "2026-11-24"
+command = '''Encoded 5 deterministic moving 64x64 8-bit I420 frames via AVM encoder API (AVME_SET_NUMBER_TLAYERS=4, tlayer pattern [0,1,2,3,0], AVM_EFLAG_NO_UPD_ALL on TL1 and TL3, AV2E_SET_ENABLE_QM=0, enable_ops=0, enable_lcr=0, lag=0) to Annex B; rewrote SequenceHeader OBU to set tlayer_dependency_present_flag=1 with TLayerDependencyMap rows TL1->{0,1}, TL2->{0,2}, TL3->{0,2,3}. Validated with splot validate --strict and verified byte-exact parity against avmdec --rawvideo --i420 --output-bit-depth=8 and per-selection frame slices.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-tlayer4-sparse-dependencies.obu"
+sha256 = "323f5920df35f05969e74a29ee1833ccb733a46b2bead03bee6b50d64c0d447e"
+size_bytes = 1611
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically from a project-owned synthetic 64x64 8-bit moving I420 pattern using AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9 with four temporal layers and signaled sparse TLayerDependencyMap in SequenceHeader. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-tlayer4-sparse-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7ca2a0172c7086eafec8de7ead173c0ee1706267eeef9211331a0c8e0c7d99cf"
+output_scope = "Complete 30,720-byte 5-frame raw I420 output; per-layer OutputMask slices verified byte-exact (TL2 only SHA-256 bdd6cb0e609912c2e8ed..., TL3 only SHA-256 f57956273cf7d4d10b22...)"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding sparse TLayerDependencyMap temporal layers."
+command_summary = "splot decode --output-format raw on {fixture:input} across all selections."
+output_digest_id = "splot-tlayer4-sparse-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7ca2a0172c7086eafec8de7ead173c0ee1706267eeef9211331a0c8e0c7d99cf"
+output_scope = "Complete 30,720-byte 5-frame raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-tlayer4-sparse-raw-sha256"
+right = "splot-tlayer4-sparse-raw-sha256"

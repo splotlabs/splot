@@ -11,15 +11,13 @@ use std::sync::Arc;
 
 use splot_core::annexb::{AnnexBObuCursor, ObuEnvelope, PartialParse};
 use splot_core::ivf::{IVF_FRAME_HEADER_SIZE, IvfError, IvfFrame, IvfHeader, is_ivf};
-use splot_core::obu::ObuHeader;
 use splot_core::span::ByteOffset;
 use splot_core::stream::BitstreamFormat;
 use splot_core::stream_reader::{ReaderError, StreamUnit, TemporalUnitReader};
-use splot_core::types::ObuType;
 
 use crate::bitstream::stream_plan::{
-    DecodeIvfFrameContext, DecodeLayerSelection, DecodeStreamPlan, DecodeUnsupportedStructure,
-    IvfPlanner, PlanBuilder, ensure_supported_obu, issue_from_ivf_error,
+    ActiveLayerFilter, DecodeIvfFrameContext, DecodeLayerSelection, DecodeStreamPlan,
+    DecodeUnsupportedStructure, IvfPlanner, PlanBuilder, classify_obu, issue_from_ivf_error,
     issue_from_unsupported_ivf_codec, plan_annex_b,
 };
 use crate::error::{DecodeError, Result};
@@ -82,14 +80,15 @@ impl UnitBytes {
 }
 
 pub(crate) fn plan_byte_stream(bytes: &[u8], options: &DecodeOptions) -> Result<DecodeStreamPlan> {
+    options.temporal_layer_selection().validate()?;
     let limits = options.limits();
     let input_len = bytes.len() as u64;
     limits.ensure(DecodeLimitName::MaxInputBytes, input_len)?;
     if is_ivf(bytes) {
-        return plan_ivf(bytes, limits);
+        return plan_ivf(bytes, options);
     }
     plan_annex_b(
-        &parse_bounded_annex_b(bytes, limits)?,
+        &parse_bounded_annex_b(bytes, options)?,
         input_len,
         options,
         true,
@@ -104,12 +103,15 @@ fn input_cap(limits: DecodeLimits) -> u64 {
         .map_or(u64::MAX, |max| max.saturating_add(1))
 }
 
-fn plan_ivf(bytes: &[u8], limits: DecodeLimits) -> Result<DecodeStreamPlan> {
+fn plan_ivf(bytes: &[u8], options: &DecodeOptions) -> Result<DecodeStreamPlan> {
+    let limits = options.limits();
     let mut units = TemporalUnitReader::with_max_unit_bytes(bytes, usize::MAX);
-    let mut builder = PlanBuilder::new(BitstreamFormat::Ivf, bytes.len() as u64, limits, true);
+    let mut builder = PlanBuilder::new(BitstreamFormat::Ivf, bytes.len() as u64, options, true);
     let mut planner = IvfPlanner::default();
     let mut counts = (0u64, 0u64);
     let mut first_unsupported = None;
+    let mut selected_layer = None;
+    let mut layer_filter = ActiveLayerFilter::new(options.temporal_layer_selection());
     let mut spare = Vec::new();
     let mut warning = None;
     let error = loop {
@@ -141,6 +143,8 @@ fn plan_ivf(bytes: &[u8], limits: DecodeLimits) -> Result<DecodeStreamPlan> {
             payload,
             payload_offset,
             limits,
+            &mut selected_layer,
+            &mut layer_filter,
             &mut counts.0,
             &mut counts.1,
             &mut first_unsupported,
@@ -362,15 +366,19 @@ pub(crate) fn runtime_obus<'a>(
     Ok(())
 }
 
-fn parse_bounded_annex_b(bytes: &[u8], limits: DecodeLimits) -> Result<PartialParse<'_>> {
+fn parse_bounded_annex_b<'a>(bytes: &'a [u8], options: &DecodeOptions) -> Result<PartialParse<'a>> {
     let mut obu_count = 0u64;
     let mut frame_candidate_count = 0u64;
     let mut first_unsupported = None;
+    let mut selected_layer = None;
+    let mut layer_filter = ActiveLayerFilter::new(options.temporal_layer_selection());
     let mut obus = Vec::new();
     let error = parse_bounded_annex_b_at(
         bytes,
         ByteOffset::new(0),
-        limits,
+        options.limits(),
+        &mut selected_layer,
+        &mut layer_filter,
         &mut obu_count,
         &mut frame_candidate_count,
         &mut first_unsupported,
@@ -379,10 +387,13 @@ fn parse_bounded_annex_b(bytes: &[u8], limits: DecodeLimits) -> Result<PartialPa
     Ok(PartialParse { obus, error })
 }
 
+#[expect(clippy::too_many_arguments)]
 fn parse_bounded_annex_b_at<'a>(
     input: &'a [u8],
     base_offset: ByteOffset,
     limits: DecodeLimits,
+    selected_layer: &mut Option<DecodeLayerSelection>,
+    layer_filter: &mut ActiveLayerFilter,
     obu_count: &mut u64,
     frame_candidate_count: &mut u64,
     first_unsupported: &mut Option<DecodeUnsupportedStructure>,
@@ -401,12 +412,13 @@ fn parse_bounded_annex_b_at<'a>(
 
         match cursor.next_obu() {
             Ok(Some(envelope)) => {
-                let selected_layer = DecodeLayerSelection::of_stream(
-                    obus.iter()
-                        .chain(core::iter::once(&envelope))
-                        .map(|obu| obu.header.extended_layer_id),
+                let current_layer = DecodeLayerSelection::adopt(
+                    selected_layer,
+                    envelope.header.extended_layer_id,
+                    layer_filter.selection(),
                 );
-                if is_selected_frame_candidate(envelope.header, selected_layer) {
+                let classification = classify_obu(envelope, current_layer, layer_filter);
+                if matches!(classification, Ok(role) if role.is_frame_candidate()) {
                     let next_frame_candidate_count = frame_candidate_count.saturating_add(1);
                     ensure_or_first_unsupported(
                         limits,
@@ -418,10 +430,7 @@ fn parse_bounded_annex_b_at<'a>(
                 }
                 obus.push(envelope);
                 *obu_count = next_obu_count;
-                record_first_unsupported(
-                    first_unsupported,
-                    ensure_supported_obu(envelope, selected_layer),
-                )?;
+                record_first_unsupported(first_unsupported, classification.map(|_| ()))?;
             }
             Ok(None) => {
                 break;
@@ -466,15 +475,6 @@ fn record_first_unsupported(
         }
         Err(error) => Err(error),
     }
-}
-
-fn is_selected_frame_candidate(header: ObuHeader, selected_layer: DecodeLayerSelection) -> bool {
-    matches!(
-        header.obu_type,
-        ObuType::ClosedLoopKey | ObuType::RegularTileGroup | ObuType::RegularTip
-    ) && header.temporal_layer_id == selected_layer.temporal_layer_id()
-        && header.embedded_layer_id == selected_layer.embedded_layer_id()
-        && header.extended_layer_id == selected_layer.extended_layer_id()
 }
 
 #[cfg(test)]

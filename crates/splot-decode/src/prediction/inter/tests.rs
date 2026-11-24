@@ -321,6 +321,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         &key_core,
         key_envelope.offset,
         key_envelope.header.embedded_layer_id,
+        key_envelope.header.temporal_layer_id,
     )?;
     reference.update(0, &update, crate::pipeline::is_key_or_switch(&key_core));
     let frames = vec![Some(key_frame)];
@@ -416,6 +417,7 @@ fn parse_inter_core_for_validation_inner(
         &key_core,
         key_envelope.offset,
         key_envelope.header.embedded_layer_id,
+        key_envelope.header.temporal_layer_id,
     )?;
     reference.update(0, &update, crate::pipeline::is_key_or_switch(&key_core));
     let frames = vec![Some(key_frame)];

@@ -89,6 +89,7 @@ pub(super) fn parse_frame_core(
     }
     let input = FrameHeaderParseInput {
         obu_type,
+        obu_tlayer_id: obu.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(active_sequence),
         mfh_record,

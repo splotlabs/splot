@@ -16,7 +16,9 @@ use crate::headers::frame::quant::CoreSeqQuantView;
 use crate::headers::frame::restoration::{CoreSeqCcsoView, CoreSeqRestorationView};
 use crate::headers::frame::segmentation::{CoreSeqSegView, MfhSegView};
 use crate::headers::frame::tiling::CoreSeqTileView;
-use crate::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
+use crate::headers::sequence::{
+    ChromaFormatIdc, MLayerDependencyMap, SequenceHeader, SuperblockSize, TLayerDependencyMap,
+};
 use crate::hls::MultiFrameHeaderRecord;
 
 /// `MOTION_MODES` (AV2 v1.0.0 § 3): the motion-mode array length carried for the
@@ -77,6 +79,8 @@ pub struct CoreSeqView {
     pub(crate) monotonic_output_order_flag: bool,
     pub(crate) single_picture_header_flag: bool,
     pub(crate) max_mlayer_id: u8,
+    pub(crate) mlayer_dependency_map: MLayerDependencyMap,
+    pub(crate) tlayer_dependency_map: TLayerDependencyMap,
     pub(crate) frame_width_bits: u32,
     pub(crate) frame_height_bits: u32,
     pub(crate) max_frame_width: u32,
@@ -151,6 +155,8 @@ impl CoreSeqView {
             monotonic_output_order_flag: general.monotonic_output_order_flag,
             single_picture_header_flag: general.single_picture_header_flag,
             max_mlayer_id: general.max_mlayer_id.get(),
+            mlayer_dependency_map: general.mlayer_dependency_map,
+            tlayer_dependency_map: general.tlayer_dependency_map,
             frame_width_bits: u32::from(general.frame_width_bits.get()),
             frame_height_bits: u32::from(general.frame_height_bits.get()),
             max_frame_width: general.max_frame_width.get(),

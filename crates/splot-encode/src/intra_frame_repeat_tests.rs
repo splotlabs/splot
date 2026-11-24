@@ -92,6 +92,7 @@ fn explicit_hints(units: &[Vec<u8>]) -> Vec<(u64, u32)> {
         };
         let input = FrameHeaderParseInput {
             obu_type: ObuType::RegularSef,
+            obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
             first_picture_in_tu: true,
             active_sequence: Some(&seq),
             mfh_record: None,

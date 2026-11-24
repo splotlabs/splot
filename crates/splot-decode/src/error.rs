@@ -96,6 +96,12 @@ pub enum DecodeError {
         #[from]
         source: splot_core::simd::UnsupportedBackendError,
     },
+    /// Caller supplied an invalid temporal-layer selection.
+    #[error("invalid temporal-layer selection: {reason}")]
+    InvalidTemporalSelection {
+        /// Why the requested temporal selection is invalid.
+        reason: &'static str,
+    },
 }
 
 /// Why a [`crate::Decoder`] session refused a call.

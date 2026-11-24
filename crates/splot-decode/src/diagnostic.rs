@@ -45,7 +45,8 @@ impl DecodeDiagnosticReport {
             | DecodeError::ReferenceState { .. }
             | DecodeError::Input { .. }
             | DecodeError::State { .. }
-            | DecodeError::UnsupportedBackend { .. } => None,
+            | DecodeError::UnsupportedBackend { .. }
+            | DecodeError::InvalidTemporalSelection { .. } => None,
             DecodeError::Limit { source } => Some(Self::resource_limit(*source)),
             DecodeError::MalformedSource { issue } => Some(Self::malformed_source(issue)),
             DecodeError::UnsupportedStructure { unsupported } => {

@@ -162,9 +162,13 @@ impl EncoderReferences {
             .transpose()
             .map_err(rule("motion field"))?;
         self.buffer.prepare_for_frame(core.obu_type, true);
-        let update =
-            frame_ref_update_from_core(core, ByteOffset::new(0), EmbeddedLayerId::from_bits(0))
-                .map_err(rule("reference update"))?;
+        let update = frame_ref_update_from_core(
+            core,
+            ByteOffset::new(0),
+            EmbeddedLayerId::from_bits(0),
+            splot_core::types::TemporalLayerId::BASE,
+        )
+        .map_err(rule("reference update"))?;
         let index = (0..=self.frames.len())
             .find(|&index| !self.buffer.retains(index))
             .unwrap_or(self.frames.len());

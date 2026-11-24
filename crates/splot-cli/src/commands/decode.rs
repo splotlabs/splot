@@ -18,7 +18,8 @@ use splot_core::simd::SimdBackend;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOptions, DecodeOutputError,
-    DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, TypedDecodeContext, Y4mFrameRate,
+    DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, TemporalLayerId,
+    TemporalLayerSelection, TypedDecodeContext, Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -86,6 +87,52 @@ pub(crate) struct DecodeArgs {
     /// Output frames without film grain synthesis. Hash output never has it.
     #[arg(long)]
     skip_film_grain: bool,
+    /// Temporal enhancement layers to decode and emit: `all` (default) or `0..=3`
+    /// (layers `0..=LAYER`).
+    #[arg(
+        long,
+        value_name = "LAYER",
+        value_parser = parse_temporal_layer,
+        conflicts_with = "temporal_output_mask"
+    )]
+    temporal_layer: Option<TemporalLayerSelection>,
+    /// Bitmask (`1..=15` or `0x1..=0xf`) of temporal layers to emit; transitive
+    /// dependencies still decode.
+    #[arg(
+        long,
+        value_name = "MASK",
+        value_parser = parse_temporal_output_mask,
+        conflicts_with = "temporal_layer"
+    )]
+    temporal_output_mask: Option<TemporalLayerSelection>,
+}
+
+fn parse_temporal_layer(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
+    if value.eq_ignore_ascii_case("all") {
+        return Ok(TemporalLayerSelection::All);
+    }
+    let id = value
+        .parse::<u8>()
+        .ok()
+        .and_then(TemporalLayerId::try_new)
+        .ok_or_else(|| "temporal layer must be 'all' or an integer in 0..=3".to_owned())?;
+    Ok(TemporalLayerSelection::Target(id))
+}
+
+fn parse_temporal_output_mask(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
+    let mask = if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u8::from_str_radix(hex, 16)
+    } else {
+        value.parse::<u8>()
+    }
+    .map_err(|_| "temporal output mask must be an integer in 1..=15".to_owned())?;
+    if mask == 0 || mask > 0x0F {
+        return Err("temporal output mask must be non-zero within 1..=15".to_owned());
+    }
+    Ok(TemporalLayerSelection::OutputMask(mask))
 }
 
 fn parse_y4m_frame_rate(value: &str) -> core::result::Result<Y4mFrameRate, String> {
@@ -454,10 +501,15 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
         anyhow::bail!("--frame-rate is only valid with Y4M output");
     }
 
+    let temporal_layer_selection = args
+        .temporal_layer
+        .or(args.temporal_output_mask)
+        .unwrap_or_default();
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
         .with_y4m_frame_rate_override(args.frame_rate)
-        .with_skip_film_grain(args.skip_film_grain);
+        .with_skip_film_grain(args.skip_film_grain)
+        .with_temporal_layer_selection(temporal_layer_selection);
     let input = open_decode_input(&args.input)
         .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
     let context = DecodeContext::new(

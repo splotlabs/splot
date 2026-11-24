@@ -11,10 +11,10 @@ use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, recycle, runtime_obus};
-use crate::bitstream::stream_plan::CandidateScan;
+use crate::bitstream::stream_plan::{ActiveLayerFilter, CandidateScan};
 use crate::error::Result;
 use crate::support::capability::missing_capability_message;
-use crate::{DecodeLimits, DecodePlannedObu};
+use crate::{DecodeLimits, DecodeOptions, DecodePlannedObu};
 
 /// The temporal units the frame loop reads frame units from, one at a time.
 pub(super) struct RuntimeStream<'a> {
@@ -31,16 +31,20 @@ impl<'a> RuntimeStream<'a> {
     pub(super) fn new(
         source: &'a mut dyn UnitSource,
         buffers: &'a mut Vec<std::sync::Arc<Vec<u8>>>,
-        limits: DecodeLimits,
+        options: &DecodeOptions,
     ) -> Self {
         Self {
             source,
             buffers,
-            limits,
+            limits: options.limits(),
             current: None,
             record: 0,
-            scan: CandidateScan::default(),
+            scan: CandidateScan::new(options.temporal_layer_selection()),
         }
+    }
+
+    pub(super) const fn layer_filter(&self) -> &ActiveLayerFilter {
+        self.scan.layer_filter()
     }
 
     pub(super) fn ivf_header(&self) -> Option<IvfHeader> {
@@ -118,6 +122,7 @@ impl<'a> RuntimeStream<'a> {
         &mut self,
         storage: &mut Vec<ObuEnvelope<'static>>,
         settle: &mut dyn FnMut() -> Result<()>,
+        on_skipped: &mut dyn FnMut(&[ObuEnvelope<'_>]) -> Result<()>,
     ) -> Result<Option<(DecodePlannedObu, UnitBytes)>> {
         let mut skipped: Vec<UnitBytes> = Vec::new();
         let mut fresh = false;
@@ -128,8 +133,9 @@ impl<'a> RuntimeStream<'a> {
                 } else {
                     require_inter_obu_order
                 };
+                let filter = *self.scan.layer_filter();
                 for skipped in &skipped {
-                    check_unit(skipped, storage, check)?;
+                    process_skipped_unit(skipped, storage, check, &filter, on_skipped)?;
                 }
                 if fresh {
                     check_unit(&unit, storage, check)?;
@@ -146,12 +152,15 @@ impl<'a> RuntimeStream<'a> {
         }
     }
 
-    /// The OBUs of `unit`, parsed into `buffer`.
+    /// The selected OBUs of `unit`, parsed into `buffer`.
     pub(super) fn obus<'s, 'u>(
+        &self,
         unit: &'u UnitBytes,
         buffer: &'s mut Vec<ObuEnvelope<'u>>,
     ) -> Result<&'s [ObuEnvelope<'u>]> {
         runtime_obus(unit.view(), buffer)?;
+        let filter = self.scan.layer_filter();
+        buffer.retain(|envelope| filter.is_obu_selected(envelope.header));
         Ok(buffer)
     }
 
@@ -174,6 +183,26 @@ fn check_unit(
     check(&obus)?;
     *storage = recycle(obus);
     Ok(())
+}
+
+fn process_skipped_unit(
+    unit: &UnitBytes,
+    storage: &mut Vec<ObuEnvelope<'static>>,
+    check: fn(&[ObuEnvelope<'_>]) -> Result<()>,
+    filter: &ActiveLayerFilter,
+    on_skipped: &mut dyn FnMut(&[ObuEnvelope<'_>]) -> Result<()>,
+) -> Result<()> {
+    let mut obus = recycle(core::mem::take(storage));
+    runtime_obus(unit.view(), &mut obus)?;
+    let check_result = check(&obus);
+    if check_result.is_ok() {
+        obus.retain(|envelope| filter.is_obu_selected(envelope.header));
+        let callback_result = on_skipped(&obus);
+        *storage = recycle(obus);
+        return callback_result;
+    }
+    *storage = recycle(obus);
+    check_result
 }
 
 fn missing_inter_ivf_obu(offset: Option<ByteOffset>) -> crate::DecodeError {
