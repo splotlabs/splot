@@ -345,8 +345,21 @@ pub(super) fn leading_record_inter_frame_unit_start(
     None
 }
 
-fn require_key_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
+fn is_trailing_metadata_or_padding(envelope: &ObuEnvelope<'_>) -> bool {
+    matches!(
+        envelope.header.obu_type,
+        ObuType::MetadataShort | ObuType::MetadataGroup | ObuType::Padding
+    )
+}
+
+pub(super) fn require_key_ivf_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
     let (_, indices) = require_key_frame_unit(obus)?;
+    if obus[indices.suffix_end..]
+        .iter()
+        .all(is_trailing_metadata_or_padding)
+    {
+        return Ok(());
+    }
     require_inter_frame_units(obus, indices.suffix_end, "unexpected_leading_obu_after_key")
 }
 
@@ -370,6 +383,9 @@ pub(super) fn require_inter_frame_units(
         };
         require_inter_frame_obu(envelope, reason)?;
         index = skip_frame_suffix_obus(obus, index + 1);
+        if obus[index..].iter().all(is_trailing_metadata_or_padding) {
+            return Ok(());
+        }
     }
     Ok(())
 }

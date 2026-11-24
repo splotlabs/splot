@@ -1916,7 +1916,7 @@ pub(crate) fn tip_reference_pair_from_hints(
     let &(future_ref, future_hint) = sorted.get(future_index)?;
     let past_offset = super::super::get_relative_dist(current, past_hint);
     let future_offset = super::super::get_relative_dist(current, future_hint);
-    let ref_offset = if future_offset < 0 {
+    let ref_offset = if has_future {
         super::super::get_relative_dist(future_hint, past_hint)
     } else {
         super::super::get_relative_dist(past_hint, future_hint)

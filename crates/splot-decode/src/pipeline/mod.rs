@@ -21,7 +21,7 @@ use splot_core::headers::tile_group::{
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
-use splot_core::types::ObuType;
+use splot_core::types::{EmbeddedLayerId, ObuType};
 #[cfg(test)]
 use splot_recon::DecodedFrame;
 
@@ -1162,6 +1162,16 @@ fn decode_frames_in_order(
     )?;
     frames.push(key_frame)?;
     let key_hint = key_update.order_hint;
+    let key_ordering = output_ordering(
+        key_hint,
+        key_envelope.header.embedded_layer_id,
+        sequence.general.max_mlayer_id,
+    );
+    let key_tu_limit = output_ordering(
+        key_hint,
+        EmbeddedLayerId::BASE,
+        sequence.general.max_mlayer_id,
+    );
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
     if !stream.layer_filter().is_layer_output(
@@ -1173,7 +1183,7 @@ fn decode_frames_in_order(
     scheduler.refresh(
         key_update.refresh_frame_flags,
         0,
-        key_hint,
+        key_ordering,
         key_implicit,
         true,
     );
@@ -1191,12 +1201,12 @@ fn decode_frames_in_order(
     scheduler.note_frame(
         key_envelope.header.obu_type,
         true,
-        key_hint,
+        key_tu_limit,
         key_immediate,
         key_implicit,
     );
     if key_immediate && !scheduler.already_emitted(0) {
-        scheduler.on_immediate(0, key_hint);
+        scheduler.on_immediate(0, key_ordering);
         charge_emitted_outputs(
             options,
             frames,
@@ -1413,17 +1423,27 @@ fn decode_frames_in_order(
                         "show-existing-frame output requires a derived display order hint",
                     )
                 })?;
+                let sef_ordering = output_ordering(
+                    ordering,
+                    sef_envelope.header.embedded_layer_id,
+                    sequence.general.max_mlayer_id,
+                );
+                let sef_tu_limit = output_ordering(
+                    ordering,
+                    EmbeddedLayerId::BASE,
+                    sequence.general.max_mlayer_id,
+                );
                 scheduler.note_frame(
                     next_candidate.obu_type(),
                     first_picture_in_tu,
-                    ordering,
+                    sef_tu_limit,
                     true,
                     false,
                 );
                 if !sef_emit_allowed {
                     scheduler.suppress(frame_index);
                 }
-                scheduler.on_immediate(frame_index, ordering);
+                scheduler.on_immediate(frame_index, sef_ordering);
                 charge_emitted_outputs(
                     options,
                     frames,
@@ -1727,6 +1747,16 @@ fn decode_frames_in_order(
                 frames.push(inter_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = inter_update.order_hint;
+                let inter_ordering = output_ordering(
+                    inter_hint,
+                    inter_envelope.header.embedded_layer_id,
+                    sequence.general.max_mlayer_id,
+                );
+                let inter_tu_limit = output_ordering(
+                    inter_hint,
+                    EmbeddedLayerId::BASE,
+                    sequence.general.max_mlayer_id,
+                );
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
                 let inter_key_or_switch = is_key_or_switch(&inter_core);
@@ -1736,7 +1766,7 @@ fn decode_frames_in_order(
                 scheduler.refresh(
                     inter_update.refresh_frame_flags,
                     frame_index,
-                    inter_hint,
+                    inter_ordering,
                     inter_implicit,
                     inter_key_or_switch,
                 );
@@ -1757,12 +1787,12 @@ fn decode_frames_in_order(
                 scheduler.note_frame(
                     next_candidate.obu_type(),
                     first_picture_in_tu,
-                    inter_hint,
+                    inter_tu_limit,
                     inter_immediate,
                     inter_implicit,
                 );
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
-                    scheduler.on_immediate(frame_index, inter_hint);
+                    scheduler.on_immediate(frame_index, inter_ordering);
                     charge_emitted_outputs(
                         options,
                         frames,
@@ -1983,6 +2013,16 @@ fn decode_frames_in_order(
                 frames.push(key_frame)?;
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
+                let key_ordering = output_ordering(
+                    key_hint,
+                    key_envelope.header.embedded_layer_id,
+                    sequence.general.max_mlayer_id,
+                );
+                let key_tu_limit = output_ordering(
+                    key_hint,
+                    EmbeddedLayerId::BASE,
+                    sequence.general.max_mlayer_id,
+                );
                 let key_implicit = key_core.implicit_output_frame == Some(true);
                 let key_immediate = key_core.immediate_output_frame == Some(true);
                 if !stream.layer_filter().is_layer_output(
@@ -1994,7 +2034,7 @@ fn decode_frames_in_order(
                 scheduler.refresh(
                     key_update.refresh_frame_flags,
                     frame_index,
-                    key_hint,
+                    key_ordering,
                     key_implicit,
                     true,
                 );
@@ -2012,12 +2052,12 @@ fn decode_frames_in_order(
                 scheduler.note_frame(
                     next_candidate.obu_type(),
                     first_picture_in_tu,
-                    key_hint,
+                    key_tu_limit,
                     key_immediate,
                     key_implicit,
                 );
                 if key_immediate && !scheduler.already_emitted(frame_index) {
-                    scheduler.on_immediate(frame_index, key_hint);
+                    scheduler.on_immediate(frame_index, key_ordering);
                     charge_emitted_outputs(
                         options,
                         frames,

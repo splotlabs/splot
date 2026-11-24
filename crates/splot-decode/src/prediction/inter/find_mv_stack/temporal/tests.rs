@@ -602,6 +602,63 @@ fn tip_reference_pair_uses_the_two_nearest_past_references() {
 }
 
 #[test]
+fn tip_reference_pair_uses_positive_ref_offset_with_same_poc_future_ref() {
+    let context = tip_context(1, vec![Some(0), Some(3), Some(1)], 4, 4);
+
+    assert_eq!(
+        context.tip_reference_pair(),
+        Some(TipReferencePair {
+            past_ref: 0,
+            future_ref: 2,
+            past_offset: 1,
+            future_offset: 0,
+            ref_offset: 1,
+        })
+    );
+}
+
+#[test]
+fn backward_projection_negates_zero_offset_same_poc_motion_vector() {
+    let mut source = TemporalMotionField::new(4, 4).unwrap();
+    source.set_reference_metadata(true, (16, 16), &[Some(1)]);
+    source.set_cell(
+        0,
+        0,
+        TemporalMotionCell {
+            ref_indices: [INVALID_TEMPORAL_REF, 0],
+            mvs: [
+                CompressedTemporalMv::ZERO,
+                compress_tmvp_mv(MotionVector { row: 16, col: -8 }),
+            ],
+        },
+    );
+    let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
+
+    project_whole_temporal_motion_field(
+        &source,
+        1,
+        2,
+        1,
+        8,
+        0,
+        1,
+        None,
+        &[Some(1)],
+        None,
+        &mut output,
+    );
+
+    assert_eq!(
+        output.cell(0, 0),
+        Some(ProjectedTemporalMotionCell::new(
+            true,
+            MotionVector { row: -16, col: 8 },
+            0
+        ))
+    );
+}
+
+#[test]
 fn reference_order_hints_exclude_invalid_and_restricted_slots() {
     assert_eq!(
         *reference_order_hints(

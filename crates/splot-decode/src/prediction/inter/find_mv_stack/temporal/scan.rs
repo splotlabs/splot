@@ -448,8 +448,9 @@ impl<'a> ChunkWalk<'a> {
                 }
                 _ => None,
             };
+            let is_bwd = prepared.side & 1 != 0;
             if bits & PROJECT != 0
-                && write_projection(output, target, mv, ints.cell(OUTPUT_CELL))
+                && write_projection(output, target, mv, ints.cell(OUTPUT_CELL), is_bwd)
                 && bits & OBSERVE != 0
             {
                 let (row, col) = ints.pair(PROJECTED);
@@ -474,6 +475,7 @@ impl<'a> ChunkWalk<'a> {
     /// The walk without trajectories: only projecting lanes have an effect.
     #[inline(never)]
     fn project(&self, prepared: &TemporalProjectionSource, output: &mut ProjectedFieldBand<'_>) {
+        let is_bwd = prepared.side & 1 != 0;
         let mut walk = self.walk;
         while walk != 0 {
             let lane = walk.trailing_zeros() as usize;
@@ -481,7 +483,7 @@ impl<'a> ChunkWalk<'a> {
             if let (Some(target), Some(ints)) =
                 (self.target(&prepared.targets, lane), self.ints(lane))
             {
-                write_projection(output, target, ints.mv(), ints.cell(OUTPUT_CELL));
+                write_projection(output, target, ints.mv(), ints.cell(OUTPUT_CELL), is_bwd);
             }
         }
     }
@@ -494,6 +496,7 @@ fn write_projection(
     target: &ProjectionTarget,
     mv: MotionVector,
     index: usize,
+    is_bwd: bool,
 ) -> bool {
     let Some(output_cell) = output.cells.get_mut(index) else {
         return false;
@@ -502,7 +505,7 @@ fn write_projection(
     if output_cell.valid && !(target.end_is_target && output_cell.ref_offset() != ref_offset) {
         return false;
     }
-    let mv = if target.ref_offset < 0 {
+    let mv = if is_bwd {
         MotionVector {
             row: -mv.row,
             col: -mv.col,

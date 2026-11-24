@@ -7,7 +7,7 @@ use super::{FrameStore, PipelineFrame, unsupported, unsupported_at};
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
-use splot_core::types::ObuType;
+use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::BitDepth;
 
 use crate::error::Result;
@@ -139,8 +139,18 @@ pub(super) fn frame_is_output(core: &FrameHeaderCore) -> bool {
     core.immediate_output_frame == Some(true) || core.implicit_output_frame == Some(true)
 }
 
+/// AV2 § 7.21.6 `output_ordering`: `OrderHint * (max_mlayer_id + 1) + obu_mlayer_id`.
+pub(super) fn output_ordering(
+    order_hint: u32,
+    embedded_layer_id: EmbeddedLayerId,
+    max_mlayer_id: EmbeddedLayerId,
+) -> u64 {
+    let stride = u64::from(max_mlayer_id.get()) + 1;
+    u64::from(order_hint) * stride + u64::from(embedded_layer_id.get())
+}
+
 pub(super) struct OutputScheduler {
-    pub(super) pending: Vec<Option<(usize, u32)>>,
+    pub(super) pending: Vec<Option<(usize, u64)>>,
     emitted: Vec<usize>,
     suppressed: Vec<usize>,
     /// The frames the last `refresh` or `on_immediate` released, kept so the
@@ -148,7 +158,7 @@ pub(super) struct OutputScheduler {
     newly: Vec<usize>,
     pub(super) emitted_count: usize,
     open_loop_active: bool,
-    open_loop_order_hint: Option<u32>,
+    open_loop_order_hint: Option<u64>,
 }
 
 impl OutputScheduler {
@@ -185,7 +195,7 @@ impl OutputScheduler {
         }
     }
 
-    pub(super) fn flush_lower_than(&mut self, ordering: u32, newly: &mut Vec<usize>) {
+    pub(super) fn flush_lower_than(&mut self, ordering: u64, newly: &mut Vec<usize>) {
         loop {
             let next = self
                 .pending
@@ -201,10 +211,10 @@ impl OutputScheduler {
         }
     }
 
-    pub(super) fn output_successive(&mut self, ordering: u32, newly: &mut Vec<usize>) {
+    pub(super) fn output_successive(&mut self, ordering: u64, newly: &mut Vec<usize>) {
         let mut target = ordering.saturating_add(1);
         loop {
-            let held = |(_, at): &&(usize, u32)| *at == target;
+            let held = |(_, at): &&(usize, u64)| *at == target;
             if !self.pending.iter().flatten().any(|slot| held(&slot)) {
                 return;
             }
@@ -220,14 +230,14 @@ impl OutputScheduler {
         &self.newly
     }
 
-    pub(super) fn on_immediate(&mut self, frame_index: usize, ordering: u32) {
+    pub(super) fn on_immediate(&mut self, frame_index: usize, ordering: u64) {
         let mut newly = core::mem::take(&mut self.newly);
         newly.clear();
         self.immediate_into(frame_index, ordering, &mut newly);
         self.newly = newly;
     }
 
-    fn immediate_into(&mut self, frame_index: usize, ordering: u32, newly: &mut Vec<usize>) {
+    fn immediate_into(&mut self, frame_index: usize, ordering: u64, newly: &mut Vec<usize>) {
         self.flush_lower_than(ordering, newly);
         self.emit(frame_index, newly);
         self.output_successive(ordering, newly);
@@ -237,7 +247,7 @@ impl OutputScheduler {
         &mut self,
         refresh_frame_flags: u32,
         frame_index: usize,
-        ordering: u32,
+        ordering: u64,
         implicit: bool,
         is_key_or_switch: bool,
     ) {
@@ -280,7 +290,7 @@ impl OutputScheduler {
 
     pub(super) fn flush_all(&mut self) -> Vec<usize> {
         let mut newly = Vec::new();
-        self.flush_lower_than(u32::MAX, &mut newly);
+        self.flush_lower_than(u64::MAX, &mut newly);
         newly
     }
 
@@ -314,7 +324,7 @@ impl OutputScheduler {
         &mut self,
         obu_type: ObuType,
         first_picture_in_tu: bool,
-        order_hint: u32,
+        order_hint: u64,
         immediate: bool,
         implicit: bool,
     ) {
@@ -470,6 +480,53 @@ mod open_loop_tests {
 
         assert_eq!(emitted, vec![11, 10, 12]);
         assert!(scheduler.pending.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn open_loop_tu_limit_flushes_all_embedded_layers_below_tu_hint_only() {
+        let max_mlayer = EmbeddedLayerId::from_bits(1);
+        let ml0 = EmbeddedLayerId::from_bits(0);
+        let ml1 = EmbeddedLayerId::from_bits(1);
+        let mut scheduler = OutputScheduler::new(3);
+        scheduler.pending[0] = Some((10, output_ordering(4, ml1, max_mlayer)));
+        scheduler.pending[1] = Some((11, output_ordering(5, ml0, max_mlayer)));
+        scheduler.pending[2] = Some((12, output_ordering(6, ml0, max_mlayer)));
+        scheduler.note_frame(
+            ObuType::OpenLoopKey,
+            true,
+            output_ordering(5, ml0, max_mlayer),
+            false,
+            true,
+        );
+
+        let emitted = scheduler.prepare_for_frame(ObuType::RegularTileGroup, true);
+
+        assert_eq!(emitted, vec![10]);
+        assert_eq!(
+            scheduler.pending[1],
+            Some((11, output_ordering(5, ml0, max_mlayer)))
+        );
+        assert_eq!(
+            scheduler.pending[2],
+            Some((12, output_ordering(6, ml0, max_mlayer)))
+        );
+    }
+
+    #[test]
+    fn layered_output_ordering_holds_future_tu_across_embedded_layers() {
+        let max_mlayer = EmbeddedLayerId::from_bits(1);
+        let ml0 = EmbeddedLayerId::from_bits(0);
+        let ml1 = EmbeddedLayerId::from_bits(1);
+        let mut scheduler = OutputScheduler::new(8);
+
+        scheduler.refresh(1 << 1, 2, output_ordering(3, ml0, max_mlayer), true, false);
+        scheduler.refresh(1 << 3, 4, output_ordering(3, ml1, max_mlayer), true, false);
+
+        scheduler.on_immediate(6, output_ordering(2, ml0, max_mlayer));
+        assert_eq!(scheduler.newly(), &[6]);
+
+        scheduler.on_immediate(7, output_ordering(2, ml1, max_mlayer));
+        assert_eq!(scheduler.newly(), &[7, 2, 4]);
     }
 }
 
