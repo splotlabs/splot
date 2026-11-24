@@ -137,25 +137,15 @@ impl EmbeddedLayerSelection {
 
     pub(crate) const fn validate(self) -> Result<()> {
         match self {
-            Self::All => Ok(()),
-            Self::Target(target) => {
-                if target.get() > 7 {
-                    Err(DecodeError::InvalidEmbeddedSelection {
-                        reason: "embedded layer target must be within 0..=7",
-                    })
-                } else {
-                    Ok(())
-                }
+            Self::Target(target) if target.get() > 7 => {
+                Err(DecodeError::InvalidEmbeddedSelection {
+                    reason: "embedded layer target must be within 0..=7",
+                })
             }
-            Self::OutputMask(mask) => {
-                if mask == 0 {
-                    Err(DecodeError::InvalidEmbeddedSelection {
-                        reason: "embedded output mask must select at least one embedded layer",
-                    })
-                } else {
-                    Ok(())
-                }
-            }
+            Self::OutputMask(0) => Err(DecodeError::InvalidEmbeddedSelection {
+                reason: "embedded output mask must select at least one embedded layer",
+            }),
+            _ => Ok(()),
         }
     }
 
@@ -418,11 +408,10 @@ impl DecodeLayerSelection {
     #[must_use]
     pub const fn with_temporal_selection(mut self, selection: TemporalLayerSelection) -> Self {
         self.temporal_selection = selection;
-        self.temporal_layer_id = match selection {
-            TemporalLayerSelection::Target(target) => target,
-            TemporalLayerSelection::All | TemporalLayerSelection::OutputMask(_) => {
-                TemporalLayerId::BASE
-            }
+        self.temporal_layer_id = if let TemporalLayerSelection::Target(target) = selection {
+            target
+        } else {
+            TemporalLayerId::BASE
         };
         self
     }
@@ -443,11 +432,10 @@ impl DecodeLayerSelection {
     #[must_use]
     pub const fn with_embedded_selection(mut self, selection: EmbeddedLayerSelection) -> Self {
         self.embedded_selection = selection;
-        self.embedded_layer_id = match selection {
-            EmbeddedLayerSelection::Target(target) => target,
-            EmbeddedLayerSelection::All | EmbeddedLayerSelection::OutputMask(_) => {
-                EmbeddedLayerId::BASE
-            }
+        self.embedded_layer_id = if let EmbeddedLayerSelection::Target(target) = selection {
+            target
+        } else {
+            EmbeddedLayerId::BASE
         };
         self
     }

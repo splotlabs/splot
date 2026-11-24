@@ -125,28 +125,32 @@ pub(crate) struct DecodeArgs {
     embedded_output_mask: Option<EmbeddedLayerSelection>,
 }
 
-fn parse_temporal_layer(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
+fn parse_layer_arg(value: &str, max: u8, name: &str) -> core::result::Result<Option<u8>, String> {
     if value.eq_ignore_ascii_case("all") {
-        return Ok(TemporalLayerSelection::All);
+        return Ok(None);
     }
-    let id = value
-        .parse::<u8>()
-        .ok()
-        .and_then(TemporalLayerId::try_new)
-        .ok_or_else(|| "temporal layer must be 'all' or an integer in 0..=3".to_owned())?;
-    Ok(TemporalLayerSelection::Target(id))
+    match value.parse::<u8>() {
+        Ok(id) if id <= max => Ok(Some(id)),
+        _ => Err(format!(
+            "{name} layer must be 'all' or an integer in 0..={max}"
+        )),
+    }
+}
+
+fn parse_temporal_layer(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
+    Ok(
+        parse_layer_arg(value, 3, "temporal")?.map_or(TemporalLayerSelection::All, |id| {
+            TemporalLayerSelection::Target(TemporalLayerId::from_bits(id))
+        }),
+    )
 }
 
 fn parse_embedded_layer(value: &str) -> core::result::Result<EmbeddedLayerSelection, String> {
-    if value.eq_ignore_ascii_case("all") {
-        return Ok(EmbeddedLayerSelection::All);
-    }
-    let id = value
-        .parse::<u8>()
-        .ok()
-        .and_then(EmbeddedLayerId::try_new)
-        .ok_or_else(|| "embedded layer must be 'all' or an integer in 0..=7".to_owned())?;
-    Ok(EmbeddedLayerSelection::Target(id))
+    Ok(
+        parse_layer_arg(value, 7, "embedded")?.map_or(EmbeddedLayerSelection::All, |id| {
+            EmbeddedLayerSelection::Target(EmbeddedLayerId::from_bits(id))
+        }),
+    )
 }
 
 fn parse_output_mask(value: &str, max: u8, name: &str) -> core::result::Result<u8, String> {
