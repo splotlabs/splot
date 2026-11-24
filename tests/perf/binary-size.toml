@@ -2,10 +2,14 @@
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 #
 # Largest allowed file size in bytes of the stripped release `splot` binary
-# (`cargo build --release -p splot-cli --locked`), by `<arch>-<os>`, for
-# `cargo xtask check-binary-size`. A budget sits a little above the measured
-# size, because the C runtime objects differ between hosts. Lower it in the
-# PR that shrinks the binary.
+# (`cargo build --release -p splot-cli --locked`) and `libsplot_capi`
+# (`cargo build --release -p splot-capi --locked`), by `<arch>-<os>`, for
+# `cargo xtask check-binary-size`. Budgets sit a little above the measured
+# sizes, because C runtime objects differ between hosts. Lower them in the
+# PR that shrinks the artifacts.
 
 [budget]
 x86_64-linux = 12280000
+
+[capi_budget]
+x86_64-linux = 8440000

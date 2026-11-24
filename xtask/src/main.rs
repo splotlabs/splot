@@ -35,6 +35,7 @@ mod git_util;
 mod perf;
 mod reference_evidence;
 mod seed_fuzz_corpus;
+mod simd_policy;
 mod source_lines;
 mod util;
 mod zero_copy;
@@ -134,6 +135,8 @@ enum Task {
     CheckConcurrencyPolicy,
     /// Verify the workspace honors the zero-copy media-buffer policy.
     CheckZeroCopyPolicy,
+    /// Verify decoder crates perform SIMD runtime detection and dispatch at startup only.
+    CheckSimdPolicy,
     /// Verify the committed AV2 spec mirror matches its CHECKSUMS and provenance.
     CheckSpecMirror,
     /// Verify diagnostic registry docs list exactly the emitted diagnostic rule ids.
@@ -349,6 +352,7 @@ fn main() -> Result<()> {
             concurrency_policy::check_concurrency_policy(&workspace_root()?)
         }
         Task::CheckZeroCopyPolicy => zero_copy::check_zero_copy_policy(&workspace_root()?),
+        Task::CheckSimdPolicy => simd_policy::check_simd_policy(&workspace_root()?),
         Task::CheckSpecMirror => check_spec_mirror(&workspace_root()?),
         Task::CheckDiagnosticRegistry => {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
@@ -515,6 +519,7 @@ fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
     check_dependency_direction(&root)?;
     concurrency_policy::check_concurrency_policy(&root)?;
     zero_copy::check_zero_copy_policy(&root)?;
+    simd_policy::check_simd_policy(&root)?;
     check_spec_mirror(&root)?;
     check_fuzz_targets(&root)?;
     gen_tables::run_gen_tables(&root, true)?;
