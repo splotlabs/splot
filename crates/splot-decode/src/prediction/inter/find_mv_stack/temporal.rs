@@ -1089,8 +1089,9 @@ impl TemporalBandPlan {
         })
     }
 
-    pub(crate) fn project<'a>(
+    pub(crate) fn project<'a, B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         context: &TemporalMvContext,
         index: usize,
         mut source_band: impl FnMut(usize, usize) -> Option<&'a TemporalMotionBand>,
@@ -1162,6 +1163,7 @@ impl TemporalBandPlan {
             }
             let mut trajectory = trajectories.as_mut().map(OwnedTrajectoryBand::as_band);
             project_temporal_motion_field(
+                backend,
                 &mut scratch.lanes,
                 &projection.source,
                 source,
@@ -1179,6 +1181,7 @@ impl TemporalBandPlan {
         if self.tip_mode {
             if let Some(references) = self.tip {
                 prepare_tip_field(
+                    backend,
                     &mut field,
                     references,
                     self.config.step,
@@ -1367,8 +1370,9 @@ impl TemporalMvContext {
         ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
     ) -> Option<Self> {
         let mut context = Self::empty();
-        context
-            .refresh_from_references(
+        crate::test_support::with_auto_backend!(backend => {
+            context.refresh_from_references(
+                backend,
                 mi_dimensions,
                 current_order_hint,
                 config,
@@ -1377,13 +1381,15 @@ impl TemporalMvContext {
                 ref_order_hint,
                 ref_motion_fields,
             )
-            .ok()?;
+        })
+        .ok()?;
         Some(context)
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn refresh_from_references(
+    pub(crate) fn refresh_from_references<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         mi_dimensions: (usize, usize),
         current_order_hint: u32,
         config: TemporalProjectionConfig,
@@ -1496,7 +1502,13 @@ impl TemporalMvContext {
                 }))
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         }
-        run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field)?;
+        run_band_projections(
+            backend,
+            &prepared,
+            config,
+            trajectories.as_mut(),
+            &mut self.field,
+        )?;
         self.current_order_hint = current_order_hint;
         self.trajectories = trajectories;
         self.tip = None;
@@ -1615,8 +1627,9 @@ impl TemporalMvContext {
             .trajectory_cell(reference, y8, x8)
     }
 
-    pub(crate) fn prepare_tip(
+    pub(crate) fn prepare_tip<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         references: TipReferencePair,
         projection_step: usize,
         tmvp_unit_size8: usize,
@@ -1624,6 +1637,7 @@ impl TemporalMvContext {
     ) -> crate::Result<()> {
         let projection_step = projection_step.clamp(1, 2);
         prepare_tip_field(
+            backend,
             &mut self.field,
             references,
             projection_step,
@@ -2038,7 +2052,8 @@ fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usi
 /// Bands partition the writes, and each band replays the queue in its original
 /// order, so the result matches the whole-field scan whatever order the bands
 /// run in.
-fn run_band_projections(
+fn run_band_projections<B: splot_core::simd::SimdBackend>(
+    backend: B,
     prepared: &[Option<PreparedTemporalProjection<'_>>],
     config: TemporalProjectionConfig,
     trajectories: Option<&mut TrajectoryState>,
@@ -2060,6 +2075,7 @@ fn run_band_projections(
         let rows8 = band.row_base..band.row_base + band_rows;
         for (pass, prepared) in prepared.iter().flatten().enumerate() {
             project_temporal_motion_field(
+                backend,
                 lanes.get_or_insert_default(),
                 &prepared.source,
                 prepared.field,

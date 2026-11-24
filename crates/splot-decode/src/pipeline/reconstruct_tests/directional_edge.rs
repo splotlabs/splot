@@ -20,55 +20,61 @@ fn one_sided_edge_state_failures_do_not_mutate_luma_plane() {
     let before = ws.samples(PlaneId::Y).unwrap().to_vec();
 
     assert!(matches!(
-        reconstruct_general_intra_one_sided_neighbour_block_into(
-            &mut ws,
-            all_zero_luma_block().view(&[]),
-            45,
-            PlaneId::Y,
-            4,
-            0,
-            2,
-            2,
-            0,
-            0,
-            OneSidedAboveMrl::default(),
-            false,
-            None,
-            None,
-            IntraEdgeAvailability {
-                above: true,
-                left: false,
-            },
-            OneSidedEdgeFilter::default(),
-        ),
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_one_sided_neighbour_block_into(
+                backend,
+                &mut ws,
+                all_zero_luma_block().view(&[]),
+                45,
+                PlaneId::Y,
+                4,
+                0,
+                2,
+                2,
+                0,
+                0,
+                OneSidedAboveMrl::default(),
+                false,
+                None,
+                None,
+                IntraEdgeAvailability {
+                    above: true,
+                    left: false,
+                },
+                OneSidedEdgeFilter::default(),
+            )
+        }),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
     ));
     assert_eq!(ws.samples(PlaneId::Y).unwrap(), before);
 
     assert!(matches!(
-        reconstruct_general_intra_one_sided_left_neighbour_block_into(
-            &mut ws,
-            all_zero_luma_block().view(&[]),
-            203,
-            PlaneId::Y,
-            0,
-            4,
-            2,
-            2,
-            0,
-            0,
-            false,
-            0,
-            0,
-            false,
-            None,
-            None,
-            IntraEdgeAvailability {
-                above: false,
-                left: true,
-            },
-            OneSidedEdgeFilter::default(),
-        ),
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                backend,
+                &mut ws,
+                all_zero_luma_block().view(&[]),
+                203,
+                PlaneId::Y,
+                0,
+                4,
+                2,
+                2,
+                0,
+                0,
+                false,
+                0,
+                0,
+                false,
+                None,
+                None,
+                IntraEdgeAvailability {
+                    above: false,
+                    left: true,
+                },
+                OneSidedEdgeFilter::default(),
+            )
+        }),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
     ));
     assert_eq!(ws.samples(PlaneId::Y).unwrap(), before);
@@ -89,30 +95,33 @@ fn chroma_mrl_edge_state_failure_does_not_mutate_plane() {
     let before = ws.samples(PlaneId::U).unwrap().to_vec();
 
     assert!(matches!(
-        reconstruct_general_intra_one_sided_neighbour_block_into(
-            &mut ws,
-            all_zero_luma_block().view(&[]),
-            45,
-            PlaneId::U,
-            0,
-            0,
-            2,
-            2,
-            0,
-            0,
-            OneSidedAboveMrl {
-                mrl_index: 1,
-                above_mrl_index: 1,
-            },
-            false,
-            None,
-            None,
-            IntraEdgeAvailability {
-                above: false,
-                left: false,
-            },
-            OneSidedEdgeFilter::default(),
-        ),
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_one_sided_neighbour_block_into(
+                backend,
+                &mut ws,
+                all_zero_luma_block().view(&[]),
+                45,
+                PlaneId::U,
+                0,
+                0,
+                2,
+                2,
+                0,
+                0,
+                OneSidedAboveMrl {
+                    mrl_index: 1,
+                    above_mrl_index: 1,
+                },
+                false,
+                None,
+                None,
+                IntraEdgeAvailability {
+                    above: false,
+                    left: false,
+                },
+                OneSidedEdgeFilter::default(),
+            )
+        }),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
     ));
     assert_eq!(ws.samples(PlaneId::U).unwrap(), before);
@@ -133,28 +142,31 @@ fn middle_edge_state_failure_does_not_mutate_luma_plane() {
     let before = ws.samples(PlaneId::Y).unwrap().to_vec();
 
     assert!(matches!(
-        reconstruct_general_intra_middle_neighbour_rect_block_into(
-            &mut ws,
-            all_zero_luma_block().view(&[]),
-            135,
-            PlaneId::Y,
-            0,
-            0,
-            2,
-            2,
-            0,
-            false,
-            None,
-            None,
-            IntraEdgeAvailability {
-                above: true,
-                left: false,
-            },
-            TwoSidedMiddleEdgeFilters {
-                above: OneSidedEdgeFilter::default(),
-                left: OneSidedEdgeFilter::default(),
-            },
-        ),
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_middle_neighbour_rect_block_into(
+                backend,
+                &mut ws,
+                all_zero_luma_block().view(&[]),
+                135,
+                PlaneId::Y,
+                0,
+                0,
+                2,
+                2,
+                0,
+                false,
+                None,
+                None,
+                IntraEdgeAvailability {
+                    above: true,
+                    left: false,
+                },
+                TwoSidedMiddleEdgeFilters {
+                    above: OneSidedEdgeFilter::default(),
+                    left: OneSidedEdgeFilter::default(),
+                },
+            )
+        }),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
     ));
     assert_eq!(ws.samples(PlaneId::Y).unwrap(), before);
@@ -175,25 +187,28 @@ fn dip_edge_state_failure_does_not_mutate_luma_plane() {
     let before = ws.samples(PlaneId::Y).unwrap().to_vec();
 
     assert!(matches!(
-        reconstruct_general_intra_luma_dip_rect_block_into(
-            &mut ws,
-            all_zero_luma_block().view(&[]),
-            0,
-            false,
-            4,
-            0,
-            2,
-            2,
-            0,
-            false,
-            0,
-            0,
-            LumaTransformTypeContext::new(IntraYMode::Dc, 0),
-            IntraEdgeAvailability {
-                above: true,
-                left: false,
-            },
-        ),
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_luma_dip_rect_block_into(
+                backend,
+                &mut ws,
+                all_zero_luma_block().view(&[]),
+                0,
+                false,
+                4,
+                0,
+                2,
+                2,
+                0,
+                false,
+                0,
+                0,
+                LumaTransformTypeContext::new(IntraYMode::Dc, 0),
+                IntraEdgeAvailability {
+                    above: true,
+                    left: false,
+                },
+            )
+        }),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
     ));
     assert_eq!(ws.samples(PlaneId::Y).unwrap(), before);

@@ -1335,7 +1335,8 @@ fn poison_reused_surface<T: ReconSample>(surface: &mut splot_recon::OwnedFrameRe
 fn poison_reused_surface<T: ReconSample>(_surface: &mut splot_recon::OwnedFrameRect<T>) {}
 
 #[expect(clippy::too_many_arguments)]
-fn precompute_recon_row<T: ReconSample>(
+fn precompute_recon_row<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     mut ready: ReadyReconRow<T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
@@ -1357,6 +1358,7 @@ fn precompute_recon_row<T: ReconSample>(
     };
     let mut surface = CurrentFrameSurface::OwnedRect(surface);
     ready.row = precompute_recon_row_on_surface(
+        backend,
         ready.row,
         ready.tile_offset,
         &mut surface,
@@ -1387,7 +1389,8 @@ fn precompute_recon_row<T: ReconSample>(
 /// (mixed-region chroma residual) before it instead of after, reading
 /// prepublish samples as its residual base.
 #[expect(clippy::too_many_arguments)]
-fn precompute_recon_row_on_surface<T: ReconSample>(
+fn precompute_recon_row_on_surface<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     mut row: ReconRow,
     tile_offset: ByteOffset,
     surface: &mut CurrentFrameSurface<'_, '_, T>,
@@ -1471,6 +1474,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     Some(ReconCommandMut::Inter(command)) => {
                         let start = row.temporal.len();
                         let result = scratch.derive_motion_logged(
+                            backend,
                             command,
                             surface,
                             &mut row.temporal,
@@ -1504,6 +1508,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             let start = row.temporal.len();
             let result = {
                 scratch.reconstruct(
+                    backend,
                     command,
                     surface,
                     block_decoded,
@@ -2217,7 +2222,8 @@ pub(crate) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn decode_tiles<T: ReconSample>(
+pub(super) fn decode_tiles<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: TileDecodeScratch<T>,
     frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     payload: &[u8],
@@ -2323,6 +2329,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             core::mem::take(frame_filter_records),
         );
         admission::run_ordinary_tile(
+            backend,
             &mut parser,
             tile,
             &mut resolve_state,

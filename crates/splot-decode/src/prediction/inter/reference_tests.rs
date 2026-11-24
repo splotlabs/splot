@@ -245,18 +245,24 @@ fn a_refused_banded_read_propagates_out_of_motion_compensation() {
     let banded = held.samples(&scalings);
     let mut output = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut output),
-        block(banded, 96, 16),
-        OFFSET,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut output),
+            block(banded, 96, 16),
+            OFFSET,
+        )
+    })
     .expect_err("a block below the watermark cannot be predicted");
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut output),
-        block(banded, 0, 16),
-        OFFSET,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut output),
+            block(banded, 0, 16),
+            OFFSET,
+        )
+    })
     .expect("a block inside the watermark is predicted");
 }
 
@@ -292,20 +298,26 @@ fn a_forced_frozen_band_keeps_readable_rows_and_checks_the_logical_limit() {
 fn a_settled_frame_reads_the_same_bytes_through_the_banded_path() {
     let settled = settled_frame();
     let mut plain = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut plain),
-        block(ReferenceSamples::settled(&settled), 0, HEIGHT),
-        OFFSET,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut plain),
+            block(ReferenceSamples::settled(&settled), 0, HEIGHT),
+            OFFSET,
+        )
+    })
     .expect("settled prediction");
 
     let mut forced = CurrentFrameWorkspace::new(info(WIDTH, HEIGHT), 0u8).expect("workspace");
     let _guard = forced_band_scope();
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut forced),
-        block(ReferenceSamples::settled(&settled), 0, HEIGHT),
-        OFFSET,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut forced),
+            block(ReferenceSamples::settled(&settled), 0, HEIGHT),
+            OFFSET,
+        )
+    })
     .expect("forced banded prediction");
 
     assert_eq!(

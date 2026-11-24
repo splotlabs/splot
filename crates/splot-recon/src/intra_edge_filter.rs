@@ -50,13 +50,13 @@ impl<B: SimdBackend> EdgeFilterRunner for TypedEdgeFilter<B> {
     #[inline]
     fn filter_u8(self, samples: &mut [u8], kernel: &[i32; INTRA_EDGE_TAPS]) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| filter_rolling::<_, _, false>(narrow.token(), samples, kernel));
+        splot_core::with_simd!(narrow, simd => filter_rolling::<_, _, false>(simd, samples, kernel));
     }
 
     #[inline]
     fn filter_u16(self, samples: &mut [u16], kernel: &[i32; INTRA_EDGE_TAPS]) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| filter_u16_edge_simd(narrow.token(), samples, kernel));
+        splot_core::with_simd!(narrow, simd => filter_u16_edge_simd(simd, samples, kernel));
     }
 }
 

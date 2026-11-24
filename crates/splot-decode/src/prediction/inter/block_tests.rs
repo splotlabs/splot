@@ -848,15 +848,18 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
     let placed = placed_luma_block(0, 0, 8, 8, InterIntraMode::Smooth);
 
     let mut scratch = InterIntraScratch::default();
-    predict_interintra_planes(
-        &mut scratch,
-        &workspace,
-        &placed,
-        &block_decoded,
-        InterIntraMode::Smooth,
-        false,
-        BitDepth::Eight,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        predict_interintra_planes(
+            backend,
+            &mut scratch,
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Smooth,
+            false,
+            BitDepth::Eight,
+        )
+    })?;
     let planes = scratch.planes().collect::<Vec<_>>();
 
     assert_eq!(planes.len(), 1);
@@ -879,15 +882,18 @@ fn interintra_invalid_derived_geometry_and_placement_are_typed() -> TestResult {
         let placed = placed_luma_block(x, 0, width, 8, InterIntraMode::Smooth);
         let mut scratch = InterIntraScratch::default();
 
-        let Err(error) = predict_interintra_planes(
-            &mut scratch,
-            &workspace,
-            &placed,
-            &block_decoded,
-            InterIntraMode::Smooth,
-            false,
-            BitDepth::Eight,
-        ) else {
+        let Err(error) = crate::test_support::with_auto_backend!(backend => {
+            predict_interintra_planes(
+                backend,
+                &mut scratch,
+                &workspace,
+                &placed,
+                &block_decoded,
+                InterIntraMode::Smooth,
+                false,
+                BitDepth::Eight,
+            )
+        }) else {
             return Err("invalid interintra geometry must fail closed".into());
         };
 
@@ -956,15 +962,18 @@ fn interintra_chroma_planes_follow_non420_subsampling() -> TestResult {
         placed.interintra_chroma = true;
 
         let mut scratch = InterIntraScratch::default();
-        predict_interintra_planes(
-            &mut scratch,
-            &workspace,
-            &placed,
-            &block_decoded,
-            InterIntraMode::Smooth,
-            false,
-            BitDepth::Eight,
-        )?;
+        crate::test_support::with_auto_backend!(backend => {
+            predict_interintra_planes(
+                backend,
+                &mut scratch,
+                &workspace,
+                &placed,
+                &block_decoded,
+                InterIntraMode::Smooth,
+                false,
+                BitDepth::Eight,
+            )
+        })?;
         let planes = scratch.planes().collect::<Vec<_>>();
 
         assert_eq!(planes.len(), 3);
@@ -992,15 +1001,18 @@ fn interintra_chroma_fallback_edges_use_each_planes_neighbour() -> TestResult {
     placed.interintra_chroma = true;
     let mut scratch = InterIntraScratch::default();
 
-    predict_interintra_planes(
-        &mut scratch,
-        &workspace,
-        &placed,
-        &block_decoded,
-        InterIntraMode::Horizontal,
-        false,
-        BitDepth::Eight,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        predict_interintra_planes(
+            backend,
+            &mut scratch,
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Horizontal,
+            false,
+            BitDepth::Eight,
+        )
+    })?;
     let planes = scratch.planes().collect::<Vec<_>>();
 
     assert_eq!(planes.len(), 3);
@@ -1047,15 +1059,18 @@ fn interintra_ignores_unavailable_tile_edges_on_each_plane() -> TestResult {
             InterIntraMode::Horizontal,
             InterIntraMode::Smooth,
         ] {
-            predict_interintra_planes(
-                &mut scratch,
-                &workspace,
-                &placed,
-                &block_decoded,
-                mode,
-                true,
-                BitDepth::Eight,
-            )?;
+            crate::test_support::with_auto_backend!(backend => {
+                predict_interintra_planes(
+                    backend,
+                    &mut scratch,
+                    &workspace,
+                    &placed,
+                    &block_decoded,
+                    mode,
+                    true,
+                    BitDepth::Eight,
+                )
+            })?;
             assert_eq!(scratch.planes().count(), 3);
             for (plane, samples) in scratch.planes() {
                 assert!(
@@ -1076,15 +1091,18 @@ fn interintra_scratch_reuses_pixel_and_fallback_edge_storage() -> TestResult {
     let mut scratch = InterIntraScratch::default();
 
     for _ in 0..2 {
-        predict_interintra_planes(
-            &mut scratch,
-            &workspace,
-            &placed,
-            &block_decoded,
-            InterIntraMode::Vertical,
-            false,
-            BitDepth::Eight,
-        )?;
+        crate::test_support::with_auto_backend!(backend => {
+            predict_interintra_planes(
+                backend,
+                &mut scratch,
+                &workspace,
+                &placed,
+                &block_decoded,
+                InterIntraMode::Vertical,
+                false,
+                BitDepth::Eight,
+            )
+        })?;
         assert!(
             scratch
                 .storage_identity()
@@ -1093,15 +1111,18 @@ fn interintra_scratch_reuses_pixel_and_fallback_edge_storage() -> TestResult {
         );
     }
     let warmed = scratch.storage_identity();
-    predict_interintra_planes(
-        &mut scratch,
-        &workspace,
-        &placed,
-        &block_decoded,
-        InterIntraMode::Vertical,
-        false,
-        BitDepth::Eight,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        predict_interintra_planes(
+            backend,
+            &mut scratch,
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Vertical,
+            false,
+            BitDepth::Eight,
+        )
+    })?;
 
     assert_eq!(scratch.storage_identity(), warmed);
     Ok(())
@@ -1143,15 +1164,18 @@ fn interintra_smooth_predictions(
     block_decoded: &TileBlockDecodedState,
 ) -> TestResult<Vec<(PlaneId, Vec<u8>)>> {
     let mut scratch = InterIntraScratch::default();
-    predict_interintra_planes(
-        &mut scratch,
-        workspace,
-        placed,
-        block_decoded,
-        InterIntraMode::Smooth,
-        false,
-        BitDepth::Eight,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        predict_interintra_planes(
+            backend,
+            &mut scratch,
+            workspace,
+            placed,
+            block_decoded,
+            InterIntraMode::Smooth,
+            false,
+            BitDepth::Eight,
+        )
+    })?;
     Ok(scratch
         .planes()
         .map(|(plane, samples)| (plane.plane, samples.to_vec()))

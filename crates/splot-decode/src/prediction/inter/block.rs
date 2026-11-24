@@ -528,7 +528,8 @@ fn finish_frame_cdfs(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_blocks<T: ReconSample>(
+pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
     sequence: &SequenceHeader,
@@ -566,7 +567,8 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     } = setup;
     let mut lease =
         crate::support::decode_buffers::DecodeBuffers::lend_temporal(scratch.buffers.as_deref());
-    let temporal_context = prelude.run(&mut lease.temporal, core, ref_frame_idx, reference)?;
+    let temporal_context =
+        prelude.run(backend, &mut lease.temporal, core, ref_frame_idx, reference)?;
     let mut tile_scratch = scratch.tile.take().unwrap_or_default();
     tile_scratch.buffers.clone_from(&scratch.buffers);
     let previous = final_segment_ids(
@@ -581,6 +583,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         products.segment_ids(params.mi_rows, params.mi_cols, segmentation_enabled(core))?
     };
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
+        backend,
         tile_scratch,
         &mut records,
         payload,
@@ -713,14 +716,16 @@ pub(crate) struct TemporalPrelude {
 }
 
 impl TemporalPrelude {
-    fn run<'a>(
+    fn run<'a, B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         temporal_context: &'a mut TemporalMvContext,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
         reference: &ReferenceMetadata,
     ) -> Result<&'a mut TemporalMvContext> {
         frame_temporal_context(
+            backend,
             temporal_context,
             core,
             self.geometry.sb_h4(),
@@ -817,7 +822,8 @@ fn scheduled_motion_field_inputs(
 /// The driver derives the TIP reference pair once and passes that exact pair to
 /// both the entropy pass and this prelude.
 #[expect(clippy::too_many_arguments)]
-fn frame_temporal_context<'a>(
+fn frame_temporal_context<'a, B: splot_core::simd::SimdBackend>(
+    backend: B,
     temporal_context: &'a mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,
@@ -830,6 +836,7 @@ fn frame_temporal_context<'a>(
 ) -> Result<&'a mut TemporalMvContext> {
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
     temporal_context.refresh_from_references(
+        backend,
         dimensions,
         current_order_hint,
         temporal_config,
@@ -838,7 +845,7 @@ fn frame_temporal_context<'a>(
         &reference.ref_order_hint,
         &ref_motion_fields,
     )?;
-    tip::prepare_motion_field(temporal_context, core, sb_h4, expected_tip_pair)?;
+    tip::prepare_motion_field(backend, temporal_context, core, sb_h4, expected_tip_pair)?;
     Ok(temporal_context)
 }
 /// AV2 § 7.12.2 TIP reference pair as the entropy pass sees it.

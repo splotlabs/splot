@@ -265,13 +265,13 @@ impl<B: SimdBackend> LineRunner for TypedLines<B> {
         along: &[u16; 16],
     ) -> [P; 16] {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| select_left_simd(narrow.token(), left, above, runs, along))
+        splot_core::with_simd!(narrow, simd => select_left_simd(simd, left, above, runs, along))
     }
 
     #[inline]
     fn small_lanes_u8(self, lanes: &SmallLanes<u8>, last: u8) -> [u8; 16] {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| small_lanes_u8_simd(narrow.token(), lanes, last))
+        splot_core::with_simd!(narrow, simd => small_lanes_u8_simd(simd, lanes, last))
     }
 
     #[inline]
@@ -282,7 +282,7 @@ impl<B: SimdBackend> LineRunner for TypedLines<B> {
             filter_u8_avx2(token, window, taps, out);
             return;
         }
-        narrow.vectorize(|| line_lanes(narrow.token(), window, taps, out));
+        splot_core::with_simd!(narrow, simd => line_lanes(simd, window, taps, out));
     }
 
     fn transpose_u8(
@@ -294,8 +294,7 @@ impl<B: SimdBackend> LineRunner for TypedLines<B> {
         stride: usize,
     ) {
         let narrow = self.0.narrow();
-        narrow
-            .vectorize(|| transpose_tiles(narrow.token(), width, height, columns, output, stride));
+        splot_core::with_simd!(narrow, simd => transpose_tiles(simd, width, height, columns, output, stride));
     }
 
     #[inline]
@@ -307,7 +306,7 @@ impl<B: SimdBackend> LineRunner for TypedLines<B> {
         last: u16,
     ) -> [u16; 16] {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| small_lanes_u16(narrow.token(), lanes, filter, max, last))
+        splot_core::with_simd!(narrow, simd => small_lanes_u16(simd, lanes, filter, max, last))
     }
 
     #[expect(
@@ -326,10 +325,10 @@ impl<B: SimdBackend> LineRunner for TypedLines<B> {
         let narrow = self.0.narrow();
         if filter == LineFilter::Bilinear {
             let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
-            narrow.vectorize(|| bilinear_lanes_u16(narrow.token(), window, weights, out));
+            splot_core::with_simd!(narrow, simd => bilinear_lanes_u16(simd, window, weights, out));
             return;
         }
-        narrow.vectorize(|| line_lanes_u16(narrow.token(), window, taps, max, out));
+        splot_core::with_simd!(narrow, simd => line_lanes_u16(simd, window, taps, max, out));
     }
 
     fn transpose_u16(
@@ -341,8 +340,8 @@ impl<B: SimdBackend> LineRunner for TypedLines<B> {
         stride: usize,
     ) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            transpose_tiles_u16(narrow.token(), width, height, columns, output, stride);
+        splot_core::with_simd!(narrow, simd => {
+            transpose_tiles_u16(simd, width, height, columns, output, stride);
         });
     }
 }

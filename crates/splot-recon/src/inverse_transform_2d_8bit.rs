@@ -1112,8 +1112,7 @@ impl<B: SimdBackend> TransformRunner for TypedTransformRunner<B> {
         passes: (Pass1d, Pass1d),
         out: &mut [i32],
     ) {
-        self.0
-            .vectorize(|| dc_only_transform::<_, RESIDUAL>(self.0.token(), t, dc, passes, out));
+        splot_core::with_simd!(self.0, simd => dc_only_transform::<_, RESIDUAL>(simd, t, dc, passes, out));
     }
 
     #[inline]
@@ -1125,15 +1124,14 @@ impl<B: SimdBackend> TransformRunner for TypedTransformRunner<B> {
         out: &mut [i32],
         scratch: &mut [i32; 32 * 32],
     ) {
-        self.0.vectorize(|| {
-            transform::<_, RESIDUAL>(self.0.token(), passes, rows, pass, out, scratch);
+        splot_core::with_simd!(self.0, simd => {
+            transform::<_, RESIDUAL>(simd, passes, rows, pass, out, scratch);
         });
     }
 
     #[inline]
     fn add_tile_u8(self, tile: &[i32], w: usize, dst: &mut [u8], stride: usize) {
-        self.0
-            .vectorize(|| add_tile_u8(self.0.token(), tile, w, dst, stride));
+        splot_core::with_simd!(self.0, simd => add_tile_u8(simd, tile, w, dst, stride));
     }
 
     #[inline]
@@ -1143,14 +1141,12 @@ impl<B: SimdBackend> TransformRunner for TypedTransformRunner<B> {
         geometry: (usize, usize, usize),
         values: (i32, i16),
     ) {
-        self.0
-            .vectorize(|| add_constant_u16(self.0.token(), dst, geometry, values));
+        splot_core::with_simd!(self.0, simd => add_constant_u16(simd, dst, geometry, values));
     }
 
     #[inline]
     fn add_tile_u16(self, tile: &[i32], w: usize, dst_stride: (&mut [u16], usize), max: i16) {
-        self.0
-            .vectorize(|| add_tile_u16(self.0.token(), tile, w, dst_stride, max));
+        splot_core::with_simd!(self.0, simd => add_tile_u16(simd, tile, w, dst_stride, max));
     }
 }
 

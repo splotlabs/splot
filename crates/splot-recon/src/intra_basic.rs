@@ -135,9 +135,9 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
         stride_samples: usize,
     ) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
+        splot_core::with_simd!(narrow, simd => {
             paeth_rows(
-                narrow.token(),
+                simd,
                 size,
                 left,
                 above,

@@ -455,13 +455,13 @@ impl<B: SimdBackend> IntraRunner for TypedIntra<B> {
         output: &mut [P],
     ) -> u8 {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| palette_lanes(narrow.token(), low, high, map, output))
+        splot_core::with_simd!(narrow, simd => palette_lanes(simd, low, high, map, output))
     }
 
     #[inline]
     fn average<P: IntraLaneSample>(self, primary: &mut [P], secondary: &[P]) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| average_lanes(narrow.token(), primary, secondary));
+        splot_core::with_simd!(narrow, simd => average_lanes(simd, primary, secondary));
     }
 }
 

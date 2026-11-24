@@ -3,13 +3,18 @@
 
 //! Cross-chroma transform reconstruction helpers.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
     BitDepth, CurrentFrameSurface, IntraRectBlockSize, PlaneId, ReconSample,
-    inverse_transform_2d_outer_with_scratch, reconstruct_add_residual,
+    inverse_transform_2d_outer_with_scratch_and_backend, reconstruct_add_residual_with,
 };
 
-use super::reconstruct::{ReconstructBlockSetup, dequantize_coeff_block, reconstruct_block_setup};
+#[cfg(test)]
+use super::reconstruct::dequantize_coeff_block;
+use super::reconstruct::{
+    ReconstructBlockSetup, dequantize_coeff_block_with, reconstruct_block_setup,
+};
 use super::{CoeffBlock, GeneralIntraResidualError, with_residual_scratch};
 
 const CCTX_PREC_BITS: u32 = 8;
@@ -38,25 +43,32 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
 ) -> Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
     let mut u_out = Vec::new();
     let mut v_out = Vec::new();
-    reconstruct_general_intra_chroma_cctx_pair_into(
-        u_block,
-        u_prediction,
-        v_block,
-        v_prediction,
-        qindex,
-        log2_width,
-        log2_height,
-        cctx_type,
-        use_ddt,
-        bit_depth,
-        &mut u_out,
-        &mut v_out,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_cctx_pair_into_with(
+            backend,
+            u_block,
+            u_prediction,
+            v_block,
+            v_prediction,
+            qindex,
+            log2_width,
+            log2_height,
+            cctx_type,
+            use_ddt,
+            bit_depth,
+            &mut u_out,
+            &mut v_out,
+        )
+    })?;
     Ok((u_out, v_out))
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into_with<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     u_block: CoeffBlock<'_>,
     u_prediction: &[T],
     v_block: CoeffBlock<'_>,
@@ -70,6 +82,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
     u_out: &mut Vec<T>,
     v_out: &mut Vec<T>,
 ) -> Result<(), GeneralIntraResidualError> {
+    let backend = backend.narrow();
     let u_setup = reconstruct_block_setup(
         u_prediction.len(),
         qindex,
@@ -106,6 +119,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
     v_out.resize(v_setup.samples, T::default());
     with_residual_scratch(|scratch| {
         let [u_dequant, v_dequant] = dequantize_cctx_pair(
+            backend,
             [u_block, v_block],
             [&u_setup, &v_setup],
             [&mut scratch.dequant, &mut scratch.dequant_pair],
@@ -118,7 +132,8 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
         ];
         for (setup, dequant, prediction, out) in pairs {
             if let Some(fused) = setup.fused()
-                && fused.add_onto(
+                && fused.add_onto_with(
+                    backend,
                     prediction,
                     dequant,
                     (None, bit_depth),
@@ -130,13 +145,14 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
                 continue;
             }
             let residual = &mut scratch.residual[..setup.samples];
-            inverse_transform_2d_outer_with_scratch(
+            inverse_transform_2d_outer_with_scratch_and_backend(
+                backend,
                 &setup.transform()?,
                 dequant,
                 residual,
                 &mut scratch.transform[0],
             )?;
-            reconstruct_add_residual(prediction, residual, bit_depth, out)?;
+            reconstruct_add_residual_with(backend, prediction, residual, bit_depth, out)?;
         }
         Ok::<(), GeneralIntraResidualError>(())
     })?;
@@ -144,7 +160,8 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
+pub(crate) fn add_cctx_pair_residual_in_place_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
     surface: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut super::ResidualScratch,
     [u_block, v_block]: [CoeffBlock<'_>; 2],
@@ -154,6 +171,7 @@ pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
+    let backend = backend.narrow();
     let (log2_width, log2_height) = (size.log2_width().into(), size.log2_height().into());
     let setup = |plane, block: CoeffBlock<'_>| {
         reconstruct_block_setup(
@@ -177,6 +195,7 @@ pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
         });
     }
     let [u_dequant, v_dequant] = dequantize_cctx_pair(
+        backend,
         [u_block, v_block],
         [&u_setup, &v_setup],
         [&mut scratch.dequant, &mut scratch.dequant_pair],
@@ -190,7 +209,8 @@ pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
     for (plane, setup, dequant) in pairs {
         if let Some(fused) = setup.fused()
             && let Some((dst, stride)) = surface.residual_rect_mut(plane, x, y, size)?
-            && fused.add(
+            && fused.add_with(
+                backend,
                 dequant,
                 (None, bit_depth),
                 dst,
@@ -201,28 +221,32 @@ pub(crate) fn add_cctx_pair_residual_in_place<T: ReconSample>(
             continue;
         }
         let residual = &mut scratch.residual[..setup.samples];
-        inverse_transform_2d_outer_with_scratch(
+        inverse_transform_2d_outer_with_scratch_and_backend(
+            backend,
             &setup.transform()?,
             dequant,
             residual,
             &mut scratch.transform[0],
         )?;
-        surface.add_residual_rect_block(plane, x, y, size, residual)?;
+        surface.add_residual_rect_block_with(backend, plane, x, y, size, residual)?;
     }
     Ok(())
 }
 
 /// Dequantizes and rotates the common whole-row prefix. Missing coefficients
 /// in the shorter plane are zero, as are both planes' omitted rows.
-fn dequantize_cctx_pair<'a>(
+fn dequantize_cctx_pair<'a, B: SimdBackend>(
+    backend: B,
     [u, v]: [CoeffBlock<'_>; 2],
     [u_setup, v_setup]: [&ReconstructBlockSetup; 2],
     [u_out, v_out]: [&'a mut [i32]; 2],
     cctx_type: usize,
     bit_depth: BitDepth,
 ) -> Result<[&'a [i32]; 2], GeneralIntraResidualError> {
-    let u_written = dequantize_coeff_block(u, &u_setup.params, &mut u_out[..u_setup.adjusted])?;
-    let v_written = dequantize_coeff_block(v, &v_setup.params, &mut v_out[..v_setup.adjusted])?;
+    let u_written =
+        dequantize_coeff_block_with(backend, u, &u_setup.params, &mut u_out[..u_setup.adjusted])?;
+    let v_written =
+        dequantize_coeff_block_with(backend, v, &v_setup.params, &mut v_out[..v_setup.adjusted])?;
     let coded = u_written.max(v_written);
     let (u, v) = (&mut u_out[..coded], &mut v_out[..coded]);
     u[u_written..].fill(0);
@@ -299,13 +323,16 @@ mod tests {
                 apply_cross_chroma_transform(5, depth, &mut want_u, &mut want_v).unwrap();
 
                 let (mut actual_u, mut actual_v) = ([i32::MAX; 64], [i32::MIN; 64]);
-                let got = dequantize_cctx_pair(
-                    [u, v],
-                    [&u_setup, &v_setup],
-                    [&mut actual_u, &mut actual_v],
-                    5,
-                    depth,
-                )
+                let got = crate::test_support::with_auto_backend!(backend => {
+                    dequantize_cctx_pair(
+                        backend,
+                        [u, v],
+                        [&u_setup, &v_setup],
+                        [&mut actual_u, &mut actual_v],
+                        5,
+                        depth,
+                    )
+                })
                 .unwrap();
                 let coded = u_len.max(v_len).next_multiple_of(8);
                 assert_eq!(got, [&want_u[..coded], &want_v[..coded]]);

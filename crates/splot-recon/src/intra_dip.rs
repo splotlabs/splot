@@ -143,8 +143,8 @@ impl<B: SimdBackend> DipRunner for TypedDip<B> {
         output: &mut [P],
     ) -> Option<()> {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            predict_dip_samples(narrow.token(), block, features, rows, left, above, output)
+        splot_core::with_simd!(narrow, simd => {
+            predict_dip_samples(simd, block, features, rows, left, above, output)
         })
     }
 }

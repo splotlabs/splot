@@ -162,8 +162,9 @@ impl IntrabcReconCommand {
         }
     }
 
-    pub(super) fn reconstruct<T: ReconSample>(
+    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -172,6 +173,7 @@ impl IntrabcReconCommand {
         let prediction = &self.prediction;
         match prediction.luma_source {
             IntrabcLumaSource::Subpel(scaling) => mc::intrabc_predict_subpel_plane_into(
+                backend,
                 workspace,
                 PlaneId::Y,
                 prediction.luma_target,
@@ -183,6 +185,7 @@ impl IntrabcReconCommand {
         }
         if let Some(mv) = prediction.morph_mv {
             crate::prediction::inter::bawp::apply_intrabc_morph_pred(
+                backend,
                 workspace,
                 prediction.luma_target,
                 prediction.morph_avail,
@@ -192,6 +195,7 @@ impl IntrabcReconCommand {
         if let Some(chroma) = prediction.chroma {
             for plane in [PlaneId::U, PlaneId::V] {
                 mc::intrabc_predict_subpel_plane_into(
+                    backend,
                     workspace,
                     plane,
                     chroma.target,
@@ -201,6 +205,7 @@ impl IntrabcReconCommand {
         }
         if let Some(residual) = self.residual.as_ref() {
             add_inter_residual_to_workspace(
+                backend,
                 &mut CurrentFrameSurface::Frame(workspace),
                 residual,
                 residual_blocks,

@@ -192,6 +192,78 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
     fn neon_token(self) -> Option<fearless_simd::Neon> {
         None
     }
+
+    /// Returns the `Avx2` token directly when `self` is [`Avx2Backend`].
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn static_avx2_token(self) -> Option<fearless_simd::Avx2> {
+        None
+    }
+
+    /// Returns the `Neon` token directly when `self` is [`NeonBackend`].
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn static_neon_token(self) -> Option<fearless_simd::Neon> {
+        None
+    }
+}
+
+/// Runs `$body` with concrete `fearless_simd` token `$simd` derived from
+/// `$backend`, avoiding runtime `vectorize` closures when static target
+/// features already guarantee the backend's instruction set.
+#[macro_export]
+macro_rules! with_simd {
+    ($backend:expr, $simd:ident => $body:expr) => {{
+        let __backend = $backend;
+        #[cfg(all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt"
+        ))]
+        {
+            if let Some($simd) = $crate::simd::SimdBackend::static_avx2_token(__backend) {
+                $body
+            } else {
+                $crate::simd::SimdBackend::vectorize(__backend, || {
+                    let $simd = $crate::simd::SimdBackend::token(__backend);
+                    $body
+                })
+            }
+        }
+        #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+        {
+            if let Some($simd) = $crate::simd::SimdBackend::static_neon_token(__backend) {
+                $body
+            } else {
+                $crate::simd::SimdBackend::vectorize(__backend, || {
+                    let $simd = $crate::simd::SimdBackend::token(__backend);
+                    $body
+                })
+            }
+        }
+        #[cfg(not(any(
+            all(
+                target_arch = "x86_64",
+                target_feature = "avx2",
+                target_feature = "fma",
+                target_feature = "bmi1",
+                target_feature = "bmi2",
+                target_feature = "f16c",
+                target_feature = "lzcnt"
+            ),
+            all(target_arch = "aarch64", target_feature = "neon")
+        )))]
+        {
+            $crate::simd::SimdBackend::vectorize(__backend, || {
+                let $simd = $crate::simd::SimdBackend::token(__backend);
+                $body
+            })
+        }
+    }};
 }
 
 /// Sealed x86-64 AVX2 backend carrying a genuine [`fearless_simd::Avx2`] token.
@@ -245,6 +317,11 @@ impl SimdBackend for Avx2Backend {
 
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        Some(self.token)
+    }
+
+    #[inline]
+    fn static_avx2_token(self) -> Option<fearless_simd::Avx2> {
         Some(self.token)
     }
 }
@@ -357,6 +434,11 @@ impl SimdBackend for NeonBackend {
 
     #[inline]
     fn neon_token(self) -> Option<fearless_simd::Neon> {
+        Some(self.token)
+    }
+
+    #[inline]
+    fn static_neon_token(self) -> Option<fearless_simd::Neon> {
         Some(self.token)
     }
 }

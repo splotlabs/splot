@@ -355,18 +355,21 @@ fn decode_inter_frame_after_core_mutation_inner(
     mutate(&mut core);
     super::validate_inter_frame_core(&core, &sequence)?;
     let mut products = super::FrameProductWriters::fresh().expect("fresh product writers");
-    let walk = crate::pipeline::frame_engine::walk_frame(
-        &mut super::InterDecodeScratch::default(),
-        inter_candidate,
-        bytes.into(),
-        inter_envelope,
-        std::sync::Arc::new(core),
-        &sequence,
-        &options,
-        &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
-        BitDepth::Eight,
-        &mut products,
-    )?;
+    let walk = crate::test_support::with_auto_backend!(backend => {
+        crate::pipeline::frame_engine::walk_frame(
+            backend,
+            &mut super::InterDecodeScratch::default(),
+            inter_candidate,
+            bytes.into(),
+            inter_envelope,
+            std::sync::Arc::new(core),
+            &sequence,
+            &options,
+            &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
+            BitDepth::Eight,
+            &mut products,
+        )
+    })?;
     let crate::pipeline::frame_engine::finish::WalkStage::Pending(walked) = walk.stage else {
         panic!("inter fixture unexpectedly completed without its filter phase");
     };
@@ -554,16 +557,19 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         },
     ];
     let residual = super::InterResidual { block_range: 0..3 };
-    super::add_inter_residual_to_workspace(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &u_quant,
-        101,
-        false,
-        true,
-        BitDepth::Eight,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &u_quant,
+            101,
+            false,
+            true,
+            BitDepth::Eight,
+        )
+    })
     .unwrap();
 
     assert_eq!(read_rect_samples(&workspace, PlaneId::U, rect), want_u);
@@ -617,16 +623,19 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         coeffs,
     }];
     let residual = super::InterResidual { block_range: 0..1 };
-    super::add_inter_residual_to_workspace(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &quant,
-        150,
-        false,
-        false,
-        BitDepth::Ten,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &quant,
+            150,
+            false,
+            false,
+            BitDepth::Ten,
+        )
+    })
     .unwrap();
 
     let first_row = workspace

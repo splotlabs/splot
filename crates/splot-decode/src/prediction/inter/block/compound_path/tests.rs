@@ -1097,15 +1097,24 @@ fn wedge_temporal_storage_keeps_only_a_dominant_reference() {
         sign: false,
     };
     assert_eq!(
-        wedge_temporal_allowed_lists(blend, 64, 64, 0, 0).unwrap(),
+        crate::test_support::with_auto_backend!(backend => {
+            wedge_temporal_allowed_lists(backend, blend, 64, 64, 0, 0)
+        })
+        .unwrap(),
         [false, true]
     );
     assert_eq!(
-        wedge_temporal_allowed_lists(blend, 64, 64, 56, 0).unwrap(),
+        crate::test_support::with_auto_backend!(backend => {
+            wedge_temporal_allowed_lists(backend, blend, 64, 64, 56, 0)
+        })
+        .unwrap(),
         [true, false]
     );
     assert_eq!(
-        wedge_temporal_allowed_lists(blend, 64, 64, 32, 24).unwrap(),
+        crate::test_support::with_auto_backend!(backend => {
+            wedge_temporal_allowed_lists(backend, blend, 64, 64, 32, 24)
+        })
+        .unwrap(),
         [true; 2]
     );
 }
@@ -1297,16 +1306,19 @@ fn compound_temporal_motion_merges_records_only_for_uniform_blocks() {
             },
         };
         let mut records = Vec::new();
-        append_compound_temporal_motion(
-            &mut records,
-            &reference,
-            &[0, 1],
-            &placed,
-            None,
-            64,
-            64,
-            9,
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            append_compound_temporal_motion(
+                backend,
+                &mut records,
+                &reference,
+                &[0, 1],
+                &placed,
+                None,
+                64,
+                64,
+                9,
+            )
+        })
         .unwrap();
         records
     };
@@ -1365,14 +1377,22 @@ fn wedge_dominant_lists_match_the_sample_count() {
                 } else {
                     [true; 2]
                 };
-                let got = wedge_dominant_lists(width, height, (index, sign), x, y).unwrap();
+                let got = crate::test_support::with_auto_backend!(backend => {
+                    wedge_dominant_lists(backend, width, height, (index, sign), x, y)
+                })
+                .unwrap();
                 assert_eq!(got, want, "{width}x{height} {index} {sign} {x},{y}");
                 seen[usize::from(got[0]) + 2 * usize::from(got[1]) - 1] += 1;
             }
         }
     }
     assert!(seen.iter().all(|&count| count > 0), "{seen:?}");
-    assert!(wedge_dominant_lists(8, 8, (0, false), 8, 0).is_err());
+    assert!(
+        crate::test_support::with_auto_backend!(backend => {
+            wedge_dominant_lists(backend, 8, 8, (0, false), 8, 0)
+        })
+        .is_err()
+    );
 }
 
 #[test]

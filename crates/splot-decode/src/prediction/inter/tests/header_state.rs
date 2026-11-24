@@ -164,16 +164,19 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
         PixelFormat::Yuv420,
     )
     .unwrap();
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        100,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            100,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("mismatched CCTX pair");
     assert!(matches!(
         error,
@@ -194,18 +197,21 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
     .unwrap();
 
     for (start, end) in [(1, 2), (1, 0)] {
-        let error = super::super::add_inter_residual_to_workspace(
-            &mut CurrentFrameSurface::Frame(&mut workspace),
-            &super::super::InterResidual {
-                block_range: start..end,
-            },
-            &[],
-            &[],
-            0,
-            false,
-            false,
-            BitDepth::Eight,
-        )
+        let error = crate::test_support::with_auto_backend!(backend => {
+            super::super::add_inter_residual_to_workspace(
+                backend,
+                &mut CurrentFrameSurface::Frame(&mut workspace),
+                &super::super::InterResidual {
+                    block_range: start..end,
+                },
+                &[],
+                &[],
+                0,
+                false,
+                false,
+                BitDepth::Eight,
+            )
+        })
         .unwrap_err();
 
         assert!(matches!(
@@ -236,16 +242,19 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
     )
     .unwrap();
 
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        0,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            0,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("invalid stored transform size");
 
     assert!(matches!(
@@ -287,16 +296,19 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
     )
     .unwrap();
 
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        0,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            0,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("invalid stored CCTX transform size");
 
     assert!(matches!(
@@ -1388,15 +1400,18 @@ fn impossible_tip_output_runtime_inputs_are_typed_state_errors() {
                 continue;
             }
         };
-        let error = super::super::block::tip::reconstruct_output(
-            &mut super::super::InterDecodeScratch::default(),
-            splot_recon::FramePlaneSamples::default(),
-            &sequence,
-            &core,
-            &reference,
-            geometry,
-            offset,
-        )
+        let error = crate::test_support::with_auto_backend!(backend => {
+            super::super::block::tip::reconstruct_output(
+                backend,
+                &mut super::super::InterDecodeScratch::default(),
+                splot_recon::FramePlaneSamples::default(),
+                &sequence,
+                &core,
+                &reference,
+                geometry,
+                offset,
+            )
+        })
         .expect_err("TIP-output runtime state");
         assert!(matches!(error, DecodeError::HeaderState { source } if source == expected));
     }
@@ -1421,15 +1436,18 @@ fn unpublished_tip_output_motion_field_is_a_typed_reference_state_error() {
     )
     .expect("valid frame geometry");
 
-    let error = super::super::block::tip::reconstruct_output(
-        &mut super::super::InterDecodeScratch::default(),
-        splot_recon::FramePlaneSamples::default(),
-        &sequence,
-        &core,
-        &reference,
-        geometry,
-        offset,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::block::tip::reconstruct_output(
+            backend,
+            &mut super::super::InterDecodeScratch::default(),
+            splot_recon::FramePlaneSamples::default(),
+            &sequence,
+            &core,
+            &reference,
+            geometry,
+            offset,
+        )
+    })
     .expect_err("unpublished TIP-output motion field");
     assert!(matches!(
         error,
@@ -2080,16 +2098,19 @@ fn bru_inactive_zero_remaining_trailing_bits_and_incompatible_refs_fail_closed()
     assert!(matches!(err, DecodeError::MalformedSource { .. }));
 
     let mut products = super::super::FrameProductWriters::fresh().unwrap();
-    let Err(err) = super::super::decode_bridge_frame(
-        &frame5_candidate,
-        frame5_obu,
-        std::sync::Arc::new(intact_core),
-        &sequence,
-        &DecodeOptions::default(),
-        &reference,
-        BitDepth::Eight,
-        &mut products,
-    ) else {
+    let Err(err) = crate::test_support::with_auto_backend!(backend => {
+        super::super::decode_bridge_frame(
+            backend,
+            &frame5_candidate,
+            frame5_obu,
+            std::sync::Arc::new(intact_core),
+            &sequence,
+            &DecodeOptions::default(),
+            &reference,
+            BitDepth::Eight,
+            &mut products,
+        )
+    }) else {
         panic!("missing reference slot decoded successfully");
     };
     assert!(matches!(

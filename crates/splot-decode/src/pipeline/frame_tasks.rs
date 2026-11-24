@@ -163,8 +163,15 @@ impl DecoderWork {
         claim: Claim,
         worker: usize,
     ) {
-        let _ = backend;
-        self.run(claim, worker);
+        let narrow = backend.narrow();
+        match self {
+            Self::Split8(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Split16(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Tip8(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Tip16(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Finish8(frame) => frame.run(claim, worker),
+            Self::Finish16(frame) => frame.run(claim, worker),
+        }
     }
 }
 
@@ -542,13 +549,23 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(awaiting.is_none())
     }
 
-    fn precompute(&self, batch: usize, worker: usize) -> Result<()> {
-        self.recon_state()?.precompute(batch, worker)
+    fn precompute<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        batch: usize,
+        worker: usize,
+    ) -> Result<()> {
+        self.recon_state()?.precompute(backend, batch, worker)
     }
 
-    fn commit(&self, batch: usize, worker: usize) -> Result<()> {
+    fn commit<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        batch: usize,
+        worker: usize,
+    ) -> Result<()> {
         let recon = self.recon_state()?;
-        let progress = recon.commit(batch, worker)?;
+        let progress = recon.commit(backend, batch, worker)?;
         if progress.recon_complete {
             *self.scratch.lock() = Some(recon.take_scheduled_scratch()?);
         }
@@ -702,21 +719,43 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
     /// (a projected band's resolve, a resolved band's first batch or the next
     /// band, a batch's commit, a commit's frontier row or the next commit),
     /// without a scan or a wake.
-    #[inline(never)]
-    fn run(&self, mut claim: Claim, worker: usize) {
+    fn run(&self, claim: Claim, worker: usize) {
+        struct Scope<'a, T: SplitSample>(&'a SplitFrame<T>, Claim, usize);
+        impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
+            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
+                self.0.run_with_backend(backend.narrow(), self.1, self.2);
+            }
+        }
+        if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
+            backend.enter(Scope(self, claim, worker));
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.failed.load(Ordering::Acquire) || self.stages[OUTPUT].is_finished()
+    }
+}
+
+impl<T: SplitSample> SplitFrame<T> {
+    fn run_with_backend<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        mut claim: Claim,
+        worker: usize,
+    ) {
         loop {
             let outcome = match claim.stage {
                 PARSE => self.parse().map(|()| true),
                 PREPARE => self.prepare().map(|()| true),
                 ATTACH => self.attach().map(|()| true),
                 RESOLVE => self.resolve(claim.row),
-                COMMIT => self.commit(claim.row, worker).map(|()| true),
+                COMMIT => self.commit(backend, claim.row, worker).map(|()| true),
                 FRONTIER => self.frontier(claim.row).map(|()| true),
-                PRECOMPUTE => self.precompute(claim.row, worker).map(|()| true),
+                PRECOMPUTE => self.precompute(backend, claim.row, worker).map(|()| true),
                 TILE => self.parse_tile(claim.row).map(|()| true),
                 PROJECT => self
                     .recon_state()
-                    .and_then(|recon| recon.project(claim.row))
+                    .and_then(|recon| recon.project(backend, claim.row))
                     .map(|()| true),
                 FILTER => run_filter_stripe(&self.filter_jobs, &self.filter_error, claim.row)
                     .map(|()| true),
@@ -783,10 +822,6 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 None => break,
             }
         }
-    }
-
-    fn done(&self) -> bool {
-        self.failed.load(Ordering::Acquire) || self.stages[OUTPUT].is_finished()
     }
 }
 
@@ -995,7 +1030,7 @@ impl<T: SplitSample> TipFrame<T> {
         *self.inputs.get_mut() = Some(inputs);
     }
 
-    fn init(&self) -> Result<()> {
+    fn init<B: splot_core::simd::SimdBackend>(&self, backend: B) -> Result<()> {
         self.entropy.lock().take();
         self.motion_deps.lock().take();
         let TipFrameInputs {
@@ -1029,6 +1064,7 @@ impl<T: SplitSample> TipFrame<T> {
         )?;
         let _ = products.settle(cdfs, None, segments);
         let work = inter::TipOutputStages::init(
+            backend,
             &self.spares,
             progress,
             &sequence,
@@ -1053,7 +1089,7 @@ impl<T: SplitSample> TipFrame<T> {
         Ok(())
     }
 
-    fn band(&self, index: usize) -> Result<()> {
+    fn band<B: splot_core::simd::SimdBackend>(&self, backend: B, index: usize) -> Result<()> {
         let (Some(core), Some(sequence)) = (self.core.get(), self.sequence.get()) else {
             return Err(inter::invalid_inter_tile_scheduling_state());
         };
@@ -1065,7 +1101,7 @@ impl<T: SplitSample> TipFrame<T> {
         let work = work
             .as_ref()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        if let Some(field) = work.band(index, sequence, core, reference)?
+        if let Some(field) = work.band(backend, index, sequence, core, reference)?
             && let Some(motion) = self.motion.lock().take()
         {
             motion.publish(field);
@@ -1075,7 +1111,7 @@ impl<T: SplitSample> TipFrame<T> {
 
     /// Projects motion-field band `index` and records the reference rows of
     /// the bands in it.
-    fn project(&self, index: usize) -> Result<()> {
+    fn project<B: splot_core::simd::SimdBackend>(&self, backend: B, index: usize) -> Result<()> {
         let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
             return Err(inter::invalid_inter_tile_scheduling_state());
         };
@@ -1087,7 +1123,7 @@ impl<T: SplitSample> TipFrame<T> {
             .read()
             .as_ref()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?
-            .project(index, core, reference, |band, needs| {
+            .project(backend, index, core, reference, |band, needs| {
                 if let Some(slot) = bounds.get(band) {
                     let _ = slot.set(needs);
                 }
@@ -1211,13 +1247,36 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
 
     /// Runs the claimed row, then a band the projection admitted or the
     /// finish the last band released, without a scan or a wake.
-    #[inline(never)]
-    fn run(&self, mut claim: Claim, _worker: usize) {
+    fn run(&self, claim: Claim, worker: usize) {
+        struct Scope<'a, T: SplitSample>(&'a TipFrame<T>, Claim, usize);
+        impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
+            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
+                self.0.run_with_backend(backend.narrow(), self.1, self.2);
+            }
+        }
+        if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
+            backend.enter(Scope(self, claim, worker));
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.failed.load(Ordering::Acquire) || self.stages[TIP_FINISH].is_finished()
+    }
+}
+
+impl<T: SplitSample> TipFrame<T> {
+    fn run_with_backend<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        mut claim: Claim,
+        _worker: usize,
+    ) {
+        let narrow = backend.narrow();
         loop {
             let outcome = match claim.stage {
-                TIP_INIT => self.init(),
-                TIP_PROJECT => self.project(claim.row),
-                TIP_BAND => self.band(claim.row),
+                TIP_INIT => self.init(narrow),
+                TIP_PROJECT => self.project(narrow, claim.row),
+                TIP_BAND => self.band(narrow, claim.row),
                 _ => self.finish_frame(),
             };
             match claim.stage {
@@ -1241,10 +1300,6 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
                 None => break,
             }
         }
-    }
-
-    fn done(&self) -> bool {
-        self.failed.load(Ordering::Acquire) || self.stages[TIP_FINISH].is_finished()
     }
 }
 
@@ -1507,11 +1562,12 @@ impl<W: IntoDecoderWork> WorkPool<W> {
         })
     }
 
-    fn push_slot(
+    fn push_slot_with(
         &mut self,
         rows: Option<&DecoderRowScheduler>,
         index: usize,
         arm: impl FnOnce(&mut W),
+        run_inline: impl Fn(&W, Claim),
     ) -> Result<()> {
         let slot = self
             .slots
@@ -1523,13 +1579,22 @@ impl<W: IntoDecoderWork> WorkPool<W> {
             return Ok(());
         }
         while let Some(claim) = slot.claim() {
-            slot.run(claim, 0);
+            run_inline(slot, claim);
         }
         if slot.done() {
             Ok(())
         } else {
             Err(inter::invalid_inter_tile_scheduling_state())
         }
+    }
+
+    fn push_slot(
+        &mut self,
+        rows: Option<&DecoderRowScheduler>,
+        index: usize,
+        arm: impl FnOnce(&mut W),
+    ) -> Result<()> {
+        self.push_slot_with(rows, index, arm, |slot, claim| slot.run(claim, 0))
     }
 
     fn drain(&mut self, rows: &DecoderRowScheduler) {
@@ -1619,6 +1684,7 @@ impl RowPools {
     /// Hands one TIP output frame to the scheduler, or decodes it inline.
     pub(crate) fn push_tip<T: SplitSample>(
         &mut self,
+        backend: splot_core::simd::ResolvedBackend,
         rows: Option<&DecoderRowScheduler>,
         options: &DecodeOptions,
         inputs: TipFrameInputs<T>,
@@ -1637,11 +1703,24 @@ impl RowPools {
             },
             TipFrame::reset,
         );
-        tip.push_slot(rows, index, |work| {
-            work.options = *options;
-            work.inline = rows.is_none();
-            work.arm(inputs);
-        })
+        tip.push_slot_with(
+            rows,
+            index,
+            |work| {
+                work.options = *options;
+                work.inline = rows.is_none();
+                work.arm(inputs);
+            },
+            |slot, claim| {
+                struct Scope<'a, T: SplitSample>(&'a TipFrame<T>, Claim);
+                impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
+                    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
+                        self.0.run_with_backend(backend.narrow(), self.1, 0);
+                    }
+                }
+                backend.enter(Scope(slot, claim));
+            },
+        )
     }
 
     /// Hands one walked frame's filter phase to the scheduler, or runs it inline.

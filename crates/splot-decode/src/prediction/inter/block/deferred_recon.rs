@@ -340,13 +340,15 @@ impl InterReconCommand {
 
     /// Appends the § 7.22 temporal records of a compound block, from the
     /// refined `motion` of its units when it refines.
-    fn compound_records<T: ReconSample>(
+    fn compound_records<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
         append_compound_temporal_motion(
+            backend,
             temporal_records,
             shared.reference,
             shared.ref_frame_idx,
@@ -363,8 +365,9 @@ impl InterReconCommand {
     ///
     /// This reads reference samples and writes none, so it is the half a motion
     /// resolution pass runs ahead of reconstruction.
-    fn derive_motion<T: ReconSample>(
+    fn derive_motion<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
@@ -373,6 +376,7 @@ impl InterReconCommand {
         if self.is_tip() {
             let frame = shared.tip(sink.info())?;
             tip::predict_block(
+                backend,
                 tip_scratch,
                 sink,
                 Some(temporal_records),
@@ -387,6 +391,7 @@ impl InterReconCommand {
         }
         if let Some(flags) = self.refined() {
             return super::prediction::predict_refined_inter_block(
+                backend,
                 sink,
                 refined,
                 &self.placed,
@@ -397,19 +402,21 @@ impl InterReconCommand {
                 ),
                 false,
                 shared.tile_offset,
-                |units| self.compound_records(temporal_records, shared, Some(units)),
+                |units| self.compound_records(backend, temporal_records, shared, Some(units)),
             );
         }
         if let InterReconKind::Compound { .. } = self.kind {
-            return self.compound_records(temporal_records, shared, None);
+            return self.compound_records(backend, temporal_records, shared, None);
         }
         temporal_records.push(self.single_temporal_record(shared));
         Ok(())
     }
 
     /// Reconstructs the samples of a block that does not refine its motion.
-    fn reconstruct_from_motion<T: ReconSample>(
+    #[expect(clippy::too_many_arguments)]
+    fn reconstruct_from_motion<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         residual_blocks: &[InterResidualBlock],
@@ -421,6 +428,7 @@ impl InterReconCommand {
         match sink {
             CurrentFrameSurface::Frame(workspace) => {
                 super::prediction::reconstruct_placed_inter_block(
+                    backend,
                     interintra_scratch,
                     workspace,
                     &self.placed,
@@ -439,6 +447,7 @@ impl InterReconCommand {
             }
             sink @ (CurrentFrameSurface::Rect(_) | CurrentFrameSurface::OwnedRect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
+                    backend,
                     sink,
                     &self.placed,
                     residual_blocks,
@@ -458,8 +467,9 @@ impl InterReconCommand {
 
     /// Reconstructs a § 7.13.3.2 TIP block or a refined compound block in
     /// one pass, deriving its § 7.22 records unless a motion pass already did.
-    fn reconstruct_unit_block<T: ReconSample>(
+    fn reconstruct_unit_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual: (&[InterResidualBlock], &[i32]),
@@ -470,6 +480,7 @@ impl InterReconCommand {
         let records = (!self.motion_derived).then_some(temporal_records);
         if let Some(flags) = self.refined() {
             super::prediction::predict_refined_inter_block(
+                backend,
                 sink,
                 refined,
                 &self.placed,
@@ -482,13 +493,14 @@ impl InterReconCommand {
                 shared.tile_offset,
                 |units| {
                     records.map_or(Ok(()), |records| {
-                        self.compound_records(records, shared, Some(units))
+                        self.compound_records(backend, records, shared, Some(units))
                     })
                 },
             )?;
         } else {
             let frame = shared.tip(sink.info())?;
             tip::predict_block(
+                backend,
                 tip_scratch,
                 sink,
                 records,
@@ -504,6 +516,7 @@ impl InterReconCommand {
             return Ok(());
         };
         super::super::add_inter_residual_to_workspace(
+            backend,
             sink,
             block_residual,
             residual.0,
@@ -516,8 +529,9 @@ impl InterReconCommand {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn reconstruct_ordered<T: ReconSample>(
+    fn reconstruct_ordered<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &mut self,
+        backend: B,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
@@ -529,6 +543,7 @@ impl InterReconCommand {
     ) -> Result<()> {
         if self.is_tip() || self.refined().is_some() {
             return self.reconstruct_unit_block(
+                backend,
                 sink,
                 temporal_records,
                 (residual_blocks, residual_coeffs),
@@ -537,9 +552,16 @@ impl InterReconCommand {
             );
         }
         if !self.motion_derived {
-            self.derive_motion(sink, temporal_records, shared, (tip_scratch, refined))?;
+            self.derive_motion(
+                backend,
+                sink,
+                temporal_records,
+                shared,
+                (tip_scratch, refined),
+            )?;
         }
         self.reconstruct_from_motion(
+            backend,
             sink,
             block_decoded,
             residual_blocks,
@@ -567,14 +589,16 @@ impl<T: ReconSample> InterReconScratch<T> {
         &mut self.general_intra
     }
 
-    pub(super) fn derive_motion_logged(
+    pub(super) fn derive_motion_logged<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         command: &mut InterReconCommand,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         command.derive_motion(
+            backend,
             sink,
             temporal_records,
             shared,
@@ -585,8 +609,9 @@ impl<T: ReconSample> InterReconScratch<T> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub(super) fn reconstruct(
+    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         command: &mut InterReconCommand,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
@@ -596,6 +621,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         command.reconstruct_ordered(
+            backend,
             sink,
             block_decoded,
             temporal_records,

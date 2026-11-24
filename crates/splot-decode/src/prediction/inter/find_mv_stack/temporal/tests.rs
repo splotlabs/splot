@@ -37,15 +37,18 @@ fn project_whole_temporal_motion_field(
     let height8 = output.height8;
     let mut band = trajectories.and_then(TrajectoryState::whole_band);
     if let Some(mut rows) = output.bands(height8.max(1)).next() {
-        project_temporal_motion_field(
-            &mut ChunkLanes::default(),
-            &prepared,
-            source,
-            0..height8,
-            (projection_step, tmvp_unit_size8),
-            band.as_mut().map(|band| (band, true)),
-            &mut rows,
-        );
+        crate::test_support::with_auto_backend!(backend => {
+            project_temporal_motion_field(
+                backend,
+                &mut ChunkLanes::default(),
+                &prepared,
+                source,
+                0..height8,
+                (projection_step, tmvp_unit_size8),
+                band.as_mut().map(|band| (band, true)),
+                &mut rows,
+            );
+        });
     }
 }
 
@@ -1309,7 +1312,12 @@ fn tip_projection_fills_unsampled_units_and_adds_the_block_mv() {
         .set(0, 0, MotionVector { row: 8, col: -16 }, 4, true);
 
     let references = context.tip_reference_pair().unwrap();
-    assert!(context.prepare_tip(references, 2, 2, false).is_ok());
+    assert!(
+        crate::test_support::with_auto_backend!(backend => {
+            context.prepare_tip(backend, references, 2, 2, false)
+        })
+        .is_ok()
+    );
     assert_eq!(context.tip_references(), context.tip_reference_pair());
     let expected = [
         MotionVector { row: 5, col: -6 },
@@ -1340,7 +1348,12 @@ fn tip_temporal_scaling_clamps_to_the_reference_mv_domain() {
     );
 
     let references = context.tip_reference_pair().unwrap();
-    assert!(context.prepare_tip(references, 1, 8, false).is_ok());
+    assert!(
+        crate::test_support::with_auto_backend!(backend => {
+            context.prepare_tip(backend, references, 1, 8, false)
+        })
+        .is_ok()
+    );
     assert_eq!(
         context.field.cell(0, 0),
         Some(ProjectedTemporalMotionCell::new(
@@ -1362,7 +1375,12 @@ fn tip_step_one_hole_fill_stays_within_64_pixel_tmvp_units() {
         .set(0, 7, MotionVector { row: 8, col: -16 }, 4, true);
 
     let references = context.tip_reference_pair().unwrap();
-    assert!(context.prepare_tip(references, 1, 8, true).is_ok());
+    assert!(
+        crate::test_support::with_auto_backend!(backend => {
+            context.prepare_tip(backend, references, 1, 8, true)
+        })
+        .is_ok()
+    );
     assert_eq!(
         context.tip_candidate(0, 8, MotionVector::ZERO),
         Some([MotionVector::ZERO; 2])
@@ -1402,7 +1420,12 @@ fn tip_newly_averaged_sample_keeps_the_scaled_reference_offset() {
         .set(0, 14, MotionVector { row: 18, col: -36 }, 9, true);
 
     let references = context.tip_reference_pair().unwrap();
-    assert!(context.prepare_tip(references, 2, 16, true).is_ok());
+    assert!(
+        crate::test_support::with_auto_backend!(backend => {
+            context.prepare_tip(backend, references, 2, 16, true)
+        })
+        .is_ok()
+    );
     let cell = context.field.cell(0, 11).unwrap();
     assert_eq!(
         cell,
@@ -1421,10 +1444,20 @@ fn tip_averaging_never_inherits_the_previous_frame_between_sampled_cells() {
         }
     }
     let references = context.tip_reference_pair().unwrap();
-    assert!(context.prepare_tip(references, 1, 8, true).is_ok());
+    assert!(
+        crate::test_support::with_auto_backend!(backend => {
+            context.prepare_tip(backend, references, 1, 8, true)
+        })
+        .is_ok()
+    );
 
     context.field.reset(4, 8).unwrap();
-    assert!(context.prepare_tip(references, 2, 16, true).is_ok());
+    assert!(
+        crate::test_support::with_auto_backend!(backend => {
+            context.prepare_tip(backend, references, 2, 16, true)
+        })
+        .is_ok()
+    );
 
     for y8 in 0..2 {
         for x8 in 0..4 {
@@ -1579,7 +1612,10 @@ fn unit_tip_preparation_matches_the_whole_field_passes() {
         };
         let mut expected = field.clone();
         reference_prepare_tip_field(&mut expected, references, step, unit, fill_holes);
-        prepare_tip_field(&mut field, references, step, unit, fill_holes).unwrap();
+        crate::test_support::with_auto_backend!(backend => {
+            prepare_tip_field(backend, &mut field, references, step, unit, fill_holes)
+        })
+        .unwrap();
         assert_eq!(
             field, expected,
             "case {case}: step {step} unit {unit} holes {fill_holes}"
@@ -1650,7 +1686,10 @@ fn narrow_tip_preparation_matches_the_whole_field_passes() {
         };
         let mut expected = field.clone();
         reference_prepare_tip_field(&mut expected, references, step, unit, fill_holes);
-        prepare_tip_field(&mut field, references, step, unit, fill_holes).unwrap();
+        crate::test_support::with_auto_backend!(backend => {
+            prepare_tip_field(backend, &mut field, references, step, unit, fill_holes)
+        })
+        .unwrap();
         assert_eq!(
             field, expected,
             "case {case}: step {step} unit {unit} holes {fill_holes}"
@@ -1693,8 +1732,9 @@ fn refresh_reuses_projected_and_trajectory_storage() {
         ..config
     };
     for config in [parked, parked, config] {
-        context
-            .refresh_from_references(
+        crate::test_support::with_auto_backend!(backend => {
+            context.refresh_from_references(
+                backend,
                 (16, 16),
                 1,
                 config,
@@ -1703,7 +1743,8 @@ fn refresh_reuses_projected_and_trajectory_storage() {
                 &ref_order_hint,
                 &ref_motion_fields,
             )
-            .unwrap();
+        })
+        .unwrap();
         assert!(context.trajectories.is_some() || context.trajectory_scratch.is_some());
     }
 
@@ -1771,23 +1812,26 @@ fn refresh_rejects_a_malformed_selected_projection_source() {
     future.set_reference_metadata(true, (0, 0), &[Some(8)]);
     let mut context = TemporalMvContext::empty();
 
-    let result = context.refresh_from_references(
-        (0, 0),
-        10,
-        TemporalProjectionConfig {
-            frame_size: (0, 0),
-            step: 1,
-            unit_size8: 8,
-            enable_tip: false,
-            enable_trajectory: false,
-            reduced: false,
-            bru_ref: None,
-        },
-        &[0, 1],
-        &[true, true],
-        &[8, 12],
-        &[Some(Arc::new(past)), Some(Arc::new(future))],
-    );
+    let result = crate::test_support::with_auto_backend!(backend => {
+        context.refresh_from_references(
+            backend,
+            (0, 0),
+            10,
+            TemporalProjectionConfig {
+                frame_size: (0, 0),
+                step: 1,
+                unit_size8: 8,
+                enable_tip: false,
+                enable_trajectory: false,
+                reduced: false,
+                bru_ref: None,
+            },
+            &[0, 1],
+            &[true, true],
+            &[8, 12],
+            &[Some(Arc::new(past)), Some(Arc::new(future))],
+        )
+    });
     assert!(matches!(
         result,
         Err(crate::DecodeError::HeaderState {
@@ -1835,7 +1879,10 @@ fn frame_temporal_storage_reuses_bands_and_clears_previous_products() {
                     .get()
                     .is_none()
             );
-            plan.project(&context, index, |_, _| None).unwrap();
+            crate::test_support::with_auto_backend!(backend => {
+                plan.project(backend, &context, index, |_, _| None)
+            })
+            .unwrap();
             let result = context.banded.as_ref().unwrap().bands[index]
                 .published
                 .get()

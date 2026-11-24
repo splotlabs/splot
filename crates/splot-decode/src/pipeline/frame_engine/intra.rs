@@ -27,7 +27,8 @@ use crate::prediction::inter::{
 use crate::{DecodeOptions, DecodePlannedObu, Result};
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn walk_intra_frame<T: ReconSample>(
+pub(crate) fn walk_intra_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut crate::prediction::inter::InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
     bytes: crate::bitstream::byte_stream::SourceBytes<'_>,
@@ -108,7 +109,8 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         frame_cdfs,
         filter_inputs,
         segment_ids,
-    } = decode_inter_blocks::<T>(
+    } = decode_inter_blocks::<B, T>(
+        backend,
         scratch,
         tile_plan,
         sequence,

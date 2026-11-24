@@ -15,6 +15,7 @@ use core::ops::Range;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::simd::{ResolvedBackend, SimdPolicy, resolve_backend};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
@@ -693,6 +694,7 @@ pub struct TileEnd {
 
 /// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {
+    backend: ResolvedBackend,
     frame: TilePartitionFrameFacts,
     bounds: TilePartitionBounds,
     chroma: ChromaFormatIdc,
@@ -782,11 +784,14 @@ impl IntraTileSyntax {
         )?;
         let delta_q = delta_q::DeltaQ::new(core, base_q_idx, tools.bit_depth);
         let segments = segment::Segments::new(seq, core, (rows.clone(), cols.clone()), base_q_idx)?;
+        let backend = resolve_backend(SimdPolicy::Auto)
+            .map_err(|_| EncoderSyntaxError::Unsupported("SIMD backend"))?;
         let mut coeff = TileCoeffContextState::default();
         coeff
             .reset_for_tile_chroma(rows.clone(), cols.clone(), chroma)
             .map_err(rule("coefficient contexts"))?;
         Ok(Self {
+            backend,
             frame,
             bounds: TilePartitionBounds::new(rows.clone(), cols.clone()),
             chroma,

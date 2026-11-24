@@ -186,8 +186,7 @@ struct TypedTransform2d<B: SimdBackend>(B);
 impl<B: SimdBackend> Transform2dRunner for TypedTransform2d<B> {
     #[inline]
     fn walsh(self, dequant: &[i32], residual: &mut [i32]) {
-        self.0
-            .vectorize(|| walsh_hadamard_4x4(self.0.token(), dequant, residual));
+        splot_core::with_simd!(self.0, simd => walsh_hadamard_4x4(simd, dequant, residual));
     }
 
     #[inline]
