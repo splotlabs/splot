@@ -91,14 +91,14 @@ fn raw_obu_limit_is_checked_before_parsing_next_obu() {
         } if source.name() == DecodeLimitName::MaxObus
     ));
 
-    let bytes = [0x01, 0x50, 0x01, 0x08];
+    let bytes = [0x02, 0xD0, 0x03, 0x01, 0x08];
     let error = plan_byte_stream(&bytes, &options).unwrap_err();
 
     assert!(matches!(
         error,
         crate::DecodeError::UnsupportedStructure {
             unsupported
-        } if unsupported.reason() == DecodeUnsupportedReason::MultistreamSelection
+        } if unsupported.reason() == DecodeUnsupportedReason::InvalidLayerScope
     ));
 }
 

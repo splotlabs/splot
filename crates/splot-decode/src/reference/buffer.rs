@@ -273,6 +273,15 @@ impl RuntimeReferenceBuffer {
         self.advance_frame_counter();
     }
 
+    pub(crate) fn invalidate_all(&mut self) {
+        for slot in &mut self.slots {
+            slot.valid = false;
+            slot.long_term_id = None;
+        }
+        self.open_loop = None;
+        self.allowed_frames = None;
+    }
+
     fn advance_frame_counter(&mut self) {
         if self.started {
             self.frame_counter = self.frame_counter.wrapping_add(1);

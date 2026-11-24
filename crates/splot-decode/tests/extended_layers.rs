@@ -607,7 +607,7 @@ fn shared_numeric_hls_ids_isolate_sequence_mfh_and_film_grain() {
     assert_eq!(sha256_hex(&raw_for_xlayer(&pics_a, 3)), SHA_ISO_X3);
     assert_eq!(sha256_hex(&raw_for_xlayer(&pics_a, 7)), SHA_ISO_X7);
 
-    let tus_8b = temporal_units(XLAYER3_7_ISOLATION);
+    let tus_8b = temporal_units(XLAYER3_7_LAYERED_MIXED);
     let tus_10b = temporal_units(XLAYER3_7_10BIT);
     let mut collided_b = Vec::new();
     for i in 0..3 {

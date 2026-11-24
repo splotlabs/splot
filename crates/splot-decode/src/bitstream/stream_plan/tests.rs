@@ -105,7 +105,7 @@ fn non_base_temporal_obus_are_retained_but_not_selected_for_base_only() {
         obu(OBU_TEMPORAL_DELIMITER | 0x01).as_slice(),
         obu(OBU_CLOSED_LOOP_KEY).as_slice(),
         obu(OBU_REGULAR_TILE_GROUP | 0x01).as_slice(),
-        obu(OBU_MSDO | 0x01).as_slice(),
+        obu(OBU_METADATA_SHORT | 0x01).as_slice(),
     ]
     .concat();
 
@@ -630,7 +630,7 @@ fn malformed_ivf_container_and_frame_payload_are_transactional() {
 
 #[test]
 fn malformed_later_ivf_payload_wins_over_earlier_unsupported_obu() {
-    let unsupported = obu(OBU_MSDO);
+    let unsupported = extended_obu(OBU_MSDO | 0x80, 0x03);
     let malformed = [0x05, OBU_CLOSED_LOOP_KEY];
     let bytes = ivf_with_payloads(&[&unsupported, &malformed]);
 
@@ -706,7 +706,7 @@ fn parsed_ivf_obu_limits_win_before_later_payload_errors() {
 
 #[test]
 fn byte_ivf_record_limit_wins_over_earlier_unsupported_obu() {
-    let unsupported = obu(OBU_MSDO);
+    let unsupported = extended_obu(OBU_MSDO | 0x80, 0x03);
     let second = obu(OBU_TEMPORAL_DELIMITER);
     let bytes = ivf_with_payloads(&[&unsupported, &second]);
 
@@ -880,8 +880,12 @@ fn a_stream_on_one_nonzero_extended_layer_is_planned() {
 fn unsupported_layers_and_obu_types_are_typed() {
     let cases = [
         (
-            obu(OBU_MSDO).to_vec(),
-            DecodeUnsupportedReason::MultistreamSelection,
+            obu(OBU_MSDO | 0x01).to_vec(),
+            DecodeUnsupportedReason::InvalidLayerScope,
+        ),
+        (
+            extended_obu(OBU_MSDO | 0x80, 0x03).to_vec(),
+            DecodeUnsupportedReason::InvalidLayerScope,
         ),
         (
             extended_obu(0x88, 0x00).to_vec(),
@@ -916,6 +920,18 @@ fn unsupported_layers_and_obu_types_are_typed() {
                     && unsupported.feature_id() == DECODE_STREAM_STATE_FEATURE_ID
             ));
         }
+    }
+
+    for accepted_msdo in [
+        obu(OBU_MSDO).to_vec(),
+        extended_obu(OBU_MSDO | 0x80, 0x1F).to_vec(),
+    ] {
+        let plan = DecodeContext::plan_bytes(&accepted_msdo, DecodeOptions::default()).unwrap();
+        assert_eq!(plan.obu_count(), 1);
+        assert_eq!(
+            plan.obus().next().unwrap().role(),
+            DecodePlannedObuRole::Global
+        );
     }
 }
 

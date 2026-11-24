@@ -663,3 +663,171 @@ fn decode_rejects_invalid_and_conflicting_extended_flags() {
         );
     }
 }
+
+#[test]
+fn decode_operating_point_selection_and_conflict_flags() {
+    let input = conformance_vector("syn-msdo-ops-random-access.obu");
+    let bytes = std::fs::read(&input).unwrap();
+    let context = splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::new(
+        splot_decode::ThreadCount::from(1usize),
+    ))
+    .unwrap();
+
+    let out_raw = temp_output("raw");
+    let res = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        "--operating-point",
+        "global:0:1",
+        input.to_str().unwrap(),
+        "-o",
+        out_raw.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        res.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&res.stderr)
+    );
+    let mut expected_raw = Vec::new();
+    context
+        .decode_raw_bytes(
+            &bytes,
+            splot_decode::DecodeOptions::default().with_operating_point_selection(
+                splot_decode::OperatingPointSelection::Global {
+                    ops_id: 0,
+                    op_index: 1,
+                },
+            ),
+            &mut expected_raw,
+        )
+        .unwrap();
+    assert_eq!(std::fs::read(&out_raw).unwrap(), expected_raw);
+
+    for (flag_val, op, expected_frames) in [
+        (
+            "global:0:0",
+            splot_decode::OperatingPointSelection::Global {
+                ops_id: 0,
+                op_index: 0,
+            },
+            6usize,
+        ),
+        (
+            "global:1:0",
+            splot_decode::OperatingPointSelection::Global {
+                ops_id: 1,
+                op_index: 0,
+            },
+            9usize,
+        ),
+        (
+            "local:3:2:0",
+            splot_decode::OperatingPointSelection::Local {
+                xlayer_id: splot_core::types::ExtendedLayerId::from_bits(3),
+                ops_id: 2,
+                op_index: 0,
+            },
+            9usize,
+        ),
+    ] {
+        let out = splot(&[
+            "decode",
+            "--output-format",
+            "hash",
+            "--operating-point",
+            flag_val,
+            input.to_str().unwrap(),
+        ]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "flag={flag_val}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let expected_report = context
+            .decode_hash_report_bytes(
+                &bytes,
+                splot_decode::DecodeOptions::default().with_operating_point_selection(op),
+            )
+            .unwrap();
+        assert_eq!(expected_report.frames.len(), expected_frames);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for frame in &expected_report.frames {
+            assert!(
+                stdout.contains(&frame.hashes[0].digest_hex),
+                "missing frame digest for {flag_val} in stdout: {stdout}"
+            );
+        }
+
+        let rej_raw = temp_output("raw");
+        let raw_fail = splot(&[
+            "decode",
+            "--output-format",
+            "raw",
+            "--operating-point",
+            flag_val,
+            input.to_str().unwrap(),
+            "-o",
+            rej_raw.to_str().unwrap(),
+        ]);
+        assert_ne!(raw_fail.status.code(), Some(0));
+        assert!(
+            String::from_utf8_lossy(&raw_fail.stderr)
+                .contains("multiple_extended_layers_flat_output")
+        );
+    }
+
+    for bad_args in [
+        &["--output-format", "hash", "--operating-point", "bad"][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "global:16:0",
+        ][..],
+        &["--output-format", "hash", "--operating-point", "global:0:7"][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "local:31:0:0",
+        ][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "global:0:1",
+            "--extended-layer",
+            "3",
+        ][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "global:0:1",
+            "--temporal-layer",
+            "0",
+        ][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "local:3:2:0",
+            "--embedded-layer",
+            "0",
+        ][..],
+    ] {
+        let mut args = vec!["decode"];
+        args.extend_from_slice(bad_args);
+        args.push(input.to_str().unwrap());
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 for {bad_args:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

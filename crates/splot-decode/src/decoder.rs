@@ -27,7 +27,7 @@ use crate::error::{DecodeError, DecoderStateError, Result};
 use crate::pipeline::{ActiveFilmGrain, DecodeSession, PipelineDecodedFrame, PipelineFrame};
 use crate::{
     DecodeLimitName, DecodeLimits, DecodeOptions, EmbeddedLayerId, EmbeddedLayerSelection,
-    ExtendedLayerId, ExtendedLayerSelection, TemporalLayerSelection,
+    ExtendedLayerId, ExtendedLayerSelection, OperatingPointSelection, TemporalLayerSelection,
 };
 
 /// How a [`Decoder`] runs.
@@ -54,6 +54,9 @@ pub struct DecoderSettings {
     pub embedded_layer_selection: EmbeddedLayerSelection,
     /// Extended enhancement layers to decode and emit. Defaults to [`ExtendedLayerSelection::All`].
     pub extended_layer_selection: ExtendedLayerSelection,
+    /// Operating-point selection within an `OBU_OPERATING_POINT_SET`. Defaults to
+    /// [`OperatingPointSelection::None`].
+    pub operating_point_selection: OperatingPointSelection,
 }
 
 impl DecoderSettings {
@@ -120,6 +123,16 @@ impl DecoderSettings {
         extended_layer_selection: ExtendedLayerSelection,
     ) -> Self {
         self.extended_layer_selection = extended_layer_selection;
+        self
+    }
+
+    /// Returns a copy with the operating-point selection policy replaced.
+    #[must_use]
+    pub const fn with_operating_point_selection(
+        mut self,
+        operating_point_selection: OperatingPointSelection,
+    ) -> Self {
+        self.operating_point_selection = operating_point_selection;
         self
     }
 }
@@ -580,6 +593,7 @@ struct DriverLaunch {
     temporal_layer_selection: TemporalLayerSelection,
     embedded_layer_selection: EmbeddedLayerSelection,
     extended_layer_selection: ExtendedLayerSelection,
+    operating_point_selection: OperatingPointSelection,
     frame_delay: core::num::NonZeroUsize,
     rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
     resolved: ResolvedBackend,
@@ -607,7 +621,8 @@ fn run_driver_session(launch: DriverLaunch) {
         .with_skip_film_grain(launch.skip_film_grain)
         .with_temporal_layer_selection(launch.temporal_layer_selection)
         .with_embedded_layer_selection(launch.embedded_layer_selection)
-        .with_extended_layer_selection(launch.extended_layer_selection);
+        .with_extended_layer_selection(launch.extended_layer_selection)
+        .with_operating_point_selection(launch.operating_point_selection);
     let guard = DriverGuard(launch.shared);
     let session = DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
     loop {
@@ -644,12 +659,19 @@ impl Decoder {
     /// `settings.embedded_layer_selection` is invalid,
     /// [`DecodeError::InvalidExtendedSelection`] if
     /// `settings.extended_layer_selection` is invalid,
+    /// [`DecodeError::InvalidOperatingPointSelection`] if
+    /// `settings.operating_point_selection` is invalid or conflicts with layer selections,
     /// [`DecodeError::UnsupportedBackend`] if the requested SIMD policy cannot
     /// run on this host, or [`DecodeError::Pool`] if a thread cannot start.
     pub fn new(settings: DecoderSettings) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
         settings.embedded_layer_selection.validate()?;
         settings.extended_layer_selection.validate()?;
+        settings.operating_point_selection.validate_with(
+            settings.temporal_layer_selection,
+            settings.embedded_layer_selection,
+            settings.extended_layer_selection,
+        )?;
         let resolved = splot_core::simd::resolve_backend(settings.simd_policy)?;
         let selected_backend = resolved.kind();
         let threads = settings.threads.resolve();
@@ -682,6 +704,7 @@ impl Decoder {
             temporal_layer_selection: settings.temporal_layer_selection,
             embedded_layer_selection: settings.embedded_layer_selection,
             extended_layer_selection: settings.extended_layer_selection,
+            operating_point_selection: settings.operating_point_selection,
             frame_delay,
             rows,
             resolved,

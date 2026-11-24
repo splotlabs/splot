@@ -116,6 +116,13 @@ pub enum DecodeError {
         /// Why the requested extended selection is invalid.
         reason: &'static str,
     },
+
+    /// Caller supplied an invalid operating-point selection.
+    #[error("invalid operating-point selection: {reason}")]
+    InvalidOperatingPointSelection {
+        /// Why the requested operating-point selection is invalid.
+        reason: &'static str,
+    },
 }
 
 /// Why a [`crate::Decoder`] session refused a call.
