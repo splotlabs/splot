@@ -4,13 +4,66 @@
 //! Temporal and embedded layer validation for coded inter, SEF, and TIP frames (§ 6.2.2 / § 6.17.2).
 
 use splot_core::annexb::ObuEnvelope;
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, FrameReferenceStateView};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::obu::ObuHeader;
 use splot_core::span::ByteOffset;
+use splot_core::types::{EmbeddedLayerId, TemporalLayerId};
 
 use super::{ReferenceMetadata, malformed_frame_header};
 use crate::Result;
+
+impl ReferenceMetadata {
+    pub(crate) fn slot_tlayer_id(&self, slot: usize) -> Option<TemporalLayerId> {
+        self.ref_tlayer_id
+            .get(slot)
+            .copied()
+            .map(TemporalLayerId::from_bits)
+    }
+
+    pub(crate) fn slot_mlayer_id(&self, slot: usize) -> Option<EmbeddedLayerId> {
+        self.ref_mlayer_id
+            .get(slot)
+            .copied()
+            .map(EmbeddedLayerId::from_bits)
+    }
+
+    pub(crate) fn header_view(&self) -> FrameReferenceStateView<'_> {
+        let view = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &self.ref_valid,
+            &self.ref_order_hint,
+            &self.ref_frame_width,
+            &self.ref_frame_height,
+            &self.ref_base_q_idx,
+        )
+        .with_quantizer_delta_state(&self.ref_chroma_ac_deltas)
+        .with_primary_reference_state(&self.ref_counter, &self.ref_is_inter)
+        .with_long_term_id_state(&self.ref_long_term_id)
+        .with_global_motion_state(
+            &self.ref_num_total_refs,
+            &self.saved_global_motion_order_hints,
+            &self.saved_global_motion_params,
+        )
+        .with_single_layer_order_hint_state(
+            &self.ref_order_hint_lsbs,
+            &self.ref_implicit_output_frame,
+            &self.ref_immediate_output_frame,
+        )
+        .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
+        .with_lr_frame_filter_taps(self.lr_frame_filter_taps.as_deref().unwrap_or_default())
+        .with_allowed_frames(self.allowed_frames);
+        let view = if self.ref_tlayer_id.is_empty() {
+            view
+        } else {
+            view.with_tlayer_id_state(&self.ref_tlayer_id)
+        };
+        if self.ref_mlayer_id.is_empty() {
+            view
+        } else {
+            view.with_mlayer_id_state(&self.ref_mlayer_id)
+        }
+    }
+}
 
 pub(super) fn validate_obu_layer_ids(
     envelope: ObuEnvelope<'_>,
