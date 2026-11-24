@@ -646,6 +646,19 @@ mod tests {
         }
     }
 
+    struct SingleLayerRetention<'a> {
+        reference: &'a crate::reference::buffer::RuntimeReferenceBuffer,
+        scheduler: &'a mut OutputScheduler,
+    }
+    impl crate::pipeline::FrameRetention for SingleLayerRetention<'_> {
+        fn retains(&self, frame_index: usize) -> bool {
+            self.reference.retains(frame_index) || self.scheduler.retains(frame_index)
+        }
+        fn forget(&mut self, frame_index: usize) {
+            self.scheduler.forget(frame_index);
+        }
+    }
+
     #[test]
     fn emitted_sample_aliases_retire_without_losing_live_byte_accounting() {
         let source = settled_frame(8, FrameOutputEffects::empty()).unwrap();
@@ -662,18 +675,6 @@ mod tests {
             crate::support::decode_buffers::DecodeBuffers::new(),
             1,
         );
-        struct SingleLayerRetention<'a> {
-            reference: &'a crate::reference::buffer::RuntimeReferenceBuffer,
-            scheduler: &'a mut OutputScheduler,
-        }
-        impl crate::pipeline::FrameRetention for SingleLayerRetention<'_> {
-            fn retains(&self, frame_index: usize) -> bool {
-                self.reference.retains(frame_index) || self.scheduler.retains(frame_index)
-            }
-            fn forget(&mut self, frame_index: usize) {
-                self.scheduler.forget(frame_index);
-            }
-        }
         for _ in 0..128 {
             let mut alias = settled_frame(8, FrameOutputEffects::empty()).unwrap();
             alias.frame =
