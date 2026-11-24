@@ -884,22 +884,6 @@ fn unsupported_layers_and_obu_types_are_typed() {
             DecodeUnsupportedReason::MultistreamSelection,
         ),
         (
-            [
-                obu(OBU_SEQUENCE_HEADER).as_slice(),
-                extended_obu(0x90, 0x01).as_slice(),
-            ]
-            .concat(),
-            DecodeUnsupportedReason::NonBaseExtendedLayer,
-        ),
-        (
-            [
-                obu(OBU_SEQUENCE_HEADER).as_slice(),
-                extended_obu(0x91, 0x01).as_slice(),
-            ]
-            .concat(),
-            DecodeUnsupportedReason::NonBaseExtendedLayer,
-        ),
-        (
             extended_obu(0x88, 0x00).to_vec(),
             DecodeUnsupportedReason::InvalidLayerScope,
         ),
@@ -1043,4 +1027,93 @@ fn non_base_embedded_obus_are_planned_and_filtered_with_continuations() {
     assert!(filter.is_layer_selected(EmbeddedLayerId::from_bits(0), TemporalLayerId::from_bits(0)));
     assert!(!filter.is_layer_output(EmbeddedLayerId::from_bits(0), TemporalLayerId::from_bits(0)));
     assert!(filter.is_layer_output(EmbeddedLayerId::from_bits(1), TemporalLayerId::from_bits(1)));
+}
+
+#[test]
+fn multiple_extended_layers_plan_and_filter_independently() {
+    let bytes = [
+        &[0x01, 0x08][..],
+        &[0x02, 0x84, 0x03][..],
+        &[0x03, OBU_CLOSED_LOOP_KEY | 0x80, 0x03, 0x80][..],
+        &[0x02, 0x84, 0x07][..],
+        &[0x03, OBU_CLOSED_LOOP_KEY | 0x80, 0x07, 0x80][..],
+    ]
+    .concat();
+
+    let all_plan = plan(&bytes);
+    assert_eq!(all_plan.frame_candidate_count(), 2);
+    assert_eq!(all_plan.selected_layer().extended_layer_id().get(), 3);
+
+    let roles: Vec<_> = all_plan.obus().map(DecodePlannedObu::role).collect();
+    assert_eq!(
+        roles,
+        [
+            DecodePlannedObuRole::Global,
+            DecodePlannedObuRole::SelectedLayerState,
+            DecodePlannedObuRole::FrameCandidate,
+            DecodePlannedObuRole::SelectedLayerState,
+            DecodePlannedObuRole::FrameCandidate,
+        ]
+    );
+    let hdr_td = all_plan.obus().next().unwrap().header();
+    assert_eq!(
+        hdr_td.extended_layer_id,
+        splot_core::types::GLOBAL_XLAYER_ID
+    );
+    assert_eq!(
+        all_plan
+            .obus()
+            .nth(1)
+            .unwrap()
+            .header()
+            .extended_layer_id
+            .get(),
+        3
+    );
+    assert_eq!(
+        all_plan
+            .obus()
+            .nth(3)
+            .unwrap()
+            .header()
+            .extended_layer_id
+            .get(),
+        7
+    );
+
+    let only_7 = DecodeContext::plan_bytes(
+        &bytes,
+        DecodeOptions::default().with_extended_layer_selection(ExtendedLayerSelection::Target(
+            ExtendedLayerId::from_bits(7),
+        )),
+    )
+    .unwrap();
+    assert_eq!(only_7.frame_candidate_count(), 1);
+    assert_eq!(only_7.selected_layer().extended_layer_id().get(), 7);
+    assert_eq!(
+        only_7.obus().nth(1).unwrap().role(),
+        DecodePlannedObuRole::UnselectedLayer
+    );
+    assert_eq!(
+        only_7.obus().nth(2).unwrap().role(),
+        DecodePlannedObuRole::UnselectedLayer
+    );
+    assert_eq!(
+        only_7.obus().nth(4).unwrap().role(),
+        DecodePlannedObuRole::FrameCandidate
+    );
+
+    for bad in [
+        ExtendedLayerSelection::Target(ExtendedLayerId::from_bits(31)),
+        ExtendedLayerSelection::OutputMask(0),
+        ExtendedLayerSelection::OutputMask(1u32 << 31),
+    ] {
+        assert!(matches!(
+            DecodeContext::plan_bytes(
+                &bytes,
+                DecodeOptions::default().with_extended_layer_selection(bad),
+            ),
+            Err(DecodeError::InvalidExtendedSelection { .. })
+        ));
+    }
 }

@@ -11,7 +11,7 @@ use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, recycle, runtime_obus};
-use crate::bitstream::stream_plan::{ActiveLayerFilter, CandidateScan};
+use crate::bitstream::stream_plan::{ActiveLayerFilter, CandidateScan, ExtendedLayerSelection};
 use crate::error::Result;
 use crate::support::capability::missing_capability_message;
 use crate::{DecodeLimits, DecodeOptions, DecodePlannedObu};
@@ -42,6 +42,7 @@ impl<'a> RuntimeStream<'a> {
             scan: CandidateScan::new(
                 options.temporal_layer_selection(),
                 options.embedded_layer_selection(),
+                options.extended_layer_selection(),
             ),
         }
     }
@@ -117,6 +118,36 @@ impl<'a> RuntimeStream<'a> {
             }))
     }
 
+    pub(super) fn unit_only_filtered_unselected_xlayer<'b>(
+        &self,
+        unit: &'b UnitBytes,
+        buffer: &mut Vec<ObuEnvelope<'b>>,
+    ) -> bool {
+        let filter = self.scan.layer_filter();
+        if filter.extended_selection() == ExtendedLayerSelection::All {
+            return false;
+        }
+        if runtime_obus(unit.view(), buffer).is_err() {
+            return false;
+        }
+        if !buffer
+            .first()
+            .is_some_and(|env| env.header.obu_type == ObuType::TemporalDelimiter)
+        {
+            return false;
+        }
+        let mut saw_unselected_xlayer_frame = false;
+        for env in buffer.iter() {
+            if is_frame_obu(env.header.obu_type) {
+                if filter.is_xlayer_selected(env.header.extended_layer_id) {
+                    return false;
+                }
+                saw_unselected_xlayer_frame = true;
+            }
+        }
+        saw_unselected_xlayer_frame
+    }
+
     /// The next frame candidate and the unit holding it; `None` at end of
     /// input. Each unit read on the way is checked as a key frame unit when
     /// the candidate is a closed-loop key, else in inter order. Units after
@@ -131,9 +162,9 @@ impl<'a> RuntimeStream<'a> {
         let mut fresh = false;
         loop {
             if let Some((candidate, unit)) = self.next_in_unit()? {
-                let filter = *self.scan.layer_filter();
+                let filter = self.scan.layer_filter();
                 for skipped in &skipped {
-                    process_skipped_unit(skipped, storage, &filter, on_skipped)?;
+                    process_skipped_unit(skipped, storage, filter, on_skipped)?;
                 }
                 if fresh {
                     check_unit(&unit, storage, candidate.obu_type())?;
@@ -179,12 +210,7 @@ fn first_unit_frame_is_key(obus: &[ObuEnvelope<'_>]) -> bool {
         return false;
     }
     let mut index = 1usize;
-    while obus.get(index).is_some_and(|envelope| {
-        matches!(
-            envelope.header.obu_type,
-            ObuType::LayerConfigurationRecord | ObuType::OperatingPointSet | ObuType::AtlasSegment
-        )
-    }) {
+    while obus.get(index).is_some_and(is_pre_sequence_obu) {
         index += 1;
     }
     if obus
@@ -202,7 +228,13 @@ fn unit_order_check(
     obus: &[ObuEnvelope<'_>],
     candidate_obu: Option<ObuType>,
 ) -> fn(&[ObuEnvelope<'_>]) -> Result<()> {
-    if candidate_obu == Some(ObuType::ClosedLoopKey) || first_unit_frame_is_key(obus) {
+    let has_prior_inter_frame = obus
+        .iter()
+        .take_while(|envelope| envelope.header.obu_type != ObuType::ClosedLoopKey)
+        .any(|envelope| is_inter_frame_obu(envelope.header.obu_type));
+    if (candidate_obu == Some(ObuType::ClosedLoopKey) && !has_prior_inter_frame)
+        || first_unit_frame_is_key(obus)
+    {
         require_key_ivf_obu_order
     } else {
         require_inter_obu_order
@@ -301,21 +333,46 @@ pub(super) fn ivf_key_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
 ) -> Result<(ObuEnvelope<'a>, &'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
-    if !obus
+    let position = obus
         .iter()
-        .any(|envelope| envelope.offset == candidate.offset())
-    {
-        return Err(missing_key_ivf_obu(Some(candidate.offset())));
-    }
-    let ([_, sequence_envelope, key_envelope], indices) = require_key_frame_unit(obus)?;
-    if key_envelope.offset != candidate.offset() {
+        .position(|envelope| envelope.offset == candidate.offset())
+        .ok_or_else(|| missing_key_ivf_obu(Some(candidate.offset())))?;
+    let key_envelope = obus[position];
+    if key_envelope.header.obu_type != ObuType::ClosedLoopKey {
         return Err(unsupported_at(
             "unexpected_key_obu_order",
             candidate.offset(),
             missing_capability_message!("frame.sequence repeated_key_frame_unit"),
         ));
     }
-    Ok((sequence_envelope, &obus[..indices.frame], key_envelope))
+    if let Some(start) = prefix_after_previous_inter_frame(position, obus) {
+        let sequence_envelope = obus[..position]
+            .iter()
+            .rev()
+            .take_while(|envelope| envelope.header.obu_type != ObuType::TemporalDelimiter)
+            .find(|envelope| {
+                envelope.header.obu_type == ObuType::SequenceHeader
+                    && envelope.header.extended_layer_id == key_envelope.header.extended_layer_id
+            })
+            .copied()
+            .ok_or_else(|| {
+                unsupported_at(
+                    "missing_sequence_header",
+                    candidate.offset(),
+                    missing_capability_message!("obu.order minimal_frame_unit"),
+                )
+            })?;
+        return Ok((sequence_envelope, &obus[start..position], key_envelope));
+    }
+    let ([_, sequence_envelope, first_key], indices) = require_key_frame_unit(obus)?;
+    if first_key.offset != candidate.offset() {
+        return Err(unsupported_at(
+            "unexpected_key_obu_order",
+            candidate.offset(),
+            missing_capability_message!("frame.sequence repeated_key_frame_unit"),
+        ));
+    }
+    Ok((sequence_envelope, &obus[..indices.frame], first_key))
 }
 
 pub(super) fn leading_record_inter_frame_unit_start(
@@ -334,7 +391,7 @@ pub(super) fn leading_record_inter_frame_unit_start(
         let unit_start = index;
         index = skip_frame_prefix_obus(obus, index);
         let envelope = obus.get(index)?;
-        if !is_inter_frame_obu(envelope.header.obu_type) {
+        if !is_frame_obu(envelope.header.obu_type) {
             return None;
         }
         if index == position {
@@ -368,7 +425,25 @@ pub(super) fn require_inter_frame_units(
                 missing_capability_message!("inter.ivf_frame_unit_order"),
             ));
         };
-        require_inter_frame_obu(envelope, reason)?;
+        if envelope.header.obu_type == ObuType::ClosedLoopKey {
+            let has_sequence = obus[..index]
+                .iter()
+                .rev()
+                .take_while(|prior| prior.header.obu_type != ObuType::TemporalDelimiter)
+                .any(|prior| {
+                    prior.header.obu_type == ObuType::SequenceHeader
+                        && prior.header.extended_layer_id == envelope.header.extended_layer_id
+                });
+            if !has_sequence {
+                return Err(unsupported_at(
+                    reason,
+                    envelope.offset,
+                    missing_capability_message!("inter.ivf_frame_unit_order"),
+                ));
+            }
+        } else {
+            require_inter_frame_obu(envelope, reason)?;
+        }
         index = skip_frame_suffix_obus(obus, index + 1);
     }
     Ok(())
@@ -389,25 +464,16 @@ fn skip_frame_suffix_obus(obus: &[ObuEnvelope<'_>], mut index: usize) -> usize {
 }
 
 fn is_frame_prefix_obu(envelope: &ObuEnvelope<'_>) -> bool {
-    matches!(
-        envelope.header.obu_type,
-        ObuType::SequenceHeader
-            | ObuType::LayerConfigurationRecord
-            | ObuType::OperatingPointSet
-            | ObuType::AtlasSegment
-            | ObuType::ContentInterpretation
-            | ObuType::MultiFrameHeader
-            | ObuType::BufferRemovalTiming
-            | ObuType::QuantizationMatrix
-            | ObuType::FilmGrain
-            | ObuType::Padding
-    ) || matches!(
-        envelope.header.obu_type,
-        ObuType::MetadataShort | ObuType::MetadataGroup
-    ) && envelope
-        .payload
-        .first()
-        .is_some_and(|first| first & 0x80 == 0)
+    is_pre_sequence_obu(envelope)
+        || matches!(
+            envelope.header.obu_type,
+            ObuType::SequenceHeader
+                | ObuType::ContentInterpretation
+                | ObuType::MultiFrameHeader
+                | ObuType::BufferRemovalTiming
+                | ObuType::QuantizationMatrix
+                | ObuType::FilmGrain
+        )
 }
 
 fn is_frame_suffix_obu(envelope: &ObuEnvelope<'_>) -> bool {
@@ -513,6 +579,7 @@ struct MinimalFrameUnitIndices {
     suffix_end: usize,
 }
 
+#[cfg(test)]
 pub(super) fn leading_prefix_obus<'a>(
     obus: &'a [ObuEnvelope<'a>],
 ) -> Result<&'a [ObuEnvelope<'a>]> {
@@ -520,14 +587,25 @@ pub(super) fn leading_prefix_obus<'a>(
     Ok(&obus[..indices.frame])
 }
 
+fn is_pre_sequence_obu(envelope: &ObuEnvelope<'_>) -> bool {
+    matches!(
+        envelope.header.obu_type,
+        ObuType::LayerConfigurationRecord
+            | ObuType::OperatingPointSet
+            | ObuType::AtlasSegment
+            | ObuType::Padding
+    ) || matches!(
+        envelope.header.obu_type,
+        ObuType::MetadataShort | ObuType::MetadataGroup
+    ) && envelope
+        .payload
+        .first()
+        .is_some_and(|first| first & 0x80 == 0)
+}
+
 fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUnitIndices> {
     let mut sequence = 1usize;
-    while obus.get(sequence).is_some_and(|envelope| {
-        matches!(
-            envelope.header.obu_type,
-            ObuType::LayerConfigurationRecord | ObuType::OperatingPointSet | ObuType::AtlasSegment
-        )
-    }) {
+    while obus.get(sequence).is_some_and(is_pre_sequence_obu) {
         sequence += 1;
     }
     let frame = skip_frame_prefix_obus(obus, sequence + 1);
@@ -562,6 +640,7 @@ pub(super) fn suffix_after_candidate<'a>(
     let mut start = position + 1;
     while obus.get(start).is_some_and(|envelope| {
         envelope.header.obu_type == candidate.obu_type()
+            && envelope.header.extended_layer_id == candidate.header().extended_layer_id
             && envelope.header.embedded_layer_id == candidate.header().embedded_layer_id
             && envelope.header.temporal_layer_id == candidate.header().temporal_layer_id
             && envelope
