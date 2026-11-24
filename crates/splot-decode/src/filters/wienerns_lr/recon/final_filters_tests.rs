@@ -802,23 +802,15 @@ fn apply_luma_lr(
     let target = lease.take_target().unwrap();
     let (target, chroma) = target.split([false, true, true]);
     drop(chroma);
-    let cdef = crate::filters::cdef::cdef_stripe(
+    let cdef = crate::test_support::with_auto_backend!(b => crate::filters::cdef::cdef_stripe(
+        b,
         crate::filters::source::DeblockedPlanes::frame(sink.workspace.as_ref().unwrap()).unwrap(),
-        None,
-        None,
-        None,
-        None,
-        (4, 4),
-        (1, 1),
-        splot_recon::BitDepth::Eight,
-        None,
-        0,
-        16,
-    )
+        None, None, None, None, (4, 4), (1, 1), splot_recon::BitDepth::Eight, None, 0, 16,
+    ))
     .unwrap();
-    let filtered = sink
-        .stripe_chain()
-        .apply_lr_stripe(
+    let filtered =
+        crate::test_support::with_auto_backend!(b => sink.stripe_chain().apply_lr_stripe(
+            b,
             core,
             cdef,
             &CdefOverlap::default(),
@@ -833,7 +825,7 @@ fn apply_luma_lr(
                 }; 3],
                 target,
             },
-        )
+        ))
         .unwrap()
         .into_filtered();
     drop(filtered);
@@ -851,24 +843,16 @@ fn inactive_filter_planes_reuse_cdef_storage() {
     progress.begin(&[(0, 16)]).unwrap();
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
-    let cdef = crate::filters::cdef::cdef_stripe(
+    let cdef = crate::test_support::with_auto_backend!(b => crate::filters::cdef::cdef_stripe(
+        b,
         crate::filters::source::DeblockedPlanes::frame(sink.workspace.as_ref().unwrap()).unwrap(),
-        None,
-        None,
-        None,
-        None,
-        (4, 4),
-        (1, 1),
-        splot_recon::BitDepth::Eight,
-        None,
-        0,
-        16,
-    )
+        None, None, None, None, (4, 4), (1, 1), splot_recon::BitDepth::Eight, None, 0, 16,
+    ))
     .unwrap();
     let cdef_ptr = cdef.filtered_y.samples().as_ptr();
-    let filtered = sink
-        .stripe_chain()
-        .apply_lr_stripe(
+    let filtered =
+        crate::test_support::with_auto_backend!(b => sink.stripe_chain().apply_lr_stripe(
+            b,
             &switchable_core(),
             cdef,
             &CdefOverlap::default(),
@@ -879,7 +863,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
                 initializations: [StripeInitialization::CopyAll; 3],
                 target,
             },
-        )
+        ))
         .unwrap()
         .into_filtered();
 
@@ -1225,19 +1209,11 @@ fn wide_luma_block(restoration_type: LrUnitRestorationType) -> WienerNsLrSourceB
 
 fn wide_cdef(sink: &WienerNsLrReconSink<u16>) -> CdefFrame<'_, u16> {
     let workspace = sink.workspace.as_ref().unwrap();
-    crate::filters::cdef::cdef_stripe(
+    crate::test_support::with_auto_backend!(b => crate::filters::cdef::cdef_stripe(
+        b,
         crate::filters::source::DeblockedPlanes::frame(workspace).unwrap(),
-        None,
-        None,
-        None,
-        None,
-        (50, 4),
-        (1, 1),
-        BitDepth::Ten,
-        None,
-        0,
-        16,
-    )
+        None, None, None, None, (50, 4), (1, 1), BitDepth::Ten, None, 0, 16,
+    ))
     .unwrap()
 }
 
@@ -1258,21 +1234,20 @@ fn apply_wide_luma_lr(
     drop((poison, poison_target, poison_lease));
     let mut lease = progress.direct_stripe(0).unwrap();
     let (target, _) = lease.take_target().unwrap().split([false, true, true]);
-    let frame = sink
-        .stripe_chain()
-        .apply_lr_stripe(
-            core,
-            wide_cdef(sink),
-            &CdefOverlap::default(),
-            [&[block], &[], &[]],
-            &[],
-            super::LrStripeOutput {
-                active_planes: [true, false, false],
-                initializations: [initialization; 3],
-                target,
-            },
-        )
-        .unwrap();
+    let frame = crate::test_support::with_auto_backend!(b => sink.stripe_chain().apply_lr_stripe(
+        b,
+        core,
+        wide_cdef(sink),
+        &CdefOverlap::default(),
+        [&[block], &[], &[]],
+        &[],
+        super::LrStripeOutput {
+            active_planes: [true, false, false],
+            initializations: [initialization; 3],
+            target,
+        },
+    ))
+    .unwrap();
     let holds_cdef = initialization == StripeInitialization::CopyAll;
     assert_eq!(frame.post_lr_y_holds_cdef, holds_cdef);
     drop(frame.into_filtered());
@@ -1404,7 +1379,8 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
     .unwrap();
     let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
     let mut runs = Vec::new();
-    for_each_lr_strip(
+    crate::test_support::with_auto_backend!(b => for_each_lr_strip(
+        b,
         rows,
         col,
         200,
@@ -1414,7 +1390,7 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
             runs.push((x, end, flat));
             Ok(())
         },
-    )
+    ))
     .unwrap();
     assert_eq!(
         runs,
@@ -1452,9 +1428,11 @@ fn a_differing_sample_in_a_strip_reach_breaks_only_that_strip() {
     let strips = |samples: &[Vec<u16>], max_sample| {
         let rows: Vec<&[u16]> = samples.iter().map(Vec::as_slice).collect();
         let mut flat = Vec::new();
-        for_each_lr_strip(&rows, 0, width, R, max_sample, |x, end, value| {
-            flat.extend((x..end).step_by(64).map(|_| value));
-            Ok(())
+        crate::test_support::with_auto_backend!(b => {
+            for_each_lr_strip(b, &rows, 0, width, R, max_sample, |x, end, value| {
+                flat.extend((x..end).step_by(64).map(|_| value));
+                Ok(())
+            })
         })
         .unwrap();
         flat

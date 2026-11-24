@@ -71,13 +71,38 @@ impl CdefLumaSegment {
         stride: usize,
         origin: (usize, usize),
     ) -> bool {
-        let ranges = gather_luma(
+        self.gather_with_simd(BaselineSegment, samples, width, stride, origin)
+    }
+
+    /// Variant of [`Self::gather`] using the caller's startup-selected
+    /// static SIMD backend `backend`.
+    pub fn gather_with<B: SimdBackend, T: crate::ReconSample>(
+        &mut self,
+        backend: B,
+        samples: &[T],
+        width: usize,
+        stride: usize,
+        origin: (usize, usize),
+    ) -> bool {
+        self.gather_with_simd(TypedSegment(backend), samples, width, stride, origin)
+    }
+
+    fn gather_with_simd<S: SegmentSimd, T: crate::ReconSample>(
+        &mut self,
+        simd: S,
+        samples: &[T],
+        width: usize,
+        stride: usize,
+        origin: (usize, usize),
+    ) -> bool {
+        let ranges = simd.gather(LumaPadGather {
             samples,
             width,
             stride,
-            (&mut self.pad, &mut self.bytes),
+            pad: &mut self.pad,
+            bytes: &mut self.bytes,
             origin,
-        );
+        });
         self.ranges = ranges.unwrap_or([[0, u16::MAX]; CDEF_SEGMENT_BLOCKS]);
         self.has_bytes = ranges.is_some() && T::u8_slice(samples).is_some();
         self.has_pad = ranges.is_some();
@@ -96,7 +121,39 @@ impl CdefLumaSegment {
         stride: usize,
         origin: (usize, usize),
     ) -> bool {
-        let ranges = gather_luma_bytes(samples, width, stride, &mut self.bytes, origin);
+        self.gather_bytes_with_simd(BaselineSegment, samples, width, stride, origin)
+    }
+
+    /// Variant of [`Self::gather_bytes`] using the caller's startup-selected
+    /// static SIMD backend `backend`.
+    #[inline]
+    pub fn gather_bytes_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        samples: &[u8],
+        width: usize,
+        stride: usize,
+        origin: (usize, usize),
+    ) -> bool {
+        self.gather_bytes_with_simd(TypedSegment(backend), samples, width, stride, origin)
+    }
+
+    #[inline]
+    fn gather_bytes_with_simd<S: SegmentSimd>(
+        &mut self,
+        simd: S,
+        samples: &[u8],
+        width: usize,
+        stride: usize,
+        origin: (usize, usize),
+    ) -> bool {
+        let ranges = simd.gather(LumaBytesGather {
+            samples,
+            width,
+            stride,
+            bytes: &mut self.bytes,
+            origin,
+        });
         self.ranges = ranges.unwrap_or([[0, u16::MAX]; CDEF_SEGMENT_BLOCKS]);
         self.has_bytes = ranges.is_some();
         self.has_pad = false;
@@ -184,17 +241,44 @@ impl CdefPairSegment {
         stride: usize,
         origin: (usize, usize),
     ) -> bool {
-        let ranges = gather_pair::<T, false>(
+        self.gather_with_mode::<_, T, false>(BaselineSegment, u, v, width, stride, origin)
+    }
+
+    /// Variant of [`Self::gather`] using the caller's startup-selected
+    /// static SIMD backend `backend`.
+    pub fn gather_with<B: SimdBackend, T: crate::ReconSample>(
+        &mut self,
+        backend: B,
+        u: &[T],
+        v: &[T],
+        width: usize,
+        stride: usize,
+        origin: (usize, usize),
+    ) -> bool {
+        self.gather_with_mode::<_, T, false>(TypedSegment(backend), u, v, width, stride, origin)
+    }
+
+    fn gather_with_mode<S: SegmentSimd, T: crate::ReconSample, const PACKED: bool>(
+        &mut self,
+        simd: S,
+        u: &[T],
+        v: &[T],
+        width: usize,
+        stride: usize,
+        origin: (usize, usize),
+    ) -> bool {
+        let ranges = simd.gather(PairGather::<T, PACKED> {
             u,
             v,
             width,
             stride,
-            (&mut self.pad, &mut self.bytes),
+            pad: &mut self.pad,
+            bytes: &mut self.bytes,
             origin,
-        );
+        });
         self.ranges = ranges.unwrap_or([u16::MAX; CDEF_SEGMENT_BLOCKS]);
-        self.has_bytes = ranges.is_some() && T::u8_slice(u).is_some();
-        self.bytes_only = false;
+        self.has_bytes = ranges.is_some() && (PACKED || T::u8_slice(u).is_some());
+        self.bytes_only = PACKED;
         ranges.is_some()
     }
 
@@ -308,20 +392,71 @@ fn window_bounds<S: SimdToken, R: LaneBounds<S>>(
     reduce.bounds(simd, min.min(next_min | high), max.max(next_max & !high))
 }
 
-/// Copies the luma segment's tap rows into `pad` and returns the least and
-/// greatest sample of each block's 12x12 window.
-fn gather_luma<T: crate::ReconSample>(
-    samples: &[T],
+trait SegmentGather<O> {
+    fn run<S: SimdToken, R: LaneBounds<S>>(self, simd: S, reduce: R) -> Option<O>;
+}
+
+trait SegmentSimd: Copy {
+    fn gather<O>(self, op: impl SegmentGather<O>) -> Option<O>;
+}
+
+#[derive(Clone, Copy)]
+struct BaselineSegment;
+
+#[derive(Clone, Copy)]
+struct TypedSegment<B: SimdBackend>(B);
+
+impl SegmentSimd for BaselineSegment {
+    #[inline]
+    fn gather<O>(self, op: impl SegmentGather<O>) -> Option<O> {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(avx2) = Level::baseline().as_avx2() {
+            return op.run(avx2, MinPos);
+        }
+        baseline_simd!(simd => op.run(simd, Reduced))
+    }
+}
+
+impl<B: SimdBackend> SegmentSimd for TypedSegment<B> {
+    #[inline]
+    fn gather<O>(self, op: impl SegmentGather<O>) -> Option<O> {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(avx2) = self.0.avx2_token() {
+            return op.run(avx2, MinPos);
+        }
+        let narrow = self.0.narrow();
+        splot_core::with_simd!(narrow, simd => op.run(simd, Reduced))
+    }
+}
+
+struct LumaPadGather<'a, T> {
+    samples: &'a [T],
     width: usize,
     stride: usize,
-    pad: (&mut [u16; LUMA_SEGMENT_AREA], &mut [u8; LUMA_BYTES_AREA]),
+    pad: &'a mut [u16; LUMA_SEGMENT_AREA],
+    bytes: &'a mut [u8; LUMA_BYTES_AREA],
     origin: (usize, usize),
-) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
-        return gather_luma_with(avx2, MinPos, samples, width, stride, pad, origin);
+}
+
+impl<T: crate::ReconSample> SegmentGather<[[u16; 2]; CDEF_SEGMENT_BLOCKS]>
+    for LumaPadGather<'_, T>
+{
+    #[inline]
+    fn run<S: SimdToken, R: LaneBounds<S>>(
+        self,
+        simd: S,
+        reduce: R,
+    ) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
+        gather_luma_with(
+            simd,
+            reduce,
+            self.samples,
+            self.width,
+            self.stride,
+            (self.pad, self.bytes),
+            self.origin,
+        )
     }
-    baseline_simd!(simd => gather_luma_with(simd, Reduced, samples, width, stride, pad, origin))
 }
 
 #[inline(always)]
@@ -405,28 +540,36 @@ fn segment_bounds<S: SimdToken, R: LaneBounds<S>>(
     ]
 }
 
-/// Interleaves the chroma segment's tap rows, `PAIR_SPAN` samples of each
-/// plane, into `pad` and returns for each block the larger of its two
-/// planes' window ranges. Block `b` covers plane columns `4b..4b + 8`: the
-/// three 8-column chunks of a row from 0, 8 and 12 hold blocks 0, 2 and 3,
-/// and block 1 is the upper half of chunk 0 and the lower half of chunk 1.
-fn gather_pair<T: crate::ReconSample, const PACKED: bool>(
-    u_samples: &[T],
-    v_samples: &[T],
+struct PairGather<'a, T, const PACKED: bool> {
+    u: &'a [T],
+    v: &'a [T],
     width: usize,
     stride: usize,
-    pad: (&mut [u16; PAIR_SEGMENT_AREA], &mut [u8; PAIR_BYTES_AREA]),
+    pad: &'a mut [u16; PAIR_SEGMENT_AREA],
+    bytes: &'a mut [u8; PAIR_BYTES_AREA],
     origin: (usize, usize),
-) -> Option<[u16; CDEF_SEGMENT_BLOCKS]> {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
-        return gather_pair_with::<_, _, _, PACKED>(
-            avx2, MinPos, u_samples, v_samples, width, stride, pad, origin,
-        );
+}
+
+impl<T: crate::ReconSample, const PACKED: bool> SegmentGather<[u16; CDEF_SEGMENT_BLOCKS]>
+    for PairGather<'_, T, PACKED>
+{
+    #[inline]
+    fn run<S: SimdToken, R: LaneBounds<S>>(
+        self,
+        simd: S,
+        reduce: R,
+    ) -> Option<[u16; CDEF_SEGMENT_BLOCKS]> {
+        gather_pair_with::<_, _, _, PACKED>(
+            simd,
+            reduce,
+            self.u,
+            self.v,
+            self.width,
+            self.stride,
+            (self.pad, self.bytes),
+            self.origin,
+        )
     }
-    baseline_simd!(simd => gather_pair_with::<_, _, _, PACKED>(
-        simd, Reduced, u_samples, v_samples, width, stride, pad, origin,
-    ))
 }
 
 #[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
@@ -1223,6 +1366,26 @@ pub fn cdef_filter_segment<T: crate::ReconSample>(
     ))
 }
 
+/// Variant of [`cdef_filter_segment`] using the caller's startup-selected
+/// static SIMD backend `backend`.
+pub fn cdef_filter_segment_with<B: SimdBackend, T: crate::ReconSample>(
+    backend: B,
+    segment: &CdefLumaSegment,
+    unit: &CdefUnitFilters,
+    blocks: [CdefSegmentBlock; CDEF_SEGMENT_BLOCKS],
+    fill_flat: [bool; 3],
+    output: CdefSegmentOutput<'_, T>,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(avx2) = backend.avx2_token() {
+        return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
+    }
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => segment_with(
+        simd, Ordered, segment, unit, blocks, fill_flat, output,
+    ))
+}
+
 #[inline(always)]
 fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     simd: S,
@@ -1373,6 +1536,17 @@ pub fn cdef_publish_chroma_pair<T: crate::ReconSample>(
     planes: [(&mut [T], usize); 2],
 ) -> bool {
     baseline_simd!(simd => publish_pair(simd, output, planes)).is_some()
+}
+
+/// Variant of [`cdef_publish_chroma_pair`] using the caller's startup-selected
+/// static SIMD backend `backend`.
+pub fn cdef_publish_chroma_pair_with<B: SimdBackend, T: crate::ReconSample>(
+    backend: B,
+    output: &[u16; CDEF_PAIR_OUTPUT],
+    planes: [(&mut [T], usize); 2],
+) -> bool {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => publish_pair(simd, output, planes)).is_some()
 }
 
 /// Writes the interleaved chroma pair `output` into the four rows of the U

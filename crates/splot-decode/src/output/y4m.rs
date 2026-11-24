@@ -27,6 +27,7 @@ pub(crate) fn write_y4m_stream_to_writer(
     let mut sample_bit_depth = None;
     let frame_rate_override = options.y4m_frame_rate_override();
     let mut spare = GrainPlanes::default();
+    let backend = session.backend();
     crate::pipeline::emit_frames(
         source,
         options,
@@ -42,13 +43,13 @@ pub(crate) fn write_y4m_stream_to_writer(
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Eight)?;
-                    write_display(frame.get(), grain, &mut spare.eight, |display| {
+                    write_display(backend, frame.get(), grain, &mut spare.eight, |display| {
                         write_y4m_frame(&mut writer, &mut target, display, frame_rate)
                     })
                 }
                 PipelineDecodedFrame::Ten(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Ten)?;
-                    write_display(frame.get(), grain, &mut spare.ten, |display| {
+                    write_display(backend, frame.get(), grain, &mut spare.ten, |display| {
                         write_y4m_frame(&mut writer, &mut target, display, frame_rate)
                     })
                 }
