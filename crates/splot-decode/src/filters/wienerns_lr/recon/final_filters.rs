@@ -893,14 +893,20 @@ impl<'a, T: ReconSample> LrSourceRows<'a, T> {
 /// The one value that the `width` columns from `col` of every row hold. A
 /// window narrower than one SIMD check is checked with the columns to its
 /// left that fill one, so it is not flat when they differ.
-fn flat_lr_window<T: ReconSample>(rows: &[&[T]], col: usize, width: usize) -> Option<u16> {
+fn flat_lr_window<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    rows: &[&[T]],
+    col: usize,
+    width: usize,
+) -> Option<u16> {
     let value = rows.first()?.get(col)?.to_u16();
     let end = col.checked_add(width)?;
     let start = col.min(end.saturating_sub(16));
     rows.iter()
         .all(|row| {
-            row.get(start..end)
-                .is_some_and(|row| crate::filters::cdef::holds_value(row, value) == Some(true))
+            row.get(start..end).is_some_and(|row| {
+                crate::filters::cdef::holds_value(backend, row, value) == Some(true)
+            })
         })
         .then_some(value)
 }
@@ -912,7 +918,8 @@ fn flat_lr_window<T: ReconSample>(rows: &[&[T]], col: usize, width: usize) -> Op
 /// column `col`, holds one value `v <= max_sample`: the § 7.20.3 tap
 /// differences are then zero and the § 7.20.4 taps sum to zero, so both
 /// filters return `v`, and no other process reads the strip's classes.
-fn for_each_lr_strip<T: ReconSample>(
+fn for_each_lr_strip<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     rows: &[&[T]],
     col: usize,
     width: usize,
@@ -922,7 +929,7 @@ fn for_each_lr_strip<T: ReconSample>(
 ) -> Result<()> {
     const STRIP: usize = 64;
     let flat_at = |x: usize| {
-        flat_lr_window(rows, col + x, STRIP.min(width - x) + 2 * radius)
+        flat_lr_window(backend, rows, col + x, STRIP.min(width - x) + 2 * radius)
             .filter(|&value| value <= max_sample)
     };
     let (mut x, mut next) = (0, flat_at(0));
@@ -1044,8 +1051,10 @@ impl StripeChain<'_> {
         (blocks, active)
     }
 
-    pub(crate) fn apply_lr_stripe<'a, T: ReconSample>(
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn apply_lr_stripe<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         core: &FrameHeaderCore,
         cdef: CdefFrame<'a, T>,
         cdef_overlap: &CdefOverlap<T>,
@@ -1132,6 +1141,7 @@ impl StripeChain<'_> {
                 match block.restoration_type {
                     LrUnitRestorationType::PcWiener => {
                         self.compute_pc_wiener_block(
+                            backend,
                             &block,
                             frame.deblocked_y,
                             &frame.cdef_y,
@@ -1145,6 +1155,7 @@ impl StripeChain<'_> {
                     LrUnitRestorationType::WienerNonsep => {
                         if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
                             self.compute_luma_lr_block(
+                                backend,
                                 &block,
                                 frame.deblocked_y,
                                 &frame.cdef_y,
@@ -1159,6 +1170,7 @@ impl StripeChain<'_> {
                         } else {
                             let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, &block)?];
                             self.compute_luma_lr_block(
+                                backend,
                                 &block,
                                 frame.deblocked_y,
                                 &frame.cdef_y,
@@ -1236,8 +1248,9 @@ impl StripeChain<'_> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn compute_pc_wiener_block<T: ReconSample>(
+    fn compute_pc_wiener_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane<T>,
@@ -1285,6 +1298,7 @@ impl StripeChain<'_> {
                 .tail(PC_WIENER_FILTER_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
             for_each_lr_strip(
+                backend,
                 rows,
                 col,
                 block.width,
@@ -1479,8 +1493,9 @@ impl StripeChain<'_> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn compute_luma_lr_block<T: ReconSample>(
+    fn compute_luma_lr_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane<T>,
@@ -1530,6 +1545,7 @@ impl StripeChain<'_> {
                 .tail(WIENER_NS_LUMA_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
             for_each_lr_strip(
+                backend,
                 rows,
                 col,
                 block.width,

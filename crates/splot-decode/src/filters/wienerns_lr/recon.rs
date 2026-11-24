@@ -950,6 +950,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         luma_output: bool,
     ) -> Result<crate::filters::cdef::CdefFrame<'d, T>> {
         let mut cdef = crate::filters::cdef::cdef_stripe_into(
+            backend,
             deblocked,
             self.cdef_strengths.as_deref(),
             &self.cdef_units,
@@ -1188,6 +1189,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         };
         let cdef_overlap = self.cdef_overlap_planes(backend, deblocked, &chain, start, end)?;
         let mut frame = chain.apply_lr_stripe(
+            backend,
             &self.core,
             cdef,
             &cdef_overlap,

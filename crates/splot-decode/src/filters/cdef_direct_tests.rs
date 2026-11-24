@@ -135,7 +135,8 @@ fn direct_cdef_10bit(
         cdef_initializations(Some(&lookup), geometry, (0, size.height())),
         [expected_initialization; 3]
     );
-    let frame = cdef_stripe_into(
+    let frame = crate::test_support::with_auto_backend!(backend => cdef_stripe_into(
+        backend,
         DeblockedPlanes::frame(workspace).unwrap(),
         Some(params),
         &cdef_units(params, 2, subsampling),
@@ -150,7 +151,7 @@ fn direct_cdef_10bit(
         size.height(),
         Some(target),
         true,
-    )
+    ))
     .unwrap();
     let samples = cdef_frame_samples(&frame);
     drop(frame);
@@ -183,7 +184,8 @@ fn owned_cdef_10bit(
         usize::from(pixel_format.subsampling_x()),
         usize::from(pixel_format.subsampling_y()),
     );
-    let frame = cdef_stripe(
+    let frame = crate::test_support::with_auto_backend!(backend => cdef_stripe(
+        backend,
         DeblockedPlanes::frame(workspace).unwrap(),
         Some(params),
         Some(grid),
@@ -198,7 +200,7 @@ fn owned_cdef_10bit(
         None,
         0,
         size.height(),
-    )
+    ))
     .unwrap();
     cdef_frame_samples(&frame)
 }
@@ -348,7 +350,8 @@ fn disabled_cdef_initializes_u8_direct_target_from_source() {
     }
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
-    let mut frame = cdef_stripe_into(
+    let mut frame = crate::test_support::with_auto_backend!(backend => cdef_stripe_into(
+        backend,
         DeblockedPlanes::frame(&workspace).unwrap(),
         None,
         &[None; 8],
@@ -363,7 +366,7 @@ fn disabled_cdef_initializes_u8_direct_target_from_source() {
         height,
         Some(target),
         true,
-    )
+    ))
     .unwrap();
     for filtered in [
         Some(&mut frame.filtered_y),
@@ -412,7 +415,8 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
     let mut target = lease.take_target().unwrap();
     target.shorten_for_test(PlaneId::V);
     assert!(
-        cdef_stripe_into(
+        crate::test_support::with_auto_backend!(backend => cdef_stripe_into(
+            backend,
             DeblockedPlanes::frame(&workspace).unwrap(),
             Some(&params),
             &cdef_units(&params, 2, (1, 1)),
@@ -427,7 +431,7 @@ fn every_direct_plane_is_preflighted_before_luma_mutation() {
             16,
             Some(target),
             true,
-        )
+        ))
         .is_err()
     );
     drop(lease);
@@ -522,7 +526,9 @@ fn flat_window_spans_exactly_the_tap_reach() {
     let window = |spike: Option<(usize, usize)>, start: (usize, usize)| {
         let workspace = flat_workspace(144, 60..132, spike.map(|(x, y)| (PlaneId::Y, x, y)));
         let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
-        flat_window::<u16, 64, 8>(plane, (64, 8), start, tile.1)
+        crate::test_support::with_auto_backend!(backend => {
+            flat_window::<_, u16, 64, 8>(backend, plane, (64, 8), start, tile.1)
+        })
     };
     assert_eq!(window(None, tile.0), Some(512));
     for corner in [(62, 6), (129, 6), (62, 17), (129, 17)] {
@@ -545,7 +551,9 @@ fn flat_window_spans_exactly_the_tap_reach() {
         }
         let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
         assert_eq!(
-            flat_window::<u8, 64, 8>(plane, (64, 8), tile.0, tile.1),
+            crate::test_support::with_auto_backend!(backend => {
+                flat_window::<_, u8, 64, 8>(backend, plane, (64, 8), tile.0, tile.1)
+            }),
             expected,
             "{spike:?}"
         );
@@ -618,7 +626,8 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
         rows.copy_rows_from(&held, 0..24).unwrap();
         assert!(rows.publish_final_rows(24) && rows.release_rows(24));
         let mut lease = progress.direct_stripe(0).unwrap();
-        let frame = cdef_stripe_into(
+        let frame = crate::test_support::with_auto_backend!(backend => cdef_stripe_into(
+            backend,
             DeblockedPlanes::frame(&workspace).unwrap(),
             Some(&params),
             &cdef_units(&params, 2, (1, 1)),
@@ -633,7 +642,7 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
             24,
             lease.take_target(),
             true,
-        )
+        ))
         .unwrap();
         let mut kept = cdef_frame_samples(&frame);
         for (plane, samples) in kept.iter_mut().enumerate() {
@@ -654,7 +663,12 @@ fn flat_blocks_keep_a_deblocked_direct_target() {
 #[test]
 fn flat_pad_gives_direction_zero_and_variance_zero() {
     for value in [0, 37, 512, 1023] {
-        assert_eq!(cdef_direction_padded(&[value; CDEF_PADDED_AREA], 2), (0, 0));
+        assert_eq!(
+            crate::test_support::with_auto_backend!(backend => {
+                cdef_direction_padded_with(backend, &[value; CDEF_PADDED_AREA], 2)
+            }),
+            (0, 0)
+        );
     }
 }
 
@@ -668,7 +682,8 @@ fn run_segment(
     segment: bool,
 ) -> [Vec<u16>; 3] {
     let deblocked = DeblockedPlanes::frame(workspace).unwrap();
-    let mut frame = cdef_stripe(
+    let mut frame = crate::test_support::with_auto_backend!(backend => cdef_stripe(
+        backend,
         deblocked,
         None,
         None,
@@ -680,7 +695,7 @@ fn run_segment(
         None,
         0,
         24,
-    )
+    ))
     .unwrap();
     let grid = constant_cdef_grid(6, 36, 0).unwrap();
     let lookup = CdefBlockLookup {
@@ -702,7 +717,8 @@ fn run_segment(
     if segment {
         let mut scratch = CdefSegmentScratch::default();
         assert!(
-            cdef_segment(
+            crate::test_support::with_auto_backend!(backend => cdef_segment(
+                backend,
                 &lookup,
                 (params, 0),
                 (2, c),
@@ -710,7 +726,7 @@ fn run_segment(
                 &mut scratch,
                 (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
                 &mut frame
-            )
+            ))
             .unwrap()
         );
     } else {
@@ -719,7 +735,8 @@ fn run_segment(
             let Some(ctx) = lookup.at(2, c + 2 * block, Some(params), (0, 6)).unwrap() else {
                 continue;
             };
-            compute_cdef_block::<u16>(
+            crate::test_support::with_auto_backend!(backend => compute_cdef_block::<_, u16>(
+                backend,
                 &ctx,
                 &mut pad,
                 deblocked.y,
@@ -728,7 +745,7 @@ fn run_segment(
                 &mut frame.filtered_y,
                 frame.filtered_u.as_mut(),
                 frame.filtered_v.as_mut(),
-            )
+            ))
             .unwrap();
         }
     }
@@ -792,7 +809,8 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         fill_flat: [true; 3],
         units: &cdef_units(&active_params(), 2, (1, 1)),
     };
-    let mut frame = cdef_stripe(
+    let mut frame = crate::test_support::with_auto_backend!(backend => cdef_stripe(
+        backend,
         DeblockedPlanes::frame(&workspace).unwrap(),
         None,
         None,
@@ -804,14 +822,15 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         None,
         0,
         24,
-    )
+    ))
     .unwrap();
     let before = cdef_frame_samples(&frame);
     let mut scratch = CdefSegmentScratch::default();
     let params = active_params()[0];
     for (r, c) in [(0, 16), (2, 0), (2, 8), (2, 32), (4, 16)] {
         assert!(
-            !cdef_segment(
+            !crate::test_support::with_auto_backend!(backend => cdef_segment(
+                backend,
                 &lookup,
                 (params, 0),
                 (r, c),
@@ -819,14 +838,15 @@ fn edge_segment_falls_back_to_the_per_block_path() {
                 &mut scratch,
                 (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
                 &mut frame
-            )
+            ))
             .unwrap(),
             "({r}, {c})"
         );
     }
     assert_eq!(cdef_frame_samples(&frame), before);
     assert!(
-        cdef_segment(
+        crate::test_support::with_auto_backend!(backend => cdef_segment(
+            backend,
             &lookup,
             (params, 0),
             (2, 16),
@@ -834,7 +854,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
             &mut scratch,
             (frame.deblocked_y, frame.deblocked_u, frame.deblocked_v),
             &mut frame
-        )
+        ))
         .unwrap()
     );
     assert_ne!(cdef_frame_samples(&frame), before);

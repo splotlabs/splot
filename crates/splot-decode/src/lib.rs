@@ -30,7 +30,7 @@ pub const UNSUPPORTED_FEATURE_RULE_ID: &str = "decode/unsupported-feature";
 /// Runs `$body` with `$simd` bound to the baseline SIMD token: the AVX2
 /// token directly where the baseline has it, since the closure `dispatch!`
 /// wraps its body in is not inlined, else through `dispatch!`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(test, target_arch = "x86_64"))]
 macro_rules! baseline_simd {
     ($simd:ident => $body:expr) => {
         match fearless_simd::Level::baseline().as_avx2() {
@@ -40,7 +40,7 @@ macro_rules! baseline_simd {
     };
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(test, target_arch = "aarch64"))]
 macro_rules! baseline_simd {
     ($simd:ident => $body:expr) => {
         match fearless_simd::Level::baseline().as_neon() {
@@ -51,7 +51,7 @@ macro_rules! baseline_simd {
 }
 
 /// [`baseline_simd`] for targets without an AVX2 or NEON baseline.
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(test, not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
 macro_rules! baseline_simd {
     ($simd:ident => $body:expr) => {
         fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
