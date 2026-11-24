@@ -5,14 +5,15 @@
 //!
 //! Feature tracking: `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
     IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges,
     IntraRectBlockSize, PlaneId, ReconSample, predict_intra_cardinal_directional_rect_into,
-    predict_intra_middle_directional_angle_rect_idif_into,
-    predict_intra_middle_directional_angle_rect_idif_mrl_into,
-    predict_intra_middle_directional_angle_rect_into,
+    predict_intra_middle_directional_angle_rect_idif_into_with,
+    predict_intra_middle_directional_angle_rect_idif_mrl_into_with,
+    predict_intra_middle_directional_angle_rect_into_with,
 };
 
 use super::one_sided::{
@@ -40,7 +41,11 @@ pub(crate) struct TwoSidedMiddleEdgeFilters {
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     mode: SupportedDirectionalLumaMode,
@@ -96,7 +101,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     };
     let predict = |output: &mut [T], stride: usize| {
         if let Some((left_idif, above_idif)) = &idif {
-            predict_intra_middle_directional_angle_rect_idif_into(
+            predict_intra_middle_directional_angle_rect_idif_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 angle,
@@ -105,7 +111,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
                 stride,
             )?;
         } else {
-            predict_intra_middle_directional_angle_rect_into(
+            predict_intra_middle_directional_angle_rect_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 angle,
@@ -117,6 +124,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         Ok(())
     };
     predict_intra_block(
+        backend,
         workspace,
         block,
         plane_id,
@@ -133,7 +141,11 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -170,12 +182,14 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
             .checked_sub(1)
             .ok_or_else(invalid_directional_edge_state)?;
         let corner = workspace.reconstructed_sample(plane_id, left_col, above_row)?;
-        let above_idif = build_two_sided_middle_idif_edge(width, filters.above, corner, |edge| {
-            gather_row_clamped(workspace, plane_id, (x, above_row), max_x, edge)
-        })?;
-        let left_idif = build_two_sided_middle_idif_edge(height, filters.left, corner, |edge| {
-            gather_column_clamped(workspace, plane_id, (left_col, y), max_y, edge)
-        })?;
+        let above_idif =
+            build_two_sided_middle_idif_edge(backend, width, filters.above, corner, |edge| {
+                gather_row_clamped(workspace, plane_id, (x, above_row), max_x, edge)
+            })?;
+        let left_idif =
+            build_two_sided_middle_idif_edge(backend, height, filters.left, corner, |edge| {
+                gather_column_clamped(workspace, plane_id, (left_col, y), max_y, edge)
+            })?;
         (left_idif, above_idif)
     } else {
         let mut edges = splot_recon::CurrentFrameIntraEdges::default();
@@ -198,7 +212,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
             bit_depth,
         )?;
         let left_idif = if availability.left {
-            build_two_sided_middle_idif_edge(height, filters.left, left[0], |edge| {
+            build_two_sided_middle_idif_edge(backend, height, filters.left, left[0], |edge| {
                 edge.copy_from_slice(&left[1..=height]); // splot-copy-ok: seed a bounded IDIF edge from prepared samples
                 Ok(())
             })?
@@ -206,7 +220,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
             extend_one_middle_idif_edge(&left, bit_depth)?
         };
         let above_idif = if availability.above {
-            build_two_sided_middle_idif_edge(width, filters.above, above[0], |edge| {
+            build_two_sided_middle_idif_edge(backend, width, filters.above, above[0], |edge| {
                 edge.copy_from_slice(&above[1..=width]); // splot-copy-ok: seed a bounded IDIF edge from prepared samples
                 Ok(())
             })?
@@ -217,7 +231,8 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     };
     let predict = |output: &mut [T], stride: usize| {
         if matches!(plane_id, PlaneId::Y) {
-            predict_intra_middle_directional_angle_rect_idif_into(
+            predict_intra_middle_directional_angle_rect_idif_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 angle,
@@ -228,7 +243,8 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         } else {
             let left = &left_idif[1..height + 2];
             let above = &above_idif[1..width + 2];
-            predict_intra_middle_directional_angle_rect_into(
+            predict_intra_middle_directional_angle_rect_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 angle,
@@ -240,6 +256,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         Ok(())
     };
     predict_intra_block(
+        backend,
         workspace,
         block,
         plane_id,
@@ -256,7 +273,11 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -278,6 +299,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let prediction = build_mrl_luma_prediction(
+        backend,
         workspace,
         block_size,
         secondary_mrl,
@@ -288,6 +310,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
                 (mrl_index, above_mrl_index, is_sb_boundary)
             };
             predict_two_sided_middle_luma_mrl_into(
+                backend,
                 workspace,
                 p_angle,
                 x,
@@ -303,6 +326,7 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
         },
     )?;
     write_intra_prediction_block(
+        backend,
         workspace,
         block,
         prediction,
@@ -319,7 +343,8 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
 }
 
 #[expect(clippy::too_many_arguments)]
-fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
+fn predict_two_sided_middle_luma_mrl_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: u16,
     x: usize,
@@ -396,7 +421,8 @@ fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
             )
         }
     };
-    predict_intra_middle_directional_angle_rect_idif_mrl_into(
+    predict_intra_middle_directional_angle_rect_idif_mrl_into_with(
+        backend,
         bit_depth,
         block_size,
         angle,
@@ -623,7 +649,8 @@ fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
     Ok(edge)
 }
 
-fn build_two_sided_middle_idif_edge<T: ReconSample>(
+fn build_two_sided_middle_idif_edge<B: SimdBackend, T: ReconSample>(
+    backend: B,
     side: usize,
     edge_filter: OneSidedEdgeFilter,
     corner: T,
@@ -638,12 +665,16 @@ fn build_two_sided_middle_idif_edge<T: ReconSample>(
     let mut edge = TwoSidedMiddleIdifEdge::new(edge_len)?;
     edge[1] = corner;
     in_edge(&mut edge[2..side + 2])?;
-    finalize_one_sided_idif_edge(&mut edge, max_base, edge_filter)?;
+    finalize_one_sided_idif_edge(backend, &mut edge, max_base, edge_filter)?;
     Ok(edge)
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     direction: IntraCardinalDirection,
@@ -707,6 +738,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         .map_err(Into::into)
     };
     predict_intra_block(
+        backend,
         workspace,
         block,
         plane_id,

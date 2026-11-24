@@ -163,8 +163,15 @@ impl DecoderWork {
         claim: Claim,
         worker: usize,
     ) {
-        let _ = backend;
-        self.run(claim, worker);
+        let narrow = backend.narrow();
+        match self {
+            Self::Split8(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Split16(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Tip8(frame) => frame.run(claim, worker),
+            Self::Tip16(frame) => frame.run(claim, worker),
+            Self::Finish8(frame) => frame.run(claim, worker),
+            Self::Finish16(frame) => frame.run(claim, worker),
+        }
     }
 }
 
@@ -542,13 +549,23 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(awaiting.is_none())
     }
 
-    fn precompute(&self, batch: usize, worker: usize) -> Result<()> {
-        self.recon_state()?.precompute(batch, worker)
+    fn precompute<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        batch: usize,
+        worker: usize,
+    ) -> Result<()> {
+        self.recon_state()?.precompute(backend, batch, worker)
     }
 
-    fn commit(&self, batch: usize, worker: usize) -> Result<()> {
+    fn commit<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        batch: usize,
+        worker: usize,
+    ) -> Result<()> {
         let recon = self.recon_state()?;
-        let progress = recon.commit(batch, worker)?;
+        let progress = recon.commit(backend, batch, worker)?;
         if progress.recon_complete {
             *self.scratch.lock() = Some(recon.take_scheduled_scratch()?);
         }
@@ -702,17 +719,39 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
     /// (a projected band's resolve, a resolved band's first batch or the next
     /// band, a batch's commit, a commit's frontier row or the next commit),
     /// without a scan or a wake.
-    #[inline(never)]
-    fn run(&self, mut claim: Claim, worker: usize) {
+    fn run(&self, claim: Claim, worker: usize) {
+        struct Scope<'a, T: SplitSample>(&'a SplitFrame<T>, Claim, usize);
+        impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
+            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
+                self.0.run_with_backend(backend.narrow(), self.1, self.2);
+            }
+        }
+        if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
+            backend.enter(Scope(self, claim, worker));
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.failed.load(Ordering::Acquire) || self.stages[OUTPUT].is_finished()
+    }
+}
+
+impl<T: SplitSample> SplitFrame<T> {
+    fn run_with_backend<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        mut claim: Claim,
+        worker: usize,
+    ) {
         loop {
             let outcome = match claim.stage {
                 PARSE => self.parse().map(|()| true),
                 PREPARE => self.prepare().map(|()| true),
                 ATTACH => self.attach().map(|()| true),
                 RESOLVE => self.resolve(claim.row),
-                COMMIT => self.commit(claim.row, worker).map(|()| true),
+                COMMIT => self.commit(backend, claim.row, worker).map(|()| true),
                 FRONTIER => self.frontier(claim.row).map(|()| true),
-                PRECOMPUTE => self.precompute(claim.row, worker).map(|()| true),
+                PRECOMPUTE => self.precompute(backend, claim.row, worker).map(|()| true),
                 TILE => self.parse_tile(claim.row).map(|()| true),
                 PROJECT => self
                     .recon_state()
@@ -783,10 +822,6 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                 None => break,
             }
         }
-    }
-
-    fn done(&self) -> bool {
-        self.failed.load(Ordering::Acquire) || self.stages[OUTPUT].is_finished()
     }
 }
 

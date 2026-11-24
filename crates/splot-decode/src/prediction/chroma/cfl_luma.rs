@@ -20,7 +20,7 @@ pub(super) type LumaToken = fearless_simd::Avx2;
 #[cfg(target_arch = "aarch64")]
 pub(super) type LumaToken = fearless_simd::Neon;
 
-/// The [`LumaToken`] of this machine, if it has one.
+#[cfg(test)]
 #[expect(clippy::inline_always, reason = "a token read in hot CfL paths")]
 #[inline(always)]
 pub(super) fn luma_token() -> Option<LumaToken> {
@@ -28,6 +28,16 @@ pub(super) fn luma_token() -> Option<LumaToken> {
     return fearless_simd::Level::baseline().as_avx2();
     #[cfg(target_arch = "aarch64")]
     return fearless_simd::Level::baseline().as_neon();
+}
+
+/// The [`LumaToken`] carried by `backend`, if it has one.
+#[expect(clippy::inline_always, reason = "a token read in hot CfL paths")]
+#[inline(always)]
+pub(super) fn luma_token_for<B: splot_core::simd::SimdBackend>(backend: B) -> Option<LumaToken> {
+    #[cfg(target_arch = "x86_64")]
+    return backend.avx2_token();
+    #[cfg(target_arch = "aarch64")]
+    return backend.neon_token();
 }
 
 /// A block whose every luma tap lies inside the stored plane, so no tap
@@ -251,7 +261,7 @@ pub(super) fn luma_420<const F: usize>(
         }
     }
     if let Some(left) = left.filter(|_| !lane_left) {
-        left_420(luma, &block, weights, left);
+        left_420(token, luma, &block, weights, left);
     }
     true
 }
@@ -333,27 +343,35 @@ fearless_simd::kernel!(
 
 /// The downsampled luma left of each block row into `left`: each row's taps
 /// (clamped only on the block's first row) gathered, then summed in lanes.
-fn left_420(luma: &[u8], block: &Luma420Block, weights: [[i32; 3]; 3], left: &mut [i16]) {
-    let first = usize::from(block.above.is_some());
-    let clamp_left = usize::from(block.luma_x != 2);
-    for (g, group) in left.chunks_mut(8).enumerate() {
-        let mut taps = [[[0u16; 8]; 3]; 3];
-        for lane in 0..group.len() {
-            let r = first + 8 * g + lane;
-            let [_, mid, bottom] = tap_rows(block, r);
-            let top = if r == first { mid } else { mid - block.stride };
-            for ((taps, row), weights) in taps.iter_mut().zip([top, mid, bottom]).zip(weights) {
-                let cols = [row - 2 - clamp_left, row - 2, row - 1];
-                for ((tap, col), weight) in taps.iter_mut().zip(cols).zip(weights) {
-                    if weight != 0 {
-                        tap[lane] = luma[col].into();
+fn left_420(
+    token: impl fearless_simd::Simd,
+    luma: &[u8],
+    block: &Luma420Block,
+    weights: [[i32; 3]; 3],
+    left: &mut [i16],
+) {
+    fearless_simd::Simd::vectorize(token, || {
+        let first = usize::from(block.above.is_some());
+        let clamp_left = usize::from(block.luma_x != 2);
+        for (g, group) in left.chunks_mut(8).enumerate() {
+            let mut taps = [[[0u16; 8]; 3]; 3];
+            for lane in 0..group.len() {
+                let r = first + 8 * g + lane;
+                let [_, mid, bottom] = tap_rows(block, r);
+                let top = if r == first { mid } else { mid - block.stride };
+                for ((taps, row), weights) in taps.iter_mut().zip([top, mid, bottom]).zip(weights) {
+                    let cols = [row - 2 - clamp_left, row - 2, row - 1];
+                    for ((tap, col), weight) in taps.iter_mut().zip(cols).zip(weights) {
+                        if weight != 0 {
+                            tap[lane] = luma[col].into();
+                        }
                     }
                 }
             }
+            let lanes = gathered_q3(token, &taps, weights);
+            group.copy_from_slice(&lanes[..group.len()]); // splot-copy-ok: publish CfL lumaLeft samples
         }
-        let lanes = gathered_q3(&taps, weights);
-        group.copy_from_slice(&lanes[..group.len()]); // splot-copy-ok: publish CfL lumaLeft samples
-    }
+    });
 }
 
 /// Defines the `pmaddubsw` part of [`luma_420`] for one constant filter.

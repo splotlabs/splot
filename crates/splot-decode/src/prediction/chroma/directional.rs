@@ -5,6 +5,7 @@
 //!
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
     IntraDirectionalAngleEdges, IntraPredictionScratchBuffer, IntraRectBlockSize,
@@ -19,7 +20,8 @@ use crate::bitstream::tile_payload::{
 use crate::pipeline::reconstruct::*;
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_chroma_block_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -39,6 +41,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     match mode {
         SupportedChromaMode::Dc => reconstruct_general_intra_block_rect_into(
+            backend,
             workspace,
             block,
             plane_id,
@@ -55,6 +58,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         SupportedChromaMode::Smooth
         | SupportedChromaMode::SmoothVertical
         | SupportedChromaMode::SmoothHorizontal => reconstruct_general_intra_chroma_smooth_into(
+            backend,
             workspace,
             block,
             plane_id,
@@ -74,6 +78,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             bit_depth,
         ),
         SupportedChromaMode::Paeth => reconstruct_general_intra_luma_paeth_neighbour_block_into(
+            backend,
             scratch,
             workspace,
             block,
@@ -88,6 +93,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         ),
         SupportedChromaMode::D135Follow | SupportedChromaMode::D135 if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_directional_first_into(
+                backend,
                 workspace,
                 block,
                 SupportedDirectionalLumaMode::D135,
@@ -101,6 +107,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         }
         SupportedChromaMode::D135Follow | SupportedChromaMode::D135 => {
             reconstruct_general_intra_directional_neighbour_block_into(
+                backend,
                 workspace,
                 block,
                 SupportedDirectionalLumaMode::D135,
@@ -116,6 +123,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         }
         SupportedChromaMode::D113Follow | SupportedChromaMode::D113 => {
             reconstruct_general_intra_directional_neighbour_block_into(
+                backend,
                 workspace,
                 block,
                 SupportedDirectionalLumaMode::D113,
@@ -131,6 +139,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         }
         SupportedChromaMode::D157 if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_directional_first_into(
+                backend,
                 workspace,
                 block,
                 SupportedDirectionalLumaMode::D157,
@@ -144,6 +153,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         }
         SupportedChromaMode::D157Follow | SupportedChromaMode::D157 => {
             reconstruct_general_intra_directional_neighbour_block_into(
+                backend,
                 workspace,
                 block,
                 SupportedDirectionalLumaMode::D157,
@@ -159,6 +169,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         }
         SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical => {
             reconstruct_general_intra_cardinal_neighbour_block_into(
+                backend,
                 workspace,
                 block,
                 IntraCardinalDirection::Vertical,
@@ -176,6 +187,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         }
         SupportedChromaMode::Horizontal if x == 0 && y == 0 => {
             reconstruct_general_intra_chroma_cardinal_horizontal_first_into(
+                backend,
                 workspace,
                 block,
                 plane_id,
@@ -190,6 +202,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         }
         SupportedChromaMode::HorizontalFollow | SupportedChromaMode::Horizontal => {
             reconstruct_general_intra_cardinal_neighbour_block_into(
+                backend,
                 workspace,
                 block,
                 IntraCardinalDirection::Horizontal,
@@ -209,6 +222,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         | SupportedChromaMode::D45
         | SupportedChromaMode::D67Follow
         | SupportedChromaMode::D67 => reconstruct_general_intra_one_sided_neighbour_block_into(
+            backend,
             workspace,
             block,
             if matches!(
@@ -235,6 +249,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
         ),
         SupportedChromaMode::D203Follow | SupportedChromaMode::D203 => {
             reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                backend,
                 workspace,
                 block,
                 203,
@@ -259,7 +274,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
+fn reconstruct_general_intra_chroma_directional_first_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     mode: SupportedDirectionalLumaMode,
@@ -278,15 +294,26 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
         plane_id,
         side * side,
     )?;
-    predict_directional_noneighbour_into(mode, block_size, side, bit_depth, &mut prediction)?;
-    write_intra_prediction_block(
-        workspace, block, prediction, plane_id, x, y, block_size, qindex, false, None, None,
+    predict_directional_noneighbour_into(
+        backend,
+        mode,
+        block_size,
+        side,
         bit_depth,
+        &mut prediction,
+    )?;
+    write_intra_prediction_block(
+        backend, workspace, block, prediction, plane_id, x, y, block_size, qindex, false, None,
+        None, bit_depth,
     )
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSample>(
+fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -318,13 +345,14 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
         width,
     )?;
     write_intra_prediction_block(
-        workspace, block, prediction, plane_id, x, y, block_size, qindex, false, None, dpcm,
-        bit_depth,
+        backend, workspace, block, prediction, plane_id, x, y, block_size, qindex, false, None,
+        dpcm, bit_depth,
     )
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
+fn reconstruct_general_intra_chroma_smooth_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -351,12 +379,13 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
         bit_depth,
     };
     if reconstruct_smooth_in_frame(
-        workspace, block, plane_id, x, y, request, qindex, false, None,
+        backend, workspace, block, plane_id, x, y, request, qindex, false, None,
     )? {
         return Ok(());
     }
     let (available_left_samples, available_above_samples) = availability.available_sample_limits();
     reconstruct_general_intra_smooth_over_available_edges_into(
+        backend,
         workspace,
         block,
         plane_id,

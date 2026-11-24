@@ -559,8 +559,9 @@ impl EncoderInterTile {
 
     /// Predicts `frontier` with `motion` into `workspace` (§ 7.11.3) and
     /// returns its motion vectors.
-    pub(crate) fn predict(
+    pub(crate) fn predict<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
         workspace: &mut CurrentFrameWorkspace<u16>,
@@ -582,6 +583,7 @@ impl EncoderInterTile {
         }
         if placed.block.interintra.is_some() || placed.block.bawp.enabled {
             prediction::reconstruct_placed_inter_block(
+                backend,
                 &mut self.interintra_scratch,
                 workspace,
                 &placed,
@@ -607,6 +609,7 @@ impl EncoderInterTile {
             return Ok(mvs);
         }
         prediction::reconstruct_pure_inter_block(
+            backend,
             &mut CurrentFrameSurface::Frame(workspace),
             &placed,
             &[],
@@ -624,13 +627,15 @@ impl EncoderInterTile {
 
     /// Adds `residual` to the predicted samples of `frontier` in `workspace`;
     /// an IntraBC block (`use_intrabc`) transforms without DDT.
-    pub(crate) fn add_residual(
+    pub(crate) fn add_residual<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         residual: &EncoderInterResidual,
         use_intrabc: bool,
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
         super::super::add_inter_residual_to_workspace(
+            backend,
             &mut CurrentFrameSurface::Frame(workspace),
             &residual.range(),
             &residual.blocks,

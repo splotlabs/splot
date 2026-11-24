@@ -3,11 +3,12 @@
 
 //! First-block, DIP, and Paeth intra entries with their edge helpers.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraBlockFrame, IntraDipEdges,
     IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraRectBlockSize, PlaneId, ReconSample,
-    predict_intra_dip_rect_into, predict_intra_middle_directional_angle_rect_into,
-    predict_intra_paeth_rect_into,
+    predict_intra_dip_rect_into_with, predict_intra_middle_directional_angle_rect_into_with,
+    predict_intra_paeth_rect_into_with,
 };
 
 use super::middle::middle_directional_angle;
@@ -18,14 +19,15 @@ use super::sink::{
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
-    add_general_intra_coeff_block_residual_in_place,
+    add_general_intra_coeff_block_residual_in_place_with,
 };
 
 const MI_SIZE: usize = 4;
 const MAX_DIP_EDGE_SAMPLES: usize = 80;
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     dip_mode: u8,
@@ -69,7 +71,8 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
             Some(row) if availability.above => row,
             _ => &above_buf[..above_len],
         };
-        predict_intra_dip_rect_into(
+        predict_intra_dip_rect_into_with(
+            backend,
             bit_depth,
             block_size,
             usize::from(dip_mode),
@@ -82,7 +85,8 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
     })?;
     if in_frame == Some(true) {
         if block.eob != 0 {
-            add_general_intra_coeff_block_residual_in_place(
+            add_general_intra_coeff_block_residual_in_place_with(
+                backend,
                 workspace,
                 block,
                 PlaneId::Y,
@@ -112,7 +116,8 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         &mut left_buf,
     )?;
     let predict = |output: &mut [T], stride: usize| {
-        predict_intra_dip_rect_into(
+        predict_intra_dip_rect_into_with(
+            backend,
             bit_depth,
             block_size,
             usize::from(dip_mode),
@@ -124,6 +129,7 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         .map_err(Into::into)
     };
     predict_intra_block(
+        backend,
         workspace,
         block,
         PlaneId::Y,
@@ -139,7 +145,8 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
     )
 }
 
-pub(crate) fn predict_directional_noneighbour_into<T: ReconSample>(
+pub(crate) fn predict_directional_noneighbour_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     mode: SupportedDirectionalLumaMode,
     block_size: IntraRectBlockSize,
     side: usize,
@@ -152,8 +159,8 @@ pub(crate) fn predict_directional_noneighbour_into<T: ReconSample>(
     above[0] = noneighbour_corner::<T>(bit_depth);
     left[0] = noneighbour_corner::<T>(bit_depth);
     let edges = IntraMiddleDirectionalAngleEdges::both(&left[..=side], &above[..=side]);
-    predict_intra_middle_directional_angle_rect_into(
-        bit_depth, block_size, angle, edges, prediction, side,
+    predict_intra_middle_directional_angle_rect_into_with(
+        backend, bit_depth, block_size, angle, edges, prediction, side,
     )?;
     Ok(())
 }
@@ -407,7 +414,11 @@ fn paeth_reference_edges_into<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
+pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -447,7 +458,8 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             left,
         )?;
         let predict = |output: &mut [T], stride: usize| {
-            predict_intra_paeth_rect_into(
+            predict_intra_paeth_rect_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 IntraPaethEdges::new(left, above, top_left),
@@ -457,8 +469,8 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             .map_err(Into::into)
         };
         predict_intra_block(
-            workspace, block, plane_id, x, y, block_size, qindex, use_tcq, None, None, bit_depth,
-            predict,
+            backend, workspace, block, plane_id, x, y, block_size, qindex, use_tcq, None, None,
+            bit_depth, predict,
         )
     }
 }

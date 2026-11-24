@@ -528,7 +528,8 @@ fn finish_frame_cdfs(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_blocks<T: ReconSample>(
+pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
     sequence: &SequenceHeader,
@@ -581,6 +582,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         products.segment_ids(params.mi_rows, params.mi_cols, segmentation_enabled(core))?
     };
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
+        backend,
         tile_scratch,
         &mut records,
         payload,

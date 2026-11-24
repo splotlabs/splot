@@ -325,8 +325,9 @@ const fn delta_limit(high_precision: bool) -> u8 {
 impl EncoderInterTile {
     /// Predicts the luma of `warp` at `frontier` into `workspace`, as the
     /// decoder predicts its luma (§ 7.11.3, § 7.13.3.14).
-    pub(crate) fn predict_warp_luma(
+    pub(crate) fn predict_warp_luma<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         frontier: &DecodeBlockFrontier,
         warp: EncoderWarpMotion,
         workspace: &mut CurrentFrameWorkspace<u16>,
@@ -344,6 +345,7 @@ impl EncoderInterTile {
             parsed,
         )?;
         prediction::reconstruct_pure_inter_block(
+            backend,
             &mut CurrentFrameSurface::Frame(workspace),
             &placed,
             &[],

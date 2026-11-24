@@ -508,8 +508,9 @@ impl ResidualPlanePlan {
 
 impl ParsedGeneralIntraResidual {
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct<T: ReconSample>(
+    pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         arena: &mut ResidualPlaneArena,
         coeffs_arena: &[i32],
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -543,6 +544,7 @@ impl ParsedGeneralIntraResidual {
                         });
                     };
                     reconstruct_chroma_pair(
+                        backend,
                         frame,
                         scratch,
                         workspace,
@@ -562,6 +564,7 @@ impl ParsedGeneralIntraResidual {
                 deferred = true;
             } else {
                 plane.reconstruct(
+                    backend,
                     frame,
                     scratch,
                     workspace,
@@ -577,6 +580,7 @@ impl ParsedGeneralIntraResidual {
         }
         if let Some(u) = pending_u {
             reconstruct_chroma_pair(
+                backend,
                 frame,
                 scratch,
                 workspace,
@@ -591,6 +595,7 @@ impl ParsedGeneralIntraResidual {
         }
         if deferred {
             reconstruct_deferred_planes(
+                backend,
                 frame,
                 scratch,
                 workspace,
@@ -638,8 +643,9 @@ impl ParsedResidualPlane {
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub(super) fn reconstruct<T: ReconSample>(
+    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         frame: FrameTileCtx,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -660,6 +666,7 @@ impl ParsedResidualPlane {
                 let palette_color_map =
                     super::palette::take_stored_palette_map(palette_maps, *palette_color_map)?;
                 plane.reconstruct(
+                    backend,
                     frame,
                     scratch,
                     workspace,
@@ -689,6 +696,7 @@ impl ParsedResidualPlane {
                         unit.palette_color_map,
                     )?;
                     plan.reconstruct(
+                        backend,
                         frame,
                         scratch,
                         workspace,
@@ -730,7 +738,8 @@ impl ParsedResidualPlane {
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_chroma_pair<T: ReconSample>(
+fn reconstruct_chroma_pair<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -751,6 +760,7 @@ fn reconstruct_chroma_pair<T: ReconSample>(
         None => None,
     };
     chroma_pair::reconstruct_chroma_pair_or_planes(
+        backend,
         frame,
         scratch,
         workspace,
@@ -764,7 +774,8 @@ fn reconstruct_chroma_pair<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_deferred_planes<T: ReconSample>(
+fn reconstruct_deferred_planes<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -790,6 +801,7 @@ fn reconstruct_deferred_planes<T: ReconSample>(
             && let Some(u) = pending_u.take()
         {
             reconstruct_chroma_pair(
+                backend,
                 frame,
                 scratch,
                 workspace,
@@ -804,6 +816,7 @@ fn reconstruct_deferred_planes<T: ReconSample>(
             continue;
         }
         plane.reconstruct(
+            backend,
             frame,
             scratch,
             workspace,
@@ -818,6 +831,7 @@ fn reconstruct_deferred_planes<T: ReconSample>(
     }
     if let Some(u) = pending_u {
         reconstruct_chroma_pair(
+            backend,
             frame,
             scratch,
             workspace,

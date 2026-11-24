@@ -136,12 +136,17 @@ fn analyse<T: ReconSample>(
     let planes = [(PlaneId::U, coeffs.view(&[]), neighbours)];
     let mut edges = CflLumaEdges::default();
     let mut ac = Vec::new();
-    let average = with_luma!(frame, filter, |luma| baseline_simd!(simd => {
-        edges.gather_above(simd, &luma, &planes, block).unwrap();
-        let left = (block.x > 0).then_some(&mut edges.left[..block.height]);
-        luma.fill_luma(simd, block, left, &mut ac).unwrap();
-        edges.average_q3(block, neighbours).unwrap()
-    }));
+    let average = with_luma!(
+        frame,
+        filter,
+        |luma| crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
+            let simd = backend.token();
+            edges.gather_above(backend, simd, &luma, &planes, block).unwrap();
+            let left = (block.x > 0).then_some(&mut edges.left[..block.height]);
+            luma.fill_luma(backend, simd, block, left, &mut ac).unwrap();
+            edges.average_q3(backend, block, neighbours).unwrap()
+        }))
+    );
     for luma in &mut ac {
         *luma -= average as i16;
     }
@@ -154,10 +159,12 @@ fn implicit_alpha<T: ReconSample>(
     block: CflBlock,
 ) -> i32 {
     let chroma = PlaneSamples::of(frame, PlaneId::U).unwrap();
-    edges
-        .plane_chroma_model(&chroma, block, interior(), true)
-        .unwrap()
-        .1
+    crate::test_support::with_auto_backend!(backend => {
+        edges
+            .plane_chroma_model(backend, &chroma, block, interior(), true)
+            .unwrap()
+            .1
+    })
 }
 
 fn explicit_prediction(
@@ -170,7 +177,9 @@ fn explicit_prediction(
     let mut prediction = vec![0u16; ac.len()];
     let max = i32::from(bit_depth.max_sample());
     let model = [dc, i32::from(alpha) * CFL_ALPHA_SCALE, 0, max];
-    cfl_predict_block(model, ac, width, &mut prediction, width).unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        cfl_predict_block(backend, model, ac, width, &mut prediction, width).unwrap();
+    });
     prediction
 }
 
@@ -184,22 +193,25 @@ fn invalid_cfl_filter_preserves_prediction_scratch() {
         scratch.mhccp_chroma.clone(),
     );
 
-    let result = reconstruct_general_intra_chroma_cfl_block_into(
-        &mut scratch,
-        &mut frame,
-        zero_block().view(&[]),
-        PlaneId::U,
-        0,
-        0,
-        2,
-        2,
-        128,
-        derived_alpha(),
-        4,
-        4,
-        interior(),
-        BitDepth::Eight,
-    );
+    let result = crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_cfl_block_into(
+            backend,
+            &mut scratch,
+            &mut frame,
+            zero_block().view(&[]),
+            PlaneId::U,
+            0,
+            0,
+            2,
+            2,
+            128,
+            derived_alpha(),
+            4,
+            4,
+            interior(),
+            BitDepth::Eight,
+        )
+    });
 
     assert!(matches!(
         result,
@@ -227,24 +239,27 @@ fn invalid_mhccp_filter_preserves_prediction_scratch() {
         scratch.mhccp_chroma.clone(),
     );
 
-    let result = reconstruct_general_intra_chroma_cfl_block_into(
-        &mut scratch,
-        &mut frame,
-        zero_block().view(&[]),
-        PlaneId::U,
-        0,
-        0,
-        2,
-        2,
-        128,
-        CflParams::Multi {
-            direction: CflMultiDirection::Direct,
-        },
-        4,
-        4,
-        interior(),
-        BitDepth::Eight,
-    );
+    let result = crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_cfl_block_into(
+            backend,
+            &mut scratch,
+            &mut frame,
+            zero_block().view(&[]),
+            PlaneId::U,
+            0,
+            0,
+            2,
+            2,
+            128,
+            CflParams::Multi {
+                direction: CflMultiDirection::Direct,
+            },
+            4,
+            4,
+            interior(),
+            BitDepth::Eight,
+        )
+    });
 
     assert!(matches!(
         result,
@@ -283,9 +298,13 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
         {
             let block = cfl_block(x, y, width, height, 16, BitDepth::Ten);
             let mut actual = Vec::new();
-            with_luma!(&frame, filter as u8, |luma| baseline_simd!(simd => {
-                luma.fill_luma(simd, block, None, &mut actual)
-            }))
+            with_luma!(
+                &frame,
+                filter as u8,
+                |luma| crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
+                    luma.fill_luma(backend, backend.token(), block, None, &mut actual)
+                }))
+            )
             .unwrap();
             for luma in &mut actual {
                 *luma -= average_q3 as i16;
@@ -442,22 +461,25 @@ fn cfl_reconstruction_supports_non_420_chroma_geometry() {
     for pixel_format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
         let mut frame = workspace(pixel_format);
 
-        reconstruct_general_intra_chroma_cfl_block_into(
-            &mut scratch,
-            &mut frame,
-            zero_block().view(&[]),
-            PlaneId::U,
-            0,
-            0,
-            2,
-            2,
-            0,
-            derived_alpha(),
-            0,
-            16,
-            NeighbourAvailability::new(false, false, 0, 0),
-            BitDepth::Eight,
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_chroma_cfl_block_into(
+                backend,
+                &mut scratch,
+                &mut frame,
+                zero_block().view(&[]),
+                PlaneId::U,
+                0,
+                0,
+                2,
+                2,
+                0,
+                derived_alpha(),
+                0,
+                16,
+                NeighbourAvailability::new(false, false, 0, 0),
+                BitDepth::Eight,
+            )
+        })
         .unwrap();
 
         assert_eq!(frame.reconstructed_sample(PlaneId::U, 0, 0).unwrap(), 128);
@@ -547,24 +569,27 @@ fn mhccp_bottom_edge_keeps_full_prediction_with_clipped_reference_extent() {
     frame
         .fill_rect(PlaneId::U, PlaneRect::new(128, 528, 32, 12).unwrap(), 77)
         .unwrap();
-    reconstruct_general_intra_chroma_cfl_block_into(
-        &mut scratch,
-        &mut frame,
-        zero_block().view(&[]),
-        PlaneId::U,
-        128,
-        528,
-        5,
-        4,
-        0,
-        CflParams::Multi {
-            direction: CflMultiDirection::Direct,
-        },
-        0,
-        32,
-        interior(),
-        BitDepth::Eight,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_cfl_block_into(
+            backend,
+            &mut scratch,
+            &mut frame,
+            zero_block().view(&[]),
+            PlaneId::U,
+            128,
+            528,
+            5,
+            4,
+            0,
+            CflParams::Multi {
+                direction: CflMultiDirection::Direct,
+            },
+            0,
+            32,
+            interior(),
+            BitDepth::Eight,
+        )
+    })
     .unwrap();
     for y in 528..540 {
         for x in 128..160 {
@@ -630,31 +655,13 @@ fn cfl_pair_matches_single_plane_reconstruction() {
     ] {
         for (x, y, log2_width, log2_height) in [(8, 8, 3, 3), (4, 12, 2, 3), (16, 4, 4, 2)] {
             let mut pair = source();
-            reconstruct_general_intra_chroma_cfl_pair_into(
-                &mut scratch,
-                &mut pair,
-                block.view(&[]),
-                block.view(&[]),
-                x,
-                y,
-                log2_width,
-                log2_height,
-                0,
-                params,
-                1,
-                16,
-                neighbours,
-                neighbours,
-                BitDepth::Ten,
-            )
-            .unwrap();
-            let mut single = source();
-            for plane in [PlaneId::U, PlaneId::V] {
-                reconstruct_general_intra_chroma_cfl_block_into(
+            crate::test_support::with_auto_backend!(backend => {
+                reconstruct_general_intra_chroma_cfl_pair_into(
+                    backend,
                     &mut scratch,
-                    &mut single,
+                    &mut pair,
                     block.view(&[]),
-                    plane,
+                    block.view(&[]),
                     x,
                     y,
                     log2_width,
@@ -664,8 +671,32 @@ fn cfl_pair_matches_single_plane_reconstruction() {
                     1,
                     16,
                     neighbours,
+                    neighbours,
                     BitDepth::Ten,
                 )
+            })
+            .unwrap();
+            let mut single = source();
+            for plane in [PlaneId::U, PlaneId::V] {
+                crate::test_support::with_auto_backend!(backend => {
+                    reconstruct_general_intra_chroma_cfl_block_into(
+                        backend,
+                        &mut scratch,
+                        &mut single,
+                        block.view(&[]),
+                        plane,
+                        x,
+                        y,
+                        log2_width,
+                        log2_height,
+                        0,
+                        params,
+                        1,
+                        16,
+                        neighbours,
+                        BitDepth::Ten,
+                    )
+                })
                 .unwrap();
             }
             for plane in [PlaneId::U, PlaneId::V] {
@@ -698,7 +729,9 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
                 .collect();
             let mut actual = vec![0u16; len];
             let model = [dc, alpha_q3, 0, max];
-            cfl_predict_block(model, &luma_ac, width, &mut actual, width).unwrap();
+            crate::test_support::with_auto_backend!(backend => {
+                cfl_predict_block(backend, model, &luma_ac, width, &mut actual, width).unwrap();
+            });
             let expected: Vec<u16> = luma_ac
                 .iter()
                 .map(|&ac| cfl_predict(model, i32::from(ac)) as u16)
@@ -722,7 +755,9 @@ fn check_cfl_predict_block<T: ReconSample>(max: i32, state: &mut u64) {
     let luma: Vec<i16> = (0..width * height).map(|_| sample(state) as i16).collect();
     let sentinel = T::try_from_u16(7).unwrap();
     let mut out = vec![sentinel; (height - 1) * stride + width];
-    cfl_predict_block(model, &luma, width, &mut out, stride).unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        cfl_predict_block(backend, model, &luma, width, &mut out, stride).unwrap();
+    });
     for (i, &got) in out.iter().enumerate() {
         let (row, col) = (i / stride, i % stride);
         let expected = if col < width {
@@ -765,7 +800,9 @@ fn check_cfl_predict_extremes<T: ReconSample>(max: i32) {
                     .collect();
                 for width in [4, 8, 16, 64] {
                     let mut out = vec![T::default(); 64];
-                    cfl_predict_block(model, &luma, width, &mut out, width).unwrap();
+                    crate::test_support::with_auto_backend!(backend => {
+                        cfl_predict_block(backend, model, &luma, width, &mut out, width).unwrap();
+                    });
                     for (got, &l) in out.iter().zip(&luma) {
                         let expected = cfl_predict(model, i32::from(l)) as u16;
                         assert_eq!(got.to_u16(), expected, "{model:?} L={l} width={width}");
@@ -984,8 +1021,16 @@ fn cfl_block_luma_matches_per_sample_q3_in_every_format() {
                 let block = cfl_block(x, y, w, h, 16, frame.info().bit_depth());
                 let mut left = [0; MAX_CFL_AXIS];
                 let mut actual = Vec::new();
-                baseline_simd!(simd => luma.fill_luma(simd, block, (x > 0).then_some(&mut left[..h]), &mut actual))
-                    .unwrap();
+                crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
+                    luma.fill_luma(
+                        backend,
+                        backend.token(),
+                        block,
+                        (x > 0).then_some(&mut left[..h]),
+                        &mut actual,
+                    )
+                }))
+                .unwrap();
                 let (max_x, max_y) = (luma.plane.width - 1, luma.plane.height - 1);
                 for row in 0..h {
                     let luma_y = clamped_cfl_luma_coordinate(y + row, luma.sub_y, max_y);
@@ -1034,12 +1079,15 @@ fn check_u8_block_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state:
         let block = cfl_block(x, y, block_width, block_height, 16, BitDepth::Eight);
         let mut left = [0; MAX_CFL_AXIS];
         let mut actual = Vec::new();
-        baseline_simd!(simd => luma.fill_luma(
-            simd,
-            block,
-            (x > 0).then_some(&mut left[..block_height]),
-            &mut actual,
-        ))
+        crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
+            luma.fill_luma(
+                backend,
+                backend.token(),
+                block,
+                (x > 0).then_some(&mut left[..block_height]),
+                &mut actual,
+            )
+        }))
         .unwrap();
         for row in 0..block_height {
             let luma_y = 2 * (y + row);
@@ -1087,8 +1135,10 @@ fn check_u8_gathered_edges<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
         let block = cfl_block(x, y, block_width, block_height, sb_mib, BitDepth::Eight);
         let mut edges = CflLumaEdges::default();
         let mut ac = Vec::new();
-        let start =
-            baseline_simd!(simd => edges.gather(simd, &luma, &planes, block, &mut ac)).unwrap();
+        let start = crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
+            edges.gather(backend, backend.token(), &luma, &planes, block, &mut ac)
+        }))
+        .unwrap();
         folded += usize::from(start > 0);
         if y > 0 {
             let min_y = cfl_above_min_luma_ref_y(y, sb_mib, PixelFormat::Yuv420);
@@ -1178,15 +1228,18 @@ fn cfl_420_u8_f2_narrow_strips_match_per_sample_q3() {
             let prefix = usize::from(has_above);
             let mut left = [0; 3];
             let mut actual = vec![0; width * (left.len() + prefix)];
-            assert!(luma.block_luma_420(
-                x,
-                y,
-                width,
-                [true; 3],
-                above,
-                &mut Some(&mut left),
-                &mut actual,
-            ));
+            assert!(crate::test_support::with_auto_backend!(backend => {
+                luma.block_luma_420(
+                    backend,
+                    x,
+                    y,
+                    width,
+                    [true; 3],
+                    above,
+                    &mut Some(&mut left),
+                    &mut actual,
+                )
+            }));
             for (row, actual) in actual.chunks_exact(width).enumerate() {
                 let rows = if row < prefix {
                     luma.row(y - 1, false, min_y)
@@ -1248,7 +1301,9 @@ fn check_u8_reference_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
         let (clamp_row0, clamp_col0) = (lcg(state).is_multiple_of(2), lcg(state).is_multiple_of(2));
         let mut actual = vec![0; block_width * block_height];
         let clamps = [false, clamp_row0, clamp_col0];
-        if !luma.block_luma_420(x, y, block_width, clamps, None, &mut None, &mut actual) {
+        if !crate::test_support::with_auto_backend!(backend => {
+            luma.block_luma_420(backend, x, y, block_width, clamps, None, &mut None, &mut actual)
+        }) {
             continue;
         }
         fast_runs += 1;
@@ -1339,7 +1394,9 @@ fn spec_mhccp<T: ReconSample>(
         linear: &edges[e][0],
         centre: &edges[e][1],
     });
-    let [params] = derive_mhccp_params(edges, [[&targets[0], &targets[1]]], block.bit_depth);
+    let [params] = crate::test_support::with_auto_backend!(backend => {
+        derive_mhccp_params_with(backend, edges, [[&targets[0], &targets[1]]], block.bit_depth)
+    });
     let bits = u32::from(block.bit_depth.bits());
     let mut out = Vec::new();
     for i in above..above + h {
@@ -1403,22 +1460,25 @@ fn check_mhccp_against_spec<T: ReconSample>(
         let expected = MhccpGeometry::new(frame, PlaneId::U, block, neighbours)
             .is_ok()
             .then(|| spec_mhccp(frame, PlaneId::U, block, neighbours, mh_dir as u8, filter));
-        let result = reconstruct_general_intra_chroma_cfl_block_into(
-            &mut scratch,
-            frame,
-            zero_block().view(&[]),
-            PlaneId::U,
-            x,
-            y,
-            log2_w,
-            log2_h,
-            0,
-            CflParams::Multi { direction },
-            filter,
-            sb_mib,
-            neighbours,
-            bit_depth,
-        );
+        let result = crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_chroma_cfl_block_into(
+                backend,
+                &mut scratch,
+                frame,
+                zero_block().view(&[]),
+                PlaneId::U,
+                x,
+                y,
+                log2_w,
+                log2_h,
+                0,
+                CflParams::Multi { direction },
+                filter,
+                sb_mib,
+                neighbours,
+                bit_depth,
+            )
+        });
         let Some(expected) = expected else {
             assert!(result.is_err());
             continue;
@@ -1594,26 +1654,33 @@ fn check_lane_models<T: ReconSample>(state: &mut u64, bit_depth: BitDepth) -> us
         let derive = lcg(state).is_multiple_of(2);
         let above = (neighbours.has_above() && y > 0).then_some(&above[..]);
         let left = (neighbours.has_left() && x > 0).then_some(&left[..]);
-        let models = edges.chroma_models(
-            above.map(|a| [a]),
-            left.map(|l| [l]),
-            block,
-            neighbours,
-            derive,
-        );
-        let pair = edges.chroma_models(
-            above.map(|a| [a, a]),
-            left.map(|l| [l, l]),
-            block,
-            neighbours,
-            derive,
-        );
+        let (models, pair) = crate::test_support::with_auto_backend!(backend => {
+            let models = edges.chroma_models(
+                backend,
+                above.map(|a| [a]),
+                left.map(|l| [l]),
+                block,
+                neighbours,
+                derive,
+            );
+            let pair = edges.chroma_models(
+                backend,
+                above.map(|a| [a, a]),
+                left.map(|l| [l, l]),
+                block,
+                neighbours,
+                derive,
+            );
+            (models, pair)
+        });
         if models.is_err() {
             assert!(derive && pair.is_err());
             continue;
         }
         let expected = scalar_models(&edges, above, left, block, neighbours, derive);
-        let average = edges.average_q3(block, neighbours).unwrap();
+        let average = crate::test_support::with_auto_backend!(backend => {
+            edges.average_q3(backend, block, neighbours).unwrap()
+        });
         assert_eq!(
             (average, models.unwrap()[0]),
             expected,
@@ -1653,15 +1720,18 @@ fn check_cfl_predict_pair<T: ReconSample>(max: i32, state: &mut u64) {
     let sentinel = T::try_from_u16(7).unwrap();
     let mut outs = strides.map(|stride| vec![sentinel; (height - 1) * stride + width]);
     let [u, v] = &mut outs;
-    cfl_predict_pair(
-        models,
-        &luma,
-        width,
-        [
-            (u.as_mut_slice(), strides[0]),
-            (v.as_mut_slice(), strides[1]),
-        ],
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        cfl_predict_pair(
+            backend,
+            models,
+            &luma,
+            width,
+            [
+                (u.as_mut_slice(), strides[0]),
+                (v.as_mut_slice(), strides[1]),
+            ],
+        )
+    })
     .unwrap();
     for ((out, model), stride) in outs.iter().zip(models).zip(strides) {
         for (i, &got) in out.iter().enumerate() {

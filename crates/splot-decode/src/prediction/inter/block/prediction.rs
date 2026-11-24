@@ -82,7 +82,8 @@ pub(super) fn placed_inter_block_at<B>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
+pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
@@ -158,6 +159,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
+            backend,
             &mut CurrentFrameSurface::Frame(workspace),
             residual,
             residual_blocks,
@@ -175,7 +177,8 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
 /// current-frame reads, no refined motion) into `sink`: motion compensation,
 /// then residual add.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
+pub(super) fn reconstruct_pure_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
@@ -192,6 +195,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     held.predict_into(sink, placed, placed.motion_compensation_rect(), tile_offset)?;
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
+            backend,
             sink,
             residual,
             residual_blocks,

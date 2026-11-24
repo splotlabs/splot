@@ -1042,8 +1042,9 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     block_decoded.clear_superblock(0, 0);
     let mut expected_decoded = block_decoded.clone();
     expected_decoded.set_luma_transform(32, 32, 8, 8);
-    parsed
-        .reconstruct(
+    crate::test_support::with_auto_backend!(backend => {
+        parsed.reconstruct(
+            backend,
             block_ctx.frame(),
             &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
             &mut workspace,
@@ -1062,7 +1063,8 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
             &units,
             &mut [],
         )
-        .expect("visible transform unit reconstructs");
+    })
+    .expect("visible transform unit reconstructs");
 
     assert_eq!(block_decoded, expected_decoded);
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 32, 32), Ok(128));
@@ -1377,8 +1379,9 @@ fn tile_top_reconstruction_samples(plan: RectLumaPlan, above: u8) -> Vec<u8> {
         .plane_plan(PlaneId::Y)
         .expect("luma plane");
 
-    plane
-        .reconstruct(
+    crate::test_support::with_auto_backend!(backend => {
+        plane.reconstruct(
+            backend,
             block_ctx.frame(),
             &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
             &mut workspace,
@@ -1396,7 +1399,8 @@ fn tile_top_reconstruction_samples(plan: RectLumaPlan, above: u8) -> Vec<u8> {
             },
             LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::Dc, 0),
         )
-        .expect("tile-top luma reconstruction");
+    })
+    .expect("tile-top luma reconstruction");
 
     (0..8)
         .flat_map(|row| (0..8).map(move |col| (row, col)))

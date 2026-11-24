@@ -913,19 +913,18 @@ impl IntraTileSyntax {
         let state = self.inter.as_mut().ok_or(INTRA_FRAME)?;
         state.planned = None;
         let workspace = &mut self.recon.workspace;
-        let mvs = match intrabc {
-            None => state.tile.predict(
-                &leaf.frontier,
+        let mvs = self
+            .backend
+            .enter(InterPredictScope {
+                tile: &mut state.tile,
+                frontier: &leaf.frontier,
                 motion,
+                intrabc,
                 workspace,
-                (&self.recon.block_decoded, self.tools.enable_ibp),
-            ),
-            Some((mv, morph)) => (state
-                .tile
-                .predict_intrabc(&leaf.frontier, mv, morph, workspace))
-            .map(|()| [mv, MotionVector::default()]),
-        }
-        .map_err(rule("inter prediction"))?;
+                block_decoded: &self.recon.block_decoded,
+                enable_ibp: self.tools.enable_ibp,
+            })
+            .map_err(rule("inter prediction"))?;
         let units = inter_residual_units(&leaf.frontier, chroma, self.tools.lossless)
             .map_err(rule("inter residual"))?;
         let (sub_x, sub_y) = chroma.subsampling();
@@ -1064,13 +1063,13 @@ impl IntraTileSyntax {
                 .map_err(rule("inter residual"))?;
         }
         let _quant = self.tools.quant_scopes();
-        state
-            .tile
-            .add_residual(
-                &planned.residual,
-                planned.use_intrabc,
-                &mut self.recon.workspace,
-            )
+        self.backend
+            .enter(InterResidualScope {
+                tile: &mut state.tile,
+                residual: &planned.residual,
+                use_intrabc: planned.use_intrabc,
+                workspace: &mut self.recon.workspace,
+            })
             .map_err(rule("inter residual"))
     }
 
@@ -1761,3 +1760,50 @@ fn lossless_units(
 }
 
 const NO_INTER_LEAF: EncoderSyntaxError = EncoderSyntaxError::Unsupported("no planned inter leaf");
+
+struct InterPredictScope<'a> {
+    tile: &'a mut EncoderInterTile,
+    frontier: &'a crate::bitstream::tile_payload::DecodeBlockFrontier,
+    motion: EncoderMotion,
+    intrabc: Option<(MotionVector, bool)>,
+    workspace: &'a mut splot_recon::CurrentFrameWorkspace<u16>,
+    block_decoded: &'a crate::bitstream::tile_payload::TileBlockDecodedState,
+    enable_ibp: bool,
+}
+
+impl splot_core::simd::SimdScope<crate::Result<[MotionVector; 2]>> for InterPredictScope<'_> {
+    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> crate::Result<[MotionVector; 2]> {
+        let narrow = backend.narrow();
+        match self.intrabc {
+            None => self.tile.predict(
+                narrow,
+                self.frontier,
+                self.motion,
+                self.workspace,
+                (self.block_decoded, self.enable_ibp),
+            ),
+            Some((mv, morph)) => self
+                .tile
+                .predict_intrabc(narrow, self.frontier, mv, morph, self.workspace)
+                .map(|()| [mv, MotionVector::default()]),
+        }
+    }
+}
+
+struct InterResidualScope<'a> {
+    tile: &'a mut EncoderInterTile,
+    residual: &'a EncoderInterResidual,
+    use_intrabc: bool,
+    workspace: &'a mut splot_recon::CurrentFrameWorkspace<u16>,
+}
+
+impl splot_core::simd::SimdScope<crate::Result<()>> for InterResidualScope<'_> {
+    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> crate::Result<()> {
+        self.tile.add_residual(
+            backend.narrow(),
+            self.residual,
+            self.use_intrabc,
+            self.workspace,
+        )
+    }
+}

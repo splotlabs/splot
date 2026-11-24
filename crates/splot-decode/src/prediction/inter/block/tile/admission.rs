@@ -66,8 +66,9 @@ impl<T: ReconSample> TileCommit<T> {
         }
     }
 
-    pub(super) fn replay(
+    pub(super) fn replay<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         mut ready: ReadyReconRow<T>,
         motion: &MotionFieldUnits,
         temporal: &TemporalMvContext,
@@ -79,6 +80,7 @@ impl<T: ReconSample> TileCommit<T> {
         }
         self.ordered.with_installed(|scratch| {
             pixel_commit::replay_recon_row(
+                backend,
                 ready.row,
                 ready.tile_offset,
                 &mut self.next,
@@ -542,7 +544,13 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn precompute(&self, index: usize, worker: usize, surfaces: &SurfaceSource<T>) -> Result<()> {
+    fn precompute<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        index: usize,
+        worker: usize,
+        surfaces: &SurfaceSource<T>,
+    ) -> Result<()> {
         let range = self
             .batch_range(index)
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
@@ -585,6 +593,7 @@ impl<T: ReconSample> TileRecon<T> {
                                 .flatten();
                         }
                         precompute_recon_row(
+                            backend,
                             ready,
                             scratch,
                             &self.prepass_block_decoded,
@@ -616,8 +625,9 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn commit_batch(
+    fn commit_batch<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         index: usize,
         parse_progress: &super::ParseProgress,
         surfaces: &SurfaceSource<T>,
@@ -659,7 +669,7 @@ impl<T: ReconSample> TileRecon<T> {
                 surface.publish_into(&mut commit.workspace)?;
                 surfaces.give(surface, worker);
             }
-            let spent = commit.replay(ready, &self.motion, &self.temporal, &context)?;
+            let spent = commit.replay(backend, ready, &self.motion, &self.temporal, &context)?;
             parse_progress.return_row_buffers(spent);
         }
         *self
@@ -706,7 +716,8 @@ pub(super) const PARSE_AHEAD_ROWS: usize = 4;
 /// Parses one tile a few superblock rows at a time and replays each batch in
 /// order, once every reference row is settled.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn run_ordinary_tile<T: ReconSample>(
+pub(super) fn run_ordinary_tile<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     parser: &mut TileParser<'_>,
     tile: &mut DecodeTileWorkUnit,
     resolve: &mut TileResolveState,
@@ -759,7 +770,7 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 surface: None,
                 bounds: super::row_gate::RowReferenceBounds::default(),
             };
-            let buffers = commit.replay(ready, motion, temporal, context)?;
+            let buffers = commit.replay(backend, ready, motion, temporal, context)?;
             row_buffers.push(buffers);
         }
     }
@@ -829,8 +840,14 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Precomputes one admitted batch on scheduler worker `worker` without
     /// entering the ordered commit spine.
-    pub(crate) fn precompute(&self, index: usize, worker: usize) -> Result<()> {
-        self.recon.precompute(index, worker, &self.pending_surfaces)
+    pub(crate) fn precompute<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        index: usize,
+        worker: usize,
+    ) -> Result<()> {
+        self.recon
+            .precompute(backend, index, worker, &self.pending_surfaces)
     }
 
     /// Whether batch `index` is parsed, resolved, and admitted by its
@@ -1342,10 +1359,19 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
-    pub(crate) fn commit(&self, index: usize, worker: usize) -> Result<ScheduledCommitProgress> {
-        let mut committed =
-            self.recon
-                .commit_batch(index, &self.parse_progress, &self.pending_surfaces, worker)?;
+    pub(crate) fn commit<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        index: usize,
+        worker: usize,
+    ) -> Result<ScheduledCommitProgress> {
+        let mut committed = self.recon.commit_batch(
+            backend,
+            index,
+            &self.parse_progress,
+            &self.pending_surfaces,
+            worker,
+        )?;
         let handed = committed.state.handed_rows;
         if committed.state.closed_rows > handed {
             self.seal_committed_rows(&mut committed.state)?;
