@@ -41,6 +41,9 @@ impl TemporalLayerId {
 pub struct EmbeddedLayerId(u8);
 
 impl EmbeddedLayerId {
+    /// Embedded layer id 0 (the base embedded layer).
+    pub const BASE: Self = Self(0);
+
     /// Creates an embedded layer id from a value already known to fit the 3-bit
     /// `obu_mlayer_id` field.
     #[must_use]

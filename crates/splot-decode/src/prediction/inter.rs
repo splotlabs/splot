@@ -7,14 +7,14 @@ use splot_core::bitio::BitReader;
 use std::sync::Arc;
 
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus,
-    FrameReferenceStateView, FrameType, QuantizationParams, RESTRICTED_ORDER_HINT, RefIdxBuf,
-    SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
+    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus, FrameType,
+    QuantizationParams, RESTRICTED_ORDER_HINT, RefIdxBuf, SefTrailingBits, SlotFrameFilterTaps,
+    TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::span::ByteOffset;
-use splot_core::types::{ObuType, TemporalLayerId};
+use splot_core::types::ObuType;
 use splot_recon::{
     BitDepth, CurrentFrameSurface, DecodedFrame, DecodedFrameInfo,
     InterpolationFilter as ReconInterpolationFilter, IntraRectBlockSize, PlaneId as ReconPlaneId,
@@ -1341,6 +1341,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_is_intra_frame: RefSlots<bool>,
     pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
     pub(crate) ref_tlayer_id: RefSlots<u8>,
+    pub(crate) ref_mlayer_id: RefSlots<u8>,
     pub(crate) ref_num_total_refs: RefSlots<u32>,
     pub(crate) saved_global_motion_order_hints:
         RefSlots<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
@@ -1598,43 +1599,34 @@ impl ReferenceMetadata {
             .and_then(|header| header.ccso_params.as_ref())
             .ok_or(DecodeReferenceStateError::MissingCcsoParams { slot }.into())
     }
+}
 
-    pub(crate) fn slot_tlayer_id(&self, slot: usize) -> Option<TemporalLayerId> {
-        self.ref_tlayer_id
-            .get(slot)
-            .copied()
-            .map(TemporalLayerId::from_bits)
-    }
-
-    pub(crate) fn header_view(&self) -> FrameReferenceStateView<'_> {
-        let view = FrameReferenceStateView::from_slots_with_base_q_idx(
-            &self.ref_valid,
-            &self.ref_order_hint,
-            &self.ref_frame_width,
-            &self.ref_frame_height,
-            &self.ref_base_q_idx,
+fn parse_inter_or_sef_core(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    reference: &ReferenceMetadata,
+    first_picture_in_tu: bool,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
+    frame_index: Option<usize>,
+) -> Result<FrameHeaderCore> {
+    if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
+        parse_sef_or_tip_frame_core(
+            envelope,
+            sequence,
+            reference,
+            first_picture_in_tu,
+            mfh_record,
+            frame_index,
         )
-        .with_quantizer_delta_state(&self.ref_chroma_ac_deltas)
-        .with_primary_reference_state(&self.ref_counter, &self.ref_is_inter)
-        .with_long_term_id_state(&self.ref_long_term_id)
-        .with_global_motion_state(
-            &self.ref_num_total_refs,
-            &self.saved_global_motion_order_hints,
-            &self.saved_global_motion_params,
+    } else {
+        parse_inter_frame_core(
+            envelope,
+            sequence,
+            reference,
+            first_picture_in_tu,
+            mfh_record,
+            frame_index,
         )
-        .with_single_layer_order_hint_state(
-            &self.ref_order_hint_lsbs,
-            &self.ref_implicit_output_frame,
-            &self.ref_immediate_output_frame,
-        )
-        .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
-        .with_lr_frame_filter_taps(self.lr_frame_filter_taps.as_deref().unwrap_or_default())
-        .with_allowed_frames(self.allowed_frames);
-        if self.ref_tlayer_id.is_empty() {
-            view
-        } else {
-            view.with_tlayer_id_state(&self.ref_tlayer_id)
-        }
     }
 }
 
@@ -1645,26 +1637,15 @@ pub(crate) fn parse_inter_frame_activation(
     first_picture_in_tu: bool,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
-    validate_obu_tlayer(envelope, sequence, frame_index)?;
-    if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
-        parse_sef_or_tip_frame_core(
-            envelope,
-            sequence,
-            reference,
-            first_picture_in_tu,
-            None,
-            frame_index,
-        )
-    } else {
-        parse_inter_frame_core(
-            envelope,
-            sequence,
-            reference,
-            first_picture_in_tu,
-            None,
-            frame_index,
-        )
-    }
+    validate_obu_layer_ids(envelope, sequence, frame_index)?;
+    parse_inter_or_sef_core(
+        envelope,
+        sequence,
+        reference,
+        first_picture_in_tu,
+        None,
+        frame_index,
+    )
 }
 
 pub(crate) fn parse_validated_inter_frame_core_with_mfh(
@@ -1675,26 +1656,15 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     mfh_record: Option<&MultiFrameHeaderRecord>,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
-    validate_obu_tlayer(envelope, sequence, frame_index)?;
-    let mut core = if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
-        parse_sef_or_tip_frame_core(
-            envelope,
-            sequence,
-            reference,
-            first_picture_in_tu,
-            mfh_record,
-            frame_index,
-        )?
-    } else {
-        parse_inter_frame_core(
-            envelope,
-            sequence,
-            reference,
-            first_picture_in_tu,
-            mfh_record,
-            frame_index,
-        )?
-    };
+    validate_obu_layer_ids(envelope, sequence, frame_index)?;
+    let mut core = parse_inter_or_sef_core(
+        envelope,
+        sequence,
+        reference,
+        first_picture_in_tu,
+        mfh_record,
+        frame_index,
+    )?;
     if envelope.header.obu_type.is_sef() {
         validate_sef_frame_core(&core, reference, envelope.offset, frame_index)?;
         validate_sef_layer_dependency(
@@ -1705,16 +1675,6 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
             envelope.offset,
             frame_index,
         )?;
-    } else if envelope.header.obu_type.is_tip_frame() {
-        validate_inter_layer_dependencies(
-            envelope.header,
-            &core,
-            sequence,
-            reference,
-            envelope.offset,
-            frame_index,
-        )?;
-        resolve_tip_output_core(&mut core, sequence, reference, envelope.offset, frame_index)?;
     } else {
         validate_inter_layer_dependencies(
             envelope.header,
@@ -1724,13 +1684,17 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
             envelope.offset,
             frame_index,
         )?;
-        validate_and_resolve_inter_frame_core(
-            &mut core,
-            sequence,
-            reference,
-            envelope.offset,
-            frame_index,
-        )?;
+        if envelope.header.obu_type.is_tip_frame() {
+            resolve_tip_output_core(&mut core, sequence, reference, envelope.offset, frame_index)?;
+        } else {
+            validate_and_resolve_inter_frame_core(
+                &mut core,
+                sequence,
+                reference,
+                envelope.offset,
+                frame_index,
+            )?;
+        }
     }
     Ok(core)
 }
@@ -1774,6 +1738,7 @@ fn parse_sef_or_tip_frame_core(
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
+        obu_mlayer_id: envelope.header.embedded_layer_id,
         obu_tlayer_id: envelope.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(sequence),
@@ -2121,6 +2086,7 @@ fn parse_inter_frame_core(
     }
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
+        obu_mlayer_id: envelope.header.embedded_layer_id,
         obu_tlayer_id: envelope.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(sequence),
@@ -2474,7 +2440,7 @@ pub(crate) use frame_walk::{
     splittable_inter_frame,
 };
 use layer_dependencies::{
-    validate_inter_layer_dependencies, validate_obu_tlayer, validate_sef_layer_dependency,
+    validate_inter_layer_dependencies, validate_obu_layer_ids, validate_sef_layer_dependency,
 };
 pub(crate) use motion_field::MotionFieldHandle;
 

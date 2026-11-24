@@ -2456,7 +2456,6 @@ fn display_order_hint_extends_past_the_coded_lsb_window() {
         ([true], [118], [118], [false], [true], [64], [64]);
     let rs = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
         .with_single_layer_order_hint_state(&lsbs, &implicit, &immediate);
-    let base = TemporalLayerId::BASE;
     let oh = get_disp_order_hint(
         ObuType::RegularTileGroup,
         Some(FrameType::Inter),
@@ -2464,7 +2463,7 @@ fn display_order_hint_extends_past_the_coded_lsb_window() {
         8,
         &seq,
         &rs,
-        base,
+        FrameLayerIds::BASE,
     );
     assert_eq!(oh, Some(136));
 }
@@ -2476,7 +2475,6 @@ fn display_order_hint_ignores_non_showable_references() {
     let (valid, hints, lsbs, output, widths, heights) = ([true], [118], [118], [false], [64], [64]);
     let rs = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
         .with_single_layer_order_hint_state(&lsbs, &output, &output);
-    let base = TemporalLayerId::BASE;
     let oh = get_disp_order_hint(
         ObuType::RegularTileGroup,
         Some(FrameType::Inter),
@@ -2484,7 +2482,7 @@ fn display_order_hint_ignores_non_showable_references() {
         8,
         &seq,
         &rs,
-        base,
+        FrameLayerIds::BASE,
     );
     assert_eq!(oh, Some(8));
 }

@@ -41,6 +41,7 @@ fn inter_seq() -> InterSeqView {
 fn inter_ctx() -> InterFrameContext {
     InterFrameContext {
         obu_type: ObuType::RegularTileGroup,
+        obu_mlayer_id: EmbeddedLayerId::BASE,
         obu_tlayer_id: TemporalLayerId::BASE,
         frame_type: FrameType::Inter,
         is_bridge: false,
@@ -231,6 +232,7 @@ fn bridge_overwrite_uses_short_refresh_flag_syntax() {
     seq.enable_short_refresh_frame_flags = true;
     let ctx = InterFrameContext {
         obu_type: ObuType::BridgeFrame,
+        obu_mlayer_id: EmbeddedLayerId::BASE,
         obu_tlayer_id: TemporalLayerId::BASE,
         frame_type: FrameType::Inter,
         is_bridge: true,
@@ -1199,6 +1201,7 @@ fn frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture() {
     let mut reader = BitReader::new(inter_obu.payload, inter_obu.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: inter_obu.header.obu_type,
+        obu_mlayer_id: inter_obu.header.embedded_layer_id,
         obu_tlayer_id: inter_obu.header.temporal_layer_id,
         first_picture_in_tu: false,
         active_sequence: Some(&seq_header),
@@ -1255,6 +1258,7 @@ fn frame_header_core_inter_implicit_map_two_valid_slots_stops_unmodeled() {
     let mut reader = BitReader::new(inter_obu.payload, inter_obu.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: inter_obu.header.obu_type,
+        obu_mlayer_id: inter_obu.header.embedded_layer_id,
         obu_tlayer_id: inter_obu.header.temporal_layer_id,
         first_picture_in_tu: false,
         active_sequence: Some(&seq_header),
@@ -1312,6 +1316,7 @@ fn frame_header_core_inter_fixture_reaches_inter_header_complete() {
     let mut reader = BitReader::new(inter_obu.payload, inter_obu.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: inter_obu.header.obu_type,
+        obu_mlayer_id: inter_obu.header.embedded_layer_id,
         obu_tlayer_id: inter_obu.header.temporal_layer_id,
         first_picture_in_tu: false,
         active_sequence: Some(&seq_header),
@@ -1380,4 +1385,51 @@ fn frame_header_core_inter_fixture_reaches_inter_header_complete() {
         "global motion enabled in the sequence but unused by this frame"
     );
     assert!(!tail.film_grain.apply_grain, "no film grain applied");
+}
+
+#[test]
+fn implicit_ref_map_filters_slots_by_mlayer_dependency_map() {
+    let mut seq = inter_seq();
+    seq.max_mlayer_id = 2;
+    seq.mlayer_dependency_map = MLayerDependencyMap::default_for(EmbeddedLayerId::from_bits(2));
+    seq.tlayer_dependency_map = crate::headers::sequence::TLayerDependencyMap::default_for(
+        TemporalLayerId::BASE,
+        EmbeddedLayerId::from_bits(2),
+    );
+
+    let mut ref_valid = [false; NUM_REF_FRAMES];
+    let mut ref_oh = [0u32; NUM_REF_FRAMES];
+    let mut ref_w = [0u32; NUM_REF_FRAMES];
+    let mut ref_h = [0u32; NUM_REF_FRAMES];
+    let ref_q = [100u32; NUM_REF_FRAMES];
+    let mut ref_mlayers = [0u8; NUM_REF_FRAMES];
+    let ref_tlayers = [0u8; NUM_REF_FRAMES];
+    ref_valid[0] = true;
+    ref_valid[1] = true;
+    ref_oh[0] = 0;
+    ref_oh[1] = 10;
+    ref_w[0] = 64;
+    ref_h[0] = 64;
+    ref_w[1] = 64;
+    ref_h[1] = 64;
+    ref_mlayers[0] = 0;
+    ref_mlayers[1] = 2;
+
+    let state = FrameReferenceStateView::from_slots_with_base_q_idx(
+        &ref_valid, &ref_oh, &ref_w, &ref_h, &ref_q,
+    )
+    .with_mlayer_id_state(&ref_mlayers)
+    .with_tlayer_id_state(&ref_tlayers);
+
+    let mut ctx = inter_ctx();
+    ctx.order_hint = Some(12);
+    ctx.obu_mlayer_id = EmbeddedLayerId::from_bits(1);
+    let refs_ml1 =
+        derive_implicit_ref_map(&seq, &ctx, &state, false, Some(FrameSize::new(64, 64))).unwrap();
+    assert_eq!(refs_ml1.ref_frame_idx[..1], [0]);
+
+    ctx.obu_mlayer_id = EmbeddedLayerId::from_bits(2);
+    let refs_ml2 =
+        derive_implicit_ref_map(&seq, &ctx, &state, false, Some(FrameSize::new(64, 64))).unwrap();
+    assert_eq!(refs_ml2.ref_frame_idx[..2], [1, 0]);
 }

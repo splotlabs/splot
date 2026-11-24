@@ -506,6 +506,7 @@ impl ReferenceMetadata {
         self.ref_is_intra_frame.push(slot.is_intra_frame);
         self.ref_long_term_id.push(slot.long_term_id);
         self.ref_tlayer_id.push(slot.temporal_layer_id().get());
+        self.ref_mlayer_id.push(slot.embedded_layer_id.get());
         self.ref_num_total_refs.push(slot.num_total_refs);
         self.saved_global_motion_order_hints
             .push(slot.saved_order_hints);

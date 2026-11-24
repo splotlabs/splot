@@ -33,8 +33,8 @@ use core::ptr;
 
 use splot_core::headers::content_interpretation::DerivedColorInfo;
 use splot_decode::{
-    BitDepth, DataProps, Decoder, DecoderSettings, FrameDelay, FrameType, Picture, PictureSamples,
-    PixelFormat, PlaneId, PlaneRef, SendStatus, TemporalLayerId, TemporalLayerSelection,
+    BitDepth, DataProps, Decoder, DecoderSettings, EmbeddedLayerSelection, FrameDelay, FrameType,
+    Picture, PictureSamples, PixelFormat, PlaneId, PlaneRef, SendStatus, TemporalLayerSelection,
     ThreadCount,
 };
 
@@ -75,14 +75,12 @@ pub struct SplotSettings {
     /// 1 leaves film grain out of the pictures; [`splot_apply_grain`] adds it
     /// to a picture later. 0 applies it.
     pub skip_film_grain: u8,
-    /// Highest temporal layer to emit: `0` selects all layers (default); `1..=4`
-    /// selects temporal layers `0..=(temporal_layer - 1)`. Mutually exclusive
-    /// with a nonzero `temporal_output_mask`.
-    pub temporal_layer: u8,
     /// Bitmask (`1..=15`) of temporal layers (`1 << temporal_layer_id`) to emit;
-    /// transitive dependencies still decode. `0` uses `temporal_layer`.
-    /// Mutually exclusive with a nonzero `temporal_layer`.
+    /// transitive dependencies still decode. `0` emits all layers (default).
     pub temporal_output_mask: u8,
+    /// Bitmask (`1..=255`) of embedded layers (`1 << embedded_layer_id`) to emit;
+    /// transitive dependencies still decode. `0` emits all layers (default).
+    pub embedded_output_mask: u8,
     /// Reserved; keep zero.
     pub reserved: [u8; 29],
 }
@@ -179,6 +177,8 @@ pub struct SplotPicture {
     pub frame_type: u8,
     /// Temporal layer id (`obu_tlayer_id`, `0..=3`) of the picture.
     pub temporal_layer_id: u8,
+    /// Embedded layer id (`obu_mlayer_id`, `0..=7`) of the picture.
+    pub embedded_layer_id: u8,
     /// Reserved.
     pub reserved: [usize; 3],
     /// The decoder's handle on the samples; do not touch.
@@ -202,8 +202,8 @@ pub unsafe extern "C" fn splot_default_settings(settings: *mut SplotSettings) {
             n_threads: 0,
             max_frame_delay: 0,
             skip_film_grain: 0,
-            temporal_layer: 0,
             temporal_output_mask: 0,
+            embedded_output_mask: 0,
             reserved: [0; 29],
         };
     }
@@ -212,9 +212,8 @@ pub unsafe extern "C" fn splot_default_settings(settings: *mut SplotSettings) {
 /// Opens a decoder and stores it in `*out`.
 ///
 /// Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a
-/// `skip_film_grain` above 1, invalid `temporal_layer` or
-/// `temporal_output_mask`, both temporal selectors nonzero, or nonzero reserved
-/// bytes, or [`SPLOT_EDECODE`] when the worker pool cannot start.
+/// `skip_film_grain` above 1, `temporal_output_mask` above `15`, or nonzero
+/// reserved bytes, or [`SPLOT_EDECODE`] when the worker pool cannot start.
 ///
 /// # Safety
 /// `out` is null or writable; `settings` is null or points to a
@@ -230,19 +229,20 @@ pub unsafe extern "C" fn splot_open(
     };
     *out = ptr::null_mut();
     if settings.skip_film_grain > 1
-        || settings.temporal_layer > 4
         || settings.temporal_output_mask > 0x0F
-        || (settings.temporal_layer != 0 && settings.temporal_output_mask != 0)
         || settings.reserved.iter().any(|&byte| byte != 0)
     {
         return SPLOT_EINVAL;
     }
     let temporal_selection = if settings.temporal_output_mask != 0 {
         TemporalLayerSelection::OutputMask(settings.temporal_output_mask)
-    } else if settings.temporal_layer != 0 {
-        TemporalLayerSelection::Target(TemporalLayerId::from_bits(settings.temporal_layer - 1))
     } else {
         TemporalLayerSelection::All
+    };
+    let embedded_selection = if settings.embedded_output_mask != 0 {
+        EmbeddedLayerSelection::OutputMask(settings.embedded_output_mask)
+    } else {
+        EmbeddedLayerSelection::All
     };
     let count = |value: u32| NonZeroUsize::new(value as usize);
     let settings = DecoderSettings::default()
@@ -252,7 +252,8 @@ pub unsafe extern "C" fn splot_open(
                 .map_or(FrameDelay::Auto, |depth| FrameDelay::from(depth.get())),
         )
         .with_skip_film_grain(settings.skip_film_grain == 1)
-        .with_temporal_layer_selection(temporal_selection);
+        .with_temporal_layer_selection(temporal_selection)
+        .with_embedded_layer_selection(embedded_selection);
     match Decoder::new(settings) {
         Ok(decoder) => {
             *out = Box::into_raw(Box::new(SplotDecoder {
@@ -482,6 +483,7 @@ const fn empty_picture() -> SplotPicture {
         has_film_grain: 0,
         frame_type: SplotFrameType::None as u8,
         temporal_layer_id: 0,
+        embedded_layer_id: 0,
         reserved: [0; 3],
         internal: ptr::null_mut(),
     }
@@ -541,6 +543,7 @@ fn c_picture(picture: Picture) -> SplotPicture {
         _ => SplotFrameType::None,
     } as u8;
     out.temporal_layer_id = picture.temporal_layer_id().get();
+    out.embedded_layer_id = picture.embedded_layer_id().get();
     out.internal = Box::into_raw(Box::new(picture)).cast();
     out
 }

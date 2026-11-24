@@ -166,6 +166,7 @@ impl ValidatorContext {
             return FrameRefUpdate::PoisonAll;
         };
         facts.global_motion = core.saved_global_motion_state();
+        facts.mlayer_id = obu.header.embedded_layer_id.get();
         facts.tlayer_id = obu.header.temporal_layer_id.get();
 
         if let Some(lr) = core.lr_params.as_ref() {

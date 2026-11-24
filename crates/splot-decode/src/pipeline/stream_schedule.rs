@@ -39,7 +39,10 @@ impl<'a> RuntimeStream<'a> {
             limits: options.limits(),
             current: None,
             record: 0,
-            scan: CandidateScan::new(options.temporal_layer_selection()),
+            scan: CandidateScan::new(
+                options.temporal_layer_selection(),
+                options.embedded_layer_selection(),
+            ),
         }
     }
 
@@ -128,17 +131,12 @@ impl<'a> RuntimeStream<'a> {
         let mut fresh = false;
         loop {
             if let Some((candidate, unit)) = self.next_in_unit()? {
-                let check = if candidate.obu_type() == ObuType::ClosedLoopKey {
-                    require_key_ivf_obu_order
-                } else {
-                    require_inter_obu_order
-                };
                 let filter = *self.scan.layer_filter();
                 for skipped in &skipped {
-                    process_skipped_unit(skipped, storage, check, &filter, on_skipped)?;
+                    process_skipped_unit(skipped, storage, &filter, on_skipped)?;
                 }
                 if fresh {
-                    check_unit(&unit, storage, check)?;
+                    check_unit(&unit, storage, candidate.obu_type())?;
                 }
                 return Ok(Some((candidate, unit)));
             }
@@ -173,13 +171,52 @@ impl<'a> RuntimeStream<'a> {
     }
 }
 
+fn first_unit_frame_is_key(obus: &[ObuEnvelope<'_>]) -> bool {
+    let Some(first) = obus.first() else {
+        return false;
+    };
+    if first.header.obu_type != ObuType::TemporalDelimiter {
+        return false;
+    }
+    let mut index = 1usize;
+    while obus.get(index).is_some_and(|envelope| {
+        matches!(
+            envelope.header.obu_type,
+            ObuType::LayerConfigurationRecord | ObuType::OperatingPointSet | ObuType::AtlasSegment
+        )
+    }) {
+        index += 1;
+    }
+    if obus
+        .get(index)
+        .is_some_and(|envelope| envelope.header.obu_type == ObuType::SequenceHeader)
+    {
+        index += 1;
+    }
+    index = skip_frame_prefix_obus(obus, index);
+    obus.get(index)
+        .is_some_and(|envelope| envelope.header.obu_type == ObuType::ClosedLoopKey)
+}
+
+fn unit_order_check(
+    obus: &[ObuEnvelope<'_>],
+    candidate_obu: Option<ObuType>,
+) -> fn(&[ObuEnvelope<'_>]) -> Result<()> {
+    if candidate_obu == Some(ObuType::ClosedLoopKey) || first_unit_frame_is_key(obus) {
+        require_key_ivf_obu_order
+    } else {
+        require_inter_obu_order
+    }
+}
+
 fn check_unit(
     unit: &UnitBytes,
     storage: &mut Vec<ObuEnvelope<'static>>,
-    check: fn(&[ObuEnvelope<'_>]) -> Result<()>,
+    candidate_obu: ObuType,
 ) -> Result<()> {
     let mut obus = recycle(core::mem::take(storage));
     runtime_obus(unit.view(), &mut obus)?;
+    let check = unit_order_check(&obus, Some(candidate_obu));
     check(&obus)?;
     *storage = recycle(obus);
     Ok(())
@@ -188,12 +225,12 @@ fn check_unit(
 fn process_skipped_unit(
     unit: &UnitBytes,
     storage: &mut Vec<ObuEnvelope<'static>>,
-    check: fn(&[ObuEnvelope<'_>]) -> Result<()>,
     filter: &ActiveLayerFilter,
     on_skipped: &mut dyn FnMut(&[ObuEnvelope<'_>]) -> Result<()>,
 ) -> Result<()> {
     let mut obus = recycle(core::mem::take(storage));
     runtime_obus(unit.view(), &mut obus)?;
+    let check = unit_order_check(&obus, None);
     let check_result = check(&obus);
     if check_result.is_ok() {
         obus.retain(|envelope| filter.is_obu_selected(envelope.header));
@@ -407,7 +444,7 @@ pub(super) fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
 fn prefix_after_previous_inter_frame(position: usize, obus: &[ObuEnvelope<'_>]) -> Option<usize> {
     let previous = obus[..position]
         .iter()
-        .rposition(|envelope| is_inter_frame_obu(envelope.header.obu_type))?;
+        .rposition(|envelope| is_frame_obu(envelope.header.obu_type))?;
     Some(skip_frame_suffix_obus(obus, previous.saturating_add(1)))
 }
 #[cfg(test)]
@@ -525,6 +562,8 @@ pub(super) fn suffix_after_candidate<'a>(
     let mut start = position + 1;
     while obus.get(start).is_some_and(|envelope| {
         envelope.header.obu_type == candidate.obu_type()
+            && envelope.header.embedded_layer_id == candidate.header().embedded_layer_id
+            && envelope.header.temporal_layer_id == candidate.header().temporal_layer_id
             && envelope
                 .payload
                 .first()
@@ -557,6 +596,10 @@ const fn is_inter_frame_obu(obu_type: ObuType) -> bool {
         || obu_type.is_tip_frame()
         || obu_type.is_sef()
         || matches!(obu_type, ObuType::BridgeFrame)
+}
+
+const fn is_frame_obu(obu_type: ObuType) -> bool {
+    is_inter_frame_obu(obu_type) || matches!(obu_type, ObuType::ClosedLoopKey)
 }
 
 pub(super) fn require_inter_frame_obu(

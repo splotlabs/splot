@@ -81,6 +81,7 @@ impl UnitBytes {
 
 pub(crate) fn plan_byte_stream(bytes: &[u8], options: &DecodeOptions) -> Result<DecodeStreamPlan> {
     options.temporal_layer_selection().validate()?;
+    options.embedded_layer_selection().validate()?;
     let limits = options.limits();
     let input_len = bytes.len() as u64;
     limits.ensure(DecodeLimitName::MaxInputBytes, input_len)?;
@@ -111,7 +112,10 @@ fn plan_ivf(bytes: &[u8], options: &DecodeOptions) -> Result<DecodeStreamPlan> {
     let mut counts = (0u64, 0u64);
     let mut first_unsupported = None;
     let mut selected_layer = None;
-    let mut layer_filter = ActiveLayerFilter::new(options.temporal_layer_selection());
+    let mut layer_filter = ActiveLayerFilter::new(
+        options.temporal_layer_selection(),
+        options.embedded_layer_selection(),
+    );
     let mut spare = Vec::new();
     let mut warning = None;
     let error = loop {
@@ -371,7 +375,10 @@ fn parse_bounded_annex_b<'a>(bytes: &'a [u8], options: &DecodeOptions) -> Result
     let mut frame_candidate_count = 0u64;
     let mut first_unsupported = None;
     let mut selected_layer = None;
-    let mut layer_filter = ActiveLayerFilter::new(options.temporal_layer_selection());
+    let mut layer_filter = ActiveLayerFilter::new(
+        options.temporal_layer_selection(),
+        options.embedded_layer_selection(),
+    );
     let mut obus = Vec::new();
     let error = parse_bounded_annex_b_at(
         bytes,
@@ -416,6 +423,7 @@ fn parse_bounded_annex_b_at<'a>(
                     selected_layer,
                     envelope.header.extended_layer_id,
                     layer_filter.selection(),
+                    layer_filter.embedded_selection(),
                 );
                 let classification = classify_obu(envelope, current_layer, layer_filter);
                 if matches!(classification, Ok(role) if role.is_frame_candidate()) {

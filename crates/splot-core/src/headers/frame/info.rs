@@ -121,6 +121,8 @@ pub struct FrameReferenceStateView<'a> {
     /// the bit-exact index parse with unresolved reference tap values (a caller
     /// that never consumes the resolved bank, like the validator, may omit them).
     pub lr_frame_filter_taps: Option<&'a [SlotFrameFilterTaps]>,
+    /// Per-slot retained embedded layer ids (`RefMLayerId[i]`, AV2 § 7.23).
+    pub ref_mlayer_id: Option<&'a [u8]>,
     /// Per-slot retained temporal layer ids (`RefTLayerId[i]`, AV2 § 7.23).
     pub ref_tlayer_id: Option<&'a [u8]>,
     /// § 5.18.1 `AllowedFrames` for the § 7.7 implicit reference map: the slots
@@ -148,6 +150,7 @@ impl<'a> FrameReferenceStateView<'a> {
         saved_global_motion_params: None,
         lr_frame_filter_class_counts: None,
         lr_frame_filter_taps: None,
+        ref_mlayer_id: None,
         ref_tlayer_id: None,
         allowed_frames: None,
     };
@@ -298,6 +301,13 @@ impl<'a> FrameReferenceStateView<'a> {
         self
     }
 
+    /// Attaches per-slot retained embedded layer ids (`RefMLayerId[i]`, AV2 § 7.23).
+    #[must_use]
+    pub const fn with_mlayer_id_state(mut self, ref_mlayer_id: &'a [u8]) -> Self {
+        self.ref_mlayer_id = Some(ref_mlayer_id);
+        self
+    }
+
     /// Attaches per-slot retained temporal layer ids (`RefTLayerId[i]`, AV2 § 7.23).
     #[must_use]
     pub const fn with_tlayer_id_state(mut self, ref_tlayer_id: &'a [u8]) -> Self {
@@ -317,6 +327,8 @@ impl<'a> FrameReferenceStateView<'a> {
 pub struct FrameHeaderParseInput<'a> {
     /// The OBU type carrying this frame header.
     pub obu_type: ObuType,
+    /// `obu_mlayer_id` from the OBU header carrying this frame header.
+    pub obu_mlayer_id: EmbeddedLayerId,
     /// `obu_tlayer_id` from the OBU header carrying this frame header.
     pub obu_tlayer_id: TemporalLayerId,
     /// `FirstPictureInTU` decoder state, used to derive `startCVS`.
@@ -562,6 +574,19 @@ impl FrameHeaderCore {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FrameLayerIds {
+    pub(super) mlayer: EmbeddedLayerId,
+    pub(super) tlayer: TemporalLayerId,
+}
+
+impl FrameLayerIds {
+    const BASE: Self = Self {
+        mlayer: EmbeddedLayerId::BASE,
+        tlayer: TemporalLayerId::BASE,
+    };
+}
+
 /// Derives `OrderHint` per AV2 v1.0.0 § 5.18.2 `get_disp_order_hint()`.
 fn get_disp_order_hint(
     obu_type: ObuType,
@@ -570,7 +595,7 @@ fn get_disp_order_hint(
     order_hint_lsbs: u32,
     seq: &CoreSeqView,
     reference_state: &FrameReferenceStateView<'_>,
-    obu_tlayer_id: TemporalLayerId,
+    layer_ids: FrameLayerIds,
 ) -> Option<u32> {
     let restricted_switch =
         frame_type == Some(FrameType::Switch) && restricted_prediction_switch == Some(true);
@@ -587,11 +612,20 @@ fn get_disp_order_hint(
         if !is_valid {
             continue;
         }
+        if let Some(ref_mlayers) = reference_state.ref_mlayer_id {
+            let ref_mlayer = ref_mlayers.get(index).copied()?;
+            if !seq
+                .mlayer_dependency_map
+                .depends_on(layer_ids.mlayer, EmbeddedLayerId::from_bits(ref_mlayer))
+            {
+                continue;
+            }
+        }
         if let Some(ref_tlayers) = reference_state.ref_tlayer_id {
             let ref_tlayer = ref_tlayers.get(index).copied()?;
             if !seq.tlayer_dependency_map.depends_on(
-                EmbeddedLayerId::from_bits(0),
-                obu_tlayer_id,
+                layer_ids.mlayer,
+                layer_ids.tlayer,
                 TemporalLayerId::from_bits(ref_tlayer),
             ) {
                 continue;
@@ -679,7 +713,10 @@ pub(crate) fn parse_frame_header_core_with_reader<O: SyntaxObserver>(
                 &seq,
                 mfh_view.as_ref(),
                 &input.reference_state,
-                input.obu_tlayer_id,
+                FrameLayerIds {
+                    mlayer: input.obu_mlayer_id,
+                    tlayer: input.obu_tlayer_id,
+                },
             )?;
         }
 
@@ -775,7 +812,7 @@ pub(crate) fn parse_core_body(
         seq,
         mfh,
         reference_state,
-        TemporalLayerId::BASE,
+        FrameLayerIds::BASE,
     )
 }
 
@@ -785,7 +822,7 @@ pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
     reference_state: &FrameReferenceStateView<'_>,
-    obu_tlayer_id: TemporalLayerId,
+    layer_ids: FrameLayerIds,
 ) -> Result<()> {
     let obu_type = core.obu_type;
 
@@ -822,7 +859,7 @@ pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
                 reference_state,
             );
         }
-        return parse_intra_tail(sr, core, seq, mfh, true, reference_state, obu_tlayer_id);
+        return parse_intra_tail(sr, core, seq, mfh, true, reference_state, layer_ids);
     }
 
     if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
@@ -837,14 +874,14 @@ pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
             seq,
             bridge_frame_ref_idx,
             reference_state,
-            obu_tlayer_id,
+            layer_ids,
         );
     }
 
     let show_existing_frame = obu_type.is_sef();
     core.show_existing_frame = Some(show_existing_frame);
     if show_existing_frame {
-        return parse_show_existing_frame(sr, core, seq, reference_state, obu_tlayer_id);
+        return parse_show_existing_frame(sr, core, seq, reference_state, layer_ids);
     }
 
     let frame_type = if obu_type == ObuType::Switch || obu_type == ObuType::RasFrame {
@@ -917,18 +954,10 @@ pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
     core.implicit_output_frame = Some(implicit_output_frame);
 
     if frame_is_intra {
-        return parse_intra_tail(sr, core, seq, mfh, false, reference_state, obu_tlayer_id);
+        return parse_intra_tail(sr, core, seq, mfh, false, reference_state, layer_ids);
     }
 
-    parse_inter_path(
-        sr,
-        core,
-        seq,
-        mfh,
-        frame_type,
-        reference_state,
-        obu_tlayer_id,
-    )
+    parse_inter_path(sr, core, seq, mfh, frame_type, reference_state, layer_ids)
 }
 
 fn parse_inter_path<O: SyntaxObserver>(
@@ -938,7 +967,7 @@ fn parse_inter_path<O: SyntaxObserver>(
     mfh: Option<&MfhFrameView>,
     frame_type: FrameType,
     reference_state: &FrameReferenceStateView<'_>,
-    obu_tlayer_id: TemporalLayerId,
+    layer_ids: FrameLayerIds,
 ) -> Result<()> {
     use crate::headers::frame::inter::{
         InterFrameContext, InterStop, parse_inter_control_into_with_reader,
@@ -973,14 +1002,15 @@ fn parse_inter_path<O: SyntaxObserver>(
             order_hint,
             seq,
             reference_state,
-            obu_tlayer_id,
+            layer_ids,
         );
 
         let inter_seq = build_inter_seq_view(seq);
         let ras_long_term_ref_mask = ras_long_term_ref_mask(core, seq, reference_state);
         let ctx = InterFrameContext {
             obu_type,
-            obu_tlayer_id,
+            obu_mlayer_id: layer_ids.mlayer,
+            obu_tlayer_id: layer_ids.tlayer,
             frame_type,
             is_bridge: false,
             bridge_frame_ref_idx: None,
@@ -1228,7 +1258,7 @@ fn parse_bridge_inter_path<O: SyntaxObserver>(
     seq: &CoreSeqView,
     bridge_frame_ref_idx: u32,
     reference_state: &FrameReferenceStateView<'_>,
-    obu_tlayer_id: TemporalLayerId,
+    layer_ids: FrameLayerIds,
 ) -> Result<()> {
     use crate::headers::frame::inter::{
         InterFrameContext, InterStop, parse_inter_control_into_with_reader,
@@ -1237,7 +1267,8 @@ fn parse_bridge_inter_path<O: SyntaxObserver>(
     let inter_seq = build_inter_seq_view(seq);
     let ctx = InterFrameContext {
         obu_type: core.obu_type,
-        obu_tlayer_id,
+        obu_mlayer_id: layer_ids.mlayer,
+        obu_tlayer_id: layer_ids.tlayer,
         frame_type: FrameType::Inter,
         is_bridge: true,
         bridge_frame_ref_idx: Some(bridge_frame_ref_idx),
@@ -1528,7 +1559,7 @@ fn parse_intra_tail<O: SyntaxObserver>(
     mfh: Option<&MfhFrameView>,
     single_picture: bool,
     reference_state: &FrameReferenceStateView<'_>,
-    obu_tlayer_id: TemporalLayerId,
+    layer_ids: FrameLayerIds,
 ) -> Result<()> {
     let frame_type = core.frame_type.unwrap_or(FrameType::Key);
     let frame_size_override_flag = if single_picture {
@@ -1552,7 +1583,7 @@ fn parse_intra_tail<O: SyntaxObserver>(
         order_hint_lsb,
         seq,
         reference_state,
-        obu_tlayer_id,
+        layer_ids,
     );
 
     core.refresh_frame_flags = Some(read_refresh_frame_flags(

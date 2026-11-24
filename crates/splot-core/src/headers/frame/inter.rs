@@ -370,6 +370,8 @@ pub(crate) struct InterSeqView {
 pub(crate) struct InterFrameContext {
     /// The OBU type (selects TIP / switch / RAS arms via `is_tip_frame()` etc.).
     pub obu_type: ObuType,
+    /// `obu_mlayer_id` of the current frame OBU.
+    pub obu_mlayer_id: EmbeddedLayerId,
     /// `obu_tlayer_id` of the current frame OBU.
     pub obu_tlayer_id: TemporalLayerId,
     /// The derived `FrameType`.
@@ -1065,6 +1067,7 @@ fn derive_implicit_ref_map(
     let allowed_frames = ctx.ras_long_term_ref_mask.unwrap_or(u32::MAX)
         & reference_state.allowed_frames.unwrap_or(u32::MAX);
 
+    let ref_mlayers = reference_state.ref_mlayer_id;
     let ref_tlayers = reference_state.ref_tlayer_id;
     let valid_count = ref_valid
         .iter()
@@ -1072,10 +1075,16 @@ fn derive_implicit_ref_map(
         .take(num_ref_frames)
         .filter(|&(i, v)| {
             *v && ((allowed_frames >> i) & 1) != 0
+                && ref_mlayers.is_none_or(|layers| {
+                    layers.get(i).copied().is_some_and(|ref_mlayer| {
+                        seq.mlayer_dependency_map
+                            .depends_on(ctx.obu_mlayer_id, EmbeddedLayerId::from_bits(ref_mlayer))
+                    })
+                })
                 && ref_tlayers.is_none_or(|layers| {
                     layers.get(i).copied().is_some_and(|ref_tlayer| {
                         seq.tlayer_dependency_map.depends_on(
-                            EmbeddedLayerId::from_bits(0),
+                            ctx.obu_mlayer_id,
                             ctx.obu_tlayer_id,
                             TemporalLayerId::from_bits(ref_tlayer),
                         )
@@ -1129,6 +1138,7 @@ fn derive_implicit_ref_map(
             .ref_counter
             .and_then(|counters| counters.get(i).copied())
             .unwrap_or(i as u32);
+        slot.mlayer_id = ref_mlayers.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.tlayer_id = ref_tlayers.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.width = ref_w.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.height = ref_h.and_then(|s| s.get(i).copied()).unwrap_or(0);
@@ -1141,7 +1151,7 @@ fn derive_implicit_ref_map(
         num_ref_frames: seq.num_ref_frames,
         slots,
         order_hint: i32::try_from(current_order_hint).unwrap_or(i32::MAX),
-        obu_mlayer_id: 0,
+        obu_mlayer_id: ctx.obu_mlayer_id.get(),
         obu_tlayer_id: ctx.obu_tlayer_id.get(),
         allowed_frames: allowed_frames as i32,
         is_bridge: false,
