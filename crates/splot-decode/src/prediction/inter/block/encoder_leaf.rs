@@ -652,8 +652,9 @@ impl EncoderInterTile {
 
     /// Publishes a coded inter leaf: its flags, then its § 7.12 resolution.
     /// Returns the motion vectors the decoder resolves.
-    pub(crate) fn publish(
+    pub(crate) fn publish<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
         skip: bool,
@@ -696,24 +697,26 @@ impl EncoderInterTile {
                 let mut units = core::mem::take(&mut self.refined);
                 let derived = self
                     .predict_refined(&placed, refine, workspace, &mut units, false)
-                    .and_then(|()| self.append_compound_records(&placed, Some(&units)));
+                    .and_then(|()| self.append_compound_records(backend, &placed, Some(&units)));
                 self.refined = units;
                 derived?;
             }
         } else if wedge {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
-            self.append_compound_records(&placed, None)?;
+            self.append_compound_records(backend, &placed, None)?;
         }
         Ok(resolved.mv)
     }
 
     /// Appends the § 7.22 temporal records of a refined or wedge compound block.
-    fn append_compound_records(
+    fn append_compound_records<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         placed: &PlacedInterBlock,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
         super::compound_path::append_compound_temporal_motion(
+            backend,
             &mut self.tip_records,
             &self.reference,
             &self.ref_frame_idx,
@@ -1216,7 +1219,8 @@ impl EncoderInterTile {
 /// The § 7.9 projected motion field of frame `core` of `sequence` over
 /// `reference`, which every tile of the frame shares; `None` without
 /// `use_ref_frame_mvs`.
-pub(crate) fn encoder_temporal_context(
+pub(crate) fn encoder_temporal_context<B: splot_core::simd::SimdBackend>(
+    backend: B,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     reference: &ReferenceMetadata,
@@ -1247,7 +1251,7 @@ pub(crate) fn encoder_temporal_context(
     let mut context = TemporalMvContext::empty();
     let plan = prelude.begin_scheduled(&mut context, core, ref_frame_idx, reference)?;
     for band in 0..plan.len() {
-        plan.project(&context, band, |slot, band| {
+        plan.project(backend, &context, band, |slot, band| {
             reference.ref_motion_fields.get(slot)?.as_ref()?.band(band)
         })?;
     }

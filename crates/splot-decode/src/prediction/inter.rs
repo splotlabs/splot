@@ -121,6 +121,7 @@ pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>
             .wait()?;
         let planes = scratch.pooled_planes();
         return decode_tip_output_frame(
+            backend,
             scratch,
             planes,
             candidate,
@@ -196,7 +197,8 @@ pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn decode_tip_output_frame<T: ReconSample>(
+pub(crate) fn decode_tip_output_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     candidate: &DecodePlannedObu,
@@ -212,7 +214,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
         &core, candidate, offset, sequence, options, reference, &geometry, products,
     )?;
     let (frame, motion_field) = reconstruct_tip_output(
-        scratch, planes, &core, sequence, reference, geometry, offset,
+        backend, scratch, planes, &core, sequence, reference, geometry, offset,
     )?;
     Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
 }
@@ -251,7 +253,9 @@ pub(crate) fn tip_output_products(
 }
 
 /// Predicts a TIP output frame's samples and its stored motion field.
-pub(crate) fn reconstruct_tip_output<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_tip_output<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     core: &FrameHeaderCore,
@@ -260,7 +264,9 @@ pub(crate) fn reconstruct_tip_output<T: ReconSample>(
     geometry: FrameDecodeGeometry,
     offset: ByteOffset,
 ) -> Result<(DecodedFrame<T>, TemporalMotionField)> {
-    block::tip::reconstruct_output(scratch, planes, sequence, core, reference, geometry, offset)
+    block::tip::reconstruct_output(
+        backend, scratch, planes, sequence, core, reference, geometry, offset,
+    )
 }
 
 #[expect(clippy::too_many_arguments)]

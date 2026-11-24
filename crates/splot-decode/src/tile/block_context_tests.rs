@@ -126,22 +126,25 @@ fn large_chroma_smooth_repeats_top_edge_instead_of_decoded_above_right() {
         .expect("write decoded above-right sentinel");
 
     let mut prediction = vec![0; 64 * 64];
-    crate::pipeline::reconstruct::predict_intra_smooth_over_available_edges_into(
-        &workspace,
-        crate::pipeline::reconstruct::SmoothIntraPredictionRequest {
-            plane_id: PlaneId::U,
-            x: 0,
-            y: 64,
-            block_size: IntraRectBlockSize::new(6, 6).expect("valid 64x64 block"),
-            mode: IntraSmoothMode::SmoothHorizontal,
-            available_left_samples: None,
-            available_above_samples: Some(64),
-            num4_above_right: neighbours.num_above_right(),
-            num4_below_left: neighbours.num_below_left(),
-            bit_depth: BitDepth::Ten,
-        },
-        &mut prediction,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        crate::pipeline::reconstruct::predict_intra_smooth_over_available_edges_into(
+            backend,
+            &workspace,
+            crate::pipeline::reconstruct::SmoothIntraPredictionRequest {
+                plane_id: PlaneId::U,
+                x: 0,
+                y: 64,
+                block_size: IntraRectBlockSize::new(6, 6).expect("valid 64x64 block"),
+                mode: IntraSmoothMode::SmoothHorizontal,
+                available_left_samples: None,
+                available_above_samples: Some(64),
+                num4_above_right: neighbours.num_above_right(),
+                num4_below_left: neighbours.num_below_left(),
+                bit_depth: BitDepth::Ten,
+            },
+            &mut prediction,
+        )
+    })
     .expect("smooth prediction");
 
     assert!(prediction.iter().all(|&sample| sample == 510));

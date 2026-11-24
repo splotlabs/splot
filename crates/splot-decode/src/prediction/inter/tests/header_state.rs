@@ -1400,15 +1400,18 @@ fn impossible_tip_output_runtime_inputs_are_typed_state_errors() {
                 continue;
             }
         };
-        let error = super::super::block::tip::reconstruct_output(
-            &mut super::super::InterDecodeScratch::default(),
-            splot_recon::FramePlaneSamples::default(),
-            &sequence,
-            &core,
-            &reference,
-            geometry,
-            offset,
-        )
+        let error = crate::test_support::with_auto_backend!(backend => {
+            super::super::block::tip::reconstruct_output(
+                backend,
+                &mut super::super::InterDecodeScratch::default(),
+                splot_recon::FramePlaneSamples::default(),
+                &sequence,
+                &core,
+                &reference,
+                geometry,
+                offset,
+            )
+        })
         .expect_err("TIP-output runtime state");
         assert!(matches!(error, DecodeError::HeaderState { source } if source == expected));
     }
@@ -1433,15 +1436,18 @@ fn unpublished_tip_output_motion_field_is_a_typed_reference_state_error() {
     )
     .expect("valid frame geometry");
 
-    let error = super::super::block::tip::reconstruct_output(
-        &mut super::super::InterDecodeScratch::default(),
-        splot_recon::FramePlaneSamples::default(),
-        &sequence,
-        &core,
-        &reference,
-        geometry,
-        offset,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::block::tip::reconstruct_output(
+            backend,
+            &mut super::super::InterDecodeScratch::default(),
+            splot_recon::FramePlaneSamples::default(),
+            &sequence,
+            &core,
+            &reference,
+            geometry,
+            offset,
+        )
+    })
     .expect_err("unpublished TIP-output motion field");
     assert!(matches!(
         error,

@@ -195,7 +195,8 @@ pub(crate) struct SmoothIntraPredictionRequest {
     pub(crate) bit_depth: BitDepth,
 }
 
-pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
+pub(crate) fn predict_intra_smooth_over_available_edges_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &CurrentFrameWorkspace<T>,
     request: SmoothIntraPredictionRequest,
     prediction: &mut [T],
@@ -204,7 +205,8 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
     let size = request.block_size;
     let smooth_edges =
         IntraSmoothEdges::new(&edges[0][..=size.height()], &edges[1][..=size.width()]);
-    splot_recon::predict_intra_smooth_rect_into(
+    predict_intra_smooth_rect_into_with(
+        backend,
         request.bit_depth,
         size,
         request.mode,

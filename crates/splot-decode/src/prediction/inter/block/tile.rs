@@ -1474,6 +1474,7 @@ fn precompute_recon_row_on_surface<B: splot_core::simd::SimdBackend, T: ReconSam
                     Some(ReconCommandMut::Inter(command)) => {
                         let start = row.temporal.len();
                         let result = scratch.derive_motion_logged(
+                            backend,
                             command,
                             surface,
                             &mut row.temporal,

@@ -860,7 +860,8 @@ pub(super) const fn compound_deblock_sub_pu_size(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn append_compound_temporal_motion(
+pub(super) fn append_compound_temporal_motion<B: splot_core::simd::SimdBackend>(
+    backend: B,
     records: &mut Vec<TemporalMotionBlock>,
     reference: &ReferenceMetadata,
     ref_frame_idx: &[u32],
@@ -906,6 +907,7 @@ pub(super) fn append_compound_temporal_motion(
                 ]
             };
             let allowed = wedge_temporal_allowed_lists(
+                backend,
                 block.compound_blend,
                 placed.luma_w(),
                 placed.luma_h(),
@@ -939,7 +941,8 @@ pub(super) fn append_compound_temporal_motion(
     Ok(())
 }
 
-fn wedge_temporal_allowed_lists(
+fn wedge_temporal_allowed_lists<B: splot_core::simd::SimdBackend>(
+    backend: B,
     blend: mc::CompoundBlend,
     luma_width: usize,
     luma_height: usize,
@@ -949,7 +952,7 @@ fn wedge_temporal_allowed_lists(
     let mc::CompoundBlend::Wedge { index, sign } = blend else {
         return Ok([true; 2]);
     };
-    wedge_dominant_lists(luma_width, luma_height, (index, sign), x, y)
+    wedge_dominant_lists(backend, luma_width, luma_height, (index, sign), x, y)
 }
 
 /// The lists that keep a temporal record of the 8x8 unit at `(x, y)` of a
@@ -958,7 +961,8 @@ fn wedge_temporal_allowed_lists(
 /// most 64.
 #[cold]
 #[inline(never)]
-fn wedge_dominant_lists(
+fn wedge_dominant_lists<B: splot_core::simd::SimdBackend>(
+    backend: B,
     luma_width: usize,
     luma_height: usize,
     (index, sign): (u8, bool),
@@ -967,7 +971,8 @@ fn wedge_dominant_lists(
 ) -> Result<[bool; 2]> {
     use fearless_simd::{prelude::*, u8x16};
     let unit = wedge_mask_unit(luma_width, luma_height, (usize::from(index), sign), (x, y))?;
-    let dominant = crate::baseline_simd!(simd => {
+    let narrow = backend.narrow();
+    let dominant = splot_core::with_simd!(narrow, simd => {
         let (one, zero) = (u8x16::splat(simd, 1), u8x16::splat(simd, 0));
         let (mut first, mut second) = (zero, zero);
         for lanes in unit.as_chunks::<16>().0 {

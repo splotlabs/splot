@@ -340,13 +340,15 @@ impl InterReconCommand {
 
     /// Appends the § 7.22 temporal records of a compound block, from the
     /// refined `motion` of its units when it refines.
-    fn compound_records<T: ReconSample>(
+    fn compound_records<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
         append_compound_temporal_motion(
+            backend,
             temporal_records,
             shared.reference,
             shared.ref_frame_idx,
@@ -363,8 +365,9 @@ impl InterReconCommand {
     ///
     /// This reads reference samples and writes none, so it is the half a motion
     /// resolution pass runs ahead of reconstruction.
-    fn derive_motion<T: ReconSample>(
+    fn derive_motion<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
@@ -397,11 +400,11 @@ impl InterReconCommand {
                 ),
                 false,
                 shared.tile_offset,
-                |units| self.compound_records(temporal_records, shared, Some(units)),
+                |units| self.compound_records(backend, temporal_records, shared, Some(units)),
             );
         }
         if let InterReconKind::Compound { .. } = self.kind {
-            return self.compound_records(temporal_records, shared, None);
+            return self.compound_records(backend, temporal_records, shared, None);
         }
         temporal_records.push(self.single_temporal_record(shared));
         Ok(())
@@ -487,7 +490,7 @@ impl InterReconCommand {
                 shared.tile_offset,
                 |units| {
                     records.map_or(Ok(()), |records| {
-                        self.compound_records(records, shared, Some(units))
+                        self.compound_records(backend, records, shared, Some(units))
                     })
                 },
             )?;
@@ -545,7 +548,13 @@ impl InterReconCommand {
             );
         }
         if !self.motion_derived {
-            self.derive_motion(sink, temporal_records, shared, (tip_scratch, refined))?;
+            self.derive_motion(
+                backend,
+                sink,
+                temporal_records,
+                shared,
+                (tip_scratch, refined),
+            )?;
         }
         self.reconstruct_from_motion(
             backend,
@@ -576,14 +585,16 @@ impl<T: ReconSample> InterReconScratch<T> {
         &mut self.general_intra
     }
 
-    pub(super) fn derive_motion_logged(
+    pub(super) fn derive_motion_logged<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         command: &mut InterReconCommand,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         command.derive_motion(
+            backend,
             sink,
             temporal_records,
             shared,

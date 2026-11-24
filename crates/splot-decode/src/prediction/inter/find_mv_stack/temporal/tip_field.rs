@@ -11,7 +11,8 @@ use super::{
     REFMVS_LIMIT, TipReferencePair, fill_temporal_sampling_gaps,
 };
 
-pub(super) fn prepare_tip_field(
+pub(super) fn prepare_tip_field<B: splot_core::simd::SimdBackend>(
+    backend: B,
     field: &mut ProjectedTemporalMotionField,
     references: TipReferencePair,
     projection_step: usize,
@@ -19,7 +20,8 @@ pub(super) fn prepare_tip_field(
     fill_holes: bool,
 ) -> crate::Result<()> {
     let (unit, holes) = (tmvp_unit_size8, fill_holes);
-    crate::baseline_simd!(simd => match projection_step {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => match projection_step {
         1 if unit <= 8 => prepare_tip_units::<_, 1, 1>(simd, field, references, unit, holes),
         1 => prepare_tip_units::<_, 2, 1>(simd, field, references, unit, holes),
         2 => prepare_tip_units::<_, 1, 2>(simd, field, references, unit, holes),
