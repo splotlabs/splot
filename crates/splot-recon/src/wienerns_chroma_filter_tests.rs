@@ -80,6 +80,7 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
             let mut lanes = vec![0u16; width * height];
             let mut scalar = vec![0u16; width * height];
             filter_chroma_padded_simd(
+                BaselineLr,
                 &mut lanes,
                 &params,
                 &rows(&chroma, stride),
@@ -98,6 +99,7 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
                 let bytes: Vec<u8> = chroma.iter().map(|&s| s as u8).collect();
                 let mut from_bytes = vec![0u16; width * height];
                 filter_chroma_padded_simd(
+                    BaselineLr,
                     &mut from_bytes,
                     &params,
                     &rows(&bytes, stride),
@@ -107,6 +109,7 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
                 assert_eq!(from_bytes, scalar, "u8 chroma width {width}");
                 let mut into_bytes = vec![0u8; width * height];
                 filter_chroma_padded_simd(
+                    BaselineLr,
                     &mut into_bytes,
                     &params,
                     &rows(&bytes, stride),
@@ -117,6 +120,7 @@ fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
                 assert_eq!(widened, scalar, "u8 chroma into u8 width {width}");
                 let mut words_into_bytes = vec![0u8; width * height];
                 filter_chroma_padded_simd(
+                    BaselineLr,
                     &mut words_into_bytes,
                     &params,
                     &rows(&chroma, stride),
@@ -1010,4 +1014,149 @@ fn rejects_luma_sample_out_of_range_fail_atomically() {
         }
     );
     assert_eq!(output, [77]);
+}
+
+#[test]
+fn typed_chroma_padded_matches_oracle_across_backend_scratch_reuse() {
+    use crate::lr_madd::ScalarLr;
+    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+    struct AutoChroma<'a, T: ReconSample> {
+        params: &'a WienerNsChromaFilter<'a>,
+        source: &'a WienerNsChromaPaddedSource<'a, T>,
+        scratch: &'a mut WienerNsChromaScratch,
+        expected: &'a [u16],
+    }
+    impl<T: ReconSample> SimdScope<()> for AutoChroma<'_, T> {
+        fn run<B: SimdBackend>(self, backend: B) {
+            let mut out = vec![T::default(); self.params.width * self.params.height];
+            wiener_ns_filter_chroma_block_padded_into_with(
+                backend,
+                &mut out,
+                self.params,
+                self.source,
+                self.scratch,
+            )
+            .unwrap();
+            let got: Vec<u16> = out.into_iter().map(ReconSample::to_u16).collect();
+            assert_eq!(got, self.expected);
+        }
+    }
+
+    let mut coeffs = [0i16; WIENER_NS_CHROMA_COEFFS];
+    for (i, slot) in coeffs.iter_mut().enumerate() {
+        *slot = ((i as i16 * 5) % 13) - 6;
+    }
+    let mut state = 0x5555_1234_abcd_ef01u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let r = WIENER_NS_CHROMA_TAP_RADIUS;
+    let mut scratch = WienerNsChromaScratch::default();
+    let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
+    for &(width, height) in &[(5usize, 3usize), (11, 4), (23, 5)] {
+        for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+            for &reads_luma in &[false, true] {
+                let c_coeffs = if reads_luma {
+                    coeffs
+                } else {
+                    core::array::from_fn(|i| if i < 6 { coeffs[i] } else { 0 })
+                };
+                let sub = u8::from(reads_luma);
+                let mut params = chroma_params(width, height, width, bit_depth, &c_coeffs);
+                params.subsampling_x = sub;
+                params.subsampling_y = sub;
+                params.luma_end_x = (width + r) << sub;
+                params.mi_rows = ((height + r) << sub).div_ceil(4) + 2;
+                let max = u64::from(bit_depth.max_sample()) + 1;
+                let c_stride = width + 2 * r;
+                let l_stride = (width + 2 * r) << sub;
+                let c_rows = height + 2 * r;
+                let l_rows = (height + 2 * r) << sub;
+                let c_u16: Vec<u16> = (0..c_rows * c_stride)
+                    .map(|_| (next() % max) as u16)
+                    .collect();
+                let l_u16: Vec<u16> = (0..l_rows * l_stride)
+                    .map(|_| (next() % max) as u16)
+                    .collect();
+                let mut expected = vec![0u16; width * height];
+                wiener_ns_filter_chroma_block(
+                    &mut expected,
+                    &params,
+                    |x, y| c_u16[(y + r as isize) as usize * c_stride + (x + r as isize) as usize],
+                    |x, y| {
+                        l_u16[(y + (r << sub) as isize) as usize * l_stride
+                            + (x + (r << sub) as isize) as usize]
+                    },
+                )
+                .unwrap();
+                let c_lines: Vec<_> = c_u16.chunks(c_stride).collect();
+                let l_lines: Vec<_> = l_u16.chunks(l_stride).collect();
+                let source = if reads_luma {
+                    WienerNsChromaPaddedSource::from_rows(
+                        (&c_lines, 0),
+                        (&l_lines, 0),
+                        width,
+                        height,
+                        (sub, sub),
+                    )
+                    .unwrap()
+                } else {
+                    WienerNsChromaPaddedSource::chroma_from_rows(&c_lines, 0, width, height)
+                        .unwrap()
+                };
+
+                resolved.enter(AutoChroma {
+                    params: &params,
+                    source: &source,
+                    scratch: &mut scratch,
+                    expected: &expected,
+                });
+                let mut out_scalar = vec![0u16; width * height];
+                wiener_ns_filter_chroma_padded_with_backend(
+                    ScalarLr,
+                    &mut out_scalar,
+                    &params,
+                    &source,
+                    &mut scratch,
+                )
+                .unwrap();
+                assert_eq!(out_scalar, expected);
+                resolved.enter(AutoChroma {
+                    params: &params,
+                    source: &source,
+                    scratch: &mut scratch,
+                    expected: &expected,
+                });
+                if bit_depth == BitDepth::Eight {
+                    let c_u8: Vec<u8> = c_u16.iter().map(|&v| v as u8).collect();
+                    let l_u8: Vec<u8> = l_u16.iter().map(|&v| v as u8).collect();
+                    let c_lines8: Vec<_> = c_u8.chunks(c_stride).collect();
+                    let l_lines8: Vec<_> = l_u8.chunks(l_stride).collect();
+                    let source8 = if reads_luma {
+                        WienerNsChromaPaddedSource::from_rows(
+                            (&c_lines8, 0),
+                            (&l_lines8, 0),
+                            width,
+                            height,
+                            (sub, sub),
+                        )
+                        .unwrap()
+                    } else {
+                        WienerNsChromaPaddedSource::chroma_from_rows(&c_lines8, 0, width, height)
+                            .unwrap()
+                    };
+                    resolved.enter(AutoChroma {
+                        params: &params,
+                        source: &source8,
+                        scratch: &mut scratch,
+                        expected: &expected,
+                    });
+                }
+            }
+        }
+    }
 }

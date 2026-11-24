@@ -1383,37 +1383,58 @@ fn luma_runs_match_the_scalar_filter() {
         let output: Vec<u16> = if max == 255 && case % 4 == 3 {
             let mut output = vec![UNTOUCHED; rows * stride];
             assert!(lr_madd::filter_run::<
+                _,
                 LumaTaps,
                 u8,
                 u16,
                 LUMA_WINDOW_ROWS,
                 CELL_REACH,
             >(
-                &byte_window, rows, span, run, (&mut output, stride), max
+                lr_madd::BaselineLr,
+                &byte_window,
+                rows,
+                span,
+                run,
+                (&mut output, stride),
+                max
             ));
             output
         } else if max == 255 && case % 4 == 1 {
             let mut output = vec![0x5a_u8; rows * stride];
             assert!(lr_madd::filter_run::<
+                _,
                 LumaTaps,
                 u16,
                 u8,
                 LUMA_WINDOW_ROWS,
                 CELL_REACH,
             >(
-                &window, rows, span, run, (&mut output, stride), max
+                lr_madd::BaselineLr,
+                &window,
+                rows,
+                span,
+                run,
+                (&mut output, stride),
+                max
             ));
             output.iter().map(|&value| u16::from(value)).collect()
         } else {
             let mut output = vec![UNTOUCHED; rows * stride];
             assert!(lr_madd::filter_run::<
+                _,
                 LumaTaps,
                 u16,
                 u16,
                 LUMA_WINDOW_ROWS,
                 CELL_REACH,
             >(
-                &window, rows, span, run, (&mut output, stride), max
+                lr_madd::BaselineLr,
+                &window,
+                rows,
+                span,
+                run,
+                (&mut output, stride),
+                max
             ));
             output
         };
@@ -1441,6 +1462,167 @@ fn luma_runs_match_the_scalar_filter() {
                 }
                 let expected = round2_i32(sum, WIENER_NS_PREC_BITS).clamp(0, i32::from(max));
                 assert_eq!(i32::from(got), expected, "case {case} ({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn typed_luma_padded_matches_oracle_across_backend_scratch_reuse() {
+    use crate::lr_madd::{LrBackend, ScalarLr};
+    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+    struct AutoRun<'a> {
+        params: &'a WienerNsLumaFilter<'a>,
+        src_u16: &'a WienerNsLumaPaddedSource<'a, u16>,
+        src_u8: &'a WienerNsLumaPaddedSource<'a, u8>,
+        cells: &'a [u8],
+        scratch: &'a mut WienerNsLumaScratch,
+        expected: &'a [u16],
+        uniform: bool,
+    }
+    impl SimdScope<()> for AutoRun<'_> {
+        fn run<B: SimdBackend>(self, backend: B) {
+            let mut out = vec![0u16; self.params.width * self.params.height];
+            if self.uniform {
+                wiener_ns_filter_luma_block_padded_into_with(
+                    backend,
+                    &mut out,
+                    self.params,
+                    self.src_u16,
+                    self.scratch,
+                )
+                .unwrap();
+            } else {
+                wiener_ns_filter_luma_block_padded_cells_into_with(
+                    backend,
+                    &mut out,
+                    self.params,
+                    self.src_u16,
+                    self.cells,
+                    self.scratch,
+                )
+                .unwrap();
+            }
+            assert_eq!(out, self.expected);
+            if self.params.bit_depth == BitDepth::Eight && self.uniform {
+                let mut out_u8 = vec![0u8; self.params.width * self.params.height];
+                wiener_ns_filter_luma_block_padded_into_with(
+                    backend,
+                    &mut out_u8,
+                    self.params,
+                    self.src_u8,
+                    self.scratch,
+                )
+                .unwrap();
+                let got: Vec<u16> = out_u8.into_iter().map(u16::from).collect();
+                assert_eq!(got, self.expected);
+            }
+        }
+    }
+
+    let coeffs: [[i16; WIENER_NS_LUMA_COEFFS]; 4] = [
+        [4, -3, 2, -1, 5, -2, 3, -4, 1, 2, -3, 1, 2, -1, 1, -2],
+        [-5, 6, -3, 2, 1, -4, 2, 3, -2, 1, 4, -2, -1, 2, 0, 1],
+        [3, 2, -4, 5, -3, 1, 4, -2, 2, -1, 1, 3, -2, 1, -1, 2],
+        [-2, -1, 4, -3, 6, -5, 1, 2, -3, 4, -2, 1, 3, -2, 2, -1],
+    ];
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let r = WIENER_NS_LUMA_TAP_RADIUS;
+    let mut scratch = WienerNsLumaScratch::default();
+    let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
+    for &(width, height) in &[(48usize, 5usize), (37, 7)] {
+        let stride = width + 2 * r;
+        let cell_cols = width.div_ceil(4);
+        let cells: Vec<u8> = (0..cell_cols * height.div_ceil(4))
+            .map(|idx| ((idx * 3 + 1) % 4) as u8)
+            .collect();
+        let samples: Vec<usize> = (0..height)
+            .flat_map(|y| {
+                cells[..]
+                    .chunks(cell_cols)
+                    .nth(y / 4)
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(col, &cls)| {
+                        core::iter::repeat_n(usize::from(cls), (width - col * 4).min(4))
+                    })
+            })
+            .collect();
+        for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+            let max = u64::from(bit_depth.max_sample()) + 1;
+            let padded_u16: Vec<u16> = (0..(height + 2 * r) * stride)
+                .map(|_| (next() % max) as u16)
+                .collect();
+            let padded_u8: Vec<u8> = padded_u16.iter().map(|&v| v as u8).collect();
+            let lines_u16: Vec<_> = padded_u16.chunks(stride).collect();
+            let src_u16 =
+                WienerNsLumaPaddedSource::from_rows(&lines_u16, 0, width, height).unwrap();
+            let lines_u8: Vec<_> = padded_u8.chunks(stride).collect();
+            let src_u8 = WienerNsLumaPaddedSource::from_rows(&lines_u8, 0, width, height).unwrap();
+            let at = |x: isize, y: isize| {
+                padded_u16[(y + r as isize) as usize * stride + (x + r as isize) as usize]
+            };
+            for &uniform in &[true, false] {
+                let active_coeffs = if uniform { &coeffs[..1] } else { &coeffs[..] };
+                let ref_params = WienerNsLumaFilter {
+                    width,
+                    height,
+                    output_stride: width,
+                    bit_depth,
+                    coeffs_by_class: active_coeffs,
+                    subclasses: (!uniform).then_some(&samples),
+                };
+                let mut expected = vec![0u16; width * height];
+                wiener_ns_filter_luma_block(&mut expected, &ref_params, at).unwrap();
+                let params = WienerNsLumaFilter {
+                    subclasses: None,
+                    ..ref_params
+                };
+                let run_lr = |backend: ScalarLr, scratch: &mut WienerNsLumaScratch| {
+                    let layout = if uniform {
+                        LumaSubclassLayout::Uniform
+                    } else {
+                        LumaSubclassLayout::Cells {
+                            values: &cells,
+                            cols: cell_cols,
+                        }
+                    };
+                    let mut out = vec![0u16; width * height];
+                    wiener_ns_filter_luma_block_padded_layout_into(
+                        backend, &mut out, &params, &src_u16, layout, scratch,
+                    )
+                    .unwrap();
+                    assert_eq!(out, expected);
+                    let _: bool = LrBackend::in_lane(backend);
+                };
+
+                resolved.enter(AutoRun {
+                    params: &params,
+                    src_u16: &src_u16,
+                    src_u8: &src_u8,
+                    cells: &cells,
+                    scratch: &mut scratch,
+                    expected: &expected,
+                    uniform,
+                });
+                run_lr(ScalarLr, &mut scratch);
+                resolved.enter(AutoRun {
+                    params: &params,
+                    src_u16: &src_u16,
+                    src_u8: &src_u8,
+                    cells: &cells,
+                    scratch: &mut scratch,
+                    expected: &expected,
+                    uniform,
+                });
             }
         }
     }
