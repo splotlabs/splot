@@ -569,7 +569,7 @@ fn collect_dependency_names(
 
 /// Walks every `.rs` file under `crates/` (never `xtask/`, `fuzz/`, `target/`, or
 /// `.git/`) and returns each line tagged with whether it is test code.
-fn collect_source_lines(root: &Path) -> Result<Vec<SourceLine>> {
+pub(crate) fn collect_source_lines(root: &Path) -> Result<Vec<SourceLine>> {
     let crates_dir = root.join("crates");
     let mut sources = Vec::new();
     if !crates_dir.is_dir() {
@@ -592,7 +592,7 @@ fn collect_source_lines(root: &Path) -> Result<Vec<SourceLine>> {
 
 /// Returns whether a source path is test-only by repository layout convention.
 fn is_test_source_file(display: &str) -> bool {
-    display.contains("/tests/") || display.ends_with("/tests.rs")
+    display.contains("/tests/") || display.ends_with("/tests.rs") || display.ends_with("_tests.rs")
 }
 
 /// Splits `contents` into [`SourceLine`]s, marking lines as test code and skipping
@@ -667,13 +667,19 @@ fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
             continue;
         }
 
-        if trimmed.starts_with("#[cfg(test)]") {
+        let cfg_test_prefix = trimmed.starts_with("#[cfg(test)]")
+            || (trimmed.starts_with("#[cfg(all(test,") && trimmed.contains("))]"));
+        if cfg_test_prefix {
             pending_cfg_test = true;
         }
         if pending_cfg_test {
-            let item = trimmed
-                .strip_prefix("#[cfg(test)]")
-                .map_or(trimmed, str::trim_start);
+            let item = if cfg_test_prefix {
+                trimmed
+                    .split_once(']')
+                    .map_or(trimmed, |(_, rest)| rest.trim_start())
+            } else {
+                trimmed
+            };
             if item.contains('{') {
                 pending_cfg_test = false;
                 depth = brace_delta(&line);
