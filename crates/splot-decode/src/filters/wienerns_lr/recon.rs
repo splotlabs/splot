@@ -455,8 +455,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(setup)
     }
 
-    pub(crate) fn into_filtered_frame(
+    pub(crate) fn into_filtered_frame<B: splot_core::simd::SimdBackend>(
         self,
+        backend: B,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
@@ -466,7 +467,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let setup =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
         let frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
-        let (frame, _shell) = frontier.run_inline()?.finish(writer);
+        let (frame, _shell) = frontier.run_inline(backend)?.finish(writer);
         frame
     }
 }
@@ -545,7 +546,10 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
     ///
     /// # Errors
     /// Returns the deblock's or the window copy's own diagnostic.
-    pub(crate) fn advance(&mut self) -> Result<Option<OwnedFilterJob<T>>> {
+    pub(crate) fn advance<B: splot_core::simd::SimdBackend>(
+        &mut self,
+        backend: B,
+    ) -> Result<Option<OwnedFilterJob<T>>> {
         let setup = self
             .setup
             .as_ref()
@@ -555,6 +559,7 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
             return Ok(None);
         };
         advance_deblock_for_stripe(
+            backend,
             self.deblock.as_mut(),
             &mut self.rows,
             range,
@@ -569,9 +574,12 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
         Ok(Some(job))
     }
 
-    pub(crate) fn run_inline(mut self) -> Result<OwnedFilterFinish<T>> {
-        while let Some(job) = self.advance()? {
-            job.run()?;
+    pub(crate) fn run_inline<B: splot_core::simd::SimdBackend>(
+        mut self,
+        backend: B,
+    ) -> Result<OwnedFilterFinish<T>> {
+        while let Some(job) = self.advance(backend)? {
+            job.run(backend)?;
         }
         self.finish()
     }
@@ -783,19 +791,21 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     }
 
     /// Claims, filters and publishes one stripe, then keeps its window.
-    fn run_window(
+    fn run_window<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         stripe: usize,
         (window, active_lr, in_place): FilledWindow<T>,
     ) -> Result<()> {
-        let result = self.run_filled(stripe, &window, [active_lr, in_place]);
+        let result = self.run_filled(backend, stripe, &window, [active_lr, in_place]);
         self.give_window(window);
         result
     }
 
     /// Claims, filters and publishes one stripe from its filled window.
-    fn run_filled(
+    fn run_filled<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         stripe: usize,
         window: &crate::filters::source::DeblockedWindow<T>,
         plan: [[bool; 3]; 2],
@@ -804,7 +814,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .and_then(|range| {
                 let planes = window.planes().ok_or_else(lr_pipeline_state_error)?;
                 let lower = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| window.lower(plane));
-                self.run_claimed_planes(stripe, range, &(planes, lower), plan)
+                self.run_claimed_planes(backend, stripe, range, &(planes, lower), plan)
             })
             .and_then(|filtered| self.publish(filtered))
     }
@@ -849,8 +859,9 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         Ok(())
     }
 
-    fn run_claimed_planes(
+    fn run_claimed_planes<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         stripe: usize,
         range: &(usize, usize),
         deblocked: &WindowPlanes<'_, T>,
@@ -863,7 +874,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         let target = direct.take_target().ok_or_else(lr_pipeline_state_error)?;
         Ok(OwnedFilteredStripe {
             stripe,
-            frame: self.run_planes(range, deblocked, target, plan)?,
+            frame: self.run_planes(backend, range, deblocked, target, plan)?,
             direct,
         })
     }
@@ -927,8 +938,10 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .map(|tile| (tile.mi_row_starts.as_ref(), tile.mi_col_starts.as_ref()))
     }
 
-    fn cdef_ccso_range<'d>(
+    #[expect(clippy::too_many_arguments)]
+    fn cdef_ccso_range<'d, B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         deblocked: crate::filters::source::DeblockedPlanes<'d, T>,
         chain: &StripeChain<'_>,
         start: usize,
@@ -959,6 +972,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         .map_err(|plane| filter_error(plane, "CDEF stripe output"))?;
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
             crate::filters::ccso::ccso_stripe(
+                backend,
                 &mut cdef,
                 grid,
                 config,
@@ -980,8 +994,9 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// the stripe already holds are resolved from it first, so any overlap
     /// between the two is redundant rather than wrong. `GDF_READ_RADIUS` is the
     /// widest of the stripe-crossing readers, so one fringe serves them all.
-    fn cdef_overlap_planes(
+    fn cdef_overlap_planes<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
         chain: &StripeChain<'_>,
         start: usize,
@@ -998,8 +1013,15 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                           range_start: usize,
                           range_end: usize|
          -> Result<()> {
-            let fringe =
-                self.cdef_ccso_range(deblocked, chain, range_start, range_end, None, true)?;
+            let fringe = self.cdef_ccso_range(
+                backend,
+                deblocked,
+                chain,
+                range_start,
+                range_end,
+                None,
+                true,
+            )?;
             overlap.y.push(fringe.filtered_y);
             overlap.u.extend(fringe.filtered_u);
             overlap.v.extend(fringe.filtered_v);
@@ -1052,8 +1074,9 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         ]
     }
 
-    fn run_planes(
+    fn run_planes<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         &(start, end): &(usize, usize),
         &(deblocked, lower): &WindowPlanes<'_, T>,
         mut target: crate::pipeline::frame_progress::DirectStripeTarget<T>,
@@ -1094,7 +1117,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 filtered_u: u,
                 filtered_v: v,
                 ..
-            } = self.cdef_ccso_range(deblocked, &chain, start, end, Some(target), false)?;
+            } =
+                self.cdef_ccso_range(backend, deblocked, &chain, start, end, Some(target), false)?;
             return Ok(final_filters::FilteredStripe { y: luma, u, v });
         }
         let deblocked = if chroma_in_place {
@@ -1142,6 +1166,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 .map(|(core, edged)| core.over(edged))
         });
         let cdef = self.cdef_ccso_range(
+            backend,
             crate::filters::source::DeblockedPlanes {
                 y: full[0].or(planes[0]).ok_or_else(lr_pipeline_state_error)?,
                 u: full[1].or(planes[1]),
@@ -1161,7 +1186,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             filtered_u: cdef.filtered_u,
             filtered_v: cdef.filtered_v,
         };
-        let cdef_overlap = self.cdef_overlap_planes(deblocked, &chain, start, end)?;
+        let cdef_overlap = self.cdef_overlap_planes(backend, deblocked, &chain, start, end)?;
         let mut frame = chain.apply_lr_stripe(
             &self.core,
             cdef,
@@ -1182,6 +1207,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                     (None, &mut frame.cdef_y)
                 };
             crate::filters::gdf::apply_stripe(
+                backend,
                 &self.core,
                 frame.deblocked_y,
                 separate_cdef_luma,
@@ -1263,12 +1289,12 @@ impl<T: ReconSample> OwnedFilterJob<T> {
     }
 
     /// Claims and runs one stripe, then publishes it exactly once.
-    pub(crate) fn run(self) -> Result<()> {
+    pub(crate) fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> Result<()> {
         self.setup
             .as_ref()
             .as_ref()
             .ok_or_else(lr_pipeline_state_error)?
-            .run_window(self.stripe, self.window)
+            .run_window(backend, self.stripe, self.window)
     }
 }
 
@@ -1369,7 +1395,8 @@ const TILE_ROW_FRINGE_MARGIN: usize = 8;
 ///
 /// The private window lets the stripe chain run while deblock continues in
 /// place below it.
-fn advance_deblock_for_stripe<T: ReconSample>(
+fn advance_deblock_for_stripe<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sections: Option<&mut crate::filters::deblock::FrameDeblock>,
     source: &mut crate::pipeline::frame_progress::FrontierRows<T>,
     range: &(usize, usize),
@@ -1382,6 +1409,7 @@ fn advance_deblock_for_stripe<T: ReconSample>(
         let reach = crate::filters::deblock::DEBLOCK_PASS_1_REACH << subsampling_y;
         sections
             .advance_source(
+                backend,
                 source,
                 needed.saturating_add(reach).div_ceil(MI_SIZE),
                 bit_depth,

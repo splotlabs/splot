@@ -673,7 +673,9 @@ impl InflightRing {
 /// A deferred phase hands its single-use writer to the freeze, so the slot
 /// settles before the frame's published row prefix closes; a freeze the phase
 /// never reaches drops the writer instead, settling the slot as failed.
+#[expect(clippy::too_many_arguments)]
 pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
+    backend: splot_core::simd::ResolvedBackend,
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
     rows: Option<&super::frame_tasks::DecoderRowScheduler>,
@@ -707,7 +709,7 @@ pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
         frames,
         frame_index,
     )?;
-    pools.push_finish(rows, pending, walked)?;
+    pools.push_finish(backend, rows, pending, walked)?;
     Ok(slot)
 }
 

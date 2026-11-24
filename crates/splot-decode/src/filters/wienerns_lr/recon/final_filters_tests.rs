@@ -10,6 +10,36 @@ use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 use splot_recon::{BitDepth, CurrentFrameWorkspace};
 use std::sync::Arc;
 
+fn filter_sink<T: ReconSample>(
+    sink: WienerNsLrReconSink<T>,
+    core: Arc<FrameHeaderCore>,
+) -> Result<(
+    Option<splot_recon::DecodedFrame<T>>,
+    crate::filters::wienerns_lr::FrameFilterRecords,
+)> {
+    crate::test_support::with_auto_backend!(backend => {
+        sink.into_filtered_frame(
+            backend,
+            core,
+            false,
+            crate::filters::deblock::DeblockQuantDeltas::ZERO,
+            None,
+        )
+    })
+}
+
+fn run_stripe_window<T: ReconSample>(
+    setup: &OwnedFilterSetup<T>,
+    stripe: usize,
+    window: FilledWindow<T>,
+) -> Result<()> {
+    crate::test_support::with_auto_backend!(backend => setup.run_window(backend, stripe, window))
+}
+
+fn run_filter_job<T: ReconSample>(job: OwnedFilterJob<T>) -> Result<()> {
+    crate::test_support::with_auto_backend!(backend => job.run(backend))
+}
+
 fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
         restoration_type: crate::bitstream::tile_payload::LrUnitRestorationType::WienerNonsep,
@@ -207,14 +237,7 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         WienerNsLrReconSink::for_final_filtering(deblock_workspace(), 64, 32, BitDepth::Eight);
     combined.filter_records.deblock_blocks.clone_from(&records);
     combined.filter_records.chroma_deblock_blocks = chroma_records.clone();
-    let (combined, _) = combined
-        .into_filtered_frame(
-            std::sync::Arc::new(core.clone()),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (combined, _) = filter_sink(combined, Arc::new(core.clone())).unwrap();
     let combined = combined.unwrap();
 
     let mut source = crate::test_support::frontier_rows(deblock_workspace()).1;
@@ -231,9 +254,10 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         &mut crate::filters::deblock::DeblockGridStorage::default(),
     )
     .unwrap();
-    deblock
-        .advance_source(&mut source, 8, BitDepth::Eight)
-        .unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        deblock.advance_source(backend, &mut source, 8, BitDepth::Eight)
+    })
+    .unwrap();
     let mut staged_workspace = CurrentFrameWorkspace::new(source.info(), 0).unwrap();
     crate::test_support::copy_rows_to_workspace(&mut source, &mut staged_workspace);
     let mut staged_core = core.clone();
@@ -241,14 +265,7 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
     let mut staged =
         WienerNsLrReconSink::for_final_filtering(staged_workspace, 64, 32, BitDepth::Eight);
     staged.filter_records.deblock_blocks = records;
-    let (staged, _) = staged
-        .into_filtered_frame(
-            std::sync::Arc::new(staged_core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (staged, _) = filter_sink(staged, Arc::new(staged_core)).unwrap();
     let staged = staged.unwrap();
 
     assert_eq!(
@@ -319,14 +336,11 @@ fn a_filtered_frame_keeps_its_reconstruction_buffer() {
     let workspace = deblock_workspace();
     let samples = workspace.samples(PlaneId::Y).unwrap().as_ptr();
 
-    let (frame, _) = WienerNsLrReconSink::for_final_filtering(workspace, 64, 32, BitDepth::Eight)
-        .into_filtered_frame(
-            Arc::new(core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (frame, _) = filter_sink(
+        WienerNsLrReconSink::for_final_filtering(workspace, 64, 32, BitDepth::Eight),
+        Arc::new(core),
+    )
+    .unwrap();
 
     let frame = frame.unwrap();
 
@@ -350,26 +364,12 @@ fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
         "fixture must exercise the stripe task path"
     );
     let core = Arc::new(core);
-    let (expected, _) = final_filter_sink_10bit()
-        .into_filtered_frame(
-            Arc::clone(&core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (expected, _) = filter_sink(final_filter_sink_10bit(), Arc::clone(&core)).unwrap();
     let expected = expected.unwrap();
     let expected = splot_recon::DecodedFrameHashInput::new(&expected).compute_hash();
 
     {
-        let (actual, _) = final_filter_sink_10bit()
-            .into_filtered_frame(
-                Arc::clone(&core),
-                false,
-                crate::filters::deblock::DeblockQuantDeltas::ZERO,
-                None,
-            )
-            .unwrap();
+        let (actual, _) = filter_sink(final_filter_sink_10bit(), Arc::clone(&core)).unwrap();
         let actual = actual.unwrap();
         assert_eq!(
             splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
@@ -385,12 +385,7 @@ fn one_worker_multi_stripe_task_failure_returns_without_publishing() {
     core.deblocking_filter_params = None;
     let mut sink = final_filter_sink_10bit();
     sink.plane_sizes[PlaneId::Y.index()] = None;
-    let result = sink.into_filtered_frame(
-        Arc::new(core),
-        false,
-        crate::filters::deblock::DeblockQuantDeltas::ZERO,
-        None,
-    );
+    let result = filter_sink(sink, Arc::new(core));
 
     assert!(result.is_err());
 }
@@ -400,14 +395,7 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     let core = Arc::new(core);
-    let (expected, _) = final_filter_sink_8bit::<u16>()
-        .into_filtered_frame(
-            Arc::clone(&core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (expected, _) = filter_sink(final_filter_sink_8bit::<u16>(), Arc::clone(&core)).unwrap();
     let expected = expected.unwrap();
 
     let mut sink = final_filter_sink_8bit::<u8>();
@@ -420,9 +408,7 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
     assert_eq!(ranges.len(), 3, "fixture must exercise multiple stripes");
 
     for stripe in [1usize, 0, 2] {
-        setup
-            .run_window(stripe, windows[stripe].take().unwrap())
-            .unwrap();
+        run_stripe_window(&setup, stripe, windows[stripe].take().unwrap()).unwrap();
     }
     drop(progress);
     let (actual, _) = setup.finish(None).unwrap();
@@ -465,14 +451,7 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     let core = Arc::new(core);
-    let (expected, _) = final_filter_sink_10bit()
-        .into_filtered_frame(
-            Arc::clone(&core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (expected, _) = filter_sink(final_filter_sink_10bit(), Arc::clone(&core)).unwrap();
     let expected = expected.unwrap();
 
     let mut sink = final_filter_sink_10bit();
@@ -485,9 +464,7 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
     assert_eq!(ranges.len(), 3, "fixture must exercise multiple stripes");
 
     for (stripe, expected_rows) in [(1usize, 0usize), (0, ranges[1].1), (2, 128)] {
-        setup
-            .run_window(stripe, windows[stripe].take().unwrap())
-            .unwrap();
+        run_stripe_window(&setup, stripe, windows[stripe].take().unwrap()).unwrap();
         assert_eq!(progress.published_luma_rows(), expected_rows);
     }
 
@@ -512,15 +489,13 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
     let mut windows = stripe_windows(&setup);
     let ranges = setup.stripe_ranges().to_vec();
 
-    setup.run_window(0, windows[0].take().unwrap()).unwrap();
+    run_stripe_window(&setup, 0, windows[0].take().unwrap()).unwrap();
     assert!(
-        setup.run_window(0, windows[1].take().unwrap()).is_err(),
+        run_stripe_window(&setup, 0, windows[1].take().unwrap()).is_err(),
         "a stripe cannot be claimed twice"
     );
     assert!(
-        setup
-            .run_window(ranges.len(), windows[2].take().unwrap())
-            .is_err(),
+        run_stripe_window(&setup, ranges.len(), windows[2].take().unwrap()).is_err(),
         "an out-of-range stripe must fail closed"
     );
 
@@ -613,20 +588,13 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     let core = Arc::new(core);
-    let (expected, _) = final_filter_sink_10bit()
-        .into_filtered_frame(
-            core,
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (expected, _) = filter_sink(final_filter_sink_10bit(), core).unwrap();
     let expected = expected.unwrap();
     let (setup, progress) = arc_owned_filter_setup();
     let mut rows = final_rows(&progress);
     assert_eq!(owned_setup(&setup).stripe_ranges().len(), 3);
     for job in owned_filter_jobs(&setup, &mut rows, &[1, 0, 2]) {
-        job.run().unwrap();
+        run_filter_job(job).unwrap();
     }
     let restored = deblock_records();
     owned_setup(&setup)
@@ -668,7 +636,7 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     let shell = Arc::as_ptr(&setup);
     let mut rows = final_rows(&progress);
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
-        job.run().unwrap();
+        run_filter_job(job).unwrap();
     }
     drop((rows, progress));
     let (outcome, mut setup) = OwnedFilterSetup::owned_finish(setup).finish(None);
@@ -685,7 +653,7 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     *Arc::get_mut(&mut setup).unwrap() = Some(next);
     let mut rows = final_rows(&progress);
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
-        job.run().unwrap();
+        run_filter_job(job).unwrap();
     }
     drop((rows, progress));
     let (outcome, setup) = OwnedFilterSetup::owned_finish(setup).finish(None);
@@ -716,7 +684,7 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
         let mut rows = final_rows(&progress);
         let order = (0..owned_setup(&setup).stripe_ranges().len()).collect::<Vec<_>>();
         for job in owned_filter_jobs(&setup, &mut rows, &order) {
-            job.run().unwrap();
+            run_filter_job(job).unwrap();
         }
         drop((rows, progress));
         let (outcome, _) = OwnedFilterSetup::owned_finish(setup).finish(None);
@@ -761,13 +729,12 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     let mut jobs = owned_filter_jobs(&setup, &mut rows, &[0, 1]);
     drop(rows);
     let second = jobs.remove(1);
-    jobs.remove(0).run().unwrap();
+    run_filter_job(jobs.remove(0)).unwrap();
     assert!(
-        OwnedFilterJob {
+        run_filter_job(OwnedFilterJob {
             stripe: 0,
             ..second
-        }
-        .run()
+        })
         .is_err()
     );
     assert!(
@@ -781,7 +748,7 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     let (setup, progress) = arc_owned_filter_setup();
     let mut rows = final_rows(&progress);
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
-        job.run().unwrap();
+        run_filter_job(job).unwrap();
     }
     drop(rows);
     let lingering = Arc::clone(&setup);
@@ -2037,15 +2004,7 @@ fn unfiltered_reference(width: usize, height: usize) -> splot_recon::DecodedFram
         height,
         BitDepth::Eight,
     );
-    sink.into_filtered_frame(
-        Arc::new(core),
-        false,
-        crate::filters::deblock::DeblockQuantDeltas::ZERO,
-        None,
-    )
-    .unwrap()
-    .0
-    .unwrap()
+    filter_sink(sink, Arc::new(core)).unwrap().0.unwrap()
 }
 
 fn run_bru_lr_frame(
@@ -2074,12 +2033,7 @@ fn run_bru_lr_frame(
     let (blocks, filters) = bru_lr_blocks_and_filters(restoration_type, width, tile_rows);
     sink.filter_records.lr_source_blocks = blocks;
     sink.filter_records.lr_unit_filters = filters;
-    let (frame, _) = sink.into_filtered_frame(
-        Arc::new(core),
-        false,
-        crate::filters::deblock::DeblockQuantDeltas::ZERO,
-        None,
-    )?;
+    let (frame, _) = filter_sink(sink, Arc::new(core))?;
     frame.ok_or_else(super::super::lr_pipeline_state_error)
 }
 
@@ -2309,12 +2263,7 @@ fn run_bru_gdf_frame<T: splot_recon::ReconSample + TryFrom<u16>>(
         sink.filter_records.lr_source_blocks = blocks;
         sink.filter_records.lr_unit_filters = filters;
     }
-    let (frame, _) = sink.into_filtered_frame(
-        Arc::new(core),
-        false,
-        crate::filters::deblock::DeblockQuantDeltas::ZERO,
-        None,
-    )?;
+    let (frame, _) = filter_sink(sink, Arc::new(core))?;
     frame.ok_or_else(super::super::lr_pipeline_state_error)
 }
 

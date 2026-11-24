@@ -288,7 +288,8 @@ fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
         let prepared =
             prepare_ccso_plane(plane, &params, &grid, BitDepth::Eight, (sub_x, sub_y)).unwrap();
 
-        ccso_apply(
+        crate::test_support::with_auto_backend!(backend => ccso_apply(
+            backend,
             &mut expected,
             FramePlane::window(&curr_luma, luma_width, luma_height, 0, luma_height).unwrap(),
             plane,
@@ -296,9 +297,10 @@ fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
             &grid,
             None,
             None,
-        )
+        ))
         .unwrap();
-        ccso_apply(
+        crate::test_support::with_auto_backend!(backend => ccso_apply(
+            backend,
             &mut actual,
             FramePlane::window(&curr_luma, luma_width, luma_height, 0, luma_height).unwrap(),
             plane,
@@ -306,7 +308,7 @@ fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
             &grid,
             None,
             None,
-        )
+        ))
         .unwrap();
 
         assert_eq!(
@@ -497,7 +499,8 @@ fn tiled_ccso<L: ReconSample>(
     let pre: Vec<u16> = (0..pw * ph).map(|i| ((i * 37 + 11) % 251) as u16).collect();
     let mut destination = StripePlane::from_samples(pw, ph, 0, pre.clone()).unwrap();
     let prepared = prepare_ccso_plane(plane, params, &grid, BitDepth::Eight, (sub, sub)).unwrap();
-    ccso_apply(
+    crate::test_support::with_auto_backend!(backend => ccso_apply(
+        backend,
         &mut destination,
         FramePlane::window(&stored_luma, lw, lh, 0, lh).unwrap(),
         plane,
@@ -505,12 +508,15 @@ fn tiled_ccso<L: ReconSample>(
         &grid,
         None,
         tiles,
-    )
+    ))
     .unwrap();
     let pre8 = pre.iter().map(|&sample| sample as u8).collect();
     let mut bytes = StripePlane::from_samples(pw, ph, 0, pre8).unwrap();
     let luma = FramePlane::window(&stored_luma, lw, lh, 0, lh).unwrap();
-    ccso_apply(&mut bytes, luma, plane, &prepared, &grid, None, tiles).unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        ccso_apply(backend, &mut bytes, luma, plane, &prepared, &grid, None, tiles)
+    })
+    .unwrap();
     assert!(
         bytes
             .samples()
@@ -641,7 +647,8 @@ fn ten_bit_vector_rows_match_the_scalar_path_for_every_quant_step() {
                     let mut destination =
                         StripePlane::from_samples(pw, ph, 0, pre.clone()).unwrap();
                     let source = FramePlane::window(&luma, lw, lh, 0, lh).unwrap();
-                    ccso_apply(
+                    crate::test_support::with_auto_backend!(backend => ccso_apply(
+                        backend,
                         &mut destination,
                         source,
                         sub,
@@ -649,7 +656,7 @@ fn ten_bit_vector_rows_match_the_scalar_path_for_every_quant_step() {
                         &grid,
                         lossless,
                         None,
-                    )
+                    ))
                     .unwrap();
                     destination.samples().to_vec()
                 };

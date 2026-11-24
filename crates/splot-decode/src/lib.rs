@@ -57,6 +57,7 @@ macro_rules! baseline_simd {
         fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
     };
 }
+#[cfg(test)]
 pub(crate) use baseline_simd;
 
 mod bitstream;

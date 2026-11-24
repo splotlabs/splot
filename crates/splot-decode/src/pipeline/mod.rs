@@ -707,6 +707,7 @@ fn decode_key_frame_with_effects(
             )?;
             let ccso_header = Some(walk.core);
             let frame = inflight::settle_walk_stage(
+                backend,
                 walk.stage,
                 T::erase,
                 rows,
@@ -1095,6 +1096,7 @@ fn decode_frames_in_order(
                 )?;
                 let ccso_header = Some(walk.core);
                 let frame = inflight::settle_walk_stage(
+                    backend,
                     walk.stage,
                     T::erase,
                     rows,
@@ -1653,6 +1655,7 @@ fn decode_frames_in_order(
                         )?;
                         let inter_core = Arc::clone(&walk.core);
                         let slot = inflight::settle_walk_stage(
+                            backend,
                             walk.stage,
                             T::erase,
                             rows,

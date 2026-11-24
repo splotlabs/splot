@@ -268,12 +268,15 @@ pub(crate) fn finish_walked_frame<T: ReconSample>(
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
     } = walked;
-    let (frame, filter_records) = sink.into_filtered_frame(
-        core,
-        disable_loopfilters_across_tiles,
-        deblock_quant_deltas,
-        None,
-    )?;
+    let (frame, filter_records) = crate::test_support::with_auto_backend!(backend => {
+        sink.into_filtered_frame(
+            backend,
+            core,
+            disable_loopfilters_across_tiles,
+            deblock_quant_deltas,
+            None,
+        )
+    })?;
     writer.complete(frame.ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?);
     Ok(filter_records)
 }
