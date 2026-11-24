@@ -12322,3 +12322,348 @@ output_scope = "Complete 36,864-byte 4-frame 8-bit 96x64 raw I420 output for ext
 kind = "digest-equality"
 left = "avm-xlayer7-layered-raw-sha256"
 right = "splot-xlayer7-layered-raw-sha256"
+
+
+[[evidence]]
+id = "lref-avm-syn-msdo-two-streams-8bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated an 8-bit Profile 0 IOP 0 two-stream MSDO-only Annex B fixture (xlayers 3 and 7, seq_lcr_id 0, 1-byte OBU_MSDO header 0x50 with RAP resend at TU 2); direct avmdec --all-layers and splot decode agree byte-for-byte."
+recorded_at = "2026-11-24"
+command = '''Encoded independent 8-bit I420 clips with avmenc (--obu --bit-depth=8 --kf-min-dist=2 --kf-max-dist=2 --lag-in-frames=0), retagged OBUs to xlayers 3 and 7 under Profile 0 IOP 0 (seq_lcr_id 0), muxed behind 1-byte OBU_MSDO (0x50) at TU 0 and TU 2, validated clean with splot validate --strict, and compared raw I420 output against avmdec --all-layers.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu"
+sha256 = "3cab7d7226c08e0e9997fb99e2810cdeb5bf206496fcfc020b5f542559e638e1"
+size_bytes = 3753
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Multiplexed deterministically from project-owned synthetic 8-bit I420 streams encoded with AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 on {fixture:input}."
+output_digest_id = "avm-msdo-8b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b"
+output_scope = "Complete 55,296-byte 8-frame 8-bit raw I420 output across xlayers 3 and 7"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding MSDO two-stream 8-bit input."
+command_summary = "splot Decoder across {fixture:input} in emission order."
+output_digest_id = "splot-msdo-8b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b"
+output_scope = "Complete 55,296-byte 8-frame 8-bit raw I420 output across xlayers 3 and 7"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-msdo-8b-raw-sha256"
+right = "splot-msdo-8b-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-msdo-two-streams-10bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated a 10-bit Profile 2 IOP 2 two-stream fixture (xlayers 2 and 9) with nonmonotonic output order, extended OBU_MSDO ([0xD0, 0x1F]), and agreeing global LCR id 1 (lcr_doh_constraint_flag 1); direct avmdec --all-layers and splot agree byte-for-byte."
+recorded_at = "2026-11-24"
+command = '''Encoded 10-bit I420 clips with avmenc (--obu --bit-depth=10 --input-bit-depth=10 --lag-in-frames=5 --auto-alt-ref=1 --monotonic-output-order=0), retagged to xlayers 2 and 9 under Profile 2 IOP 2 behind [0xD0, 0x1F] MSDO and agreeing global LCR id 1, validated clean with splot validate --strict, and compared raw I420 output against avmdec --all-layers.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-msdo-two-streams-10bit.obu"
+sha256 = "ad4458d25b0114f7ce114c2277717e5f813701cac7f014bd025584cf0e08d9cd"
+size_bytes = 5195
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Multiplexed deterministically from project-owned synthetic 10-bit I420 streams encoded with AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 on {fixture:input}."
+output_digest_id = "avm-msdo-10b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "754993eb0ce0034850dbe99d1ffa1e7da358b3ce7fa34b32319f53a927e1b62b"
+output_scope = "Complete 138,240-byte 10-frame 10-bit raw I420 output across xlayers 2 and 9"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding 10-bit nonmonotonic MSDO + global LCR input."
+command_summary = "splot Decoder across {fixture:input} in emission order."
+output_digest_id = "splot-msdo-10b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "754993eb0ce0034850dbe99d1ffa1e7da358b3ce7fa34b32319f53a927e1b62b"
+output_scope = "Complete 138,240-byte 10-frame 10-bit raw I420 output across xlayers 2 and 9"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-msdo-10b-raw-sha256"
+right = "splot-msdo-10b-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-msdo-four-streams-obu-order"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated four independent 8-bit Profile 0 IOP 0 streams (xlayers 1, 5, 12, and 20) multiplexed in ascending CELU order under OBU_MSDO ([0xD0, 0x1F], num_streams_minus_2=2); direct avmdec --all-layers and splot agree byte-for-byte."
+recorded_at = "2026-11-24"
+command = '''Encoded four independent 8-bit I420 clips with avmenc (--obu --bit-depth=8 --lag-in-frames=0), retagged to xlayers 1, 5, 12, and 20 under Profile 0 IOP 0 behind [0xD0, 0x1F] MSDO, validated clean with splot validate --strict, and compared raw I420 output against avmdec --all-layers.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-msdo-four-streams-obu-order.obu"
+sha256 = "dc86eeb4b678f469832835695ec55702db55ceed4a04816b6d7805fe47a962b6"
+size_bytes = 3579
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Multiplexed deterministically from project-owned synthetic 8-bit I420 streams encoded with AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 on {fixture:input}."
+output_digest_id = "avm-msdo-4stream-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "45460122ee439e322b620ed69612d173aaf5522658461245edbd9e7d0b4f76be"
+output_scope = "Complete 92,160-byte 12-frame 8-bit raw I420 output across xlayers 1, 5, 12, and 20"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding four-stream MSDO input."
+command_summary = "splot Decoder across {fixture:input} in emission order."
+output_digest_id = "splot-msdo-4stream-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "45460122ee439e322b620ed69612d173aaf5522658461245edbd9e7d0b4f76be"
+output_scope = "Complete 92,160-byte 12-frame 8-bit raw I420 output across xlayers 1, 5, 12, and 20"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-msdo-4stream-raw-sha256"
+right = "splot-msdo-4stream-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-msdo-ops-random-access"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated two 2-tlayer streams multiplexed on xlayers 3 and 7 behind OBU_MSDO, global OPS 0 (explicit), global OPS 1 (cross-ops_id inheritance from OPS 0), local OPS 2 on xlayer 3, and unaligned/dual CLKs; direct avmdec and splot agree byte-for-byte across all-layers, --select-ops=0,0, --select-ops=0,1, --select-ops=1,0, and --select-local-ops=3,2,0."
+recorded_at = "2026-11-24"
+command = '''Encoded 2-tlayer 8-bit clips with scalable_encoder (kf 4 for x3, kf 2 for x7), muxed with MSDO, global OPS 0/1, and local OPS 2, validated clean with splot validate --strict, and verified byte-for-byte raw I420 parity against avmdec across --all-layers, --select-ops=0,0, --select-ops=0,1, --select-ops=1,0, and --select-local-ops=3,2,0.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-msdo-ops-random-access.obu"
+sha256 = "deea2d352a6f3f9932a16c88536c78d1f127a9e0f1b4181d70ee7d4581b08d07"
+size_bytes = 1163
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Multiplexed deterministically from project-owned synthetic 8-bit I420 streams encoded with AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-all"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 on {fixture:input}."
+output_digest_id = "avm-msdo-ops-all-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "abcb36ae31ba11246e8445e87f90fd6ffddab5c0eeaf15fdffbe2d53d83b6830"
+output_scope = "Complete 82,944-byte 12-frame 8-bit raw I420 output for --all-layers"
+
+[[evidence.reference_run]]
+id = "splot-all"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding default operating-point-free selection."
+command_summary = "splot Decoder with OperatingPointSelection::None on {fixture:input}."
+output_digest_id = "splot-msdo-ops-all-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "abcb36ae31ba11246e8445e87f90fd6ffddab5c0eeaf15fdffbe2d53d83b6830"
+output_scope = "Complete 82,944-byte 12-frame 8-bit raw I420 output for --all-layers"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-msdo-ops-all-raw-sha256"
+right = "splot-msdo-ops-all-raw-sha256"
+
+[[evidence.reference_run]]
+id = "avm-op-0-0"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --select-ops=0,0 --rawvideo --i420 on {fixture:input}."
+output_digest_id = "avm-msdo-ops-0-0-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "2ec69bc4694d071cad578706823dee7cf1ab9a50c9feee6478bd3f9ca2a1d2c3"
+output_scope = "Complete 41,472-byte 6-frame output for global OP (ops_id=0, op_index=0)"
+
+[[evidence.reference_run]]
+id = "splot-op-0-0"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree selecting global:0:0."
+command_summary = "splot decode --operating-point global:0:0 on {fixture:input}."
+output_digest_id = "splot-msdo-ops-0-0-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "2ec69bc4694d071cad578706823dee7cf1ab9a50c9feee6478bd3f9ca2a1d2c3"
+output_scope = "Complete 41,472-byte 6-frame output for global OP (ops_id=0, op_index=0)"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-msdo-ops-0-0-raw-sha256"
+right = "splot-msdo-ops-0-0-raw-sha256"
+
+[[evidence.reference_run]]
+id = "avm-op-0-1"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --select-ops=0,1 --rawvideo --i420 on {fixture:input}."
+output_digest_id = "avm-msdo-ops-0-1-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "1f7bb640c50012cfbbdebbcaf3fce4c2c0442a31899bcb850ef5221153a26c49"
+output_scope = "Complete 36,864-byte 6-frame output for global OP (ops_id=0, op_index=1)"
+
+[[evidence.reference_run]]
+id = "splot-op-0-1"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree selecting global:0:1."
+command_summary = "splot decode --operating-point global:0:1 --output-format raw on {fixture:input}."
+output_digest_id = "splot-msdo-ops-0-1-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "1f7bb640c50012cfbbdebbcaf3fce4c2c0442a31899bcb850ef5221153a26c49"
+output_scope = "Complete 36,864-byte 6-frame output for global OP (ops_id=0, op_index=1)"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-msdo-ops-0-1-raw-sha256"
+right = "splot-msdo-ops-0-1-raw-sha256"
+
+[[evidence.reference_run]]
+id = "avm-op-1-0"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --select-ops=1,0 --rawvideo --i420 on {fixture:input}."
+output_digest_id = "avm-msdo-ops-1-0-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "5dd12c346465a01afad48df7d8e54aa24f66954c57351064e4144c12607df789"
+output_scope = "Complete 59,904-byte 9-frame output for inherited global OP (ops_id=1, op_index=0)"
+
+[[evidence.reference_run]]
+id = "splot-op-1-0"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree selecting inherited global:1:0."
+command_summary = "splot decode --operating-point global:1:0 on {fixture:input}."
+output_digest_id = "splot-msdo-ops-1-0-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "5dd12c346465a01afad48df7d8e54aa24f66954c57351064e4144c12607df789"
+output_scope = "Complete 59,904-byte 9-frame output for inherited global OP (ops_id=1, op_index=0)"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-msdo-ops-1-0-raw-sha256"
+right = "splot-msdo-ops-1-0-raw-sha256"
+
+[[evidence.reference_run]]
+id = "avm-local-3-2-0"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --select-local-ops=3,2,0 --rawvideo --i420 on {fixture:input}."
+output_digest_id = "avm-msdo-local-3-2-0-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7eafb4d548549b91d3b30300b0cd32f3ec708a0ea2d3489e9cc9950588625542"
+output_scope = "Complete 64,512-byte 9-frame output for local OP (xlayer=3, ops_id=2, op_index=0) plus unfiltered xlayer 7"
+
+[[evidence.reference_run]]
+id = "splot-local-3-2-0"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree selecting local:3:2:0."
+command_summary = "splot decode --operating-point local:3:2:0 on {fixture:input}."
+output_digest_id = "splot-msdo-local-3-2-0-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7eafb4d548549b91d3b30300b0cd32f3ec708a0ea2d3489e9cc9950588625542"
+output_scope = "Complete 64,512-byte 9-frame output for local OP (xlayer=3, ops_id=2, op_index=0) plus unfiltered xlayer 7"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-msdo-local-3-2-0-raw-sha256"
+right = "splot-msdo-local-3-2-0-raw-sha256"

@@ -2912,3 +2912,24 @@ expect = "clean"
 path = "vectors/valid/syn-xlayer3-7-layered-mixed.obu"
 description = "Four-TU multi-extended-layer 8-bit 4:2:0 Profile 2 IOP 2 Annex B stream with an activated global LCR (id 1, xlayer_map 0x88, lcr_doh_constraint_flag 1) multiplexing a 2-mlayer x 2-tlayer sparse-state AVM stream at obu_xlayer_id 3 (seq_header_id 0, 64x64 8 frames across ML0..1 TL0..1 with local LCR and OPS) and an independent single-mlayer stream at obu_xlayer_id 7 (seq_header_id 1, MFH enabled, 96x64 4 frames). Decodes identically to component avmdec outputs (xlayer 3 49,152 bytes SHA-256 80f2b107ff4512837e25b724f380259077ad451f73e7cb2c046e64feee8062cc; xlayer 7 36,864 bytes SHA-256 8762b65ff05fd6aa3b144f2b0675544f17c61ae8fd8431dbe9f2c7aad9c1598b); validates clean."
 expect = "clean"
+
+
+[[vector]]
+path = "vectors/valid/syn-msdo-two-streams-8bit.obu"
+description = "Four-TU multi-extended-layer 8-bit 4:2:0 Profile 0 IOP 0 Annex B stream governed solely by OBU_MSDO (0x50 1-byte header, seq_lcr_id 0, multistream_doh_constraint_flag 1, no global LCR) multiplexing independent AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) streams at obu_xlayer_id 3 (64x64, kf-min-dist 2) and obu_xlayer_id 7 (80x64, kf-min-dist 2) with RAP OBU_MSDO resend at TU 2. Decodes identically to avmdec --all-layers (55,296 bytes, SHA-256 6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-two-streams-10bit.obu"
+description = "Five-TU multi-extended-layer 10-bit 4:2:0 Profile 2 IOP 2 Annex B stream pairing OBU_MSDO ([0xD0, 0x1F] extended header, multistream_doh_constraint_flag 1) with an agreeing global LCR (id 1, xlayer_map 0x204, lcr_max_interop 2, lcr_doh_constraint_flag 1) across obu_xlayer_id 2 (64x64) and obu_xlayer_id 9 (80x64) with nonmonotonic_output_order_flag=0 (monotonic_output_order_flag=false) and matched nonmonotonic OrderHints per TU. Decodes identically to avmdec --all-layers across all 10 10-bit frames (138,240 bytes, SHA-256 754993eb0ce0034850dbe99d1ffa1e7da358b3ce7fa34b32319f53a927e1b62b); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-four-streams-obu-order.obu"
+description = "Three-TU four-stream 8-bit 4:2:0 Profile 0 IOP 0 Annex B stream with OBU_MSDO ([0xD0, 0x1F], num_streams_minus_2=2) multiplexing independent AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) streams on noncontiguous obu_xlayer_id 1 (64x64), 5 (80x64), 12 (64x80), and 20 (96x64) in ascending CELU order. Decodes identically to avmdec --all-layers across all 12 frames (92,160 bytes, SHA-256 45460122ee439e322b620ed69612d173aaf5522658461245edbd9e7d0b4f76be); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-ops-random-access.obu"
+description = "Six-TU multi-extended-layer 8-bit 4:2:0 Profile 2 IOP 2 Annex B stream with OBU_MSDO ([0xD0, 0x1F]), global OPS ops_id 0 (OP 0 selecting xlayers 3 and 7 at tl0; OP 1 selecting xlayer 3 tl0..1), global OPS ops_id 1 (OP 0 inheriting xlayer 3 from ops_id 0 op_index 1 plus explicit xlayer 7 tl0), local OPS ops_id 2 on xlayer 3 (OP 0 selecting tl0), unaligned CLK random access on xlayer 7 at TU 2, and dual CLK at TU 4. Decodes identically to avmdec across --all-layers (SHA-256 abcb36ae31ba11246e8445e87f90fd6ffddab5c0eeaf15fdffbe2d53d83b6830), --select-ops=0,0, --select-ops=0,1, --select-ops=1,0, and --select-local-ops=3,2,0; validates clean."
+expect = "clean"

@@ -7,11 +7,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use splot_core::annexb::ObuEnvelope;
+use splot_core::bitio::BitReader;
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::headers::layer_config_record::LayerConfigurationRecord;
+use splot_core::headers::layer_config_record::{LayerConfigurationRecord, LcrGlobalInfo};
 use splot_core::headers::metadata::{MetadataType, MetadataUnit};
 use splot_core::headers::operating_point_set::OperatingPointSet;
-use splot_core::headers::sequence::SequenceHeader;
+use splot_core::headers::sequence::{ProfileIdc, SequenceHeader, Tier};
+use splot_core::hls::{MultistreamDecoderOperation, parse_msdo};
+use splot_core::obu::finish_obu_payload;
 use splot_core::span::ByteOffset;
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType};
 
@@ -22,6 +25,7 @@ use super::output_effects::{
 };
 use super::output_schedule::OutputScheduler;
 use super::unsupported_feature_at;
+use crate::bitstream::ops_plan::validate_ops_semantics;
 use crate::bitstream::stream_plan::DecodeSourceIssue;
 use crate::error::{DecodeError, Result};
 use crate::reference::buffer::RuntimeReferenceBuffer;
@@ -170,17 +174,95 @@ struct GlobalMetadataEntry {
     item: Option<(u8, GlobalMetadataItem)>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SubStreamCeiling {
+    profile: u8,
+    level: u8,
+    tier: u8,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MsdoKeyFields {
+    profile_idc: u8,
+    level_idx: u8,
+    tier: u8,
+    num_streams_minus_2: u8,
+    even_allocation_flag: bool,
+    large_picture_idc: Option<u8>,
+}
+
+impl MsdoKeyFields {
+    fn from_msdo(msdo: &MultistreamDecoderOperation) -> Self {
+        Self {
+            profile_idc: msdo.multistream_profile_idc.get(),
+            level_idx: msdo.multistream_level_idx,
+            tier: msdo.multistream_tier,
+            num_streams_minus_2: msdo.num_streams_minus_2,
+            even_allocation_flag: msdo.multistream_even_allocation_flag,
+            large_picture_idc: msdo.multistream_large_picture_idc,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ActiveMsdo {
+    msdo: MultistreamDecoderOperation,
+    payload: Vec<u8>,
+    key_fields: MsdoKeyFields,
+    ceilings: BTreeMap<u8, SubStreamCeiling>,
+}
+
+impl ActiveMsdo {
+    fn from_validated(msdo: MultistreamDecoderOperation, payload: &[u8]) -> Self {
+        let mut ceilings: BTreeMap<u8, SubStreamCeiling> = BTreeMap::new();
+        for sub in msdo.sub_streams() {
+            let entry = SubStreamCeiling {
+                profile: sub.sub_stream_max_profile,
+                level: sub.sub_stream_max_level,
+                tier: sub.sub_stream_max_tier,
+            };
+            ceilings
+                .entry(sub.sub_xlayer_id)
+                .and_modify(|existing| {
+                    existing.profile = existing.profile.min(entry.profile);
+                    existing.level = existing.level.min(entry.level);
+                    existing.tier = existing.tier.min(entry.tier);
+                })
+                .or_insert(entry);
+        }
+        Self {
+            msdo,
+            payload: payload.to_vec(),
+            key_fields: MsdoKeyFields::from_msdo(&msdo),
+            ceilings,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct GlobalHlsState {
     tu_index: u64,
-    global_lcr_xlayers: [Option<u32>; 8],
+    global_lcrs: [Option<(u64, LcrGlobalInfo)>; 8],
+    activated_global_lcrs: [Option<u64>; 8],
     global_ops_counts: BTreeMap<u8, u8>,
     global_metadata: Vec<GlobalMetadataEntry>,
+    active_msdo: Option<ActiveMsdo>,
+    cmvs_start_tu_index: Option<u64>,
+    tu_saw_msdo: bool,
+    tu_saw_non_msdo_prefix: bool,
+    last_celu_xlayer: Option<u8>,
+    tu_order_hint_bits: Option<u8>,
+    tu_output_order_hint: Option<(ExtendedLayerId, u32)>,
 }
 
 impl GlobalHlsState {
     fn begin_temporal_unit(&mut self) {
         self.tu_index = self.tu_index.saturating_add(1);
+        self.tu_saw_msdo = false;
+        self.tu_saw_non_msdo_prefix = false;
+        self.last_celu_xlayer = None;
+        self.tu_order_hint_bits = None;
+        self.tu_output_order_hint = None;
         self.global_metadata.retain(|entry| {
             entry
                 .item
@@ -258,9 +340,9 @@ impl GlobalHlsState {
 
     fn sync_effects(&self, effects: &mut OutputEffectState) {
         effects.set_tu_index(self.tu_index);
-        for (id, slot) in self.global_lcr_xlayers.iter().enumerate() {
-            if let Some(xlayer_map) = *slot {
-                effects.apply_global_lcr(id as u8, xlayer_map);
+        for (id, slot) in self.global_lcrs.iter().enumerate() {
+            if let Some((_, info)) = slot {
+                effects.apply_global_lcr(id as u8, info.xlayer_map);
             }
         }
         for (&ops_id, &ops_cnt) in &self.global_ops_counts {
@@ -280,13 +362,257 @@ impl GlobalHlsState {
         }
     }
 
-    fn global_lcr_has_xlayer(&self, lcr_id: u8, xlayer: ExtendedLayerId) -> bool {
-        self.global_lcr_xlayers
+    fn global_lcr(&self, lcr_id: u8) -> Option<(u64, &LcrGlobalInfo)> {
+        self.global_lcrs
             .get(usize::from(lcr_id))
-            .copied()
-            .flatten()
-            .is_some_and(|map| (map & (1u32 << u32::from(xlayer.get()))) != 0)
+            .and_then(|slot| slot.as_ref().map(|(tu, info)| (*tu, info)))
     }
+
+    fn global_lcr_has_xlayer(&self, lcr_id: u8, xlayer: ExtendedLayerId) -> bool {
+        self.global_lcr(lcr_id)
+            .is_some_and(|(_, info)| (info.xlayer_map & (1u32 << u32::from(xlayer.get()))) != 0)
+    }
+
+    fn any_doh_constrained(&self) -> bool {
+        if self
+            .active_msdo
+            .as_ref()
+            .is_some_and(|active| active.msdo.multistream_doh_constraint_flag)
+        {
+            return true;
+        }
+        self.activated_global_lcrs
+            .iter()
+            .enumerate()
+            .any(|(id, activated)| {
+                activated.is_some()
+                    && self
+                        .global_lcrs
+                        .get(id)
+                        .and_then(|slot| slot.as_ref())
+                        .is_some_and(|(_, info)| info.doh_constraint_flag)
+            })
+    }
+
+    fn has_multistream_mode(&self) -> bool {
+        self.active_msdo.is_some() || self.activated_global_lcrs.iter().any(Option::is_some)
+    }
+
+    fn xlayer_declared_in_multistream(&self, xlayer: ExtendedLayerId) -> bool {
+        if let Some(active) = &self.active_msdo {
+            return active.ceilings.contains_key(&xlayer.get());
+        }
+        self.activated_global_lcrs
+            .iter()
+            .enumerate()
+            .any(|(id, activated)| {
+                activated.is_some() && self.global_lcr_has_xlayer(id as u8, xlayer)
+            })
+    }
+}
+
+fn malformed(offset: ByteOffset, spec_section: &'static str, message: String) -> DecodeError {
+    DecodeError::MalformedSource {
+        issue: DecodeSourceIssue::sequence_header_conformance(offset, spec_section, message),
+    }
+}
+
+fn iop_of_profile(profile_idc: u8) -> Option<u8> {
+    match profile_idc {
+        0 => Some(0),
+        1 | 3 | 4 => Some(1),
+        2 => Some(2),
+        _ => None,
+    }
+}
+
+fn config_idc_allows_profile(config_idc: u8, profile_idc: u8) -> bool {
+    match config_idc {
+        0 => matches!(profile_idc, 0..=2 | 31),
+        1 => matches!(profile_idc, 0..=3 | 31),
+        2 => matches!(profile_idc, 0..=2 | 4 | 31),
+        _ => true,
+    }
+}
+
+fn parse_validated_msdo(envelope: ObuEnvelope<'_>) -> Result<MultistreamDecoderOperation> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    let msdo = parse_msdo(&mut reader)
+        .map_err(|error| malformed(envelope.offset, "5.6", format!("invalid MSDO: {error}")))?;
+    finish_obu_payload(
+        &mut reader,
+        envelope.payload,
+        envelope.header.obu_type.is_extensible_obu(),
+    )
+    .map_err(|error| {
+        malformed(
+            envelope.offset,
+            "5.6",
+            format!("MSDO payload tail invalid: {error}"),
+        )
+    })?;
+    if msdo.num_streams_minus_2 > 2 {
+        return Err(malformed(
+            envelope.offset,
+            "6.6",
+            format!(
+                "OBU_MSDO num_streams_minus_2 {} exceeds maximum 2",
+                msdo.num_streams_minus_2
+            ),
+        ));
+    }
+    if msdo.multistream_profile_idc.is_reserved() {
+        return Err(malformed(
+            envelope.offset,
+            "A.2",
+            format!(
+                "OBU_MSDO uses reserved multistream_profile_idc {}",
+                msdo.multistream_profile_idc.get()
+            ),
+        ));
+    }
+    if !msdo.multistream_even_allocation_flag
+        && msdo
+            .multistream_large_picture_idc
+            .is_none_or(|idx| u32::from(idx) >= msdo.num_streams())
+    {
+        return Err(malformed(
+            envelope.offset,
+            "6.6",
+            "OBU_MSDO multistream_large_picture_idc exceeds declared stream count".to_owned(),
+        ));
+    }
+    for sub in msdo.sub_streams() {
+        if sub.sub_xlayer_id >= GLOBAL_XLAYER_ID.get() {
+            return Err(malformed(
+                envelope.offset,
+                "6.6",
+                format!(
+                    "OBU_MSDO sub_xlayer_id {} must be below GLOBAL_XLAYER_ID (31)",
+                    sub.sub_xlayer_id
+                ),
+            ));
+        }
+        let sub_profile = ProfileIdc::from_bits(sub.sub_stream_max_profile);
+        if sub_profile.is_reserved()
+            || sub.sub_stream_max_profile > msdo.multistream_profile_idc.get()
+        {
+            return Err(malformed(
+                envelope.offset,
+                "6.6",
+                format!(
+                    "OBU_MSDO sub_stream_max_profile {} is invalid for multistream_profile_idc {}",
+                    sub.sub_stream_max_profile,
+                    msdo.multistream_profile_idc.get()
+                ),
+            ));
+        }
+    }
+    Ok(msdo)
+}
+
+fn check_msdo_global_lcr_agreement(
+    msdo: &MultistreamDecoderOperation,
+    lcr: &LcrGlobalInfo,
+    offset: ByteOffset,
+) -> Result<()> {
+    if msdo.num_streams() != lcr.xlayer_map.count_ones() {
+        return Err(malformed(
+            offset,
+            "6.8.2",
+            format!(
+                "OBU_MSDO stream count {} disagrees with global LCR {} xlayer count {}",
+                msdo.num_streams(),
+                lcr.global_config_record_id,
+                lcr.xlayer_map.count_ones()
+            ),
+        ));
+    }
+    for sub in msdo.sub_streams() {
+        if (lcr.xlayer_map & (1u32 << u32::from(sub.sub_xlayer_id))) == 0 {
+            return Err(malformed(
+                offset,
+                "6.8.2",
+                format!(
+                    "OBU_MSDO sub_xlayer_id {} is absent from global LCR {} lcr_xlayer_map",
+                    sub.sub_xlayer_id, lcr.global_config_record_id
+                ),
+            ));
+        }
+    }
+    if msdo.multistream_doh_constraint_flag != lcr.doh_constraint_flag {
+        return Err(malformed(
+            offset,
+            "6.8.2",
+            "OBU_MSDO multistream_doh_constraint_flag disagrees with global LCR lcr_doh_constraint_flag".to_owned(),
+        ));
+    }
+    if let Some(agg) = lcr.aggregate_info {
+        if !config_idc_allows_profile(agg.config_idc, msdo.multistream_profile_idc.get()) {
+            return Err(malformed(
+                offset,
+                "6.8.2",
+                format!(
+                    "OBU_MSDO profile {} disagrees with global LCR lcr_config_idc {}",
+                    msdo.multistream_profile_idc.get(),
+                    agg.config_idc
+                ),
+            ));
+        }
+        if let Some(iop) = iop_of_profile(msdo.multistream_profile_idc.get())
+            && iop != agg.max_interop
+        {
+            return Err(malformed(
+                offset,
+                "6.8.2",
+                format!(
+                    "OBU_MSDO profile IOP {iop} disagrees with global LCR lcr_max_interop {}",
+                    agg.max_interop
+                ),
+            ));
+        }
+        if msdo.multistream_level_idx != agg.aggregate_level_idx
+            || (msdo.multistream_tier != 0) != agg.max_tier_flag
+        {
+            return Err(malformed(
+                offset,
+                "6.8.2",
+                "OBU_MSDO aggregate level or tier disagrees with global LCR".to_owned(),
+            ));
+        }
+    }
+    if lcr.seq_ptl_info_present {
+        for sub in msdo.sub_streams() {
+            let Some(ptl) = lcr
+                .seq_ptl_infos
+                .iter()
+                .find(|entry| entry.xlayer_id == sub.sub_xlayer_id)
+            else {
+                return Err(malformed(
+                    offset,
+                    "6.8.2",
+                    format!(
+                        "global LCR missing PTL info for MSDO sub_xlayer_id {}",
+                        sub.sub_xlayer_id
+                    ),
+                ));
+            };
+            if sub.sub_stream_max_profile != ptl.seq_profile_idc.get()
+                || sub.sub_stream_max_level != ptl.max_level_idx
+                || (sub.sub_stream_max_tier != 0) != ptl.tier_flag
+            {
+                return Err(malformed(
+                    offset,
+                    "6.8.2",
+                    format!(
+                        "OBU_MSDO sub-stream PTL for xlayer {} disagrees with global LCR",
+                        sub.sub_xlayer_id
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) struct XLayerState {
@@ -361,6 +687,7 @@ pub(super) struct XLayerTable {
     first: Option<XLayerState>,
     rest: Vec<XLayerState>,
     global: GlobalHlsState,
+    pending_cmvs_flushed: Vec<usize>,
 }
 
 impl XLayerTable {
@@ -369,7 +696,12 @@ impl XLayerTable {
             first: None,
             rest: Vec::new(),
             global: GlobalHlsState::default(),
+            pending_cmvs_flushed: Vec::new(),
         }
+    }
+
+    pub(super) fn take_pending_cmvs_flushed(&mut self) -> Vec<usize> {
+        core::mem::take(&mut self.pending_cmvs_flushed)
     }
 
     fn iter(&self) -> impl Iterator<Item = &XLayerState> {
@@ -450,7 +782,11 @@ impl XLayerTable {
         &mut self,
         obus: &[ObuEnvelope<'_>],
         skipped_tu: bool,
-    ) -> Result<()> {
+        tu_has_rap: bool,
+        tu_has_clk: bool,
+    ) -> Result<bool> {
+        let mut cmvs_reset = false;
+        let has_layers = self.first.is_some();
         for envelope in obus {
             if !envelope.header.extended_layer_id.is_global() {
                 continue;
@@ -462,31 +798,96 @@ impl XLayerTable {
                         layer.on_temporal_delimiter(skipped_tu);
                     }
                 }
+                ObuType::Msdo => {
+                    if self.global.tu_saw_msdo {
+                        return Err(malformed(
+                            envelope.offset,
+                            "7.3.7",
+                            "multiple OBU_MSDO in one temporal unit".to_owned(),
+                        ));
+                    }
+                    if self.global.tu_saw_non_msdo_prefix || self.global.last_celu_xlayer.is_some()
+                    {
+                        return Err(malformed(
+                            envelope.offset,
+                            "7.3.7",
+                            "OBU_MSDO must precede other global prefix OBUs and coded extended layer units"
+                                .to_owned(),
+                        ));
+                    }
+                    let msdo = parse_validated_msdo(*envelope)?;
+                    let next_active = ActiveMsdo::from_validated(msdo, envelope.payload);
+                    let mut triggered_reset = false;
+                    if let Some(prev) = &self.global.active_msdo {
+                        if !tu_has_rap && next_active.payload != prev.payload {
+                            return Err(malformed(
+                                envelope.offset,
+                                "7.3.8.2",
+                                "non-RAP OBU_MSDO differs from previous OBU_MSDO".to_owned(),
+                            ));
+                        }
+                        if next_active.key_fields != prev.key_fields {
+                            if !tu_has_clk && has_layers {
+                                return Err(malformed(
+                                    envelope.offset,
+                                    "7.3.2",
+                                    "OBU_MSDO parameters cannot change without an OBU_CLOSED_LOOP_KEY"
+                                        .to_owned(),
+                                ));
+                            }
+                            triggered_reset = has_layers;
+                        }
+                    }
+                    if !triggered_reset {
+                        for (id, slot) in self.global.activated_global_lcrs.iter().enumerate() {
+                            if slot.is_some()
+                                && let Some((_, info)) = self
+                                    .global
+                                    .global_lcrs
+                                    .get(id)
+                                    .and_then(|entry| entry.as_ref())
+                            {
+                                check_msdo_global_lcr_agreement(&msdo, info, envelope.offset)?;
+                            }
+                        }
+                    }
+                    self.global.tu_saw_msdo = true;
+                    if triggered_reset || self.global.cmvs_start_tu_index.is_none() {
+                        self.global.cmvs_start_tu_index = Some(self.global.tu_index);
+                    }
+                    if triggered_reset {
+                        self.global.activated_global_lcrs = [None; 8];
+                        cmvs_reset = true;
+                    }
+                    self.global.active_msdo = Some(next_active);
+                }
                 ObuType::LayerConfigurationRecord => {
+                    self.global.tu_saw_non_msdo_prefix = true;
                     if let LayerConfigurationRecord::Global(info) = parse_validated_lcr(*envelope)?
                     {
-                        if let Some(slot) = self
-                            .global
-                            .global_lcr_xlayers
-                            .get_mut(usize::from(info.global_config_record_id))
-                        {
-                            *slot = Some(info.xlayer_map);
+                        let idx = usize::from(info.global_config_record_id);
+                        let xlayer_map = info.xlayer_map;
+                        if let Some(slot) = self.global.global_lcrs.get_mut(idx) {
+                            *slot = Some((self.global.tu_index, info));
                         }
                         for layer in self.iter_mut() {
                             layer
                                 .output_effect_state
-                                .apply_global_lcr(info.global_config_record_id, info.xlayer_map);
+                                .apply_global_lcr(idx as u8, xlayer_map);
                         }
                     }
                 }
                 ObuType::OperatingPointSet => {
+                    self.global.tu_saw_non_msdo_prefix = true;
                     let ops = parse_ops_obu(*envelope)?;
+                    validate_ops_semantics(&ops, envelope.offset)?;
                     self.global.record_ops(&ops);
                     for layer in self.iter_mut() {
                         layer.output_effect_state.apply_ops_record(&ops);
                     }
                 }
                 ObuType::MetadataShort | ObuType::MetadataGroup => {
+                    self.global.tu_saw_non_msdo_prefix = true;
                     parse_metadata_obu(*envelope, false, |action| {
                         self.global.record_metadata_action(&action);
                         for layer in self.iter_mut() {
@@ -496,6 +897,90 @@ impl XLayerTable {
                         }
                     })?;
                 }
+                _ => {}
+            }
+        }
+        Ok(cmvs_reset)
+    }
+
+    pub(super) fn flush_all_outputs_and_invalidate(&mut self) -> Vec<usize> {
+        let mut flushed = Vec::new();
+        for layer in self.iter_mut() {
+            flushed.extend(layer.scheduler.flush_all());
+            layer.reference.invalidate_all();
+        }
+        flushed
+    }
+
+    pub(super) fn should_skip_pre_rap_frame(
+        &self,
+        xlayer: ExtendedLayerId,
+        tu_has_rap: bool,
+    ) -> bool {
+        self.global.has_multistream_mode()
+            && self.global.xlayer_declared_in_multistream(xlayer)
+            && !self.contains(xlayer)
+            && (self.first.is_some() || tu_has_rap)
+    }
+
+    pub(super) fn note_celu_order(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        if let Some(prev) = self.global.last_celu_xlayer
+            && xlayer.get() < prev
+        {
+            return Err(malformed(
+                offset,
+                "7.3.7",
+                format!(
+                    "extended layer {} follows higher extended layer {} out of order",
+                    xlayer.get(),
+                    prev
+                ),
+            ));
+        }
+        self.global.last_celu_xlayer = Some(xlayer.get());
+        Ok(())
+    }
+
+    pub(super) fn check_tu_doh(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        order_hint_bits: u8,
+        order_hint: Option<u32>,
+        is_output: bool,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        if !self.global.any_doh_constrained() {
+            return Ok(());
+        }
+        match self.global.tu_order_hint_bits {
+            Some(prev_bits) if prev_bits != order_hint_bits => {
+                return Err(malformed(
+                    offset,
+                    "7.3.7",
+                    format!(
+                        "DOH constraint requires equal OrderHintBits in a temporal unit (got {order_hint_bits}, expected {prev_bits})"
+                    ),
+                ));
+            }
+            None => self.global.tu_order_hint_bits = Some(order_hint_bits),
+            _ => {}
+        }
+        if is_output && let Some(hint) = order_hint {
+            match self.global.tu_output_order_hint {
+                Some((prev_xlayer, prev_hint)) if prev_xlayer != xlayer && prev_hint != hint => {
+                    return Err(malformed(
+                        offset,
+                        "7.3.7",
+                        format!(
+                            "DOH constraint requires equal OrderHint across extended layers in a temporal unit (got {hint}, expected {prev_hint})"
+                        ),
+                    ));
+                }
+                None => self.global.tu_output_order_hint = Some((xlayer, hint)),
                 _ => {}
             }
         }
@@ -545,8 +1030,16 @@ impl XLayerTable {
         Ok(())
     }
 
-    pub(super) fn observe_skipped(&mut self, obus: &[ObuEnvelope<'_>]) -> Result<()> {
-        self.observe_global_obus(obus, true)?;
+    pub(super) fn observe_skipped(
+        &mut self,
+        obus: &[ObuEnvelope<'_>],
+        tu_has_rap: bool,
+        tu_has_clk: bool,
+    ) -> Result<()> {
+        if self.observe_global_obus(obus, true, tu_has_rap, tu_has_clk)? {
+            let flushed = self.flush_all_outputs_and_invalidate();
+            self.pending_cmvs_flushed.extend(flushed);
+        }
         self.observe_other_non_global_prefix(obus, GLOBAL_XLAYER_ID)
     }
 
@@ -586,10 +1079,10 @@ impl XLayerTable {
     }
 
     pub(super) fn validate_xlayer_lcr(
-        &self,
+        &mut self,
         xlayer: ExtendedLayerId,
         sequence: &SequenceHeader,
-        effects: &OutputEffectState,
+        has_local_lcr: bool,
         offset: ByteOffset,
         initializing_new_layer: bool,
     ) -> Result<()> {
@@ -598,48 +1091,145 @@ impl XLayerTable {
         } else {
             !self.rest.is_empty()
         };
+        let has_msdo = self.global.active_msdo.is_some();
+        if will_have_multiple && !has_msdo {
+            let requires_msdo = |seq: &SequenceHeader| {
+                matches!(
+                    seq.general.seq_profile_idc,
+                    ProfileIdc::Main420Ip0
+                        | ProfileIdc::Main420Ip1
+                        | ProfileIdc::Main422Ip1
+                        | ProfileIdc::Main444Ip1
+                )
+            };
+            if requires_msdo(sequence) || self.iter().any(|layer| requires_msdo(&layer.sequence)) {
+                return Err(malformed(
+                    offset,
+                    "A.2",
+                    "multi-extended-layer IOP 0/1 stream requires an active OBU_MSDO".to_owned(),
+                ));
+            }
+        }
+
+        if let Some(active) = &self.global.active_msdo {
+            let Some(&ceiling) = active.ceilings.get(&xlayer.get()) else {
+                return Err(malformed(
+                    offset,
+                    "6.6",
+                    format!(
+                        "extended layer {} is not listed in active OBU_MSDO sub_xlayer_id",
+                        xlayer.get()
+                    ),
+                ));
+            };
+            let seq_tier = u8::from(sequence.general.seq_tier == Tier::High);
+            if sequence.general.seq_profile_idc.get() > ceiling.profile
+                || sequence.general.seq_level_idx.get() > ceiling.level
+                || seq_tier > ceiling.tier
+            {
+                return Err(malformed(
+                    offset,
+                    "6.6",
+                    format!(
+                        "extended layer {} sequence PTL exceeds OBU_MSDO ceiling",
+                        xlayer.get()
+                    ),
+                ));
+            }
+            if !sequence.general.monotonic_output_order_flag
+                && !active.msdo.multistream_doh_constraint_flag
+            {
+                return Err(malformed(
+                    offset,
+                    "6.6",
+                    format!(
+                        "extended layer {} disables monotonic output order without multistream_doh_constraint_flag",
+                        xlayer.get()
+                    ),
+                ));
+            }
+        }
+
         let lcr_id = sequence.general.seq_lcr_id.get();
         if lcr_id != 0 {
             let in_global = self.global.global_lcr_has_xlayer(lcr_id, xlayer);
-            let has_global_record = self
-                .global
-                .global_lcr_xlayers
-                .get(usize::from(lcr_id))
-                .copied()
-                .flatten()
-                .is_some();
-            let in_local = !will_have_multiple && effects.has_local_lcr_id(lcr_id);
+            let has_global_record = self.global.global_lcr(lcr_id).is_some();
+            let allow_local = !will_have_multiple || has_msdo;
+            let in_local = allow_local && has_local_lcr;
             let deferred_annex_a = !will_have_multiple
+                && !has_msdo
                 && !has_global_record
                 && !in_local
                 && sequence.general.max_mlayer_id.get() > 0;
             if !in_global && !in_local && !deferred_annex_a {
-                return Err(DecodeError::MalformedSource {
-                    issue: DecodeSourceIssue::sequence_header_conformance(
-                        offset,
-                        "6.4.1",
-                        format!(
-                            "extended layer {} references global LCR {} which is missing or omits bit {}",
-                            xlayer.get(),
-                            lcr_id,
-                            xlayer.get()
-                        ),
-                    ),
-                });
-            }
-        } else if will_have_multiple {
-            return Err(DecodeError::MalformedSource {
-                issue: DecodeSourceIssue::sequence_header_conformance(
+                return Err(malformed(
                     offset,
                     "6.4.1",
                     format!(
-                        "extended layer {} requires seq_lcr_id != 0 in a multi-xlayer stream",
+                        "extended layer {} references global LCR {} which is missing or omits bit {}",
+                        xlayer.get(),
+                        lcr_id,
                         xlayer.get()
                     ),
+                ));
+            }
+            if !in_local && in_global {
+                if let Some((obs_tu, info)) = self.global.global_lcr(lcr_id) {
+                    if !sequence.general.monotonic_output_order_flag
+                        && !info.doh_constraint_flag
+                        && will_have_multiple
+                    {
+                        return Err(malformed(
+                            offset,
+                            "6.6",
+                            format!(
+                                "extended layer {} disables monotonic output order without lcr_doh_constraint_flag",
+                                xlayer.get()
+                            ),
+                        ));
+                    }
+                    if let Some(active) = &self.global.active_msdo
+                        && self
+                            .global
+                            .cmvs_start_tu_index
+                            .is_some_and(|start| obs_tu >= start)
+                    {
+                        check_msdo_global_lcr_agreement(&active.msdo, info, offset)?;
+                    }
+                }
+                if let Some(slot) = self
+                    .global
+                    .activated_global_lcrs
+                    .get_mut(usize::from(lcr_id))
+                {
+                    *slot = Some(self.global.tu_index);
+                }
+            }
+        } else if will_have_multiple && !has_msdo {
+            return Err(malformed(
+                offset,
+                "6.4.1",
+                format!(
+                    "extended layer {} requires seq_lcr_id != 0 in a multi-xlayer stream without OBU_MSDO",
+                    xlayer.get()
                 ),
-            });
+            ));
+        } else if has_msdo
+            && sequence.general.max_mlayer_id.get() > 0
+            && !has_local_lcr
+            && will_have_multiple
+        {
+            return Err(malformed(
+                offset,
+                "A.2",
+                format!(
+                    "extended layer {} with embedded layers requires an active local or global LCR",
+                    xlayer.get()
+                ),
+            ));
         }
-        if will_have_multiple && initializing_new_layer {
+
+        if will_have_multiple && initializing_new_layer && !has_msdo {
             for existing in self.iter() {
                 let existing_lcr_id = existing.sequence.general.seq_lcr_id.get();
                 if existing_lcr_id == 0
@@ -647,16 +1237,14 @@ impl XLayerTable {
                         .global
                         .global_lcr_has_xlayer(existing_lcr_id, existing.xlayer_id)
                 {
-                    return Err(DecodeError::MalformedSource {
-                        issue: DecodeSourceIssue::sequence_header_conformance(
-                            offset,
-                            "6.4.1",
-                            format!(
-                                "active extended layer {} must be declared in an active global LCR before another extended layer activates",
-                                existing.xlayer_id.get()
-                            ),
+                    return Err(malformed(
+                        offset,
+                        "6.4.1",
+                        format!(
+                            "active extended layer {} must be declared in an active global LCR before another extended layer activates",
+                            existing.xlayer_id.get()
                         ),
-                    });
+                    ));
                 }
             }
         }
