@@ -83,6 +83,7 @@ pub struct EncoderReferences {
     state: InterReferenceState<u16>,
     /// An open-loop key frame was stored and no regular frame after it yet.
     leading: bool,
+    backend: splot_core::simd::ResolvedBackend,
 }
 
 /// One coded frame: its filtered reconstruction, saved CDFs, motion field,
@@ -112,12 +113,15 @@ impl EncoderReferences {
         let buffer =
             RuntimeReferenceBuffer::new(usize::from(slots)).map_err(rule("reference buffer"))?;
         let state = settled_state(&buffer, &[])?;
+        let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
+            .map_err(|_| EncoderSyntaxError::Unsupported("SIMD backend"))?;
         Ok(Self {
             sequence: seq.clone(),
             buffer,
             frames: Vec::new(),
             state,
             leading: false,
+            backend,
         })
     }
 
@@ -271,13 +275,15 @@ impl EncoderReferences {
                 ByteOffset::new(0),
             )
             .map_err(rule("initial CDFs"))?,
-            temporal: encoder_temporal_context(
-                &self.sequence,
-                core,
-                &self.state,
-                super::intra::sequence_bit_depth(&self.sequence),
-            )
-            .map_err(rule("temporal motion field"))?,
+            temporal: self
+                .backend
+                .enter(EncoderTemporalScope {
+                    sequence: &self.sequence,
+                    core,
+                    reference: &self.state,
+                    bit_depth: super::intra::sequence_bit_depth(&self.sequence),
+                })
+                .map_err(rule("temporal motion field"))?,
         })
     }
 
@@ -1452,14 +1458,15 @@ impl IntraTileSyntax {
                 .reset_skip_contexts(&leaf.frontier, &mut self.coeff)
                 .map_err(rule("coefficient contexts"))?;
         }
-        let resolved = state
-            .tile
-            .publish(
-                &leaf.frontier,
-                planned.motion,
+        let resolved = self
+            .backend
+            .enter(InterPublishScope {
+                tile: &mut state.tile,
+                frontier: &leaf.frontier,
+                motion: planned.motion,
                 skip,
-                &mut self.recon.workspace,
-            )
+                workspace: &mut self.recon.workspace,
+            })
             .map_err(rule("motion resolution"))?;
         if resolved != planned.mvs {
             return Err(EncoderSyntaxError::Unsupported(
@@ -1807,6 +1814,50 @@ impl splot_core::simd::SimdScope<crate::Result<()>> for InterResidualScope<'_> {
             backend.narrow(),
             self.residual,
             self.use_intrabc,
+            self.workspace,
+        )
+    }
+}
+
+struct EncoderTemporalScope<'a> {
+    sequence: &'a SequenceHeader,
+    core: &'a FrameHeaderCore,
+    reference: &'a crate::prediction::inter::ReferenceMetadata,
+    bit_depth: BitDepth,
+}
+
+impl splot_core::simd::SimdScope<crate::Result<Option<Arc<TemporalMvContext>>>>
+    for EncoderTemporalScope<'_>
+{
+    fn run<B: splot_core::simd::SimdBackend>(
+        self,
+        backend: B,
+    ) -> crate::Result<Option<Arc<TemporalMvContext>>> {
+        encoder_temporal_context(
+            backend.narrow(),
+            self.sequence,
+            self.core,
+            self.reference,
+            self.bit_depth,
+        )
+    }
+}
+
+struct InterPublishScope<'a> {
+    tile: &'a mut EncoderInterTile,
+    frontier: &'a crate::bitstream::tile_payload::DecodeBlockFrontier,
+    motion: EncoderMotion,
+    skip: bool,
+    workspace: &'a mut splot_recon::CurrentFrameWorkspace<u16>,
+}
+
+impl splot_core::simd::SimdScope<crate::Result<[MotionVector; 2]>> for InterPublishScope<'_> {
+    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> crate::Result<[MotionVector; 2]> {
+        self.tile.publish(
+            backend.narrow(),
+            self.frontier,
+            self.motion,
+            self.skip,
             self.workspace,
         )
     }

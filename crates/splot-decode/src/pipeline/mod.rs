@@ -1610,6 +1610,7 @@ fn decode_frames_in_order(
                             });
                         let core = Arc::clone(&inter_core);
                         pools.push_tip::<T>(
+                            backend,
                             rows,
                             options,
                             frame_tasks::TipFrameInputs {

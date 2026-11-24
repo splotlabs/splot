@@ -3,6 +3,8 @@
 
 //! AV2 § 7.13.3.25 block adaptive weighted prediction.
 
+use fearless_simd::{prelude::*, u16x16};
+use splot_core::simd::SimdBackend;
 use splot_core::span::ByteOffset;
 use splot_recon::{
     CurrentFramePlane, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
@@ -11,7 +13,6 @@ use splot_recon::{
 use super::reference::ReferenceSamples;
 use super::{BawpSyntax, MotionVector, PlacedInterBlock};
 use crate::Result;
-use fearless_simd::{prelude::*, u16x16};
 
 const SHIFT: u32 = 8;
 
@@ -135,10 +136,11 @@ impl TemplatePairs {
     /// zeroed, `u16` lanes for the sample sums and `u32` lanes for the
     /// products.
     #[inline]
-    fn stats(&self) -> TemplateStats {
+    fn stats<B: SimdBackend>(&self, backend: B) -> TemplateStats {
         const LANE: [u16; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let (len, step) = self.up;
-        baseline_simd!(simd => {
+        let narrow = backend.narrow();
+        splot_core::with_simd!(narrow, simd => {
             let lane = u16x16::load_array(simd, LANE);
             let keep = lane.simd_lt(u16x16::splat(simd, len as u16))
                 & (lane & u16x16::splat(simd, step.wrapping_sub(1) as u16))
@@ -234,7 +236,8 @@ impl<'a, T: ReconSample> CurrentTemplate<'a, T> {
 /// the block from its first column, `left_ref(i)` the reference sample left
 /// of block row `i`.
 #[inline]
-fn collect_template_stats<T: ReconSample>(
+fn collect_template_stats<B: SimdBackend, T: ReconSample>(
+    backend: B,
     current: &CurrentTemplate<'_, T>,
     (width, height, num_up, num_left): (usize, usize, usize, usize),
     above_ref: &[T],
@@ -252,10 +255,11 @@ fn collect_template_stats<T: ReconSample>(
             Some((left_ref(i)?, current.left(i)?))
         })?;
     }
-    Some(pairs.stats())
+    Some(pairs.stats(backend))
 }
 
-pub(crate) fn apply_bawp<T: ReconSample>(
+pub(crate) fn apply_bawp<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: ReferenceSamples<'_, T>,
     placed: &PlacedInterBlock,
@@ -269,6 +273,7 @@ pub(crate) fn apply_bawp<T: ReconSample>(
             break;
         }
         luma_alpha = apply_bawp_plane(
+            backend,
             workspace,
             reference,
             placed,
@@ -284,7 +289,8 @@ pub(crate) fn apply_bawp<T: ReconSample>(
     Ok(())
 }
 
-pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
+pub(crate) fn apply_intrabc_morph_pred<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     target: PlaneRect,
     (avail_up, avail_left): (bool, bool),
@@ -346,19 +352,21 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     };
     let mut padded = [T::default(); 16];
     let above = reference.above_row(width, &mut padded).unwrap_or_default();
-    let Some(stats) = collect_template_stats(&current, dims, above, |i| reference.left(i)) else {
+    let Some(stats) = collect_template_stats(backend, &current, dims, above, |i| reference.left(i))
+    else {
         return Ok(());
     };
 
     let alpha = stats.implicit_alpha();
     let beta = stats.beta(alpha);
 
-    workspace.apply_bawp_rect(PlaneId::Y, target, alpha, beta)?;
+    workspace.apply_bawp_rect_with(backend, PlaneId::Y, target, alpha, beta)?;
     Ok(())
 }
 
 #[expect(clippy::too_many_arguments)]
-fn apply_bawp_plane<T: ReconSample>(
+fn apply_bawp_plane<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: ReferenceSamples<'_, T>,
     placed: &PlacedInterBlock,
@@ -449,7 +457,7 @@ fn apply_bawp_plane<T: ReconSample>(
         return Ok(luma_alpha);
     };
     let above_row = ref_samples.row(ref_y - 1).get(ref_x..).unwrap_or_default();
-    let Some(stats) = collect_template_stats(&current, dims, above_row, |i| {
+    let Some(stats) = collect_template_stats(backend, &current, dims, above_row, |i| {
         Some(ref_samples.sample(ref_y + i, ref_x - 1) as u16)
     }) else {
         return Ok(luma_alpha);
@@ -475,7 +483,8 @@ fn apply_bawp_plane<T: ReconSample>(
     };
     let beta = stats.beta(alpha);
 
-    workspace.apply_bawp_rect(
+    workspace.apply_bawp_rect_with(
+        backend,
         plane,
         PlaneRect::new(plane_x, plane_y, plane_w, plane_h)?,
         alpha,

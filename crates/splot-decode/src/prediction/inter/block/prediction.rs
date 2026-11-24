@@ -102,6 +102,7 @@ pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T
     let rect = placed.motion_compensation_rect();
     if let Some(prediction) = placed.block.interintra {
         super::predict_interintra_planes(
+            backend,
             interintra_scratch,
             workspace,
             placed,
@@ -120,6 +121,7 @@ pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T
     )?;
     if placed.block.bawp.enabled {
         super::super::bawp::apply_bawp(
+            backend,
             workspace,
             held.reference0_samples(),
             placed,
@@ -132,7 +134,8 @@ pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T
         for (prediction, samples) in interintra_scratch.planes() {
             let blend = match interintra {
                 InterIntraPrediction::SmoothMask { mode } => workspace
-                    .blend_smooth_interintra_rect(
+                    .blend_smooth_interintra_rect_with(
+                        backend,
                         prediction.plane,
                         prediction.x,
                         prediction.y,
@@ -141,7 +144,8 @@ pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T
                         samples,
                     ),
                 InterIntraPrediction::WedgeMask { wedge_index, .. } => workspace
-                    .blend_wedge_interintra_rect(
+                    .blend_wedge_interintra_rect_with(
+                        backend,
                         prediction.plane,
                         prediction.x,
                         prediction.y,

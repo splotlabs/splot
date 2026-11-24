@@ -7,11 +7,12 @@
 //!
 //! Feature tracking: `INFRA-DECODE-SERIAL-HOT-PATHS`.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, InterIntraMode, IntraCardinalDirection, IntraDcEdges,
     IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode, PlaneId as ReconPlaneId,
     ReconError, ReconSample, predict_intra_cardinal_directional_rect_into,
-    predict_intra_dc_rect_value, predict_intra_ibp_dc_rect_into,
+    predict_intra_dc_rect_value, predict_intra_ibp_dc_rect_into_with,
 };
 
 use super::super::{PlacedInterBlock, mc};
@@ -125,7 +126,9 @@ impl<T> InterIntraScratch<T> {
     }
 }
 
-pub(super) fn predict_interintra_planes<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn predict_interintra_planes<B: SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterIntraScratch<T>,
     workspace: &CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
@@ -189,7 +192,9 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
         match mode {
             InterIntraMode::Dc => {
                 if enable_ibp && !(w == 4 && h == 4) {
-                    predict_intra_ibp_dc_rect_into(bit_depth, size, dc_edges, samples, w)?;
+                    predict_intra_ibp_dc_rect_into_with(
+                        backend, bit_depth, size, dc_edges, samples, w,
+                    )?;
                 } else {
                     samples.fill(predict_intra_dc_rect_value(bit_depth, size, dc_edges)?);
                 }
@@ -236,6 +241,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                         block_decoded.count_bottom_left_avail(plane.index(), x4, y4, h4),
                     );
                 predict_intra_smooth_over_available_edges_into(
+                    backend,
                     workspace,
                     SmoothIntraPredictionRequest {
                         plane_id: plane,

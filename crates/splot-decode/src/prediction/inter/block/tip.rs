@@ -341,7 +341,8 @@ fn output_interpolation_filter(
     }
 }
 
-pub(super) fn prepare_motion_field(
+pub(super) fn prepare_motion_field<B: splot_core::simd::SimdBackend>(
+    backend: B,
     temporal: &mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,
@@ -364,7 +365,13 @@ pub(super) fn prepare_motion_field(
     let fill_holes = inter
         .allow_tip_hole_fill
         .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
-    temporal.prepare_tip(references, projection_step, tmvp_unit_size8, fill_holes)?;
+    temporal.prepare_tip(
+        backend,
+        references,
+        projection_step,
+        tmvp_unit_size8,
+        fill_holes,
+    )?;
     Ok(())
 }
 
@@ -820,7 +827,12 @@ const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
 
 const TIP_OUTPUT_BAND_LUMA_COLS: usize = 256;
 
-pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(in crate::prediction::inter) fn reconstruct_output<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     decode_scratch: &mut super::InterDecodeScratch<T>,
     mut recycled: splot_recon::FramePlaneSamples<T>,
     sequence: &SequenceHeader,
@@ -844,6 +856,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         )?,
     );
     let stages = TipOutputStages::init(
+        backend,
         &spares,
         Arc::clone(&progress),
         sequence,
@@ -904,7 +917,8 @@ impl<T: ReconSample> TipOutputStages<T> {
     /// # Errors
     /// Returns the header, projection or workspace diagnostic.
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn init(
+    pub(crate) fn init<B: splot_core::simd::SimdBackend>(
+        backend: B,
         spares: &TipSpares,
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
         sequence: &SequenceHeader,
@@ -984,6 +998,7 @@ impl<T: ReconSample> TipOutputStages<T> {
         } else {
             let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
             temporal.refresh_from_references(
+                backend,
                 (mi_rows, mi_cols),
                 current_order_hint,
                 config,
@@ -992,7 +1007,7 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &reference.ref_order_hint,
                 &ref_motion_fields,
             )?;
-            prepare_motion_field(&mut temporal, core, sb_h4, tip_pair)?;
+            prepare_motion_field(backend, &mut temporal, core, sb_h4, tip_pair)?;
             None
         };
         let global_mv = inter
@@ -1126,8 +1141,9 @@ impl<T: ReconSample> TipOutputStages<T> {
     ///
     /// # Errors
     /// Returns the projection's own diagnostic.
-    pub(crate) fn project(
+    pub(crate) fn project<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         index: usize,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,
@@ -1138,6 +1154,7 @@ impl<T: ReconSample> TipOutputStages<T> {
             .as_ref()
             .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
         super::tile::project_temporal_band(
+            backend,
             plan,
             &self.temporal,
             &reference.ref_motion_fields,

@@ -184,6 +184,7 @@ impl IntrabcReconCommand {
         }
         if let Some(mv) = prediction.morph_mv {
             crate::prediction::inter::bawp::apply_intrabc_morph_pred(
+                backend,
                 workspace,
                 prediction.luma_target,
                 prediction.morph_avail,

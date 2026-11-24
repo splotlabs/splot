@@ -167,7 +167,10 @@ fn restore_active_commit<T: ReconSample>(
     Ok(())
 }
 
-pub(in crate::prediction::inter::block) fn project_temporal_band(
+pub(in crate::prediction::inter::block) fn project_temporal_band<
+    B: splot_core::simd::SimdBackend,
+>(
+    backend: B,
     plan: &TemporalBandPlan,
     temporal: &TemporalMvContext,
     reference_fields: &[Option<MotionFieldHandle>],
@@ -185,7 +188,7 @@ pub(in crate::prediction::inter::block) fn project_temporal_band(
             );
         }
     }
-    plan.project(temporal, index, |slot, band| {
+    plan.project(backend, temporal, index, |slot, band| {
         reference_fields.get(slot)?.as_ref()?.band(band)
     })
 }
@@ -893,8 +896,13 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Projects temporal band `index`. A band reads only the same band of
     /// each reference field (§ 7.9.8), so it projects ahead of the resolve.
-    pub(crate) fn project(&self, index: usize) -> Result<()> {
+    pub(crate) fn project<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        index: usize,
+    ) -> Result<()> {
         project_temporal_band(
+            backend,
             &self.temporal_plan,
             &self.recon.temporal,
             &self.recon.reference.ref_motion_fields,
@@ -1896,7 +1904,9 @@ mod tests {
             ..
         } = temporal_projection_case()?;
 
-        let Err(error) = project_temporal_band(&plan, &temporal, &fields, 0) else {
+        let Err(error) = crate::test_support::with_auto_backend!(backend => {
+            project_temporal_band(backend, &plan, &temporal, &fields, 0)
+        }) else {
             return Err("pending publication must fail");
         };
 
@@ -1921,7 +1931,9 @@ mod tests {
         let handle = fields[0].as_ref().ok_or("reference handle")?;
         handle.fail();
 
-        let Err(error) = project_temporal_band(&plan, &temporal, &fields, 0) else {
+        let Err(error) = crate::test_support::with_auto_backend!(backend => {
+            project_temporal_band(backend, &plan, &temporal, &fields, 0)
+        }) else {
             return Err("failed publication must fail");
         };
 
@@ -1951,12 +1963,16 @@ mod tests {
         handle.fail();
 
         assert!(matches!(handle.band_publication(0), Some(Some(_))));
-        project_temporal_band(&plan, &temporal, &fields, 0)
-            .map_err(|_| "published band must project")?;
+        crate::test_support::with_auto_backend!(backend => {
+            project_temporal_band(backend, &plan, &temporal, &fields, 0)
+        })
+        .map_err(|_| "published band must project")?;
         let mut read_again = false;
-        plan.project(&temporal, 0, |_, _| {
-            read_again = true;
-            None
+        crate::test_support::with_auto_backend!(backend => {
+            plan.project(backend, &temporal, 0, |_, _| {
+                read_again = true;
+                None
+            })
         })
         .map_err(|_| "resuming resolution must reuse its projection")?;
         assert!(!read_again);

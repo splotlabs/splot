@@ -3,8 +3,6 @@
 
 use std::ops::Range;
 
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::Level;
 use fearless_simd::{
     Simd, i16x8, i32x4, i32x16, mask32x16, prelude::*, u8x16, u32x4, u32x16, u64x2,
 };
@@ -295,7 +293,9 @@ impl LaneGeometry {
 /// The trajectory flag admits extension from earlier scans. At the first
 /// scan of a fresh band each source slot is visited before it is recorded,
 /// and every end record made by this scan already has a source vector.
-pub(super) fn project_temporal_motion_field(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn project_temporal_motion_field<B: splot_core::simd::SimdBackend>(
+    backend: B,
     lanes: &mut ChunkLanes,
     prepared: &TemporalProjectionSource,
     source: &impl TemporalMotionRows,
@@ -322,20 +322,8 @@ pub(super) fn project_temporal_motion_field(
     };
     let refs = band.map_or(0, |band| band.reference_count);
     let rows = rows.start..rows.end.min(prepared.source_height8);
-    #[cfg(target_arch = "x86_64")]
-    if let Some(simd) = Level::baseline().as_avx2() {
-        let tables = TargetTables::new(simd, prepared, refs);
-        return project_rows(
-            (&tables, lanes),
-            prepared,
-            source,
-            rows,
-            geometry,
-            trajectories,
-            output,
-        );
-    }
-    crate::baseline_simd!(simd => {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
         let tables = TargetTables::new(simd, prepared, refs);
         project_rows((&tables, lanes), prepared, source, rows, geometry, trajectories, output);
     });
@@ -817,6 +805,8 @@ mod tests {
     };
     use super::*;
     use crate::prediction::inter::get_relative_dist;
+    #[cfg(target_arch = "x86_64")]
+    use fearless_simd::Level;
 
     #[test]
     fn lane_projection_matches_the_scalar_projection_for_every_saved_component() {
@@ -884,15 +874,18 @@ mod tests {
                 let mut output = ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap();
                 let mut trajectories =
                     TrajectoryState::new((mi_rows, mi_cols), 4, step, unit).unwrap();
-                project_temporal_motion_field(
-                    &mut ChunkLanes::default(),
-                    &prepared,
-                    &source,
-                    0..height8,
-                    (step, unit),
-                    Some((&mut trajectories.whole_band().unwrap(), history)),
-                    &mut output.bands(height8).next().unwrap(),
-                );
+                crate::test_support::with_auto_backend!(backend => {
+                    project_temporal_motion_field(
+                        backend,
+                        &mut ChunkLanes::default(),
+                        &prepared,
+                        &source,
+                        0..height8,
+                        (step, unit),
+                        Some((&mut trajectories.whole_band().unwrap(), history)),
+                        &mut output.bands(height8).next().unwrap(),
+                    );
+                });
                 (output, trajectories)
             };
             assert_eq!(project(false), project(true), "case {case}");
