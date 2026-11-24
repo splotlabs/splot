@@ -200,6 +200,15 @@ fn arbitrary_seq_view() -> impl Strategy<Value = CoreSeqView> {
                     monotonic_output_order_flag: flags[1],
                     single_picture_header_flag: flags[2],
                     max_mlayer_id,
+                    mlayer_dependency_map:
+                        crate::headers::sequence::MLayerDependencyMap::default_for(
+                            crate::types::EmbeddedLayerId::from_bits(max_mlayer_id),
+                        ),
+                    tlayer_dependency_map:
+                        crate::headers::sequence::TLayerDependencyMap::default_for(
+                            crate::types::TemporalLayerId::BASE,
+                            crate::types::EmbeddedLayerId::from_bits(max_mlayer_id),
+                        ),
                     frame_width_bits: dim_bits.0,
                     frame_height_bits: dim_bits.1,
                     max_frame_width: max_dims.0,
@@ -289,6 +298,7 @@ proptest! {
         let mut reader = BitReader::new(&data, ByteOffset::new(0));
         let input = FrameHeaderParseInput {
             obu_type,
+            obu_tlayer_id: crate::types::TemporalLayerId::BASE,
             first_picture_in_tu: first_picture,
             active_sequence: None,
             mfh_record: None,

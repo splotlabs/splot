@@ -214,7 +214,7 @@ impl OutputEffectState {
                 ObuType::OperatingPointSet => self.observe_ops(*envelope)?,
                 ObuType::MultiFrameHeader => self.observe_mfh(*envelope, sequence)?,
                 ObuType::BufferRemovalTiming => self.observe_brt(*envelope)?,
-                ObuType::QuantizationMatrix => self.observe_qm(*envelope)?,
+                ObuType::QuantizationMatrix => self.observe_qm(*envelope, sequence)?,
                 ObuType::ContentInterpretation => self.observe_ci(*envelope)?,
                 ObuType::MetadataShort | ObuType::MetadataGroup => {
                     self.observe_metadata(*envelope, false)?;
@@ -376,6 +376,20 @@ impl OutputEffectState {
     }
 
     fn observe_mfh(&mut self, envelope: ObuEnvelope<'_>, sequence: &SequenceHeader) -> Result<()> {
+        if envelope.header.temporal_layer_id > sequence.general.max_tlayer_id {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    None,
+                    "6.2.2",
+                    format!(
+                        "OBU temporal_layer_id {} exceeds max_tlayer_id {}",
+                        envelope.header.temporal_layer_id.get(),
+                        sequence.general.max_tlayer_id.get()
+                    ),
+                ),
+            });
+        }
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let mfh = parse_multi_frame_header(&mut reader).map_err(|_| {
             unsupported_feature_at(
@@ -437,7 +451,21 @@ impl OutputEffectState {
         Ok(())
     }
 
-    fn observe_qm(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
+    fn observe_qm(&mut self, envelope: ObuEnvelope<'_>, sequence: &SequenceHeader) -> Result<()> {
+        if envelope.header.temporal_layer_id > sequence.general.max_tlayer_id {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    None,
+                    "6.2.2",
+                    format!(
+                        "quantizer matrix temporal_layer_id {} exceeds max_tlayer_id {}",
+                        envelope.header.temporal_layer_id.get(),
+                        sequence.general.max_tlayer_id.get()
+                    ),
+                ),
+            });
+        }
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let qm = parse_quantizer_matrix(&mut reader).map_err(|_| {
             unsupported_feature_at(
@@ -758,9 +786,9 @@ impl OutputEffectState {
                         "6.17.6.2",
                     ));
                 }
-                if let (Some(mlayer), Some(tlayer)) = (slot.mlayer_id, slot.tlayer_id)
+                if let (Some(_mlayer), Some(tlayer)) = (slot.mlayer_id, slot.tlayer_id)
                     && !sequence.general.tlayer_dependency_map.depends_on(
-                        EmbeddedLayerId::from_bits(mlayer),
+                        envelope.header.embedded_layer_id,
                         envelope.header.temporal_layer_id,
                         splot_core::types::TemporalLayerId::from_bits(tlayer),
                     )
@@ -1252,6 +1280,97 @@ mod tests {
             result,
             Err(crate::DecodeError::UnsupportedFeature { unsupported })
                 if unsupported.reason() == "content_interpretation_changed_in_cvs"
+        ));
+    }
+
+    fn sparse_tlayer_sequence() -> SequenceHeader {
+        const SPARSE_OBU: &[u8] = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-tlayer4-sparse-dependencies.obu"
+        );
+        let obus = splot_core::annexb::parse_annex_b_obus(SPARSE_OBU).unwrap();
+        let seq_obu = obus
+            .iter()
+            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader)
+            .unwrap();
+        let mut reader = BitReader::new(seq_obu.payload, seq_obu.payload_offset());
+        splot_core::headers::sequence::parse_sequence_header(&mut reader).unwrap()
+    }
+
+    #[test]
+    fn resolve_mfh_record_rejects_disallowed_temporal_layer_dependency() {
+        let Some((mut frame_envelope, _base_seq, _core)) = olk_frame() else {
+            return;
+        };
+        let sequence = sparse_tlayer_sequence();
+        let mfh_id = MfhId::from_raw(1);
+        let mut state = OutputEffectState::new();
+        state.mfh[1] = Some(MultiFrameHeaderRecord {
+            mfh_id,
+            mfh_seq_header_id: sequence.general.seq_header_id,
+            mfh_tlayer_id: splot_core::types::TemporalLayerId::from_bits(1),
+            mfh_mlayer_id: EmbeddedLayerId::from_bits(0),
+            mfh_frame_size: None,
+            mfh_seg_info_present_flag: false,
+            mfh_ext_seg_flag: None,
+            mfh_allow_seg_info_change: None,
+            mfh_segment_info: None,
+            mfh_deblocking_filter_update: false,
+            mfh_apply_deblocking_filter: [false; 4],
+            offset: ByteOffset::new(0),
+        });
+
+        frame_envelope.header.temporal_layer_id = splot_core::types::TemporalLayerId::from_bits(1);
+        assert!(
+            state
+                .resolve_mfh_record(frame_envelope, &sequence, mfh_id)
+                .is_ok()
+        );
+
+        frame_envelope.header.temporal_layer_id = splot_core::types::TemporalLayerId::from_bits(2);
+        let result = state.resolve_mfh_record(frame_envelope, &sequence, mfh_id);
+        assert!(matches!(
+            result,
+            Err(crate::DecodeError::UnsupportedFeature { unsupported })
+                if unsupported.reason() == "multi_frame_header_layer_dependency"
+        ));
+    }
+
+    #[test]
+    fn validate_frame_qm_rejects_disallowed_temporal_layer_dependency() {
+        let Some((mut frame_envelope, _base_seq, mut core)) = olk_frame() else {
+            return;
+        };
+        let sequence = sparse_tlayer_sequence();
+        let mut state = OutputEffectState::new();
+        state.qm[2] = Some(QmSlot {
+            mlayer_id: Some(0),
+            tlayer_id: Some(1),
+            num_planes: 3,
+            user: None,
+        });
+        let setup = core
+            .setup_qm_params
+            .as_mut()
+            .expect("key frame core carries setup_qm_params");
+        setup.using_qmatrix = true;
+        setup.pic_qm_num_minus_1 = 0;
+        setup.levels[0].qm_y = 2;
+        setup.levels[0].qm_u = 2;
+        setup.levels[0].qm_v = 2;
+
+        frame_envelope.header.temporal_layer_id = splot_core::types::TemporalLayerId::from_bits(1);
+        assert!(
+            state
+                .validate_frame_qm(frame_envelope, &core, &sequence)
+                .is_ok()
+        );
+
+        frame_envelope.header.temporal_layer_id = splot_core::types::TemporalLayerId::from_bits(2);
+        let result = state.validate_frame_qm(frame_envelope, &core, &sequence);
+        assert!(matches!(
+            result,
+            Err(crate::DecodeError::UnsupportedFeature { unsupported })
+                if unsupported.reason() == "quantizer_matrix_tlayer_dependency"
         ));
     }
 }

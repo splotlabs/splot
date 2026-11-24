@@ -116,6 +116,7 @@ fn headers(unit: &[u8]) -> (SequenceHeader, FrameHeaderCore) {
         &mut reader,
         &FrameHeaderParseInput {
             obu_type: ObuType::ClosedLoopKey,
+            obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
             first_picture_in_tu: true,
             active_sequence: Some(&seq),
             mfh_record: None,

@@ -24,9 +24,9 @@ use crate::headers::frame::get_ref_frames::{
     get_ref_frames, get_relative_dist,
 };
 use crate::headers::frame::size::{FrameSize, ceil_log2};
-use crate::headers::sequence::SuperblockSize;
+use crate::headers::sequence::{MLayerDependencyMap, SuperblockSize, TLayerDependencyMap};
 use crate::syntax::{SyntaxObserver, SyntaxReader};
-use crate::types::ObuType;
+use crate::types::{EmbeddedLayerId, ObuType, TemporalLayerId};
 
 use super::FrameReferenceStateView;
 use super::info::FrameType;
@@ -346,6 +346,10 @@ pub(crate) struct InterSeqView {
     pub enable_opfl_refine: u8,
     /// `max_mlayer_id` (§ 5.4.1): selects the RAS `refresh_frame_flags` derivation arm.
     pub max_mlayer_id: u8,
+    /// `MLayerDependencyMap` (§ 5.4.1).
+    pub mlayer_dependency_map: MLayerDependencyMap,
+    /// `TLayerDependencyMap` (§ 5.4.1).
+    pub tlayer_dependency_map: TLayerDependencyMap,
     /// `seq_force_screen_content_tools` (§ 5.4.7).
     pub seq_force_screen_content_tools: u8,
     /// `seq_force_integer_mv` (§ 5.4.7).
@@ -366,6 +370,8 @@ pub(crate) struct InterSeqView {
 pub(crate) struct InterFrameContext {
     /// The OBU type (selects TIP / switch / RAS arms via `is_tip_frame()` etc.).
     pub obu_type: ObuType,
+    /// `obu_tlayer_id` of the current frame OBU.
+    pub obu_tlayer_id: TemporalLayerId,
     /// The derived `FrameType`.
     pub frame_type: FrameType,
     /// `IsBridge`.
@@ -1059,11 +1065,23 @@ fn derive_implicit_ref_map(
     let allowed_frames = ctx.ras_long_term_ref_mask.unwrap_or(u32::MAX)
         & reference_state.allowed_frames.unwrap_or(u32::MAX);
 
+    let ref_tlayers = reference_state.ref_tlayer_id;
     let valid_count = ref_valid
         .iter()
         .enumerate()
         .take(num_ref_frames)
-        .filter(|&(i, v)| *v && ((allowed_frames >> i) & 1) != 0)
+        .filter(|&(i, v)| {
+            *v && ((allowed_frames >> i) & 1) != 0
+                && ref_tlayers.is_none_or(|layers| {
+                    layers.get(i).copied().is_some_and(|ref_tlayer| {
+                        seq.tlayer_dependency_map.depends_on(
+                            EmbeddedLayerId::from_bits(0),
+                            ctx.obu_tlayer_id,
+                            TemporalLayerId::from_bits(ref_tlayer),
+                        )
+                    })
+                })
+        })
         .count();
     let current_order_hint = if valid_count <= 1 {
         ctx.order_hint.unwrap_or(0)
@@ -1111,6 +1129,7 @@ fn derive_implicit_ref_map(
             .ref_counter
             .and_then(|counters| counters.get(i).copied())
             .unwrap_or(i as u32);
+        slot.tlayer_id = ref_tlayers.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.width = ref_w.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.height = ref_h.and_then(|s| s.get(i).copied()).unwrap_or(0);
         slot.base_q_idx = ref_base_q_idx.and_then(|s| s.get(i).copied()).unwrap_or(0);
@@ -1123,13 +1142,14 @@ fn derive_implicit_ref_map(
         slots,
         order_hint: i32::try_from(current_order_hint).unwrap_or(i32::MAX),
         obu_mlayer_id: 0,
-        obu_tlayer_id: 0,
+        obu_tlayer_id: ctx.obu_tlayer_id.get(),
         allowed_frames: allowed_frames as i32,
         is_bridge: false,
         bridge_frame_ref_idx: 0,
         frame_width,
         frame_height,
-        layer_dependency: |_frame_mlayer, _frame_tlayer, _ref_mlayer, _ref_tlayer| true,
+        mlayer_dependency_map: Some(&seq.mlayer_dependency_map),
+        tlayer_dependency_map: Some(&seq.tlayer_dependency_map),
     };
     Some(get_ref_frames(&input, check_res))
 }

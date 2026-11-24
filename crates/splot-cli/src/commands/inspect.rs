@@ -623,6 +623,7 @@ fn parse_inspect_core_and_structure(
     }
     let input = FrameHeaderParseInput {
         obu_type,
+        obu_tlayer_id: obu.header.temporal_layer_id,
         first_picture_in_tu: false,
         active_sequence,
         mfh_record,

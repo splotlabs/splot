@@ -2862,3 +2862,18 @@ path = "vectors/valid/syn-5frame-xlayer1-only-176x144.ivf"
 description = """
 Five-frame 176x144 8-bit 4:2:0 stream in which every OBU except the temporal delimiters is tagged with obu_xlayer_id 1 (hand-retagged from an AVM stream; the original encoder command was not recorded). avmdec decodes it. Decodes cleanly in avmdec (5 frames, 190,080 bytes), raw md5 b6111c9fcabf624bc7f900f53b3fb511; validates clean. Produced and verified with AVM revision 1cfda4fa4879ef2da411b02fe2f51597daab3451 (local build; decoder-oracle.toml pins 457cd58681a747465661baccb1f32095bc5b7774, which was not available locally)."""
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer2-dependent-8bit.ivf"
+description = "Four-frame 128x64 8-bit 4:2:0 AVM-encoded stream with two temporal layers (max_tlayer_id=1, alternating TL0 and TL1) and two tile columns / two tile groups per frame so even TL1 inter frames carry continuation tile groups. Decodes identically to AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) for both the complete 4-frame output (49,152 bytes, SHA-256 03f7c2f971bce618c9952033b0c3221b3a79ea81f332c13e0b85cc1d55390dfb) and temporal selection subsets; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer2-dependent-10bit.ivf"
+description = "Four-frame 64x64 10-bit 4:2:0 AVM-encoded stream with two temporal layers (max_tlayer_id=1, alternating TL0 and TL1) exercising 10-bit inter prediction from base-layer references across TL0 and TL1. Decodes identically to AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) across full 4-frame output (49,152 bytes, SHA-256 2dba95f537ff163df9ff77be59f12418e14dbaa338a86a3e47f57ef8a99cb6ec) and TL0/TL1 selection modes; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer4-sparse-dependencies.obu"
+description = "Five-frame 64x64 8-bit 4:2:0 Annex B stream built from a 4-temporal-layer AVM encode (max_tlayer_id=3, tlayer_id sequence [0, 1, 2, 3, 0] with TL1/TL3 non-updating references) whose SequenceHeader OBU sets tlayer_dependency_present_flag=1 with sparse TLayerDependencyMap (TL1->{0,1}, TL2->{0,2}, TL3->{0,2,3}, excluding TL1 from TL2 and TL3 dependencies). Decodes identically to AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) across full 5-frame output (30,720 bytes, SHA-256 7ca2a0172c7086eafec8de7ead173c0ee1706267eeef9211331a0c8e0c7d99cf) and dependency-closed selection modes; validates clean."
+expect = "clean"

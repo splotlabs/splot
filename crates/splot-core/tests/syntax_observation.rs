@@ -258,6 +258,7 @@ fn sequence_and_frame_headers_observe_full_syntax_and_inferred_fields() {
     let mut fh_rec = SyntaxRecorder::with_default_limits();
     let input = FrameHeaderParseInput {
         obu_type: ObuType::ClosedLoopKey,
+        obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: Some(&parsed_seq),
         mfh_record: None,

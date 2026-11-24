@@ -14,7 +14,7 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::tile::InlineVec;
-use splot_core::types::{EmbeddedLayerId, ObuType};
+use splot_core::types::{EmbeddedLayerId, ObuType, TemporalLayerId};
 use splot_recon::{DecodedFrameInfo, ReconSample, ReferenceFrameStore, ReferenceSlot};
 use std::sync::Arc;
 
@@ -49,6 +49,7 @@ struct Slot {
     frame_index: Option<usize>,
     long_term_id: Option<u32>,
     embedded_layer_id: EmbeddedLayerId,
+    temporal_layer_id: TemporalLayerId,
     output_done: bool,
 }
 
@@ -74,8 +75,13 @@ impl Slot {
         frame_index: None,
         long_term_id: None,
         embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        temporal_layer_id: TemporalLayerId::BASE,
         output_done: false,
     };
+
+    pub(crate) const fn temporal_layer_id(&self) -> TemporalLayerId {
+        self.temporal_layer_id
+    }
 
     fn refresh(
         &mut self,
@@ -105,6 +111,7 @@ impl Slot {
             frame_index: Some(frame_index),
             long_term_id: update.long_term_id,
             embedded_layer_id: update.embedded_layer_id,
+            temporal_layer_id: update.temporal_layer_id,
             output_done: false,
         };
     }
@@ -132,6 +139,7 @@ pub(crate) struct FrameRefUpdate<'a> {
     pub(crate) lr_banks: [Option<&'a WienerNsFrameFilterBank>; 3],
     pub(crate) long_term_id: Option<u32>,
     pub(crate) embedded_layer_id: EmbeddedLayerId,
+    pub(crate) temporal_layer_id: TemporalLayerId,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -497,6 +505,7 @@ impl ReferenceMetadata {
         self.ref_is_inter.push(slot.is_inter);
         self.ref_is_intra_frame.push(slot.is_intra_frame);
         self.ref_long_term_id.push(slot.long_term_id);
+        self.ref_tlayer_id.push(slot.temporal_layer_id().get());
         self.ref_num_total_refs.push(slot.num_total_refs);
         self.saved_global_motion_order_hints
             .push(slot.saved_order_hints);

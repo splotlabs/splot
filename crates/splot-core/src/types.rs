@@ -13,6 +13,9 @@ pub const GLOBAL_XLAYER_ID: ExtendedLayerId = ExtendedLayerId::from_bits(31);
 pub struct TemporalLayerId(u8);
 
 impl TemporalLayerId {
+    /// Temporal layer id 0 (the base temporal layer).
+    pub const BASE: Self = Self(0);
+
     /// Creates a temporal layer id from a value already known to fit the 2-bit
     /// `obu_tlayer_id` field (for example, just read from the bitstream).
     #[must_use]

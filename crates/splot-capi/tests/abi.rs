@@ -83,7 +83,9 @@ fn pictures(ivf: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> 
         n_threads: 0,
         max_frame_delay: 0,
         skip_film_grain: 1,
-        reserved: [1; 31],
+        temporal_layer: 1,
+        temporal_output_mask: 1,
+        reserved: [1; 29],
     };
     let mut decoder = ptr::null_mut();
     unsafe {
@@ -200,6 +202,9 @@ fn the_new_fields_keep_the_struct_layouts() {
     use core::mem::offset_of;
     assert_eq!(size_of::<SplotSettings>(), 40);
     assert_eq!(offset_of!(SplotSettings, skip_film_grain), 8);
+    assert_eq!(offset_of!(SplotSettings, temporal_layer), 9);
+    assert_eq!(offset_of!(SplotSettings, temporal_output_mask), 10);
+    assert_eq!(offset_of!(SplotSettings, reserved), 11);
     assert_eq!(
         offset_of!(SplotPicture, internal),
         offset_of!(SplotPicture, has_film_grain) + 4 * size_of::<usize>()
@@ -207,6 +212,10 @@ fn the_new_fields_keep_the_struct_layouts() {
     assert_eq!(
         offset_of!(SplotPicture, frame_type),
         offset_of!(SplotPicture, has_film_grain) + 1
+    );
+    assert_eq!(
+        offset_of!(SplotPicture, temporal_layer_id),
+        offset_of!(SplotPicture, has_film_grain) + 2
     );
 }
 
@@ -253,11 +262,19 @@ fn null_and_bad_arguments_are_refused() {
     let mut decoder = ptr::null_mut();
     unsafe {
         assert_eq!(splot_open(&raw mut decoder, ptr::null()), SPLOT_EINVAL);
-        for (skip_film_grain, reserved) in [(0, [1; 31]), (2, [0; 31])] {
+        for (skip_film_grain, temporal_layer, temporal_output_mask, reserved) in [
+            (0, 0, 0, [1; 29]),
+            (2, 0, 0, [0; 29]),
+            (0, 5, 0, [0; 29]),
+            (0, 0, 0x10, [0; 29]),
+            (0, 1, 0x01, [0; 29]),
+        ] {
             let settings = SplotSettings {
                 n_threads: 1,
                 max_frame_delay: 1,
                 skip_film_grain,
+                temporal_layer,
+                temporal_output_mask,
                 reserved,
             };
             assert_eq!(
@@ -317,5 +334,79 @@ fn a_decode_error_ends_the_session() {
         assert_eq!(splot_get_picture(decoder, &raw mut picture), SPLOT_EDECODE);
         assert_eq!(splot_get_picture(decoder, &raw mut picture), SPLOT_ESTATE);
         splot_close(&raw mut decoder);
+    }
+}
+
+#[test]
+fn temporal_layer_and_output_mask_match_batch_decoder_and_report_layer_ids() {
+    const DEP_8BIT: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-tlayer2-dependent-8bit.ivf");
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+
+    for (configure, selection, expected_tlayers) in [
+        (
+            (|settings: &mut SplotSettings| {
+                settings.temporal_layer = 1;
+            }) as fn(&mut SplotSettings),
+            splot_decode::TemporalLayerSelection::BASE_ONLY,
+            [0u8, 0u8],
+        ),
+        (
+            (|settings: &mut SplotSettings| {
+                settings.temporal_output_mask = 2;
+            }) as fn(&mut SplotSettings),
+            splot_decode::TemporalLayerSelection::OutputMask(2),
+            [1u8, 1u8],
+        ),
+    ] {
+        let mut settings = core::mem::MaybeUninit::<SplotSettings>::uninit();
+        let mut decoder = ptr::null_mut();
+        let mut raw = Vec::new();
+        let mut seen_tlayers = Vec::new();
+        unsafe {
+            splot_default_settings(settings.as_mut_ptr());
+            let mut settings = settings.assume_init();
+            settings.n_threads = 1;
+            configure(&mut settings);
+            assert_eq!(splot_open(&raw mut decoder, &raw const settings), SPLOT_OK);
+
+            let mut take = |decoder: *mut SplotDecoder| loop {
+                let mut picture = core::mem::zeroed::<SplotPicture>();
+                match splot_get_picture(decoder, &raw mut picture) {
+                    SPLOT_OK => {
+                        append(&picture, &mut raw);
+                        seen_tlayers.push(picture.temporal_layer_id);
+                        splot_picture_unref(&raw mut picture);
+                    }
+                    SPLOT_EAGAIN | SPLOT_EOF => break,
+                    error => panic!("splot_get_picture failed: {error}"),
+                }
+            };
+
+            for unit in units(DEP_8BIT) {
+                loop {
+                    match splot_send_data(decoder, unit.as_ptr(), unit.len(), ptr::null()) {
+                        SPLOT_OK => break,
+                        SPLOT_EAGAIN => take(decoder),
+                        error => panic!("splot_send_data failed: {error}"),
+                    }
+                }
+                take(decoder);
+            }
+            splot_drain(decoder);
+            take(decoder);
+            splot_close(&raw mut decoder);
+        }
+
+        assert_eq!(seen_tlayers, expected_tlayers);
+        let mut expected = Vec::new();
+        context
+            .decode_raw_bytes(
+                DEP_8BIT,
+                DecodeOptions::default().with_temporal_layer_selection(selection),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(raw, expected);
     }
 }

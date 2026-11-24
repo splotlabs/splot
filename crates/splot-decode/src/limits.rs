@@ -9,6 +9,8 @@ use core::{fmt, num::NonZeroU64};
 
 use splot_recon::Y4mFrameRate;
 
+use crate::TemporalLayerSelection;
+
 const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
 
 macro_rules! decode_limit_accessors {
@@ -38,6 +40,7 @@ pub struct DecodeOptions {
     output_frame_limit: Option<NonZeroU64>,
     y4m_frame_rate_override: Option<Y4mFrameRate>,
     skip_film_grain: bool,
+    temporal_layer_selection: TemporalLayerSelection,
 }
 
 impl DecodeOptions {
@@ -47,6 +50,7 @@ impl DecodeOptions {
         output_frame_limit: None,
         y4m_frame_rate_override: None,
         skip_film_grain: false,
+        temporal_layer_selection: TemporalLayerSelection::All,
     };
 
     /// Creates decoder options from caller-provided resource limits.
@@ -57,6 +61,7 @@ impl DecodeOptions {
             output_frame_limit: None,
             y4m_frame_rate_override: None,
             skip_film_grain: false,
+            temporal_layer_selection: TemporalLayerSelection::All,
         }
     }
 
@@ -105,6 +110,22 @@ impl DecodeOptions {
     #[must_use]
     pub const fn with_skip_film_grain(mut self, skip: bool) -> Self {
         self.skip_film_grain = skip;
+        self
+    }
+
+    /// Returns the caller-requested temporal-layer selection policy.
+    #[must_use]
+    pub const fn temporal_layer_selection(self) -> TemporalLayerSelection {
+        self.temporal_layer_selection
+    }
+
+    /// Returns a copy with the requested temporal-layer selection policy.
+    #[must_use]
+    pub const fn with_temporal_layer_selection(
+        mut self,
+        selection: TemporalLayerSelection,
+    ) -> Self {
+        self.temporal_layer_selection = selection;
         self
     }
 }

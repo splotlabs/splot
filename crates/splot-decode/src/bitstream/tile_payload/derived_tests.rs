@@ -192,6 +192,7 @@ fn parsed_frame_header_fixture() -> ParsedFrameHeaderFixture {
     assert_eq!(frame_reader.read_bit().unwrap(), 1);
     let input = FrameHeaderParseInput {
         obu_type: ObuType::ClosedLoopKey,
+        obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
         first_picture_in_tu: false,
         active_sequence: Some(&sequence),
         mfh_record: None,
@@ -212,6 +213,7 @@ fn activation_only_frame_header_core() -> FrameHeaderCore {
     let mut reader = BitReader::new(&data, ByteOffset::new(0));
     let input = FrameHeaderParseInput {
         obu_type: ObuType::ClosedLoopKey,
+        obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: None,
         mfh_record: None,

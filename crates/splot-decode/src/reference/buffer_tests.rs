@@ -29,6 +29,7 @@ fn key_update() -> FrameRefUpdate<'static> {
         lr_banks: [None; 3],
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
+        temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
     }
 }
 
@@ -53,6 +54,7 @@ fn inter_update() -> FrameRefUpdate<'static> {
         lr_banks: [None; 3],
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
+        temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
     }
 }
 
@@ -100,6 +102,7 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
             numerator: 1,
             denominator: 1,
         },
+        temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
         props: crate::DataProps::default(),
     }
 }

@@ -77,6 +77,8 @@ pub(crate) struct SlotFacts {
     pub(crate) long_term_id: Option<u32>,
     /// Per-plane retained Wiener-NS class counts used by the § 5.18 filter dictionary.
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
+    /// `RefTLayerId[ i ]` (§ 7.23).
+    pub(crate) tlayer_id: u8,
     /// `RefNumTotalRefs[ i ]`, `SavedOrderHints[ i ]` and `SavedGmParams[ i ]` (§ 7.23),
     /// read by the § 5.18.9.1 `global_motion_params()` base-warp selection.
     pub(crate) global_motion: (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams),
@@ -251,6 +253,7 @@ pub(crate) struct ReferenceStateScratch {
     implicit_output_frame: [bool; NUM_REF_FRAMES],
     immediate_output_frame: [bool; NUM_REF_FRAMES],
     lr_frame_filter_class_counts: [[u8; 3]; NUM_REF_FRAMES],
+    tlayer_id: [u8; NUM_REF_FRAMES],
     num_total_refs: [u32; NUM_REF_FRAMES],
     saved_gm_order_hints: [SavedGlobalMotionOrderHints; NUM_REF_FRAMES],
     saved_gm_params: [SavedGlobalMotionParams; NUM_REF_FRAMES],
@@ -270,6 +273,7 @@ impl ReferenceStateScratch {
         .with_primary_reference_state(&self.counter, &self.frame_is_inter)
         .with_long_term_id_state(&self.long_term_id)
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
+        .with_tlayer_id_state(&self.tlayer_id)
         .with_global_motion_state(
             &self.num_total_refs,
             &self.saved_gm_order_hints,
@@ -442,6 +446,7 @@ impl ReferenceStateTracker {
                     scratch.implicit_output_frame[i] = facts.implicit_output_frame;
                     scratch.immediate_output_frame[i] = facts.immediate_output_frame;
                     scratch.lr_frame_filter_class_counts[i] = facts.lr_frame_filter_class_counts;
+                    scratch.tlayer_id[i] = facts.tlayer_id;
                     (
                         scratch.num_total_refs[i],
                         scratch.saved_gm_order_hints[i],
@@ -462,6 +467,7 @@ impl ReferenceStateTracker {
                     scratch.implicit_output_frame[i] = false;
                     scratch.immediate_output_frame[i] = false;
                     scratch.lr_frame_filter_class_counts[i] = [0; 3];
+                    scratch.tlayer_id[i] = 0;
                     (
                         scratch.num_total_refs[i],
                         scratch.saved_gm_order_hints[i],
@@ -514,6 +520,7 @@ pub(crate) fn slot_facts(
         frame_type: frame_type?,
         long_term_id: long_term_id.and_then(|id| u32::try_from(id).ok()),
         lr_frame_filter_class_counts: [0; 3],
+        tlayer_id: 0,
         global_motion: IDENTITY_GLOBAL_MOTION,
     })
 }
@@ -553,6 +560,7 @@ mod tests {
             frame_type: FrameType::Key,
             long_term_id: None,
             lr_frame_filter_class_counts: [0; 3],
+            tlayer_id: 0,
             global_motion: IDENTITY_GLOBAL_MOTION,
         }
     }

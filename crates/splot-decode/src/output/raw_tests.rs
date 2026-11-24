@@ -18,7 +18,7 @@ use crate::{
     DecodeContext, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeLayerSelection, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
     DecodeOutputOperation, DecodePlannedObuRole, DecodeRuntimeConfig, DecodeSourceIssueKind,
-    OUTPUT_ERROR_RULE_ID,
+    OUTPUT_ERROR_RULE_ID, TemporalLayerSelection,
 };
 
 const MONO_FIXTURE: &[u8] =
@@ -300,7 +300,7 @@ fn higher_declared_temporal_layer_decodes_selected_base_layer_to_reference_outpu
     let plan =
         DecodeContext::plan_bytes(TEMPORAL_LAYER_DECLARATION_FIXTURE, DecodeOptions::default())
             .unwrap();
-    assert_eq!(plan.selected_layer(), DecodeLayerSelection::base());
+    assert_eq!(plan.selected_layer(), DecodeLayerSelection::default());
     assert_eq!(plan.obu_count(), 3);
     assert_eq!(plan.frame_candidate_count(), 1);
     assert!(plan.frame_candidates_all().all(|candidate| {
@@ -346,38 +346,60 @@ fn higher_declared_temporal_layer_decodes_selected_base_layer_to_reference_outpu
 }
 
 #[test]
-fn non_base_temporal_layer_is_retained_without_runtime_output() {
+fn non_base_temporal_layer_is_selected_by_default_and_filtered_under_base_only() {
     let context = context(ThreadCount::from(1usize));
-    let plan =
-        DecodeContext::plan_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, DecodeOptions::default()).unwrap();
-    let unselected: Vec<_> = plan
+    let base_options =
+        DecodeOptions::default().with_temporal_layer_selection(TemporalLayerSelection::BASE_ONLY);
+    let base_plan = DecodeContext::plan_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, base_options).unwrap();
+    let unselected: Vec<_> = base_plan
         .obus()
         .filter(|obu| obu.role() == DecodePlannedObuRole::UnselectedLayer)
         .collect();
 
-    assert_eq!(plan.obu_count(), 5);
-    assert_eq!(plan.frame_candidate_count(), 1);
+    assert_eq!(base_plan.selected_layer(), DecodeLayerSelection::base());
+    assert_eq!(base_plan.obu_count(), 5);
+    assert_eq!(base_plan.frame_candidate_count(), 1);
     assert_eq!(unselected.len(), 1);
     assert_eq!(unselected[0].header().temporal_layer_id.get(), 1);
 
-    let report = context
-        .decode_hash_report_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, DecodeOptions::default())
+    let base_report = context
+        .decode_hash_report_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, base_options)
         .unwrap();
-    assert_eq!(report.frames.len(), 1);
+    assert_eq!(base_report.frames.len(), 1);
     assert_eq!(
-        report.frames[0].hashes[0].digest_hex,
+        base_report.frames[0].hashes[0].digest_hex,
         TEMPORAL_LAYER_STREAM_BASE_AVM_DIGEST
     );
 
-    let mut raw = Vec::new();
+    let mut base_raw = Vec::new();
+    context
+        .decode_raw_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, base_options, &mut base_raw)
+        .unwrap();
+    assert_eq!(base_raw.len(), 64 * 64 + 2 * 32 * 32);
+
+    let all_plan =
+        DecodeContext::plan_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, DecodeOptions::default()).unwrap();
+    assert_eq!(all_plan.obu_count(), 5);
+    assert_eq!(all_plan.frame_candidate_count(), 2);
+
+    let all_report = context
+        .decode_hash_report_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, DecodeOptions::default())
+        .unwrap();
+    assert_eq!(all_report.frames.len(), 2);
+    assert_eq!(
+        all_report.frames[0].hashes[0].digest_hex,
+        TEMPORAL_LAYER_STREAM_BASE_AVM_DIGEST
+    );
+
+    let mut all_raw = Vec::new();
     context
         .decode_raw_bytes(
             TEMPORAL_LAYER_STREAM_FIXTURE,
             DecodeOptions::default(),
-            &mut raw,
+            &mut all_raw,
         )
         .unwrap();
-    assert_eq!(raw.len(), 64 * 64 + 2 * 32 * 32);
+    assert_eq!(all_raw.len(), 2 * (64 * 64 + 2 * 32 * 32));
 }
 
 #[test]

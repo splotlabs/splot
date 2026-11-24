@@ -80,7 +80,7 @@ fn raw_annex_b_plan_preserves_order_and_roles() {
     let obus: Vec<_> = plan.obus().collect();
 
     assert_eq!(plan.format(), BitstreamFormat::AnnexB);
-    assert_eq!(plan.selected_layer(), DecodeLayerSelection::base());
+    assert_eq!(plan.selected_layer(), DecodeLayerSelection::default());
     assert_eq!(plan.input_len_bytes(), bytes.len() as u64);
     assert_eq!(plan.obu_count(), 4);
     assert_eq!(plan.frame_candidate_count(), 1);
@@ -100,7 +100,7 @@ fn raw_annex_b_plan_preserves_order_and_roles() {
 }
 
 #[test]
-fn non_base_temporal_obus_are_retained_but_not_selected() {
+fn non_base_temporal_obus_are_retained_but_not_selected_for_base_only() {
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER | 0x01).as_slice(),
         obu(OBU_CLOSED_LOOP_KEY).as_slice(),
@@ -109,11 +109,19 @@ fn non_base_temporal_obus_are_retained_but_not_selected() {
     ]
     .concat();
 
-    let parsed_plan = plan(&bytes);
-    let byte_plan = plan_bytes(&bytes);
+    let base_options =
+        DecodeOptions::default().with_temporal_layer_selection(TemporalLayerSelection::BASE_ONLY);
+    let parsed = parse_bitstream_partial(&bytes);
+    let parsed_plan = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        base_options,
+    )
+    .unwrap();
+    let byte_plan = DecodeContext::plan_bytes(&bytes, base_options).unwrap();
     let obus: Vec<_> = parsed_plan.obus().collect();
 
     assert_eq!(byte_plan, parsed_plan);
+    assert_eq!(parsed_plan.selected_layer(), DecodeLayerSelection::base());
     assert_eq!(parsed_plan.obu_count(), 4);
     assert_eq!(parsed_plan.frame_candidate_count(), 1);
     assert_eq!(parsed_plan.frame_candidates_all().count(), 1);
@@ -139,7 +147,8 @@ fn non_base_temporal_obus_consume_obu_but_not_frame_limits() {
         DecodeLimits::unlimited()
             .with_max_obus(DecodeLimitThreshold::Max(2))
             .with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
-    );
+    )
+    .with_temporal_layer_selection(TemporalLayerSelection::BASE_ONLY);
 
     let byte_plan = DecodeContext::plan_bytes(&bytes, frame_options).unwrap();
     let parsed = parse_bitstream_partial(&bytes);
@@ -151,6 +160,17 @@ fn non_base_temporal_obus_consume_obu_but_not_frame_limits() {
     for plan in [byte_plan, parsed_plan] {
         assert_eq!(plan.frame_candidate_count(), 1);
     }
+
+    let all_options = DecodeOptions::new(
+        DecodeLimits::unlimited()
+            .with_max_obus(DecodeLimitThreshold::Max(2))
+            .with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
+    );
+    let all_error = DecodeContext::plan_bytes(&bytes, all_options).unwrap_err();
+    assert!(matches!(
+        all_error,
+        DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxFramesToDecode
+    ));
 
     let error = DecodeContext::plan_bytes(
         &bytes,

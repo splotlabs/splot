@@ -41,7 +41,7 @@ use crate::headers::frame::tiling::{TileInfo, parse_tile_info_with_reader};
 use crate::headers::sequence::{SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
 use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
-use crate::types::ObuType;
+use crate::types::{EmbeddedLayerId, ObuType, TemporalLayerId};
 
 use super::global_motion::{
     DEFAULT_WARP_PARAMS, REFS_PER_FRAME, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
@@ -121,6 +121,8 @@ pub struct FrameReferenceStateView<'a> {
     /// the bit-exact index parse with unresolved reference tap values (a caller
     /// that never consumes the resolved bank, like the validator, may omit them).
     pub lr_frame_filter_taps: Option<&'a [SlotFrameFilterTaps]>,
+    /// Per-slot retained temporal layer ids (`RefTLayerId[i]`, AV2 § 7.23).
+    pub ref_tlayer_id: Option<&'a [u8]>,
     /// § 5.18.1 `AllowedFrames` for the § 7.7 implicit reference map: the slots
     /// refreshed by the open-loop key temporal unit, for a regular frame after the
     /// OLK in that temporal unit. `None` is the spec's `-1` (every slot allowed).
@@ -146,6 +148,7 @@ impl<'a> FrameReferenceStateView<'a> {
         saved_global_motion_params: None,
         lr_frame_filter_class_counts: None,
         lr_frame_filter_taps: None,
+        ref_tlayer_id: None,
         allowed_frames: None,
     };
 
@@ -294,6 +297,13 @@ impl<'a> FrameReferenceStateView<'a> {
         self.lr_frame_filter_class_counts = Some(counts);
         self
     }
+
+    /// Attaches per-slot retained temporal layer ids (`RefTLayerId[i]`, AV2 § 7.23).
+    #[must_use]
+    pub const fn with_tlayer_id_state(mut self, ref_tlayer_id: &'a [u8]) -> Self {
+        self.ref_tlayer_id = Some(ref_tlayer_id);
+        self
+    }
 }
 
 /// Explicit inputs for [`parse_frame_header_core`] (AV2 v1.0.0 § 5.18.2).
@@ -307,6 +317,8 @@ impl<'a> FrameReferenceStateView<'a> {
 pub struct FrameHeaderParseInput<'a> {
     /// The OBU type carrying this frame header.
     pub obu_type: ObuType,
+    /// `obu_tlayer_id` from the OBU header carrying this frame header.
+    pub obu_tlayer_id: TemporalLayerId,
     /// `FirstPictureInTU` decoder state, used to derive `startCVS`.
     pub first_picture_in_tu: bool,
     /// The active sequence header this frame resolves to (`load_sequence_header()`),
@@ -556,12 +568,13 @@ fn get_disp_order_hint(
     frame_type: Option<FrameType>,
     restricted_prediction_switch: Option<bool>,
     order_hint_lsbs: u32,
-    order_hint_bits: u32,
+    seq: &CoreSeqView,
     reference_state: &FrameReferenceStateView<'_>,
+    obu_tlayer_id: TemporalLayerId,
 ) -> Option<u32> {
     let restricted_switch =
         frame_type == Some(FrameType::Switch) && restricted_prediction_switch == Some(true);
-    if obu_type == ObuType::ClosedLoopKey || restricted_switch || order_hint_bits == 0 {
+    if obu_type == ObuType::ClosedLoopKey || restricted_switch || seq.order_hint_bits == 0 {
         return Some(order_hint_lsbs);
     }
 
@@ -574,6 +587,16 @@ fn get_disp_order_hint(
         if !is_valid {
             continue;
         }
+        if let Some(ref_tlayers) = reference_state.ref_tlayer_id {
+            let ref_tlayer = ref_tlayers.get(index).copied()?;
+            if !seq.tlayer_dependency_map.depends_on(
+                EmbeddedLayerId::from_bits(0),
+                obu_tlayer_id,
+                TemporalLayerId::from_bits(ref_tlayer),
+            ) {
+                continue;
+            }
+        }
         let showable = implicit.get(index).copied()? || immediate.get(index).copied()?;
         if showable {
             let hint = hints.get(index).copied()?;
@@ -583,13 +606,13 @@ fn get_disp_order_hint(
         }
     }
 
-    let half_window = 1u32.checked_shl(order_hint_bits - 1)?;
+    let half_window = 1u32.checked_shl(seq.order_hint_bits - 1)?;
     let threshold = half_window.checked_add(order_hint_lsbs)?;
     if max_disp < threshold {
         return Some(order_hint_lsbs);
     }
-    let wraps = (max_disp - threshold) >> order_hint_bits;
-    order_hint_lsbs.checked_add((wraps + 1).checked_shl(order_hint_bits)?)
+    let wraps = (max_disp - threshold) >> seq.order_hint_bits;
+    order_hint_lsbs.checked_add((wraps + 1).checked_shl(seq.order_hint_bits)?)
 }
 
 /// Matrix Feature ID for the frame-header-info coverage this phase does not model.
@@ -656,6 +679,7 @@ pub(crate) fn parse_frame_header_core_with_reader<O: SyntaxObserver>(
                 &seq,
                 mfh_view.as_ref(),
                 &input.reference_state,
+                input.obu_tlayer_id,
             )?;
         }
 
@@ -745,7 +769,14 @@ pub(crate) fn parse_core_body(
 ) -> Result<()> {
     let mut noop = NoopObserver;
     let mut sr = SyntaxReader::new(reader, &mut noop);
-    parse_core_body_with_reader(&mut sr, core, seq, mfh, reference_state)
+    parse_core_body_with_reader(
+        &mut sr,
+        core,
+        seq,
+        mfh,
+        reference_state,
+        TemporalLayerId::BASE,
+    )
 }
 
 pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
@@ -754,6 +785,7 @@ pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
     reference_state: &FrameReferenceStateView<'_>,
+    obu_tlayer_id: TemporalLayerId,
 ) -> Result<()> {
     let obu_type = core.obu_type;
 
@@ -790,7 +822,7 @@ pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
                 reference_state,
             );
         }
-        return parse_intra_tail(sr, core, seq, mfh, FrameType::Key, true, reference_state);
+        return parse_intra_tail(sr, core, seq, mfh, true, reference_state, obu_tlayer_id);
     }
 
     if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
@@ -799,13 +831,20 @@ pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
         core.frame_is_intra = Some(false);
         core.immediate_output_frame = Some(false);
         core.implicit_output_frame = Some(false);
-        return parse_bridge_inter_path(sr, core, seq, bridge_frame_ref_idx, reference_state);
+        return parse_bridge_inter_path(
+            sr,
+            core,
+            seq,
+            bridge_frame_ref_idx,
+            reference_state,
+            obu_tlayer_id,
+        );
     }
 
     let show_existing_frame = obu_type.is_sef();
     core.show_existing_frame = Some(show_existing_frame);
     if show_existing_frame {
-        return parse_show_existing_frame(sr, core, seq, reference_state);
+        return parse_show_existing_frame(sr, core, seq, reference_state, obu_tlayer_id);
     }
 
     let frame_type = if obu_type == ObuType::Switch || obu_type == ObuType::RasFrame {
@@ -878,10 +917,18 @@ pub(crate) fn parse_core_body_with_reader<O: SyntaxObserver>(
     core.implicit_output_frame = Some(implicit_output_frame);
 
     if frame_is_intra {
-        return parse_intra_tail(sr, core, seq, mfh, frame_type, false, reference_state);
+        return parse_intra_tail(sr, core, seq, mfh, false, reference_state, obu_tlayer_id);
     }
 
-    parse_inter_path(sr, core, seq, mfh, frame_type, reference_state)
+    parse_inter_path(
+        sr,
+        core,
+        seq,
+        mfh,
+        frame_type,
+        reference_state,
+        obu_tlayer_id,
+    )
 }
 
 fn parse_inter_path<O: SyntaxObserver>(
@@ -891,6 +938,7 @@ fn parse_inter_path<O: SyntaxObserver>(
     mfh: Option<&MfhFrameView>,
     frame_type: FrameType,
     reference_state: &FrameReferenceStateView<'_>,
+    obu_tlayer_id: TemporalLayerId,
 ) -> Result<()> {
     use crate::headers::frame::inter::{
         InterFrameContext, InterStop, parse_inter_control_into_with_reader,
@@ -923,14 +971,16 @@ fn parse_inter_path<O: SyntaxObserver>(
             core.frame_type,
             core.restricted_prediction_switch,
             order_hint,
-            seq.order_hint_bits,
+            seq,
             reference_state,
+            obu_tlayer_id,
         );
 
         let inter_seq = build_inter_seq_view(seq);
         let ras_long_term_ref_mask = ras_long_term_ref_mask(core, seq, reference_state);
         let ctx = InterFrameContext {
             obu_type,
+            obu_tlayer_id,
             frame_type,
             is_bridge: false,
             bridge_frame_ref_idx: None,
@@ -1144,6 +1194,8 @@ pub(crate) fn build_inter_seq_view(
         seq_enabled_motion_modes: seq.inter.seq_enabled_motion_modes,
         enable_opfl_refine: seq.inter.enable_opfl_refine,
         max_mlayer_id: seq.max_mlayer_id,
+        mlayer_dependency_map: seq.mlayer_dependency_map,
+        tlayer_dependency_map: seq.tlayer_dependency_map,
         seq_force_screen_content_tools: seq.seq_force_screen_content_tools,
         seq_force_integer_mv: seq.seq_force_integer_mv,
         allow_frame_max_bvp_drl_bits: seq.allow_frame_max_bvp_drl_bits,
@@ -1176,6 +1228,7 @@ fn parse_bridge_inter_path<O: SyntaxObserver>(
     seq: &CoreSeqView,
     bridge_frame_ref_idx: u32,
     reference_state: &FrameReferenceStateView<'_>,
+    obu_tlayer_id: TemporalLayerId,
 ) -> Result<()> {
     use crate::headers::frame::inter::{
         InterFrameContext, InterStop, parse_inter_control_into_with_reader,
@@ -1184,6 +1237,7 @@ fn parse_bridge_inter_path<O: SyntaxObserver>(
     let inter_seq = build_inter_seq_view(seq);
     let ctx = InterFrameContext {
         obu_type: core.obu_type,
+        obu_tlayer_id,
         frame_type: FrameType::Inter,
         is_bridge: true,
         bridge_frame_ref_idx: Some(bridge_frame_ref_idx),
@@ -1472,10 +1526,11 @@ fn parse_intra_tail<O: SyntaxObserver>(
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     mfh: Option<&MfhFrameView>,
-    frame_type: FrameType,
     single_picture: bool,
     reference_state: &FrameReferenceStateView<'_>,
+    obu_tlayer_id: TemporalLayerId,
 ) -> Result<()> {
+    let frame_type = core.frame_type.unwrap_or(FrameType::Key);
     let frame_size_override_flag = if single_picture {
         sr.inferred_bool(
             "frame_size_override_flag",
@@ -1495,8 +1550,9 @@ fn parse_intra_tail<O: SyntaxObserver>(
         core.frame_type,
         core.restricted_prediction_switch,
         order_hint_lsb,
-        seq.order_hint_bits,
+        seq,
         reference_state,
+        obu_tlayer_id,
     );
 
     core.refresh_frame_flags = Some(read_refresh_frame_flags(

@@ -15,6 +15,7 @@ use splot_core::headers::frame::FrameType;
 use splot_core::headers::metadata::MetadataUnit;
 use splot_core::ivf::IvfHeader;
 use splot_core::simd::{ResolvedBackend, SelectedBackend, SimdBackend, SimdPolicy, SimdScope};
+use splot_core::types::TemporalLayerId;
 use splot_parallel::{FrameDelay, ThreadCount};
 use splot_recon::{
     BitDepth, DecodedFrameInfo, FramePlaneSamples, PixelFormat, PlaneId, PlanePool, PlaneRef,
@@ -24,7 +25,7 @@ use splot_recon::{
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, fill_buffer};
 use crate::error::{DecodeError, DecoderStateError, Result};
 use crate::pipeline::{ActiveFilmGrain, DecodeSession, PipelineDecodedFrame, PipelineFrame};
-use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
+use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, TemporalLayerSelection};
 
 /// How a [`Decoder`] runs.
 #[derive(Clone, Copy, Debug, Default)]
@@ -44,6 +45,8 @@ pub struct DecoderSettings {
     pub skip_film_grain: bool,
     /// Startup SIMD backend policy. Defaults to [`SimdPolicy::Auto`].
     pub simd_policy: SimdPolicy,
+    /// Temporal enhancement layers to decode and emit. Defaults to [`TemporalLayerSelection::All`].
+    pub temporal_layer_selection: TemporalLayerSelection,
 }
 
 impl DecoderSettings {
@@ -80,6 +83,16 @@ impl DecoderSettings {
     #[must_use]
     pub const fn with_simd_policy(mut self, simd_policy: SimdPolicy) -> Self {
         self.simd_policy = simd_policy;
+        self
+    }
+
+    /// Returns a copy with the temporal-layer selection policy replaced.
+    #[must_use]
+    pub const fn with_temporal_layer_selection(
+        mut self,
+        temporal_layer_selection: TemporalLayerSelection,
+    ) -> Self {
+        self.temporal_layer_selection = temporal_layer_selection;
         self
     }
 }
@@ -156,6 +169,7 @@ pub struct Picture {
     /// The grain the stream signals for this picture and the samples lack.
     pending_grain: Option<ActiveFilmGrain>,
     frame_type: Option<FrameType>,
+    temporal_layer_id: TemporalLayerId,
 }
 
 #[derive(Debug)]
@@ -201,6 +215,7 @@ impl Picture {
                 .ccso_header
                 .as_ref()
                 .and_then(|header| header.frame_type),
+            temporal_layer_id: frame.temporal_layer_id,
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
@@ -249,6 +264,7 @@ impl Picture {
             has_film_grain: self.has_film_grain,
             pending_grain: None,
             frame_type: self.frame_type,
+            temporal_layer_id: self.temporal_layer_id,
         })
     }
 
@@ -258,6 +274,13 @@ impl Picture {
     #[must_use]
     pub const fn frame_type(&self) -> Option<FrameType> {
         self.frame_type
+    }
+
+    /// Temporal layer id (`obu_tlayer_id`, AV2 § 6.2.2) of the coded or
+    /// show-existing frame that produced this picture.
+    #[must_use]
+    pub const fn temporal_layer_id(&self) -> TemporalLayerId {
+        self.temporal_layer_id
     }
 
     /// Visible width in luma samples.
@@ -493,6 +516,7 @@ struct DriverLaunch {
     shared: Arc<Shared>,
     limits: DecodeLimits,
     skip_film_grain: bool,
+    temporal_layer_selection: TemporalLayerSelection,
     frame_delay: core::num::NonZeroUsize,
     rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
     resolved: ResolvedBackend,
@@ -500,45 +524,27 @@ struct DriverLaunch {
 
 impl SimdScope<Result<std::thread::JoinHandle<()>>> for DriverLaunch {
     fn run<B: SimdBackend>(self, backend: B) -> Result<std::thread::JoinHandle<()>> {
-        spawn_driver(
-            backend,
-            self.shared,
-            self.limits,
-            self.skip_film_grain,
-            self.frame_delay,
-            self.rows,
-            self.resolved,
-        )
+        spawn_driver(backend, self)
     }
 }
 
 fn spawn_driver<B: SimdBackend>(
     backend: B,
-    shared: Arc<Shared>,
-    limits: DecodeLimits,
-    skip_film_grain: bool,
-    frame_delay: core::num::NonZeroUsize,
-    rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
-    resolved: ResolvedBackend,
+    launch: DriverLaunch,
 ) -> Result<std::thread::JoinHandle<()>> {
     splot_parallel::spawn_thread("splot-driver", move || {
         let _ = backend;
-        run_driver_session(shared, limits, skip_film_grain, frame_delay, rows, resolved);
+        run_driver_session(launch);
     })
     .map_err(Into::into)
 }
 
-fn run_driver_session(
-    driver: Arc<Shared>,
-    limits: DecodeLimits,
-    skip_film_grain: bool,
-    frame_delay: core::num::NonZeroUsize,
-    rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
-    resolved: ResolvedBackend,
-) {
-    let options = DecodeOptions::new(limits).with_skip_film_grain(skip_film_grain);
-    let guard = DriverGuard(driver);
-    let session = DecodeSession::detaching_held(frame_delay, rows, resolved);
+fn run_driver_session(launch: DriverLaunch) {
+    let options = DecodeOptions::new(launch.limits)
+        .with_skip_film_grain(launch.skip_film_grain)
+        .with_temporal_layer_selection(launch.temporal_layer_selection);
+    let guard = DriverGuard(launch.shared);
+    let session = DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
@@ -560,13 +566,16 @@ fn run_driver_session(
 }
 
 impl Decoder {
-    /// Opens a decoder, validates its SIMD policy, and starts its driver and row workers.
+    /// Opens a decoder, validates its settings and SIMD policy, and starts its
+    /// driver and row workers.
     ///
     /// # Errors
-    /// Returns [`DecodeError::UnsupportedBackend`] if the requested SIMD policy
-    /// cannot run on this host, or [`DecodeError::Pool`] if a thread cannot
-    /// start.
+    /// Returns [`DecodeError::InvalidTemporalSelection`] if
+    /// `settings.temporal_layer_selection` is invalid,
+    /// [`DecodeError::UnsupportedBackend`] if the requested SIMD policy cannot
+    /// run on this host, or [`DecodeError::Pool`] if a thread cannot start.
     pub fn new(settings: DecoderSettings) -> Result<Self> {
+        settings.temporal_layer_selection.validate()?;
         let resolved = splot_core::simd::resolve_backend(settings.simd_policy)?;
         let selected_backend = resolved.kind();
         let threads = settings.threads.resolve();
@@ -596,6 +605,7 @@ impl Decoder {
             shared: driver,
             limits: settings.limits,
             skip_film_grain: settings.skip_film_grain,
+            temporal_layer_selection: settings.temporal_layer_selection,
             frame_delay,
             rows,
             resolved,

@@ -358,3 +358,87 @@ fn decode_raw_directory_output_path_emits_output_error_text_and_cleans_temp_file
     assert!(output.is_dir(), "directory output path was replaced");
     assert_eq!(read_dir_names(&parent), before_entries);
 }
+
+#[test]
+fn decode_temporal_layer_and_output_mask_flags_match_library() {
+    let context =
+        splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::default()).unwrap();
+    let dep8 = conformance_vector("syn-tlayer2-dependent-8bit.ivf");
+    let dep8_bytes = std::fs::read(&dep8).unwrap();
+    for (flag_val, selection) in [
+        ("0", splot_decode::TemporalLayerSelection::BASE_ONLY),
+        ("all", splot_decode::TemporalLayerSelection::All),
+    ] {
+        let output = temp_output("raw");
+        let out = splot(&[
+            "decode",
+            "--output-format",
+            "raw",
+            "--temporal-layer",
+            flag_val,
+            dep8.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        let mut expected = Vec::new();
+        context
+            .decode_raw_bytes(
+                &dep8_bytes,
+                splot_decode::DecodeOptions::default().with_temporal_layer_selection(selection),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+    }
+
+    let sparse = conformance_vector("syn-tlayer4-sparse-dependencies.obu");
+    let sparse_bytes = std::fs::read(&sparse).unwrap();
+    for (mask_arg, mask) in [("4", 4u8), ("0x8", 8u8)] {
+        let output = temp_output("raw");
+        let out = splot(&[
+            "decode",
+            "--output-format",
+            "raw",
+            "--temporal-output-mask",
+            mask_arg,
+            sparse.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        let mut expected = Vec::new();
+        context
+            .decode_raw_bytes(
+                &sparse_bytes,
+                splot_decode::DecodeOptions::default().with_temporal_layer_selection(
+                    splot_decode::TemporalLayerSelection::OutputMask(mask),
+                ),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decode_rejects_invalid_and_conflicting_temporal_flags() {
+    let input = conformance_vector("syn-tlayer2-dependent-8bit.ivf");
+    for extra in [
+        &["--temporal-layer", "0", "--temporal-output-mask", "2"][..],
+        &["--temporal-layer", "4"][..],
+        &["--temporal-output-mask", "0"][..],
+    ] {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 for {extra:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}

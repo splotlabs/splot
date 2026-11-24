@@ -24,6 +24,11 @@ fn inter_seq() -> InterSeqView {
         seq_enabled_motion_modes: [false; MOTION_MODES],
         enable_opfl_refine: 0,
         max_mlayer_id: 0,
+        mlayer_dependency_map: MLayerDependencyMap::default_for(EmbeddedLayerId::from_bits(0)),
+        tlayer_dependency_map: TLayerDependencyMap::default_for(
+            TemporalLayerId::BASE,
+            EmbeddedLayerId::from_bits(0),
+        ),
         seq_force_screen_content_tools: 0,
         seq_force_integer_mv: 0,
         allow_frame_max_bvp_drl_bits: false,
@@ -36,6 +41,7 @@ fn inter_seq() -> InterSeqView {
 fn inter_ctx() -> InterFrameContext {
     InterFrameContext {
         obu_type: ObuType::RegularTileGroup,
+        obu_tlayer_id: TemporalLayerId::BASE,
         frame_type: FrameType::Inter,
         is_bridge: false,
         bridge_frame_ref_idx: None,
@@ -225,6 +231,7 @@ fn bridge_overwrite_uses_short_refresh_flag_syntax() {
     seq.enable_short_refresh_frame_flags = true;
     let ctx = InterFrameContext {
         obu_type: ObuType::BridgeFrame,
+        obu_tlayer_id: TemporalLayerId::BASE,
         frame_type: FrameType::Inter,
         is_bridge: true,
         bridge_frame_ref_idx: Some(2),
@@ -1192,6 +1199,7 @@ fn frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture() {
     let mut reader = BitReader::new(inter_obu.payload, inter_obu.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: inter_obu.header.obu_type,
+        obu_tlayer_id: inter_obu.header.temporal_layer_id,
         first_picture_in_tu: false,
         active_sequence: Some(&seq_header),
         mfh_record: None,
@@ -1247,6 +1255,7 @@ fn frame_header_core_inter_implicit_map_two_valid_slots_stops_unmodeled() {
     let mut reader = BitReader::new(inter_obu.payload, inter_obu.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: inter_obu.header.obu_type,
+        obu_tlayer_id: inter_obu.header.temporal_layer_id,
         first_picture_in_tu: false,
         active_sequence: Some(&seq_header),
         mfh_record: None,
@@ -1303,6 +1312,7 @@ fn frame_header_core_inter_fixture_reaches_inter_header_complete() {
     let mut reader = BitReader::new(inter_obu.payload, inter_obu.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: inter_obu.header.obu_type,
+        obu_tlayer_id: inter_obu.header.temporal_layer_id,
         first_picture_in_tu: false,
         active_sequence: Some(&seq_header),
         mfh_record: None,

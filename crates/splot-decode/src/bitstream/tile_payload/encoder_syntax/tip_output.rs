@@ -69,9 +69,13 @@ impl EncoderReferences {
             ));
         }
         self.buffer.prepare_for_frame(core.obu_type, true);
-        let update =
-            frame_ref_update_from_core(core, ByteOffset::new(0), EmbeddedLayerId::from_bits(0))
-                .map_err(rule("reference update"))?;
+        let update = frame_ref_update_from_core(
+            core,
+            ByteOffset::new(0),
+            EmbeddedLayerId::from_bits(0),
+            splot_core::types::TemporalLayerId::BASE,
+        )
+        .map_err(rule("reference update"))?;
         self.buffer.update(self.frames.len(), &update, false);
         self.buffer.note_frame(core.obu_type, true, &update);
         self.state = settled_state(&self.buffer, &self.frames)?;
