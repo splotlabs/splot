@@ -259,7 +259,8 @@ impl CcsoFrameConfig {
     }
 }
 
-pub(crate) fn ccso_stripe<T: ReconSample>(
+pub(crate) fn ccso_stripe<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     frame: &mut CdefFrame<'_, T>,
     grid: &CcsoUnitGrid,
     config: &CcsoFrameConfig,
@@ -283,6 +284,7 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
             None => None,
         };
         ccso_apply(
+            backend,
             destination,
             luma,
             plane,
@@ -368,16 +370,19 @@ fn ccso_plane<T: ReconSample>(
             StripeCopyError::Geometry => CcsoError::Workspace,
         },
     )?;
-    ccso_apply(
-        &mut filtered,
-        FramePlane::window(curr_luma, luma_width, luma_height, 0, luma_height)
-            .ok_or(CcsoError::Workspace)?,
-        plane,
-        &prepared,
-        grid,
-        lossless_grid,
-        None,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        ccso_apply(
+            backend,
+            &mut filtered,
+            FramePlane::window(curr_luma, luma_width, luma_height, 0, luma_height)
+                .ok_or(CcsoError::Workspace)?,
+            plane,
+            &prepared,
+            grid,
+            lossless_grid,
+            None,
+        )
+    })?;
     workspace
         .write_rect(
             plane_id,
@@ -388,7 +393,9 @@ fn ccso_plane<T: ReconSample>(
         .map_err(|_| CcsoError::Workspace)
 }
 
-fn ccso_apply<D: ReconSample, L: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn ccso_apply<B: splot_core::simd::SimdBackend, D: ReconSample, L: ReconSample>(
+    backend: B,
     destination: &mut StripePlane<D>,
     curr_luma: FramePlane<'_, L>,
     plane: usize,
@@ -509,11 +516,27 @@ fn ccso_apply<D: ReconSample, L: ReconSample>(
                         .ok_or(CcsoError::Workspace)?;
                 }
                 let clamp = (min_luma_x, max_luma_x);
-                let (simd_start, simd_end) =
-                    ccso_simd_row(plane_row, center_row, offset_rows, x, x_end, clamp, config);
+                let (simd_start, simd_end) = ccso_simd_row(
+                    backend,
+                    plane_row,
+                    center_row,
+                    offset_rows,
+                    x,
+                    x_end,
+                    clamp,
+                    config,
+                );
                 for span in [(x, simd_start), (simd_end, x_end)] {
-                    ccso_edge_span(plane_row, center_row, offset_rows, span, clamp, config)
-                        .ok_or(CcsoError::Geometry)?;
+                    ccso_edge_span(
+                        backend,
+                        plane_row,
+                        center_row,
+                        offset_rows,
+                        span,
+                        clamp,
+                        config,
+                    )
+                    .ok_or(CcsoError::Geometry)?;
                 }
                 if lossless_grid.is_some() {
                     lossless_runs(plane_row, true, &mut lossless_saved)
@@ -537,7 +560,8 @@ const CCSO_EDGE_LUMA: usize = 2 * (CCSO_EDGE_PAD + CCSO_LANES) + 4;
 /// range `(min, max)` cuts, in 16-column groups through [`ccso_simd_row`]:
 /// each group reads copies of its luma rows with the range's edge samples
 /// repeated past it, so the kernel's taps need no clamp.
-fn ccso_edge_span<D: ReconSample, L: ReconSample>(
+fn ccso_edge_span<B: splot_core::simd::SimdBackend, D: ReconSample, L: ReconSample>(
+    backend: B,
     destination: &mut [D],
     center_row: &[L],
     offset_rows: Option<(&[L], &[L])>,
@@ -573,6 +597,7 @@ fn ccso_edge_span<D: ReconSample, L: ReconSample>(
         group[CCSO_EDGE_PAD..CCSO_EDGE_PAD + n].copy_from_slice(samples); // splot-copy-ok: one CCSO edge group
         let taps = offset_rows.map(|_| (&tap0[..], &tap1[..]));
         let filtered = ccso_simd_row(
+            backend,
             &mut group,
             &center[..],
             taps,
@@ -644,7 +669,9 @@ fn ccso_luma<S: Simd, V: SimdBase<S>, const SUB_X: usize>(
 /// ([`docs/spec/av2/1.0.0/07-decoding-process.md`](../../../../docs/spec/av2/1.0.0/07-decoding-process.md));
 /// the vector loop cannot clamp per lane, so its span keeps the centre and
 /// every tap inside that range.
-fn ccso_simd_row<D: ReconSample, L: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn ccso_simd_row<B: splot_core::simd::SimdBackend, D: ReconSample, L: ReconSample>(
+    backend: B,
     destination: &mut [D],
     center_row: &[L],
     offset_rows: Option<(&[L], &[L])>,
@@ -654,7 +681,7 @@ fn ccso_simd_row<D: ReconSample, L: ReconSample>(
     config: &CcsoPlaneConfig,
 ) -> (usize, usize) {
     let args = (destination, center_row, offset_rows, x_start, x_end);
-    baseline_simd!(simd => match config.sub_x {
+    splot_core::with_simd!(backend, simd => match config.sub_x {
         0 => ccso_lanes_span::<_, D, L, 0>(simd, args, tile_clamp, config),
         1 => ccso_lanes_span::<_, D, L, 1>(simd, args, tile_clamp, config),
         _ => (x_end, x_end),

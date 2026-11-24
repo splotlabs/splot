@@ -9,6 +9,27 @@ use splot_core::simd::SimdBackend;
 use super::cdef_direction_avx2;
 use super::{CDEF_PADDED_AREA, CDEF_PADDED_SIDE, cdef_direction_input, cdef_direction_rows};
 
+/// Variant of [`super::cdef_direction_padded`] using the caller's
+/// startup-selected static SIMD backend `backend`.
+pub fn cdef_direction_padded_with<B: SimdBackend>(
+    backend: B,
+    pad: &[u16; CDEF_PADDED_AREA],
+    coeff_shift: u32,
+) -> (usize, i32) {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(avx2) = backend.avx2_token() {
+        let rows = cdef_direction_input::<_, CDEF_PADDED_SIDE, _>(avx2, pad, coeff_shift);
+        return cdef_direction_avx2(avx2, rows);
+    }
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
+        cdef_direction_rows(
+            simd,
+            cdef_direction_input::<_, CDEF_PADDED_SIDE, _>(simd, pad, coeff_shift),
+        )
+    })
+}
+
 /// [`super::cdef_direction_padded`] using an explicit startup-selected
 /// [`SimdBackend`] without consulting global baseline detection in the hot path.
 pub fn cdef_direction_padded_with_backend<B: CdefDirectionBackend>(

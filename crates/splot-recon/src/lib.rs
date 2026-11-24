@@ -108,10 +108,13 @@ pub use cdef_filter::{
     CDEF_SEGMENT_BLOCK_AREA, CDEF_SEGMENT_BLOCKS, CDEF_SEGMENT_STRIDE, CDEF_UNAVAILABLE,
     CDEF_UV_DIR, CdefBlockFilter, CdefDirectionBackend, CdefLumaSegment, CdefPairSegment,
     CdefSampleTaps, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, CdefUnitFilters,
-    cdef_direction, cdef_direction_padded, cdef_direction_padded_with_backend,
-    cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
-    cdef_filter_block_interior_to, cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
-    cdef_filter_segment, cdef_publish_chroma_pair,
+    cdef_direction, cdef_direction_padded, cdef_direction_padded_with,
+    cdef_direction_padded_with_backend, cdef_filter_block_boundary_to_valid_stride,
+    cdef_filter_block_boundary_to_valid_stride_with, cdef_filter_block_chroma_pair,
+    cdef_filter_block_chroma_pair_with, cdef_filter_block_interior_to,
+    cdef_filter_block_interior_to_valid_stride, cdef_filter_block_interior_to_valid_stride_with,
+    cdef_filter_sample, cdef_filter_segment, cdef_filter_segment_with, cdef_publish_chroma_pair,
+    cdef_publish_chroma_pair_with,
 };
 pub use coefficient_scan::{
     TransformClass, coefficient_scan_position, coefficient_scan_slice, tx_class,
@@ -119,9 +122,10 @@ pub use coefficient_scan::{
 pub use deblock_filter::{
     DeblockEdge, DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
     deblock_filter_choice, deblock_filter_choice_strided, deblock_filter_max_width,
-    deblock_horizontal_edges, deblock_sample_filter, deblock_sample_filter_strided,
-    deblock_sample_filter_strided_4, deblock_side_threshold_index, deblock_vertical_edge_band,
-    deblock_vertical_edges,
+    deblock_horizontal_edges, deblock_horizontal_edges_with, deblock_sample_filter,
+    deblock_sample_filter_strided, deblock_sample_filter_strided_4, deblock_side_threshold_index,
+    deblock_vertical_edge_band, deblock_vertical_edge_band_with, deblock_vertical_edges,
+    deblock_vertical_edges_with,
 };
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_value,
@@ -131,7 +135,7 @@ pub use dequant_process::{
     dequantize_block, dequantize_block_with, qm_weighted_quantizer, quantization_matrix_weight,
 };
 pub use error::{ReconError, Result};
-pub use film_grain::{apply_film_grain, apply_film_grain_into};
+pub use film_grain::{apply_film_grain, apply_film_grain_into, apply_film_grain_into_with};
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{
     DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, RetiredFramePlanes,

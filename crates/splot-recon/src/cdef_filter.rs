@@ -41,9 +41,12 @@ use fearless_simd::{
 };
 
 use crate::ReconSample;
+use splot_core::simd::SimdBackend;
 
 mod direction_backend;
-pub use direction_backend::{CdefDirectionBackend, cdef_direction_padded_with_backend};
+pub use direction_backend::{
+    CdefDirectionBackend, cdef_direction_padded_with, cdef_direction_padded_with_backend,
+};
 
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
 const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
@@ -1367,6 +1370,25 @@ pub fn cdef_filter_block_interior_to_valid_stride<T: ReconSample>(
     cdef_filter_block_padded_to_valid_stride::<false, _>(pad, w, h, filter, out, out_stride)
 }
 
+/// Variant of [`cdef_filter_block_interior_to_valid_stride`] using `backend`.
+#[doc(hidden)]
+pub fn cdef_filter_block_interior_to_valid_stride_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [T],
+    out_stride: usize,
+) -> bool {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
+        cdef_filter_block_to_valid_stride_simd::<_, T, false>(
+            simd, pad, w, h, filter, out, out_stride,
+        )
+    })
+}
+
 /// SIMD CDEF filtering for a padded boundary block.
 ///
 /// Tap slots outside the active filter region must contain [`CDEF_UNAVAILABLE`].
@@ -1383,6 +1405,25 @@ pub fn cdef_filter_block_boundary_to_valid_stride<T: ReconSample>(
     cdef_filter_block_padded_to_valid_stride::<true, _>(pad, w, h, filter, out, out_stride)
 }
 
+/// Variant of [`cdef_filter_block_boundary_to_valid_stride`] using `backend`.
+#[doc(hidden)]
+pub fn cdef_filter_block_boundary_to_valid_stride_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [T],
+    out_stride: usize,
+) -> bool {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
+        cdef_filter_block_to_valid_stride_simd::<_, T, true>(
+            simd, pad, w, h, filter, out, out_stride,
+        )
+    })
+}
+
 fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: ReconSample>(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
@@ -1391,38 +1432,49 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: Reco
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
+    baseline_simd!(simd => {
+        cdef_filter_block_to_valid_stride_simd::<_, T, HAS_UNAVAILABLE>(
+            simd, pad, w, h, filter, out, out_stride,
+        )
+    })
+}
+
+fn cdef_filter_block_to_valid_stride_simd<
+    S: SimdToken,
+    T: ReconSample,
+    const HAS_UNAVAILABLE: bool,
+>(
+    simd: S,
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [T],
+    out_stride: usize,
+) -> bool {
+    const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
     let (w, h) = (w.min(8), h.min(8));
     let mut block = [0u16; 64];
-    if w == 0 || !cdef_filter_block_padded::<HAS_UNAVAILABLE>(pad, h, filter, &mut block) {
+    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
+    if w == 0
+        || cdef_filter_block_rows::<
+            _,
+            _,
+            8,
+            HAS_UNAVAILABLE,
+            CDEF_PADDED_SIDE,
+            2,
+            8,
+            SPAN,
+            CDEF_PADDED_AREA,
+        >(simd, args)
+        .is_none()
+    {
         return false;
     }
     let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
     let size = (w, h, unfiltered);
-    baseline_simd!(simd => cdef_publish_block(simd, &block, size, out, out_stride)).is_some()
-}
-
-/// § 7.18.3 over one padded block into the first `h` rows of the 8x8
-/// `block`, every row 8 lanes wide whatever the block's width.
-fn cdef_filter_block_padded<const HAS_UNAVAILABLE: bool>(
-    pad: &[u16; CDEF_PADDED_AREA],
-    h: usize,
-    filter: &CdefBlockFilter,
-    block: &mut [u16; 64],
-) -> bool {
-    const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
-    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
-    baseline_simd!(simd => cdef_filter_block_rows::<
-        _,
-        _,
-        8,
-        HAS_UNAVAILABLE,
-        CDEF_PADDED_SIDE,
-        2,
-        8,
-        SPAN,
-        CDEF_PADDED_AREA,
-    >(simd, args))
-    .is_some()
+    cdef_publish_block(simd, &block, size, out, out_stride).is_some()
 }
 
 /// Writes the first `w` lanes of the first `h` rows of `block` to `out`, rows
@@ -1497,11 +1549,36 @@ pub fn cdef_filter_block_chroma_pair(
     filter: &CdefBlockFilter,
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
+    baseline_simd!(simd => cdef_filter_block_chroma_pair_rows(simd, pad, h, filter, out))
+}
+
+/// Variant of [`cdef_filter_block_chroma_pair`] using the caller's
+/// startup-selected static SIMD backend `backend`.
+pub fn cdef_filter_block_chroma_pair_with<B: SimdBackend>(
+    backend: B,
+    pad: &[u16; CDEF_PADDED_AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [u16; CDEF_PAIR_OUTPUT],
+) -> bool {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
+        cdef_filter_block_chroma_pair_rows(simd, pad, h, filter, out)
+    })
+}
+
+fn cdef_filter_block_chroma_pair_rows<S: SimdToken>(
+    simd: S,
+    pad: &[u16; CDEF_PADDED_AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [u16; CDEF_PAIR_OUTPUT],
+) -> bool {
     if h > 4 {
         return false;
     }
     let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
-    baseline_simd!(simd => cdef_filter_block_rows::<
+    cdef_filter_block_rows::<
         _,
         _,
         8,
@@ -1511,14 +1588,15 @@ pub fn cdef_filter_block_chroma_pair(
         4,
         { 3 * CDEF_PAIR_STRIDE + 8 },
         CDEF_PADDED_AREA,
-    >(simd, args))
+    >(simd, args)
     .is_some()
 }
 
 mod segment;
 pub use segment::{
     CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths,
-    CdefUnitFilters, cdef_filter_segment, cdef_publish_chroma_pair,
+    CdefUnitFilters, cdef_filter_segment, cdef_filter_segment_with, cdef_publish_chroma_pair,
+    cdef_publish_chroma_pair_with,
 };
 #[cfg(test)]
 pub(crate) use segment::{cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment};

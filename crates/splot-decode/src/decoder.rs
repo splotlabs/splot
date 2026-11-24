@@ -199,6 +199,7 @@ pub struct Picture {
     extended_layer_id: ExtendedLayerId,
     embedded_layer_id: EmbeddedLayerId,
     temporal_layer_id: TemporalLayerId,
+    backend: splot_core::simd::ResolvedBackend,
 }
 
 #[derive(Debug)]
@@ -230,13 +231,16 @@ impl Picture {
         frame: &PipelineFrame,
         pool: Option<Arc<PlanePool>>,
         options: &DecodeOptions,
+        backend: splot_core::simd::ResolvedBackend,
     ) -> Result<Self> {
         let grain = frame.output_grain(options);
         let samples = match frame.ready_frame()? {
             PipelineDecodedFrame::Eight(frame) => {
-                Samples::Eight(display(frame, grain, pool.as_ref())?)
+                Samples::Eight(display(backend, frame, grain, pool.as_ref())?)
             }
-            PipelineDecodedFrame::Ten(frame) => Samples::Ten(display(frame, grain, pool.as_ref())?),
+            PipelineDecodedFrame::Ten(frame) => {
+                Samples::Ten(display(backend, frame, grain, pool.as_ref())?)
+            }
         };
         let metadata = &frame.output_effects.metadata;
         Ok(Self {
@@ -247,6 +251,7 @@ impl Picture {
             extended_layer_id: frame.extended_layer_id,
             embedded_layer_id: frame.embedded_layer_id,
             temporal_layer_id: frame.temporal_layer_id,
+            backend,
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
@@ -279,10 +284,18 @@ impl Picture {
         let grain = self.pending_grain.as_ref();
         let pool = self.pool.as_ref();
         let samples = match self.samples.as_ref() {
-            Some(Samples::Eight(frame)) => {
-                Some(Samples::Eight(display(frame.share(), grain, pool)?))
-            }
-            Some(Samples::Ten(frame)) => Some(Samples::Ten(display(frame.share(), grain, pool)?)),
+            Some(Samples::Eight(frame)) => Some(Samples::Eight(display(
+                self.backend,
+                frame.share(),
+                grain,
+                pool,
+            )?)),
+            Some(Samples::Ten(frame)) => Some(Samples::Ten(display(
+                self.backend,
+                frame.share(),
+                grain,
+                pool,
+            )?)),
             None => None,
         };
         Ok(Self {
@@ -298,6 +311,7 @@ impl Picture {
             extended_layer_id: self.extended_layer_id,
             embedded_layer_id: self.embedded_layer_id,
             temporal_layer_id: self.temporal_layer_id,
+            backend: self.backend,
         })
     }
 
@@ -400,6 +414,7 @@ impl Drop for Picture {
 /// The displayed form of `frame`: grain goes into planes from the decoder's
 /// pool, which the picture gives them back to when the caller drops it.
 fn display<T: ReconSample>(
+    backend: splot_core::simd::ResolvedBackend,
     frame: SharedFrame<T>,
     grain: Option<&ActiveFilmGrain>,
     pool: Option<&Arc<PlanePool>>,
@@ -408,8 +423,7 @@ fn display<T: ReconSample>(
         return Ok(frame);
     };
     let spare = FramePlaneSamples::default().with_pool(pool);
-    let grained =
-        splot_recon::apply_film_grain_into(frame.get(), &grain.model, grain.grain_seed, spare)?;
+    let grained = crate::output::film_grain::apply(backend, frame.get(), grain, spare)?;
     Ok(SharedFrame::new(grained))
 }
 
@@ -604,9 +618,12 @@ fn run_driver_session(launch: DriverLaunch) {
             &session,
             |_| Ok(()),
             |frame| {
-                guard
-                    .0
-                    .push_picture(Picture::new(frame, session.planes(), &options)?);
+                guard.0.push_picture(Picture::new(
+                    frame,
+                    session.planes(),
+                    &options,
+                    session.backend(),
+                )?);
                 Ok(())
             },
         );

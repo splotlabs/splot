@@ -33,18 +33,21 @@ impl CdefPairSegment {
         stride: usize,
         origin: (usize, usize),
     ) -> bool {
-        let ranges = gather_pair::<u8, true>(
-            u,
-            v,
-            width,
-            stride,
-            (&mut self.pad, &mut self.bytes),
-            origin,
-        );
-        self.ranges = ranges.unwrap_or([u16::MAX; CDEF_SEGMENT_BLOCKS]);
-        self.has_bytes = ranges.is_some();
-        self.bytes_only = true;
-        ranges.is_some()
+        self.gather_with_mode::<_, u8, true>(BaselineSegment, u, v, width, stride, origin)
+    }
+
+    /// Variant of [`Self::gather_bytes`] using the caller's startup-selected
+    /// static SIMD backend `backend`.
+    pub fn gather_bytes_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        u: &[u8],
+        v: &[u8],
+        width: usize,
+        stride: usize,
+        origin: (usize, usize),
+    ) -> bool {
+        self.gather_with_mode::<_, u8, true>(TypedSegment(backend), u, v, width, stride, origin)
     }
 
     #[inline]
