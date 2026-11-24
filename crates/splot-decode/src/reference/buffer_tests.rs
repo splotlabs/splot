@@ -102,6 +102,7 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
             numerator: 1,
             denominator: 1,
         },
+        extended_layer_id: splot_core::types::ExtendedLayerId::from_bits(0),
         embedded_layer_id: splot_core::types::EmbeddedLayerId::BASE,
         temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
         props: crate::DataProps::default(),

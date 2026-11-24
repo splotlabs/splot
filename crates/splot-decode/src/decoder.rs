@@ -27,7 +27,7 @@ use crate::error::{DecodeError, DecoderStateError, Result};
 use crate::pipeline::{ActiveFilmGrain, DecodeSession, PipelineDecodedFrame, PipelineFrame};
 use crate::{
     DecodeLimitName, DecodeLimits, DecodeOptions, EmbeddedLayerId, EmbeddedLayerSelection,
-    TemporalLayerSelection,
+    ExtendedLayerId, ExtendedLayerSelection, TemporalLayerSelection,
 };
 
 /// How a [`Decoder`] runs.
@@ -52,6 +52,8 @@ pub struct DecoderSettings {
     pub temporal_layer_selection: TemporalLayerSelection,
     /// Embedded enhancement layers to decode and emit. Defaults to [`EmbeddedLayerSelection::All`].
     pub embedded_layer_selection: EmbeddedLayerSelection,
+    /// Extended enhancement layers to decode and emit. Defaults to [`ExtendedLayerSelection::All`].
+    pub extended_layer_selection: ExtendedLayerSelection,
 }
 
 impl DecoderSettings {
@@ -108,6 +110,16 @@ impl DecoderSettings {
         embedded_layer_selection: EmbeddedLayerSelection,
     ) -> Self {
         self.embedded_layer_selection = embedded_layer_selection;
+        self
+    }
+
+    /// Returns a copy with the extended-layer selection policy replaced.
+    #[must_use]
+    pub const fn with_extended_layer_selection(
+        mut self,
+        extended_layer_selection: ExtendedLayerSelection,
+    ) -> Self {
+        self.extended_layer_selection = extended_layer_selection;
         self
     }
 }
@@ -184,6 +196,7 @@ pub struct Picture {
     /// The grain the stream signals for this picture and the samples lack.
     pending_grain: Option<ActiveFilmGrain>,
     frame_type: Option<FrameType>,
+    extended_layer_id: ExtendedLayerId,
     embedded_layer_id: EmbeddedLayerId,
     temporal_layer_id: TemporalLayerId,
     backend: splot_core::simd::ResolvedBackend,
@@ -235,6 +248,7 @@ impl Picture {
                 .ccso_header
                 .as_ref()
                 .and_then(|header| header.frame_type),
+            extended_layer_id: frame.extended_layer_id,
             embedded_layer_id: frame.embedded_layer_id,
             temporal_layer_id: frame.temporal_layer_id,
             backend,
@@ -294,6 +308,7 @@ impl Picture {
             has_film_grain: self.has_film_grain,
             pending_grain: None,
             frame_type: self.frame_type,
+            extended_layer_id: self.extended_layer_id,
             embedded_layer_id: self.embedded_layer_id,
             temporal_layer_id: self.temporal_layer_id,
             backend: self.backend,
@@ -306,6 +321,13 @@ impl Picture {
     #[must_use]
     pub const fn frame_type(&self) -> Option<FrameType> {
         self.frame_type
+    }
+
+    /// Extended layer id (`obu_xlayer_id`, AV2 § 6.2.2) of the coded or
+    /// show-existing frame that produced this picture.
+    #[must_use]
+    pub const fn extended_layer_id(&self) -> ExtendedLayerId {
+        self.extended_layer_id
     }
 
     /// Embedded layer id (`obu_mlayer_id`, AV2 § 6.2.2) of the coded or
@@ -557,6 +579,7 @@ struct DriverLaunch {
     skip_film_grain: bool,
     temporal_layer_selection: TemporalLayerSelection,
     embedded_layer_selection: EmbeddedLayerSelection,
+    extended_layer_selection: ExtendedLayerSelection,
     frame_delay: core::num::NonZeroUsize,
     rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
     resolved: ResolvedBackend,
@@ -583,7 +606,8 @@ fn run_driver_session(launch: DriverLaunch) {
     let options = DecodeOptions::new(launch.limits)
         .with_skip_film_grain(launch.skip_film_grain)
         .with_temporal_layer_selection(launch.temporal_layer_selection)
-        .with_embedded_layer_selection(launch.embedded_layer_selection);
+        .with_embedded_layer_selection(launch.embedded_layer_selection)
+        .with_extended_layer_selection(launch.extended_layer_selection);
     let guard = DriverGuard(launch.shared);
     let session = DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
     loop {
@@ -618,11 +642,14 @@ impl Decoder {
     /// `settings.temporal_layer_selection` is invalid,
     /// [`DecodeError::InvalidEmbeddedSelection`] if
     /// `settings.embedded_layer_selection` is invalid,
+    /// [`DecodeError::InvalidExtendedSelection`] if
+    /// `settings.extended_layer_selection` is invalid,
     /// [`DecodeError::UnsupportedBackend`] if the requested SIMD policy cannot
     /// run on this host, or [`DecodeError::Pool`] if a thread cannot start.
     pub fn new(settings: DecoderSettings) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
         settings.embedded_layer_selection.validate()?;
+        settings.extended_layer_selection.validate()?;
         let resolved = splot_core::simd::resolve_backend(settings.simd_policy)?;
         let selected_backend = resolved.kind();
         let threads = settings.threads.resolve();
@@ -654,6 +681,7 @@ impl Decoder {
             skip_film_grain: settings.skip_film_grain,
             temporal_layer_selection: settings.temporal_layer_selection,
             embedded_layer_selection: settings.embedded_layer_selection,
+            extended_layer_selection: settings.extended_layer_selection,
             frame_delay,
             rows,
             resolved,

@@ -101,7 +101,7 @@ fn missing_display_frame() -> crate::error::DecodeError {
 pub(super) fn charge_emitted_outputs(
     options: &DecodeOptions,
     frames: &FrameStore,
-    scheduler: &OutputScheduler,
+    emitted_count: usize,
     queue: &mut EmissionQueue,
     newly: &[usize],
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
@@ -110,9 +110,9 @@ pub(super) fn charge_emitted_outputs(
         let requested = options
             .output_frame_limit()
             .map_or(u64::MAX, std::num::NonZeroU64::get);
-        let emitted_total = (scheduler.emitted_count as u64).min(requested);
+        let emitted_total = (emitted_count as u64).min(requested);
         ensure_output_frame_count_limit(options.limits(), emitted_total)?;
-        let first_new = scheduler.emitted_count - newly.len();
+        let first_new = emitted_count - newly.len();
         for (offset, &frame_index) in newly.iter().enumerate() {
             if (first_new + offset) as u64 >= requested {
                 break;
@@ -524,6 +524,7 @@ mod tests {
                 numerator: 1,
                 denominator: 1,
             },
+            extended_layer_id: splot_core::types::ExtendedLayerId::from_bits(0),
             embedded_layer_id: splot_core::types::EmbeddedLayerId::BASE,
             temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
             props: crate::DataProps::default(),
@@ -562,7 +563,7 @@ mod tests {
         let result = charge_emitted_outputs(
             &options,
             &frames,
-            &scheduler,
+            scheduler.emitted_count,
             &mut queue,
             &[0, 1],
             &mut |frame| {
@@ -661,16 +662,31 @@ mod tests {
             crate::support::decode_buffers::DecodeBuffers::new(),
             1,
         );
+        struct SingleLayerRetention<'a> {
+            reference: &'a crate::reference::buffer::RuntimeReferenceBuffer,
+            scheduler: &'a mut OutputScheduler,
+        }
+        impl crate::pipeline::FrameRetention for SingleLayerRetention<'_> {
+            fn retains(&self, frame_index: usize) -> bool {
+                self.reference.retains(frame_index) || self.scheduler.retains(frame_index)
+            }
+            fn forget(&mut self, frame_index: usize) {
+                self.scheduler.forget(frame_index);
+            }
+        }
         for _ in 0..128 {
             let mut alias = settled_frame(8, FrameOutputEffects::empty()).unwrap();
             alias.frame =
                 PipelineFrameSlot::completed(frames.get(0).unwrap().frame.ready().unwrap());
             assert_eq!(retained_decoded_frame_bytes(&alias).unwrap(), 0);
             frames.entries[1].frame = Some(alias);
-            crate::pipeline::reclaim_unowned_frames(
+            let mut retention = SingleLayerRetention {
+                reference: &reference,
+                scheduler: &mut scheduler,
+            };
+            crate::pipeline::reclaim_unowned_frames_with(
                 &mut frames,
-                &reference,
-                &mut scheduler,
+                &mut retention,
                 &queue,
                 &mut ring,
                 &mut retained_bytes,
@@ -680,10 +696,13 @@ mod tests {
             assert_eq!(retained_bytes, source_bytes);
         }
         scheduler.pending[0] = None;
-        crate::pipeline::reclaim_unowned_frames(
+        let mut retention = SingleLayerRetention {
+            reference: &reference,
+            scheduler: &mut scheduler,
+        };
+        crate::pipeline::reclaim_unowned_frames_with(
             &mut frames,
-            &reference,
-            &mut scheduler,
+            &mut retention,
             &queue,
             &mut ring,
             &mut retained_bytes,
@@ -694,10 +713,9 @@ mod tests {
             "external samples still need accounting"
         );
         drop(external);
-        crate::pipeline::reclaim_unowned_frames(
+        crate::pipeline::reclaim_unowned_frames_with(
             &mut frames,
-            &reference,
-            &mut scheduler,
+            &mut retention,
             &queue,
             &mut ring,
             &mut retained_bytes,

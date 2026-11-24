@@ -12064,3 +12064,261 @@ output_scope = "Complete 49,152-byte 8-frame 8-bit raw I420 output across ML0, M
 kind = "digest-equality"
 left = "avm-mlayer-tlayer-sparse-state-raw-sha256"
 right = "splot-mlayer-tlayer-sparse-state-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-xlayer3-7-global-lcr-isolation"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated independent 8-bit streams multiplexed at obu_xlayer_id 3 (64x64 to 80x64 mid-stream CLK sequence transition, film-grain models 1 and 2) and obu_xlayer_id 7 (96x64, MFH signaled, film-grain model 3) under Profile 2 IOP 2 and global LCR id 1; splot decodes each extended layer byte-for-byte identically to component avmdec runs."
+recorded_at = "2026-11-24"
+command = '''Encoded independent 8-bit component streams with avmenc (--obu --bit-depth=8 --i420 --film-grain-test=1..3, --enable-mfh-obu-signaling=1 and --kf-min-dist=2 --kf-max-dist=2 for layer 7), retagged OBU extension headers to extended layers 3 and 7 with Profile 2, seq_header_id 0 and 1, seq_lcr_id 1, and muxed per temporal unit behind global LCR id 1 (doh_constraint_flag 1). Validated clean with splot validate --strict and verified byte-exact raw I420 parity per extended layer against avmdec.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-xlayer3-7-global-lcr-isolation.obu"
+sha256 = "87e62f3da20ce7690dfe0d7a69cb97e15b1ad279e651650d86b4722e410456b2"
+size_bytes = 13738
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Multiplexed deterministically from project-owned synthetic 8-bit I420 streams encoded with AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-xlayer3"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=8 decoded the component extended-layer 3 bitstream before multiplexing into {fixture:input}."
+output_digest_id = "avm-xlayer3-iso-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "8bdd46a3f2c2af0d989621bd90253a101ee29a5e2274062301dcce60f9398c46"
+output_scope = "Complete 27,648-byte 4-frame 8-bit raw I420 output for extended layer 3 (frames 0 and 1 at 64x64 then frames 2 and 3 at 80x64)"
+
+[[evidence.reference_run]]
+id = "splot-xlayer3"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding extended layer 3 from multi-extended-layer input."
+command_summary = "splot decode --extended-layer 3 --output-format raw on {fixture:input}."
+output_digest_id = "splot-xlayer3-iso-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "8bdd46a3f2c2af0d989621bd90253a101ee29a5e2274062301dcce60f9398c46"
+output_scope = "Complete 27,648-byte 4-frame 8-bit raw I420 output for extended layer 3 (frames 0 and 1 at 64x64 then frames 2 and 3 at 80x64)"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-xlayer3-iso-raw-sha256"
+right = "splot-xlayer3-iso-raw-sha256"
+
+[[evidence.reference_run]]
+id = "avm-xlayer7"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=8 decoded the component extended-layer 7 bitstream before multiplexing into {fixture:input}."
+output_digest_id = "avm-xlayer7-iso-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "0abae5b2ef2bf8a1b8d2000e927da1f55ccd1083ea92d755c45a2893cd057b8e"
+output_scope = "Complete 36,864-byte 4-frame 8-bit 96x64 raw I420 output for extended layer 7"
+
+[[evidence.reference_run]]
+id = "splot-xlayer7"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding extended layer 7 from multi-extended-layer input."
+command_summary = "splot decode --extended-layer 7 --output-format raw on {fixture:input}."
+output_digest_id = "splot-xlayer7-iso-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "0abae5b2ef2bf8a1b8d2000e927da1f55ccd1083ea92d755c45a2893cd057b8e"
+output_scope = "Complete 36,864-byte 4-frame 8-bit 96x64 raw I420 output for extended layer 7"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-xlayer7-iso-raw-sha256"
+right = "splot-xlayer7-iso-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-xlayer3-7-global-lcr-10bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated independent 10-bit streams multiplexed at obu_xlayer_id 3 (64x64, 3 frames) and obu_xlayer_id 7 (96x64, MFH signaled, 3 frames) under Profile 2 IOP 2 and global LCR id 1; splot decodes each extended layer byte-for-byte identically to component avmdec runs."
+recorded_at = "2026-11-24"
+command = '''Encoded 10-bit component streams with avmenc (--obu --bit-depth=10 --input-bit-depth=10 --i420, --enable-mfh-obu-signaling=1 on layer 7), retagged OBU extension headers to extended layers 3 and 7 with Profile 2, seq_header_id 0 and 1, seq_lcr_id 1, and muxed per temporal unit behind global LCR id 1. Validated clean with splot validate --strict and verified byte-exact 10-bit I420 parity against avmdec.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-xlayer3-7-global-lcr-10bit.obu"
+sha256 = "1ef9f61f15d1cbd29695158f318de46667ddfad53fa07a94c99dd26bb358597e"
+size_bytes = 8153
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Multiplexed deterministically from project-owned synthetic 10-bit I420 streams encoded with AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-xlayer3"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=10 decoded the component extended-layer 3 bitstream before multiplexing into {fixture:input}."
+output_digest_id = "avm-xlayer3-10b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "49bb757a8539e871f291d96bc62632159f6eea670431a1e04808c3700d52ef94"
+output_scope = "Complete 36,864-byte 3-frame 10-bit 64x64 raw I420 output for extended layer 3"
+
+[[evidence.reference_run]]
+id = "splot-xlayer3"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding 10-bit extended layer 3 from multi-extended-layer input."
+command_summary = "splot decode --extended-layer 3 --output-format raw on {fixture:input}."
+output_digest_id = "splot-xlayer3-10b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "49bb757a8539e871f291d96bc62632159f6eea670431a1e04808c3700d52ef94"
+output_scope = "Complete 36,864-byte 3-frame 10-bit 64x64 raw I420 output for extended layer 3"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-xlayer3-10b-raw-sha256"
+right = "splot-xlayer3-10b-raw-sha256"
+
+[[evidence.reference_run]]
+id = "avm-xlayer7"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=10 decoded the component extended-layer 7 bitstream before multiplexing into {fixture:input}."
+output_digest_id = "avm-xlayer7-10b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "32ea1a187f3332e64a900fea920db9e32c82ac0fb68e86af36c91709955dd40e"
+output_scope = "Complete 55,296-byte 3-frame 10-bit 96x64 raw I420 output for extended layer 7"
+
+[[evidence.reference_run]]
+id = "splot-xlayer7"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding 10-bit extended layer 7 from multi-extended-layer input."
+command_summary = "splot decode --extended-layer 7 --output-format raw on {fixture:input}."
+output_digest_id = "splot-xlayer7-10b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "32ea1a187f3332e64a900fea920db9e32c82ac0fb68e86af36c91709955dd40e"
+output_scope = "Complete 55,296-byte 3-frame 10-bit 96x64 raw I420 output for extended layer 7"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-xlayer7-10b-raw-sha256"
+right = "splot-xlayer7-10b-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-xlayer3-7-layered-mixed"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Local AVM generated a 2-mlayer by 2-tlayer sparse-state stream at obu_xlayer_id 3 (64x64, 8 frames) and an independent single-mlayer stream at obu_xlayer_id 7 (96x64, MFH signaled, 4 frames) multiplexed under Profile 2 IOP 2 and global LCR id 1; splot decodes each extended layer byte-for-byte identically to component avmdec runs."
+recorded_at = "2026-11-24"
+command = '''Multiplexed the 2-mlayer by 2-tlayer sparse-state AVM stream (extended layer 3, seq_header_id 0) and single-mlayer AVM stream (extended layer 7, seq_header_id 1, MFH enabled) under Profile 2 IOP 2 and global LCR id 1. Validated clean with splot validate --strict and verified byte-exact raw I420 parity per extended layer against avmdec.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-xlayer3-7-layered-mixed.obu"
+sha256 = "c9af7026fae77012458e3334742a65ffb1cbb4d362d836d0c71b295cced98751"
+size_bytes = 8553
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Multiplexed deterministically from project-owned synthetic 8-bit I420 streams encoded with AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-xlayer3"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=8 decoded the component extended-layer 3 bitstream before multiplexing into {fixture:input}."
+output_digest_id = "avm-xlayer3-layered-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "80f2b107ff4512837e25b724f380259077ad451f73e7cb2c046e64feee8062cc"
+output_scope = "Complete 49,152-byte 8-frame 8-bit 64x64 raw I420 output for extended layer 3 across ML0, ML1, TL0, and TL1"
+
+[[evidence.reference_run]]
+id = "splot-xlayer3"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding extended layer 3 across all embedded and temporal layers from multi-extended-layer input."
+command_summary = "splot decode --extended-layer 3 --embedded-layer all --temporal-layer all --output-format raw on {fixture:input}."
+output_digest_id = "splot-xlayer3-layered-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "80f2b107ff4512837e25b724f380259077ad451f73e7cb2c046e64feee8062cc"
+output_scope = "Complete 49,152-byte 8-frame 8-bit 64x64 raw I420 output for extended layer 3 across ML0, ML1, TL0, and TL1"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-xlayer3-layered-raw-sha256"
+right = "splot-xlayer3-layered-raw-sha256"
+
+[[evidence.reference_run]]
+id = "avm-xlayer7"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --rawvideo --i420 --output-bit-depth=8 decoded the component extended-layer 7 bitstream before multiplexing into {fixture:input}."
+output_digest_id = "avm-xlayer7-layered-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "8762b65ff05fd6aa3b144f2b0675544f17c61ae8fd8431dbe9f2c7aad9c1598b"
+output_scope = "Complete 36,864-byte 4-frame 8-bit 96x64 raw I420 output for extended layer 7"
+
+[[evidence.reference_run]]
+id = "splot-xlayer7"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree decoding extended layer 7 from multi-extended-layer input."
+command_summary = "splot decode --extended-layer 7 --output-format raw on {fixture:input}."
+output_digest_id = "splot-xlayer7-layered-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "8762b65ff05fd6aa3b144f2b0675544f17c61ae8fd8431dbe9f2c7aad9c1598b"
+output_scope = "Complete 36,864-byte 4-frame 8-bit 96x64 raw I420 output for extended layer 7"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-xlayer7-layered-raw-sha256"
+right = "splot-xlayer7-layered-raw-sha256"
