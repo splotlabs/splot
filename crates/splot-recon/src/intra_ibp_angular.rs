@@ -180,9 +180,9 @@ impl<B: SimdBackend> IbpAngularRunner for TypedIbpAngular<B> {
     ) {
         let narrow = self.0.narrow();
         if width <= 16 {
-            narrow.vectorize(|| {
+            splot_core::with_simd!(narrow, simd => {
                 blend_rows::<_, _, 16>(
-                    narrow.token(),
+                    simd,
                     weights,
                     shifts,
                     width,
@@ -192,9 +192,9 @@ impl<B: SimdBackend> IbpAngularRunner for TypedIbpAngular<B> {
                 );
             });
         } else {
-            narrow.vectorize(|| {
+            splot_core::with_simd!(narrow, simd => {
                 blend_rows::<_, _, 64>(
-                    narrow.token(),
+                    simd,
                     weights,
                     shifts,
                     width,

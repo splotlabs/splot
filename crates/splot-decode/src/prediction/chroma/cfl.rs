@@ -694,11 +694,11 @@ fn cfl_predict_block<B: SimdBackend, T: ReconSample>(
     }
     let narrow = backend.narrow();
     if let Some(out) = T::u16_slice_mut(out) {
-        narrow.vectorize(|| cfl_predict_rows(narrow.token(), model, luma, width, out, stride));
+        splot_core::with_simd!(narrow, simd => cfl_predict_rows(simd, model, luma, width, out, stride));
     } else if model[3] <= i32::from(u8::MAX)
         && let Some(out) = T::u8_slice_mut(out)
     {
-        narrow.vectorize(|| cfl_predict_rows(narrow.token(), model, luma, width, out, stride));
+        splot_core::with_simd!(narrow, simd => cfl_predict_rows(simd, model, luma, width, out, stride));
     } else {
         return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "CfL sample storage",
@@ -998,8 +998,7 @@ impl CflLumaEdges {
             }
         }
         let narrow = backend.narrow();
-        let alpha = narrow.vectorize(|| {
-            let simd = narrow.token();
+        let alpha = splot_core::with_simd!(narrow, simd => {
             let x = i32x8::from_slice(simd, &picked);
             let sums = |lanes: i32x8<_>| {
                 let (low, high) = simd.split_i32x8(lanes);

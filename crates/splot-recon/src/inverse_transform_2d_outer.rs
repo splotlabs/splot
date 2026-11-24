@@ -478,8 +478,7 @@ struct TypedOuter<B: SimdBackend>(B);
 impl<B: SimdBackend> OuterRunner for TypedOuter<B> {
     #[inline]
     fn idtx_shift(self, dequant: &[i32], coded: &mut [i32], down: u32) {
-        self.0
-            .vectorize(|| idtx_shift_lanes(self.0.token(), dequant, coded, down));
+        splot_core::with_simd!(self.0, simd => idtx_shift_lanes(simd, dequant, coded, down));
     }
 
     #[inline]
@@ -501,14 +500,12 @@ impl<B: SimdBackend> OuterRunner for TypedOuter<B> {
 
     #[inline]
     fn apply_dpcm(self, res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
-        self.0
-            .vectorize(|| apply_dpcm_lanes(self.0.token(), res, w, h, direction));
+        splot_core::with_simd!(self.0, simd => apply_dpcm_lanes(simd, res, w, h, direction));
     }
 
     #[inline]
     fn duplicate_columns(self, src: &[i32], dst: &mut [i32]) {
-        self.0
-            .vectorize(|| duplicate_columns_lanes(self.0.token(), src, dst));
+        splot_core::with_simd!(self.0, simd => duplicate_columns_lanes(simd, src, dst));
     }
 }
 

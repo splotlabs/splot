@@ -151,8 +151,8 @@ impl<B: SimdBackend> SmoothRunner for TypedSmooth<B> {
         stride: usize,
     ) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            smooth_lanes(narrow.token(), size, mode, lanes, corners, output, stride);
+        splot_core::with_simd!(narrow, simd => {
+            smooth_lanes(simd, size, mode, lanes, corners, output, stride);
         });
     }
 }

@@ -350,28 +350,26 @@ fn left_420(
     weights: [[i32; 3]; 3],
     left: &mut [i16],
 ) {
-    fearless_simd::Simd::vectorize(token, || {
-        let first = usize::from(block.above.is_some());
-        let clamp_left = usize::from(block.luma_x != 2);
-        for (g, group) in left.chunks_mut(8).enumerate() {
-            let mut taps = [[[0u16; 8]; 3]; 3];
-            for lane in 0..group.len() {
-                let r = first + 8 * g + lane;
-                let [_, mid, bottom] = tap_rows(block, r);
-                let top = if r == first { mid } else { mid - block.stride };
-                for ((taps, row), weights) in taps.iter_mut().zip([top, mid, bottom]).zip(weights) {
-                    let cols = [row - 2 - clamp_left, row - 2, row - 1];
-                    for ((tap, col), weight) in taps.iter_mut().zip(cols).zip(weights) {
-                        if weight != 0 {
-                            tap[lane] = luma[col].into();
-                        }
+    let first = usize::from(block.above.is_some());
+    let clamp_left = usize::from(block.luma_x != 2);
+    for (g, group) in left.chunks_mut(8).enumerate() {
+        let mut taps = [[[0u16; 8]; 3]; 3];
+        for lane in 0..group.len() {
+            let r = first + 8 * g + lane;
+            let [_, mid, bottom] = tap_rows(block, r);
+            let top = if r == first { mid } else { mid - block.stride };
+            for ((taps, row), weights) in taps.iter_mut().zip([top, mid, bottom]).zip(weights) {
+                let cols = [row - 2 - clamp_left, row - 2, row - 1];
+                for ((tap, col), weight) in taps.iter_mut().zip(cols).zip(weights) {
+                    if weight != 0 {
+                        tap[lane] = luma[col].into();
                     }
                 }
             }
-            let lanes = gathered_q3(token, &taps, weights);
-            group.copy_from_slice(&lanes[..group.len()]); // splot-copy-ok: publish CfL lumaLeft samples
         }
-    });
+        let lanes = gathered_q3(token, &taps, weights);
+        group.copy_from_slice(&lanes[..group.len()]); // splot-copy-ok: publish CfL lumaLeft samples
+    }
 }
 
 /// Defines the `pmaddubsw` part of [`luma_420`] for one constant filter.

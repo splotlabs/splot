@@ -185,7 +185,7 @@ pub fn dequantize_block_with<B: SimdBackend>(
 ) -> Result<usize> {
     let (written, out) = prepare_dequant_block(params, quant, out)?;
     let narrow = backend.narrow();
-    narrow.vectorize(|| dequantize_groups(narrow.token(), params, quant, out))?;
+    splot_core::with_simd!(narrow, simd => dequantize_groups(simd, params, quant, out))?;
     Ok(written)
 }
 

@@ -434,7 +434,7 @@ impl<B: SimdBackend> IstRunner for TypedIst<B> {
         bound: i32,
     ) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| dequant_ist_pow2(narrow.token(), coefs, n, quantizers, bound));
+        splot_core::with_simd!(narrow, simd => dequant_ist_pow2(simd, coefs, n, quantizers, bound));
     }
 
     #[inline]
@@ -448,8 +448,8 @@ impl<B: SimdBackend> IstRunner for TypedIst<B> {
         dequant: &mut [i32],
     ) {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            ist_8x8_simd(narrow.token(), kernel, coefs, wide, bound, geom, dequant);
+        splot_core::with_simd!(narrow, simd => {
+            ist_8x8_simd(simd, kernel, coefs, wide, bound, geom, dequant);
         });
     }
 
@@ -463,7 +463,7 @@ impl<B: SimdBackend> IstRunner for TypedIst<B> {
         bound: i32,
     ) -> [i32; IST_4X4_WIDTH] {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| ist_4x4_simd(narrow.token(), kernel, stx, coefs, wide, bound))
+        splot_core::with_simd!(narrow, simd => ist_4x4_simd(simd, kernel, stx, coefs, wide, bound))
     }
 }
 

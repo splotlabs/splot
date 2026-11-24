@@ -47,7 +47,7 @@ pub(crate) fn u16_samples_exceed_with<B: SimdBackend>(
     max_sample: u16,
 ) -> bool {
     let narrow = backend.narrow();
-    narrow.vectorize(|| u16_peak_exceeds(narrow.token(), samples, max_sample))
+    splot_core::with_simd!(narrow, simd => u16_peak_exceeds(simd, samples, max_sample))
 }
 
 #[inline]
@@ -129,7 +129,7 @@ pub fn sum_samples_with<B: SimdBackend, T: SummedSample>(
     every_second: bool,
 ) -> u32 {
     let narrow = backend.narrow();
-    narrow.vectorize(|| sum_lanes(narrow.token(), samples, every_second))
+    splot_core::with_simd!(narrow, simd => sum_lanes(simd, samples, every_second))
 }
 
 #[inline]
