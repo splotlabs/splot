@@ -376,6 +376,7 @@ impl InterReconCommand {
         if self.is_tip() {
             let frame = shared.tip(sink.info())?;
             tip::predict_block(
+                backend,
                 tip_scratch,
                 sink,
                 Some(temporal_records),
@@ -390,6 +391,7 @@ impl InterReconCommand {
         }
         if let Some(flags) = self.refined() {
             return super::prediction::predict_refined_inter_block(
+                backend,
                 sink,
                 refined,
                 &self.placed,
@@ -478,6 +480,7 @@ impl InterReconCommand {
         let records = (!self.motion_derived).then_some(temporal_records);
         if let Some(flags) = self.refined() {
             super::prediction::predict_refined_inter_block(
+                backend,
                 sink,
                 refined,
                 &self.placed,
@@ -497,6 +500,7 @@ impl InterReconCommand {
         } else {
             let frame = shared.tip(sink.info())?;
             tip::predict_block(
+                backend,
                 tip_scratch,
                 sink,
                 records,

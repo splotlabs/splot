@@ -104,20 +104,23 @@ fn scalar<T: ReconSample>(
     let [pred0, pred1] = preds;
     let result = if matches!(blend, CompoundBlend::Average { .. }) {
         let ([s0, s1], (fw, fh)) = (at.scalings, at.frame);
-        blend_compound_average::<T>(
-            pred0,
-            pred1,
-            bit_depth,
-            w,
-            h,
-            blend,
-            s0,
-            s1,
-            fw,
-            fh,
-            &mut output,
-            stride,
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            blend_compound_average::<_, T>(
+                backend,
+                pred0,
+                pred1,
+                bit_depth,
+                w,
+                h,
+                blend,
+                s0,
+                s1,
+                fw,
+                fh,
+                &mut output,
+                stride,
+            )
+        })
     } else {
         let (luma_w, luma_h) = at.luma;
         blend_compound_diff_weighted::<T>(
@@ -166,25 +169,43 @@ fn kernel_mask(
     let stride = w + 3;
     let len = (h - 1) * stride + w;
     let refs = [preds[0].as_slice(), preds[1].as_slice()];
-    match depth {
-        Depth::Narrow => {
-            let narrow = narrow(preds);
-            let mut output = vec![0u8; len];
-            let refs = [narrow[0].as_slice(), narrow[1].as_slice()];
-            blend_mask_u8(&mut output, stride, refs, mask, (w, h));
-            output.into_iter().map(u16::from).collect()
+    crate::test_support::with_auto_backend!(backend => {
+        match depth {
+            Depth::Narrow => {
+                let narrow = narrow(preds);
+                let mut output = vec![0u8; len];
+                let refs = [narrow[0].as_slice(), narrow[1].as_slice()];
+                blend_mask_u8_with(backend, &mut output, stride, refs, mask, (w, h));
+                output.into_iter().map(u16::from).collect()
+            }
+            Depth::WideEight => {
+                let mut output = vec![0u8; len];
+                blend_mask_wide_with(
+                    backend,
+                    &mut output,
+                    stride,
+                    refs,
+                    mask,
+                    (w, h),
+                    BitDepth::Eight,
+                );
+                output.into_iter().map(u16::from).collect()
+            }
+            Depth::WideTen => {
+                let mut output = vec![0u16; len];
+                blend_mask_wide_with(
+                    backend,
+                    &mut output,
+                    stride,
+                    refs,
+                    mask,
+                    (w, h),
+                    BitDepth::Ten,
+                );
+                output
+            }
         }
-        Depth::WideEight => {
-            let mut output = vec![0u8; len];
-            blend_mask_wide(&mut output, stride, refs, mask, (w, h), BitDepth::Eight);
-            output.into_iter().map(u16::from).collect()
-        }
-        Depth::WideTen => {
-            let mut output = vec![0u16; len];
-            blend_mask_wide(&mut output, stride, refs, mask, (w, h), BitDepth::Ten);
-            output
-        }
-    }
+    })
 }
 
 /// The difference-weight kernel of `depth` into a `w + 3`-strided output.
@@ -199,25 +220,51 @@ fn kernel_diff(
     let len = (h - 1) * stride + w;
     let refs = [preds[0].as_slice(), preds[1].as_slice()];
     let shape = (inverse, depth.bit_depth());
-    match depth {
-        Depth::Narrow => {
-            let narrow = narrow(preds);
-            let mut output = vec![0u8; len];
-            let refs = [narrow[0].as_slice(), narrow[1].as_slice()];
-            blend_diff_weighted_u8(&mut output, stride, refs, (w, h), inverse, Some(chroma));
-            output.into_iter().map(u16::from).collect()
+    crate::test_support::with_auto_backend!(backend => {
+        match depth {
+            Depth::Narrow => {
+                let narrow = narrow(preds);
+                let mut output = vec![0u8; len];
+                let refs = [narrow[0].as_slice(), narrow[1].as_slice()];
+                blend_diff_weighted_u8_with(
+                    backend,
+                    &mut output,
+                    stride,
+                    refs,
+                    (w, h),
+                    inverse,
+                    Some(chroma),
+                );
+                output.into_iter().map(u16::from).collect()
+            }
+            Depth::WideEight => {
+                let mut output = vec![0u8; len];
+                blend_diff_weighted_wide_with(
+                    backend,
+                    &mut output,
+                    stride,
+                    refs,
+                    (w, h),
+                    shape,
+                    Some(chroma),
+                );
+                output.into_iter().map(u16::from).collect()
+            }
+            Depth::WideTen => {
+                let mut output = vec![0u16; len];
+                blend_diff_weighted_wide_with(
+                    backend,
+                    &mut output,
+                    stride,
+                    refs,
+                    (w, h),
+                    shape,
+                    Some(chroma),
+                );
+                output
+            }
         }
-        Depth::WideEight => {
-            let mut output = vec![0u8; len];
-            blend_diff_weighted_wide(&mut output, stride, refs, (w, h), shape, Some(chroma));
-            output.into_iter().map(u16::from).collect()
-        }
-        Depth::WideTen => {
-            let mut output = vec![0u16; len];
-            blend_diff_weighted_wide(&mut output, stride, refs, (w, h), shape, Some(chroma));
-            output
-        }
-    }
+    })
 }
 
 #[test]
@@ -314,7 +361,10 @@ fn wedge_mask_blend_matches_the_scalar_blend() {
                     );
                     let mut mask = vec![0; pw * ph];
                     let wedge = (usize::from(index), sign);
-                    wedge_mask_into(&mut mask, (pw, ph), (w, h), wedge, sub).expect("wedge mask");
+                    crate::test_support::with_auto_backend!(backend => {
+                        wedge_mask_into_with(backend, &mut mask, (pw, ph), (w, h), wedge, sub)
+                    })
+                    .expect("wedge mask");
                     assert!(mask.iter().any(|&m| m != mask[0]), "wedge {index} {w}x{h}");
                     let got = kernel_mask(depth, &preds, (pw, ph), &mask);
                     assert_eq!(got, want, "wedge {index} sign {sign} {w}x{h} sub {sub:?}");

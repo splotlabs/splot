@@ -99,6 +99,7 @@ pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait()?;
         return decode_bridge_frame(
+            backend,
             candidate,
             frame_envelope,
             core,
@@ -270,7 +271,8 @@ pub(crate) fn reconstruct_tip_output<B: splot_core::simd::SimdBackend, T: ReconS
 }
 
 #[expect(clippy::too_many_arguments)]
-fn decode_bridge_frame<T: ReconSample>(
+fn decode_bridge_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     core: Arc<FrameHeaderCore>,
@@ -333,7 +335,7 @@ fn decode_bridge_frame<T: ReconSample>(
     let frame_cdfs =
         resolve_initial_frame_cdfs(&core, sequence, reference, Some(candidate), offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
-    let frame = bridge::reconstruct(&source, frame_size, visible, 0, offset)?;
+    let frame = bridge::reconstruct(backend, &source, frame_size, visible, 0, offset)?;
     products.frame_cdfs()?.reset_output_from(&frame_cdfs);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = segment_id_map_dimensions(&core)?;
@@ -814,8 +816,9 @@ impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
     ///
     /// As [`mc::motion_compensate_single_block_into`] and
     /// [`mc::predict_inter_block`].
-    pub(in crate::prediction::inter) fn predict_into(
+    pub(in crate::prediction::inter) fn predict_into<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
@@ -823,6 +826,7 @@ impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
     ) -> Result<()> {
         if !self.compound && placed.block.warp_params[0].is_none() {
             return mc::motion_compensate_single_block_into(
+                backend,
                 sink,
                 self.reference0,
                 rect,
@@ -832,7 +836,7 @@ impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
                 offset,
             );
         }
-        mc::predict_inter_block(sink, &self.block_params(placed, rect), offset)
+        mc::predict_inter_block(backend, sink, &self.block_params(placed, rect), offset)
     }
 
     /// Builds the § 7.13.3 prediction parameters for the held block.

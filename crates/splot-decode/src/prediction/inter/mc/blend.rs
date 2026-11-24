@@ -11,7 +11,8 @@ use fearless_simd::{
 const MAX_MC_LUMA_DIM: usize = 256;
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn blend_compound_average<T: ReconSample>(
+pub(super) fn blend_compound_average<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     pred0: &[i32],
     pred1: &[i32],
     bit_depth: splot_recon::BitDepth,
@@ -69,11 +70,12 @@ pub(super) fn blend_compound_average<T: ReconSample>(
         (frame_w, frame_h),
     ) {
         return blend_rows(pred0, pred1, w, output, stride, |pred0, pred1, output| {
-            weighted_row(pred0, pred1, bit_depth, cwp_weight, output)
+            weighted_row(backend, pred0, pred1, bit_depth, cwp_weight, output)
         });
     }
 
     blend_nonuniform_implicit_mask(
+        backend,
         pred0,
         pred1,
         (bit_depth, w),
@@ -128,7 +130,9 @@ pub(super) fn blend_compound_diff_weighted<T: ReconSample>(
     }
     let CompoundBlend::DiffWeighted { inverse } = blend else {
         return blend_rows(pred0, pred1, w, output, stride, |pred0, pred1, output| {
-            weighted_row(pred0, pred1, bit_depth, CWP_EQUAL, output)
+            crate::test_support::with_auto_backend!(backend => {
+                weighted_row(backend, pred0, pred1, bit_depth, CWP_EQUAL, output)
+            })
         });
     };
     if pred0.len() != pred1.len() {
@@ -231,12 +235,14 @@ fn blend_mask_row<T: ReconSample>(
 /// Clips each of `samples` to `0..=max_sample` (at most 1023) into the
 /// matching sample of `output`, eight at a time; a tail under eight samples
 /// is not written.
-pub(super) fn clip_samples_into<T: ReconSample>(
+pub(super) fn clip_samples_into<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     samples: &[i32],
     max_sample: i32,
     output: &mut [T],
 ) {
-    baseline_simd!(simd => {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
         let clip = |samples: &[i32; 8]| {
             let half = |lanes: &[i32]| i32x4::from_slice(simd, lanes).clamp(0, max_sample).bitcast::<u32x4<_>>();
             half(&samples[..4]).narrow(half(&samples[4..]))
@@ -436,7 +442,9 @@ fn check_clipped_samples<T: ReconSample>(max_sample: i32) {
         .collect();
     for len in [16, 64] {
         let mut output = vec![T::default(); len];
-        clip_samples_into(&samples[..len], max_sample, &mut output);
+        crate::test_support::with_auto_backend!(backend => {
+            clip_samples_into(backend, &samples[..len], max_sample, &mut output);
+        });
         for (got, &sample) in output.iter().zip(&samples) {
             assert_eq!(
                 i32::from(got.to_u16()),
@@ -493,7 +501,9 @@ fn difference_weight_matches_the_rounded_spec_formula_at_the_extremes() {
 
 /// The § 7.13.3.14 implicit-mask blend of a translational region whose
 /// reference starts `scalings` hold, in rows of `width` samples.
-pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn blend_nonuniform_implicit_mask<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     pred0: &[i32],
     pred1: &[i32],
     (bit_depth, width): (splot_recon::BitDepth, usize),
@@ -515,7 +525,7 @@ pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
         .enumerate()
     {
         let starts = reference_starts.map(|(x, y)| (x, y + row as i32));
-        blend.row(pred0, pred1, starts, &mut output[..width])?;
+        blend.row(backend, pred0, pred1, starts, &mut output[..width])?;
     }
     Ok(())
 }
@@ -557,8 +567,9 @@ impl ImplicitMaskBlend {
     /// The implicit-mask blend of one row whose first sample reads the
     /// reference positions `starts` and whose later samples step one column
     /// right.
-    fn row<T: ReconSample>(
+    fn row<B: splot_core::simd::SimdBackend, T: ReconSample>(
         self,
+        backend: B,
         left: &[i32],
         right: &[i32],
         starts: [(i32, i32); 2],
@@ -581,27 +592,30 @@ impl ImplicitMaskBlend {
                 (first >= 0 && end <= bound).then_some(32)
             }
         };
-        baseline_simd!(simd => {
+        let narrow = backend.narrow();
+        splot_core::with_simd!(narrow, simd => {
             if let (Some(weight0), Some(weight1)) = (row_weight(0), row_weight(1)) {
                 let mask = i32x4::splat(simd, weight0 - weight1 + 32);
-                return masked_row(simd, (left, right), self.max_sample, output, |_| mask);
+                masked_row(simd, (left, right), self.max_sample, output, |_| mask)
+            } else {
+                let columns = i32x4::from_slice(simd, &[0, 1, 2, 3]);
+                let weight = |reference: usize, col: usize| {
+                    let x = columns + (starts[reference].0 + col as i32);
+                    x.bitcast::<u32x4<_>>()
+                        .simd_lt(bounds[reference])
+                        .select(i32x4::splat(simd, 32), i32x4::splat(simd, 0))
+                };
+                let masks = |col: usize| weight(0, col) - weight(1, col) + 32;
+                masked_row(simd, (left, right), self.max_sample, output, masks)
             }
-            let columns = i32x4::from_slice(simd, &[0, 1, 2, 3]);
-            let weight = |reference: usize, col: usize| {
-                let x = columns + (starts[reference].0 + col as i32);
-                x.bitcast::<u32x4<_>>()
-                    .simd_lt(bounds[reference])
-                    .select(i32x4::splat(simd, 32), i32x4::splat(simd, 0))
-            };
-            let masks = |col: usize| weight(0, col) - weight(1, col) + 32;
-            masked_row(simd, (left, right), self.max_sample, output, masks)
         })
     }
 }
 
 /// The § 7.13.3.16 `cwpWeight` blend of a row: [`masked_row`] with the
 /// mask `4 * cwp_weight`, the same rounding at four times the scale.
-pub(super) fn weighted_row<T: ReconSample>(
+pub(super) fn weighted_row<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     left: &[i32],
     right: &[i32],
     bit_depth: splot_recon::BitDepth,
@@ -610,7 +624,8 @@ pub(super) fn weighted_row<T: ReconSample>(
 ) -> splot_recon::Result<()> {
     let max_sample = i32::from(bit_depth.max_sample());
     let weight = 4 * i32::from(cwp_weight);
-    baseline_simd!(simd => masked_row(simd, (left, right), max_sample, output, |_| {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => masked_row(simd, (left, right), max_sample, output, |_| {
         i32x4::splat(simd, weight)
     }))
 }
@@ -680,7 +695,8 @@ fn masked_row<S: Simd, T: ReconSample>(
 /// start is the sample position plus one per-cell offset; a scaled
 /// reference is an error.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn blend_implicit_mask_region<T: ReconSample>(
+pub(super) fn blend_implicit_mask_region<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     preds: [&[i32]; 2],
     pred_stride: usize,
     [x, y, width, height]: [usize; 4],
@@ -731,6 +747,7 @@ pub(super) fn blend_implicit_mask_region<T: ReconSample>(
                     )
                 });
                 blend.row(
+                    backend,
                     &preds[0][source + cols.start..source + cols.end],
                     &preds[1][source + cols.start..source + cols.end],
                     starts,

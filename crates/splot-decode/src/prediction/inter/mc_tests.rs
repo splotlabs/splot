@@ -5,7 +5,7 @@ use super::*;
 use crate::prediction::inter::mv_scaling::derive_plane_scaling;
 use splot_recon::{
     DecodedFrame, DecodedFrameInfo, FramePlanes, IDENTITY_WARP_PARAMS, OutputIndex, PixelFormat,
-    Plane, PlaneSize, wedge_mask_into,
+    Plane, PlaneSize, wedge_mask_into_with,
 };
 
 fn compound_recycler_box<T: 'static>() -> Option<*const ()> {
@@ -250,16 +250,19 @@ fn dispatcher_copies_non420_reference_planes() {
         let reference = flat_frame_with_format(format, 8, 8, 40, 90, 120);
         let mut workspace = workspace_with_format(format, 8, 8);
 
-        motion_compensate_inter_block_into(
-            &mut CurrentFrameSurface::Frame(&mut workspace),
-            InterBlockParams::single(
-                ReferenceSamples::settled(&reference),
-                McBlockRect::from_luma_rect(0, 0, 8, 8),
-                MotionVector::ZERO,
-                InterpolationFilter::EightTap,
-            ),
-            ByteOffset::new(0),
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            motion_compensate_inter_block_into(
+                backend,
+                &mut CurrentFrameSurface::Frame(&mut workspace),
+                InterBlockParams::single(
+                    ReferenceSamples::settled(&reference),
+                    McBlockRect::from_luma_rect(0, 0, 8, 8),
+                    MotionVector::ZERO,
+                    InterpolationFilter::EightTap,
+                ),
+                ByteOffset::new(0),
+            )
+        })
         .expect("non-4:2:0 single-reference dispatcher");
 
         let decoded = workspace.freeze().expect("freeze non-4:2:0 workspace");
@@ -296,11 +299,14 @@ fn compound_and_warp_copy_non420_chroma_at_native_resolution() {
             ),
         ] {
             let mut workspace = workspace_with_format(format, 8, 8);
-            motion_compensate_inter_block_into(
-                &mut CurrentFrameSurface::Frame(&mut workspace),
-                params,
-                ByteOffset::new(0),
-            )
+            crate::test_support::with_auto_backend!(backend => {
+                motion_compensate_inter_block_into(
+                    backend,
+                    &mut CurrentFrameSurface::Frame(&mut workspace),
+                    params,
+                    ByteOffset::new(0),
+                )
+            })
             .expect("non-4:2:0 compound or warp dispatcher");
 
             let decoded = workspace.freeze().expect("freeze non-4:2:0 workspace");
@@ -320,16 +326,19 @@ fn dispatcher_zero_mv_copies_single_reference_planes() {
     let reference = patterned_frame(8, 8);
     let mut workspace = workspace(8, 8);
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::single(
-            ReferenceSamples::settled(&reference),
-            McBlockRect::from_luma_rect(0, 0, 8, 8),
-            MotionVector { row: 0, col: 0 },
-            InterpolationFilter::EightTap,
-        ),
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::single(
+                ReferenceSamples::settled(&reference),
+                McBlockRect::from_luma_rect(0, 0, 8, 8),
+                MotionVector { row: 0, col: 0 },
+                InterpolationFilter::EightTap,
+            ),
+            ByteOffset::new(0),
+        )
+    })
     .expect("single-reference dispatcher");
 
     let decoded = workspace.freeze().expect("freeze dispatched workspace");
@@ -352,16 +361,19 @@ fn dispatcher_zero_mv_copies_odd_reference_chroma_extents() {
     let reference = patterned_frame(9, 11);
     let mut workspace = workspace(9, 11);
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::single(
-            ReferenceSamples::settled(&reference),
-            McBlockRect::from_luma_rect(0, 0, 9, 11),
-            MotionVector::ZERO,
-            InterpolationFilter::EightTap,
-        ),
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::single(
+                ReferenceSamples::settled(&reference),
+                McBlockRect::from_luma_rect(0, 0, 9, 11),
+                MotionVector::ZERO,
+                InterpolationFilter::EightTap,
+            ),
+            ByteOffset::new(0),
+        )
+    })
     .expect("odd single-reference dispatcher");
 
     let decoded = workspace.freeze().expect("freeze odd workspace");
@@ -378,16 +390,19 @@ fn dispatcher_clips_single_prediction_at_frame_edge() {
     let reference = patterned_frame(8, 8);
     let mut workspace = workspace(8, 8);
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::single(
-            ReferenceSamples::settled(&reference),
-            McBlockRect::from_luma_rect(4, 4, 8, 8),
-            MotionVector::ZERO,
-            InterpolationFilter::EightTap,
-        ),
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::single(
+                ReferenceSamples::settled(&reference),
+                McBlockRect::from_luma_rect(4, 4, 8, 8),
+                MotionVector::ZERO,
+                InterpolationFilter::EightTap,
+            ),
+            ByteOffset::new(0),
+        )
+    })
     .expect("edge-clipped single-reference dispatcher");
 
     let decoded = workspace.freeze().expect("freeze edge-clipped workspace");
@@ -485,19 +500,22 @@ fn dispatcher_blends_compound_average_with_odd_chroma_extents() {
     let reference1 = flat_frame(9, 11, 80, 110, 140);
     let mut workspace = workspace(9, 11);
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::compound_average(
-            ReferenceSamples::settled(&reference0),
-            ReferenceSamples::settled(&reference1),
-            McBlockRect::from_luma_rect(0, 0, 9, 11),
-            MotionVector::ZERO,
-            MotionVector::ZERO,
-            InterpolationFilter::EightTap,
-            CompoundBlend::default(),
-        ),
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::compound_average(
+                ReferenceSamples::settled(&reference0),
+                ReferenceSamples::settled(&reference1),
+                McBlockRect::from_luma_rect(0, 0, 9, 11),
+                MotionVector::ZERO,
+                MotionVector::ZERO,
+                InterpolationFilter::EightTap,
+                CompoundBlend::default(),
+            ),
+            ByteOffset::new(0),
+        )
+    })
     .expect("odd compound dispatcher");
 
     let decoded = workspace.freeze().expect("freeze odd compound workspace");
@@ -549,8 +567,15 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
                     CurrentFrameSurface::Frame(&mut direct),
                     CurrentFrameSurface::Rect(&mut surface),
                 ] {
-                    motion_compensate_inter_block_into(&mut sink, block, ByteOffset::new(0))
-                        .expect("u8 single-reference prediction");
+                    crate::test_support::with_auto_backend!(backend => {
+                        motion_compensate_inter_block_into(
+                            backend,
+                            &mut sink,
+                            block,
+                            ByteOffset::new(0),
+                        )
+                    })
+                    .expect("u8 single-reference prediction");
                 }
             }
 
@@ -573,20 +598,22 @@ fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
     let reference1 = flat_frame(8, 8, 80, 110, 140);
     let mut workspace = workspace(8, 8);
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::compound_average(
-            ReferenceSamples::settled(&reference0),
-            ReferenceSamples::settled(&reference1),
-            McBlockRect::from_luma_rect(0, 0, 8, 8),
-            MotionVector::ZERO,
-            MotionVector::ZERO,
-            InterpolationFilter::EightTap,
-            CompoundBlend::default(),
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::compound_average(
+                ReferenceSamples::settled(&reference0),
+                ReferenceSamples::settled(&reference1),
+                McBlockRect::from_luma_rect(0, 0, 8, 8),
+                MotionVector::ZERO,
+                MotionVector::ZERO,
+                InterpolationFilter::EightTap,
+                CompoundBlend::default(),
         )
         .with_sub8x8_chroma(true),
         ByteOffset::new(0),
-    )
+    )})
     .expect("sub8x8 chroma dispatcher");
 
     let decoded = workspace.freeze().expect("freeze sub8x8 workspace");
@@ -603,29 +630,35 @@ fn dispatcher_sub8x8_chroma_drops_warp() {
     let rect = McBlockRect::from_luma_rect(0, 0, 8, 8);
     let mv = MotionVector::ZERO;
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut warped),
-        InterBlockParams::single_warp(
-            ReferenceSamples::settled(&reference),
-            rect,
-            mv,
-            InterpolationFilter::EightTap,
-            [1 << 16, 0, 1 << 16, 0, 0, 1 << 16],
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut warped),
+            InterBlockParams::single_warp(
+                ReferenceSamples::settled(&reference),
+                rect,
+                mv,
+                InterpolationFilter::EightTap,
+                [1 << 16, 0, 1 << 16, 0, 0, 1 << 16],
+            )
+            .with_sub8x8_chroma(true),
+            ByteOffset::new(0),
         )
-        .with_sub8x8_chroma(true),
-        ByteOffset::new(0),
-    )
+    })
     .expect("sub8x8 chroma warp dispatcher");
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut translational),
-        InterBlockParams::single(
-            ReferenceSamples::settled(&reference),
-            rect,
-            mv,
-            InterpolationFilter::EightTap,
-        ),
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut translational),
+            InterBlockParams::single(
+                ReferenceSamples::settled(&reference),
+                rect,
+                mv,
+                InterpolationFilter::EightTap,
+            ),
+            ByteOffset::new(0),
+        )
+    })
     .expect("translational dispatcher");
 
     let warped = warped.freeze().expect("freeze warped workspace");
@@ -663,20 +696,23 @@ fn dispatcher_rebuilds_optflow_compound_planes_from_refined_grid() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);
     let mut workspace = workspace(8, 8);
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::compound_average(
-            ReferenceSamples::settled(&reference0),
-            ReferenceSamples::settled(&reference1),
-            McBlockRect::from_luma_rect(0, 0, 8, 8),
-            MotionVector::ZERO,
-            MotionVector::ZERO,
-            InterpolationFilter::EightTap,
-            CompoundBlend::default(),
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::compound_average(
+                ReferenceSamples::settled(&reference0),
+                ReferenceSamples::settled(&reference1),
+                McBlockRect::from_luma_rect(0, 0, 8, 8),
+                MotionVector::ZERO,
+                MotionVector::ZERO,
+                InterpolationFilter::EightTap,
+                CompoundBlend::default(),
         )
         .with_optflow_distances(Some([1, -1])),
         ByteOffset::new(0),
-    )
+        )
+    })
     .expect("optical-flow compound dispatcher");
 
     let decoded = workspace.freeze().expect("freeze optical-flow workspace");
@@ -695,20 +731,23 @@ fn optflow_reuses_the_luma_motion_grid_for_every_chroma_format() {
         let reference0 = flat_frame_with_format(format, 8, 8, 40, 90, 120);
         let reference1 = flat_frame_with_format(format, 8, 8, 80, 110, 140);
         let mut workspace = workspace_with_format(format, 8, 8);
-        motion_compensate_inter_block_into(
-            &mut CurrentFrameSurface::Frame(&mut workspace),
-            InterBlockParams::compound_average(
-                ReferenceSamples::settled(&reference0),
-                ReferenceSamples::settled(&reference1),
-                McBlockRect::from_luma_rect(0, 0, 8, 8),
-                MotionVector::ZERO,
-                MotionVector::ZERO,
+        crate::test_support::with_auto_backend!(backend => {
+            motion_compensate_inter_block_into(
+                backend,
+                &mut CurrentFrameSurface::Frame(&mut workspace),
+                InterBlockParams::compound_average(
+                    ReferenceSamples::settled(&reference0),
+                    ReferenceSamples::settled(&reference1),
+                    McBlockRect::from_luma_rect(0, 0, 8, 8),
+                    MotionVector::ZERO,
+                    MotionVector::ZERO,
                 InterpolationFilter::EightTapSharp,
                 CompoundBlend::default(),
             )
             .with_optflow_distances(Some([1, -1])),
             ByteOffset::new(0),
-        )
+            )
+        })
         .expect("optical-flow chroma dispatcher");
 
         let decoded = workspace.freeze().expect("freeze optical-flow workspace");
@@ -791,7 +830,10 @@ fn refined_units<T: ReconSample>(
 ) -> RefinedUnits {
     let compound = block.into_compound().expect("compound block");
     let mut units = RefinedUnits::default();
-    refine_block_units(sink, &compound, &mut units, ByteOffset::new(0)).expect("refined units");
+    crate::test_support::with_auto_backend!(backend => {
+        refine_block_units(backend, sink, &compound, &mut units, ByteOffset::new(0))
+    })
+    .expect("refined units");
     units
 }
 
@@ -947,7 +989,10 @@ fn dispatcher_blends_compound_wedge_planes() {
     );
     let mask = |sign, sub| {
         let mut mask = [0; 16];
-        wedge_mask_into(&mut mask, (4, 4), (8, 8), (0, sign), sub).expect("wedge mask");
+        crate::test_support::with_auto_backend!(backend => {
+            wedge_mask_into_with(backend, &mut mask, (4, 4), (8, 8), (0, sign), sub)
+        })
+        .expect("wedge mask");
         mask[0]
     };
     assert_eq!(samples.0[0], mask(false, (0, 0)));
@@ -969,19 +1014,22 @@ fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
     let reference = patterned_frame(32, 8);
     let mut workspace = workspace(32, 8);
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::compound_average(
-            ReferenceSamples::settled(&reference),
-            ReferenceSamples::settled(&reference),
-            McBlockRect::from_luma_rect(0, 0, 32, 4),
-            MotionVector { row: 0, col: 32 },
-            MotionVector { row: 0, col: -128 },
-            InterpolationFilter::EightTap,
-            CompoundBlend::average_with_implicit_mask(true),
-        ),
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::compound_average(
+                ReferenceSamples::settled(&reference),
+                ReferenceSamples::settled(&reference),
+                McBlockRect::from_luma_rect(0, 0, 32, 4),
+                MotionVector { row: 0, col: 32 },
+                MotionVector { row: 0, col: -128 },
+                InterpolationFilter::EightTap,
+                CompoundBlend::average_with_implicit_mask(true),
+            ),
+            ByteOffset::new(0),
+        )
+    })
     .expect("implicit-mask compound dispatcher");
 
     let decoded = workspace.freeze().expect("freeze implicit mask workspace");
@@ -1011,25 +1059,34 @@ fn u8_translational_compound_direct_fallback_matches_the_general_path() {
 
     let mut direct = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
     assert!(
-        !compound_average::predict_translational_direct(
+        !crate::test_support::with_auto_backend!(backend => {
+            compound_average::predict_translational_direct(
+                backend,
+                &mut CurrentFrameSurface::Frame(&mut direct),
+                &block,
+                ByteOffset::new(0),
+            )
+        })
+        .expect("geometry fallback")
+    );
+    crate::test_support::with_auto_backend!(backend => {
+        predict_compound_into(
+            backend,
             &mut CurrentFrameSurface::Frame(&mut direct),
             &block,
             ByteOffset::new(0),
         )
-        .expect("geometry fallback")
-    );
-    predict_compound_into(
-        &mut CurrentFrameSurface::Frame(&mut direct),
-        &block,
-        ByteOffset::new(0),
-    )
+    })
     .expect("general path after the fallback");
     let mut general = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, width, height);
-    predict_compound_into(
-        &mut CurrentFrameSurface::Frame(&mut general),
-        &block,
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        predict_compound_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut general),
+            &block,
+            ByteOffset::new(0),
+        )
+    })
     .expect("general path");
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         assert_eq!(
@@ -1045,24 +1102,31 @@ fn direct_compound_blend_preserves_sample_storage_width() {
     let pred0 = [20 * 16, 60 * 16, 255 * 16];
     let pred1 = [44 * 16, 120 * 16, 255 * 16];
     let mut eight = vec![0; pred0.len()];
-    blend::weighted_row::<u8>(&pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut eight)
-        .expect("eight-bit compound blend");
+    crate::test_support::with_auto_backend!(backend => {
+        blend::weighted_row::<_, u8>(backend, &pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut eight)
+    })
+    .expect("eight-bit compound blend");
     let mut wide = vec![0; pred0.len()];
-    blend::weighted_row::<u16>(&pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut wide)
-        .expect("wide eight-bit compound blend");
+    crate::test_support::with_auto_backend!(backend => {
+        blend::weighted_row::<_, u16>(backend, &pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut wide)
+    })
+    .expect("wide eight-bit compound blend");
     assert_eq!(
         eight.iter().copied().map(u16::from).collect::<Vec<_>>(),
         wide
     );
 
     let mut ten_bit = vec![0; 1];
-    blend::weighted_row::<u16>(
-        &[900 * 16],
-        &[1000 * 16],
-        BitDepth::Ten,
-        CWP_EQUAL,
-        &mut ten_bit,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        blend::weighted_row::<_, u16>(
+            backend,
+            &[900 * 16],
+            &[1000 * 16],
+            BitDepth::Ten,
+            CWP_EQUAL,
+            &mut ten_bit,
+        )
+    })
     .expect("ten-bit compound blend");
     assert_eq!(ten_bit, [950]);
 }
@@ -1077,8 +1141,10 @@ fn weighted_rows_match_the_per_sample_blend<T: ReconSample>(bit_depth: BitDepth)
             .collect();
         for cwp_weight in [2, 8, 12, 14] {
             let mut output = vec![T::default(); w];
-            blend::weighted_row(&pred0, &pred1, bit_depth, cwp_weight, &mut output)
-                .expect("weighted row");
+            crate::test_support::with_auto_backend!(backend => {
+                blend::weighted_row(backend, &pred0, &pred1, bit_depth, cwp_weight, &mut output)
+            })
+            .expect("weighted row");
             for (col, sample) in output.iter().enumerate() {
                 let want = splot_recon::blend_compound_average_weighted_sample(
                     pred0[col], pred1[col], bit_depth, cwp_weight,
@@ -1106,24 +1172,36 @@ fn scaled_compound_references_disable_implicit_mask_blending() {
     let scaling = derive_plane_scaling(4, 4, 0, 0, 0, 0, 64, 64, 32, 32);
 
     let mut got = vec![0; pred0.len()];
-    blend_compound_average::<u16>(
-        &pred0,
-        &pred1,
-        BitDepth::Eight,
-        2,
-        2,
-        CompoundBlend::average_with_implicit_mask(true),
-        scaling,
-        scaling,
-        32,
-        32,
-        &mut got,
-        2,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        blend_compound_average::<_, u16>(
+            backend,
+            &pred0,
+            &pred1,
+            BitDepth::Eight,
+            2,
+            2,
+            CompoundBlend::average_with_implicit_mask(true),
+            scaling,
+            scaling,
+            32,
+            32,
+            &mut got,
+            2,
+        )
+    })
     .expect("scaled compound blend");
     let mut expected = vec![0; pred0.len()];
-    blend::weighted_row::<u16>(&pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut expected)
-        .expect("weighted compound blend");
+    crate::test_support::with_auto_backend!(backend => {
+        blend::weighted_row::<_, u16>(
+            backend,
+            &pred0,
+            &pred1,
+            BitDepth::Eight,
+            CWP_EQUAL,
+            &mut expected,
+        )
+    })
+    .expect("weighted compound blend");
 
     assert_eq!(got, expected);
 }
@@ -1133,18 +1211,21 @@ fn warp_skips_prediction_units_beyond_the_current_frame() {
     let reference = patterned_frame(16, 8);
     let mut workspace = workspace(16, 8);
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::single_warp(
-            ReferenceSamples::settled(&reference),
-            McBlockRect::from_luma_rect(8, 0, 16, 8),
-            MotionVector::ZERO,
-            InterpolationFilter::EightTap,
-            IDENTITY_WARP_PARAMS,
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::single_warp(
+                ReferenceSamples::settled(&reference),
+                McBlockRect::from_luma_rect(8, 0, 16, 8),
+                MotionVector::ZERO,
+                InterpolationFilter::EightTap,
+                IDENTITY_WARP_PARAMS,
+            )
+            .with_chroma(false),
+            ByteOffset::new(0),
         )
-        .with_chroma(false),
-        ByteOffset::new(0),
-    )
+    })
     .expect("edge-clipped warp dispatcher");
 
     let decoded = workspace
@@ -1174,18 +1255,21 @@ fn edge_clipped_sheared_warp_writes_its_visible_sections() {
         256,
         (1 << 16) - 192,
     ];
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::single_warp(
-            ReferenceSamples::settled(&reference),
-            McBlockRect::from_luma_rect(24, 8, 32, 32),
-            MotionVector::ZERO,
-            InterpolationFilter::EightTap,
-            warp_params,
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::single_warp(
+                ReferenceSamples::settled(&reference),
+                McBlockRect::from_luma_rect(24, 8, 32, 32),
+                MotionVector::ZERO,
+                InterpolationFilter::EightTap,
+                warp_params,
+            )
+            .with_chroma(false),
+            ByteOffset::new(0),
         )
-        .with_chroma(false),
-        ByteOffset::new(0),
-    )
+    })
     .expect("edge-clipped sheared warp dispatcher");
 
     let decoded = workspace.freeze().expect("freeze sheared warp workspace");
@@ -1221,18 +1305,21 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
     let reference = patterned_frame(16, 8);
     let mut workspace = workspace(16, 8);
 
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::single_warp(
-            ReferenceSamples::settled(&reference),
-            McBlockRect::from_luma_rect(12, 0, 8, 4),
-            MotionVector::ZERO,
-            InterpolationFilter::EightTap,
-            IDENTITY_WARP_PARAMS,
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::single_warp(
+                ReferenceSamples::settled(&reference),
+                McBlockRect::from_luma_rect(12, 0, 8, 4),
+                MotionVector::ZERO,
+                InterpolationFilter::EightTap,
+                IDENTITY_WARP_PARAMS,
+            )
+            .with_chroma(false),
+            ByteOffset::new(0),
         )
-        .with_chroma(false),
-        ByteOffset::new(0),
-    )
+    })
     .expect("edge-clipped extended-warp dispatcher");
 
     let decoded = workspace
@@ -1348,19 +1435,22 @@ fn dispatch_compound_samples(
     blend: CompoundBlend,
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut workspace = workspace(8, 8);
-    motion_compensate_inter_block_into(
-        &mut CurrentFrameSurface::Frame(&mut workspace),
-        InterBlockParams::compound_average(
-            reference0,
-            reference1,
-            McBlockRect::from_luma_rect(0, 0, 8, 8),
-            MotionVector { row: 0, col: 0 },
-            MotionVector { row: 0, col: 0 },
-            InterpolationFilter::EightTap,
-            blend,
-        ),
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        motion_compensate_inter_block_into(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            InterBlockParams::compound_average(
+                reference0,
+                reference1,
+                McBlockRect::from_luma_rect(0, 0, 8, 8),
+                MotionVector { row: 0, col: 0 },
+                MotionVector { row: 0, col: 0 },
+                InterpolationFilter::EightTap,
+                blend,
+            ),
+            ByteOffset::new(0),
+        )
+    })
     .expect("compound dispatcher");
 
     let decoded = workspace.freeze().expect("freeze compound workspace");
@@ -1574,11 +1664,14 @@ fn prediction_reads_padded_reference_samples_and_masks_at_storage_edges() {
             )
         }
         .with_chroma(false);
-        motion_compensate_inter_block_into(
-            &mut CurrentFrameSurface::Frame(&mut output),
-            block,
-            ByteOffset::new(0),
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            motion_compensate_inter_block_into(
+                backend,
+                &mut CurrentFrameSurface::Frame(&mut output),
+                block,
+                ByteOffset::new(0),
+            )
+        })
         .expect("prediction");
         let expected = if compound { 60 } else { 100 };
         let stride = output.plane(PlaneId::Y).expect("luma").stride_samples();

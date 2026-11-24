@@ -13,8 +13,9 @@ use std::cell::Cell;
 use splot_core::span::ByteOffset;
 use splot_recon::{
     BitDepth, CurrentFrameSurface, PlaneId, PlaneRect, ReconError, ReconSample,
-    blend_diff_weighted_u8, blend_diff_weighted_wide, blend_mask_u8, blend_mask_wide,
-    subpel_predict_block_compound_intermediate_into, wedge_mask_into,
+    blend_diff_weighted_u8_with, blend_diff_weighted_wide_with, blend_mask_u8_with,
+    blend_mask_wide_with, subpel_predict_block_compound_intermediate_into_with,
+    wedge_mask_into_with,
 };
 
 use super::super::mv_scaling::PlaneScaling;
@@ -66,7 +67,8 @@ pub(super) struct PlaneLayout {
 
 /// Predicts a compound block without warp or motion grid and returns
 /// `true`; returns `false` without writing for a warp block.
-pub(super) fn predict<T: ReconSample>(
+pub(super) fn predict<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
@@ -74,10 +76,11 @@ pub(super) fn predict<T: ReconSample>(
     if block.warp_params.iter().any(Option::is_some) {
         return Ok(false);
     }
-    with_scratch(|scratch| predict_planes(sink, block, offset, scratch)).map(|()| true)
+    with_scratch(|scratch| predict_planes(backend, sink, block, offset, scratch)).map(|()| true)
 }
 
-fn predict_planes<T: ReconSample>(
+fn predict_planes<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
@@ -94,6 +97,7 @@ fn predict_planes<T: ReconSample>(
         }
         if plane != PlaneId::Y && block.sub8x8_chroma {
             predict_plane(
+                backend,
                 sink,
                 block.reference0,
                 plane,
@@ -137,10 +141,16 @@ fn predict_planes<T: ReconSample>(
         {
             write_plane(sink, plane, target, |output, stride| {
                 if let Some(output) = T::u8_slice_mut(&mut *output) {
-                    return predict_unscaled_or_two_call(&translation, cwp_weight, output, stride);
+                    return predict_unscaled_or_two_call(
+                        backend,
+                        &translation,
+                        cwp_weight,
+                        output,
+                        stride,
+                    );
                 }
                 let output = T::u16_slice_mut(output).ok_or(unsupported::<T>(bit_depth))?;
-                predict_unscaled_or_two_call(&translation, cwp_weight, output, stride)
+                predict_unscaled_or_two_call(backend, &translation, cwp_weight, output, stride)
             })?;
             continue;
         }
@@ -150,20 +160,32 @@ fn predict_planes<T: ReconSample>(
             let [pred0, pred1] = &mut scratch.preds;
             let preds = [grown(pred0, len), grown(pred1, len)];
             for (pred, (view, params)) in preds.into_iter().zip(views) {
-                subpel_predict_block_compound_intermediate_into(view, params, None, pred, w)?;
+                subpel_predict_block_compound_intermediate_into_with(
+                    backend, view, params, None, pred, w,
+                )?;
             }
             Preds::Narrow([&scratch.preds[0][..len], &scratch.preds[1][..len]])
         } else {
             let [pred0, pred1] = &mut scratch.wide;
             let preds = [grown(pred0, len), grown(pred1, len)];
             for (pred, (view, params)) in preds.into_iter().zip(views) {
-                subpel_predict_block_compound_intermediate_into(view, params, None, pred, w)?;
+                subpel_predict_block_compound_intermediate_into_with(
+                    backend, view, params, None, pred, w,
+                )?;
             }
             Preds::Wide([&scratch.wide[0][..len], &scratch.wide[1][..len]])
         };
         let mask = &mut scratch.mask;
         write_plane(sink, plane, target, |output, stride| {
-            blend_plane(block, &layout, preds, mask, (output, stride), bit_depth)
+            blend_plane(
+                backend,
+                block,
+                &layout,
+                preds,
+                mask,
+                (output, stride),
+                bit_depth,
+            )
         })?;
     }
     Ok(())
@@ -171,7 +193,8 @@ fn predict_planes<T: ReconSample>(
 
 /// Blends a non-average plane of a warp compound block, whose `i32`
 /// predictors the warp kernels made, into `output`.
-pub(super) fn blend_warp_plane<T: ReconSample>(
+pub(super) fn blend_warp_plane<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     block: &CompoundMcBlock<'_, T>,
     layout: &PlaneLayout,
     preds: [&[i32]; 2],
@@ -180,14 +203,23 @@ pub(super) fn blend_warp_plane<T: ReconSample>(
 ) -> splot_recon::Result<()> {
     with_scratch(|scratch| {
         let preds = Preds::Wide(preds);
-        blend_plane(block, layout, preds, &mut scratch.mask, output, bit_depth)
+        blend_plane(
+            backend,
+            block,
+            layout,
+            preds,
+            &mut scratch.mask,
+            output,
+            bit_depth,
+        )
     })
 }
 
 /// Makes the mask of the plane and blends `preds` with it into `output`. The
 /// luma plane of a difference-weight block makes the chroma mask in `mask`
 /// instead, which its chroma planes then read.
-fn blend_plane<T: ReconSample>(
+fn blend_plane<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     block: &CompoundMcBlock<'_, T>,
     layout: &PlaneLayout,
     preds: Preds<'_>,
@@ -205,7 +237,14 @@ fn blend_plane<T: ReconSample>(
         CompoundBlend::DiffWeighted { .. } => None,
         CompoundBlend::Wedge { index, sign } => {
             let (luma, wedge) = ((block.rect.luma_w, block.rect.luma_h), (index.into(), sign));
-            wedge_mask_into(grown(mask, len), (w, h), luma, wedge, (sub_x, sub_y))?;
+            wedge_mask_into_with(
+                backend,
+                grown(mask, len),
+                (w, h),
+                luma,
+                wedge,
+                (sub_x, sub_y),
+            )?;
             None
         }
         CompoundBlend::Average { .. } => {
@@ -223,12 +262,28 @@ fn blend_plane<T: ReconSample>(
         return match preds {
             Preds::Narrow(preds) => {
                 let output = T::u8_slice_mut(output).ok_or(unsupported::<T>(bit_depth))?;
-                blend_diff_weighted_u8(output, stride, preds, (w, h), inverse, chroma_mask);
+                blend_diff_weighted_u8_with(
+                    backend,
+                    output,
+                    stride,
+                    preds,
+                    (w, h),
+                    inverse,
+                    chroma_mask,
+                );
                 Ok(())
             }
             Preds::Wide(preds) => {
                 let shape = (inverse, bit_depth);
-                blend_diff_weighted_wide(output, stride, preds, (w, h), shape, chroma_mask);
+                blend_diff_weighted_wide_with(
+                    backend,
+                    output,
+                    stride,
+                    preds,
+                    (w, h),
+                    shape,
+                    chroma_mask,
+                );
                 Ok(())
             }
         };
@@ -240,10 +295,10 @@ fn blend_plane<T: ReconSample>(
     match preds {
         Preds::Narrow(preds) => {
             let output = T::u8_slice_mut(output).ok_or(unsupported::<T>(bit_depth))?;
-            blend_mask_u8(output, stride, preds, mask, (w, h));
+            blend_mask_u8_with(backend, output, stride, preds, mask, (w, h));
         }
         Preds::Wide(preds) => {
-            blend_mask_wide(output, stride, preds, mask, (w, h), bit_depth);
+            blend_mask_wide_with(backend, output, stride, preds, mask, (w, h), bit_depth);
         }
     }
     Ok(())

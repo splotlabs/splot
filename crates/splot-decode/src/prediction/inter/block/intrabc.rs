@@ -173,6 +173,7 @@ impl IntrabcReconCommand {
         let prediction = &self.prediction;
         match prediction.luma_source {
             IntrabcLumaSource::Subpel(scaling) => mc::intrabc_predict_subpel_plane_into(
+                backend,
                 workspace,
                 PlaneId::Y,
                 prediction.luma_target,
@@ -194,6 +195,7 @@ impl IntrabcReconCommand {
         if let Some(chroma) = prediction.chroma {
             for plane in [PlaneId::U, PlaneId::V] {
                 mc::intrabc_predict_subpel_plane_into(
+                    backend,
                     workspace,
                     plane,
                     chroma.target,
