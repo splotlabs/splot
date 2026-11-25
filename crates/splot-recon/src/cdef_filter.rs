@@ -1381,12 +1381,15 @@ pub fn cdef_filter_block_interior_to_valid_stride_with<B: SimdBackend, T: ReconS
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
-        cdef_filter_block_to_valid_stride_simd::<_, T, false>(
-            simd, pad, w, h, filter, out, out_stride,
-        )
-    })
+    cdef_filter_block_to_valid_stride_simd::<_, T, false>(
+        backend.narrow().token(),
+        pad,
+        w,
+        h,
+        filter,
+        out,
+        out_stride,
+    )
 }
 
 /// SIMD CDEF filtering for a padded boundary block.
@@ -1416,12 +1419,15 @@ pub fn cdef_filter_block_boundary_to_valid_stride_with<B: SimdBackend, T: ReconS
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
-        cdef_filter_block_to_valid_stride_simd::<_, T, true>(
-            simd, pad, w, h, filter, out, out_stride,
-        )
-    })
+    cdef_filter_block_to_valid_stride_simd::<_, T, true>(
+        backend.narrow().token(),
+        pad,
+        w,
+        h,
+        filter,
+        out,
+        out_stride,
+    )
 }
 
 fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: ReconSample>(
@@ -1452,29 +1458,34 @@ fn cdef_filter_block_to_valid_stride_simd<
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
-    let (w, h) = (w.min(8), h.min(8));
-    let mut block = [0u16; 64];
-    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
-    if w == 0
-        || cdef_filter_block_rows::<
-            _,
-            _,
-            8,
-            HAS_UNAVAILABLE,
-            CDEF_PADDED_SIDE,
-            2,
-            8,
-            SPAN,
-            CDEF_PADDED_AREA,
-        >(simd, args)
-        .is_none()
-    {
-        return false;
-    }
-    let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
-    let size = (w, h, unfiltered);
-    cdef_publish_block(simd, &block, size, out, out_stride).is_some()
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
+            let (w, h) = (w.min(8), h.min(8));
+            let mut block = [0u16; 64];
+            let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
+            if w == 0
+                || cdef_filter_block_rows::<
+                    _,
+                    _,
+                    8,
+                    HAS_UNAVAILABLE,
+                    CDEF_PADDED_SIDE,
+                    2,
+                    8,
+                    SPAN,
+                    CDEF_PADDED_AREA,
+                >(simd, args)
+                .is_none()
+            {
+                return false;
+            }
+            let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
+            let size = (w, h, unfiltered);
+            cdef_publish_block(simd, &block, size, out, out_stride).is_some()
+        },
+    )
 }
 
 /// Writes the first `w` lanes of the first `h` rows of `block` to `out`, rows
