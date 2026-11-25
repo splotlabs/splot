@@ -639,20 +639,32 @@ const CDEF_PAIR_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
     2 * CDEF_PAIR_SEGMENT_STRIDE + 4,
 );
 
-/// Two consecutive 8-lane rows of one tap view as one 16-lane vector.
+/// Loads two consecutive 8-lane rows of one tap view.
 #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_load_row_pair<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
+    simd: S,
+    view: &[u16; SPAN],
+    row: usize,
+) -> Option<[u16x8<S>; 2]> {
+    let first = view.get(row * STRIDE..)?.first_chunk::<8>()?;
+    let second = view.get((row + 1) * STRIDE..)?.first_chunk::<8>()?;
+    Some([
+        u16x8::from_slice(simd, first),
+        u16x8::from_slice(simd, second),
+    ])
+}
+
+/// Two consecutive 8-lane rows of one tap view as one 16-lane vector.
+#[expect(clippy::inline_always, reason = "keeps pair loads in the CDEF kernel")]
 #[inline(always)]
 fn cdef_row_pair<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
     simd: S,
     view: &[u16; SPAN],
     row: usize,
 ) -> Option<u16x16<S>> {
-    let first = view.get(row * STRIDE..)?.first_chunk::<8>()?;
-    let second = view.get((row + 1) * STRIDE..)?.first_chunk::<8>()?;
-    Some(simd.combine_u16x8(
-        u16x8::from_slice(simd, first),
-        u16x8::from_slice(simd, second),
-    ))
+    let [first, second] = cdef_load_row_pair::<S, STRIDE, SPAN>(simd, view, row)?;
+    Some(simd.combine_u16x8(first, second))
 }
 
 /// [`cdef_row_pair`] as `i16` lanes.
@@ -1007,10 +1019,12 @@ fn cdef_filter_rows_8bit<
     let pri = CdefConstrain8::new(simd, filter.pri_str, filter.damping);
     let sec = CdefConstrain8::new(simd, filter.sec_str, filter.damping);
     let base_u8 = u8x16::splat(simd, base as u8);
-    let pair = |view: &[u16; SPAN], row: usize| -> Option<u8x16<S>> {
-        let lanes = cdef_row_pair::<S, STRIDE, SPAN>(simd, view, row)?;
-        let (low, high) = simd.split_u16x16(lanes);
-        Some(simd.narrow_u16x8(low, high) - base_u8)
+    let pair = {
+        #[inline(always)]
+        |view: &[u16; SPAN], row: usize| -> Option<u8x16<S>> {
+            let [first, second] = cdef_load_row_pair::<S, STRIDE, SPAN>(simd, view, row)?;
+            Some(simd.narrow_u16x8(first, second) - base_u8)
+        }
     };
     for_each_row_pair!([0, 2, 4, 6], ROWS, h, |row| {
         let center = pair(center_view, row)?;
@@ -1510,6 +1524,11 @@ fn cdef_filter_block_to_valid_stride_simd<
 /// `out_stride` apart. `u8` storage takes filtered lanes with saturation;
 /// an `unfiltered` block keeps its centre samples, and one above 255 in its
 /// lane group (4 lanes for a 4-wide block, else 8) fails the write.
+#[expect(
+    clippy::inline_always,
+    reason = "keeps strided stores in the CDEF filter scope"
+)]
+#[inline(always)]
 fn cdef_publish_block<S: SimdToken, T: ReconSample>(
     simd: S,
     block: &[u16; 64],
@@ -1596,6 +1615,11 @@ pub fn cdef_filter_block_chroma_pair_with<B: SimdBackend>(
     })
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "keeps the padded chroma loop in the CDEF filter scope"
+)]
+#[inline(always)]
 fn cdef_filter_block_chroma_pair_rows<S: SimdToken>(
     simd: S,
     pad: &[u16; CDEF_PADDED_AREA],
