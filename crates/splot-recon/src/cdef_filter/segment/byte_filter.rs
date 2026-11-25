@@ -224,7 +224,6 @@ pub(super) fn cdef_filter_rows_wide8<
             let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
             for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
                 let byte_quad = {
-                    // Keep vector loads and the row unpack in the surrounding SIMD scope.
                     #[inline(always)]
                     |view: &[u8; SPAN8]| -> Option<i8x32<S>> {
                         if STRIDE == LUMA_BYTE_STRIDE {
