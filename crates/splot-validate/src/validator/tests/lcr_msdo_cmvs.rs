@@ -821,3 +821,44 @@ fn lcr_global_group_excludes_retired_layers() {
         "{report}"
     );
 }
+
+#[test]
+fn lcr_global_group_keeps_the_key_binding_across_inter_frames() {
+    use splot_core::annexb::parse_annex_b_obus;
+    use splot_core::types::ObuType;
+    use splot_core::write::{BitWriter, write_annexb_obu};
+
+    let fixture = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-xlayer3-7-9-shared-global-parent.obu"
+    );
+    let mut data = Vec::new();
+    let mut x7_sequence = None;
+    let mut tu = 0;
+    let mut inserted = false;
+    for envelope in parse_annex_b_obus(fixture).unwrap() {
+        let header = envelope.header;
+        if header.obu_type == ObuType::TemporalDelimiter {
+            tu += 1;
+        }
+        if header.extended_layer_id.get() == 7 {
+            if tu == 1 && header.obu_type == ObuType::SequenceHeader {
+                x7_sequence = Some(envelope);
+            }
+            if tu == 2 && header.obu_type == ObuType::RegularTileGroup && !inserted {
+                data.extend(super::lcr_atlas::local_lcr_obu(7, 0, 1, None));
+                let sequence = x7_sequence.unwrap();
+                let mut writer = BitWriter::new();
+                write_annexb_obu(&mut writer, &sequence.header, sequence.payload).unwrap();
+                data.extend(writer.into_bytes());
+                inserted = true;
+            }
+        }
+        let mut writer = BitWriter::new();
+        write_annexb_obu(&mut writer, &header, envelope.payload).unwrap();
+        data.extend(writer.into_bytes());
+    }
+    assert!(inserted);
+
+    let report = Validator::new(true).validate_bytes(&data);
+    assert_eq!(report.errors().count(), 0, "{report}");
+}

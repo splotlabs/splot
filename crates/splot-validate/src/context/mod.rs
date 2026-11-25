@@ -236,6 +236,7 @@ pub(crate) struct ValidatorContext {
     /// record).
     lcr_associations: BTreeMap<(ExtendedLayerId, SequenceHeaderId), LcrAssociation>,
     global_lcr_group_start: Option<u64>,
+    active_global_lcr_references: [Option<ActiveGlobalLcrReference>; 32],
     global_lcr_keys_in_tu: u32,
     global_lcr_group_mismatches: u32,
     /// Stateful § 5.6 MSDO observer (AV2 § 5.6 / § 7.3.2); see [`MsdoObserver`]. Feeds

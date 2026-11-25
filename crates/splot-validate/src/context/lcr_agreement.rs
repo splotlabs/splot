@@ -56,6 +56,13 @@ pub(super) fn lcr_agreement_value_fingerprint(
     }
 }
 
+#[derive(Debug)]
+pub(super) struct ActiveGlobalLcrReference {
+    activation_tu: u64,
+    id: Option<u8>,
+    direct_offset: Option<ByteOffset>,
+}
+
 impl ValidatorContext {
     /// Resolves "the activated global layer configuration record of the coded multistream
     /// video sequence" (AV2 § 6.8.2 / § 7.3.2) from the existing § 6.4.1 association chain:
@@ -160,6 +167,23 @@ impl ValidatorContext {
         None
     }
 
+    pub(super) fn activate_global_lcr_reference(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        sequence: SequenceHeaderId,
+    ) {
+        self.global_lcr_keys_in_tu |= 1 << xlayer.get();
+        let association = self.lcr_associations.get(&(xlayer, sequence));
+        self.active_global_lcr_references[usize::from(xlayer.get())] =
+            Some(ActiveGlobalLcrReference {
+                activation_tu: self.cvs.tu_index,
+                id: association.and_then(|association| association.global_reference),
+                direct_offset: association
+                    .and_then(|association| association.global_record.as_ref())
+                    .map(|record| record.offset),
+            });
+    }
+
     pub(super) fn resolve_global_lcr_group_agreement(
         &mut self,
         completed_tu: u64,
@@ -176,8 +200,12 @@ impl ValidatorContext {
 
         let activates_global = key_layers != 0
             && self
-                .activated_global_lcr_where(|xlayer, _| key_layers & (1 << xlayer.get()) != 0)
-                .is_some();
+                .active_global_lcr_references
+                .iter()
+                .flatten()
+                .any(|active| {
+                    active.activation_tu == completed_tu && active.direct_offset.is_some()
+                });
         let cmvs_start = self.cmvs.current_cmvs_start_tu_index();
         if facts.has_clk && !facts.msdo_present && !activates_global {
             self.global_lcr_group_start = None;
@@ -195,37 +223,36 @@ impl ValidatorContext {
             return;
         };
 
+        if key_layers == 0 && !facts.msdo_present {
+            return;
+        }
         let declared = self
             .msdo_substream_max
             .as_ref()
             .filter(|_| self.cmvs.state == super::cmvs::CmvsState::Inside);
-        let active_in_group = |xlayer: ExtendedLayerId| {
-            declared.is_none_or(|msdo| msdo.ceilings.contains_key(&xlayer.get()))
-                && self
-                    .frame_confirmed_activation_tu
-                    .get(&xlayer)
-                    .is_some_and(|&tu| tu >= start)
-        };
-        let Some((expected, record)) =
-            self.activated_global_lcr_where(|xlayer, _| active_in_group(xlayer))
+        let active_in_group = self
+            .active_global_lcr_references
+            .iter()
+            .zip(0u8..)
+            .filter_map(|(active, xlayer)| {
+                let active = active.as_ref()?;
+                (active.activation_tu >= start
+                    && declared.is_none_or(|msdo| msdo.ceilings.contains_key(&xlayer)))
+                .then_some((xlayer, active))
+            });
+        let Some((expected, offset)) = active_in_group
+            .clone()
+            .find_map(|(_, active)| active.id.zip(active.direct_offset))
         else {
             return;
         };
-        let offset = record.offset;
         let mut mismatches = 0;
-        for &xlayer in &self.frame_confirmed_xlayers {
-            if !active_in_group(xlayer) {
-                continue;
-            }
-            let global_reference = self
-                .active_sequence_by_xlayer
-                .get(&xlayer)
-                .and_then(|&sequence| self.lcr_associations.get(&(xlayer, sequence)))
-                .and_then(|association| association.global_reference);
+        for (xlayer, active) in active_in_group {
+            let global_reference = active.id;
             if global_reference == Some(expected) {
                 continue;
             }
-            let bit = 1 << xlayer.get();
+            let bit = 1 << xlayer;
             mismatches |= bit;
             if self.global_lcr_group_mismatches & bit != 0 {
                 continue;
@@ -235,8 +262,7 @@ impl ValidatorContext {
                 Diagnostic::error(
                     "lcr/global-reference-mismatch",
                     format!(
-                        "Extended layer {} references global LCR {observed}. Expected global LCR {expected}.",
-                        xlayer.get()
+                        "Extended layer {xlayer} references global LCR {observed}. Expected global LCR {expected}."
                     ),
                 )
                 .with_spec_section("6.8.2")

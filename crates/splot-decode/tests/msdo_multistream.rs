@@ -1300,3 +1300,35 @@ fn negative_msdo_ops_lifecycle_ordering_doh_and_aggregate_limits() {
         .unwrap_err();
     assert!(matches!(limited_bytes, DecodeError::Limit { .. }));
 }
+
+#[test]
+fn msdo_only_switch_clears_the_previous_global_lcr() {
+    let first_tu = &temporal_units(MSDO_10BIT)[0];
+    let mut data = first_tu.clone();
+    for raise_x9_ceiling in [false, true] {
+        for envelope in parse_annex_b_obus(first_tu).unwrap() {
+            let header = envelope.header;
+            match envelope.payload_status().unwrap() {
+                PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(_)) => {}
+                PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut sequence)) => {
+                    sequence.general.seq_lcr_id = LcrId::from_bits(0);
+                    write_parsed(&mut data, header, &ParsedObu::SequenceHeader(sequence));
+                }
+                PayloadStatus::Parsed(ParsedObu::Msdo(mut msdo)) if raise_x9_ceiling => {
+                    let substream = &mut msdo.sub_streams[1];
+                    assert_eq!(substream.sub_xlayer_id, 9);
+                    substream.sub_stream_max_level += 1;
+                    write_parsed(&mut data, header, &ParsedObu::Msdo(msdo));
+                }
+                _ => write_obu(&mut data, header, envelope.payload),
+            }
+        }
+    }
+
+    let pictures = stream_decode(&data, &DecoderSettings::default()).unwrap();
+    assert_eq!(pictures.len(), 6);
+    assert_eq!(
+        sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
+        "d0d884316a744753b962983bce246765c69e9d08ba06b94a3135be3bb6cab0e6"
+    );
+}

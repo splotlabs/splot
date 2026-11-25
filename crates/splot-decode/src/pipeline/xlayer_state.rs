@@ -1008,6 +1008,7 @@ impl XLayerTable {
         };
         let Some((_, lcr_offset, record)) = expected else {
             if self.global.active_msdo.is_some() {
+                self.global.activated_global_lcrs.fill(None);
                 return Ok(());
             }
             return Err(malformed(
