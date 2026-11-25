@@ -1,0 +1,18 @@
+---
+source: crates/splot-cli/tests/help_snapshots.rs
+expression: "help(\"compose\")"
+---
+Compose a multistream atlas and write raw planar samples
+
+Usage: splot compose [OPTIONS] --output <OUTPUT> <INPUT>
+
+Arguments:
+  <INPUT>  Input AV2 stream in Annex B or IVF format
+
+Options:
+  -o, --output <OUTPUT>        Write the raw composite planes to this file. Use '-' for standard output
+      --atlas-id <ATLAS_ID>    Select a global atlas by ID when several layouts apply to the same picture
+      --threads <THREADS>      Set the number of decoder threads [default: auto]
+      --max-bytes <MAX_BYTES>  Set separate byte limits for one decoded frame, all pending pictures, and the canvas with scratch. The compositor accepts pictures within a window of 32 input temporal units [default: 268435456]
+  -h, --help                   Print help
+  -V, --version                Print version

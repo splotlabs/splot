@@ -3,6 +3,8 @@
 
 //! End-to-end checks for atlas presentation and raw canvas output.
 
+#![expect(clippy::expect_used)]
+
 mod common;
 
 use common::{conformance_vector, sha256_hex, splot, temp_input, temp_output};
@@ -146,4 +148,20 @@ fn two_global_layouts_require_an_explicit_atlas_id() {
         String::from_utf8_lossy(&selected.stderr)
     );
     assert_eq!(selected.stdout.len(), 55_296);
+}
+
+#[test]
+fn pending_atlas_pictures_respect_the_byte_limit() {
+    let input = conformance_vector("syn-atlas-alpha-paired-8bit.obu");
+    let result = splot(&[
+        "compose",
+        input.to_str().unwrap(),
+        "-o",
+        "-",
+        "--max-bytes",
+        "6144",
+    ]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Pending atlas pictures exceed"));
+    assert!(result.stdout.is_empty());
 }
