@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+name: Apple Silicon release comparison (#2006)
+
+on:
+  push:
+    branches: [test/simd-2006-apple-arm64]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: macos-15
+    timeout-minutes: 150
+    env:
+      BASE: d171d82416a67140e1f6696eeba8e08e56af5763
+      CANDIDATE: a55cff38f4d5a5855af54e75aeac25b92a09531f
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: harness
+          sparse-checkout: scripts/experiment-apple-arm64.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.BASE }}
+          path: base
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.CANDIDATE }}
+          path: candidate
+      - name: Record hosted hardware and pin Rust
+        run: |
+          set -euo pipefail
+          mkdir results
+          {
+            uname -a
+            sw_vers
+            test "$(uname -m)" = arm64
+            test "$(arch)" = arm64
+            sysctl machdep.cpu.brand_string hw.model hw.ncpu hw.physicalcpu hw.logicalcpu hw.memsize hw.optional.neon
+            test "$(sysctl -n hw.optional.neon)" = 1
+            xcodebuild -version
+            df -h .
+            rustup toolchain install 1.100.0 --profile minimal
+            rustc +1.100.0 -vV
+            cargo +1.100.0 -V
+          } 2>&1 | tee results/host.txt
+      - name: Build the same release products and run backend and lifecycle tests
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          for variant in base candidate; do
+            (
+              cd "$root/$variant"
+              out="$root/results/$variant"
+              mkdir -p "$out"
+              revision=$(git rev-parse HEAD)
+              if [[ "$variant" = base ]]; then
+                test "$revision" = "$BASE"
+              else
+                test "$revision" = "$CANDIDATE"
+              fi
+              printf '%s\n' "$revision" | tee "$out/revision.txt"
+              cat .cargo/config.toml > "$out/cargo-config.toml"
+              export CARGO_TARGET_DIR="$RUNNER_TEMP/splot-build-$variant"
+              cargo +1.100.0 build --release --locked -j1 -p splot-cli -p splot-capi \
+                2>&1 | tee "$out/build.log"
+              cp "$CARGO_TARGET_DIR/release/splot" "$CARGO_TARGET_DIR/release/libsplot_capi.dylib" "$out/"
+              {
+                file "$out"/splot "$out"/libsplot_capi.dylib
+                test "$(lipo -archs "$out/splot")" = arm64
+                test "$(lipo -archs "$out/libsplot_capi.dylib")" = arm64
+                stat -f '%z %N' "$out"/splot "$out"/libsplot_capi.dylib
+                shasum -a 256 "$out"/splot "$out"/libsplot_capi.dylib
+                size -m "$out"/splot "$out"/libsplot_capi.dylib
+                otool -L "$out"/splot "$out"/libsplot_capi.dylib
+              } | tee "$out/linked-size.txt"
+              cc -Wall -Wextra -I crates/splot-capi/include crates/splot-capi/examples/decode.c \
+                "$out/libsplot_capi.dylib" -Wl,-rpath,"$out" -o "$out/capi-decode"
+              otool -L "$out/capi-decode" | tee "$out/capi-link.txt"
+              DYLD_LIBRARY_PATH="$out" DYLD_PRINT_LIBRARIES=1 "$out/capi-decode" \
+                tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf "$out/capi.raw" \
+                2>&1 | tee "$out/capi-run.txt"
+              printf '%s  %s\n' d67b6682c3ae18e7ad78ddfc07311fbb605920bf1bb599495ffa7dc7225b2db2 "$out/capi.raw" \
+                | shasum -a 256 --check | tee "$out/capi-hash.txt"
+              cargo +1.100.0 test --release --locked -j1 -p splot-decode --test simd_backend_parity \
+                -- --test-threads=1 --nocapture 2>&1 | tee "$out/backend-tests.log"
+            )
+          done
+      - name: Fetch the frozen streams and verify their input manifest
+        run: |
+          set -euo pipefail
+          python3 candidate/scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth" 2>&1 | tee results/corpus.log
+          cp "$RUNNER_TEMP/ewouth/simd-cases.tsv" results/
+      - name: Compare full output and collect focused paired decode timing
+        run: |
+          set -euo pipefail
+          python3 -u harness/scripts/experiment-apple-arm64.py results "$RUNNER_TEMP/ewouth" \
+            2>&1 | tee results/comparison.log
+      - name: Upload the comparison and native logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: splot-2006-apple-arm64-comparison
+          path: |
+            results/**/*.txt
+            results/**/*.log
+            results/**/*.toml
+            results/**/*.tsv
+            results/**/*.csv
+          if-no-files-found: warn
