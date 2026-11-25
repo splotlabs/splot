@@ -69,5 +69,6 @@ jobs:
         if: ${{ inputs.timing }}
         run: |
           core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          cargo test -p splot-recon --release --locked --lib --no-run
           taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
             film_grain::tests::measure_wide_grain_noise_rows -- --ignored --exact --nocapture
