@@ -1297,6 +1297,16 @@ description = "Eight 10-bit 128x64 frames matching syn-bru-inactive-refresh-8bit
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-inactive-block-use-8bit.ivf"
+description = "Eight 8-bit 128x64 frames with a moving square. Frame 5 copies frame 3 and refreshes slot 1. The top-left inter block of frame 6 uses that slot."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-inactive-block-use-10bit.ivf"
+description = "Eight 10-bit 128x64 frames with a moving square. Frame 5 copies frame 3 and refreshes slot 1. The top-left inter block of frame 6 uses that slot."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-bru-inactive-filmgrain-8bit.ivf"
 description = "Eight 8-bit 128x64 frames matching syn-bru-inactive-refresh-8bit with --film-grain-test=1 so frame 5 (bru_inactive == 1) synthesizes output film grain without mutating stored reference pixels; validates clean."
 expect = "clean"
@@ -2876,6 +2886,21 @@ expect = "clean"
 [[vector]]
 path = "vectors/valid/syn-tlayer4-sparse-dependencies.obu"
 description = "Five-frame 64x64 8-bit 4:2:0 Annex B stream built from a 4-temporal-layer AVM encode (max_tlayer_id=3, tlayer_id sequence [0, 1, 2, 3, 0] with TL1/TL3 non-updating references) whose SequenceHeader OBU sets tlayer_dependency_present_flag=1 with sparse TLayerDependencyMap (TL1->{0,1}, TL2->{0,2}, TL3->{0,2,3}, excluding TL1 from TL2 and TL3 dependencies). Decodes identically to AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) across full 5-frame output (30,720 bytes, SHA-256 7ca2a0172c7086eafec8de7ead173c0ee1706267eeef9211331a0c8e0c7d99cf) and dependency-closed selection modes; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer2-reproducible-8bit.ivf"
+description = "Four 128x64 8-bit 4:2:0 frames alternate between temporal layers 0 and 1. Each frame has two tile groups. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer2-reproducible-10bit.ivf"
+description = "Four 64x64 10-bit 4:2:0 frames alternate between temporal layers 0 and 1. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer4-reproducible-sparse.obu"
+description = "Five 64x64 8-bit 4:2:0 frames signal a sparse dependency map. Layers 2 and 3 exclude layer 1 from their dependencies. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
 expect = "clean"
 
 [[vector]]
