@@ -735,7 +735,6 @@ fn derived_sef_uses_the_reference_layer_for_output() {
     let [base, enhancement, hidden, ..] = CROSSREF_8BIT_FRAMES else {
         panic!("Missing AVM frame expectations.");
     };
-    // AVM outputs the two first-unit pictures, a base-layer repeat, then the hidden base frame.
     let all = [*base, *enhancement, *base, *hidden];
     // Base-only extraction omits the SEF OBU on the enhancement layer.
     let base_only = [*base, *base];
