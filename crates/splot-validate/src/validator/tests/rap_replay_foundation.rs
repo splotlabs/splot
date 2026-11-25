@@ -237,7 +237,7 @@ fn rap_replay_operating_point_set_resent_in_rap_temporal_unit_passes() {
 #[test]
 fn rap_replay_rap_in_other_xlayer_does_not_govern_this_layers_reference() {
     let mut data = td_and_seq(3);
-    data.extend(seq_obu(7));
+    data.extend(seq_obu_layer(7, 1));
     data.extend(temporal_delimiter_obu());
     data.extend(seq_obu(3)); // resent -> xlayer 0's CLK reference is satisfied
     data.extend(frame_obu_direct_seq_ref(CLK_HEADER, 3)); // xlayer 0 random access point
@@ -252,7 +252,8 @@ fn rap_replay_rap_in_other_xlayer_does_not_govern_this_layers_reference() {
 
 #[test]
 fn rap_replay_reference_governed_by_its_own_layers_rap_fires() {
-    let mut data = td_and_seq(3);
+    let mut data = temporal_delimiter_obu();
+    data.extend(seq_obu_layer(3, 1));
     data.extend(temporal_delimiter_obu());
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 3));
     let report = Validator::new(false).validate_bytes(&data);

@@ -239,6 +239,7 @@ impl<'payload> InterFrameParser<'payload> {
                 filter_states.ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
             (self.merged_units, cdef, gdf, ccso)
         };
+        super::validate_bru_regions(params.bru_modes.as_deref(), work_units)?;
         let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, &mut products)?;
         if let Some(previous) = previous {
             products.inherit_segment_ids(previous)?;

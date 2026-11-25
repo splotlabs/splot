@@ -204,6 +204,7 @@ pub struct Picture {
     props: DataProps,
     content_interpretation: Option<ContentInterpretation>,
     metadata: Option<Arc<[MetadataUnit]>>,
+    atlas: Vec<crate::AtlasAssociation>,
     pool: Option<Arc<PlanePool>>,
     has_film_grain: bool,
     /// The grain the stream signals for this picture and the samples lack.
@@ -270,6 +271,7 @@ impl Picture {
             samples: Some(samples),
             props: frame.props,
             content_interpretation: frame.output_effects.content_interpretation,
+            atlas: frame.output_effects.atlas.clone(),
             metadata: (!metadata.is_empty()).then(|| Arc::from(metadata.as_slice())),
             pool,
             has_film_grain: frame.display_grain.is_some(),
@@ -302,6 +304,7 @@ impl Picture {
             props: self.props,
             content_interpretation: self.content_interpretation,
             metadata: self.metadata.clone(),
+            atlas: self.atlas.clone(),
             pool: self.pool.clone(),
             has_film_grain: self.has_film_grain,
             pending_grain: None,
@@ -387,6 +390,12 @@ impl Picture {
     #[must_use]
     pub const fn content_interpretation(&self) -> Option<&ContentInterpretation> {
         self.content_interpretation.as_ref()
+    }
+
+    /// Applicable global and local atlas associations in source order by scope (global first).
+    #[must_use]
+    pub fn atlas_associations(&self) -> &[crate::AtlasAssociation] {
+        &self.atlas
     }
 
     /// The metadata units (HDR, ITU-T T.35 and others) attached to this
@@ -597,6 +606,7 @@ impl Drop for DriverGuard {
 }
 
 struct DriverLaunch {
+    atlases: crate::ExternalAtlases,
     shared: Arc<Shared>,
     limits: DecodeLimits,
     skip_film_grain: bool,
@@ -626,7 +636,9 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
         .with_extended_layer_selection(launch.extended_layer_selection)
         .with_operating_point_selection(launch.operating_point_selection);
     let guard = DriverGuard(launch.shared);
-    let session = DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
+    let mut session =
+        DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
+    session.external_atlases = launch.atlases;
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
@@ -668,6 +680,18 @@ impl Decoder {
     /// [`DecodeError::UnsupportedBackend`] if the requested SIMD policy cannot
     /// run on this host, or [`DecodeError::Pool`] if a thread cannot start.
     pub fn new(settings: DecoderSettings) -> Result<Self> {
+        Self::new_with_external_atlases(settings, crate::ExternalAtlases::default())
+    }
+
+    /// Opens a decoder with caller-supplied atlas metadata. In-band OBUs can replace those atlases.
+    /// Each flush restores the supplied metadata for the next decode.
+    ///
+    /// # Errors
+    /// Returns the errors from [`Self::new`].
+    pub fn new_with_external_atlases(
+        settings: DecoderSettings,
+        atlases: crate::ExternalAtlases,
+    ) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
         settings.embedded_layer_selection.validate()?;
         settings.extended_layer_selection.validate()?;
@@ -702,6 +726,7 @@ impl Decoder {
         let driver = Arc::clone(&shared);
         let rows = crate::pipeline::row_scheduler(threads, resolved)?;
         let driver = resolved.enter(DriverLaunch {
+            atlases,
             shared: driver,
             limits: settings.limits,
             skip_film_grain: settings.skip_film_grain,

@@ -12,7 +12,10 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py bru-inactive-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py atlas-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py extended-layer-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py temporal-fixtures ...
+  python3 tools/decoder-fixtures/generate.py embedded-fixtures ...
 
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
 .ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo). AVM decoder
@@ -25,6 +28,8 @@ import argparse, hashlib, json, math, os, shutil, subprocess, sys
 from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+from atlas import generate as generate_atlas
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VALID = os.path.join(REPO, "tests/conformance/vectors/valid")
@@ -952,7 +957,7 @@ def cmd_coverage_fixtures(args):
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 
 
-def _bru_lr_write_y4m(path, w, h, bit_depth, sample_fn, num_frames=6):
+def _write_i420_y4m(path, w, h, bit_depth, sample_fn, num_frames=6):
     chroma = "C420p10" if bit_depth == 10 else "C420"
     max_val = (1 << bit_depth) - 1
     shift = bit_depth - 8
@@ -1112,7 +1117,7 @@ def _bru_gdf_sharp_shape(dx, dy, phase):
     return 128 + (ring + edge) // 2
 
 
-def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth):
+def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth, translated_consumer=False):
     shift = bit_depth - 8
     if plane > 0:
         return (128 + int(24 * math.sin(x * 0.08 + y * 0.06))) << shift
@@ -1123,6 +1128,8 @@ def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth):
         val = _bru_gdf_sharp_shape(x % 64, y - 64, 7)
     elif t == 4 and 66 <= x < 190 and 2 <= y < 62:
         val = _bru_gdf_sharp_shape(x % 64, y, 13)
+    elif translated_consumer and t == 5 and 66 <= x < 190 and 2 <= y < 62:
+        val = _bru_gdf_sharp_shape((x - 2) % 64, y, 13)
     elif t == 5 and 76 <= x < 120 and 72 <= y < 118:
         val = _bru_gdf_sharp_shape(x - 64, y - 64, 19)
     return int(round(val)) << shift
@@ -1160,11 +1167,15 @@ def _bru_gdf_sample_multitile(t, x, y, plane):
     return int(round(val))
 
 
+def _bru_gdf_stripe_fixtures(mode, search_flags):
+    flags = [*search_flags, "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]
+    return [(f"syn-bru-gdf-{mode}-{depth}bit", 256, 128, depth,
+             lambda t, x, y, p, bd=depth: _bru_gdf_sample_stripe(t, x, y, p, bd, mode == "frame"), flags)
+            for depth in (8, 10)]
+
+
 BRU_GDF_FIXTURES = [
-    ("syn-bru-gdf-block-8bit", 256, 128, 8, lambda t, x, y, p: _bru_gdf_sample_stripe(t, x, y, p, 8),
-     ["--cpu-used=1", "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]),
-    ("syn-bru-gdf-block-10bit", 256, 128, 10, lambda t, x, y, p: _bru_gdf_sample_stripe(t, x, y, p, 10),
-     ["--cpu-used=1", "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]),
+    *_bru_gdf_stripe_fixtures("block", ["--cpu-used=1"]),
     ("syn-bru-gdf-lr-8bit", 256, 128, 8, _bru_gdf_sample_lr,
      ["--cpu-used=0", "--qp=165", "--enable-restoration=1", "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]),
     ("syn-bru-gdf-multitile-8bit", 256, 256, 8, _bru_gdf_sample_multitile,
@@ -1318,7 +1329,7 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args, *, num_frames=6):
         ivf = os.path.join(stage, f"{fid}.ivf")
         repeat_ivf = os.path.join(stage, f"{fid}.repeat.ivf")
         raw = os.path.join(stage, f"{fid}.avm.raw")
-        _bru_lr_write_y4m(y4m, w, h, bd, sample_fn, num_frames)
+        _write_i420_y4m(y4m, w, h, bd, sample_fn, num_frames)
         encode = [
             avmenc, "--codec=av2", "--ivf", "-D", "--passes=1",
             "--lag-in-frames=0", "--kf-min-dist=9999", "--kf-max-dist=9999",
@@ -1357,8 +1368,34 @@ def cmd_bru_lr_fixtures(args):
 
 
 def cmd_bru_gdf_fixtures(args):
+    """Regenerate the frame-wide pair and the 10-bit LR stream at AVM 457cd58681a747465661baccb1f32095bc5b7774.
+
+    Configure AVM with the following command.
+
+      cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=0 -DENABLE_DOCS=0 \
+        -DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 -DCONFIG_TENSORFLOW_LITE=0
+      cmake --build build --target avmenc avmdec
+
+    For --frame-wide, edit only the local AVM encoder. In av2/encoder/encoder.c,
+    add the following statement immediately after gdf_optimizer(cpi, cm) in gdf_optimize_frame.
+
+      if (cm->bru.enabled && !cm->bru.frame_inactive_flag) cm->gdf_info.gdf_mode = 1;
+
+    Rebuild avmenc. Set AVM_BUILD to the directory containing this encoder and the pristine avmdec.
+    Run bru-gdf-fixtures --frame-wide --stage <dir> to regenerate the three streams.
+    The frame-wide pair uses a bounded partition search. Its last picture translates the textured patch
+    from picture 4 by two pixels so an active inter block uses its filtered reference.
+    The 10-bit LR stream uses the scaled 8-bit LR source and enables restoration.
+    """
+    fixtures = BRU_GDF_FIXTURES
+    if args.frame_wide:
+        partition_flags = ["--min-partition-size=16", "--max-partition-size=32"]
+        fixtures = _bru_gdf_stripe_fixtures("frame", ["--cpu-used=3", *partition_flags])
+        fixtures.append(("syn-bru-gdf-lr-10bit", 256, 128, 10, lambda t, x, y, p: _bru_gdf_sample_lr(t, x, y, p) << 2,
+                         ["--cpu-used=2", *partition_flags, "--qp=165", "--enable-restoration=1",
+                          "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]))
     _run_bru_fixture_batch(
-        BRU_GDF_FIXTURES,
+        fixtures,
         ["--enable-intrabc=0", "--enable-gdf=1", "--gdf-unit-matches-sb=1"],
         "BRU+GDF",
         args,
@@ -1373,6 +1410,13 @@ def cmd_bru_intrabc_fixtures(args):
         args,
     )
 
+
+def cmd_extended_layer_fixtures(args):
+    from extended_layers import generate
+    try:
+        generate(VALID, args.stage, find("avmenc"), find("avmdec"), _write_i420_y4m, run_checked)
+    except (OSError, ValueError) as error:
+        sys.exit(f"error: {error}")
 
 
 def signal_sparse_tlayers(data):
@@ -1429,7 +1473,7 @@ def check_temporal_fixture(splot, avmdec, path, depth, frame_size, layers, group
     print(f"{hashlib.sha256(raw).hexdigest()}  {path.name} decoded I420")
 
 
-def cmd_temporal_fixtures(args):
+def build_layer_fixture_encoder(args, work):
     revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
     actual = run_checked(["git", "-C", args.avm_source, "rev-parse", "HEAD"])
     if actual.stdout.decode().strip() != revision:
@@ -1440,6 +1484,33 @@ def cmd_temporal_fixtures(args):
     if f"-g{revision[:10]}".encode() not in version:
         sys.exit(f"Build avmdec at revision {revision}.")
 
+    runner = Path(work) / "encode-temporal"
+    source = Path(__file__).with_name("encode-temporal.c")
+    run_checked([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 "-I", args.avm_source, source, args.avm_build / "libavm.a",
+                 "-pthread", "-lm", "-o", runner])
+    return runner, avmdec
+
+
+def encode_layer_fixture(runner, index, source, name, source_sha256):
+    command = [runner, str(index), source]
+    data = run_checked(command, timeout=600).stdout
+    if sha(source) != source_sha256:
+        sys.exit(f"Source I420 bytes differ for {name}.")
+    if data != run_checked(command, timeout=600).stdout or sha(source) != source_sha256:
+        sys.exit(f"Repeated encodes produced different bytes for {name}.")
+    print(f"{source_sha256}  {name} source I420")
+    return data
+
+
+def stage_layer_fixtures(stage, work, specs):
+    stage.mkdir(parents=True, exist_ok=True)
+    for name, *_ in specs:
+        with (stage / name).open("xb") as target:
+            target.write((Path(work) / name).read_bytes())
+
+
+def cmd_temporal_fixtures(args):
     specs = [
         ("syn-tlayer2-reproducible-8bit.ivf", 8, 12288, [0, 1, 0, 1], 2,
          "aa536ca69716284731231b1de7558547a47c01437f495b8ec6d94decc5ac3a46"),
@@ -1452,20 +1523,10 @@ def cmd_temporal_fixtures(args):
         if (args.stage / name).exists():
             sys.exit(f"Use a stage directory without {name}.")
     with TemporaryDirectory() as work:
-        runner = Path(work) / "encode-temporal"
-        source = Path(__file__).with_name("encode-temporal.c")
-        run_checked([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
-                     "-I", args.avm_source, source, args.avm_build / "libavm.a",
-                     "-pthread", "-lm", "-o", runner])
+        runner, avmdec = build_layer_fixture_encoder(args, work)
         for index, (name, depth, frame_size, layers, groups, source_sha256) in enumerate(specs):
             raw = Path(work) / "source.i420"
-            command = [runner, str(index), raw]
-            data = run_checked(command).stdout
-            if sha(raw) != source_sha256:
-                sys.exit(f"Source I420 bytes differ for {name}.")
-            if data != run_checked(command).stdout or sha(raw) != source_sha256:
-                sys.exit(f"Repeated encodes produced different bytes for {name}.")
-            print(f"{source_sha256}  {name} source I420")
+            data = encode_layer_fixture(runner, index, raw, name, source_sha256)
             if index == 2:
                 data = signal_sparse_tlayers(data)
             if data != (Path(VALID) / name).read_bytes():
@@ -1475,10 +1536,104 @@ def cmd_temporal_fixtures(args):
             check_temporal_fixture(args.splot, avmdec, path, depth, frame_size,
                                    layers, groups)
 
-        args.stage.mkdir(parents=True, exist_ok=True)
-        for name, *_ in specs:
-            with (args.stage / name).open("xb") as target:
-                target.write((Path(work) / name).read_bytes())
+        stage_layer_fixtures(args.stage, work, specs)
+
+
+def local_embedded_lcr(data):
+    # The pinned AVM encoder emits a local LCR with parent ID 1 before the sequence.
+    # These single-stream fixtures supply no global LCR. Clear its f(3) parent ID
+    # (AV2 § 5.8.3) without changing the OBU size or subsequent syntax.
+    if data[:8] != bytes.fromhex("01 08 05 40 24 00 00 40"):
+        sys.exit("Unexpected local LCR. Check the AVM revision and build options.")
+    return data[:4] + bytes([data[4] & 31]) + data[5:]
+
+
+def check_embedded_fixture(splot, avmdec, path, depth, pictures, groups, raw_sha256):
+    run_checked([splot, "validate", "--strict", path])
+    obus = json.loads(run_checked([splot, "inspect", "--json", path]).stdout)
+    tile_groups = [obu for obu in obus
+                   if obu["header"]["obu_type"] in ("ClosedLoopKey", "RegularTileGroup")]
+    observed = [(obu["header"]["embedded_layer_id"], obu["header"]["temporal_layer_id"])
+                for obu in tile_groups]
+    expected = [(m, t) for m, t, _, _ in pictures for _ in range(groups)]
+    if observed != expected:
+        sys.exit(f"Unexpected tile groups in {path.name}.")
+
+    if any(tlayer != 0 for _, tlayer, _, _ in pictures):
+        mfh_headers = [obu["header"] for obu in obus
+                       if obu["header"]["obu_type"] == "MultiFrameHeader"]
+        if [(h["embedded_layer_id"], h["temporal_layer_id"]) for h in mfh_headers] != [(0, 0)]:
+            sys.exit(f"Expected one ML0/TL0 multi-frame header in {path.name}.")
+        referenced_mfh = [obu.get("frame_header_prefix", {}).get("cur_mfh_id")
+                          for obu in tile_groups[::groups]]
+        if referenced_mfh != [1] * len(pictures):
+            sys.exit(f"Expected every picture in {path.name} to use multi-frame header 1.")
+
+    raw = run_checked([avmdec, "--all-layers", "--skip-film-grain", "--rawvideo",
+                      "--i420", f"--output-bit-depth={depth}", "-o", "-", path]).stdout
+    if hashlib.sha256(raw).hexdigest() != raw_sha256:
+        sys.exit(f"AVM output differs from the recorded digest for {path.name}.")
+    decode = [splot, "decode", "--output-format", "raw", "-o", "-"]
+    if run_checked([*decode, path]).stdout != raw:
+        sys.exit(f"Splot and AVM output differ for {path.name}.")
+
+    samples = []
+    offset = 0
+    for _, _, width, height in pictures:
+        size = width * height * 3 // 2 * (1 if depth == 8 else 2)
+        samples.append(raw[offset:offset + size])
+        offset += size
+    if offset != len(raw):
+        sys.exit(f"Unexpected decoded size for {path.name}.")
+
+    for axis, flag in enumerate(("--embedded-output-mask", "--temporal-output-mask")):
+        ids = sorted({picture[axis] for picture in pictures})
+        if len(ids) < 2:
+            continue
+        for layer in ids:
+            subset = b"".join(frame for frame, picture in zip(samples, pictures)
+                              if picture[axis] == layer)
+            if run_checked([*decode, flag, str(1 << layer), path]).stdout != subset:
+                sys.exit(f"Output for {flag} {1 << layer} differs in {path.name}.")
+    print(f"{sha(path)}  {path.name}")
+    print(f"{raw_sha256}  {path.name} decoded I420")
+
+
+def cmd_embedded_fixtures(args):
+    same_size = [(layer, 0, 64, 64) for _ in range(3) for layer in (0, 1)]
+    mixed_size = [(0, 0, 128, 128), (1, 0, 256, 256)] * 3
+    joint = [(layer, int(frame != 0), 128, 64)
+             for frame in range(4) for layer in (0, 1)]
+    specs = [
+        ("syn-mlayer2-reproducible-8bit.obu", 8, same_size, 1,
+         "33e129a615d52d1efb767fe543d1e4e9138961045a2b3a3f64da413155b4998d",
+         "6b1c68c461792ee00843253575b70204a00059381fd76b8037387036e1cffcbc"),
+        ("syn-mlayer2-reproducible-10bit.obu", 10, same_size, 1,
+         "45a4add1eb104ef19c2a6c58fd7fdf8f6f2667e0e9f08f652b0f5167610539b5",
+         "c9d7de9c050d472aff6ccd3a9aea208e43b190d982b74391be371becf4ca8c74"),
+        ("syn-mlayer2-reproducible-mixedres-8bit.obu", 8, mixed_size, 1,
+         "be30dbcb82cf5413fee7644436835eea22116b33aad36cf416b6dd31b1697d66",
+         "b6975e368cbde9728aa1d76218e9c610c6260a6d218384d1302d6f10e962f3e5"),
+        ("syn-mlayer2-reproducible-2d-8bit.obu", 8, joint, 2,
+         "aa536ca69716284731231b1de7558547a47c01437f495b8ec6d94decc5ac3a46",
+         "2735a0e58bf3ee19fb7ca625aad6bcadff45ce176b4e74e66f2356b795988600"),
+    ]
+    with TemporaryDirectory() as work:
+        runner, avmdec = build_layer_fixture_encoder(args, work)
+        for index, (name, depth, pictures, groups, source_sha256, raw_sha256) in enumerate(specs, start=3):
+            destination = args.stage / name
+            if destination.exists():
+                sys.exit(f"Use a stage directory without {name}.")
+            source = Path(work) / "source.i420"
+            data = local_embedded_lcr(
+                encode_layer_fixture(runner, index, source, name, source_sha256))
+            if data != (Path(VALID) / name).read_bytes():
+                sys.exit(f"Generated bytes differ from the committed fixture {name}.")
+            path = Path(work) / name
+            path.write_bytes(data)
+            check_embedded_fixture(args.splot, avmdec, path, depth, pictures, groups,
+                                   raw_sha256)
+        stage_layer_fixtures(args.stage, work, specs)
 
 
 def main():
@@ -1498,16 +1653,26 @@ def main():
     b.set_defaults(fn=cmd_bru_lr_fixtures)
     g = sub.add_parser("bru-gdf-fixtures"); g.add_argument("--stage", required=True)
     g.add_argument("--only", help="regenerate one fixture id")
+    g.add_argument("--frame-wide", action="store_true", help="use the frame-wide AVM encoder described in cmd_bru_gdf_fixtures")
     g.set_defaults(fn=cmd_bru_gdf_fixtures)
     i = sub.add_parser("bru-intrabc-fixtures"); i.add_argument("--stage", required=True)
     i.add_argument("--only", help="regenerate one fixture id")
     i.set_defaults(fn=cmd_bru_intrabc_fixtures)
-    t = sub.add_parser("temporal-fixtures")
-    t.add_argument("--stage", type=Path, required=True)
-    t.add_argument("--avm-source", type=Path, required=True)
-    t.add_argument("--avm-build", type=Path, required=True)
-    t.add_argument("--splot", type=Path, required=True)
-    t.set_defaults(fn=cmd_temporal_fixtures)
+    a = sub.add_parser("atlas-fixtures")
+    a.add_argument("--stage", required=True)
+    a.set_defaults(fn=lambda args: generate_atlas(VALID, args.stage))
+    multi = sub.add_parser("extended-layer-fixtures")
+    multi.add_argument("--stage", required=True)
+    multi.set_defaults(fn=cmd_extended_layer_fixtures)
+
+    for name, command in [("temporal-fixtures", cmd_temporal_fixtures),
+                          ("embedded-fixtures", cmd_embedded_fixtures)]:
+        layer = sub.add_parser(name)
+        layer.add_argument("--stage", type=Path, required=True)
+        layer.add_argument("--avm-source", type=Path, required=True)
+        layer.add_argument("--avm-build", type=Path, required=True)
+        layer.add_argument("--splot", type=Path, required=True)
+        layer.set_defaults(fn=command)
     args = p.parse_args()
     args.fn(args)
 

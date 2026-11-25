@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::error::{Error, TileParamsErrorKind};
-use splot_core::headers::atlas_segment::parse_atlas_segment;
+use splot_core::headers::atlas_segment::parse_scoped_atlas_segment;
 use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
@@ -114,7 +114,6 @@ use self::frame_header_copy::*;
 use self::frame_header_diagnostics::*;
 use self::hls::*;
 use self::lcr::*;
-use self::lcr_agreement::*;
 use self::metadata::*;
 use self::msdo::*;
 use self::ops::*;
@@ -131,7 +130,6 @@ use self::timecode::*;
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
 pub(crate) struct ValidatorContext {
-    sequence_headers: BTreeMap<SequenceHeaderId, SequenceHeader>,
     active_sequence_by_xlayer: BTreeMap<ExtendedLayerId, SequenceHeaderId>,
     /// Payload fingerprints for activated sequence headers, keyed by
     /// `(obu_xlayer_id, seq_header_id)`, used to detect non-bit-identical repeats
@@ -151,12 +149,6 @@ pub(crate) struct ValidatorContext {
     /// (AV2 § 6.10.1, § 7.3.8.5). Kept separate from [`HlsAvailabilityStore`] because
     /// OPS state, unlike the other HLS records, is explicitly resettable.
     ops: OpsAvailabilityStore,
-    /// Quantizer-matrix `qm_bit_map` reset/level state (§ 6.12) plus per-level
-    /// availability for frame-reference checks (§ 7.3.8).
-    qm: QuantizerMatrixState,
-    /// Film-grain `fgm_update_flags` slot state (§ 6.13) plus per-slot availability
-    /// for frame-reference checks (§ 7.3.8).
-    film_grain: FilmGrainState,
     /// HDR CLL / MDCV content baselines per coded-video-sequence scope, for the
     /// § 6.16.5 / § 6.16.6 "shall have the same content" checks: each record
     /// carries its unit's bitstream-derived embedded-layer association (see
@@ -309,10 +301,6 @@ pub(crate) struct ValidatorContext {
         u64,
         AnnexAValueSpaceFingerprint,
     )>,
-    /// Byte offset of the OBU carrying each stored sequence header, keyed by
-    /// `seq_header_id`, so the Annex A value-space diagnostics — emitted at activation
-    /// time, which may be a frame OBU — anchor at the defining sequence-header OBU.
-    sequence_header_offsets: BTreeMap<SequenceHeaderId, ByteOffset>,
     /// The most recently observed OBU_MSDO's `sub_xlayer_id[i] → (max_profile,
     /// max_level, max_tier)` mapping plus the MSDO's byte offset, recorded for the
     /// § 6.6 sub-stream PTL-ceiling agreement checks
@@ -494,7 +482,9 @@ impl ValidatorContext {
         self.temporal_unit.observe_obu(obu, report);
 
         if obu.header.obu_type == ObuType::TemporalDelimiter {
-            self.qm.clear_qm_protected_at_temporal_delimiter();
+            for state in self.hls.layers.iter_mut().flatten() {
+                state.qm.clear_qm_protected_at_temporal_delimiter();
+            }
         }
 
         self.annex_a_iop.note_xlayer(obu.header.extended_layer_id);
@@ -539,7 +529,7 @@ impl ValidatorContext {
         }
 
         if is_frame_bearing(obu.header.obu_type) {
-            self.reset_coded_frame_window();
+            self.reset_coded_frame_window(obu.header.extended_layer_id);
         }
         let role = self.seg_role_for(obu, first_picture_in_tu);
         let boundary = self.frame_unit.observe(obu, role, report);

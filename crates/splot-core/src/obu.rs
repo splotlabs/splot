@@ -306,7 +306,8 @@ fn dispatch_obu_payload_impl<'a, O: SyntaxObserver>(
             )))
         }
         ObuType::AtlasSegment => {
-            let atlas_segment = parse_atlas_segment_with_reader(&mut sr)?;
+            let atlas_segment =
+                parse_atlas_segment_with_reader(&mut sr, Some(header.extended_layer_id))?;
             finish_obu_payload_with_reader(&mut sr, payload, header.obu_type.is_extensible_obu())?;
             Ok(PayloadStatus::Parsed(ParsedObu::AtlasSegment(Box::new(
                 atlas_segment,

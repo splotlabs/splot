@@ -95,6 +95,12 @@ pub enum AtlasSegmentErrorKind {
     /// per-mode syntax is defined, so parsing cannot continue.
     #[error("ats_atlas_segment_mode_idc must be less than or equal to 4")]
     ModeOutOfRange,
+    /// Multistream modes require global scope (AV2 § 6.9).
+    #[error("Multistream atlas modes require obu_xlayer_id equal to GLOBAL_XLAYER_ID")]
+    MultistreamRequiresGlobalXlayer,
+    /// The atlas names the same input stream more than once (AV2 § 6.9.4 / § 6.9.6).
+    #[error("Each atlas input stream ID must be unique")]
+    DuplicateInputStreamId,
     /// A region-grid dimension (`ats_num_region_columns_minus_1` /
     /// `ats_num_region_rows_minus_1`) reaches `MAX_ATLAS_COLS` / `MAX_ATLAS_ROWS`
     /// (AV2 § 6.9.3.1), which would drive an out-of-range loop.
