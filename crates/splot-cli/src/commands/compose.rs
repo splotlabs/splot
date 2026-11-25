@@ -31,7 +31,7 @@ pub(crate) struct ComposeArgs {
     /// Set the number of decoder threads.
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
-    /// Limit pending picture storage and composite storage separately, in bytes.
+    /// Set separate byte limits for one decoded frame, all pending pictures, and the canvas with scratch.
     /// The compositor can hold 32 incomplete presentation times.
     #[arg(long, default_value = "268435456")]
     max_bytes: NonZeroU64,
@@ -67,7 +67,11 @@ pub(crate) fn run(args: &ComposeArgs) -> Result<ExitCode> {
                     output.push(picture, writer)?;
                 }
             }
-            if index == 0 && units.ivf_header().is_some_and(|header| header.fourcc != *b"AV02") {
+            if index == 0
+                && units
+                    .ivf_header()
+                    .is_some_and(|header| header.fourcc != *b"AV02")
+            {
                 bail!("The IVF input must contain AV2.");
             }
         }

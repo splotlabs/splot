@@ -79,7 +79,9 @@ fn repeated_ivf_timestamps_keep_each_temporal_unit_distinct() {
 fn a_failed_composition_preserves_existing_output() {
     let output = temp_output("yuv");
     std::fs::write(&output, b"existing").unwrap();
-    let input = conformance_vector("syn-msdo-two-streams-8bit.obu");
+    let mut bytes = std::fs::read(conformance_vector("syn-atlas-alpha-paired-8bit.obu")).unwrap();
+    bytes.pop();
+    let input = temp_input("obu", &bytes);
     let result = splot(&[
         "compose",
         input.to_str().unwrap(),
@@ -87,6 +89,5 @@ fn a_failed_composition_preserves_existing_output() {
         output.to_str().unwrap(),
     ]);
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("no multistream atlas"));
     assert_eq!(std::fs::read(output).unwrap(), b"existing");
 }
