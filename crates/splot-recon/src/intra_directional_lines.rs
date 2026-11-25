@@ -19,7 +19,7 @@ use fearless_simd::{
 };
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{SimdFrom, u8x32};
-use splot_core::simd::SimdBackend;
+use splot_core::{simd::SimdBackend, with_simd};
 
 use super::{
     DR_INTERP_FILTER, DirectionalAngleBranch, IntraMiddleDirectionalAngle, directional_shift,
@@ -74,36 +74,90 @@ static IDIF_TAPS: [[i8; 4]; 32] = {
     taps
 };
 
+macro_rules! line_methods {
+    ($runner:ident, $($mode:tt)+) => {
+        simd_runner_methods! {
+            $($mode)+;
+
+            (fn select_left<P: LineSample>(
+                $runner,
+                left: &[P; 16],
+                above: &[P; 16],
+                runs: &[u16; 16],
+                along: &[u16; 16],
+            ) -> [P; 16]) simd =>
+                select_left_simd(simd, left, above, runs, along);
+
+            #[inline]
+            (fn small_lanes_u8($runner, lanes: &SmallLanes<u8>, last: u8) -> [u8; 16]) simd =>
+                small_lanes_u8_simd(simd, lanes, last);
+
+            (fn transpose_u8(
+                $runner,
+                width: usize,
+                height: usize,
+                columns: &[u8],
+                output: &mut [u8],
+                stride: usize,
+            )) simd =>
+                transpose_tiles(simd, width, height, columns, output, stride);
+
+            #[inline]
+            (fn small_lanes_u16(
+                $runner,
+                lanes: &SmallLanes<u16>,
+                filter: LineFilter,
+                max: u16,
+                last: u16,
+            ) -> [u16; 16]) simd =>
+                small_lanes_u16(simd, lanes, filter, max, last);
+
+            (fn transpose_u16(
+                $runner,
+                width: usize,
+                height: usize,
+                columns: &[u16],
+                output: &mut [u16],
+                stride: usize,
+            )) simd =>
+                transpose_tiles_u16(simd, width, height, columns, output, stride);
+
+            #[inline]
+            (fn filter_four_tap_u8($runner, window: &[u8], taps: [i8; 4], out: &mut [u8])) simd =>
+                line_lanes(simd, window, taps, out);
+
+            #[inline(always)]
+            (fn bilinear_u16($runner, window: &[u16], weights: [u16; 2], out: &mut [u16])) simd =>
+                bilinear_lanes_u16(simd, window, weights, out);
+
+            #[inline(always)]
+            (fn four_tap_u16($runner, window: &[u16], taps: [i8; 4], max: u16, out: &mut [u16])) simd =>
+                line_lanes_u16(simd, window, taps, max, out);
+        }
+    };
+}
+
 pub(super) trait LineRunner: Copy {
-    fn select_left<P: LineSample>(
-        self,
-        left: &[P; 16],
-        above: &[P; 16],
-        runs: &[u16; 16],
-        along: &[u16; 16],
-    ) -> [P; 16];
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2>;
 
-    fn small_lanes_u8(self, lanes: &SmallLanes<u8>, last: u8) -> [u8; 16];
+    line_methods!(self, declare);
 
-    fn filter_u8(self, window: &[u8], taps: [i8; 4], out: &mut [u8]);
+    #[inline]
+    fn filter_u8(self, window: &[u8], taps: [i8; 4], out: &mut [u8]) {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(token) = self.avx2_token() {
+            filter_u8_avx2(token, window, taps, out);
+            return;
+        }
+        self.filter_four_tap_u8(window, taps, out);
+    }
 
-    fn transpose_u8(
-        self,
-        width: usize,
-        height: usize,
-        columns: &[u8],
-        output: &mut [u8],
-        stride: usize,
-    );
-
-    fn small_lanes_u16(
-        self,
-        lanes: &SmallLanes<u16>,
-        filter: LineFilter,
-        max: u16,
-        last: u16,
-    ) -> [u16; 16];
-
+    #[expect(
+        clippy::inline_always,
+        reason = "measured: one call per line was the line cost"
+    )]
+    #[inline(always)]
     fn filter_u16(
         self,
         window: &[u16],
@@ -111,16 +165,14 @@ pub(super) trait LineRunner: Copy {
         taps: [i8; 4],
         max: u16,
         out: &mut [u16],
-    );
-
-    fn transpose_u16(
-        self,
-        width: usize,
-        height: usize,
-        columns: &[u16],
-        output: &mut [u16],
-        stride: usize,
-    );
+    ) {
+        if filter == LineFilter::Bilinear {
+            let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
+            self.bilinear_u16(window, weights, out);
+            return;
+        }
+        self.four_tap_u16(window, taps, max, out);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -176,174 +228,23 @@ fn filter_u8_avx2(token: fearless_simd::Avx2, window: &[u8], taps: [i8; 4], out:
 }
 
 impl LineRunner for BaselineLines {
-    fn select_left<P: LineSample>(
-        self,
-        left: &[P; 16],
-        above: &[P; 16],
-        runs: &[u16; 16],
-        along: &[u16; 16],
-    ) -> [P; 16] {
-        baseline_simd!(simd => select_left_simd(simd, left, above, runs, along))
-    }
-
+    #[cfg(target_arch = "x86_64")]
     #[inline]
-    fn small_lanes_u8(self, lanes: &SmallLanes<u8>, last: u8) -> [u8; 16] {
-        baseline_simd!(simd => small_lanes_u8_simd(simd, lanes, last))
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        fearless_simd::Level::baseline().as_avx2()
     }
 
-    #[inline]
-    fn filter_u8(self, window: &[u8], taps: [i8; 4], out: &mut [u8]) {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
-            filter_u8_avx2(token, window, taps, out);
-            return;
-        }
-        baseline_simd!(simd => line_lanes(simd, window, taps, out));
-    }
-
-    fn transpose_u8(
-        self,
-        width: usize,
-        height: usize,
-        columns: &[u8],
-        output: &mut [u8],
-        stride: usize,
-    ) {
-        baseline_simd!(simd => transpose_tiles(simd, width, height, columns, output, stride));
-    }
-
-    #[inline]
-    fn small_lanes_u16(
-        self,
-        lanes: &SmallLanes<u16>,
-        filter: LineFilter,
-        max: u16,
-        last: u16,
-    ) -> [u16; 16] {
-        baseline_simd!(simd => small_lanes_u16(simd, lanes, filter, max, last))
-    }
-
-    #[expect(
-        clippy::inline_always,
-        reason = "measured: one call per line was the line cost"
-    )]
-    #[inline(always)]
-    fn filter_u16(
-        self,
-        window: &[u16],
-        filter: LineFilter,
-        taps: [i8; 4],
-        max: u16,
-        out: &mut [u16],
-    ) {
-        if filter == LineFilter::Bilinear {
-            let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
-            baseline_simd!(simd => bilinear_lanes_u16(simd, window, weights, out));
-            return;
-        }
-        baseline_simd!(simd => line_lanes_u16(simd, window, taps, max, out));
-    }
-
-    fn transpose_u16(
-        self,
-        width: usize,
-        height: usize,
-        columns: &[u16],
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        baseline_simd!(simd => transpose_tiles_u16(simd, width, height, columns, output, stride));
-    }
+    line_methods!(self, baseline);
 }
 
 impl<B: SimdBackend> LineRunner for TypedLines<B> {
-    fn select_left<P: LineSample>(
-        self,
-        left: &[P; 16],
-        above: &[P; 16],
-        runs: &[u16; 16],
-        along: &[u16; 16],
-    ) -> [P; 16] {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => select_left_simd(simd, left, above, runs, along))
-    }
-
+    #[cfg(target_arch = "x86_64")]
     #[inline]
-    fn small_lanes_u8(self, lanes: &SmallLanes<u8>, last: u8) -> [u8; 16] {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => small_lanes_u8_simd(simd, lanes, last))
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        self.0.narrow().avx2_token()
     }
 
-    #[inline]
-    fn filter_u8(self, window: &[u8], taps: [i8; 4], out: &mut [u8]) {
-        let narrow = self.0.narrow();
-        #[cfg(target_arch = "x86_64")]
-        if let Some(token) = narrow.avx2_token() {
-            filter_u8_avx2(token, window, taps, out);
-            return;
-        }
-        splot_core::with_simd!(narrow, simd => line_lanes(simd, window, taps, out));
-    }
-
-    fn transpose_u8(
-        self,
-        width: usize,
-        height: usize,
-        columns: &[u8],
-        output: &mut [u8],
-        stride: usize,
-    ) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => transpose_tiles(simd, width, height, columns, output, stride));
-    }
-
-    #[inline]
-    fn small_lanes_u16(
-        self,
-        lanes: &SmallLanes<u16>,
-        filter: LineFilter,
-        max: u16,
-        last: u16,
-    ) -> [u16; 16] {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => small_lanes_u16(simd, lanes, filter, max, last))
-    }
-
-    #[expect(
-        clippy::inline_always,
-        reason = "measured: one call per line was the line cost"
-    )]
-    #[inline(always)]
-    fn filter_u16(
-        self,
-        window: &[u16],
-        filter: LineFilter,
-        taps: [i8; 4],
-        max: u16,
-        out: &mut [u16],
-    ) {
-        let narrow = self.0.narrow();
-        if filter == LineFilter::Bilinear {
-            let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
-            splot_core::with_simd!(narrow, simd => bilinear_lanes_u16(simd, window, weights, out));
-            return;
-        }
-        splot_core::with_simd!(narrow, simd => line_lanes_u16(simd, window, taps, max, out));
-    }
-
-    fn transpose_u16(
-        self,
-        width: usize,
-        height: usize,
-        columns: &[u16],
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => {
-            transpose_tiles_u16(simd, width, height, columns, output, stride);
-        });
-    }
+    line_methods!(self, typed(with_simd, self.0.narrow()));
 }
 
 /// A sample type with a directional line kernel and a column transpose.

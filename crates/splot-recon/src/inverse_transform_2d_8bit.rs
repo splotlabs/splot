@@ -22,7 +22,7 @@ use fearless_simd::{
     Bytes as _, Simd, SimdBase as _, SimdInt, i16x8, i16x16, i32x4, i32x8, u8x16, u16x8, u16x16,
     u32x8, u64x2,
 };
-use splot_core::simd::SimdBackend;
+use splot_core::{simd::SimdBackend, with_simd};
 use splot_tables::tables::transform_1d::{DCT_KERNEL8, DCT_KERNEL16, DCT_KERNEL32};
 
 use crate::dequant_process::{dequant_coefficient, dequant_lanes};
@@ -925,6 +925,58 @@ impl InverseTransformAdd {
     }
 }
 
+macro_rules! transform_runner_methods {
+    ($runner:ident, $($mode:tt)+) => {
+        simd_runner_methods! {
+            $($mode)+;
+
+            #[inline]
+            (fn run_dc_only<const RESIDUAL: bool>(
+                $runner,
+                t: Transform8,
+                dc: i32,
+                passes: (Pass1d, Pass1d),
+                out: &mut [i32],
+            )) simd =>
+                dc_only_transform::<_, RESIDUAL>(simd, t, dc, passes, out);
+
+            #[inline]
+            (fn run_transform<const RESIDUAL: bool>(
+                $runner,
+                passes: (Pass1d, Pass1d),
+                rows: Rows<'_>,
+                pass: ColPass,
+                out: &mut [i32],
+                scratch: &mut [i32; 32 * 32],
+            )) simd =>
+                transform::<_, RESIDUAL>(simd, passes, rows, pass, out, scratch);
+
+            #[inline]
+            (fn add_tile_u8($runner, tile: &[i32], w: usize, dst: &mut [u8], stride: usize)) simd =>
+                add_tile_u8(simd, tile, w, dst, stride);
+
+            #[inline]
+            (fn add_constant_u16(
+                $runner,
+                dst: &mut [u16],
+                geometry: (usize, usize, usize),
+                values: (i32, i16),
+            )) simd =>
+                add_constant_u16(simd, dst, geometry, values);
+
+            #[inline]
+            (fn add_tile_u16(
+                $runner,
+                tile: &[i32],
+                w: usize,
+                dst_stride: (&mut [u16], usize),
+                max: i16,
+            )) simd =>
+                add_tile_u16(simd, tile, w, dst_stride, max);
+        }
+    };
+}
+
 trait TransformRunner: Copy {
     #[cfg(target_arch = "x86_64")]
     fn avx2_token(self) -> Option<fearless_simd::Avx2>;
@@ -950,28 +1002,7 @@ trait TransformRunner: Copy {
         dequant: &mut [i32],
     ) -> crate::Result<usize>;
 
-    fn run_dc_only<const RESIDUAL: bool>(
-        self,
-        t: Transform8,
-        dc: i32,
-        passes: (Pass1d, Pass1d),
-        out: &mut [i32],
-    );
-
-    fn run_transform<const RESIDUAL: bool>(
-        self,
-        passes: (Pass1d, Pass1d),
-        rows: Rows<'_>,
-        pass: ColPass,
-        out: &mut [i32],
-        scratch: &mut [i32; 32 * 32],
-    );
-
-    fn add_tile_u8(self, tile: &[i32], w: usize, dst: &mut [u8], stride: usize);
-
-    fn add_constant_u16(self, dst: &mut [u16], geometry: (usize, usize, usize), values: (i32, i16));
-
-    fn add_tile_u16(self, tile: &[i32], w: usize, dst_stride: (&mut [u16], usize), max: i16);
+    transform_runner_methods!(self, declare);
 }
 
 #[derive(Clone, Copy)]
@@ -1017,48 +1048,7 @@ impl TransformRunner for BaselineTransformRunner {
         secondary_inverse_transform_quant(quant, quantizers, secondary, dequant)
     }
 
-    #[inline]
-    fn run_dc_only<const RESIDUAL: bool>(
-        self,
-        t: Transform8,
-        dc: i32,
-        passes: (Pass1d, Pass1d),
-        out: &mut [i32],
-    ) {
-        baseline_simd!(simd => dc_only_transform::<_, RESIDUAL>(simd, t, dc, passes, out));
-    }
-
-    #[inline]
-    fn run_transform<const RESIDUAL: bool>(
-        self,
-        passes: (Pass1d, Pass1d),
-        rows: Rows<'_>,
-        pass: ColPass,
-        out: &mut [i32],
-        scratch: &mut [i32; 32 * 32],
-    ) {
-        baseline_simd!(simd => transform::<_, RESIDUAL>(simd, passes, rows, pass, out, scratch));
-    }
-
-    #[inline]
-    fn add_tile_u8(self, tile: &[i32], w: usize, dst: &mut [u8], stride: usize) {
-        baseline_simd!(simd => add_tile_u8(simd, tile, w, dst, stride));
-    }
-
-    #[inline]
-    fn add_constant_u16(
-        self,
-        dst: &mut [u16],
-        geometry: (usize, usize, usize),
-        values: (i32, i16),
-    ) {
-        baseline_simd!(simd => add_constant_u16(simd, dst, geometry, values));
-    }
-
-    #[inline]
-    fn add_tile_u16(self, tile: &[i32], w: usize, dst_stride: (&mut [u16], usize), max: i16) {
-        baseline_simd!(simd => add_tile_u16(simd, tile, w, dst_stride, max));
-    }
+    transform_runner_methods!(self, baseline);
 }
 
 #[derive(Clone, Copy)]
@@ -1104,50 +1094,7 @@ impl<B: SimdBackend> TransformRunner for TypedTransformRunner<B> {
         secondary_inverse_transform_quant_with(self.0, quant, quantizers, secondary, dequant)
     }
 
-    #[inline]
-    fn run_dc_only<const RESIDUAL: bool>(
-        self,
-        t: Transform8,
-        dc: i32,
-        passes: (Pass1d, Pass1d),
-        out: &mut [i32],
-    ) {
-        splot_core::with_simd!(self.0, simd => dc_only_transform::<_, RESIDUAL>(simd, t, dc, passes, out));
-    }
-
-    #[inline]
-    fn run_transform<const RESIDUAL: bool>(
-        self,
-        passes: (Pass1d, Pass1d),
-        rows: Rows<'_>,
-        pass: ColPass,
-        out: &mut [i32],
-        scratch: &mut [i32; 32 * 32],
-    ) {
-        splot_core::with_simd!(self.0, simd => {
-            transform::<_, RESIDUAL>(simd, passes, rows, pass, out, scratch);
-        });
-    }
-
-    #[inline]
-    fn add_tile_u8(self, tile: &[i32], w: usize, dst: &mut [u8], stride: usize) {
-        splot_core::with_simd!(self.0, simd => add_tile_u8(simd, tile, w, dst, stride));
-    }
-
-    #[inline]
-    fn add_constant_u16(
-        self,
-        dst: &mut [u16],
-        geometry: (usize, usize, usize),
-        values: (i32, i16),
-    ) {
-        splot_core::with_simd!(self.0, simd => add_constant_u16(simd, dst, geometry, values));
-    }
-
-    #[inline]
-    fn add_tile_u16(self, tile: &[i32], w: usize, dst_stride: (&mut [u16], usize), max: i16) {
-        splot_core::with_simd!(self.0, simd => add_tile_u16(simd, tile, w, dst_stride, max));
-    }
+    transform_runner_methods!(self, typed(with_simd, self.0));
 }
 
 /// Runs the transform of `dequant` (a whole-row prefix of the `w * h` block)

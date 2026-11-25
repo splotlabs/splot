@@ -38,6 +38,29 @@ macro_rules! baseline_simd {
     };
 }
 
+/// Emits a runner trait’s method declarations or implements them in the supplied SIMD scope.
+macro_rules! simd_runner_methods {
+    (declare; $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
+        $($($signature)*;)*
+    };
+    (baseline; $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
+        $(
+            $(#[$attr])*
+            $($signature)* {
+                baseline_simd!($simd => $body)
+            }
+        )*
+    };
+    (typed($scope:ident, $backend:expr); $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
+        $(
+            $(#[$attr])*
+            $($signature)* {
+                $scope!($backend, $simd => $body)
+            }
+        )*
+    };
+}
+
 mod atlas_blend;
 mod blend_mask;
 mod cdef_filter;
