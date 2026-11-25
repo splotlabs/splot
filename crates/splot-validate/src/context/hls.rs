@@ -5,14 +5,26 @@
 
 use super::*;
 
+#[derive(Debug)]
+pub(super) struct StoredSequenceHeader {
+    pub(super) header: SequenceHeader,
+    pub(super) offset: ByteOffset,
+}
+
+/// Extended-layer substream state. Allocate header records only when their OBUs arrive.
+#[derive(Debug, Default)]
+pub(super) struct LayerHls {
+    pub(super) sequences: [Option<Box<StoredSequenceHeader>>; MAX_SEQ_NUM as usize],
+    multi_frame_headers: [Option<Box<MultiFrameHeaderRecord>>; MAX_MFH_NUM as usize],
+    pub(super) qm: QuantizerMatrixState,
+    pub(super) film_grain: FilmGrainState,
+}
+
 /// In-band HLS availability for § 7.3.8 reference checks. RAP resend requirements
 /// are tracked separately by `RapReplayTracker`; redefinitions replace stored details.
 #[derive(Debug, Default)]
 pub(super) struct HlsAvailabilityStore {
-    /// `seq_header_id` values of sequence headers seen in-band so far (§ 7.3.8.6).
-    pub(super) sequence_header_ids: BTreeSet<u32>,
-    /// Multi-frame-header records keyed by `mfhId`, seen in-band so far (§ 7.3.8.7).
-    pub(super) multi_frame_headers: BTreeMap<u32, MultiFrameHeaderRecord>,
+    pub(super) layers: [Option<Box<LayerHls>>; GLOBAL_XLAYER_ID.get() as usize + 1],
     /// `lcr_xlayer_map` of each global LCR, keyed by `lcr_global_config_record_id`,
     /// seen in-band so far (§ 7.3.8.3).
     pub(super) global_lcr_xlayer_maps: BTreeMap<u8, u32>,
@@ -69,20 +81,42 @@ pub(super) enum HlsResolution {
 }
 
 impl HlsAvailabilityStore {
-    /// Records a sequence header (by `seq_header_id`) as available in-band
-    /// (AV2 § 7.3.8.6).
-    pub(super) fn record_sequence_header(&mut self, seq_header_id: u32) {
-        self.sequence_header_ids.insert(seq_header_id);
+    pub(super) fn layer(&self, xlayer: ExtendedLayerId) -> Option<&LayerHls> {
+        self.layers[usize::from(xlayer.get())].as_deref()
+    }
+
+    pub(super) fn layer_mut(&mut self, xlayer: ExtendedLayerId) -> &mut LayerHls {
+        self.layers[usize::from(xlayer.get())].get_or_insert_default()
+    }
+
+    pub(super) fn sequence(
+        &self,
+        xlayer: ExtendedLayerId,
+        id: SequenceHeaderId,
+    ) -> Option<&StoredSequenceHeader> {
+        self.layer(xlayer)?.sequences[usize::from(id.get())].as_deref()
+    }
+
+    pub(super) fn sequence_header(
+        &self,
+        xlayer: ExtendedLayerId,
+        id: SequenceHeaderId,
+    ) -> Option<&SequenceHeader> {
+        self.sequence(xlayer, id).map(|stored| &stored.header)
     }
 
     /// Resolves a `seq_header_id` reference against in-band then caller-provided
     /// external availability (AV2 § 7.3.8.6).
     pub(super) fn resolve_sequence_header(
         &self,
+        xlayer: ExtendedLayerId,
         id: u32,
         options: &ValidationOptions,
     ) -> HlsResolution {
-        if self.sequence_header_ids.contains(&id) {
+        if SequenceHeaderId::try_new(id)
+            .and_then(|id| self.sequence(xlayer, id))
+            .is_some()
+        {
             return HlsResolution::InBand;
         }
         if let ExternalHlsMode::Provided(set) = &options.external_hls
@@ -93,19 +127,42 @@ impl HlsAvailabilityStore {
         HlsResolution::Unavailable
     }
 
-    /// Records a multi-frame header as available in-band, keyed by `mfhId`
+    /// Records a multi-frame header as available in-band, keyed by extended layer and `mfhId`
     /// (AV2 § 7.3.8.7). A later redefinition of the same id overwrites the record but
     /// keeps the id available, preserving monotonic availability.
     #[expect(clippy::large_types_passed_by_value)]
-    pub(super) fn record_multi_frame_header(&mut self, record: MultiFrameHeaderRecord) {
-        self.multi_frame_headers.insert(record.mfh_id.get(), record);
+    pub(super) fn record_multi_frame_header(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        record: MultiFrameHeaderRecord,
+    ) {
+        self.layer_mut(xlayer).multi_frame_headers[record.mfh_id.get() as usize] =
+            Some(Box::new(record));
     }
 
     /// Returns the in-band multi-frame-header record for `mfhId`, if available.
     ///
     /// External multi-frame-header availability is not modeled.
-    pub(super) fn multi_frame_header(&self, id: MfhId) -> Option<&MultiFrameHeaderRecord> {
-        self.multi_frame_headers.get(&id.get())
+    pub(super) fn multi_frame_header(
+        &self,
+        xlayer: ExtendedLayerId,
+        id: MfhId,
+    ) -> Option<&MultiFrameHeaderRecord> {
+        self.layer(xlayer)?
+            .multi_frame_headers
+            .get(id.get() as usize)?
+            .as_deref()
+    }
+
+    /// A frame can use only an MFH associated with its resolved sequence in this layer.
+    pub(super) fn frame_mfh_record(
+        &self,
+        xlayer: ExtendedLayerId,
+        mfh_id: MfhId,
+        sequence_id: SequenceHeaderId,
+    ) -> Option<&MultiFrameHeaderRecord> {
+        self.multi_frame_header(xlayer, mfh_id)
+            .filter(|record| record.mfh_seq_header_id == sequence_id)
     }
 
     /// Records a global LCR (by `lcr_global_config_record_id`) and its `lcr_xlayer_map`
@@ -233,7 +290,10 @@ impl ValidatorContext {
         }
 
         let id = mfh.mfh_seq_header_id;
-        match self.hls.resolve_sequence_header(id, options) {
+        match self
+            .hls
+            .resolve_sequence_header(obu.header.extended_layer_id, id, options)
+        {
             HlsResolution::InBand | HlsResolution::External => {}
             HlsResolution::Unavailable => {
                 let external_note = if matches!(options.external_hls, ExternalHlsMode::Disabled) {
@@ -272,30 +332,34 @@ impl ValidatorContext {
             && let Some(seq_id) = SequenceHeaderId::try_new(mfh.mfh_seq_header_id)
             && let Ok(mfh_id_value) = u32::try_from(mfh.mfh_id())
         {
-            self.hls.record_multi_frame_header(MultiFrameHeaderRecord {
-                mfh_id: MfhId::from_raw(mfh_id_value),
-                mfh_seq_header_id: seq_id,
-                mfh_tlayer_id: obu.header.temporal_layer_id,
-                mfh_mlayer_id: obu.header.embedded_layer_id,
-                mfh_frame_size: mfh.mfh_frame_size,
-                mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
-                mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
-                mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
-                mfh_segment_info: mfh.segment_info,
-                mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
-                mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
-                offset: obu.offset,
-            });
+            self.hls.record_multi_frame_header(
+                obu.header.extended_layer_id,
+                MultiFrameHeaderRecord {
+                    mfh_id: MfhId::from_raw(mfh_id_value),
+                    mfh_seq_header_id: seq_id,
+                    mfh_tlayer_id: obu.header.temporal_layer_id,
+                    mfh_mlayer_id: obu.header.embedded_layer_id,
+                    mfh_frame_size: mfh.mfh_frame_size,
+                    mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
+                    mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
+                    mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
+                    mfh_segment_info: mfh.segment_info,
+                    mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
+                    mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
+                    offset: obu.offset,
+                },
+            );
             self.rap_replay.note_resend(
-                RapHlsKey::MultiFrameHeader(mfh_id_value),
+                RapHlsKey::MultiFrameHeader(obu.header.extended_layer_id, mfh_id_value),
                 obu.header.extended_layer_id,
             );
             if matches!(
-                self.hls.resolve_sequence_header(id, options),
+                self.hls
+                    .resolve_sequence_header(obu.header.extended_layer_id, id, options),
                 HlsResolution::InBand
             ) {
                 self.note_rap_reference(
-                    RapHlsKey::SequenceHeader(id),
+                    RapHlsKey::SequenceHeader(obu.header.extended_layer_id, id),
                     obu.header.extended_layer_id,
                     obu.offset,
                 );

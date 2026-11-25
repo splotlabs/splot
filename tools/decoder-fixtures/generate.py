@@ -13,6 +13,7 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py atlas-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py extended-layer-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py temporal-fixtures ...
 
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
@@ -54,12 +55,12 @@ def sha(path):
     return h.hexdigest()
 
 
-def run(cmd, env=None):
-    return subprocess.run(cmd, capture_output=True, timeout=180, env=env)
+def run(cmd, env=None, *, timeout=180):
+    return subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
 
 
-def run_checked(cmd, env=None):
-    r = run(cmd, env=env)
+def run_checked(cmd, env=None, *, timeout=180):
+    r = run(cmd, env=env, timeout=timeout)
     if r.returncode != 0:
         raise SystemExit(f"error: {cmd[0]} failed ({r.returncode}): "
                          f"{r.stderr.decode(errors='replace')[:200]}")
@@ -955,7 +956,7 @@ def cmd_coverage_fixtures(args):
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 
 
-def _bru_lr_write_y4m(path, w, h, bit_depth, sample_fn, num_frames=6):
+def _write_i420_y4m(path, w, h, bit_depth, sample_fn, num_frames=6):
     chroma = "C420p10" if bit_depth == 10 else "C420"
     max_val = (1 << bit_depth) - 1
     shift = bit_depth - 8
@@ -1115,7 +1116,7 @@ def _bru_gdf_sharp_shape(dx, dy, phase):
     return 128 + (ring + edge) // 2
 
 
-def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth):
+def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth, translated_consumer=False):
     shift = bit_depth - 8
     if plane > 0:
         return (128 + int(24 * math.sin(x * 0.08 + y * 0.06))) << shift
@@ -1126,6 +1127,8 @@ def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth):
         val = _bru_gdf_sharp_shape(x % 64, y - 64, 7)
     elif t == 4 and 66 <= x < 190 and 2 <= y < 62:
         val = _bru_gdf_sharp_shape(x % 64, y, 13)
+    elif translated_consumer and t == 5 and 66 <= x < 190 and 2 <= y < 62:
+        val = _bru_gdf_sharp_shape((x - 2) % 64, y, 13)
     elif t == 5 and 76 <= x < 120 and 72 <= y < 118:
         val = _bru_gdf_sharp_shape(x - 64, y - 64, 19)
     return int(round(val)) << shift
@@ -1163,11 +1166,15 @@ def _bru_gdf_sample_multitile(t, x, y, plane):
     return int(round(val))
 
 
+def _bru_gdf_stripe_fixtures(mode, search_flags):
+    flags = [*search_flags, "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]
+    return [(f"syn-bru-gdf-{mode}-{depth}bit", 256, 128, depth,
+             lambda t, x, y, p, bd=depth: _bru_gdf_sample_stripe(t, x, y, p, bd, mode == "frame"), flags)
+            for depth in (8, 10)]
+
+
 BRU_GDF_FIXTURES = [
-    ("syn-bru-gdf-block-8bit", 256, 128, 8, lambda t, x, y, p: _bru_gdf_sample_stripe(t, x, y, p, 8),
-     ["--cpu-used=1", "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]),
-    ("syn-bru-gdf-block-10bit", 256, 128, 10, lambda t, x, y, p: _bru_gdf_sample_stripe(t, x, y, p, 10),
-     ["--cpu-used=1", "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]),
+    *_bru_gdf_stripe_fixtures("block", ["--cpu-used=1"]),
     ("syn-bru-gdf-lr-8bit", 256, 128, 8, _bru_gdf_sample_lr,
      ["--cpu-used=0", "--qp=165", "--enable-restoration=1", "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]),
     ("syn-bru-gdf-multitile-8bit", 256, 256, 8, _bru_gdf_sample_multitile,
@@ -1321,7 +1328,7 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args, *, num_frames=6):
         ivf = os.path.join(stage, f"{fid}.ivf")
         repeat_ivf = os.path.join(stage, f"{fid}.repeat.ivf")
         raw = os.path.join(stage, f"{fid}.avm.raw")
-        _bru_lr_write_y4m(y4m, w, h, bd, sample_fn, num_frames)
+        _write_i420_y4m(y4m, w, h, bd, sample_fn, num_frames)
         encode = [
             avmenc, "--codec=av2", "--ivf", "-D", "--passes=1",
             "--lag-in-frames=0", "--kf-min-dist=9999", "--kf-max-dist=9999",
@@ -1329,8 +1336,8 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args, *, num_frames=6):
             *fixed_flags, f"--bit-depth={bd}", f"--input-bit-depth={bd}", "--i420",
             "--threads=1", "--end-usage=q", "--quiet", "--disable-warning-prompt", *flags,
         ]
-        run_checked([*encode, "-o", ivf, y4m])
-        run_checked([*encode, "-o", repeat_ivf, y4m])
+        run_checked([*encode, "-o", ivf, y4m], timeout=None)
+        run_checked([*encode, "-o", repeat_ivf, y4m], timeout=None)
         ivf_sha = sha(ivf)
         if sha(repeat_ivf) != ivf_sha:
             sys.exit(f"error: {fid} is not deterministic across two encodes")
@@ -1360,8 +1367,34 @@ def cmd_bru_lr_fixtures(args):
 
 
 def cmd_bru_gdf_fixtures(args):
+    """Regenerate the frame-wide pair and the 10-bit LR stream at AVM 457cd58681a747465661baccb1f32095bc5b7774.
+
+    Configure AVM with the following command.
+
+      cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=0 -DENABLE_DOCS=0 \
+        -DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 -DCONFIG_TENSORFLOW_LITE=0
+      cmake --build build --target avmenc avmdec
+
+    For --frame-wide, edit only the local AVM encoder. In av2/encoder/encoder.c,
+    add the following statement immediately after gdf_optimizer(cpi, cm) in gdf_optimize_frame.
+
+      if (cm->bru.enabled && !cm->bru.frame_inactive_flag) cm->gdf_info.gdf_mode = 1;
+
+    Rebuild avmenc. Set AVM_BUILD to the directory containing this encoder and the pristine avmdec.
+    Run bru-gdf-fixtures --frame-wide --stage <dir> to regenerate the three streams.
+    The frame-wide pair uses a bounded partition search. Its last picture translates the textured patch
+    from picture 4 by two pixels so an active inter block uses its filtered reference.
+    The 10-bit LR stream uses the scaled 8-bit LR source and enables restoration.
+    """
+    fixtures = BRU_GDF_FIXTURES
+    if args.frame_wide:
+        partition_flags = ["--min-partition-size=16", "--max-partition-size=32"]
+        fixtures = _bru_gdf_stripe_fixtures("frame", ["--cpu-used=3", *partition_flags])
+        fixtures.append(("syn-bru-gdf-lr-10bit", 256, 128, 10, lambda t, x, y, p: _bru_gdf_sample_lr(t, x, y, p) << 2,
+                         ["--cpu-used=2", *partition_flags, "--qp=165", "--enable-restoration=1",
+                          "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]))
     _run_bru_fixture_batch(
-        BRU_GDF_FIXTURES,
+        fixtures,
         ["--enable-intrabc=0", "--enable-gdf=1", "--gdf-unit-matches-sb=1"],
         "BRU+GDF",
         args,
@@ -1376,6 +1409,13 @@ def cmd_bru_intrabc_fixtures(args):
         args,
     )
 
+
+def cmd_extended_layer_fixtures(args):
+    from extended_layers import generate
+    try:
+        generate(VALID, args.stage, find("avmenc"), find("avmdec"), _write_i420_y4m, run_checked)
+    except (OSError, ValueError) as error:
+        sys.exit(f"error: {error}")
 
 
 def signal_sparse_tlayers(data):
@@ -1501,6 +1541,7 @@ def main():
     b.set_defaults(fn=cmd_bru_lr_fixtures)
     g = sub.add_parser("bru-gdf-fixtures"); g.add_argument("--stage", required=True)
     g.add_argument("--only", help="regenerate one fixture id")
+    g.add_argument("--frame-wide", action="store_true", help="use the frame-wide AVM encoder described in cmd_bru_gdf_fixtures")
     g.set_defaults(fn=cmd_bru_gdf_fixtures)
     i = sub.add_parser("bru-intrabc-fixtures"); i.add_argument("--stage", required=True)
     i.add_argument("--only", help="regenerate one fixture id")
@@ -1508,6 +1549,10 @@ def main():
     a = sub.add_parser("atlas-fixtures")
     a.add_argument("--stage", required=True)
     a.set_defaults(fn=lambda args: generate_atlas(VALID, args.stage))
+    multi = sub.add_parser("extended-layer-fixtures")
+    multi.add_argument("--stage", required=True)
+    multi.set_defaults(fn=cmd_extended_layer_fixtures)
+
     t = sub.add_parser("temporal-fixtures")
     t.add_argument("--stage", type=Path, required=True)
     t.add_argument("--avm-source", type=Path, required=True)
