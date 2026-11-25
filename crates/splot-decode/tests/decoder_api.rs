@@ -485,10 +485,12 @@ fn a_picture_reports_the_type_of_the_frame_it_shows() {
 
 #[test]
 fn decoder_validates_simd_policy_once_and_retains_it_across_flush() {
-    use splot_decode::{SelectedBackend, SimdPolicy};
+    use splot_decode::SelectedBackend;
 
     #[cfg(target_arch = "x86_64")]
     {
+        use splot_decode::SimdPolicy;
+
         let err = Decoder::new(DecoderSettings::default().with_simd_policy(SimdPolicy::Neon))
             .unwrap_err();
         assert!(
