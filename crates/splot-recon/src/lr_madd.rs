@@ -376,7 +376,6 @@ pub(crate) fn filter_run<
     }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = backend.avx2_token() {
-        // Keep weight setup, row arithmetic and stores in one target-feature scope.
         return token.vectorize(
             #[inline(always)]
             || {

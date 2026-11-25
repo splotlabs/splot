@@ -158,7 +158,6 @@ fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
             ]
         }
     };
-    // Keep a zero shift constant for the 8-bit rows.
     if coeff_shift == 0 {
         rows(0)
     } else {
