@@ -182,7 +182,10 @@ impl ValidatorContext {
             let num_ref_frames = self
                 .active_sequence_by_xlayer
                 .get(&obu.header.extended_layer_id)
-                .and_then(|seq_id| self.sequence_headers.get(seq_id))
+                .and_then(|seq_id| {
+                    self.hls
+                        .sequence_header(obu.header.extended_layer_id, *seq_id)
+                })
                 .and_then(|seq| seq.inter.as_ref())
                 .map_or(NUM_REF_FRAMES, |inter| usize::from(inter.num_ref_frames));
             return FrameRefUpdate::ClkReset {

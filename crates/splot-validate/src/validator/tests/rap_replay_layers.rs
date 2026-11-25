@@ -141,7 +141,7 @@ fn rap_replay_resend_by_undecodable_other_layer_does_not_satisfy_reference() {
 }
 
 #[test]
-fn rap_replay_resend_by_decodable_other_layer_satisfies_reference() {
+fn rap_replay_decodable_other_layer_cannot_resend_a_local_header() {
     let mut data = td_and_seq(3);
     data.extend(seq_obu(7));
     data.extend(temporal_delimiter_obu());
@@ -154,9 +154,10 @@ fn rap_replay_resend_by_decodable_other_layer_satisfies_reference() {
     data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        !report.errors().any(|d| d.rule_id == RAP_RULE),
-        "a resend by a layer that random-accesses within [R, S.tu] is decoded under \
-         start-at-R and satisfies the reference (§ 7.4.6); report was: {report}"
+        report
+            .errors()
+            .any(|d| d.rule_id == RAP_RULE && d.message.contains("seq_header_id 7")),
+        "The layer 0 reference needs its own copy of sequence header 7. {report}"
     );
 }
 
@@ -224,7 +225,7 @@ fn rap_replay_resend_in_rap_tu_by_undecodable_other_layer_does_not_satisfy() {
 }
 
 #[test]
-fn rap_replay_resend_in_rap_tu_by_layer_that_random_accesses_there_satisfies() {
+fn rap_replay_coincident_rap_in_another_layer_cannot_resend_a_local_header() {
     let mut data = td_and_seq(3);
     data.extend(seq_obu(7));
     data.extend(temporal_delimiter_obu());
@@ -236,9 +237,10 @@ fn rap_replay_resend_in_rap_tu_by_layer_that_random_accesses_there_satisfies() {
     data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        !report.errors().any(|d| d.rule_id == RAP_RULE),
-        "a resend in the random access point's own temporal unit by a layer that DOES \
-         random-access there is decoded and satisfies the reference; report was: {report}"
+        report
+            .errors()
+            .any(|d| d.rule_id == RAP_RULE && d.message.contains("seq_header_id 7")),
+        "The layer 0 reference needs its own copy of sequence header 7. {report}"
     );
 }
 
@@ -326,7 +328,7 @@ fn rap_replay_sender_rap_in_post_anchor_leading_tu_does_not_enable_layer() {
 }
 
 #[test]
-fn rap_replay_sender_rap_in_post_anchor_non_leading_tu_enables_layer() {
+fn rap_replay_post_anchor_sender_cannot_resend_another_layers_header() {
     let mut data = td_and_seq(3);
     data.extend(seq_obu(7));
     data.extend(temporal_delimiter_obu());
@@ -342,9 +344,9 @@ fn rap_replay_sender_rap_in_post_anchor_non_leading_tu_enables_layer() {
     data.extend(frame_obu_direct_seq_ref(REGULAR_TILE_GROUP_HEADER, 7));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        !report.errors().any(|d| d.rule_id == RAP_RULE),
-        "a sender layer whose random access point temporal unit is non-leading is enabled \
-         under the earlier anchor, so its later resend satisfies the reference (§ 7.4.6); \
-         report was: {report}"
+        report
+            .errors()
+            .any(|d| d.rule_id == RAP_RULE && d.message.contains("seq_header_id 7")),
+        "The layer 0 reference needs its own copy of sequence header 7. {report}"
     );
 }
