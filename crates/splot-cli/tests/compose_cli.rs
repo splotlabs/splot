@@ -3,8 +3,7 @@
 
 mod common;
 
-use common::{conformance_vector, splot, temp_input, temp_output};
-use sha2::{Digest as _, Sha256};
+use common::{conformance_vector, sha256_hex, splot, temp_input, temp_output};
 use splot_core::annexb::parse_annex_b_obus;
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::stream_reader::TemporalUnitReader;
@@ -49,7 +48,7 @@ fn atlas_presentation_matches_independent_raw_planes() {
                 String::from_utf8_lossy(&result.stderr)
             );
             assert_eq!(result.stdout.len(), bytes);
-            assert_eq!(format!("{:x}", Sha256::digest(result.stdout)), digest);
+            assert_eq!(sha256_hex(&result.stdout), digest);
         }
     }
 }
@@ -71,7 +70,7 @@ fn repeated_ivf_timestamps_keep_each_temporal_unit_distinct() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(
-        format!("{:x}", Sha256::digest(result.stdout)),
+        sha256_hex(&result.stdout),
         "2286b9dc5c613cf1da66d598a6a67bc2da6ad37095006fd3a19ce4124f49adb4"
     );
 }

@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
+mod common;
+use common::sha256_hex;
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
 use splot_decode::{
     DataProps, DecodeContext, DecodeOptions, DecodeRuntimeConfig, Decoder, DecoderSettings,
@@ -78,15 +79,6 @@ fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .expect("repo root")
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut hex = String::with_capacity(64);
-    for b in Sha256::digest(bytes) {
-        let _ = write!(hex, "{b:02x}");
-    }
-    hex
 }
 
 fn decode_raw(bytes: &[u8], threads: usize) -> splot_decode::Result<Vec<u8>> {
