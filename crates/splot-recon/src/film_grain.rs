@@ -14,9 +14,10 @@
 //! the scaled noise fits `i16` lanes: a table value is at most 255 and the
 //! grain lies in `GrainMin..=GrainMax`, so `|scale * noise| <= 32640`.
 
-use fearless_simd::{Simd, i16x16, i32x8, prelude::*, u8x16, u8x32, u16x16};
+use fearless_simd::{Simd, i16x16, i16x32, i32x8, prelude::*, u8x16, u8x32, u16x16};
 
 use splot_core::headers::film_grain::{FilmGrainModel, FilmGrainScalingPoint};
+use splot_core::simd::SelectedBackend;
 use splot_core::tables::conversion::GAUSSIAN_SEQUENCE;
 
 use crate::{
@@ -61,7 +62,14 @@ pub fn apply_film_grain_into<T: ReconSample>(
     grain_seed: u16,
     spare: FramePlaneSamples<T>,
 ) -> Result<DecodedFrame<T>> {
-    baseline_simd!(simd => apply_film_grain_simd(simd, frame, model, grain_seed, spare))
+    baseline_simd!(simd => apply_film_grain_simd(
+        simd,
+        frame,
+        model,
+        grain_seed,
+        spare,
+        |row, scale, noise, params| add_noise_row::<_, _, false>(simd, row, scale, noise, params),
+    ))
 }
 
 /// [`apply_film_grain_into`] using the caller's startup-selected static
@@ -78,8 +86,18 @@ pub fn apply_film_grain_into_with<B: splot_core::simd::SimdBackend, T: ReconSamp
     spare: FramePlaneSamples<T>,
 ) -> Result<DecodedFrame<T>> {
     let narrow = backend.narrow();
+    let wide = B::KIND == SelectedBackend::Avx512 && frame.bit_depth().bits() <= 10;
     splot_core::with_simd!(narrow, simd => {
-        apply_film_grain_simd(simd, frame, model, grain_seed, spare)
+        let add_noise = |row: &mut [T], scale: &[i16], noise: &[i16], params| {
+            if wide && row.len() >= 32 {
+                return backend.vectorize(
+                    #[inline(always)]
+                    || add_noise_row::<_, _, true>(backend.token(), row, scale, noise, params),
+                );
+            }
+            add_noise_row::<_, _, false>(simd, row, scale, noise, params)
+        };
+        apply_film_grain_simd(simd, frame, model, grain_seed, spare, add_noise)
     })
 }
 
@@ -89,6 +107,7 @@ fn apply_film_grain_simd<S: Simd, T: ReconSample>(
     model: &FilmGrainModel,
     grain_seed: u16,
     mut spare: FramePlaneSamples<T>,
+    add_noise: impl Fn(&mut [T], &[i16], &[i16], NoiseParams) -> Result<()>,
 ) -> Result<DecodedFrame<T>> {
     let grain = ActiveFilmGrain { model, grain_seed };
     let visible = frame.visible_luma_rect();
@@ -127,7 +146,8 @@ fn apply_film_grain_simd<S: Simd, T: ReconSample>(
             });
         }
     }
-    let mut outputs = synthesize(simd, &sources, &geometry, &grain, &mut spare)?.into_iter();
+    let mut outputs =
+        synthesize(simd, &sources, &geometry, &grain, &mut spare, add_noise)?.into_iter();
 
     let info = DecodedFrameInfo::new(
         OutputIndex::new(frame.output_index().get()),
@@ -239,6 +259,7 @@ fn synthesize<S: Simd, T: ReconSample>(
     geometry: &GrainGeometry,
     grain: &ActiveFilmGrain<'_>,
     spare: &mut FramePlaneSamples<T>,
+    add_noise: impl Fn(&mut [T], &[i16], &[i16], NoiseParams) -> Result<()>,
 ) -> Result<Vec<GrainDestination<T>>> {
     let model = grain.model;
     let bit_depth = geometry.bit_depth;
@@ -391,7 +412,7 @@ fn synthesize<S: Simd, T: ReconSample>(
                         *scale = table[usize::from(index as u16).min(SCALE_TABLE_LEN - 1)];
                     }
                 }
-                add_noise_row(simd, output, scale, noise_row, params)?;
+                add_noise(output, scale, noise_row, params)?;
             }
         }
     }
@@ -671,7 +692,12 @@ struct NoiseParams {
 }
 
 /// Adds the scaled noise to one output row in place.
-fn add_noise_row<S: Simd, T: ReconSample>(
+#[expect(
+    clippy::inline_always,
+    reason = "keep the row in the selected SIMD scope"
+)]
+#[inline(always)]
+fn add_noise_row<S: Simd, T: ReconSample, const WIDE: bool>(
     simd: S,
     row: &mut [T],
     scale: &[i16],
@@ -681,9 +707,9 @@ fn add_noise_row<S: Simd, T: ReconSample>(
     let done = if i32::from(T::MAX_VALUE) < params.max {
         0
     } else if let Some(row) = T::u8_slice_mut(row) {
-        add_noise_lanes(simd, row, scale, noise, params)
+        add_noise_lanes::<_, _, WIDE>(simd, row, scale, noise, params)
     } else if let Some(row) = T::u16_slice_mut(row) {
-        add_noise_lanes(simd, row, scale, noise, params)
+        add_noise_lanes::<_, _, WIDE>(simd, row, scale, noise, params)
     } else {
         0
     };
@@ -695,53 +721,73 @@ fn add_noise_row<S: Simd, T: ReconSample>(
     Ok(())
 }
 
-/// Lane-group [`add_noise_row`]; returns the columns done. The narrow
-/// `Round2` is `((p >> (shift - 1)) + 1) >> 1`, which never leaves `i16`.
-#[inline]
-fn add_noise_lanes<S: Simd, L: GrainLanes>(
+/// Adds grain using the same rounding and saturation for a half or full group.
+#[expect(clippy::inline_always, reason = "shared vector noise arithmetic")]
+#[inline(always)]
+fn add_noise_vector<S, V>(simd: S, orig: V, scale: V, noise: V, params: NoiseParams) -> V
+where
+    S: Simd,
+    V: SimdIntWiden<S, Element = i16, Widened: SimdInt<S, Element = i32>>,
+{
+    let shift = u32::from(params.shift);
+    if params.narrow {
+        // Exact Round2 without overflowing i16 when the product is near its limit.
+        let delta = (((scale * noise) >> (shift - 1)) + V::splat(simd, 1)) >> 1;
+        return (orig + delta).clamp(
+            V::splat(simd, params.min as i16),
+            V::splat(simd, params.max as i16),
+        );
+    }
+    let (low, high) = scale.widening_mul(noise);
+    let (orig_low, orig_high) = orig.widen();
+    let half = V::Widened::splat(simd, (1 << shift) >> 1);
+    let (min, max) = (
+        V::Widened::splat(simd, params.min),
+        V::Widened::splat(simd, params.max),
+    );
+    let add = |product: V::Widened, orig: V::Widened| {
+        (orig + ((product + half) >> shift)).clamp(min, max)
+    };
+    add(low, orig_low).narrow(add(high, orig_high))
+}
+
+/// Lane-group [`add_noise_row`]; returns the columns done. The wide backend
+/// processes all 32 samples in the group together.
+#[expect(
+    clippy::inline_always,
+    reason = "keep the row in the selected SIMD scope"
+)]
+#[inline(always)]
+fn add_noise_lanes<S: Simd, L: GrainLanes, const WIDE: bool>(
     simd: S,
     row: &mut [L],
     scale: &[i16],
     noise: &[i16],
     params: NoiseParams,
 ) -> usize {
-    let shift = u32::from(params.shift);
-    let (min16, max16) = (
-        i16x16::splat(simd, params.min as i16),
-        i16x16::splat(simd, params.max as i16),
-    );
-    let (min32, max32) = (
-        i32x8::splat(simd, params.min),
-        i32x8::splat(simd, params.max),
-    );
-    let half = i32x8::splat(simd, (1 << shift) >> 1);
-    let lanes = |values: &[i16; 32], part: usize| {
-        values[16 * part..].first_chunk::<16>().map_or_else(
-            || i16x16::splat(simd, 0),
-            |values| i16x16::load_array_ref(simd, values),
-        )
-    };
     let mut col = 0;
     while let (Some(samples), Some(scale), Some(noise)) = (
         row.get_mut(col..).and_then(<[L]>::first_chunk_mut::<32>),
         scale.get(col..).and_then(<[i16]>::first_chunk::<32>),
         noise.get(col..).and_then(<[i16]>::first_chunk::<32>),
     ) {
-        let noisy = |orig: i16x16<S>, part: usize| {
-            let (scale, noise) = (lanes(scale, part), lanes(noise, part));
-            if params.narrow {
-                let delta = (((scale * noise) >> (shift - 1)) + 1) >> 1;
-                return (orig + delta).clamp(min16, max16);
-            }
-            let (low, high) = scale.widening_mul(noise);
-            let (orig_low, orig_high) = orig.widen();
-            let add = |product: i32x8<S>, orig: i32x8<S>| {
-                (orig + ((product + half) >> shift)).clamp(min32, max32)
-            };
-            add(low, orig_low).narrow(add(high, orig_high))
-        };
         let (orig_low, orig_high) = L::load32(simd, samples);
-        L::store32(noisy(orig_low, 0), noisy(orig_high, 1), samples);
+        let (low, high) = if WIDE {
+            let orig = simd.combine_i16x16(orig_low, orig_high);
+            let scale = i16x32::load_array_ref(simd, scale);
+            let noise = i16x32::load_array_ref(simd, noise);
+            simd.split_i16x32(add_noise_vector(simd, orig, scale, noise, params))
+        } else {
+            let split =
+                |values: &[i16; 32]| simd.split_i16x32(i16x32::load_array_ref(simd, values));
+            let (scale_low, scale_high) = split(scale);
+            let (noise_low, noise_high) = split(noise);
+            (
+                add_noise_vector(simd, orig_low, scale_low, noise_low, params),
+                add_noise_vector(simd, orig_high, scale_high, noise_high, params),
+            )
+        };
+        L::store32(low, high, samples);
         col += 32;
     }
     col
