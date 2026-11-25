@@ -123,9 +123,10 @@ fn late_atlas_pictures_obey_the_reorder_window_boundary() -> anyhow::Result<()> 
                 "2286b9dc5c613cf1da66d598a6a67bc2da6ad37095006fd3a19ce4124f49adb4"
             );
         } else {
+            let message = String::from_utf8_lossy(&result.stderr);
             assert!(
-                String::from_utf8_lossy(&result.stderr)
-                    .contains("Pictures exceed the reorder window of 32 temporal units")
+                message.contains("Pictures exceed the reorder window of 32 temporal units"),
+                "{message}"
             );
         }
     }
