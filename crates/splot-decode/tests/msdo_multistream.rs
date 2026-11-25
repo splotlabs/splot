@@ -24,6 +24,9 @@ use splot_decode::{
     SendStatus, TemporalLayerSelection, ThreadCount,
 };
 
+#[path = "msdo_multistream/reproducible.rs"]
+mod reproducible;
+
 const MSDO_8BIT: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu");
 const MSDO_10BIT: &[u8] =

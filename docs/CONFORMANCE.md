@@ -49,6 +49,31 @@ expect = "clean"
 expect = { diagnostics = ["ivf/truncated-frame-payload"] }
 ```
 
+## Reproduce the MSDO fixtures
+
+Use AVM revision `a1ec4594d97028ebc34083ec8346616d697c2fc9`.
+Set `AVM_SOURCE` to the checkout path and `AVM_BUILD` to a new build directory.
+The reference run used a native macOS arm64 Release build with AVM's default
+encoder options. Run these commands from the Splot repository.
+
+```sh
+cmake -S "$AVM_SOURCE" -B "$AVM_BUILD" -DCMAKE_BUILD_TYPE=Release \
+  -DENABLE_EXAMPLES=ON -DCONFIG_INSPECTION=1
+cmake --build "$AVM_BUILD" --target avmenc avmdec scalable_encoder --parallel
+cargo build -p splot-cli --locked
+AVM_BUILD="$AVM_BUILD" python3 tools/decoder-fixtures/msdo.py \
+  --splot target/debug/splot --stage "$(mktemp -d)"
+```
+
+The recipe encodes each component from its own deterministic I420 input.
+It uses the earlier streams for descriptor bytes and resend positions.
+It compares the decoded components with full and selected multiplexed
+output and checks Splot at 1, 3, and 12 threads. The original vectors remain
+in the corpus. The [reference evidence](LOCAL-REFERENCE-EVIDENCE.toml) records
+the source hashes, descriptor offsets, and decoded output hashes. AVM inspection
+confirmed real inter references in all ten components. In the OPS fixture,
+every temporal-layer 1 picture references temporal-layer 0.
+
 ## Public Vectors
 
 Public vector ingestion is gated by redistributability review. Do not commit
