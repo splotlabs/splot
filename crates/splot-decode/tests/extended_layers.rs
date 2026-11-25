@@ -585,6 +585,9 @@ fn avm_digest_parity_across_full_target_mask_and_3d_selections() {
     ));
 }
 
+#[path = "extended_layers/regenerated.rs"]
+mod regenerated;
+
 #[test]
 fn shared_numeric_hls_ids_isolate_sequence_mfh_and_film_grain() {
     let mut collided_a = Vec::new();
