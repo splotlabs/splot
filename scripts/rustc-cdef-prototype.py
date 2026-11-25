@@ -17,7 +17,7 @@ unit = value('--crate-name')
 flags = []
 if target.startswith('x86_64') and unit in ('splot_cdef_base', 'splot_cdef_avx2'):
     flags = ['-Ctarget-cpu=x86-64']
-    if unit == 'splot_cdef_avx2':
+    if unit == 'splot_cdef_avx2' and '--test' not in args:
         # The complete feature contract of the type carried by the selected backend.
         flags += ['-Ctarget-feature=+avx2,+bmi1,+bmi2,+cmpxchg16b,+f16c,+fma,+fxsr,+lzcnt,+movbe,+popcnt,+xsave']
 log = os.environ.get('SPLOT_CDEF_COMPILE_LOG')

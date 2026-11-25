@@ -309,6 +309,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 
 [[package]]
+name = "splot-cdef-avx2"
+version = "0.0.0"
+dependencies = [
+ "fearless_simd",
+ "splot-cdef-base",
+]
+
+[[package]]
+name = "splot-cdef-base"
+version = "0.0.0"
+dependencies = [
+ "fearless_simd",
+]
+
+[[package]]
 name = "splot-core"
 version = "0.0.0"
 dependencies = [
@@ -370,6 +385,8 @@ version = "0.0.0"
 dependencies = [
  "fearless_simd",
  "sha2",
+ "splot-cdef-avx2",
+ "splot-cdef-base",
  "splot-core",
  "splot-tables",
  "thiserror",

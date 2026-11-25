@@ -9,6 +9,8 @@ use fearless_simd::{Avx2, Simd};
 use splot_cdef_base::{PACKED_BYTES, gather_packed_with, minpos_bounds};
 
 /// Gathers the four packed chroma windows using the caller's AVX2 proof.
+/// Row addressing and partial scratch writes on failure follow
+/// [`splot_cdef_base::gather_with`], including strides that overlap rows.
 #[inline(never)]
 pub fn gather_packed(
     simd: Avx2,

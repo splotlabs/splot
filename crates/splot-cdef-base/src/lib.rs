@@ -5,7 +5,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, Sse2};
-use fearless_simd::{Simd, SimdBase, SimdInt as _, u8x16, u16x8, u16x16};
+use fearless_simd::{Simd, SimdBase, u8x16, u16x8, u16x16};
 
 /// Chroma samples per plane across the four blocks, including tap reach.
 pub const SPAN: usize = 20;
@@ -40,7 +40,9 @@ pub fn widen_u8<S: Simd>(simd: S, lanes: u8x16<S>) -> u16x16<S> {
 }
 
 /// The larger plane window range of each block from the column-wise least and greatest
-/// of both planes at columns 0, 8 and 12.
+/// of both planes at columns 0, 8 and 12. Each minimum must be no larger
+/// than its corresponding maximum. `bounds` returns the least lane of its
+/// first argument and the greatest lane of its second.
 #[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 pub fn pair_ranges<S: Simd>(
@@ -65,6 +67,10 @@ pub fn pair_ranges<S: Simd>(
 
 /// Gathers two planes whose slices begin at the upper-left tap, reduces
 /// the four window ranges and passes interleaved byte vectors to `store`.
+/// Row starts are `stride` bytes apart. Values below [`SPAN`] overlap the
+/// windows, including zero, which repeats the first row. Returns `None` if
+/// either plane lacks a complete row or a row offset overflows. Earlier
+/// rows may already have been stored. `bounds` follows [`pair_ranges`].
 #[expect(
     clippy::inline_always,
     reason = "instantiate the row loop in the caller's ISA scope"
@@ -108,6 +114,7 @@ pub fn gather_with<S: Simd>(
 }
 
 /// Gathers two byte planes into block-major interleaved, biased scratch.
+/// Row addressing, partial writes on failure and `bounds` follow [`gather_with`].
 #[expect(
     clippy::inline_always,
     reason = "instantiate the packed gather in the caller's ISA scope"
@@ -128,7 +135,8 @@ pub fn gather_packed_with<S: Simd>(
     })
 }
 
-/// SSE2 entry for the packed byte gather.
+/// SSE2 entry for [`gather_packed_with`], including overlapping rows and
+/// partial scratch writes if a row is truncated.
 #[cfg(target_arch = "x86_64")]
 #[inline(never)]
 pub fn gather_packed(
