@@ -15,6 +15,7 @@
 use super::super::MotionFieldHandle;
 use super::*;
 use splot_core::headers::frame::RefIdxBuf;
+use splot_core::simd::SimdBackend;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -154,8 +155,10 @@ impl<'payload> InterFrameParser<'payload> {
 
     /// Parses the next unit of the current tile, returning whether the frame's
     /// entropy pass has ended.
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn parse_unit(
         &mut self,
+        backend: impl SimdBackend,
         tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
         sequence: &SequenceHeader,
@@ -191,7 +194,7 @@ impl<'payload> InterFrameParser<'payload> {
         self.parser
             .as_mut()
             .ok_or_else(tile::invalid_inter_tile_scheduling_state)?
-            .parse_scheduled_unit(tile, context, parse_progress)
+            .parse_scheduled_unit(backend, tile, context, parse_progress)
     }
 
     pub(crate) fn finish(
@@ -272,6 +275,7 @@ impl OpenTile {
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn parse(
         self,
+        backend: impl SimdBackend,
         tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
         tile_bytes: &[u8],
         sequence: &SequenceHeader,
@@ -295,7 +299,7 @@ impl OpenTile {
             parse_progress,
             (index, tiles),
         )?;
-        while !parser.parse_scheduled_unit(tile, context, parse_progress)? {}
+        while !parser.parse_scheduled_unit(backend, tile, context, parse_progress)? {}
         parser.finish_scheduled(parse_progress).map(TileParse)
     }
 }

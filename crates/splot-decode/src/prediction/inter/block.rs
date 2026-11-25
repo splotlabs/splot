@@ -1213,7 +1213,8 @@ fn references_on_one_side(hints: impl Iterator<Item = u32>, current_order_hint: 
 /// The tile parse state and frame facts every [`decode_block`] call of a
 /// superblock row reads or updates, borrowed once for the row so a leaf call
 /// passes one pointer instead of each piece.
-pub(super) struct BlockDecodeContext<'a> {
+pub(super) struct BlockDecodeContext<'a, B: splot_core::simd::SimdBackend> {
+    pub(super) backend: B,
     pub(super) sink: InterLeafSink<'a>,
     pub(super) previous_segment_ids: Option<&'a FrameSegmentIdMap>,
     pub(super) gdf_state: &'a mut GdfState,
@@ -1245,14 +1246,15 @@ pub(super) struct InterLeafSink<'a> {
 }
 
 /// Decodes one leaf and stores its record as the row's next entry.
-fn decode_block(
+fn decode_block<B: splot_core::simd::SimdBackend>(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
-    context: &mut BlockDecodeContext<'_>,
+    context: &mut BlockDecodeContext<'_, B>,
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
 ) -> Result<GeneralIntraLeafMode> {
     let BlockDecodeContext {
+        backend,
         ref mut sink,
         previous_segment_ids,
         ref mut gdf_state,
@@ -1478,6 +1480,7 @@ fn decode_block(
             } else {
                 let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
                 Some(read_inter_residual(
+                    backend,
                     work_unit,
                     symbols,
                     coeff_ctx,
@@ -1543,6 +1546,7 @@ fn decode_block(
             delta_q_state.qindex_u32(),
         );
         let (leaf, command) = crate::pipeline::general_intra::decode_one_general_intra_block(
+            backend,
             &mut crate::pipeline::general_intra::GeneralIntraLeafParse {
                 work_unit,
                 symbols,
@@ -1640,12 +1644,12 @@ fn decode_block(
     );
     if skip_mode == 1 {
         return compound_path::decode_skip_mode_inter_block(
+            backend,
             work_unit,
             symbols,
             sink,
             frontier,
-            &mut block_ctx,
-            &neighbour_ctx,
+            (&mut block_ctx, &neighbour_ctx),
             (skip, segment_id, block_qindex),
         )
         .map(|index| {
@@ -1681,6 +1685,7 @@ fn decode_block(
     };
     if uses_compound {
         return compound_path::decode_compound_inter_block(
+            backend,
             work_unit,
             symbols,
             sink,
@@ -1778,6 +1783,7 @@ fn decode_block(
             None
         };
         return finish_inter_leaf(
+            backend,
             work_unit,
             symbols,
             sink,
@@ -1948,6 +1954,7 @@ fn decode_block(
                 .is_some_and(|tools| tools.enable_tip_refinemv),
         );
     finish_inter_leaf(
+        backend,
         work_unit,
         symbols,
         sink,
@@ -2022,6 +2029,7 @@ const fn parsed_inter_block(
 /// written once into its row slot.
 #[expect(clippy::too_many_arguments)]
 fn finish_inter_leaf(
+    backend: impl splot_core::simd::SimdBackend,
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     sink: &mut InterLeafSink<'_>,
@@ -2053,6 +2061,7 @@ fn finish_inter_leaf(
         .unwrap_or(false);
     let residual = if skip == 0 {
         Some(read_inter_residual(
+            backend,
             work_unit,
             symbols,
             coeff_ctx,

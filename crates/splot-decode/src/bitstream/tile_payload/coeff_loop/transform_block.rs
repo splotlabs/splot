@@ -8,6 +8,7 @@
 //! Feature tracking: `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`.
 
 use splot_core::coefficient::LF_SIG_COEF_CONTEXTS_2D;
+use splot_core::simd::SimdBackend;
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{TransformClass, coefficient_scan_position};
 
@@ -317,7 +318,8 @@ pub(crate) struct CoeffTransformBlockInput<'l> {
 /// per adjusted position up to at least the [`scan_extent`] of the EOB),
 /// commits its above and left contexts, and returns one past its last
 /// nonzero entry.
-pub(crate) fn decode_ordinary_transform_block(
+pub(crate) fn decode_ordinary_transform_block<B: SimdBackend>(
+    backend: B,
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -327,7 +329,9 @@ pub(crate) fn decode_ordinary_transform_block(
     input.parity_hiding &= !input.lossless;
     input.use_tcq &= !input.lossless;
     preflight(&input, quant.len())?;
-    Ok(dispatch(&input)(state, cdfs, symbols, &input, quant)?)
+    Ok(dispatch(&input)(
+        backend, state, cdfs, symbols, &input, quant,
+    )?)
 }
 
 fn preflight(
@@ -373,7 +377,7 @@ struct BlockSummary {
 }
 
 #[inline(always)]
-fn dispatch(input: &CoeffTransformBlockInput<'_>) -> RunFn {
+fn dispatch<B: SimdBackend>(input: &CoeffTransformBlockInput<'_>) -> RunFn<B> {
     use TransformClass::{Horizontal, TwoD, Vertical};
     match (
         input.tx_class,
@@ -381,20 +385,21 @@ fn dispatch(input: &CoeffTransformBlockInput<'_>) -> RunFn {
         input.use_tcq,
         input.parity_hiding,
     ) {
-        (TwoD, true, true, _) => run::<0, true, true, false>,
-        (TwoD, true, false, true) => run::<0, true, false, true>,
-        (TwoD, true, false, false) => run::<0, true, false, false>,
-        (Horizontal, true, _, true) => run::<1, true, false, true>,
-        (Horizontal, true, _, false) => run::<1, true, false, false>,
-        (Vertical, true, _, true) => run::<2, true, false, true>,
-        (Vertical, true, _, false) => run::<2, true, false, false>,
-        (TwoD, false, ..) => run::<0, false, false, false>,
-        (Horizontal, false, ..) => run::<1, false, false, false>,
-        (Vertical, false, ..) => run::<2, false, false, false>,
+        (TwoD, true, true, _) => run::<B, 0, true, true, false>,
+        (TwoD, true, false, true) => run::<B, 0, true, false, true>,
+        (TwoD, true, false, false) => run::<B, 0, true, false, false>,
+        (Horizontal, true, _, true) => run::<B, 1, true, false, true>,
+        (Horizontal, true, _, false) => run::<B, 1, true, false, false>,
+        (Vertical, true, _, true) => run::<B, 2, true, false, true>,
+        (Vertical, true, _, false) => run::<B, 2, true, false, false>,
+        (TwoD, false, ..) => run::<B, 0, false, false, false>,
+        (Horizontal, false, ..) => run::<B, 1, false, false, false>,
+        (Vertical, false, ..) => run::<B, 2, false, false, false>,
     }
 }
 
-type RunFn = fn(
+type RunFn<B> = fn(
+    B,
     &mut TileCoeffContextState,
     &mut TileCdfSubset,
     &mut SymbolDecoder<'_>,
@@ -405,7 +410,8 @@ type RunFn = fn(
 /// One specialised block body per class, plane type and tool set, kept out
 /// of line so its loops own the registers.
 #[inline(never)]
-fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
+fn run<B: SimdBackend, const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
+    backend: B,
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -454,6 +460,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
     let eob_ctx = coeff_base_eob_ctx(eob_index, width_log2, usize::from(tx.height));
     let eob_level = read_eob_base::<LUMA>(symbols, &mut rows, eob_ctx, eob_index < lf_end) + 1;
     let mut pass = LevelPass {
+        backend,
         symbols: symbols.clone(),
         levels: &mut *levels,
         width_log2,
@@ -464,7 +471,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         nonzero: &mut *nonzero,
         nonzero_len: 0,
     };
-    pass.levels_pass::<CLASS, LUMA, TCQ, PH>(&mut rows, scan, eob_entry, eob_level, lf_end);
+    splot_core::with_simd!(backend, _simd => pass.levels_pass::<CLASS, LUMA, TCQ, PH>(&mut rows, scan, eob_entry, eob_level, lf_end));
     let (mut owned, ph, nonzero_len) = (pass.symbols, pass.ph, pass.nonzero_len);
     let nonzero = nonzero.get(..nonzero_len).unwrap_or_default();
     let facts = SignFacts {
@@ -524,7 +531,8 @@ const fn ctx_class_of(entry: u32) -> usize {
 /// The base and range pass state: an owned decoder whose reads skip every
 /// per-symbol check (the coefficient rows are decoder-owned), the level
 /// grid and the TCQ, parity and nonzero-list state.
-struct LevelPass<'a, 'r> {
+struct LevelPass<'a, 'r, B: SimdBackend> {
+    backend: B,
     symbols: SymbolDecoder<'a>,
     levels: &'r mut CoeffLevelWords,
     width_log2: u32,
@@ -545,7 +553,7 @@ struct LevelPass<'a, 'r> {
 /// One entry per scan index of the largest (32 by 32) block.
 const NONZERO_LIST: usize = 1024;
 
-impl LevelPass<'_, '_> {
+impl<B: SimdBackend> LevelPass<'_, '_, B> {
     /// The sum of the grid words at `offsets` from `grid`.
     #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
@@ -620,13 +628,13 @@ impl LevelPass<'_, '_> {
         level
             + if !LUMA {
                 let row = row_at(rows.cdf.coeff_br_uv(), ctx);
-                self.symbols.read_trusted(row)
+                self.symbols.read_trusted_with(self.backend, row)
             } else if LF {
                 let row = row_at(rows.cdf.coeff_br_lf(), ctx);
-                self.symbols.read_trusted(row)
+                self.symbols.read_trusted_with(self.backend, row)
             } else {
                 let row = row_at(rows.cdf.coeff_br(), ctx);
-                self.symbols.read_trusted(row)
+                self.symbols.read_trusted_with(self.backend, row)
             }
     }
 
@@ -662,7 +670,7 @@ impl LevelPass<'_, '_> {
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
             let row = row_at(rows.cdf.coeff_base_lf_uv(), ctx);
-            return self.symbols.read_trusted(row);
+            return self.symbols.read_trusted_with(self.backend, row);
         }
         let ctx = if CLASS == 0 {
             if DC {
@@ -685,7 +693,7 @@ impl LevelPass<'_, '_> {
         };
         let q0 = self.tcq_q0 & 1;
         let row = &mut row_at(rows.base_lf(), ctx)[q0];
-        self.symbols.read_trusted(row)
+        self.symbols.read_trusted_with(self.backend, row)
     }
 
     /// Reads one high-frequency base symbol.
@@ -703,7 +711,7 @@ impl LevelPass<'_, '_> {
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
             let row = row_at(rows.cdf.coeff_base_uv(), ctx);
-            return self.symbols.read_trusted(row);
+            return self.symbols.read_trusted_with(self.backend, row);
         }
         let q0 = self.tcq_q0 & 1;
         let row = if CLASS == 0 {
@@ -712,7 +720,7 @@ impl LevelPass<'_, '_> {
         } else {
             &mut row_at(rows.base(), half_capped(mag, 4) + 15)[q0]
         };
-        self.symbols.read_trusted(row)
+        self.symbols.read_trusted_with(self.backend, row)
     }
 
     /// Records a decoded level and advances the TCQ and parity state.
@@ -744,12 +752,14 @@ impl LevelPass<'_, '_> {
         mut rows: CoeffLevelRows<'_>,
         hf: &[u32],
     ) {
-        for &entry in hf.iter().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_hf_base::<CLASS, LUMA>(&mut rows, entry);
-            let level = self.add_range::<CLASS, LUMA, false>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(entry, level, true);
-        }
+        splot_core::with_simd!(self.backend, _simd => {
+            for &entry in hf.iter().rev() {
+                let grid = entry_grid(entry);
+                let level = self.read_hf_base::<CLASS, LUMA>(&mut rows, entry);
+                let level = self.add_range::<CLASS, LUMA, false>(&mut rows, grid, false, level);
+                self.finish::<TCQ, PH>(entry, level, true);
+            }
+        });
     }
 
     #[allow(clippy::inline_always, reason = "measured: one loop per tool set")]
@@ -760,12 +770,14 @@ impl LevelPass<'_, '_> {
         mut rows: CoeffLevelRows<'_>,
         lf: &[u32],
     ) {
-        for &entry in lf.iter().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
-            let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(entry, level, true);
-        }
+        splot_core::with_simd!(self.backend, _simd => {
+            for &entry in lf.iter().rev() {
+                let grid = entry_grid(entry);
+                let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
+                let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
+                self.finish::<TCQ, PH>(entry, level, true);
+            }
+        });
     }
 
     /// The base and range symbols of every scan index below the EOB, in
@@ -804,7 +816,7 @@ impl LevelPass<'_, '_> {
         let level = if PH && (self.ph >> 1) >= PHTHRESH {
             let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
             let row = row_at(rows.cdf.coeff_base_ph(), half_capped(mag, 4));
-            self.symbols.read_trusted(row)
+            self.symbols.read_trusted_with(self.backend, row)
         } else {
             let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
             self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)

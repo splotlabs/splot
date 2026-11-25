@@ -741,7 +741,7 @@ pub(super) fn run_ordinary_tile<B: splot_core::simd::SimdBackend, T: ReconSample
     let mut reached_last = false;
     while !reached_last && parsed < unit_count {
         while !reached_last && parsed < unit_count && pending.len() < PARSE_AHEAD_ROWS {
-            let step = parser.next_unit(tile, &parse, row_buffers.pop(), true);
+            let step = parser.next_unit(backend, tile, &parse, row_buffers.pop(), true);
             let step = resolve_parser_step(step, |row| {
                 resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)?;
                 #[cfg(test)]

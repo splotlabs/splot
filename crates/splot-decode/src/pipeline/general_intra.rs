@@ -187,6 +187,7 @@ struct LeafResidualFacts<'a> {
 
 #[inline(never)]
 pub(crate) fn decode_one_general_intra_block(
+    backend: impl splot_core::simd::SimdBackend,
     leaf: &mut GeneralIntraLeafParse<'_, '_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     tools: &GeneralIntraFrameTools,
@@ -248,6 +249,7 @@ pub(crate) fn decode_one_general_intra_block(
         let lossless_luma_fsc =
             lossless && neighbours.collocated.uses_fsc_at(frontier.r, frontier.c);
         let command = parse_general_intra_residual_plan(
+            backend,
             leaf,
             ResidualPlanInput::Chroma {
                 chroma_plan,
@@ -299,6 +301,7 @@ pub(crate) fn decode_one_general_intra_block(
     let luma_plan = rect_luma_plan(&modes, &block_ctx, leaf.luma_use_tcq, tools.sb_mib)?;
     let chroma_plan = rect_chroma_plan(&modes, tools.cfl_ds_filter_index, tools.sb_mib);
     let command = parse_general_intra_residual_plan(
+        backend,
         leaf,
         ResidualPlanInput::Rect {
             luma_plan,
@@ -646,6 +649,7 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
 }
 
 fn parse_general_intra_residual_plan(
+    backend: impl splot_core::simd::SimdBackend,
     leaf: &mut GeneralIntraLeafParse<'_, '_>,
     residual_plan: ResidualPlanInput,
     facts: &LeafResidualFacts<'_>,
@@ -665,6 +669,7 @@ fn parse_general_intra_residual_plan(
     let residual = leaf
         .arena
         .parse(
+            backend,
             *facts.block_ctx,
             residual_plan,
             leaf.work_unit,

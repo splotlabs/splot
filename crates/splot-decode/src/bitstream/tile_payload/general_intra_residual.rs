@@ -6,6 +6,7 @@
 //! Feature tracking: `DECODE-GENERAL-INTRA-TRANSFORM-UNIT-PREDICTION`.
 
 use splot_core::Error as CoreError;
+use splot_core::simd::SimdBackend;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
     MD_IDX_TO_TYPE, MODE_TO_ANGLE, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SIZE_CLASS,
@@ -967,7 +968,8 @@ pub(crate) struct PlaneCoeffBlock {
     reason = "measured: the caller's descriptor stays in its frame"
 )]
 #[inline(always)]
-pub(crate) fn decode_general_intra_plane_coeffs(
+pub(crate) fn decode_general_intra_plane_coeffs<B: SimdBackend>(
+    backend: B,
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
@@ -1018,8 +1020,8 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         });
     }
     decode_nonzero_plane_coeffs(
-        cdfs,
-        &work_unit.coeff_frame_facts,
+        backend,
+        work_unit,
         symbols,
         context,
         arena,
@@ -1082,9 +1084,9 @@ fn txb_skip_ctx(
 /// The nonzero path of [`decode_general_intra_plane_coeffs`], out of line so
 /// an `all_zero` block skips its frame.
 #[inline(never)]
-fn decode_nonzero_plane_coeffs(
-    cdfs: &mut TileCdfSubset,
-    frame_facts: &TileCoeffFrameFacts,
+fn decode_nonzero_plane_coeffs<B: SimdBackend>(
+    backend: B,
+    work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
@@ -1096,6 +1098,8 @@ fn decode_nonzero_plane_coeffs(
         &CoeffBlockLines,
     ),
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
+    let cdfs = work_unit.cdf.tile_cdfs_mut();
+    let frame_facts = &work_unit.coeff_frame_facts;
     let plane = block.plane;
     let geometry = CoeffOrdinaryTxSizeGeometryConfig { plane, tx_size };
     let start = read_nonzero_coeff_block_start(cdfs, symbols, tx, plane, block.is_inter)
@@ -1166,6 +1170,7 @@ fn decode_nonzero_plane_coeffs(
         let extent = scan_extent(tx_class, tx, eob);
         arena.resize(start_idx + extent, 0);
         let quant_end = decode_ordinary_transform_block(
+            backend,
             context,
             cdfs,
             symbols,

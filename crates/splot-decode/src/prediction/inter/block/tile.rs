@@ -7,6 +7,7 @@
 
 use std::ops::Range;
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{CurrentFrameSurface, PlaneId, ReconError};
 
 use super::*;
@@ -228,8 +229,8 @@ pub(super) struct TileParseContext<'a> {
 }
 
 /// The inter leaf syntax of one walk, storing each leaf in its row.
-impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
-    for super::BlockDecodeContext<'_>
+impl<'payload, B: SimdBackend> crate::bitstream::tile_payload::LeafDecoder<'payload>
+    for super::BlockDecodeContext<'_, B>
 {
     type Command = ();
     type Error = crate::DecodeError;
@@ -509,6 +510,7 @@ impl<'payload> TileParser<'payload> {
     /// frame in flight holds only what it parsed.
     fn next_unit(
         &mut self,
+        backend: impl SimdBackend,
         tile: &mut DecodeTileWorkUnit,
         context: &TileParseContext<'_>,
         buffers: Option<ReconRowBuffers>,
@@ -566,7 +568,7 @@ impl<'payload> TileParser<'payload> {
         } else {
             WalkSpan::Superblock
         };
-        let decoded_row = self.walk_leaves(tile, context, &mut recon_row, span);
+        let decoded_row = self.walk_leaves(backend, tile, context, &mut recon_row, span);
         match decoded_row.and_then(|more| self.close_walk(more, tile_offset).map(|()| more)) {
             Ok(true) => ParserStep::More(recon_row),
             Ok(false) => ParserStep::Last(recon_row),
@@ -582,6 +584,7 @@ impl<'payload> TileParser<'payload> {
     /// resolve and reconstruction stages. Returns whether superblocks remain.
     fn walk_leaves(
         &mut self,
+        backend: impl SimdBackend,
         tile: &mut DecodeTileWorkUnit,
         context: &TileParseContext<'_>,
         row: &mut ReconRow,
@@ -591,6 +594,7 @@ impl<'payload> TileParser<'payload> {
         let walk = self.walk.active_mut()?;
         let sb_mask = walk.sb_mask();
         let mut block_context = super::BlockDecodeContext {
+            backend,
             sink: super::InterLeafSink {
                 sequence: context.sequence,
                 core: context.core,
@@ -2069,12 +2073,13 @@ impl<'payload> TileParser<'payload> {
     /// Parses and publishes the next unit, returning whether the tile ended.
     pub(super) fn parse_scheduled_unit(
         &mut self,
+        backend: impl SimdBackend,
         tile: &mut DecodeTileWorkUnit,
         context: &TileParseContext<'_>,
         parse_progress: &ParseProgress,
     ) -> Result<bool> {
         let row_set = parse_progress.take_row_buffers();
-        let (mut row, last) = match self.next_unit(tile, context, Some(row_set), false) {
+        let (mut row, last) = match self.next_unit(backend, tile, context, Some(row_set), false) {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
         };

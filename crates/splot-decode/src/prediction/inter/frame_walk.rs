@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{FrameHeaderCore, FrameSize, FrameType};
 use splot_core::headers::sequence::SequenceHeader;
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
     QuantizerDeltas, ReconSample,
@@ -525,7 +526,11 @@ pub(crate) struct PendingInterWalk<'payload> {
 
 impl PendingInterWalk<'_> {
     /// Parses at most `units` units, returning whether entropy has ended.
-    pub(crate) fn parse_units(&mut self, units: core::num::NonZeroUsize) -> Result<bool> {
+    pub(crate) fn parse_units(
+        &mut self,
+        backend: impl SimdBackend,
+        units: core::num::NonZeroUsize,
+    ) -> Result<bool> {
         let _quantizer_scopes = self.quantizer.install_frame();
         for _ in 0..units.get() {
             let parsed = self
@@ -534,6 +539,7 @@ impl PendingInterWalk<'_> {
                 .ok_or_else(block::invalid_inter_tile_scheduling_state)
                 .and_then(|(tile_bytes, tile)| {
                     self.parser.parse_unit(
+                        backend,
                         tile,
                         tile_bytes,
                         &self.sequence,
@@ -654,15 +660,23 @@ impl TileParseJobs {
 
     /// Parses tile `index`; the row that parses the last tile returns the
     /// finished walk.
-    pub(crate) fn parse_tile(&self, index: usize) -> Result<Option<DeferredInterWalk>> {
-        let parsed = self.parse_one(index);
+    pub(crate) fn parse_tile(
+        &self,
+        backend: impl SimdBackend,
+        index: usize,
+    ) -> Result<Option<DeferredInterWalk>> {
+        let parsed = self.parse_one(backend, index);
         if parsed.is_err() {
             self.parse_progress.fail();
         }
         parsed
     }
 
-    fn parse_one(&self, index: usize) -> Result<Option<DeferredInterWalk>> {
+    fn parse_one(
+        &self,
+        backend: impl SimdBackend,
+        index: usize,
+    ) -> Result<Option<DeferredInterWalk>> {
         let invalid = block::invalid_inter_tile_scheduling_state;
         let _quantizer_scopes = self.quantizer.install_frame();
         let slot = self.tiles.get(index).ok_or_else(invalid)?;
@@ -681,6 +695,7 @@ impl TileParseJobs {
             .open_tile(&tile, &self.parse_progress);
         let parsed = open.and_then(|open| {
             open.parse(
+                backend,
                 &mut tile,
                 bytes,
                 &self.sequence,

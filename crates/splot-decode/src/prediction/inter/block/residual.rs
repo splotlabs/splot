@@ -113,6 +113,7 @@ impl InterLumaTxTypeMap {
 
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn read_inter_residual(
+    backend: impl splot_core::simd::SimdBackend,
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
@@ -183,6 +184,7 @@ pub(crate) fn read_inter_residual(
                             continue;
                         }
                         read_inter_residual_luma_chunk(
+                            backend,
                             work_unit,
                             symbols,
                             coeff_ctx,
@@ -213,6 +215,7 @@ pub(crate) fn read_inter_residual(
                             (frontier.has_chroma, chroma_group)
                         {
                             read_inter_residual_chroma_group(
+                                backend,
                                 work_unit,
                                 symbols,
                                 coeff_ctx,
@@ -294,6 +297,7 @@ fn inter_luma_tx_records_are_selectable(selectable_tx_partitions: bool, lossless
 
 #[expect(clippy::too_many_arguments)]
 fn read_inter_residual_luma_chunk(
+    backend: impl splot_core::simd::SimdBackend,
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
@@ -317,6 +321,7 @@ fn read_inter_residual_luma_chunk(
     let segment_lossless = current_segment_lossless(work_unit);
     let mut read = |row: usize, col: usize, tx_size: usize, fills_block: bool| -> Result<()> {
         let coeffs = read_inter_residual_plane(
+            backend,
             work_unit,
             symbols,
             coeff_ctx,
@@ -369,6 +374,7 @@ fn read_inter_residual_luma_chunk(
 
 #[expect(clippy::too_many_arguments)]
 fn read_inter_residual_chroma_group(
+    backend: impl splot_core::simd::SimdBackend,
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
@@ -424,6 +430,7 @@ fn read_inter_residual_chroma_group(
                 )
             };
             let coeffs = read_inter_residual_plane(
+                backend,
                 work_unit,
                 symbols,
                 coeff_ctx,
@@ -698,6 +705,7 @@ fn residual_allocation_error() -> crate::error::DecodeError {
 
 #[expect(clippy::too_many_arguments)]
 fn read_inter_residual_plane(
+    backend: impl splot_core::simd::SimdBackend,
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
@@ -715,6 +723,7 @@ fn read_inter_residual_plane(
     tile_offset: ByteOffset,
 ) -> Result<LumaCoeffBlock> {
     decode_general_intra_plane_coeffs(
+        backend,
         work_unit,
         symbols,
         coeff_ctx,

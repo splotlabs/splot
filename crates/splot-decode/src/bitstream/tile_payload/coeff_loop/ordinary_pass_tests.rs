@@ -191,14 +191,15 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
 
     let mut quant = [0; 16];
     let lines = state.block_lines(0, [1, 1, 1, 1]).unwrap();
-    let end = decode_ordinary_transform_block(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        staged_input(&lines, start, true, base_config(true, true)),
-        &mut quant,
-    )
-    .unwrap();
+    let end =
+        crate::test_support::with_auto_backend!(backend => decode_ordinary_transform_block(backend,
+            &mut state,
+            &mut tile,
+            &mut symbols,
+            staged_input(&lines, start, true, base_config(true, true)),
+            &mut quant,
+        ))
+        .unwrap();
 
     assert_eq!((end, quant[0]), (1, -11));
     assert!(levels_clear(&mut state));
@@ -223,14 +224,15 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
 
     let mut quant = [0; 16];
     let lines = state.block_lines(0, [1, 1, 1, 1]).unwrap();
-    let end = decode_ordinary_transform_block(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        staged_input(&lines, start, false, base_config(false, true)),
-        &mut quant,
-    )
-    .unwrap();
+    let end =
+        crate::test_support::with_auto_backend!(backend => decode_ordinary_transform_block(backend,
+            &mut state,
+            &mut tile,
+            &mut symbols,
+            staged_input(&lines, start, false, base_config(false, true)),
+            &mut quant,
+        ))
+        .unwrap();
 
     assert_eq!(end, 5);
     assert_eq!(quant[..5], [1, 2, 0, 0, 4]);
@@ -281,13 +283,13 @@ fn staged_ordinary_preflights_plane_and_bounds_without_consumption() {
         let state_before = state.clone();
         let lines = state.block_lines(plane, [1, 1, 1, 1]).unwrap();
 
-        let result = decode_ordinary_transform_block(
+        let result = crate::test_support::with_auto_backend!(backend => decode_ordinary_transform_block(backend,
             &mut state,
             &mut tile,
             &mut symbols,
             staged_input(&lines, start, true, base_config(false, false)),
             &mut vec![0; quant_len],
-        );
+        ));
 
         assert!(result.is_err());
         assert_eq!(state, state_before);

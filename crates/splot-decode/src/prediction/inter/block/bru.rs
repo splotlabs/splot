@@ -22,11 +22,11 @@ use crate::error::Result;
 /// `CurrentQIndex` to `base_q_idx`, and reads only `read_gdf()` and
 /// `read_ccso()`.
 #[inline(never)]
-pub(super) fn decode_bru_leaf(
+pub(super) fn decode_bru_leaf<B: splot_core::simd::SimdBackend>(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
-    context: &mut BlockDecodeContext<'_>,
+    context: &mut BlockDecodeContext<'_, B>,
 ) -> Result<GeneralIntraLeafMode> {
     let (Ok(n4w), Ok(n4h)) = (
         frontier.b_size.num_4x4_wide(),
@@ -64,6 +64,7 @@ pub(super) fn decode_bru_leaf(
     );
     let interp = ReconInterpolationFilter::EightTapSharp;
     let index = finish_inter_leaf(
+        context.backend,
         work_unit,
         symbols,
         &mut context.sink,

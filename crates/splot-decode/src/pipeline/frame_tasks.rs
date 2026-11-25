@@ -364,7 +364,7 @@ impl<T: SplitSample> SplitFrame<T> {
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)
     }
 
-    fn parse(&self) -> Result<()> {
+    fn parse(&self, backend: impl splot_core::simd::SimdBackend) -> Result<()> {
         let inputs = self
             .inputs
             .lock()
@@ -418,16 +418,16 @@ impl<T: SplitSample> SplitFrame<T> {
             self.tiles.set_rows(tiles);
             return Ok(());
         }
-        while !pending.parse_units(core::num::NonZeroUsize::MAX)? {}
+        while !pending.parse_units(backend, core::num::NonZeroUsize::MAX)? {}
         self.parse_finished(pending.finish()?)
     }
 
-    fn parse_tile(&self, tile: usize) -> Result<()> {
+    fn parse_tile(&self, backend: impl splot_core::simd::SimdBackend, tile: usize) -> Result<()> {
         let jobs = self
             .tile_jobs
             .get()
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
-        match jobs.parse_tile(tile)? {
+        match jobs.parse_tile(backend, tile)? {
             Some(deferred) => self.parse_finished(deferred),
             None => Ok(()),
         }
@@ -745,14 +745,14 @@ impl<T: SplitSample> SplitFrame<T> {
     ) {
         loop {
             let outcome = match claim.stage {
-                PARSE => self.parse().map(|()| true),
+                PARSE => self.parse(backend).map(|()| true),
                 PREPARE => self.prepare().map(|()| true),
                 ATTACH => self.attach().map(|()| true),
                 RESOLVE => self.resolve(claim.row),
                 COMMIT => self.commit(backend, claim.row, worker).map(|()| true),
                 FRONTIER => self.frontier(backend, claim.row).map(|()| true),
                 PRECOMPUTE => self.precompute(backend, claim.row, worker).map(|()| true),
-                TILE => self.parse_tile(claim.row).map(|()| true),
+                TILE => self.parse_tile(backend, claim.row).map(|()| true),
                 PROJECT => self
                     .recon_state()
                     .and_then(|recon| recon.project(backend, claim.row))

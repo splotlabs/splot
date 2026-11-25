@@ -136,6 +136,7 @@ impl ResidualPlaneArena {
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn parse(
         &mut self,
+        backend: impl splot_core::simd::SimdBackend,
         block_ctx: BlockCtx,
         input: ResidualPlanInput,
         work_unit: &mut DecodeTileWorkUnit,
@@ -170,6 +171,7 @@ impl ResidualPlaneArena {
                     (CctxRole::None, eob_u_nonzero)
                 };
             let kind = plane.parse(
+                backend,
                 frame,
                 work_unit,
                 symbols,
@@ -219,6 +221,7 @@ impl ResidualPlanePlan {
     #[expect(clippy::too_many_arguments)]
     fn parse(
         &self,
+        backend: impl splot_core::simd::SimdBackend,
         frame: FrameTileCtx,
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
@@ -264,6 +267,7 @@ impl ResidualPlanePlan {
         };
         if let Some(unit_tx_size) = self.lossless_transform_unit_tx_size(segment_lossless) {
             let parsed = self.parse_lossless_transform_units(
+                backend,
                 frame,
                 unit_tx_size,
                 work_unit,
@@ -285,6 +289,7 @@ impl ResidualPlanePlan {
             let max_tx_size = context.max_tx_size();
             if partition != LumaTxPartition::None || max_tx_size != coeff_block.tx_size {
                 let parsed = self.parse_partitioned_luma(
+                    backend,
                     frame,
                     work_unit,
                     symbols,
@@ -303,6 +308,7 @@ impl ResidualPlanePlan {
             }
         }
         let mut coeffs = decode_general_intra_plane_coeffs(
+            backend,
             work_unit,
             symbols,
             coeff_ctx,
@@ -337,6 +343,7 @@ impl ResidualPlanePlan {
     #[inline(never)]
     fn parse_lossless_transform_units(
         &self,
+        backend: impl splot_core::simd::SimdBackend,
         frame: FrameTileCtx,
         unit_tx_size: usize,
         work_unit: &mut DecodeTileWorkUnit,
@@ -361,6 +368,7 @@ impl ResidualPlanePlan {
                     continue;
                 }
                 let mut coeffs = decode_general_intra_plane_coeffs(
+                    backend,
                     work_unit,
                     symbols,
                     coeff_ctx,
@@ -411,6 +419,7 @@ impl ResidualPlanePlan {
     #[inline(never)]
     fn parse_partitioned_luma(
         &self,
+        backend: impl splot_core::simd::SimdBackend,
         frame: FrameTileCtx,
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
@@ -439,6 +448,7 @@ impl ResidualPlanePlan {
                 continue;
             }
             let coeffs = decode_general_intra_plane_coeffs(
+                backend,
                 work_unit,
                 symbols,
                 coeff_ctx,

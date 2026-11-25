@@ -341,6 +341,7 @@ pub(super) fn read_reference_mode(
 
 #[expect(clippy::too_many_arguments)]
 pub(super) fn decode_compound_inter_block(
+    backend: impl splot_core::simd::SimdBackend,
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     sink: &mut super::InterLeafSink<'_>,
@@ -581,6 +582,7 @@ pub(super) fn decode_compound_inter_block(
     };
     let optflow_distances = compound_optflow_distances(facts, compound.ref_frame0, &motion)?;
     super::finish_inter_leaf(
+        backend,
         work_unit,
         symbols,
         sink,
@@ -992,12 +994,12 @@ fn wedge_dominant_lists<B: splot_core::simd::SimdBackend>(
 }
 
 pub(super) fn decode_skip_mode_inter_block(
+    backend: impl splot_core::simd::SimdBackend,
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     sink: &mut super::InterLeafSink<'_>,
     frontier: &DecodeBlockFrontier,
-    block_ctx: &mut MvBlockContext,
-    neighbour_ctx: &BlockNeighbourContext,
+    (block_ctx, neighbour_ctx): (&mut MvBlockContext, &BlockNeighbourContext),
     leaf: (u8, u8, u32),
 ) -> Result<u32> {
     let super::InterLeafSink {
@@ -1027,6 +1029,7 @@ pub(super) fn decode_skip_mode_inter_block(
         CompoundBlendToolConfig::from_sequence(sequence).implicit_mask,
     );
     super::finish_inter_leaf(
+        backend,
         work_unit,
         symbols,
         sink,

@@ -430,7 +430,8 @@ fn read_edge_chroma_group(payload: &[u8]) -> Result<Vec<InterResidualBlock>> {
     let mut coeff_ctx =
         TileCoeffContextState::new_for_tile_chroma(0..14, 0..18, ChromaFormatIdc::Yuv420).unwrap();
     let mut blocks = Vec::new();
-    read_inter_residual_chroma_group(
+    crate::test_support::with_auto_backend!(backend => read_inter_residual_chroma_group(
+        backend,
         &mut work_unit,
         &mut symbols,
         &mut coeff_ctx,
@@ -448,7 +449,7 @@ fn read_edge_chroma_group(payload: &[u8]) -> Result<Vec<InterResidualBlock>> {
         false,
         TransformToolResidualPolicy::default(),
         ByteOffset::new(0),
-    )?;
+    ))?;
     Ok(blocks)
 }
 
@@ -507,7 +508,8 @@ fn failed_inter_residual_drops_its_blocks_and_coefficients() {
     let mut blocks = Vec::new();
     let mut arena = vec![7; 3];
 
-    let result = read_inter_residual(
+    let result = crate::test_support::with_auto_backend!(backend => read_inter_residual(
+        backend,
         &mut work_unit,
         &mut symbols,
         &mut coeff_ctx,
@@ -524,7 +526,7 @@ fn failed_inter_residual_drops_its_blocks_and_coefficients() {
         false,
         TransformToolResidualPolicy::default(),
         ByteOffset::new(0),
-    );
+    ));
 
     assert!(result.is_err());
     assert!(blocks.is_empty());
