@@ -1095,26 +1095,31 @@ fn classify_chunk<S: Simd>(
     next: [i16x16<S>; 4],
     tables: &[[i16; 16]; 4],
 ) -> i32x8<S> {
-    let strengths: [i32x8<S>; 4] = core::array::from_fn(
+    let weight = i16x16::splat(simd, 4096);
+    let strength = {
         #[inline(always)]
-        |d| {
-            let columns = sums[d] + simd.slide_i16x16::<2>(sums[d], next[d]);
-            simd.pairwise_dot_product_i16x16(columns, i16x16::splat(simd, 4096))
-        },
-    );
+        |sum, next| {
+            let columns = sum + simd.slide_i16x16::<2>(sum, next);
+            simd.pairwise_dot_product_i16x16(columns, weight)
+        }
+    };
+    let [sum0, sum1, sum2, sum3] = sums;
+    let [next0, next1, next2, next3] = next;
+    let (first, second) = (strength(sum0, next0), strength(sum1, next1));
+    let (third, fourth) = (strength(sum2, next2), strength(sum3, next3));
     let bit = |a: i32x8<S>, b: i32x8<S>, value: i32| {
         a.simd_le(b)
             .select(i32x8::splat(simd, value), i32x8::splat(simd, 0))
     };
-    let index = bit(strengths[0], strengths[1], 1) | bit(strengths[2], strengths[3], 2);
+    let index = bit(first, second, 1) | bit(third, fourth, 2);
     let high = i32x8::splat(simd, -65536);
     let combs = |low: i32x8<S>, high_half: i32x8<S>, [alpha, weight]: [&[i16; 16]; 2]| {
         let packed: i16x16<S> = ((low >> 16) | (high_half & high)).bitcast();
         let alpha = i16x16::from_slice(simd, alpha);
         simd.pairwise_dot_product_i16x16(packed.min(alpha), i16x16::from_slice(simd, weight))
     };
-    let bias = combs(strengths[0], strengths[1], [&tables[0], &tables[1]])
-        + combs(strengths[2], strengths[3], [&tables[2], &tables[3]]);
+    let bias = combs(first, second, [&tables[0], &tables[1]])
+        + combs(third, fourth, [&tables[2], &tables[3]]);
     (bias << 2) | index
 }
 
