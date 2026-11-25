@@ -301,11 +301,10 @@ impl TileLocalIbcState {
             } else {
                 ((1u64 << width) - 1) << bit
             };
-            let word = col0 >> 6;
-            for row in slice.chunks_exact_mut(self.row_words) {
-                if let Some(cell) = row.get_mut(word) {
-                    *cell |= mask;
-                }
+            let mut word = col0 >> 6;
+            while let Some(cell) = slice.get_mut(word) {
+                *cell |= mask;
+                word += self.row_words;
             }
             return;
         }
