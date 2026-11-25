@@ -56,6 +56,8 @@ impl fmt::Display for SimdPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SelectedBackend {
+    /// x86-64 SSE2 backend.
+    Sse2,
     /// x86-64 AVX2 backend.
     Avx2,
     /// x86-64 AVX-512 backend.
@@ -75,6 +77,7 @@ impl SelectedBackend {
             Self::Avx512 => "avx512",
             Self::Neon => "neon",
             Self::Fallback => "fallback",
+            Self::Sse2 => "sse2",
         }
     }
 }
@@ -443,6 +446,56 @@ impl SimdBackend for NeonBackend {
     }
 }
 
+/// Sealed SSE2 backend carrying a genuine [`fearless_simd::Sse2`] token.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub struct Sse2Backend {
+    token: fearless_simd::Sse2,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl fmt::Debug for Sse2Backend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sse2Backend").finish_non_exhaustive()
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl PartialEq for Sse2Backend {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Eq for Sse2Backend {}
+
+#[cfg(target_arch = "x86_64")]
+impl sealed::Sealed for Sse2Backend {}
+
+#[cfg(target_arch = "x86_64")]
+impl SimdBackend for Sse2Backend {
+    type Token = fearless_simd::Sse2;
+    type Narrow = Self;
+    const KIND: SelectedBackend = SelectedBackend::Sse2;
+    const NAME: &'static str = "sse2";
+
+    #[inline]
+    fn token(self) -> Self::Token {
+        self.token
+    }
+
+    #[inline]
+    fn vectorize<R>(self, f: impl FnOnce() -> R) -> R {
+        self.token.vectorize(f)
+    }
+
+    #[inline]
+    fn narrow(self) -> Self::Narrow {
+        self
+    }
+}
+
 /// Sealed fallback backend carrying a genuine [`fearless_simd::Fallback`] token.
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 #[derive(Clone, Copy)]
@@ -497,6 +550,9 @@ impl SimdBackend for FallbackBackend {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ResolvedBackend {
+    /// x86-64 SSE2 backend token.
+    #[cfg(target_arch = "x86_64")]
+    Sse2(Sse2Backend),
     /// x86-64 AVX2 backend token.
     #[cfg(target_arch = "x86_64")]
     Avx2(Avx2Backend),
@@ -525,6 +581,8 @@ impl ResolvedBackend {
             #[cfg(target_arch = "x86_64")]
             Self::Avx2(_) => SelectedBackend::Avx2,
             #[cfg(target_arch = "x86_64")]
+            Self::Sse2(_) => SelectedBackend::Sse2,
+            #[cfg(target_arch = "x86_64")]
             Self::Avx512(_) => SelectedBackend::Avx512,
             #[cfg(target_arch = "aarch64")]
             Self::Neon(_) => SelectedBackend::Neon,
@@ -545,6 +603,8 @@ impl ResolvedBackend {
         match self {
             #[cfg(target_arch = "x86_64")]
             Self::Avx2(backend) => scope.run(backend),
+            #[cfg(target_arch = "x86_64")]
+            Self::Sse2(backend) => scope.run(backend),
             #[cfg(target_arch = "x86_64")]
             Self::Avx512(backend) => scope.run(backend),
             #[cfg(target_arch = "aarch64")]
@@ -613,7 +673,7 @@ fn select_policy_kind(
                 } else if caps.avx2 {
                     Ok(SelectedBackend::Avx2)
                 } else {
-                    Err(err())
+                    Ok(SelectedBackend::Sse2)
                 }
             }
             SimdPolicy::Avx2 => caps.avx2.then_some(SelectedBackend::Avx2).ok_or_else(err),
@@ -667,6 +727,10 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
             .zip(level.as_avx2())
             .map(|(token, avx2)| ResolvedBackend::Avx512(Avx512Backend { token, avx2 }))
             .ok_or_else(err),
+        SelectedBackend::Sse2 => level
+            .as_sse2()
+            .map(|token| ResolvedBackend::Sse2(Sse2Backend { token }))
+            .ok_or_else(err),
         SelectedBackend::Neon | SelectedBackend::Fallback => Err(err()),
     }
     #[cfg(target_arch = "aarch64")]
@@ -675,7 +739,7 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
             .as_neon()
             .map(|token| ResolvedBackend::Neon(NeonBackend { token }))
             .ok_or_else(err),
-        SelectedBackend::Avx2 | SelectedBackend::Avx512 | SelectedBackend::Fallback => Err(err()),
+        SelectedBackend::Sse2 | SelectedBackend::Avx2 | SelectedBackend::Avx512 | SelectedBackend::Fallback => Err(err()),
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     match selected {
@@ -686,7 +750,7 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
             };
             Ok(ResolvedBackend::Fallback(FallbackBackend { token }))
         }
-        SelectedBackend::Avx2 | SelectedBackend::Avx512 | SelectedBackend::Neon => Err(err()),
+        SelectedBackend::Sse2 | SelectedBackend::Avx2 | SelectedBackend::Avx512 | SelectedBackend::Neon => Err(err()),
     }
 }
 
