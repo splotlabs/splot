@@ -200,9 +200,18 @@ pub(super) enum DependencyFindingKey {
 
 impl DependencyFindingKey {
     /// The activated sequence header this finding was paired with.
-    pub(super) fn seq_header_id(self) -> SequenceHeaderId {
+    pub(super) fn sequence(self) -> (ExtendedLayerId, SequenceHeaderId) {
         match self {
-            Self::Ops { seq_header_id, .. } | Self::Lcr { seq_header_id, .. } => seq_header_id,
+            Self::Ops {
+                entry_xlayer: xlayer,
+                seq_header_id,
+                ..
+            }
+            | Self::Lcr {
+                xlayer,
+                seq_header_id,
+                ..
+            } => (xlayer, seq_header_id),
         }
     }
 }
