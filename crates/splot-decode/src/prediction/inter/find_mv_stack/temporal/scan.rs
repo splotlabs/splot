@@ -27,7 +27,8 @@ type Grid<T> = [[T; LANES]; GROUPS];
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct ProjectionTarget {
     pub(super) end_ref: Option<usize>,
-    pub(super) ref_offset: i32,
+    pub(super) ref_distance: i32,
+    pub(super) negate_mv: bool,
     /// `DIV_MULT[|ref_offset|]` with the sign of `ref_offset` when the reference
     /// admits a projection factor, else 0. Times `source_to_current` it is the
     /// projection factor with the offset sign folded in, which projects the
@@ -448,9 +449,8 @@ impl<'a> ChunkWalk<'a> {
                 }
                 _ => None,
             };
-            let is_bwd = prepared.side & 1 != 0;
             if bits & PROJECT != 0
-                && write_projection(output, target, mv, ints.cell(OUTPUT_CELL), is_bwd)
+                && write_projection(output, target, mv, ints.cell(OUTPUT_CELL))
                 && bits & OBSERVE != 0
             {
                 let (row, col) = ints.pair(PROJECTED);
@@ -475,7 +475,6 @@ impl<'a> ChunkWalk<'a> {
     /// The walk without trajectories: only projecting lanes have an effect.
     #[inline(never)]
     fn project(&self, prepared: &TemporalProjectionSource, output: &mut ProjectedFieldBand<'_>) {
-        let is_bwd = prepared.side & 1 != 0;
         let mut walk = self.walk;
         while walk != 0 {
             let lane = walk.trailing_zeros() as usize;
@@ -483,7 +482,7 @@ impl<'a> ChunkWalk<'a> {
             if let (Some(target), Some(ints)) =
                 (self.target(&prepared.targets, lane), self.ints(lane))
             {
-                write_projection(output, target, ints.mv(), ints.cell(OUTPUT_CELL), is_bwd);
+                write_projection(output, target, ints.mv(), ints.cell(OUTPUT_CELL));
             }
         }
     }
@@ -496,16 +495,16 @@ fn write_projection(
     target: &ProjectionTarget,
     mv: MotionVector,
     index: usize,
-    is_bwd: bool,
 ) -> bool {
     let Some(output_cell) = output.cells.get_mut(index) else {
         return false;
     };
-    let ref_offset = target.ref_offset.abs();
-    if output_cell.valid && !(target.end_is_target && output_cell.ref_offset() != ref_offset) {
+    if output_cell.valid
+        && !(target.end_is_target && output_cell.ref_offset() != target.ref_distance)
+    {
         return false;
     }
-    let mv = if is_bwd {
+    let mv = if target.negate_mv {
         MotionVector {
             row: -mv.row,
             col: -mv.col,
@@ -513,7 +512,7 @@ fn write_projection(
     } else {
         mv
     };
-    *output_cell = ProjectedTemporalMotionCell::new(true, mv, ref_offset);
+    *output_cell = ProjectedTemporalMotionCell::new(true, mv, target.ref_distance);
     true
 }
 

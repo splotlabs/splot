@@ -618,20 +618,22 @@ fn tip_reference_pair_uses_positive_ref_offset_with_same_poc_future_ref() {
 }
 
 #[test]
-fn backward_projection_negates_zero_offset_same_poc_motion_vector() {
+fn backward_projection_negates_zero_offset_motion_vectors() {
     let mut source = TemporalMotionField::new(4, 4).unwrap();
     source.set_reference_metadata(true, (16, 16), &[Some(1)]);
-    source.set_cell(
-        0,
-        0,
-        TemporalMotionCell {
-            ref_indices: [INVALID_TEMPORAL_REF, 0],
-            mvs: [
-                CompressedTemporalMv::ZERO,
-                compress_tmvp_mv(MotionVector { row: 16, col: -8 }),
-            ],
-        },
-    );
+    for (x8, reference) in [0, RESTRICTED_TEMPORAL_REF].into_iter().enumerate() {
+        source.set_cell(
+            0,
+            x8,
+            TemporalMotionCell {
+                ref_indices: [INVALID_TEMPORAL_REF, reference],
+                mvs: [
+                    CompressedTemporalMv::ZERO,
+                    compress_tmvp_mv(MotionVector { row: 16, col: -8 }),
+                ],
+            },
+        );
+    }
     let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
 
     project_whole_temporal_motion_field(
@@ -648,14 +650,16 @@ fn backward_projection_negates_zero_offset_same_poc_motion_vector() {
         &mut output,
     );
 
-    assert_eq!(
-        output.cell(0, 0),
-        Some(ProjectedTemporalMotionCell::new(
-            true,
-            MotionVector { row: -16, col: 8 },
-            0
-        ))
-    );
+    for x8 in 0..2 {
+        assert_eq!(
+            output.cell(0, x8),
+            Some(ProjectedTemporalMotionCell::new(
+                true,
+                MotionVector { row: -16, col: 8 },
+                0
+            ))
+        );
+    }
 }
 
 #[test]

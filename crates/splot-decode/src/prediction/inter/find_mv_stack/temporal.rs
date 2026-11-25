@@ -2156,7 +2156,8 @@ impl TemporalProjectionSource {
         let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
         let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
         let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
-        let numerator = if side & 1 == 1 {
+        let negate_mv = side & 1 != 0;
+        let numerator = if negate_mv {
             -source_to_current
         } else {
             source_to_current
@@ -2172,19 +2173,21 @@ impl TemporalProjectionSource {
                 source_hint,
                 i32::try_from(hint).unwrap_or(i32::MAX),
             );
+            let ref_distance = ref_offset.abs();
             let factor = tmvp_projection_factor(source_to_current, ref_offset, side);
             *target = ProjectionTarget {
                 end_ref,
-                ref_offset,
+                ref_distance,
+                negate_mv,
                 divisor: factor
-                    .and(DIV_MULT.get(ref_offset.unsigned_abs() as usize))
+                    .and(DIV_MULT.get(ref_distance as usize))
                     .map_or(0, |&scale| {
                         (if ref_offset < 0 { -scale } else { scale }) as i16
                     }),
                 end_factor: DIV_MULT
-                    .get(ref_offset.unsigned_abs() as usize)
+                    .get(ref_distance as usize)
                     .map_or(0, |&scale| i32::from(scale as i16))
-                    * (ref_offset.abs() - numerator).clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE),
+                    * (ref_distance - numerator).clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE),
                 end_is_target: target_ref.is_some() && end_ref == target_ref,
                 flags: if factor.is_some() { scan::PROJECTS } else { 0 }
                     | if end_ref.is_some() {
@@ -2195,6 +2198,7 @@ impl TemporalProjectionSource {
             };
         }
         targets[MAX_SORTED_REFS] = ProjectionTarget {
+            negate_mv,
             flags: if tmvp_projection_factor(source_to_current, 0, side).is_some() {
                 scan::PROJECTS
             } else {
