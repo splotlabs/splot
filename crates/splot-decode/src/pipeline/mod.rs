@@ -1534,7 +1534,7 @@ fn decode_frames_in_order(
                     }
                 }
                 let frame_index = frames.len();
-                let (inter_core, user_qm, inter_order_hint_bits) = {
+                let decoded = with_sample_bit_depth!(bit_depth, T, {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1547,83 +1547,78 @@ fn decode_frames_in_order(
                         .inter
                         .as_ref()
                         .map_or(0, |inter| inter.order_hint_bits);
-                    with_sample_bit_depth!(bit_depth, T, {
-                        let inter_state = layer.reference.state::<T>(frames)?;
-                        let inter_core = parse_inter_core_with_effects(
-                            inter_envelope,
-                            &layer.sequence,
-                            &inter_state,
-                            &layer.output_effect_state,
-                            first_picture_in_tu,
-                            ivf_frame_index,
-                        )?;
-                        if initializing_layer {
-                            layer.in_band_long_term_prelude.validate_required(
-                                &inter_core,
-                                &layer.reference,
-                                inter_envelope.offset,
-                            )?;
-                        }
-                        let inter_core = frames.share_core(inter_core)?;
-                        let user_qm = layer.output_effect_state.prepare_frame(
-                            inter_envelope,
-                            &inter_core,
-                            &layer.sequence,
-                            first_picture_in_tu,
-                            ivf_frame_index,
-                        )?;
-                        Result::Ok((inter_core, user_qm, order_hint_bits))
-                    })?
-                };
-                xlayers.check_msdo_frame_limits(
-                    candidate_xlayer,
-                    None,
-                    &inter_core,
-                    inter_envelope.offset,
-                )?;
-                xlayers.check_tu_doh(
-                    candidate_xlayer,
-                    inter_order_hint_bits,
-                    inter_core.display_order_hint(),
-                    frame_is_output(&inter_core),
-                    inter_envelope.offset,
-                )?;
-                if inter_emit_allowed && frame_is_output(&inter_core) {
-                    let next_output_frame_count = checked_add(
-                        DecodeLimitName::MaxOutputFrames,
-                        xlayers.total_emitted_count() as u64,
-                        1,
+                    let inter_state = layer.reference.state::<T>(frames)?;
+                    let inter_core = parse_inter_core_with_effects(
+                        inter_envelope,
+                        &layer.sequence,
+                        &inter_state,
+                        &layer.output_effect_state,
+                        first_picture_in_tu,
+                        ivf_frame_index,
                     )?;
-                    ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
-                }
-                admit_within_reference_store(
-                    |xlayers, retained| {
-                        let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
-                            unsupported_at(
-                                "missing_random_access_frame",
-                                inter_envelope.offset,
-                                "decode runtime requires an active extended layer",
-                            )
-                        })?;
-                        ensure_retained_frame_byte_limits_for_core(
-                            options.limits(),
-                            retained,
+                    if initializing_layer {
+                        layer.in_band_long_term_prelude.validate_required(
                             &inter_core,
-                            &layer.sequence,
+                            &layer.reference,
                             inter_envelope.offset,
-                        )
-                    },
-                    options,
-                    rows,
-                    pools,
-                    ring,
-                    frames,
-                    &mut xlayers,
-                    &mut emission_queue,
-                    emit,
-                    &mut retained_frame_bytes,
-                )?;
-                let decoded = with_sample_bit_depth!(bit_depth, T, {
+                        )?;
+                    }
+                    let inter_core = frames.share_core(inter_core)?;
+                    let user_qm = layer.output_effect_state.prepare_frame(
+                        inter_envelope,
+                        &inter_core,
+                        &layer.sequence,
+                        first_picture_in_tu,
+                        ivf_frame_index,
+                    )?;
+                    xlayers.check_msdo_frame_limits(
+                        candidate_xlayer,
+                        None,
+                        &inter_core,
+                        inter_envelope.offset,
+                    )?;
+                    xlayers.check_tu_doh(
+                        candidate_xlayer,
+                        order_hint_bits,
+                        inter_core.display_order_hint(),
+                        frame_is_output(&inter_core),
+                        inter_envelope.offset,
+                    )?;
+                    if inter_emit_allowed && frame_is_output(&inter_core) {
+                        let next_output_frame_count = checked_add(
+                            DecodeLimitName::MaxOutputFrames,
+                            xlayers.total_emitted_count() as u64,
+                            1,
+                        )?;
+                        ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
+                    }
+                    admit_within_reference_store(
+                        |xlayers, retained| {
+                            let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
+                                unsupported_at(
+                                    "missing_random_access_frame",
+                                    inter_envelope.offset,
+                                    "decode runtime requires an active extended layer",
+                                )
+                            })?;
+                            ensure_retained_frame_byte_limits_for_core(
+                                options.limits(),
+                                retained,
+                                &inter_core,
+                                &layer.sequence,
+                                inter_envelope.offset,
+                            )
+                        },
+                        options,
+                        rows,
+                        pools,
+                        ring,
+                        frames,
+                        &mut xlayers,
+                        &mut emission_queue,
+                        emit,
+                        &mut retained_frame_bytes,
+                    )?;
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1631,7 +1626,6 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
-                    let inter_state = layer.reference.state::<T>(frames)?;
                     let split = rows.filter(|_| {
                         inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
                     });
