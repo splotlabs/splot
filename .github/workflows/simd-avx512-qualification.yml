@@ -12,7 +12,7 @@ permissions:
 jobs:
   forced-avx512:
     runs-on: ${{ vars.SPLOT_AVX512_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
       SPLOT_REQUIRE_AVX512: "1"
@@ -29,3 +29,12 @@ jobs:
 
       - name: Require and exercise the forced AVX-512 backend
         run: cargo test -p splot-decode --release --locked --test simd_backend_parity
+
+      - name: Fetch and verify the frozen EwoutH streams
+        run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
+
+      - name: Compare forced and automatic streaming decode against AVM
+        run: |
+          export SPLOT_EWOUTH_CASES="$RUNNER_TEMP/ewouth/simd-cases.tsv"
+          cargo test -p splot-decode --release --locked --test simd_backend_parity \
+            frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
