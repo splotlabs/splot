@@ -195,11 +195,12 @@ cargo install --path crates/splot-cli --locked
 splot --help
 ```
 
-> **Older x86 CPUs:** release builds use AVX2 (Intel Haswell 2013+, AMD
-> Excavator 2015+). On an older CPU, build with
-> `RUSTFLAGS="-C target-cpu=x86-64"`. Apple Silicon and ARM need nothing extra.
->
-> **Linux:** builds need glibc 2.36 or newer (Debian 12, Ubuntu 24.04).
+> **CPU requirements.** Release builds from this checkout target x86-64-v3.
+> The decoder detects AVX-512 at startup and can use it for selected operations.
+> AArch64 uses NEON. For older x86-64 CPUs, build with
+> `RUSTFLAGS="-C target-cpu=x86-64"`. That build can select SSE2, AVX2 or
+> AVX-512 at runtime. Its surrounding decoder code also targets baseline
+> x86-64, which can reduce throughput even when it selects an AVX2 kernel.
 
 ## Where it stands.
 

@@ -10,7 +10,7 @@
 //! in decoder crates. Shared reconstruction kernels cannot select a new `Level`.
 //! Ambient or per-call dispatch in decoder crates
 //! (`Level::baseline`, `baseline_simd!`, `fearless_simd::dispatch!`) is banned
-//! outside tests. The symbol helper can use the compile-time baseline token.
+//! outside tests. The build-floor constant and symbol helper can use the compile-time baseline.
 
 use std::fmt;
 use std::path::Path;
@@ -99,10 +99,12 @@ pub(crate) fn evaluate_simd_policy(sources: &[SourceLine]) -> Vec<SimdViolation>
             }
         }
         if decoder_runtime {
+            let build_floor = line.path == RUNTIME_PROBE_ALLOWLIST
+                && code.trim_start().starts_with("const STATIC_AVX2: bool =");
             for &needle in AMBIENT_DISPATCH_NEEDLES {
-                if code.contains(needle)
-                    && !(line.path == BASELINE_DISPATCH_ALLOWLIST && needle == "Level::baseline")
-                {
+                let baseline_allowed = needle == "Level::baseline"
+                    && (line.path == BASELINE_DISPATCH_ALLOWLIST || build_floor);
+                if code.contains(needle) && !baseline_allowed {
                     violations.push(SimdViolation {
                         path: line.path.clone(),
                         line_no: line.line_no,
@@ -184,6 +186,27 @@ mod tests {
             ),
         ];
         assert!(evaluate_simd_policy(&lines).is_empty());
+    }
+
+    #[test]
+    fn allows_the_build_floor_but_rejects_per_call_baseline_in_startup_module() {
+        let lines = [
+            src(
+                RUNTIME_PROBE_ALLOWLIST,
+                1,
+                "const STATIC_AVX2: bool = matches!(Level::baseline(), Level::Avx2(_) | Level::Avx512(_));",
+                false,
+            ),
+            src(
+                RUNTIME_PROBE_ALLOWLIST,
+                2,
+                "let level = Level::baseline();",
+                false,
+            ),
+        ];
+        let violations = evaluate_simd_policy(&lines);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].line_no, 2);
     }
 
     #[test]

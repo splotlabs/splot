@@ -36,9 +36,20 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustc -vV
           lscpu
+          grep -qw avx512f /proc/cpuinfo
 
       - name: Require and exercise the forced AVX-512 backend
         run: cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test simd_backend_parity
+
+      - name: Check wide grain through synchronous and streaming APIs
+        run: |
+          cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test decoder_api \
+            avx512_film_grain_matches_narrow_output_at_both_bit_depths -- --exact
+
+      - name: Compare native wide rows with the scalar oracle
+        run: |
+          cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
+            film_grain::tests::wide_noise_matches_scalar_at_both_depths -- --exact
 
       - name: Fetch and verify the frozen EwoutH streams
         run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
@@ -58,3 +69,10 @@ jobs:
           export SPLOT_EWOUTH_CASES="$RUNNER_TEMP/ewouth/simd-cases.tsv"
           cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test simd_backend_parity \
             frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
+
+      - name: Measure AVX2 and AVX-512 grain rows on the same core
+        if: ${{ inputs.timing }}
+        run: |
+          core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
+            film_grain::tests::measure_wide_grain_noise_rows -- --ignored --exact --nocapture

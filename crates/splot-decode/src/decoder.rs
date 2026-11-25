@@ -248,7 +248,8 @@ impl Picture {
         frame: &PipelineFrame,
         pool: Option<Arc<PlanePool>>,
         options: &DecodeOptions,
-        backend: splot_core::simd::ResolvedBackend,
+        backend: impl SimdBackend,
+        resolved: ResolvedBackend,
     ) -> Result<Self> {
         let grain = frame.output_grain(options);
         let samples = match frame.ready_frame()? {
@@ -268,7 +269,7 @@ impl Picture {
             extended_layer_id: frame.extended_layer_id,
             embedded_layer_id: frame.embedded_layer_id,
             temporal_layer_id: frame.temporal_layer_id,
-            backend,
+            backend: resolved,
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
@@ -299,21 +300,28 @@ impl Picture {
     /// # Errors
     /// Returns [`DecodeError::Reconstruction`] when the synthesis fails.
     pub fn apply_film_grain(&self) -> Result<Self> {
+        struct Apply<'a>(&'a Picture);
+        impl SimdScope<Result<Picture>> for Apply<'_> {
+            fn run<B: SimdBackend>(self, backend: B) -> Result<Picture> {
+                self.0.apply_film_grain_with(backend)
+            }
+        }
+        self.backend.enter(Apply(self))
+    }
+
+    fn apply_film_grain_with(&self, backend: impl SimdBackend) -> Result<Self> {
         let grain = self.pending_grain.as_ref();
         let pool = self.pool.as_ref();
-        let samples = match self.samples.as_ref() {
+        let samples = match &self.samples {
             Some(Samples::Eight(frame)) => Some(Samples::Eight(display(
-                self.backend,
+                backend,
                 frame.share(),
                 grain,
                 pool,
             )?)),
-            Some(Samples::Ten(frame)) => Some(Samples::Ten(display(
-                self.backend,
-                frame.share(),
-                grain,
-                pool,
-            )?)),
+            Some(Samples::Ten(frame)) => {
+                Some(Samples::Ten(display(backend, frame.share(), grain, pool)?))
+            }
             None => None,
         };
         Ok(Self {
@@ -439,7 +447,7 @@ impl Drop for Picture {
 /// The displayed form of `frame`: grain goes into planes from the decoder's
 /// pool, which the picture gives them back to when the caller drops it.
 fn display<T: ReconSample>(
-    backend: splot_core::simd::ResolvedBackend,
+    backend: impl SimdBackend,
     frame: SharedFrame<T>,
     grain: Option<&ActiveFilmGrain>,
     pool: Option<&Arc<PlanePool>>,
@@ -614,22 +622,14 @@ struct DriverLaunch {
 
 impl SimdScope<Result<std::thread::JoinHandle<()>>> for DriverLaunch {
     fn run<B: SimdBackend>(self, backend: B) -> Result<std::thread::JoinHandle<()>> {
-        spawn_driver(backend, self)
+        splot_parallel::spawn_thread("splot-driver", move || {
+            run_driver_session(backend, self);
+        })
+        .map_err(Into::into)
     }
 }
 
-fn spawn_driver<B: SimdBackend>(
-    backend: B,
-    launch: DriverLaunch,
-) -> Result<std::thread::JoinHandle<()>> {
-    splot_parallel::spawn_thread("splot-driver", move || {
-        let _ = backend;
-        run_driver_session(launch);
-    })
-    .map_err(Into::into)
-}
-
-fn run_driver_session(launch: DriverLaunch) {
+fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
     let options = DecodeOptions::new(launch.limits)
         .with_skip_film_grain(launch.skip_film_grain)
         .with_temporal_layer_selection(launch.temporal_layer_selection)
@@ -643,6 +643,7 @@ fn run_driver_session(launch: DriverLaunch) {
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
+            backend.narrow(),
             &mut units,
             &options,
             &session,
@@ -652,6 +653,7 @@ fn run_driver_session(launch: DriverLaunch) {
                     frame,
                     session.planes(),
                     &options,
+                    backend,
                     session.backend(),
                 )?);
                 Ok(())

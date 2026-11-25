@@ -7,6 +7,7 @@
 
 use core::num::NonZeroUsize;
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::DecodeOptions;
@@ -16,12 +17,13 @@ use crate::hash_report::{DecodeHashEntry, DecodeHashFrame, DecodeHashReport};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn decode_hash_report_from_plan(
+    backend: impl SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     resolved_threads: NonZeroUsize,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<DecodeHashReport> {
-    let report_frames = decode_hash_frames(source, options, session)?;
+    let report_frames = decode_hash_frames(backend, source, options, session)?;
 
     Ok(DecodeHashReport::raw_intermediate_output(
         resolved_threads.to_string(),
@@ -31,6 +33,7 @@ pub(crate) fn decode_hash_report_from_plan(
 
 /// Hashes each decoded frame as the driver emits it.
 fn decode_hash_frames(
+    backend: impl SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
@@ -38,6 +41,7 @@ fn decode_hash_frames(
     let mut completed = Vec::new();
     let mut emitted = 0u64;
     crate::pipeline::emit_frames(
+        backend,
         source,
         options,
         session,

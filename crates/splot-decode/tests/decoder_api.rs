@@ -261,6 +261,59 @@ fn skipped_film_grain_is_left_out_and_applied_on_request() {
 }
 
 #[test]
+fn avx512_film_grain_matches_narrow_output_at_both_bit_depths() {
+    use splot_decode::{SelectedBackend, SimdPolicy};
+
+    if !splot_core::simd::detect_capabilities().has_avx512() {
+        return;
+    }
+
+    let runtime = DecodeRuntimeConfig::new(ThreadCount::from(1usize));
+    let wide = DecodeContext::new(runtime.with_simd_policy(SimdPolicy::Avx512)).unwrap();
+    let narrow = DecodeContext::new(runtime.with_simd_policy(SimdPolicy::Avx2)).unwrap();
+    let wide_settings = DecoderSettings::default()
+        .with_threads(ThreadCount::from(1usize))
+        .with_simd_policy(SimdPolicy::Avx512);
+    let options = DecodeOptions::default();
+    let grain_ten = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-3frame-filmgrain-inter-64x64-10bit.ivf"
+    );
+    assert_eq!(wide.selected_backend(), SelectedBackend::Avx512);
+
+    for fixture in [FILM_GRAIN, grain_ten.as_slice()] {
+        let mut expected = Vec::new();
+        narrow
+            .decode_raw_bytes(fixture, options, &mut expected)
+            .unwrap();
+        let mut raw = Vec::new();
+        wide.decode_raw_bytes(fixture, options, &mut raw).unwrap();
+        assert_eq!(raw, expected);
+        wide.decode_discard_reader(fixture, options).unwrap();
+
+        let mut expected_y4m = Vec::new();
+        narrow
+            .decode_y4m_bytes(fixture, options, &mut expected_y4m)
+            .unwrap();
+        let mut y4m = Vec::new();
+        wide.decode_y4m_bytes(fixture, options, &mut y4m).unwrap();
+        assert_eq!(y4m, expected_y4m);
+
+        let units = units(fixture);
+        let mut decoder = Decoder::new(wide_settings).unwrap();
+        assert_eq!(decoder.selected_backend(), SelectedBackend::Avx512);
+        let eager = decode(&mut decoder, &units, |_| DataProps::default());
+        assert!(eager.iter().any(Picture::has_film_grain));
+        assert_eq!(raw_of(&eager), expected);
+
+        let mut decoder = Decoder::new(wide_settings.with_skip_film_grain(true)).unwrap();
+        let deferred = decode(&mut decoder, &units, |_| DataProps::default());
+        drop(decoder);
+        assert_ne!(raw_of(&deferred), expected);
+        assert_eq!(raw_of(&with_film_grain(&deferred)), expected);
+    }
+}
+
+#[test]
 fn a_picture_with_nothing_to_apply_shares_its_samples() {
     for (fixture, has_film_grain) in [(FILM_GRAIN, true), (MULTIREF, false)] {
         let pictures = decode(&mut decoder(1, 1), &units(fixture), |_| {
@@ -519,7 +572,16 @@ fn decoder_validates_simd_policy_once_and_retains_it_across_flush() {
     let mut decoder = Decoder::new(DecoderSettings::default()).unwrap();
     let initial = decoder.selected_backend();
     #[cfg(target_arch = "x86_64")]
-    assert_eq!(initial, SelectedBackend::Avx2);
+    assert_eq!(
+        initial,
+        if splot_core::simd::detect_capabilities().has_avx512() {
+            SelectedBackend::Avx512
+        } else if splot_core::simd::detect_capabilities().has_avx2() {
+            SelectedBackend::Avx2
+        } else {
+            SelectedBackend::Sse2
+        }
+    );
     #[cfg(target_arch = "aarch64")]
     assert_eq!(initial, SelectedBackend::Neon);
 

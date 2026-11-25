@@ -121,7 +121,8 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
     let mut collected = Vec::new();
     splot_parallel::run_on_thread("splot-driver", || {
         let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
-        emit_frames(
+        crate::test_support::with_auto_backend!(backend => emit_frames(
+            backend,
             &mut source,
             options,
             &session,
@@ -130,7 +131,7 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
                 collected.push(collect(frame)?);
                 Ok(())
             },
-        )
+        ))
     })??;
     Ok(collected)
 }
@@ -161,7 +162,8 @@ pub(crate) fn collect_bru_lr_audit(
             let mut source =
                 crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
             let mut frames = Vec::new();
-            emit_frames(
+            crate::test_support::with_auto_backend!(backend => emit_frames(
+                backend,
                 &mut source,
                 options,
                 &session,
@@ -176,7 +178,7 @@ pub(crate) fn collect_bru_lr_audit(
                     let _ = frame.ready_frame()?;
                     Ok(())
                 },
-            )?;
+            ))?;
             Result::Ok(frames)
         })
     })?;
@@ -186,6 +188,7 @@ pub(crate) fn collect_bru_lr_audit(
 /// Decodes every temporal unit of `source` and passes each displayed frame
 /// to `emit` in display order.
 pub(crate) fn emit_frames(
+    backend: impl splot_core::simd::SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &DecodeSession,
@@ -207,6 +210,7 @@ pub(crate) fn emit_frames(
         options,
         &mut retained,
         session,
+        backend,
         &mut preflight,
         &mut emit,
     );
@@ -441,8 +445,7 @@ pub(crate) fn decode_key_frame(
     let mut pools = frame_tasks::RowPools::new(1, 1, &buffers);
     let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, buffers, 1);
     let mut frames = FrameStore::new(ring.capacity());
-    let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)?;
-    let decoded = decode_key_frame_with_effects(
+    let decoded = crate::test_support::with_auto_backend!(backend => decode_key_frame_with_effects(
         None,
         backend,
         &mut pools,
@@ -461,7 +464,7 @@ pub(crate) fn decode_key_frame(
         None,
         FrameOutputEffects::empty(),
         crate::DataProps::default(),
-    );
+    ));
     ring.harvest_all(&mut pools);
     match ring.take_failure() {
         Some(failure) => Err(failure),
@@ -483,72 +486,9 @@ fn empty_key_reference<T: splot_recon::ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn walk_frame_with_backend<T: splot_recon::ReconSample>(
-    backend: splot_core::simd::ResolvedBackend,
-    scratch: &mut inter::InterDecodeScratch<T>,
-    candidate: &DecodePlannedObu,
-    bytes: crate::bitstream::byte_stream::SourceBytes<'_>,
-    frame_envelope: ObuEnvelope<'_>,
-    core: Arc<FrameHeaderCore>,
-    sequence: &SequenceHeader,
-    options: &DecodeOptions,
-    setup: &frame_engine::FrameSetup<'_, T>,
-    bit_depth: splot_recon::BitDepth,
-    products: &mut inter::FrameProductWriters,
-) -> Result<frame_engine::finish::FrameWalk<T>> {
-    struct WalkLaunch<'a, T: splot_recon::ReconSample> {
-        scratch: &'a mut inter::InterDecodeScratch<T>,
-        candidate: &'a DecodePlannedObu,
-        bytes: crate::bitstream::byte_stream::SourceBytes<'a>,
-        frame_envelope: ObuEnvelope<'a>,
-        core: Arc<FrameHeaderCore>,
-        sequence: &'a SequenceHeader,
-        options: &'a DecodeOptions,
-        setup: &'a frame_engine::FrameSetup<'a, T>,
-        bit_depth: splot_recon::BitDepth,
-        products: &'a mut inter::FrameProductWriters,
-    }
-    impl<T: splot_recon::ReconSample>
-        splot_core::simd::SimdScope<Result<frame_engine::finish::FrameWalk<T>>>
-        for WalkLaunch<'_, T>
-    {
-        fn run<B: splot_core::simd::SimdBackend>(
-            self,
-            backend: B,
-        ) -> Result<frame_engine::finish::FrameWalk<T>> {
-            frame_engine::walk_frame(
-                backend.narrow(),
-                self.scratch,
-                self.candidate,
-                self.bytes,
-                self.frame_envelope,
-                self.core,
-                self.sequence,
-                self.options,
-                self.setup,
-                self.bit_depth,
-                self.products,
-            )
-        }
-    }
-    backend.enter(WalkLaunch {
-        scratch,
-        candidate,
-        bytes,
-        frame_envelope,
-        core,
-        sequence,
-        options,
-        setup,
-        bit_depth,
-        products,
-    })
-}
-
-#[expect(clippy::too_many_arguments)]
 fn decode_key_frame_with_effects(
     rows: Option<&DecoderRowScheduler>,
-    backend: splot_core::simd::ResolvedBackend,
+    backend: impl splot_core::simd::SimdBackend,
     pools: &mut frame_tasks::RowPools,
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
@@ -614,7 +554,7 @@ fn decode_key_frame_with_effects(
     let mut product_writers = frames.reserve_products()?;
     let (frame, frame_cdfs, ccso_header, ccso_grid, segment_ids, motion_field) =
         with_sample!(sequence, T, {
-            let walk = walk_frame_with_backend::<T>(
+            let walk = frame_engine::walk_frame::<_, T>(
                 backend,
                 &mut T::pools(pools).scratch,
                 candidate,
@@ -722,6 +662,7 @@ fn drive_frames(
     options: &DecodeOptions,
     retained: &mut frame_store::RetainedDecode,
     session: &DecodeSession,
+    backend: impl splot_core::simd::SimdBackend,
     preflight: &mut dyn FnMut(Option<IvfHeader>) -> Result<()>,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
@@ -738,6 +679,7 @@ fn drive_frames(
         preflight,
         emit,
         session,
+        backend,
         ring,
         pools,
         frames,
@@ -913,13 +855,13 @@ fn decode_frames_in_order(
     preflight: &mut dyn FnMut(Option<IvfHeader>) -> Result<()>,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
     session: &DecodeSession,
+    backend: impl splot_core::simd::SimdBackend,
     ring: &mut inflight::InflightRing,
     pools: &mut frame_tasks::RowPools,
     frames: &mut FrameStore,
     input_scratch: &mut InputScratch,
 ) -> Result<()> {
     let rows = session.rows();
-    let backend = session.backend();
     options.validate_selections()?;
     let InputScratch {
         records,
@@ -1692,7 +1634,7 @@ fn decode_frames_in_order(
                             frame_engine::FrameSetup::Inter(&inter_state)
                         };
                         let mut product_writers = frames.reserve_products()?;
-                        let walk = walk_frame_with_backend(
+                        let walk = frame_engine::walk_frame(
                             backend,
                             &mut T::pools(pools).scratch,
                             next_candidate,

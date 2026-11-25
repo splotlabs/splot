@@ -316,7 +316,7 @@ jobs:
       - name: Build the targets of this group
         env:
           FEATURES: ${{ matrix.features }}
-          RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
+          RUSTFLAGS: -C target-cpu=x86-64-v3
         run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu
 
       # Every target runs, so that one crash does not hide another.
@@ -325,7 +325,7 @@ jobs:
         env:
           FEATURES: ${{ matrix.features }}
           TARGETS: ${{ matrix.targets }}
-          RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
+          RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
           read -r -a fuzz_targets <<< "$TARGETS"
           # shellcheck disable=SC2016
