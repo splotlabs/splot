@@ -29,6 +29,13 @@ the caller's loop. The ordinary synchronous methods enter that scope for each
 call. A deferred `Picture::apply_film_grain` uses the backend stored with the
 picture.
 
+Run the **AVX-512 correctness qualification** Actions workflow on native
+hardware to compare Auto and both forced policies against AVM. Its timing
+option compares the forced backends on the same runner. Set the repository
+variable `SPLOT_AVX512_RUNNER` to a registered wide-capable runner label for
+repeatable access. The default Ubuntu hosted pool contains several CPU models;
+the hardware check fails if the assigned runner lacks the required features.
+
 Cargo uses the consuming workspace's configuration when building splot as a
 dependency. With generic x86-64 flags the decoder can fall back to SSE2.
 On Linux GNU, this command builds a baseline CLI and C library while retaining

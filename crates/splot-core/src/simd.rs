@@ -24,7 +24,6 @@ const STATIC_AVX2: bool = matches!(Level::baseline(), Level::Avx2(_) | Level::Av
 #[cfg(all(test, not(target_arch = "x86_64")))]
 const STATIC_AVX2: bool = false;
 
-// An uninhabited SSE2 backend removes its decoder instantiations when the build guarantees AVX2.
 #[cfg(target_arch = "x86_64")]
 mod sse2_floor {
     use core::convert::Infallible;
@@ -520,6 +519,7 @@ impl SimdBackend for NeonBackend {
 }
 
 /// Sealed SSE2 backend carrying a genuine [`fearless_simd::Sse2`] token.
+/// Its uninhabited proof removes the SSE2 decoder when the build guarantees AVX2.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 pub struct Sse2Backend(

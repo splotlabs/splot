@@ -722,6 +722,7 @@ fn add_noise_row<S: Simd, T: ReconSample, const WIDE: bool>(
 }
 
 /// Adds grain using the same rounding and saturation for a half or full group.
+/// The 8-bit path shifts the product before rounding so the sum stays in i16.
 #[expect(clippy::inline_always, reason = "shared vector noise arithmetic")]
 #[inline(always)]
 fn add_noise_vector<S, V>(simd: S, orig: V, scale: V, noise: V, params: NoiseParams) -> V
@@ -731,7 +732,6 @@ where
 {
     let shift = u32::from(params.shift);
     if params.narrow {
-        // Exact Round2 without overflowing i16 when the product is near its limit.
         let delta = (((scale * noise) >> (shift - 1)) + V::splat(simd, 1)) >> 1;
         return (orig + delta).clamp(
             V::splat(simd, params.min as i16),

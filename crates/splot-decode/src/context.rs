@@ -189,7 +189,6 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
     }
 }
 
-// Concrete entry points keep the decoder's generic kernels in this crate.
 macro_rules! decode_request {
     ($request:ident, $method:ident, $output:ty $(, $field:ident: $ty:ty)*) => {
         struct $request<'a> {

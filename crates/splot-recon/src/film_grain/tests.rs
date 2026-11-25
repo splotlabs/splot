@@ -375,7 +375,7 @@ fn measure_wide_grain_noise_rows() {
         noise: &[i16],
         run: impl Fn(&mut [T], &[i16], &[i16]),
     ) -> f64 {
-        let mut row = initial.to_vec();
+        let mut row = initial.to_vec(); // splot-copy-ok: each timed sample starts from the same pixels
         let start = Instant::now();
         for _ in 0..ITERATIONS {
             run(black_box(&mut row), black_box(scale), black_box(noise));
