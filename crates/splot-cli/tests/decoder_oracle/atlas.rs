@@ -47,8 +47,8 @@ impl Read for ShortReads<'_> {
     }
 }
 
-fn decode_timed(bytes: &[u8], pts: &[i64], settings: DecoderSettings) -> Vec<Picture> {
-    let mut decoder = Decoder::new(settings).expect("decoder");
+fn decode_timed(bytes: &[u8], pts: &[i64], settings: &DecoderSettings) -> Vec<Picture> {
+    let mut decoder = Decoder::new(*settings).expect("decoder");
     let mut units = TemporalUnitReader::new(ShortReads(bytes));
     let mut pictures = Vec::new();
     for &time in pts {
@@ -122,7 +122,7 @@ fn native_and_composite_output_match_independent_goldens() {
             let pictures = decode_timed(
                 &bytes,
                 pts,
-                DecoderSettings::default().with_threads(threads),
+                &DecoderSettings::default().with_threads(threads),
             );
             let mut at_time = BTreeMap::<i64, Vec<&Picture>>::new();
             for picture in &pictures {
@@ -184,7 +184,7 @@ fn separate_target_decoders_compose_matching_atlas_snapshots() {
             .with_extended_layer_selection(ExtendedLayerSelection::Target(
                 ExtendedLayerId::from_bits(id),
             ));
-        let pictures = decode_timed(bytes, &times, settings);
+        let pictures = decode_timed(bytes, &times, &settings);
         assert_eq!(pictures.len(), times.len());
         assert!(pictures.iter().all(|p| p.extended_layer_id().get() == id));
         pictures
@@ -213,7 +213,7 @@ fn missing_duplicate_stale_and_oversized_groups_return_typed_errors() {
         "../../../../tests/conformance/vectors/valid/syn-atlas-alpha-paired-8bit.obu"
     );
     let settings = DecoderSettings::default().with_threads(ThreadCount::from(1usize));
-    let pics = decode_timed(bytes, &[0, 1, 2, 3], settings);
+    let pics = decode_timed(bytes, &[0, 1, 2, 3], &settings);
     let first = global_layout(&pics[0]);
     let mut compositor = AtlasCompositor::new(DecodeLimits::default());
     assert!(matches!(
