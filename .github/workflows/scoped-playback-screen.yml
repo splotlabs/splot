@@ -13,12 +13,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - variant: shipped
-            ref: 102798461d19a98b6e04b935538fb24f7b339701
-          - variant: draft
-            ref: 29e001679265816c1e0fed9e09a5e32efe1a2d47
-          - variant: candidate
-            ref: ${{ github.sha }}
+          - variant: release-main
+            ref: d171d82416a67140e1f6696eeba8e08e56af5763
+          - variant: release-wide
+            ref: a55cff38f4d5a5855af54e75aeac25b92a09531f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,5 +38,5 @@ jobs:
         with:
           name: playback-${{ matrix.variant }}
           path: playback
-          retention-days: 3
+          retention-days: 1
           if-no-files-found: error
