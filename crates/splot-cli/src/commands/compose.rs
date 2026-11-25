@@ -30,6 +30,9 @@ pub(crate) struct ComposeArgs {
     /// Write the raw composite planes to this file. Use '-' for standard output.
     #[arg(short, long)]
     output: PathBuf,
+    /// Select a global atlas by ID when several layouts apply to the same picture.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=7))]
+    atlas_id: Option<u8>,
     /// Set the number of decoder threads.
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -52,6 +55,7 @@ pub(crate) fn run(args: &ComposeArgs) -> Result<ExitCode> {
     )?;
     let mut output = CompositeOutput {
         compositor: AtlasCompositor::new(limits),
+        atlas_id: args.atlas_id,
         pending: VecDeque::new(),
         retained_bytes: 0,
         max_bytes: args.max_bytes.get(),
@@ -111,6 +115,7 @@ struct PresentationGroup {
 
 struct CompositeOutput {
     compositor: AtlasCompositor,
+    atlas_id: Option<u8>,
     pending: VecDeque<PresentationGroup>,
     retained_bytes: u64,
     max_bytes: u64,
@@ -120,21 +125,34 @@ struct CompositeOutput {
 
 impl CompositeOutput {
     fn push(&mut self, picture: Picture, writer: &mut dyn Write) -> Result<()> {
-        let Some(association) = picture
+        let mut candidates = picture
             .atlas_associations()
             .iter()
-            .find(|a| a.scope.is_global())
-        else {
+            .filter(|a| a.scope.is_global() && self.atlas_id.is_none_or(|id| a.atlas_id == id))
+            .filter_map(|association| {
+                let Some(layout) = &association.layout else {
+                    return Some(Err(anyhow::anyhow!(
+                        "Global atlas {} is unavailable.",
+                        association.atlas_id
+                    )));
+                };
+                match &layout.atlas.mode_info {
+                    AtlasModeInfo::Multistream(info) | AtlasModeInfo::MultistreamAlpha(info) => {
+                        Some(Ok((layout, info)))
+                    }
+                    _ if self.atlas_id.is_some() => Some(Err(anyhow::anyhow!(
+                        "Only multistream atlas modes 3 and 4 support composition."
+                    ))),
+                    _ => None,
+                }
+            });
+        let Some((layout, info)) = candidates.next().transpose()? else {
             return Ok(());
         };
-        let layout = association
-            .layout
-            .as_ref()
-            .context("The referenced global atlas is unavailable.")?;
-        let info = match &layout.atlas.mode_info {
-            AtlasModeInfo::Multistream(info) | AtlasModeInfo::MultistreamAlpha(info) => info,
-            _ => bail!("Only multistream atlas modes 3 and 4 support composition."),
-        };
+        ensure!(
+            candidates.next().is_none(),
+            "Several global atlases apply to this picture. Select one with --atlas-id."
+        );
         let required = info
             .segments
             .iter()

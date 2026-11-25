@@ -98,3 +98,51 @@ fn a_failed_composition_preserves_existing_output() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("lacks one or more atlas pictures"));
     assert_eq!(std::fs::read(output).unwrap(), b"existing");
 }
+
+#[test]
+fn two_global_layouts_require_an_explicit_atlas_id() {
+    use splot_core::types::ObuType;
+
+    let mut stream = std::fs::read(conformance_vector("syn-msdo-two-streams-8bit.obu")).unwrap();
+    let source = std::fs::read(conformance_vector(
+        "syn-atlas-multistream-side-by-side-8bit.obu",
+    ))
+    .unwrap();
+    let atlas = parse_annex_b_obus(&source)
+        .unwrap()
+        .into_iter()
+        .find(|obu| obu.header.obu_type == ObuType::AtlasSegment)
+        .unwrap();
+    let header = atlas.offset.get() as usize;
+    let size = atlas.size as usize;
+    assert!(size < 128);
+    let mut records = Vec::new();
+    for id in [2, 5] {
+        let mut copy = source[header..header + size].to_vec();
+        let payload = usize::from(atlas.header.header_size_bytes);
+        copy[payload] = (copy[payload] & 0x1f) | (id << 5);
+        records.push(size as u8);
+        records.extend(copy);
+    }
+    let offsets: Vec<_> = parse_annex_b_obus(&stream)
+        .unwrap()
+        .into_iter()
+        .filter(|obu| obu.header.obu_type == ObuType::Msdo)
+        .map(|obu| (obu.offset.get() + u64::from(obu.size)) as usize)
+        .collect();
+    for at in offsets.into_iter().rev() {
+        stream.splice(at..at, records.iter().copied());
+    }
+    let input = temp_input("obu", &stream);
+    let path = input.to_str().unwrap();
+    let ambiguous = splot(&["compose", path, "-o", "-"]);
+    assert!(!ambiguous.status.success());
+    assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("Select one with --atlas-id"));
+    let selected = splot(&["compose", path, "-o", "-", "--atlas-id", "5"]);
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    assert_eq!(selected.stdout.len(), 55_296);
+}
