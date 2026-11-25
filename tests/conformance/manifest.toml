@@ -2964,6 +2964,21 @@ description = "Eight-frame 64x64 8-bit 4:2:0 Annex B stream encoded by AVM (a1ec
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-xlayer-independent-reset-10bit.obu"
+description = "Profile 2 IOP 2 stream with independent extended layers 3 and 7 using sequence header ID 0. Extended layer 3 changes from 64x64 with grain model 1 to 80x64 with grain model 2 at its third temporal unit. Extended layer 7 continues its 96x64 sequence with MFH and grain model 3. The reference output contains 8 pictures at 10 bits. Regenerate with the extended-layer-fixtures recipe."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-xlayer-independent-reset-8bit.obu"
+description = "Profile 2 IOP 2 stream with independent extended layers 3 and 7 using sequence header ID 0. Extended layer 3 changes from 64x64 with grain model 1 to 80x64 with grain model 2 at its third temporal unit. Extended layer 7 continues its 96x64 sequence with MFH and grain model 3. The reference output contains 8 pictures at 8 bits. Regenerate with the extended-layer-fixtures recipe."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-xlayer-independent-sparse-8bit.obu"
+description = "Profile 2 IOP 2 stream with independent extended layers 3 and 7 using sequence header ID 0. Extended layer 3 carries two embedded and two temporal layers with a local LCR and OPS. Extended layer 7 continues its 96x64 sequence with MFH and grain model 3. The reference output contains 12 pictures at 8 bits. Regenerate with the extended-layer-fixtures recipe."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-xlayer3-7-global-lcr-isolation.obu"
 description = "Four-TU multi-extended-layer 8-bit 4:2:0 Profile 2 IOP 2 Annex B stream with an activated global LCR (id 1, xlayer_map 0x88, lcr_doh_constraint_flag 1) multiplexing independent AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) streams at obu_xlayer_id 3 (seq_header_id 0, 64x64 frames 0..1 film-grain 1 transitioning at TU2 CLK to 80x64 frames 2..3 film-grain 2) and obu_xlayer_id 7 (seq_header_id 1, MFH enabled, 96x64 frames 0..3 film-grain 3, kf-max-dist 2). Decodes identically to component avmdec outputs (xlayer 3 27,648 bytes SHA-256 8bdd46a3f2c2af0d989621bd90253a101ee29a5e2274062301dcce60f9398c46; xlayer 7 36,864 bytes SHA-256 0abae5b2ef2bf8a1b8d2000e927da1f55ccd1083ea92d755c45a2893cd057b8e); validates clean."
 expect = "clean"

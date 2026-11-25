@@ -284,12 +284,15 @@ impl ValidatorContext {
             );
         }
 
-        let overlap = self.film_grain.updated_slots_since_coded_frame & fg.update_flags;
+        let Some(state) = self.hls.layer(obu.header.extended_layer_id) else {
+            return;
+        };
+        let overlap = state.film_grain.updated_slots_since_coded_frame & fg.update_flags;
         for slot in 0..MAX_FILM_GRAIN {
             if overlap & (1 << slot) == 0 {
                 continue;
             }
-            let prior = match self.film_grain.available[slot] {
+            let prior = match state.film_grain.available[slot] {
                 Some(record) => format!(
                     " (previously updated by a film grain OBU at embedded layer {}, temporal \
                      layer {}, fgm_chroma_idc {})",
@@ -318,17 +321,22 @@ impl ValidatorContext {
     /// a film-grain OBU defines a model that a later frame may reference; the replay catches a
     /// model sent before a random access point and not resent in or after it).
     pub(super) fn record_film_grain(&mut self, obu: &ObuEnvelope<'_>, fg: &FilmGrainObu) {
-        self.film_grain.updated_slots_since_coded_frame |= fg.update_flags;
+        let xlayer = obu.header.extended_layer_id;
+        let state = self.hls.layer_mut(xlayer);
+        state.film_grain.updated_slots_since_coded_frame |= fg.update_flags;
         for update in &fg.models {
             let index = update.slot as usize;
             if index < MAX_FILM_GRAIN {
-                self.film_grain.available[index] = Some(FgmSlotRecord {
+                state.film_grain.available[index] = Some(FgmSlotRecord {
                     chroma_idc: fg.chroma_idc,
                     mlayer_id: obu.header.embedded_layer_id,
                     tlayer_id: obu.header.temporal_layer_id,
                 });
                 self.rap_replay.note_resend(
-                    RapHlsKey::FilmGrain { slot: update.slot },
+                    RapHlsKey::FilmGrain {
+                        xlayer,
+                        slot: update.slot,
+                    },
                     obu.header.extended_layer_id,
                 );
             }

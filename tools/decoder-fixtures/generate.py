@@ -12,6 +12,7 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py bru-inactive-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py extended-layer-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py temporal-fixtures ...
   python3 tools/decoder-fixtures/generate.py embedded-fixtures ...
 
@@ -953,7 +954,7 @@ def cmd_coverage_fixtures(args):
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 
 
-def _bru_lr_write_y4m(path, w, h, bit_depth, sample_fn, num_frames=6):
+def _write_i420_y4m(path, w, h, bit_depth, sample_fn, num_frames=6):
     chroma = "C420p10" if bit_depth == 10 else "C420"
     max_val = (1 << bit_depth) - 1
     shift = bit_depth - 8
@@ -1319,7 +1320,7 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args, *, num_frames=6):
         ivf = os.path.join(stage, f"{fid}.ivf")
         repeat_ivf = os.path.join(stage, f"{fid}.repeat.ivf")
         raw = os.path.join(stage, f"{fid}.avm.raw")
-        _bru_lr_write_y4m(y4m, w, h, bd, sample_fn, num_frames)
+        _write_i420_y4m(y4m, w, h, bd, sample_fn, num_frames)
         encode = [
             avmenc, "--codec=av2", "--ivf", "-D", "--passes=1",
             "--lag-in-frames=0", "--kf-min-dist=9999", "--kf-max-dist=9999",
@@ -1374,6 +1375,13 @@ def cmd_bru_intrabc_fixtures(args):
         args,
     )
 
+
+def cmd_extended_layer_fixtures(args):
+    from extended_layers import generate
+    try:
+        generate(VALID, args.stage, find("avmenc"), find("avmdec"), _write_i420_y4m, run_checked)
+    except (OSError, ValueError) as error:
+        sys.exit(f"error: {error}")
 
 
 def signal_sparse_tlayers(data):
@@ -1614,6 +1622,10 @@ def main():
     i = sub.add_parser("bru-intrabc-fixtures"); i.add_argument("--stage", required=True)
     i.add_argument("--only", help="regenerate one fixture id")
     i.set_defaults(fn=cmd_bru_intrabc_fixtures)
+    multi = sub.add_parser("extended-layer-fixtures")
+    multi.add_argument("--stage", required=True)
+    multi.set_defaults(fn=cmd_extended_layer_fixtures)
+
     for name, command in [("temporal-fixtures", cmd_temporal_fixtures),
                           ("embedded-fixtures", cmd_embedded_fixtures)]:
         layer = sub.add_parser(name)
