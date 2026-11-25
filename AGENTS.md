@@ -12,9 +12,10 @@ and `.github/copilot-instructions.md` point here.
 2. Fit the solution to the problem. Use the simplest solution for simple
    problems and better designs only when the problem justifies them. Do not add
    flexibility that is not needed yet.
-3. Keep the diff scoped. Do not touch unrelated code. If you discover bad code
-   or design smells outside the task, surface them separately instead of fixing
-   them opportunistically.
+3. Fix codec defects within the task's scope during the session. Keep unrelated
+   fixes in separate changes. For a deferred fix, open or update an issue in
+   the owning repository before handover. Follow the
+   [shared issue procedure](https://github.com/splotlabs/.github/blob/main/AGENTS.md#defects-found-during-work).
 4. Flag uncertainty explicitly. If a small, local, low-risk experiment would
    clarify the issue, run it and bring the hypothesis and result back for
    discussion. Do not present confidence as certainty.
@@ -141,7 +142,9 @@ Generated status markdown is not committed; render it on demand.
 
 ## Coding Standards
 
-- Library-first, thin CLI. Codec and validation logic live in libraries.
+- Put codec and validation fixes in the library that owns the behavior.
+  Keep the CLI thin. When a consumer reveals a defect, test the same public API the consumer calls.
+  Keep independent test oracles separate from the production implementation.
 - Library errors are typed with `thiserror`; `anyhow` is allowed only in
   `splot-cli` and `xtask`.
 - No reachable library `unwrap`, `expect`, `panic!`, `todo!`, or
@@ -201,6 +204,9 @@ inspiration only; AV2 behavior comes from the AV2 spec and AVM.
 Testing priority is parser unit tests, property/fuzz no-panic coverage,
 `inspect` snapshots, conformance vectors, then AVM differential testing. Parser
 changes need positive, negative, and EOF cases. See `docs/TESTING.md`.
+
+When a shared default changes, check which presets or callers inherit it.
+Test the affected configurations through their normal entry points.
 
 ## Performance and SIMD
 
