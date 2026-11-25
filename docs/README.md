@@ -15,9 +15,9 @@ rustup show active-toolchain
 cargo build --release
 ```
 
-x86-64 builds target `x86-64-v3` (AVX2/FMA/BMI2) for decode throughput; an
-older CPU traps with `SIGILL`. Use `RUSTFLAGS="-C target-cpu=x86-64"` for a
-portable baseline. `aarch64` uses 128-bit NEON as its baseline.
+x86-64 builds use the portable SSE2 instruction set at startup. The decoder
+selects AVX2 on hosts with the required CPU and OS support and SSE2 on other
+x86-64 hosts. AArch64 uses 128-bit NEON.
 Linux GNU builds link packed relative relocations (`DT_RELR`) and need glibc
 2.36 or newer.
 

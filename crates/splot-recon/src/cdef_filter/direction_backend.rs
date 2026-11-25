@@ -44,6 +44,9 @@ mod sealed_backend {
     pub trait Sealed {}
 
     #[cfg(target_arch = "x86_64")]
+    impl Sealed for splot_core::simd::Sse2Backend {}
+
+    #[cfg(target_arch = "x86_64")]
     impl Sealed for splot_core::simd::Avx2Backend {}
 
     #[cfg(target_arch = "x86_64")]
@@ -64,6 +67,17 @@ pub trait CdefDirectionBackend: SimdBackend + sealed_backend::Sealed {
         pad: &[u16; CDEF_PADDED_AREA],
         coeff_shift: u32,
     ) -> (usize, i32);
+}
+
+#[cfg(target_arch = "x86_64")]
+impl CdefDirectionBackend for splot_core::simd::Sse2Backend {
+    fn cdef_direction_padded_impl(
+        self,
+        pad: &[u16; CDEF_PADDED_AREA],
+        coeff_shift: u32,
+    ) -> (usize, i32) {
+        cdef_direction_padded_with(self, pad, coeff_shift)
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -157,6 +171,8 @@ mod tests {
         let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
         let run = |pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32| -> (usize, i32) {
             match resolved {
+                #[cfg(target_arch = "x86_64")]
+                ResolvedBackend::Sse2(b) => cdef_direction_backend_audit_entry(b, pad, coeff_shift),
                 #[cfg(target_arch = "x86_64")]
                 ResolvedBackend::Avx2(b) => cdef_direction_backend_audit_entry(b, pad, coeff_shift),
                 #[cfg(target_arch = "x86_64")]

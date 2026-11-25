@@ -74,7 +74,14 @@ fn context_validates_simd_policy_at_startup() {
 
     let ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
     #[cfg(target_arch = "x86_64")]
-    assert_eq!(ctx.selected_backend(), SelectedBackend::Avx2);
+    assert_eq!(
+        ctx.selected_backend(),
+        if splot_core::simd::detect_capabilities().has_avx2() {
+            SelectedBackend::Avx2
+        } else {
+            SelectedBackend::Sse2
+        }
+    );
     #[cfg(target_arch = "aarch64")]
     assert_eq!(ctx.selected_backend(), SelectedBackend::Neon);
 

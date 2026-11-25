@@ -308,12 +308,9 @@ jobs:
         run: cargo xtask seed-fuzz-corpus
 
       # Force GNU: AddressSanitizer cannot link the static musl default.
-      # RUSTFLAGS restores `.cargo/config.toml`'s x86-64-v3 baseline (which `cargo-fuzz` overrides).
-      # Build and run use the same flags and `RUSTFLAGS`, else `fuzz run` builds again.
       - name: Build the targets of this group
         env:
           FEATURES: ${{ matrix.features }}
-          RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
         run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu
 
       # Every target runs, so that one crash does not hide another.
@@ -321,7 +318,6 @@ jobs:
         env:
           FEATURES: ${{ matrix.features }}
           TARGETS: ${{ matrix.targets }}
-          RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
         run: |
           failed=""
           for target in $TARGETS; do
