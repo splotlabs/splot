@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-name: Qualify typed AVX-512 grain with 48 native timing pairs
+name: Repeat native BlueSky and ungrained Noise policy comparisons
 on:
   push:
-    branches: [experiment/simd-1882-grain-focus]
+    branches: [experiment/simd-1882-nongrain-repeat]
 permissions:
   contents: read
 jobs:
@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 83566cc2a716603280a8b0773fc026f1fe86676e
+          ref: 91fbc9218814c1a0eebe73074c03fd35f3a2f932
           persist-credentials: false
       - name: Require a native wide host
         run: |
@@ -32,15 +32,15 @@ jobs:
           RS
           rustc "$RUNNER_TEMP/host.rs" -o "$RUNNER_TEMP/host"
           "$RUNNER_TEMP/host"
-      - name: Prepare the affected frozen stream
+      - name: Prepare both fixed repeat streams
         run: |
           python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
-          grep -F '_filmgrain_' "$RUNNER_TEMP/ewouth/simd-cases.tsv" > "$RUNNER_TEMP/ewouth/grain-cases.tsv"
+          grep -E '^(BlueSky_|Noise_Ocean_1920x1080_60fps_qp135_)' "$RUNNER_TEMP/ewouth/simd-cases.tsv" > "$RUNNER_TEMP/ewouth/repeat-cases.tsv"
       - name: Warm and compare 48 pairs at each thread count
         env:
           SPLOT_REQUIRE_AVX512: "1"
           SPLOT_TIMING_PAIRS: "48"
         run: |
-          export SPLOT_EWOUTH_CASES="$RUNNER_TEMP/ewouth/grain-cases.tsv"
+          export SPLOT_EWOUTH_CASES="$RUNNER_TEMP/ewouth/repeat-cases.tsv"
           cargo test -p splot-decode --release --locked --test simd_backend_parity \
             frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
