@@ -658,3 +658,81 @@ fn local_record_with_id_zero_fails_at_its_obu() {
         assert_eq!(issue.offset(), invalid_offset);
     }
 }
+
+#[test]
+fn derived_sef_selects_the_atlas_segment_of_the_reference_layer() {
+    use splot_core::headers::layer_config_record::LayerConfigurationRecord;
+
+    let fixture = include_bytes!(
+        "../../../../tests/conformance/vectors/valid/syn-mlayer2-derived-sef-8bit.obu"
+    );
+    let atlas = parse_annex_b_obus(include_bytes!(
+        "../../../../tests/conformance/vectors/valid/syn-atlas-mode-0.obu"
+    ))
+    .unwrap()
+    .into_iter()
+    .find(|obu| obu.header.obu_type == ObuType::AtlasSegment)
+    .unwrap();
+    let donor = parse_annex_b_obus(COLLISION_8)
+        .unwrap()
+        .into_iter()
+        .find(|obu| {
+            obu.header.obu_type == ObuType::LayerConfigurationRecord
+                && obu.header.extended_layer_id.is_global()
+        })
+        .unwrap();
+    let PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(mut record)) =
+        donor.payload_status().unwrap()
+    else {
+        panic!("expected a global LCR");
+    };
+    let LayerConfigurationRecord::Global(global) = &mut *record else {
+        panic!("expected a global LCR");
+    };
+    global.xlayer_map = 1;
+    global.payloads.truncate(1);
+    let payload = &mut global.payloads[0];
+    payload.xlayer_id = 0;
+    // The second embedded-layer entry occupies six bytes (§ 5.8.8).
+    payload.data_size += 6;
+    let embedded = payload.xlayer_info.embedded_layer_info.as_mut().unwrap();
+    embedded.mlayer_map = 3;
+    embedded.layers[0].tlayer_map = 3;
+    let mut enhancement = embedded.layers[0];
+    enhancement.mlayer_index = 1;
+    enhancement.atlas_segment_id = Some(77);
+    enhancement.dependent_layer_map = Some(1);
+    embedded.layers.push(enhancement);
+
+    let mut prefix = Vec::new();
+    write_parsed(
+        &mut prefix,
+        donor.header,
+        &ParsedObu::LayerConfigurationRecord(record),
+    );
+    write_obu(&mut prefix, atlas.header, atlas.payload);
+    let mut stream = Vec::new();
+    for obu in parse_annex_b_obus(fixture).unwrap() {
+        if obu.header.obu_type == ObuType::LayerConfigurationRecord {
+            stream.extend_from_slice(&prefix);
+        } else {
+            write_obu(&mut stream, obu.header, obu.payload);
+        }
+    }
+    let pictures = stream_decode(&stream, &DecoderSettings::default()).unwrap();
+    assert_eq!(
+        sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
+        "bca7d45ad940d920c77414eea6516e243bd0ea98d58441a6de270fa1fb231033"
+    );
+    assert_eq!(pictures.len(), 4);
+    // The last SEF uses ML1/TL1 in its OBU and derives ML0/TL0 from its reference.
+    for (pic, (mlayer, label)) in pictures.iter().zip([(0, 41), (1, 77), (0, 41), (0, 41)]) {
+        let [association] = pic.atlas_associations() else {
+            panic!("expected one global atlas")
+        };
+        assert_eq!(pic.embedded_layer_id().get(), mlayer);
+        assert_eq!(pic.temporal_layer_id().get(), 0);
+        assert_eq!(association.segment_id, Some(label));
+        assert_eq!(association.segment_index(), Some(usize::from(mlayer)));
+    }
+}
