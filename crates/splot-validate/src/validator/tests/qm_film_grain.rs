@@ -470,3 +470,44 @@ fn padding_empty_payload_is_accepted() {
         "report was: {report}"
     );
 }
+
+#[test]
+fn film_grain_and_qm_references_require_a_definition_in_their_layer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let grain_sequence = FrameCoreSeq {
+        film_grain_params_present: true,
+        ..FrameCoreSeq::base()
+    };
+    for (sequence, model, frame, missing) in [
+        (
+            grain_sequence,
+            film_grain_obu_bytes(1, 0),
+            sef_with_applied_grain(0),
+            "frame-header/film-grain-model-unavailable",
+        ),
+        (
+            FrameCoreSeq::base(),
+            qm_default_level_obu_chroma(0),
+            clk_frame_with_qm_reference(0),
+            "frame-header/qm-level-unavailable",
+        ),
+    ] {
+        let obus = splot_core::annexb::parse_annex_b_obus(&model)?;
+        let obu = &obus[0];
+        for xlayer in [0, 30] {
+            let mut data = td_and_frame_core_seq(sequence);
+            data.extend(annex_b_obu_with_header(
+                &layer_obu_header(obu.header.obu_type.raw(), 0, 0, xlayer),
+                obu.payload,
+            ));
+            data.extend(&frame);
+            let report = Validator::new(false).validate_bytes(&data);
+            assert_eq!(
+                has_error(&report, missing),
+                xlayer != 0,
+                "{missing} {xlayer} {report}"
+            );
+        }
+    }
+    Ok(())
+}

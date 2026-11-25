@@ -135,14 +135,19 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
     Ok(collected)
 }
 
-/// Decodes `bytes` serially on the driver thread while capturing per-frame BRU
-/// mode maps and pre/post BRU loop-restoration source-block spans.
+#[cfg(test)]
+pub(crate) struct BruLrAuditFrame {
+    pub(crate) header: Arc<FrameHeaderCore>,
+    pub(crate) motion_field: Option<Arc<crate::prediction::inter::TemporalMotionField>>,
+}
+
+/// Captures per-frame BRU state and the restoration spans before and after the BRU gate.
 #[cfg(test)]
 pub(crate) fn collect_bru_lr_audit(
     bytes: &[u8],
     options: &DecodeOptions,
 ) -> Result<(
-    Vec<Arc<FrameHeaderCore>>,
+    Vec<BruLrAuditFrame>,
     Vec<crate::filters::wienerns_lr::recon::BruLrFrameAudit>,
 )> {
     let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)?;
@@ -151,11 +156,11 @@ pub(crate) fn collect_bru_lr_audit(
         row_scheduler(NonZeroUsize::MIN, backend)?,
         backend,
     );
-    let (headers, audits) = splot_parallel::run_on_thread("splot-driver", || {
+    let (frames, audits) = splot_parallel::run_on_thread("splot-driver", || {
         crate::filters::wienerns_lr::recon::with_bru_lr_audit(|| {
             let mut source =
                 crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
-            let mut headers = Vec::new();
+            let mut frames = Vec::new();
             crate::test_support::with_auto_backend!(backend => emit_frames(
                 backend,
                 &mut source,
@@ -163,17 +168,20 @@ pub(crate) fn collect_bru_lr_audit(
                 &session,
                 |_| Ok(()),
                 |frame| {
-                    if let Some(core) = frame.ccso_header.as_ref() {
-                        headers.push(Arc::clone(core));
+                    if let Some(header) = frame.ccso_header.as_ref() {
+                        frames.push(BruLrAuditFrame {
+                            header: Arc::clone(header),
+                            motion_field: frame.motion_field.field().cloned(),
+                        });
                     }
                     let _ = frame.ready_frame()?;
                     Ok(())
                 },
             ))?;
-            Result::Ok(headers)
+            Result::Ok(frames)
         })
     })?;
-    Ok((headers?, audits))
+    Ok((frames?, audits))
 }
 
 /// Decodes every temporal unit of `source` and passes each displayed frame
@@ -340,6 +348,14 @@ fn parse_key_core_with_effects(
 ) -> Result<FrameHeaderCore> {
     let activation = parse_frame_core(envelope, sequence)?;
     if activation.cur_mfh_id.is_zero() {
+        if activation.referenced_sequence_header_id != Some(sequence.general.seq_header_id) {
+            return Err(unsupported_feature_at(
+                "sequence_header_unavailable",
+                envelope.offset,
+                "closed-loop key references a sequence header that is not available in-band",
+                "7.3.8.6",
+            ));
+        }
         return Ok(activation);
     }
     let record = effects.resolve_mfh_record(envelope, sequence, activation.cur_mfh_id)?;
@@ -792,39 +808,55 @@ fn drain_pending_cmvs_flushed(
     )
 }
 
+fn global_lcr_activation(
+    xlayers: &XLayerTable,
+    unit: &crate::bitstream::byte_stream::UnitBytes,
+    prefix: &[ObuEnvelope<'_>],
+    tu_has_clk: bool,
+) -> Result<Option<ByteOffset>> {
+    if !tu_has_clk
+        || !xlayers.has_active_cmvs()
+        || prefix
+            .iter()
+            .any(|env| env.header.obu_type == ObuType::Msdo)
+    {
+        return Ok(None);
+    }
+    let mut obus = Vec::new();
+    crate::bitstream::byte_stream::runtime_obus(unit.view(), &mut obus)?;
+    xlayers.global_lcr_activation_in_tu(&obus)
+}
+
 #[expect(clippy::too_many_arguments)]
 fn observe_global_and_cmvs(
     xlayers: &mut XLayerTable,
     prefix_obus: &[ObuEnvelope<'_>],
     unit: &crate::bitstream::byte_stream::UnitBytes,
-    skipped_tu: bool,
+    checked_rap_flags: Option<(bool, bool)>,
     options: &DecodeOptions,
     frames: &FrameStore,
     emission_queue: &mut output_schedule::EmissionQueue,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
-    let (tu_has_rap, tu_has_clk) = if prefix_obus
-        .iter()
-        .any(|env| env.header.obu_type == ObuType::Msdo && env.header.extended_layer_id.is_global())
-    {
-        unit_rap_flags(unit)?
+    let check_cmvs_end = xlayers.has_active_cmvs()
+        && prefix_obus
+            .iter()
+            .any(|env| env.header.obu_type == ObuType::TemporalDelimiter);
+    let (tu_has_rap, tu_has_clk) = if check_cmvs_end
+        || prefix_obus.iter().any(|env| {
+            env.header.obu_type == ObuType::Msdo && env.header.extended_layer_id.is_global()
+        }) {
+        if let Some(flags) = checked_rap_flags {
+            flags
+        } else {
+            unit_rap_flags(unit)?
+        }
     } else {
         (false, false)
     };
-    if xlayers.observe_global_obus(prefix_obus, skipped_tu, tu_has_rap, tu_has_clk)? {
-        let flushed = xlayers.flush_all_outputs_and_invalidate();
-        if !flushed.is_empty() {
-            charge_emitted_outputs(
-                options,
-                frames,
-                xlayers.total_emitted_count(),
-                emission_queue,
-                &flushed,
-                emit,
-            )?;
-        }
-    }
-    Ok(())
+    let global_lcr = global_lcr_activation(xlayers, unit, prefix_obus, tu_has_clk)?;
+    xlayers.observe_global_obus(prefix_obus, false, tu_has_rap, tu_has_clk, global_lcr)?;
+    drain_pending_cmvs_flushed(options, frames, xlayers, emission_queue, emit)
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -858,12 +890,15 @@ fn decode_frames_in_order(
             skipped_unselected_leading = true;
             let (tu_has_rap, tu_has_clk) = unit_rap_flags(&leading_unit)?;
             let filtered = stream.obus(&leading_unit, &mut scan_buffer)?;
-            xlayers.observe_global_obus(filtered, true, tu_has_rap, tu_has_clk)?;
+            xlayers.observe_global_obus(filtered, true, tu_has_rap, tu_has_clk, None)?;
             *obu_storage = recycle(scan_buffer);
             if let Some((candidate, unit)) = stream.candidate(
                 obu_storage,
                 &mut || Ok(()),
-                &mut |skipped, has_rap, has_clk| xlayers.observe_skipped(skipped, has_rap, has_clk),
+                &mut |unit, skipped, has_rap, has_clk| {
+                    let global_lcr = global_lcr_activation(&xlayers, unit, skipped, has_clk)?;
+                    xlayers.observe_skipped(skipped, has_rap, has_clk, global_lcr)
+                },
             )? {
                 leading_unit = unit;
                 key_candidate = Ok(candidate);
@@ -930,8 +965,9 @@ fn decode_frames_in_order(
             let found = stream.candidate(
                 obu_storage,
                 &mut || emission_queue.flush(frames, emit),
-                &mut |skipped_obus, has_rap, has_clk| {
-                    xlayers.observe_skipped(skipped_obus, has_rap, has_clk)
+                &mut |unit, skipped, has_rap, has_clk| {
+                    let global_lcr = global_lcr_activation(&xlayers, unit, skipped, has_clk)?;
+                    xlayers.observe_skipped(skipped, has_rap, has_clk, global_lcr)
                 },
             )?;
             drain_pending_cmvs_flushed(options, frames, &mut xlayers, &mut emission_queue, emit)?;
@@ -955,7 +991,7 @@ fn decode_frames_in_order(
                 &mut xlayers,
                 prefix_obus,
                 &unit,
-                false,
+                stream.checked_rap_flags(),
                 options,
                 frames,
                 &mut emission_queue,
@@ -978,17 +1014,12 @@ fn decode_frames_in_order(
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) =
                     stream.inter_envelope(obus, next_candidate)?;
-                let sef_emit_allowed = stream.layer_filter().is_layer_output_for(
-                    sef_envelope.header.extended_layer_id,
-                    sef_envelope.header.embedded_layer_id,
-                    sef_envelope.header.temporal_layer_id,
-                );
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 observe_global_and_cmvs(
                     &mut xlayers,
                     sef_prefix_obus,
                     &unit,
-                    false,
+                    stream.checked_rap_flags(),
                     options,
                     frames,
                     &mut emission_queue,
@@ -1047,6 +1078,37 @@ fn decode_frames_in_order(
                         )?
                     })
                 };
+                let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
+                    unsupported_at(
+                        "sef_missing_frame_to_show_map_idx",
+                        sef_envelope.offset,
+                        "show-existing-frame output requires frame_to_show_map_idx",
+                    )
+                })?;
+                let source_index = layer.reference.frame_index_for_slot(slot)?;
+                let source = frames.get(source_index).ok_or_else(|| {
+                    unsupported_at(
+                        "sef_reference_frame_unavailable",
+                        sef_envelope.offset,
+                        "show-existing-frame output requires its retained decoded frame",
+                    )
+                })?;
+                let derive_order_hint = sef_core.derive_sef_order_hint == Some(true);
+                let output_mlayer = show_existing_output_layer(
+                    derive_order_hint,
+                    sef_envelope.header.embedded_layer_id,
+                    source.embedded_layer_id,
+                );
+                let output_tlayer = if derive_order_hint {
+                    source.temporal_layer_id
+                } else {
+                    sef_envelope.header.temporal_layer_id
+                };
+                let sef_emit_allowed = stream.layer_filter().is_layer_output_for(
+                    candidate_xlayer,
+                    output_mlayer,
+                    output_tlayer,
+                );
                 xlayers.check_tu_doh(
                     candidate_xlayer,
                     sef_order_hint_bits,
@@ -1098,7 +1160,7 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let (sef_frame, ordering, output_mlayer) = {
+                let (sef_frame, ordering) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1110,15 +1172,6 @@ fn decode_frames_in_order(
                         .output_effect_state
                         .finish_frame(sef_envelope.header.embedded_layer_id);
                     let output_rate = output_effects.frame_rate(frame_rate);
-                    let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
-                        unsupported_at(
-                            "sef_missing_frame_to_show_map_idx",
-                            sef_envelope.offset,
-                            "show-existing-frame output requires frame_to_show_map_idx",
-                        )
-                    })?;
-                    let source_index = layer.reference.frame_index_for_slot(slot)?;
-                    let derive_order_hint = sef_core.derive_sef_order_hint == Some(true);
                     if derive_order_hint {
                         layer.reference.mark_sef_derive_output(
                             slot,
@@ -1126,18 +1179,6 @@ fn decode_frames_in_order(
                         )?;
                     }
                     layer.reference.note_show_existing();
-                    let source = frames.get(source_index).ok_or_else(|| {
-                        unsupported_at(
-                            "sef_reference_frame_unavailable",
-                            sef_envelope.offset,
-                            "show-existing-frame output requires its retained decoded frame",
-                        )
-                    })?;
-                    let output_mlayer = show_existing_output_layer(
-                        derive_order_hint,
-                        sef_envelope.header.embedded_layer_id,
-                        source.embedded_layer_id,
-                    );
                     let sef_frame = PipelineFrame {
                         display_grain,
                         output_effects,
@@ -1148,8 +1189,8 @@ fn decode_frames_in_order(
                         segment_ids: source.segment_ids.clone(),
                         frame_rate: output_rate,
                         extended_layer_id: sef_envelope.header.extended_layer_id,
-                        embedded_layer_id: sef_envelope.header.embedded_layer_id,
-                        temporal_layer_id: sef_envelope.header.temporal_layer_id,
+                        embedded_layer_id: output_mlayer,
+                        temporal_layer_id: output_tlayer,
                         props: stream.props(),
                         frame: inflight::PipelineFrameSlot::completed_recycled(
                             source.wait_ready_frame()?,
@@ -1163,7 +1204,7 @@ fn decode_frames_in_order(
                             "show-existing-frame output requires a derived display order hint",
                         )
                     })?;
-                    (sef_frame, ordering, output_mlayer)
+                    (sef_frame, ordering)
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -1245,7 +1286,7 @@ fn decode_frames_in_order(
                     &mut xlayers,
                     inter_prefix_obus,
                     &unit,
-                    false,
+                    stream.checked_rap_flags(),
                     options,
                     frames,
                     &mut emission_queue,
@@ -1301,8 +1342,8 @@ fn decode_frames_in_order(
                             })?
                             .num_ref_frames,
                     );
-                    let mut output_effect_state = xlayers.create_effect_state(candidate_xlayer);
-                    let mut film_grain_slots = FilmGrainSlots::new();
+                    let (mut output_effect_state, mut film_grain_slots) =
+                        xlayers.take_layer_hls(candidate_xlayer);
                     XLayerTable::apply_non_global_prefix(
                         inter_prefix_obus,
                         candidate_xlayer,
@@ -1798,9 +1839,9 @@ fn decode_frames_in_order(
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
                 {
-                    let (sequence_envelope, prefix, frame) =
-                        ivf_key_frame_unit(obus, next_candidate)?;
-                    (Some(sequence_envelope), prefix, frame)
+                    ivf_key_frame_unit(obus, next_candidate, |id| {
+                        xlayers.available_mfh_sequence(candidate_xlayer, id)
+                    })?
                 } else {
                     let (prefix, frame) = stream.inter_envelope(obus, next_candidate)?;
                     let sequence_envelope = prefix
@@ -1810,15 +1851,14 @@ fn decode_frames_in_order(
                         .copied();
                     (sequence_envelope, prefix, frame)
                 };
-                let initializing_layer = !xlayers.contains(candidate_xlayer);
                 let (key_sequence, key_sequence_offset) = if let Some(envelope) =
                     key_sequence_envelope
                 {
                     let parsed = parse_sequence(envelope)?;
                     validate_sequence(&parsed, envelope.offset)?;
                     (parsed, envelope.offset)
-                } else if let Some(layer) = xlayers.get(candidate_xlayer) {
-                    (layer.sequence.clone(), key_envelope.offset)
+                } else if let Some(sequence) = xlayers.available_sequence(candidate_xlayer) {
+                    (sequence.clone(), key_envelope.offset)
                 } else {
                     return Err(unsupported_at(
                         "missing_sequence_header",
@@ -1853,7 +1893,7 @@ fn decode_frames_in_order(
                     &mut xlayers,
                     key_prefix_obus,
                     &unit,
-                    false,
+                    stream.checked_rap_flags(),
                     options,
                     frames,
                     &mut emission_queue,
@@ -1865,9 +1905,10 @@ fn decode_frames_in_order(
                 }
                 xlayers.note_celu_order(candidate_xlayer, key_envelope.offset)?;
                 xlayers.observe_other_non_global_prefix(key_prefix_obus, candidate_xlayer)?;
+                let initializing_layer = !xlayers.contains(candidate_xlayer);
                 if initializing_layer {
-                    let mut output_effect_state = xlayers.create_effect_state(candidate_xlayer);
-                    let mut film_grain_slots = FilmGrainSlots::new();
+                    let (mut output_effect_state, mut film_grain_slots) =
+                        xlayers.take_layer_hls(candidate_xlayer);
                     XLayerTable::apply_non_global_prefix(
                         key_prefix_obus,
                         candidate_xlayer,
@@ -1920,12 +1961,12 @@ fn decode_frames_in_order(
                             .output_effect_state
                             .has_local_lcr_id(key_sequence.general.seq_lcr_id.get())
                     };
-                    if let Some(seq_env) = key_sequence_envelope {
+                    if starts_new_sequence || key_sequence_envelope.is_some() {
                         xlayers.validate_xlayer_lcr(
                             candidate_xlayer,
                             &key_sequence,
                             has_local_lcr,
-                            seq_env.offset,
+                            key_sequence_offset,
                             false,
                         )?;
                     }
