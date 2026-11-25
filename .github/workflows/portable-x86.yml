@@ -61,7 +61,7 @@ jobs:
           oracle = tomllib.loads((conformance / "decoder-oracle.toml").read_text())
           fixtures = {entry["id"]: entry for entry in oracle["fixture"]}
           for cpu, backend in [("qemu64,-pni,-sse4a", "sse2"), ("Haswell-noTSX", "avx2")]:
-              for fixture_id in ["syn-3frame-multiref-64x64", "syn-3frame-deblock-subpu-chroma-64x32-10bit-q90"]:
+              for fixture_id in ["syn-3frame-multiref-64x64", "syn-3frame-deblock-subpu-chroma-64x32-10bit-q90", "syn-filmgrain-intra-64x64"]:
                   fixture = conformance / "vectors/valid" / f"{fixture_id}.ivf"
                   expected = fixtures[fixture_id]
                   assert hashlib.sha256(fixture.read_bytes()).hexdigest() == expected["ivf_sha256"], fixture_id
