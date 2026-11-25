@@ -603,6 +603,7 @@ pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSamp
         segment_ids,
     )?;
     scratch.tile = Some(tile_scratch);
+    validate_bru_regions(params.bru_modes.as_deref(), work_units)?;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, products)?;
     let mut ccso_state = walked.ccso_state;
     let reused = super::reused_ccso_grids(core, sequence, reference);
@@ -626,6 +627,30 @@ pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSamp
         filter_inputs,
         segment_ids,
     })
+}
+
+fn validate_bru_regions(
+    modes: Option<&crate::filters::bru::BruModeMap>,
+    work_units: &[crate::bitstream::tile_payload::DecodeTileWorkUnit],
+) -> Result<()> {
+    if let Some(modes) = modes {
+        modes.validate_regions(|row, col| {
+            let Some(tile) = work_units.iter().find(|tile| {
+                let rows = tile.mi_row_range();
+                let cols = tile.mi_col_range();
+                (rows.start as usize..rows.end as usize).contains(&row)
+                    && (cols.start as usize..cols.end as usize).contains(&col)
+            }) else {
+                return invalid_inter_tile_scheduling_state();
+            };
+            crate::pipeline::malformed_tile_payload(
+                tile.tile_byte_span().start,
+                "7.2",
+                "The BRU superblock modes do not form a valid region.",
+            )
+        })?;
+    }
+    Ok(())
 }
 
 pub(crate) fn segmentation_enabled(core: &FrameHeaderCore) -> bool {
