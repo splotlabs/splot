@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+name: Native AVX-512 luma LUT qualification
+
+on:
+  push:
+    branches: [experiment/simd-2007-qualification]
+
+permissions:
+  contents: read
+
+jobs:
+  qualification:
+    runs-on: ${{ vars.SPLOT_AVX512_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_STRIP: none
+      SPLOT_REQUIRE_AVX512: "1"
+      CONTROL: d04f4d61bed29288ab5109c4eaa543c5c152f9f9
+      CANDIDATE: 5b78d3c1e4c965deb0c1b7f5779fa88d34429412
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check the native CPU and prepare pinned inputs
+        shell: bash
+        run: |
+          EVIDENCE="$RUNNER_TEMP/wide-luma"
+          printf "EVIDENCE=%s\n" "$EVIDENCE" >> "$GITHUB_ENV"
+          mkdir -p "$EVIDENCE"
+          rustup show active-toolchain || rustup toolchain install
+          rustc -vV | tee "$EVIDENCE/rustc.txt"
+          lscpu | tee "$EVIDENCE/cpu.txt"
+          test "$(uname -m)" = x86_64
+          grep -qw avx512vbmi /proc/cpuinfo
+          grep -qw avx512_vbmi2 /proc/cpuinfo
+          git merge-base --is-ancestor "$CONTROL" "$CANDIDATE"
+          git rev-parse "$CONTROL" "$CANDIDATE" | tee "$EVIDENCE/revisions.txt"
+          python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
+          cp scripts/qualify-wide-luma.py "$RUNNER_TEMP/"
+          cp tests/perf/binary-size.toml "$EVIDENCE/"
+          cp "$RUNNER_TEMP/ewouth/simd-cases.tsv" "$EVIDENCE/oracle.tsv"
+          git show "$CONTROL:crates/splot-capi/examples/decode.c" > "$RUNNER_TEMP/decode.c"
+          sed -i '/splot_default_settings(&settings);/a\    settings.n_threads = 1;\n    settings.max_frame_delay = 1;\n    settings.skip_film_grain = getenv("SPLOT_C_SKIP_GRAIN") != NULL;' "$RUNNER_TEMP/decode.c"
+
+      - name: Build both exact releases and link C consumers
+        shell: bash
+        run: |
+          for variant in control candidate; do
+            key=${variant^^}
+            revision=${!key}
+            git checkout --detach "$revision"
+            test "$(git rev-parse HEAD)" = "$revision"
+            dir="$EVIDENCE/$variant"
+            mkdir "$dir"
+            printf '%s\n' "$revision" > "$dir/revision.sha"
+            cargo build --release --locked -j1 -p splot-cli -p splot-capi
+            cp target/release/splot "$dir/splot"
+            strip --strip-all -o "$dir/splot.stripped" "$dir/splot"
+            strip --strip-all -o "$dir/libsplot_capi.so" target/release/libsplot_capi.so
+            cp target/release/libsplot_capi.a "$dir/libsplot_capi.a"
+            strip --strip-debug "$dir/libsplot_capi.a"
+            stat -c '%s %n' "$dir/splot.stripped" "$dir/libsplot_capi.so" "$dir/libsplot_capi.a" |
+              tee "$dir/sizes.txt"
+            cc -std=c11 -Wall -Wextra -Werror -I crates/splot-capi/include \
+              "$RUNNER_TEMP/decode.c" -L "$dir" -lsplot_capi "-Wl,-rpath,\$ORIGIN" -o "$dir/shared"
+            cc -std=c11 -Wall -Wextra -Werror -I crates/splot-capi/include \
+              "$RUNNER_TEMP/decode.c" "$dir/libsplot_capi.a" -lpthread -ldl -lm -lutil -lrt -o "$dir/static"
+            ldd "$dir/shared" | tee "$dir/shared-link.txt"
+            grep -F "$dir/libsplot_capi.so" "$dir/shared-link.txt"
+            ldd "$dir/static" | tee "$dir/static-link.txt"
+            if grep -F libsplot_capi "$dir/static-link.txt"; then
+              echo "The static consumer loads the shared Splot library." >&2
+              exit 1
+            fi
+            (cd "$dir" && sha256sum splot splot.stripped libsplot_capi.so libsplot_capi.a shared static > SHA256SUMS)
+            rm "$dir/libsplot_capi.a" "$dir/splot.stripped"
+          done
+
+      - name: Check native luma rows and record the microbenchmark
+        shell: bash
+        run: |
+          core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          cargo test -p splot-recon --release --locked -j1 --lib \
+            film_grain::tests::wide_luma_lookup_matches_the_exact_table -- --exact |
+            tee "$EVIDENCE/row-test.log"
+          grep -F '1 passed' "$EVIDENCE/row-test.log"
+          taskset -c "$core" cargo test -p splot-recon --release --locked -j1 --lib \
+            film_grain::tests::measure_luma_grain_with_lookup -- --ignored --exact --nocapture |
+            tee "$EVIDENCE/row.log"
+          grep -F '1 passed' "$EVIDENCE/row.log"
+          objdump -dC "$EVIDENCE/candidate/splot" |
+            awk '/^[0-9a-f]+ </{show=($0 ~ /vectorize_avx512.*apply_film_grain/)} show' \
+            > "$EVIDENCE/wide-grain.asm"
+          grep -Eq 'vpermi2b|vpermt2b' "$EVIDENCE/wide-grain.asm"
+
+      - name: Compare complete hashes, release sizes and paired playback
+        shell: bash
+        run: |
+          python3 "$RUNNER_TEMP/qualify-wide-luma.py" "$EVIDENCE" "$RUNNER_TEMP/ewouth" |
+            tee "$EVIDENCE/report.log"
+
+      - name: Publish the qualification summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if test -f "$EVIDENCE/report.log"; then
+            {
+              echo '```text'
+              cat "$EVIDENCE/report.log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: wide-luma-qualification
+          path: |
+            ${{ runner.temp }}/wide-luma/**/*.log
+            ${{ runner.temp }}/wide-luma/**/*.tsv
+            ${{ runner.temp }}/wide-luma/**/*.csv
+            ${{ runner.temp }}/wide-luma/**/*.txt
+            ${{ runner.temp }}/wide-luma/**/*.sha
+            ${{ runner.temp }}/wide-luma/**/*.asm
+            ${{ runner.temp }}/wide-luma/**/*.gz
+            ${{ runner.temp }}/wide-luma/**/SHA256SUMS
+            ${{ runner.temp }}/wide-luma/binary-size.toml
+          if-no-files-found: error
+          retention-days: 14
