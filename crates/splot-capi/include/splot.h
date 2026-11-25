@@ -153,9 +153,11 @@ typedef struct SplotPicture {
   uint8_t has_film_grain;
   // A [`SplotFrameType`] value: the type of the frame this picture shows.
   uint8_t frame_type;
-  // Temporal layer id (`obu_tlayer_id`, `0..=3`) of the picture.
+  // Temporal layer ID (`obu_tlayer_id`, `0..=3`) of the output picture.
+  // A show-existing frame with a derived order hint uses the reference layer ID.
   uint8_t temporal_layer_id;
-  // Embedded layer id (`obu_mlayer_id`, `0..=7`) of the picture.
+  // Embedded layer ID (`obu_mlayer_id`, `0..=7`) of the output picture.
+  // A show-existing frame with a derived order hint uses the reference layer ID.
   uint8_t embedded_layer_id;
   // Extended layer id (`obu_xlayer_id`, `0..=30`) of the picture.
   uint8_t extended_layer_id;
