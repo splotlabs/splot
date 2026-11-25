@@ -78,25 +78,31 @@ pub(super) fn cdef_filter_rows_u8_quad<
                     &CDEF_SEGMENT_TAP_STARTS,
                 )?;
             let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-            let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
+            let [near, far] = CDEF_PRI_TAPS[tap_row];
+            let (near, far) = (near as i16, far as i16);
             let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
             let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
             let base = u16x16::splat(simd, base);
             for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
-                let pairs = |view: &[u16; SPAN]| -> Option<[u16x16<S>; 2]> {
-                    Some([
-                        cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first)?,
-                        cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first + 2)?,
-                    ])
+                // Keep both row pairs in the SIMD scope through packing and rounding.
+                let pairs = {
+                    #[inline(always)]
+                    |view: &[u16; SPAN]| -> Option<[u16x16<S>; 2]> {
+                        Some([
+                            cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first)?,
+                            cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first + 2)?,
+                        ])
+                    }
                 };
                 let quad = {
                     #[inline(always)]
                     |view: &[u16; SPAN]| -> Option<u8x32<S>> {
-                        Some(quads.pack(simd, pairs(view)?.map(|pair| pair - base)))
+                        let [low, high] = pairs(view)?;
+                        Some(quads.pack(simd, [low - base, high - base]))
                     }
                 };
                 let centers = pairs(center_view)?;
-                let center = quads.pack(simd, centers.map(|pair| pair - base));
+                let center = quads.pack(simd, [centers[0] - base, centers[1] - base]);
                 let (mut min, mut max) = (center, center);
                 macro_rules! tap {
                     ($view:expr, $constrain:expr) => {{
@@ -118,7 +124,10 @@ pub(super) fn cdef_filter_rows_u8_quad<
                         quads.widen(simd, tap!(pri_views[0], pri) + tap!(pri_views[1], pri));
                     let pair1 =
                         quads.widen(simd, tap!(pri_views[2], pri) + tap!(pri_views[3], pri));
-                    sum = [0, 1].map(|half| pair0[half] * pri_taps[0] + pair1[half] * pri_taps[1]);
+                    sum = [
+                        pair0[0] * near + pair1[0] * far,
+                        pair0[1] * near + pair1[1] * far,
+                    ];
                 }
                 if SEC {
                     let view = |k: usize| sec_views[k];
@@ -132,10 +141,11 @@ pub(super) fn cdef_filter_rows_u8_quad<
                         + tap!(view(7), sec);
                     let (family0, family1) =
                         (quads.widen(simd, family0), quads.widen(simd, family1));
-                    sum = [0, 1]
-                        .map(|half| sum[half] + family0[half] + family0[half] + family1[half]);
+                    for half in 0..2 {
+                        sum[half] = sum[half] + family0[half] + family0[half] + family1[half];
+                    }
                 }
-                let mut offset = sum.map(cdef_round);
+                let mut offset = [cdef_round(sum[0]), cdef_round(sum[1])];
                 if PRI && SEC {
                     let below = (center - min)
                         .min(u8x32::splat(simd, 127))
