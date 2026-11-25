@@ -482,7 +482,7 @@ impl InverseTransformAdd {
         scratch: &mut InverseTransformAddScratch,
     ) -> bool {
         self.add_with_runner(
-            TypedTransformRunner(backend.narrow()),
+            TypedTransformRunner(backend.common().narrow()),
             coeffs,
             dequant_depth,
             dst,
@@ -584,7 +584,7 @@ impl InverseTransformAdd {
         scratch: &mut InverseTransformAddScratch,
     ) -> bool {
         self.add_onto_with_runner(
-            TypedTransformRunner(backend.narrow()),
+            TypedTransformRunner(backend.common().narrow()),
             prediction,
             coeffs,
             dequant_depth,
@@ -646,7 +646,7 @@ impl InverseTransformAdd {
         stride: usize,
     ) -> bool {
         self.put_prediction_with_runner(
-            TypedTransformRunner(backend.narrow()),
+            TypedTransformRunner(backend.common().narrow()),
             prediction,
             bit_depth,
             dst,
@@ -734,7 +734,7 @@ impl InverseTransformAdd {
         scratch: &mut InverseTransformAddScratch,
     ) -> crate::Result<bool> {
         self.add_secondary_with_runner(
-            TypedTransformRunner(backend.narrow()),
+            TypedTransformRunner(backend.common().narrow()),
             (quantizers, secondary),
             quant,
             dequant,
@@ -1170,7 +1170,7 @@ pub(crate) fn inverse_transform_2d_8bit_with<B: SimdBackend>(
     scratch: &mut [i32; 32 * 32],
 ) -> bool {
     inverse_transform_2d_8bit_with_runner(
-        TypedTransformRunner(backend.narrow()),
+        TypedTransformRunner(backend.common().narrow()),
         t,
         dequant,
         residual,

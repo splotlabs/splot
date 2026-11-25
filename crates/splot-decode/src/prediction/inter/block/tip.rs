@@ -1376,7 +1376,7 @@ pub(crate) fn deblock_output<B: splot_core::simd::SimdBackend, T: ReconSample>(
             .as_ref()
             .is_some_and(|tools| tools.enable_tip_refinemv);
         crate::filters::deblock::deblock_tip_frame(
-            backend,
+            backend.common(),
             workspace,
             output_prediction_unit_size(enable_tip_refinemv, interpolation_filter),
             quant,

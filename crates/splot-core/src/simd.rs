@@ -216,6 +216,10 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
     /// Narrower non-widened compute backend (`Avx2Backend` for AVX-512, else `Self`).
     type Narrow: SimdBackend;
 
+    /// Shared backend for kernels that never call the eight-bit subpel paths.
+    #[doc(hidden)]
+    type Common: SimdBackend;
+
     /// Observation tag for this backend type.
     const KIND: SelectedBackend;
 
@@ -235,6 +239,10 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
 
     /// Converts `self` to its narrower compute backend with zero runtime checks.
     fn narrow(self) -> Self::Narrow;
+
+    /// Drops the NEON subpel specialization for a filter or transform.
+    #[doc(hidden)]
+    fn common(self) -> Self::Common;
 
     /// Enters a concrete narrow-kernel scope without selecting a backend again.
     #[doc(hidden)]
@@ -358,6 +366,7 @@ impl sealed::Sealed for Avx2Backend {}
 impl SimdBackend for Avx2Backend {
     type Token = fearless_simd::Avx2;
     type Narrow = Self;
+    type Common = Self;
     const KIND: SelectedBackend = SelectedBackend::Avx2;
     const NAME: &'static str = "avx2";
 
@@ -373,6 +382,11 @@ impl SimdBackend for Avx2Backend {
 
     #[inline]
     fn narrow(self) -> Self::Narrow {
+        self
+    }
+
+    #[inline]
+    fn common(self) -> Self::Common {
         self
     }
 
@@ -425,6 +439,7 @@ impl sealed::Sealed for Avx512Backend {}
 impl SimdBackend for Avx512Backend {
     type Token = fearless_simd::Avx512;
     type Narrow = Avx2Backend;
+    type Common = Self;
     const KIND: SelectedBackend = SelectedBackend::Avx512;
     const NAME: &'static str = "avx512";
 
@@ -441,6 +456,11 @@ impl SimdBackend for Avx512Backend {
     #[inline]
     fn narrow(self) -> Self::Narrow {
         Avx2Backend { token: self.avx2 }
+    }
+
+    #[inline]
+    fn common(self) -> Self::Common {
+        self
     }
 
     #[inline]
@@ -574,6 +594,10 @@ impl<D: NeonSubpelMode> sealed::Sealed for NeonBackend<D> {}
 impl<D: NeonSubpelMode> SimdBackend for NeonBackend<D> {
     type Token = fearless_simd::Neon;
     type Narrow = Self;
+    #[cfg(target_feature = "dotprod")]
+    type Common = NeonBackend<NeonSdot>;
+    #[cfg(not(target_feature = "dotprod"))]
+    type Common = NeonBackend<NeonMla>;
     const KIND: SelectedBackend = SelectedBackend::Neon;
     const NAME: &'static str = "neon";
     const NEON_SUBPEL_DOT: Option<NeonSubpelDot> = D::STATIC;
@@ -591,6 +615,18 @@ impl<D: NeonSubpelMode> SimdBackend for NeonBackend<D> {
     #[inline]
     fn narrow(self) -> Self::Narrow {
         self
+    }
+
+    #[inline]
+    fn common(self) -> Self::Common {
+        #[cfg(target_feature = "dotprod")]
+        let dot = NeonSdot(());
+        #[cfg(not(target_feature = "dotprod"))]
+        let dot = NeonMla(());
+        NeonBackend {
+            token: self.token,
+            dot,
+        }
     }
 
     #[inline]
@@ -666,6 +702,7 @@ impl sealed::Sealed for FallbackBackend {}
 impl SimdBackend for FallbackBackend {
     type Token = fearless_simd::Fallback;
     type Narrow = Self;
+    type Common = Self;
     const KIND: SelectedBackend = SelectedBackend::Fallback;
     const NAME: &'static str = "fallback";
 
@@ -681,6 +718,11 @@ impl SimdBackend for FallbackBackend {
 
     #[inline]
     fn narrow(self) -> Self::Narrow {
+        self
+    }
+
+    #[inline]
+    fn common(self) -> Self::Common {
         self
     }
 
@@ -1038,6 +1080,7 @@ mod tests {
         impl SimdScope<SelectedBackend> for NarrowProbe {
             fn run<B: SimdBackend>(self, backend: B) -> SelectedBackend {
                 let narrow = backend.narrow();
+                assert_eq!(<B::Common as SimdBackend>::KIND, B::KIND);
                 #[cfg(target_arch = "x86_64")]
                 assert!(backend.avx2_token().is_some());
                 #[cfg(target_arch = "aarch64")]
