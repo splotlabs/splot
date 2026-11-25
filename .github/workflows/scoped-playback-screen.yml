@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+name: Build matched binaries for native AVX2 playback
+on:
+  push:
+    branches: [experiment/simd-1934-scoped-screen]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        include:
+          - variant: shipped
+            ref: 102798461d19a98b6e04b935538fb24f7b339701
+          - variant: draft
+            ref: 29e001679265816c1e0fed9e09a5e32efe1a2d47
+          - variant: candidate
+            ref: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - name: Build the release CLI and C library with symbols
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          cargo build --release --locked -j1 -p splot-cli -p splot-capi
+          install -d playback
+          cp target/release/splot target/release/libsplot_capi.so playback/
+          git rev-parse HEAD > playback/revision.txt
+          rustc -vV > playback/toolchain.txt
+          cd playback
+          sha256sum splot libsplot_capi.so > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playback-${{ matrix.variant }}
+          path: playback
+          retention-days: 3
+          if-no-files-found: error
