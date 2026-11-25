@@ -83,9 +83,9 @@ pub(crate) struct PipelineFrame {
     pub(crate) frame_rate: PipelineFrameRate,
     /// Extended layer id of the coded or show-existing frame OBU.
     pub(crate) extended_layer_id: ExtendedLayerId,
-    /// Embedded layer id of the coded or show-existing frame OBU.
+    /// Embedded layer ID of the output picture.
     pub(crate) embedded_layer_id: EmbeddedLayerId,
-    /// Temporal layer id of the coded or show-existing frame OBU.
+    /// Temporal layer ID of the output picture.
     pub(crate) temporal_layer_id: TemporalLayerId,
     /// The caller data of the temporal unit that coded or showed this frame.
     pub(crate) props: crate::DataProps,
