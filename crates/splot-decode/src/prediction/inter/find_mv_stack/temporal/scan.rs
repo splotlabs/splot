@@ -341,9 +341,10 @@ fn project_rows<S: Simd>(
         for (chunk_index, chunk) in row.chunks(CHUNK * step).enumerate() {
             let x_base = chunk_index * CHUNK * step;
             if let Some(trajectories) = trajectories.as_deref_mut() {
-                let Some(walk) =
-                    chunk_lanes::<S, true>(lanes, chunk, side, tables, y8, x_base, geometry)
-                else {
+                let Some(walk) = tables.simd.vectorize(
+                    #[inline(always)]
+                    || chunk_lanes::<S, true>(lanes, chunk, side, tables, y8, x_base, geometry),
+                ) else {
                     return;
                 };
                 let chunk = ChunkWalk::new(lanes, walk, y8, x_base, step);
@@ -353,9 +354,10 @@ fn project_rows<S: Simd>(
                     chunk.project_tracked::<false>(prepared, trajectories, output);
                 }
             } else {
-                let Some(walk) =
-                    chunk_lanes::<S, false>(lanes, chunk, side, tables, y8, x_base, geometry)
-                else {
+                let Some(walk) = tables.simd.vectorize(
+                    #[inline(always)]
+                    || chunk_lanes::<S, false>(lanes, chunk, side, tables, y8, x_base, geometry),
+                ) else {
                     return;
                 };
                 ChunkWalk::new(lanes, walk, y8, x_base, step).project(prepared, output);
@@ -516,7 +518,11 @@ fn write_projection(
 /// window only needs the scanned list's `count * step` cells: a step-1 group
 /// spans one six-byte list per cell and a step-2 group skips every other
 /// cell, so lanes past that read stale bytes that the walk mask drops.
-#[inline(never)]
+#[expect(
+    clippy::inline_always,
+    reason = "compile the chunk inside its SIMD entry"
+)]
+#[inline(always)]
 fn chunk_lanes<S: Simd, const TRACKED: bool>(
     lanes: &mut ChunkLanes,
     chunk: &[StoredTemporalCell],
