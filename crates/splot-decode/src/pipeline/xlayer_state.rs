@@ -242,7 +242,8 @@ impl ActiveMsdo {
 #[derive(Default)]
 pub(super) struct GlobalHlsState {
     tu_index: u64,
-    global_lcrs: [Option<(u64, LcrGlobalInfo)>; 8],
+    global_lcrs: [Option<(u64, ByteOffset, LcrGlobalInfo)>; 8],
+    atlases: super::atlas::ScopedAtlases,
     activated_global_lcrs: [Option<u64>; 8],
     global_ops_counts: BTreeMap<u8, u8>,
     global_metadata: Vec<GlobalMetadataEntry>,
@@ -341,7 +342,7 @@ impl GlobalHlsState {
     fn sync_effects(&self, effects: &mut OutputEffectState) {
         effects.set_tu_index(self.tu_index);
         for (id, slot) in self.global_lcrs.iter().enumerate() {
-            if let Some((_, info)) = slot {
+            if let Some((_, _, info)) = slot {
                 effects.apply_global_lcr(id as u8, info.xlayer_map);
             }
         }
@@ -365,7 +366,7 @@ impl GlobalHlsState {
     fn global_lcr(&self, lcr_id: u8) -> Option<(u64, &LcrGlobalInfo)> {
         self.global_lcrs
             .get(usize::from(lcr_id))
-            .and_then(|slot| slot.as_ref().map(|(tu, info)| (*tu, info)))
+            .and_then(|slot| slot.as_ref().map(|(tu, _, info)| (*tu, info)))
     }
 
     fn global_lcr_has_xlayer(&self, lcr_id: u8, xlayer: ExtendedLayerId) -> bool {
@@ -390,7 +391,7 @@ impl GlobalHlsState {
                         .global_lcrs
                         .get(id)
                         .and_then(|slot| slot.as_ref())
-                        .is_some_and(|(_, info)| info.doh_constraint_flag)
+                        .is_some_and(|(_, _, info)| info.doh_constraint_flag)
             })
     }
 
@@ -688,14 +689,23 @@ pub(super) struct XLayerTable {
     rest: Vec<XLayerState>,
     global: GlobalHlsState,
     pending_cmvs_flushed: Vec<usize>,
+    external_atlases: crate::ExternalAtlases,
 }
 
 impl XLayerTable {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(mut external_atlases: crate::ExternalAtlases) -> Self {
+        let atlases = external_atlases
+            .scopes
+            .remove(&GLOBAL_XLAYER_ID)
+            .unwrap_or_default();
         Self {
+            external_atlases,
             first: None,
             rest: Vec::new(),
-            global: GlobalHlsState::default(),
+            global: GlobalHlsState {
+                atlases,
+                ..Default::default()
+            },
             pending_cmvs_flushed: Vec::new(),
         }
     }
@@ -767,8 +777,11 @@ impl XLayerTable {
         (newly, total)
     }
 
-    pub(super) fn create_effect_state(&self, xlayer: ExtendedLayerId) -> OutputEffectState {
+    pub(super) fn create_effect_state(&mut self, xlayer: ExtendedLayerId) -> OutputEffectState {
         let mut effects = OutputEffectState::new_for_xlayer(xlayer);
+        if let Some(layouts) = self.external_atlases.scopes.remove(&xlayer) {
+            effects.atlas.layouts = layouts;
+        }
         self.global.sync_effects(&mut effects);
         effects
     }
@@ -841,7 +854,7 @@ impl XLayerTable {
                     if !triggered_reset {
                         for (id, slot) in self.global.activated_global_lcrs.iter().enumerate() {
                             if slot.is_some()
-                                && let Some((_, info)) = self
+                                && let Some((_, _, info)) = self
                                     .global
                                     .global_lcrs
                                     .get(id)
@@ -861,6 +874,10 @@ impl XLayerTable {
                     }
                     self.global.active_msdo = Some(next_active);
                 }
+                ObuType::AtlasSegment => {
+                    self.global.tu_saw_non_msdo_prefix = true;
+                    self.global.atlases.observe(*envelope)?;
+                }
                 ObuType::LayerConfigurationRecord => {
                     self.global.tu_saw_non_msdo_prefix = true;
                     if let LayerConfigurationRecord::Global(info) = parse_validated_lcr(*envelope)?
@@ -868,7 +885,7 @@ impl XLayerTable {
                         let idx = usize::from(info.global_config_record_id);
                         let xlayer_map = info.xlayer_map;
                         if let Some(slot) = self.global.global_lcrs.get_mut(idx) {
-                            *slot = Some((self.global.tu_index, info));
+                            *slot = Some((self.global.tu_index, envelope.offset, info));
                         }
                         for layer in self.iter_mut() {
                             layer
@@ -1041,6 +1058,77 @@ impl XLayerTable {
             self.pending_cmvs_flushed.extend(flushed);
         }
         self.observe_other_non_global_prefix(obus, GLOBAL_XLAYER_ID)
+    }
+
+    pub(super) fn finish_frame(
+        &mut self,
+        envelope: ObuEnvelope<'_>,
+        activate: bool,
+    ) -> Result<super::FrameOutputEffects> {
+        let xlayer = envelope.header.extended_layer_id;
+        let mlayer = envelope.header.embedded_layer_id;
+        let layer = self
+            .first
+            .iter_mut()
+            .chain(&mut self.rest)
+            .find(|layer| layer.xlayer_id == xlayer)
+            .ok_or_else(|| {
+                unsupported_feature_at(
+                    "missing_random_access_frame",
+                    envelope.offset,
+                    "frame requires an active extended layer",
+                    "7.4",
+                )
+            })?;
+        let effects = &mut layer.output_effect_state;
+        let mut output = effects.finish_frame(mlayer);
+        let atlas = &mut effects.atlas;
+        if activate {
+            let id = layer.sequence.general.seq_lcr_id.get();
+            let local = (id != 0).then(|| atlas.records.get(&id)).flatten();
+            atlas.active_local = local.and_then(|(offset, record)| {
+                Some(Box::new(super::atlas::AtlasReference {
+                    id: record.local_atlas_id?,
+                    offset: *offset,
+                    explicit: true,
+                    xlayer_info: Some(record.xlayer_info.clone()),
+                }))
+            });
+            let global_id = local.map_or(id, |(_, record)| record.global_id);
+            let global = self.global.global_lcrs[usize::from(global_id)].as_ref();
+            atlas.active_global = global
+                .filter(|(_, _, record)| record.xlayer_map & (1u32 << xlayer.get()) != 0)
+                .map(|(_, offset, record)| {
+                    let info = record.payloads.iter().find(|p| p.xlayer_id == xlayer.get());
+                    Box::new(super::atlas::AtlasReference {
+                        id: record.global_atlas_id.unwrap_or(0),
+                        offset: *offset,
+                        explicit: record.global_atlas_id.is_some(),
+                        xlayer_info: info.map(|p| p.xlayer_info.clone()),
+                    })
+                });
+        }
+        if let Some(global) = &atlas.active_global
+            && let Some(association) =
+                global.association(&self.global.atlases, GLOBAL_XLAYER_ID, xlayer, mlayer)?
+        {
+            output.atlas.push(association);
+        } else if self
+            .global
+            .active_msdo
+            .as_ref()
+            .is_some_and(|msdo| msdo.ceilings.contains_key(&xlayer.get()))
+        {
+            self.global
+                .atlases
+                .msdo_associations(xlayer, &mut output.atlas);
+        }
+        if let Some(local) = &atlas.active_local
+            && let Some(association) = local.association(&atlas.layouts, xlayer, xlayer, mlayer)?
+        {
+            output.atlas.push(association);
+        }
+        Ok(output)
     }
 
     pub(super) fn observe_suffix_for_xlayer(

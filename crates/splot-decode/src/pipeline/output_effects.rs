@@ -44,6 +44,7 @@ const LAYER_VALUES: u8 = 3;
 pub(crate) struct FrameOutputEffects {
     pub(crate) content_interpretation: Option<ContentInterpretation>,
     pub(crate) metadata: Vec<MetadataUnit>,
+    pub(crate) atlas: Vec<crate::AtlasAssociation>,
 }
 
 impl FrameOutputEffects {
@@ -52,6 +53,7 @@ impl FrameOutputEffects {
         Self {
             content_interpretation: None,
             metadata: Vec::new(),
+            atlas: Vec::new(),
         }
     }
 
@@ -193,7 +195,7 @@ pub(crate) struct OutputEffectState {
     active_xlayer: ExtendedLayerId,
     local_lcr_tu: Option<u64>,
     local_lcr_in_cvs: bool,
-    local_lcr_ids: u8,
+    pub(super) atlas: super::atlas::LayerAtlases,
     global_lcr_xlayers: [Option<u32>; 8],
     brt_count: BrtCount,
     second_brt_offset: Option<ByteOffset>,
@@ -220,7 +222,7 @@ impl OutputEffectState {
             active_xlayer,
             local_lcr_tu: None,
             local_lcr_in_cvs: false,
-            local_lcr_ids: 0,
+            atlas: super::atlas::LayerAtlases::default(),
             global_lcr_xlayers: [None; 8],
             brt_count: BrtCount::None,
             second_brt_offset: None,
@@ -235,7 +237,7 @@ impl OutputEffectState {
     }
 
     pub(crate) fn has_local_lcr_id(&self, id: u8) -> bool {
-        (1..=7).contains(&id) && (self.local_lcr_ids & (1u8 << id)) != 0
+        id != 0 && self.atlas.records.contains_key(&id)
     }
 
     pub(crate) fn apply_global_lcr(&mut self, id: u8, xlayer_map: u32) {
@@ -274,6 +276,7 @@ impl OutputEffectState {
         match envelope.header.obu_type {
             ObuType::TemporalDelimiter => self.begin_temporal_unit(),
             ObuType::LayerConfigurationRecord => self.observe_lcr(envelope)?,
+            ObuType::AtlasSegment => self.atlas.layouts.observe(envelope)?,
             ObuType::OperatingPointSet => self.observe_ops(envelope)?,
             ObuType::MultiFrameHeader => self.observe_mfh(envelope, sequence)?,
             ObuType::BufferRemovalTiming => self.observe_brt(envelope)?,
@@ -470,6 +473,7 @@ impl OutputEffectState {
         let idx = usize::from(mlayer.get());
         let effects = FrameOutputEffects {
             content_interpretation: self.content_interpretation.get(idx).copied().flatten(),
+            atlas: Vec::new(),
             metadata: self
                 .metadata
                 .iter()
@@ -709,9 +713,7 @@ impl OutputEffectState {
             LayerConfigurationRecord::Local(info) => {
                 self.local_lcr_tu = Some(self.tu_index);
                 self.local_lcr_in_cvs = true;
-                if (1..=7).contains(&info.local_id) {
-                    self.local_lcr_ids |= 1u8 << info.local_id;
-                }
+                self.atlas.observe_local_lcr(envelope.offset, info)?;
             }
             _ => {}
         }

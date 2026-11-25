@@ -219,6 +219,13 @@ impl DecodeContext {
         })
     }
 
+    /// Supplies external atlas metadata for each decode on this context.
+    #[must_use]
+    pub fn with_external_atlases(mut self, atlases: crate::ExternalAtlases) -> Self {
+        self.session.external_atlases = atlases;
+        self
+    }
+
     /// The concrete SIMD backend selected when this context opened.
     #[must_use]
     pub const fn selected_backend(&self) -> SelectedBackend {
