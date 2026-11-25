@@ -73,7 +73,9 @@ impl<'a> AssociationView<'a> {
         Self {
             scope_xlayer_id: association.scope.get(),
             atlas_id: association.atlas_id,
-            lcr_offset: association.lcr_offset.map(|offset| offset.get()),
+            lcr_offset: association
+                .lcr_offset
+                .map(splot_core::span::ByteOffset::get),
             segment_id: association.segment_id,
             segment_index: association.segment_index(),
             priority_order: association.priority_order,
