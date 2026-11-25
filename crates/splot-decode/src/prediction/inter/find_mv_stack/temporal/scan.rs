@@ -77,8 +77,8 @@ const INT_ROWS: usize = 9;
 /// One lane's view of [`ChunkLanes::ints`], from its first row to its last.
 const LANE_SPAN: usize = (INT_ROWS - 1) * CHUNK + 1;
 
-/// The order-free values of up to [`CHUNK`] sampled cells of one source row,
-/// reused chunk after chunk; lanes past a chunk's end keep stale values.
+/// Scratch values for up to [`CHUNK`] sampled cells of one source row.
+/// Only lanes in the walk mask need initialized scratch values.
 #[derive(Debug, Default)]
 pub(super) struct ChunkLanes {
     window: Window,
@@ -166,14 +166,6 @@ impl<S: Simd> TargetTables<S> {
             low.zip_low(high).bitcast(),
             low.zip_high(high).bitcast(),
         )
-    }
-
-    /// The admitted lane bits and the folded projection factor of each lane's
-    /// reference.
-    fn lookup(&self, refs: u8x16<S>) -> (u8x16<S>, Lanes<S>) {
-        let factor = self.folded(self.divisor, refs) * self.source_to_current;
-        let allow = u8x16::splat(self.simd, REVERSE | END_WRITE);
-        (self.allow.swizzle_dyn_precise(refs) | allow, factor)
     }
 }
 
@@ -570,13 +562,20 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
         let x = lane_x + first;
         let [refs, saved_rows, saved_cols] =
             deinterleave(simd, &lanes.window, group, geometry.step)?;
+        let allow = tables.allow.swizzle_dyn_precise(refs);
+        if (allow & walk_flags).simd_ne(0).to_bitmask() == 0 {
+            continue;
+        }
+        let allow = allow | (REVERSE | END_WRITE);
         lanes.refs[group] = refs.into();
-        let (allow, factor) = tables.lookup(refs);
+        let factor = tables.folded(tables.divisor, refs) * tables.source_to_current;
         let motion = [saved_rows, saved_cols].map(|saved| decompress(widen_i8(simd, saved)));
         let projection = motion.map(|mv| project(mv, factor));
-        for (axis, (mv, projected)) in motion.into_iter().zip(projection).enumerate() {
+        for (axis, mv) in motion.into_iter().enumerate() {
             lanes.ints[MV + axis][group] = mv.into();
-            lanes.ints[PROJECTED + axis][group] = projected.into();
+            if TRACKED {
+                lanes.ints[PROJECTED + axis][group] = projection[axis].into();
+            }
         }
         let same_cell = TRACKED
             && aligned
@@ -623,11 +622,13 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
             let unrounded = origin + divide_by_64(projected);
             sampled &= inside(unrounded);
             position[component] = unrounded & !geometry.step_mask;
-            lanes.ints[POSITION + component][group] = position[component].into();
             base[component] = position[component] & !geometry.unit_mask;
-            let unrounded = origin + divide_by_64(mv);
-            ended &= inside(unrounded);
-            end[component] = unrounded & !geometry.step_mask;
+            if TRACKED {
+                lanes.ints[POSITION + component][group] = position[component].into();
+                let unrounded = origin + divide_by_64(mv);
+                ended &= inside(unrounded);
+                end[component] = unrounded & !geometry.step_mask;
+            }
         }
         lanes.ints[OUTPUT_CELL][group] = geometry.output.index(position).into();
         let column = x - base[1] + geometry.horizontal_offset8;
@@ -1042,11 +1043,6 @@ mod tests {
                 let raw = usize::from(cell.ref_indices[side]);
                 let reference = raw.min(MAX_SORTED_REFS);
                 let mv = uncompress_tmvp_mv(cell.mvs[side]);
-                let lane_mv = MotionVector {
-                    row: lanes.ints[MV].as_flattened()[lane],
-                    col: lanes.ints[MV + 1].as_flattened()[lane],
-                };
-                assert_eq!(lane_mv, mv, "case {case} lane {lane}");
                 let hint = source_hints
                     .get(reference)
                     .filter(|_| reference < MAX_SORTED_REFS);
@@ -1062,9 +1058,7 @@ mod tests {
                     )
                 });
                 let target = source.targets[reference];
-                let bits = lanes.bits.as_flattened()[lane];
                 let intersects = entry.is_some() && target.end_ref.is_some() && x8 < width8;
-                assert_eq!(bits & INTERSECT != 0, intersects);
                 let expected = entry.and_then(|(offset, factor)| {
                     let mv = if offset < 0 {
                         MotionVector {
@@ -1079,6 +1073,18 @@ mod tests {
                     sampled_temporal_position(y8, x8, projected, step, unit, (width8, height8))
                         .map(|position| (projected, position))
                 });
+                let live = expected.is_some() || intersects;
+                assert_eq!(walk >> lane & 1 == 1, live);
+                if !live {
+                    continue;
+                }
+                let lane_mv = MotionVector {
+                    row: lanes.ints[MV].as_flattened()[lane],
+                    col: lanes.ints[MV + 1].as_flattened()[lane],
+                };
+                assert_eq!(lane_mv, mv, "case {case} lane {lane}");
+                let bits = lanes.bits.as_flattened()[lane];
+                assert_eq!(bits & INTERSECT != 0, intersects);
                 let end = [(y8, mv.row, height8), (x8, mv.col, width8)]
                     .map(|(origin, delta, max)| project_no_constraint(origin, delta, max));
                 let end = match end {
@@ -1124,7 +1130,6 @@ mod tests {
                     assert_eq!(bits & END_WRITE != 0, in_band.is_some() && window);
                 }
                 assert_eq!(bits & PROJECT != 0, expected.is_some(), "case {case}");
-                assert_eq!(walk >> lane & 1 == 1, expected.is_some() || intersects);
                 if let Some((projected, (pos_y8, pos_x8))) = expected {
                     let lane_projected = MotionVector {
                         row: lanes.ints[PROJECTED].as_flattened()[lane],
