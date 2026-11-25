@@ -30,7 +30,7 @@ pub(super) struct HlsAvailabilityStore {
     pub(super) global_lcr_xlayer_maps: BTreeMap<u8, u32>,
     /// `lcr_local_id` values of local LCRs, keyed by their `obu_xlayer_id`, seen
     /// in-band so far (§ 7.3.8.3).
-    pub(super) local_lcr_ids: BTreeMap<ExtendedLayerId, BTreeSet<u8>>,
+    pub(super) local_lcr_parents: BTreeMap<(ExtendedLayerId, u8), u8>,
     /// § 5.8.8 embedded-layer maps of global LCR payloads, keyed by
     /// `(lcr_global_config_record_id, xId)`, for the § 6.8.9 dependency-map
     /// agreement checks. A redefinition overwrites the maps, mirroring
@@ -180,19 +180,18 @@ impl HlsAvailabilityStore {
 
     /// Records a local LCR (by `obu_xlayer_id` and `lcr_local_id`) as available in-band
     /// (AV2 § 7.3.8.3).
-    pub(super) fn record_local_lcr(&mut self, xlayer: ExtendedLayerId, local_id: u8) {
-        self.local_lcr_ids
-            .entry(xlayer)
-            .or_default()
-            .insert(local_id);
+    pub(super) fn record_local_lcr(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        local_id: u8,
+        global_id: u8,
+    ) {
+        self.local_lcr_parents.insert((xlayer, local_id), global_id);
     }
 
-    /// Returns `true` if a local LCR with `lcr_local_id == local_id` is available in
-    /// the extended layer `xlayer` (AV2 § 7.3.8.3).
+    /// Returns `true` if the layer has this local LCR (AV2 § 7.3.8.3).
     pub(super) fn has_local_lcr(&self, xlayer: ExtendedLayerId, local_id: u8) -> bool {
-        self.local_lcr_ids
-            .get(&xlayer)
-            .is_some_and(|ids| ids.contains(&local_id))
+        self.local_lcr_parents.contains_key(&(xlayer, local_id))
     }
 
     /// Drops every stored embedded-layer map of the global LCR `global_id`. Called
