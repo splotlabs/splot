@@ -59,17 +59,38 @@ fn atlas_presentation_matches_independent_raw_planes() {
     }
 }
 
-#[test]
-fn repeated_ivf_timestamps_keep_each_temporal_unit_distinct() {
-    let input = std::fs::read(conformance_vector("syn-atlas-alpha-paired-10bit.obu")).unwrap();
-    let mut units = TemporalUnitReader::new(input.as_slice());
+fn atlas_units(fixture: &str) -> anyhow::Result<Vec<Vec<u8>>> {
+    let source = std::fs::read(conformance_vector(fixture))?;
+    let mut reader = TemporalUnitReader::new(source.as_slice());
+    let mut units = Vec::new();
+    while let Some(unit) = reader.next_temporal_unit()? {
+        units.push(unit.bytes.to_vec());
+    }
+    Ok(units)
+}
+
+fn compose_at_one_timestamp(units: &[Vec<u8>]) -> anyhow::Result<std::process::Output> {
+    let count = u32::try_from(units.len())?;
     let mut ivf = Vec::new();
-    write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 144, 64, 1, 1, 10)).unwrap();
-    while let Some(unit) = units.next_temporal_unit().unwrap() {
-        write_ivf_frame(&mut ivf, 9, unit.bytes).unwrap();
+    write_ivf_header(&mut ivf, &IvfHeader::new(*b"AV02", 144, 64, 1, 1, count))?;
+    for unit in units {
+        write_ivf_frame(&mut ivf, 9, unit)?;
     }
     let path = temp_input("ivf", &ivf);
-    let result = splot(&["compose", path.to_str().unwrap(), "-o", "-"]);
+    Ok(splot(&[
+        "compose",
+        &path.to_string_lossy(),
+        "-o",
+        "-",
+        "--threads",
+        "1",
+    ]))
+}
+
+#[test]
+fn repeated_ivf_timestamps_keep_each_temporal_unit_distinct() -> anyhow::Result<()> {
+    let units = atlas_units("syn-atlas-alpha-paired-10bit.obu")?;
+    let result = compose_at_one_timestamp(&units)?;
     assert!(
         result.status.success(),
         "{}",
@@ -79,6 +100,51 @@ fn repeated_ivf_timestamps_keep_each_temporal_unit_distinct() {
         sha256_hex(&result.stdout),
         "2286b9dc5c613cf1da66d598a6a67bc2da6ad37095006fd3a19ce4124f49adb4"
     );
+    Ok(())
+}
+
+#[test]
+fn late_atlas_pictures_obey_the_reorder_window_boundary() -> anyhow::Result<()> {
+    let units = atlas_units("syn-atlas-alpha-paired-10bit.obu")?;
+    // TU 1 reaches the compositor after TU 3. Empty IVF records increase that distance.
+    for (padding, accepted) in [(29, true), (30, false)] {
+        let mut records = units.clone();
+        records.splice(2..2, std::iter::repeat_n(Vec::new(), padding));
+        let result = compose_at_one_timestamp(&records)?;
+        assert_eq!(
+            result.status.success(),
+            accepted,
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if accepted {
+            assert_eq!(
+                sha256_hex(&result.stdout),
+                "2286b9dc5c613cf1da66d598a6a67bc2da6ad37095006fd3a19ce4124f49adb4"
+            );
+        } else {
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains("Pictures exceed the reorder window of 32 temporal units")
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn an_extra_picture_after_a_completed_atlas_is_rejected() -> anyhow::Result<()> {
+    let mut units = atlas_units("syn-atlas-alpha-paired-8bit.obu")?;
+    let second = units.remove(1);
+    units[0].extend(second);
+    let result = compose_at_one_timestamp(&units)?;
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("Temporal unit 0 has an additional picture after composition")
+    );
+    assert_eq!(result.stdout.len(), 144 * 64 * 3 / 2);
+    Ok(())
 }
 
 #[test]
