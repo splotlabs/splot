@@ -964,29 +964,49 @@ impl XLayerTable {
         if self.rest.is_empty() {
             return Ok(());
         }
-        let active_layers = || {
-            self.iter().filter(|layer| {
-                self.global
-                    .active_msdo
-                    .as_ref()
-                    .is_none_or(|msdo| msdo.ceilings.contains_key(&layer.xlayer_id.get()))
-            })
-        };
-        let reference = |layer: &XLayerState, require_direct| {
-            let active = &self.layer_atlases(layer.xlayer_id)?.active;
-            if require_direct && !active.direct_global_for(layer.xlayer_id) {
-                return None;
-            }
-            active
+        self.check_active_global_references(change_offset)
+    }
+
+    #[cold]
+    fn check_active_global_references(&mut self, change_offset: ByteOffset) -> Result<()> {
+        let mut first_reference = None;
+        let mut differing_reference = None;
+        let mut direct = None;
+        let mut parent = None;
+        for layer in self.iter() {
+            let xlayer_id = layer.xlayer_id.get();
+            if self
                 .global
+                .active_msdo
                 .as_ref()
-                .map(|(_, offset, record)| (Arc::clone(record), *offset))
-        };
-        let mut expected = active_layers().find_map(|layer| reference(layer, true));
-        if expected.is_none() && self.extended_layers_filtered {
-            expected = active_layers().find_map(|layer| reference(layer, false));
+                .is_some_and(|msdo| !msdo.ceilings.contains_key(&xlayer_id))
+            {
+                continue;
+            }
+            let binding = self
+                .layer_atlases(layer.xlayer_id)
+                .map(|atlas| &atlas.active);
+            let global = binding.and_then(|binding| binding.global.as_ref());
+            if let Some(record) = global {
+                if direct.is_none()
+                    && binding.is_some_and(|binding| binding.direct_global_for(layer.xlayer_id))
+                {
+                    direct = Some(record);
+                }
+                parent.get_or_insert(record);
+            }
+            let id = global.map_or(0, |(_, _, record)| record.global_config_record_id);
+            let (_, first_id) = *first_reference.get_or_insert((xlayer_id, id));
+            if id != first_id {
+                differing_reference.get_or_insert((xlayer_id, id));
+            }
         }
-        let Some((expected_record, lcr_offset)) = expected else {
+        let expected = if self.extended_layers_filtered {
+            direct.or(parent)
+        } else {
+            direct
+        };
+        let Some((_, lcr_offset, record)) = expected else {
             if self.global.active_msdo.is_some() {
                 return Ok(());
             }
@@ -996,26 +1016,22 @@ impl XLayerTable {
                 "multistream decode requires MSDO or an activated global LCR".to_owned(),
             ));
         };
-        let expected_id = expected_record.global_config_record_id;
-        for layer in active_layers() {
-            let id = self
-                .layer_atlases(layer.xlayer_id)
-                .and_then(|atlas| atlas.active.global.as_ref())
-                .map(|(_, _, record)| record.global_config_record_id);
-            if id != Some(expected_id) {
-                let seen = id.map_or_else(|| "none".to_owned(), |value| value.to_string());
-                return Err(malformed(
-                    lcr_offset,
-                    "6.8.2",
-                    format!(
-                        "Extended layer {} references global LCR {seen}. Expected global LCR {expected_id}.",
-                        layer.xlayer_id.get()
-                    ),
-                ));
-            }
+        let expected_id = record.global_config_record_id;
+        if let Some((xlayer_id, id)) = first_reference
+            .filter(|&(_, id)| id != expected_id)
+            .or(differing_reference)
+        {
+            return Err(malformed(
+                *lcr_offset,
+                "6.8.2",
+                format!(
+                    "Extended layer {xlayer_id} references global LCR {id}. Expected ID {expected_id}. ID 0 means no global reference."
+                ),
+            ));
         }
+        let record = Arc::clone(record);
         self.global.activated_global_lcrs.fill(None);
-        self.global.activated_global_lcrs[usize::from(expected_id)] = Some(expected_record);
+        self.global.activated_global_lcrs[usize::from(expected_id)] = Some(record);
         Ok(())
     }
 
