@@ -1674,38 +1674,44 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         periodic: bool,
         out: &mut [i16],
     ) {
-        let sub_x = if F < RUNTIME_WEIGHTS { 1 } else { self.sub_x };
-        let edge = (self.plane.width - 1) >> sub_x;
-        let inside = (edge + 1).saturating_sub(chroma_x0).min(out.len());
-        let (stored, past) = out.split_at_mut(inside);
-        for (g, group) in stored.chunks_mut(8).enumerate() {
-            let lanes = self.q3_group(
-                simd,
-                rows,
-                chroma_x0 + 8 * g,
-                clamp_first && g == 0,
-                periodic,
-            );
-            if let Ok(group) = <&mut [i16; 8]>::try_from(&mut *group) {
-                lanes.store_slice(group);
-            } else {
-                store_partial(lanes.into(), group);
-            }
-        }
-        if past.is_empty() {
-            return;
-        }
-        let clamp = periodic && (edge << sub_x).is_multiple_of(64);
-        let at_edge = |clamp: bool| self.q3_group(simd, rows, edge, clamp, false).as_slice()[0];
-        let from = usize::from(inside == 0);
-        if inside == 0 {
-            past[0] = at_edge(clamp_first || clamp);
-        }
-        let last = match stored.last() {
-            Some(&last) if inside > 1 || !clamp_first || clamp => last,
-            _ => at_edge(clamp),
-        };
-        past[from..].fill(last);
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                let sub_x = if F < RUNTIME_WEIGHTS { 1 } else { self.sub_x };
+                let edge = (self.plane.width - 1) >> sub_x;
+                let inside = (edge + 1).saturating_sub(chroma_x0).min(out.len());
+                let (stored, past) = out.split_at_mut(inside);
+                for (g, group) in stored.chunks_mut(8).enumerate() {
+                    let lanes = self.q3_group(
+                        simd,
+                        rows,
+                        chroma_x0 + 8 * g,
+                        clamp_first && g == 0,
+                        periodic,
+                    );
+                    if let Ok(group) = <&mut [i16; 8]>::try_from(&mut *group) {
+                        lanes.store_slice(group);
+                    } else {
+                        store_partial(lanes.into(), group);
+                    }
+                }
+                if past.is_empty() {
+                    return;
+                }
+                let clamp = periodic && (edge << sub_x).is_multiple_of(64);
+                let at_edge =
+                    |clamp: bool| self.q3_group(simd, rows, edge, clamp, false).as_slice()[0];
+                let from = usize::from(inside == 0);
+                if inside == 0 {
+                    past[0] = at_edge(clamp_first || clamp);
+                }
+                let last = match stored.last() {
+                    Some(&last) if inside > 1 || !clamp_first || clamp => last,
+                    _ => at_edge(clamp),
+                };
+                past[from..].fill(last);
+            },
+        );
     }
 
     /// Eight Q3 downsampled luma samples of chroma columns `x..x + 8`, the first one

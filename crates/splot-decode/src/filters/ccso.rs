@@ -786,14 +786,14 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
     let index_u16 = {
         #[inline(always)]
         |rows: [&[L]; 3]| -> Option<u8x16<S>> {
-            let [centers, row0, row1] =
-                rows.map(|row| ccso_luma::<S, u16x16<S>, SUB_X>(simd, L::u16_slice(row)?));
-            let centers = centers?;
+            let [center, row0, row1] = rows;
+            let load = |row| ccso_luma::<S, u16x16<S>, SUB_X>(simd, L::u16_slice(row)?);
+            let centers = load(center)?;
             let mut index = centers >> u32::from(config.band_shift);
             if offset_rows.is_some() {
                 index = index
-                    + edge_u16(row0?, centers, class_weight0)
-                    + edge_u16(row1?, centers, class_weight1);
+                    + edge_u16(load(row0)?, centers, class_weight0)
+                    + edge_u16(load(row1)?, centers, class_weight1);
             }
             let (low, high) = simd.split_u16x16(index);
             Some(simd.narrow_u16x8(low, high))
@@ -815,35 +815,38 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                 .select(weight, zero)
     };
     let index_u8 = |rows: [&[L]; 3]| -> Option<u8x16<S>> {
-        let [centers, row0, row1] =
-            rows.map(|row| ccso_luma::<S, u8x16<S>, SUB_X>(simd, L::u8_slice(row)?));
-        let centers = centers?;
+        let [center, row0, row1] = rows;
+        let load = |row| ccso_luma::<S, u8x16<S>, SUB_X>(simd, L::u8_slice(row)?);
+        let centers = load(center)?;
         let mut index = match config.band_shift {
             shift @ 0..8 => centers >> u32::from(shift),
             _ => u8x16::splat(simd, 0),
         };
         if offset_rows.is_some() {
             index = index
-                + edge_u8(row0?, centers, class_weight0)
-                + edge_u8(row1?, centers, class_weight1);
+                + edge_u8(load(row0)?, centers, class_weight0)
+                + edge_u8(load(row1)?, centers, class_weight1);
         }
         Some(index)
     };
     let max_sample = i16x16::splat(simd, config.max_sample as i16);
-    let filter = |rows: [&[L]; 3], output: &[D]| -> Option<u16x16<S>> {
-        let index = if L::u8_slice(rows[0]).is_some() {
-            index_u8(rows)
-        } else {
-            index_u16(rows)
-        }?;
-        let offset = ccso_lookup(&tables, blocks, index).bitcast::<i8x16<S>>();
-        let offset = simd.widen_i8x32(simd.combine_i8x16(offset, offset)).0;
-        Some(
-            (load_lanes(simd, output)?.bitcast::<i16x16<S>>() + offset)
-                .max(i16x16::splat(simd, 0))
-                .min(max_sample)
-                .bitcast(),
-        )
+    let filter = {
+        #[inline(always)]
+        |rows: [&[L]; 3], output: &[D]| -> Option<u16x16<S>> {
+            let index = if L::u8_slice(rows[0]).is_some() {
+                index_u8(rows)
+            } else {
+                index_u16(rows)
+            }?;
+            let offset = ccso_lookup(&tables, blocks, index).bitcast::<i8x16<S>>();
+            let offset = simd.widen_i8x32(simd.combine_i8x16(offset, offset)).0;
+            Some(
+                (load_lanes(simd, output)?.bitcast::<i16x16<S>>() + offset)
+                    .max(i16x16::splat(simd, 0))
+                    .min(max_sample)
+                    .bitcast(),
+            )
+        }
     };
     let mut x = first;
     if count >= 2 {

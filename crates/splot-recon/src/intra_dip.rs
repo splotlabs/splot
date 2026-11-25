@@ -296,7 +296,11 @@ struct DipBlock {
     stride: usize,
 }
 
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep prediction bands in the selected SIMD scope"
+)]
+#[inline(always)]
 fn predict_dip_samples<S: Simd, P: IntraLaneSample>(
     simd: S,
     block: DipBlock,

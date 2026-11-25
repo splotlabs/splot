@@ -121,7 +121,11 @@ impl Load {
         self.dequantize(simd, v, dc, bound)
     }
 
-    #[inline]
+    #[expect(
+        clippy::inline_always,
+        reason = "keep coefficient arithmetic alongside scoped SIMD loads"
+    )]
+    #[inline(always)]
     fn dequantize<S: Simd>(self, simd: S, v: i32x8<S>, dc: bool, bound: i32) -> i32x8<S> {
         let Some(dq) = self.dequant else {
             return v;
