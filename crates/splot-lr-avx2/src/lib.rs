@@ -15,13 +15,25 @@ splot_lr_kernel::madd_row_kernel!(word_row, u16, LumaTaps, 9, 24, |token, lanes|
     u16x16::load_array_ref(token, lanes).into()
 });
 
-/// Filters the complete 16-column groups of a padded luma Wiener run.
-/// `window` contains `rows + 8` input rows, starting four rows above the output.
-/// Source row slices start four samples left of output column zero; output
-/// row `r` starts at `r * stride` of the supplied buffer.
-/// Samples must fit the active bit depth of at most 10 bits. Returns
-/// `false` if a source, output or class span is short or the run exceeds
-/// eight output rows.
+/// Filters the complete 16-column groups in `span = (x, end)`. A zero-row
+/// or empty span succeeds without writing output.
+///
+/// For a nonempty run, `rows` is in `1..=8`. The first `rows + 8` source
+/// rows contain the four-sample halo on each side of the run. Row zero
+/// starts four rows above the output, and column zero starts four samples
+/// left of output column zero. Output row `r` starts at `r * stride + x`,
+/// and the written portions of successive rows must be disjoint.
+///
+/// Input words have been validated in `0..=max_sample`, and `max_sample`
+/// is at most 1023. Each class contains the 16 luma tap-pair coefficients
+/// and the precomputed center weight `128 - 2 * sum(coefficients)`.
+/// A cell class map has one valid class-table index per four columns,
+/// starting at `x`. The result is rounded by seven bits and clipped to
+/// `0..=max_sample`.
+///
+/// Returns `false` when the run exceeds the supported geometry or a source,
+/// output or class span is short. A short class span can leave earlier
+/// groups written.
 #[inline(never)]
 pub fn filter_luma_run(
     token: Avx2,
