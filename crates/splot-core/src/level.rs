@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Static frame and tile limits from AV2 v1.0.0 Annex A.4.
+//! Static frame and tile limits from AV2 v1.0.0 Annex A.4, Tables A.7–A.9.
 
 use crate::headers::frame::FrameHeaderCore;
 use crate::headers::sequence::SequenceHeader;
@@ -34,8 +34,6 @@ pub fn level_limits(level_idx: u8) -> Option<FrameLevelLimits> {
 }
 
 fn group_limits(group: usize) -> FrameLevelLimits {
-    // Tables A.8 and A.9 repeat the static limits within each level group.
-    // Columns are MaxPicSize, MaxHSize/MaxVSize, MaxTiles, MaxTileCols and MaxHeaderRate.
     const LEVELS: [(u32, u16, u16, u8, u16); 9] = [
         (147_456, 640, 8, 4, 150),
         (278_784, 880, 8, 4, 150),
@@ -59,18 +57,12 @@ fn group_limits(group: usize) -> FrameLevelLimits {
 }
 
 fn level_group(level_idx: u8) -> Option<usize> {
-    // Table A.7, level indices 0–21.
     const GROUP: [u8; 22] = [
         0, 1, 2, 3, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8,
     ];
     GROUP.get(usize::from(level_idx)).copied().map(usize::from)
 }
 
-// Annex A.4 multistream table (mirror lines 475–512). The columns
-// contain (MaxVSizeX, MaxHSizeX, MaxTileColsX) for scales 1.5, 4, 9.
-// For the absent rows at aggregate levels 0–3, Splot follows pinned
-// AVM 457cd58681a747465661baccb1f32095bc5b7774, level.c,
-// level_to_sub_stream_level_index(): use the level-4.0 table cells.
 const SUBSTREAM: [[(u16, u16, u8); 3]; 5] = [
     [(1600, 896, 7), (960, 576, 4), (640, 384, 3)],
     [(2560, 1472, 7), (1920, 1088, 4), (1280, 768, 3)],
@@ -80,7 +72,6 @@ const SUBSTREAM: [[(u16, u16, u8); 3]; 5] = [
 ];
 
 impl MultistreamDecoderOperation {
-    // Table column and ScaleFactorX as a numerator / denominator.
     fn allocation_scale(&self, xlayer: ExtendedLayerId) -> Option<(usize, u32, u32)> {
         let streams = self.sub_streams.get(..usize::from(self.sub_stream_count))?;
         if !streams.iter().any(|sub| sub.sub_xlayer_id == xlayer.get()) {
@@ -100,7 +91,8 @@ impl MultistreamDecoderOperation {
     /// Computes the static frame and tile maxima in decoder mode 1 (Annex A.4).
     /// The native sequence level supplies the per-stream limits. The aggregate
     /// level and the stream's allocation can reduce them. Returns `None` for
-    /// an undeclared layer or an unmapped sequence level.
+    /// an undeclared layer or an unmapped sequence level. For aggregate levels
+    /// 0–3, Splot uses the AVM level-4.0 width, height, tile-column and header-rate cells.
     #[must_use]
     pub fn frame_level_limits(
         &self,
@@ -119,7 +111,6 @@ impl MultistreamDecoderOperation {
             .min(aggregate.max_tiles * denominator / numerator);
 
         let (height, width, cols) = SUBSTREAM[group.saturating_sub(4)][column];
-        // MaxHeaderRateX is 132 for every row.
         limits.max_header_rate = limits.max_header_rate.min(132);
         limits.max_width = limits.max_width.min(u32::from(width));
         limits.max_height = limits.max_height.min(u32::from(height));
@@ -135,6 +126,7 @@ impl FrameLevelLimits {
     /// Checks the Annex A.4 video reference-frame limit. Returns the signaled
     /// count and the maximum on a proved violation. Without a frame, this
     /// checks the sequence allocation before a decoder creates its buffers.
+    /// The syntax already bounds the count by `8 << explicit_num_ref_frames`.
     #[must_use]
     pub fn excess_ref_frames(
         &self,
@@ -151,8 +143,6 @@ impl FrameLevelLimits {
             (sequence.general.max_mlayer_id.get() != 0 || frame.obu_type != ObuType::ClosedLoopKey)
                 && requires_second_decode(frame)
         });
-        // The syntax bounds NumRefFrames by 8 << explicit_num_ref_frames.
-        // Only the smaller geometry-based branch can prove a violation.
         let slots = self
             .max_pic_size
             .checked_mul(8)?
@@ -162,7 +152,6 @@ impl FrameLevelLimits {
     }
 }
 
-// Annex A.4 InloopFilteringEnabled and DecodeCount (mirror lines 537–544).
 fn requires_second_decode(frame: &FrameHeaderCore) -> bool {
     frame
         .intrabc

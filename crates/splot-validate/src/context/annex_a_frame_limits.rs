@@ -5,12 +5,12 @@
 
 use super::*;
 
+/// Holds the first violation for each layer and limit until the TU determines its mode (§ 7.4.1).
 #[derive(Debug, Default)]
 pub(super) struct FrameAllocations {
     pub(super) latest: Option<MultistreamDecoderOperation>,
     multistream: bool,
     saw_msdo: bool,
-    // One finding per layer and limit suffices until a later CELU fixes the TU's mode (§ 7.4.1).
     limits_seen: [u8; 32],
     pending: Vec<Diagnostic>,
 }

@@ -394,8 +394,6 @@ fn msdo_frame_width_uses_the_allocated_layer_and_aggregate_level() {
     );
     let ivf = splot_core::ivf::parse_ivf_partial(seed);
     let obus = parse_annex_b_obus(ivf.frames[0].payload).unwrap();
-    // Each native picture is 512x256. At aggregate level 4 the small
-    // stream is limited to 384 samples horizontally. At level 6 it gets 768.
     for aggregate_level in [4, 6] {
         let mut data = Vec::new();
         write_obu(&mut data, obus[0].header, obus[0].payload);
@@ -460,8 +458,6 @@ fn msdo_reference_buffer_capacity_uses_the_sequence_maximum_before_frame_parse()
             seq.general.max_frame_height = FrameHeight::from_minus_1(1023);
             seq.general.frame_width_bits = FrameDimensionBits::from_minus_1(10);
             seq.general.frame_height_bits = FrameDimensionBits::from_minus_1(9);
-            // The original sequence tile grid describes the 64x64 seed.
-            // Signal frame-level tile information for the new sequence size.
             let tile = seq.tile.as_mut().unwrap();
             tile.seq_tile_info_present_flag = false;
             tile.allow_tile_info_change = None;

@@ -461,7 +461,6 @@ mod tests {
         for level in 0..=4 {
             msdo.multistream_level_idx = level;
             let even = msdo.frame_level_limits(21, small).unwrap();
-            // Splot uses the AVM 4.0 geometry and header-rate cells at levels 0–3.
             assert_eq!(
                 (
                     even.max_width,
@@ -472,7 +471,6 @@ mod tests {
                 (576, 960, 4, 132)
             );
             assert_eq!(even.max_pic_size, 552_960);
-            // Table A.9 still selects MaxTiles from the signaled aggregate level.
             assert_eq!(even.max_tiles, [2, 2, 4, 4, 8][usize::from(level)]);
         }
         msdo.multistream_even_allocation_flag = false;
