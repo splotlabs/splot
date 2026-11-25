@@ -32,8 +32,6 @@ const MSDO_4STREAM: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-msdo-four-streams-obu-order.obu");
 const MSDO_OPS_RA: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-msdo-ops-random-access.obu");
-const MLAYER2_CROSSREF_8BIT: &[u8] =
-    include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-crossref-8bit.obu");
 
 const SHA_MSDO_8BIT_ALL: &str = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b";
 const SHA_MSDO_8BIT_X3: &str = "a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe";
@@ -682,48 +680,62 @@ fn unaligned_rap_pre_skip_and_cmvs_transition() {
 }
 
 #[test]
-fn first_unit_order_uses_frames_outside_the_embedded_layer_selection() {
-    let embedded_units = temporal_units(MLAYER2_CROSSREF_8BIT);
-    let embedded_obus = parse_annex_b_obus(&embedded_units[0]).unwrap();
-    let multistream_units = temporal_units(MSDO_8BIT);
-    let multistream_obus = parse_annex_b_obus(&multistream_units[0]).unwrap();
-    let delimiter = &multistream_obus[0];
+fn first_unit_order_uses_frames_outside_the_temporal_layer_selection() {
+    let units = temporal_units(MSDO_OPS_RA);
+    let rap = parse_annex_b_obus(&units[2]).unwrap();
+    let following = parse_annex_b_obus(&units[3]).unwrap();
     let xlayer = ExtendedLayerId::from_bits(3);
     let other_xlayer = ExtendedLayerId::from_bits(7);
     let mut bytes = Vec::new();
-    write_obu(&mut bytes, delimiter.header, delimiter.payload);
-    bytes.extend(make_msdo_obu(false, 0, true, &[(3, 2, 1, 0), (7, 2, 1, 0)]));
-    for obu in &embedded_obus[1..] {
+    for obu in &rap[..2] {
+        write_obu(&mut bytes, obu.header, obu.payload);
+    }
+    for obu in rap
+        .iter()
+        .filter(|obu| obu.header.extended_layer_id == other_xlayer)
+    {
         let header = ObuHeader {
-            has_header_extension: true,
             extended_layer_id: xlayer,
-            header_size_bytes: 2,
             ..obu.header
         };
         write_obu(&mut bytes, header, obu.payload);
     }
-    for obu in multistream_obus
+    let ops = rap
         .iter()
-        .filter(|obu| obu.header.extended_layer_id == other_xlayer)
-    {
-        write_obu(&mut bytes, obu.header, obu.payload);
+        .find(|obu| {
+            obu.header.extended_layer_id == xlayer
+                && obu.header.obu_type == ObuType::OperatingPointSet
+        })
+        .unwrap();
+    let other_frame = following
+        .iter()
+        .find(|obu| {
+            obu.header.extended_layer_id == xlayer
+                && obu.header.temporal_layer_id == TemporalLayerId::from_bits(1)
+                && obu.header.obu_type == ObuType::RegularTileGroup
+        })
+        .unwrap();
+    for obu in [ops, other_frame] {
+        let header = ObuHeader {
+            extended_layer_id: other_xlayer,
+            ..obu.header
+        };
+        write_obu(&mut bytes, header, obu.payload);
     }
 
     let all = stream_decode(&bytes, &DecoderSettings::default()).unwrap();
-    assert_eq!(all.len(), 3);
-    let enhancement = EmbeddedLayerId::from_bits(1);
+    assert_eq!(all.len(), 1);
     let selected = stream_decode(
         &bytes,
         &DecoderSettings::default()
-            .with_embedded_layer_selection(EmbeddedLayerSelection::Target(enhancement)),
+            .with_temporal_layer_selection(TemporalLayerSelection::BASE_ONLY),
     )
     .unwrap();
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].extended_layer_id(), xlayer);
-    assert_eq!(selected[0].embedded_layer_id(), enhancement);
     assert_eq!(
         raw_all_and_by_xlayer(&selected).0,
-        raw_all_and_by_xlayer(&all[1..2]).0
+        raw_all_and_by_xlayer(&all).0
     );
 }
 
