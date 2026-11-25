@@ -49,6 +49,10 @@ fn celu_doh_cross_celu_order_hint_mismatch_under_msdo_flag_is_flagged() {
         &frame_core_seq_payload(FrameCoreSeq::base()),
     ));
     data.extend(celu_output_clk_at(0, 0)); // CELU xlayer 0, OrderHint 0
+    data.extend(annex_b_obu_with_header(
+        &layer_obu_header(1, 0, 0, 1),
+        &frame_core_seq_payload(FrameCoreSeq::base()),
+    ));
     data.extend(celu_output_clk_at(1, 1)); // CELU xlayer 1, OrderHint 1 -> cross-CELU mismatch
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
@@ -68,6 +72,10 @@ fn celu_doh_cross_celu_order_hint_mismatch_without_flag_is_silent() {
         &frame_core_seq_payload(FrameCoreSeq::base()),
     ));
     data.extend(celu_output_clk_at(0, 0));
+    data.extend(annex_b_obu_with_header(
+        &layer_obu_header(1, 0, 0, 1),
+        &frame_core_seq_payload(FrameCoreSeq::base()),
+    ));
     data.extend(celu_output_clk_at(1, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
