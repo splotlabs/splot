@@ -2889,6 +2889,21 @@ description = "Five-frame 64x64 8-bit 4:2:0 Annex B stream built from a 4-tempor
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-tlayer2-reproducible-8bit.ivf"
+description = "Four 128x64 8-bit 4:2:0 frames alternate between temporal layers 0 and 1. Each frame has two tile groups. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer2-reproducible-10bit.ivf"
+description = "Four 64x64 10-bit 4:2:0 frames alternate between temporal layers 0 and 1. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer4-reproducible-sparse.obu"
+description = "Five 64x64 8-bit 4:2:0 frames signal a sparse dependency map. Layers 2 and 3 exclude layer 1 from their dependencies. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mlayer2-crossref-8bit.obu"
 description = "Six-frame 64x64 8-bit 4:2:0 Annex B stream encoded by AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) with two embedded layers (max_mlayer_id=1, IOP 1, local LCR, 3 temporal units across ML0 and ML1) and cross-layer prediction. Decodes identically to avmdec --all-layers across all 6 frames (36,864 bytes, SHA-256 8f798709cae451909159dde10c9581b07c373d6b6a71a6a43f450da11e018176); validates clean."
 expect = "clean"
