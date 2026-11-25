@@ -83,7 +83,7 @@ jobs:
             cargo xtask check-conventional-commits "$PUSH_COMMIT_RANGE"
           fi
 
-      - run: cargo xtask ci --exclude-tests splot-encode
+      - run: cargo xtask ci --exclude-tests splot-encode --exclude-tests splot-cli
 
       # Checkout gives the sources new mtimes, so workspace crates compile again. Keep third-party artifacts only.
       - name: Remove workspace artifacts before the cache save
@@ -106,13 +106,14 @@ jobs:
   # The splot-encode tests that `ci` leaves out, in two shards that together select every test once.
   # The wavefront_search test alone runs for about 4.6 minutes, so it has its own shard.
   test-encode:
+    name: ${{ matrix.shard == 'cli' && 'test-cli' || format('test-encode ({0})', matrix.shard) }}
     runs-on: ubuntu-latest
     env:
       FILTER: "intra_frame::tests::wavefront_search::"
     strategy:
       fail-fast: false
       matrix:
-        shard: [wavefront-search, rest]
+        shard: [wavefront-search, rest, cli]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -133,6 +134,7 @@ jobs:
             ${{ runner.os }}-cargo-v3-
 
       - name: Test splot-encode
+        if: matrix.shard != 'cli'
         env:
           SHARD: ${{ matrix.shard }}
         run: |
@@ -141,6 +143,12 @@ jobs:
           else
             cargo test -p splot-encode --all-targets --locked -- --skip "$FILTER"
           fi
+
+      - name: Test splot-cli and encoder doctests
+        if: matrix.shard == 'cli'
+        run: |
+          cargo test -p splot-cli --all-targets --locked
+          cargo test -p splot-cli -p splot-encode --doc --locked
 
   decode-release:
     runs-on: ubuntu-latest
