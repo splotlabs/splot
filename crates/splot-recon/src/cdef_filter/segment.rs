@@ -420,11 +420,11 @@ impl SegmentSimd for BaselineSegment {
 impl<B: SimdBackend> SegmentSimd for TypedSegment<B> {
     #[inline]
     fn gather<O>(self, op: impl SegmentGather<O>) -> Option<O> {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(avx2) = self.0.avx2_token() {
-            return op.run(avx2, MinPos);
-        }
         let narrow = self.0.narrow();
+        #[cfg(target_arch = "x86_64")]
+        if let Some(avx2) = narrow.avx2_token() {
+            return splot_core::with_simd!(narrow, _simd => op.run(avx2, MinPos));
+        }
         splot_core::with_simd!(narrow, simd => op.run(simd, Reduced))
     }
 }
