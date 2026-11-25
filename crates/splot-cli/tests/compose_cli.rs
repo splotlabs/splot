@@ -3,8 +3,10 @@
 
 //! End-to-end checks for atlas presentation and raw canvas output.
 
-#![expect(clippy::expect_used)]
-
+#[expect(
+    clippy::expect_used,
+    reason = "The shared test helpers require their fixture paths and child processes to exist."
+)]
 mod common;
 
 use common::{conformance_vector, sha256_hex, splot, temp_input, temp_output};
