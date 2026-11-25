@@ -1868,36 +1868,50 @@ features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.mult
 ivf_sha256 = "66a78d2841c9e1e1d1af24f89c350bfc74c87e6e28cf704fda2a36e21e0893ba"
 avm_raw_sha256 = "20a0dc98a3d39918c2c9cf7b1f7ad027295d22c6d7fd761b596f5d38035d2bd8"
 
+# Run `generate.py bru-lr-fixtures --stage <dir>` with AVM
+# a1ec4594d97028ebc34083ec8346616d697c2fc9 (CMake Release).
+# Source SHA-256: fa379c9476994b65e8a6982479df274ad62e58b7b3fded08abe82e838cd3db66
+# AVM raw I420 output: 294912 bytes across six frames.
 [[fixture]]
 id = "syn-bru-lr-stripe-wienerns-8bit"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.loop_restoration", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "e5ebd67c6d9762cd82f0fdbc6a36e839ad74b5440f50c3b592f0a83db18c6159"
 avm_raw_sha256 = "84753ddb90979addfc13e7abda2a568e3f1fbbe951744db0b5d84b5dc6ae5190"
 
+# Source SHA-256: b69e860814587e7a44ed990509c73958986d9672c4af14a379275d5d3632c3c8
+# AVM raw I420 output: 589824 bytes across six frames.
 [[fixture]]
 id = "syn-bru-lr-stripe-wienerns-10bit"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.loop_restoration", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "5c9fcea50e919a44b72cc2787376c927909ee4a5c4f68feee5fec374a303d67e"
 avm_raw_sha256 = "7c4f155ceceeb11564605fbbf5e742d0ed8d01ad9424851aa9dcabf2617d75e6"
 
+# Source SHA-256: 07990f160c899e71e6d6f17f114ed7d77734905e655e2b768b1e709f00060d2c
+# AVM raw I420 output: 147456 bytes across six frames.
 [[fixture]]
 id = "syn-bru-lr-stripe-pcwiener-8bit"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.loop_restoration", "loop.pc_wiener", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "58c5d43697778ab3e033f2136421b97ee72498d558e7b9eaf1a970634fd7c1ee"
 avm_raw_sha256 = "362fcdf14467a8aaf4c67dff8bd8c8e6a079489ff454c479803b876d86d2e9ec"
 
+# Source SHA-256: 802bfce18c9ed1e2b3f1c40d8ad86b003227e5632f97aff3d4563d499e71382a
+# AVM raw I420 output: 294912 bytes across six frames.
 [[fixture]]
 id = "syn-bru-lr-stripe-pcwiener-10bit"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.loop_restoration", "loop.pc_wiener", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "ac847f32ebf94849502ef8aacbbbe30cb2ed80b51ef1f2d23ab371aa6be01b8b"
 avm_raw_sha256 = "de3dad1ec24b11831702515bb75b94fff308ce339b7564f2a83f44ca45653583"
 
+# Source SHA-256: b5f697c39fa1b29b5401b868861c550e1206c4b8d49d558b65e1e8a4aca04ac9
+# AVM raw I420 output: 589824 bytes across six frames.
 [[fixture]]
 id = "syn-bru-lr-multitile-cross-8bit"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.loop_restoration", "loop.lr_multitile", "loop.pc_wiener", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "5243716212b0eb9ea416ac8a8bdf713e1fcc1e5c30b63aa1002a1292a4e8c9b5"
 avm_raw_sha256 = "64c2892b5503fd3def9ddd926fc73fb0aa28c77e27356ac1c464a1a7beae4f12"
 
+# Source SHA-256: b5f697c39fa1b29b5401b868861c550e1206c4b8d49d558b65e1e8a4aca04ac9
+# AVM raw I420 output: 589824 bytes across six frames.
 [[fixture]]
 id = "syn-bru-lr-multitile-isolated-8bit"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.loop_restoration", "loop.lr_multitile", "loop.pc_wiener", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
