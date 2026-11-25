@@ -39,6 +39,8 @@ enum Command {
     /// Decode the currently supported experimental AV2 subset.
     #[command(visible_alias = "dec")]
     Decode(commands::decode::DecodeArgs),
+    /// Compose a multistream atlas and write raw planar samples.
+    Compose(commands::compose::ComposeArgs),
     /// Encode a Y4M file to an AV2 IVF or Annex B stream.
     #[command(visible_alias = "enc")]
     Encode(Box<commands::encode::EncodeArgs>),
@@ -54,6 +56,7 @@ fn main() -> ExitCode {
     let result = splot_parallel::run_on_thread("splot-main", || match cli.command {
         Command::Validate(args) => commands::validate::run(&args),
         Command::Inspect(args) => commands::inspect::run(&args),
+        Command::Compose(args) => commands::compose::run(&args),
         Command::Decode(args) => commands::decode::run(&args),
         Command::Encode(args) => commands::encode::run(&args),
         Command::Explain(args) => commands::explain::run(&args),

@@ -87,7 +87,10 @@ mod tile;
 pub use bitstream::stream_plan;
 pub use context::{DecodeContext, DecodeScope, TypedDecodeContext};
 use core::fmt;
-pub use decoder::{DataProps, Decoder, DecoderSettings, Picture, PictureSamples, SendStatus};
+pub use decoder::{
+    AtlasComposite, AtlasCompositionError, AtlasCompositor, DataProps, Decoder, DecoderSettings,
+    Picture, PictureSamples, SendStatus,
+};
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,
     DecodeOutputErrorDetails, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
