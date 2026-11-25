@@ -126,11 +126,11 @@ macro_rules! line_methods {
             (fn filter_four_tap_u8($runner, window: &[u8], taps: [i8; 4], out: &mut [u8])) simd =>
                 line_lanes(simd, window, taps, out);
 
-            #[inline]
+            #[inline(always)]
             (fn bilinear_u16($runner, window: &[u16], weights: [u16; 2], out: &mut [u16])) simd =>
                 bilinear_lanes_u16(simd, window, weights, out);
 
-            #[inline]
+            #[inline(always)]
             (fn four_tap_u16($runner, window: &[u16], taps: [i8; 4], max: u16, out: &mut [u16])) simd =>
                 line_lanes_u16(simd, window, taps, max, out);
         }
