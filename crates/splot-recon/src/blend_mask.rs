@@ -517,7 +517,11 @@ fn blend<S: Simd>(p1: i16x8<S>, diff: i16x8<S>, mask: i16x8<S>) -> [u8; LANES] {
 }
 
 /// [`blend`] of `i32` predictors, clipped to `0..=max`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep the compound pixel loop inside the selected SIMD target"
+)]
+#[inline(always)]
 fn wide_blend<S: Simd>(
     simd: S,
     (p0, p1): (&[i32; LANES], &[i32; LANES]),
@@ -535,7 +539,11 @@ fn wide_blend<S: Simd>(
 
 /// The § 7.13.3.28 weight `|flip - Min(38 + ((|p0 - p1| + round) >> shift), 64)|`
 /// of eight `i32` lanes.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep the compound pixel loop inside the selected SIMD target"
+)]
+#[inline(always)]
 fn wide_weight<S: Simd>(
     simd: S,
     (p0, p1): (&[i32; LANES], &[i32; LANES]),
