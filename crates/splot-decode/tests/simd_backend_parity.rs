@@ -207,6 +207,51 @@ fn decode_streaming(decoder: &mut Decoder, units: &[Vec<u8>]) -> Vec<Picture> {
     pictures
 }
 
+fn frozen_stream_decoder(
+    threads: usize,
+    policy: SimdPolicy,
+    backend: SelectedBackend,
+    label: &str,
+) -> Decoder {
+    let decoder = Decoder::new(
+        DecoderSettings::default()
+            .with_threads(ThreadCount::from(threads))
+            .with_frame_delay(FrameDelay::from(threads.min(4)))
+            .with_simd_policy(policy),
+    )
+    .unwrap();
+    assert_eq!(decoder.selected_backend(), backend, "{label}");
+    decoder
+}
+
+fn report_frozen_stream_timings(
+    filename: &str,
+    units: &[Vec<u8>],
+    expected_frames: usize,
+    threads: usize,
+    pairs: usize,
+) {
+    let mut policies = [
+        (SimdPolicy::Avx2, SelectedBackend::Avx2),
+        (SimdPolicy::Avx512, SelectedBackend::Avx512),
+    ];
+    for pair in 0..=pairs {
+        for (policy, backend) in policies {
+            let label = format!("{filename} threads={threads} policy={policy}");
+            let mut decoder = frozen_stream_decoder(threads, policy, backend, &label);
+            let mut frames = 0;
+            let start = std::time::Instant::now();
+            decode_streaming_into(&mut decoder, units, |_| frames += 1);
+            let elapsed = start.elapsed().as_secs_f64();
+            assert_eq!(frames, expected_frames, "{label}");
+            if pair != 0 {
+                println!("{label} pair={pair} frames={frames} decode_seconds={elapsed:.6}");
+            }
+        }
+        policies.reverse();
+    }
+}
+
 #[test]
 #[ignore = "requires the frozen EwoutH stream files and sha256sum"]
 fn frozen_ewouth_streaming_parity() {
@@ -218,6 +263,14 @@ fn frozen_ewouth_streaming_parity() {
     let case_list = PathBuf::from(std::env::var_os("SPLOT_EWOUTH_CASES").unwrap());
     let corpus = case_list.parent().unwrap();
     let cases = std::fs::read_to_string(&case_list).unwrap();
+    let timing_pairs = std::env::var_os("SPLOT_TIMING_PAIRS").map(|pairs| {
+        pairs
+            .to_str()
+            .unwrap()
+            .parse::<core::num::NonZeroUsize>()
+            .unwrap()
+            .get()
+    });
     let mut policies = vec![
         (SimdPolicy::Auto, SelectedBackend::Avx2),
         (SimdPolicy::Avx2, SelectedBackend::Avx2),
@@ -238,6 +291,10 @@ fn frozen_ewouth_streaming_parity() {
         assert!(!units.is_empty(), "{filename}");
 
         for threads in [1usize, 7, 12] {
+            if let Some(pairs) = timing_pairs {
+                report_frozen_stream_timings(filename, &units, expected_frames, threads, pairs);
+                continue;
+            }
             for &(policy, backend) in &policies {
                 let label = format!("{filename} threads={threads} policy={policy}");
                 let mut hash = Command::new("sha256sum")
@@ -250,14 +307,7 @@ fn frozen_ewouth_streaming_parity() {
                 let mut frames = 0;
                 let mut bytes = 0;
                 let start = Instant::now();
-                let mut decoder = Decoder::new(
-                    DecoderSettings::default()
-                        .with_threads(ThreadCount::from(threads))
-                        .with_frame_delay(FrameDelay::from(threads.min(4)))
-                        .with_simd_policy(policy),
-                )
-                .unwrap();
-                assert_eq!(decoder.selected_backend(), backend, "{label}");
+                let mut decoder = frozen_stream_decoder(threads, policy, backend, &label);
                 decode_streaming_into(&mut decoder, &units, |picture| {
                     raw.clear();
                     append_raw_picture(&picture, &mut raw);
