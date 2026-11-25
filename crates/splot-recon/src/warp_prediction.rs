@@ -540,20 +540,23 @@ impl PreparedWarpPrediction {
                             ..row
                         };
                         let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
-                        let store = |row: usize, rounded: i32x8<S>| {
-                            if row >= section_h {
-                                return Ok(());
+                        let store = {
+                            #[inline(always)]
+                            |row: usize, rounded: i32x8<S>| {
+                                if row >= section_h {
+                                    return Ok(());
+                                }
+                                let start = (local_y + row) * stride + local_x;
+                                let (low, high) = rounded.split();
+                                let target = &mut output[start..start + section_w];
+                                store_clipped_row(
+                                    simd,
+                                    target,
+                                    low.saturating_narrow(high),
+                                    max_sample,
+                                );
+                                Ok(())
                             }
-                            let start = (local_y + row) * stride + local_x;
-                            let (low, high) = rounded.split();
-                            let target = &mut output[start..start + section_w];
-                            store_clipped_row(
-                                simd,
-                                target,
-                                low.saturating_narrow(high),
-                                max_sample,
-                            );
-                            Ok(())
                         };
                         warp_predict_section(
                             runner,
@@ -1630,15 +1633,20 @@ fn build_intermediate<S: Simd, T: ReconSample>(
     projected: &ProjectedCenter,
     intermediate: &mut Intermediate,
 ) {
-    let first_col = projected.x4_int.saturating_sub(7);
-    let columns = clamped_columns(simd, reference.width(), first_col, [first_x, last_x]);
-    for i1 in -7i32..8 {
-        let row = (projected.y4_int + i1).clamp(first_y, last_y);
-        let span = clamped_span(simd, reference.row(row as usize), columns);
-        let sx = projected.sx4 + shear.beta * i1;
-        intermediate[(i1 + 7) as usize] =
-            horizontal_row(simd, [span.0, span.1], sx, shear.alpha).into();
-    }
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let first_col = projected.x4_int.saturating_sub(7);
+            let columns = clamped_columns(simd, reference.width(), first_col, [first_x, last_x]);
+            for i1 in -7i32..8 {
+                let row = (projected.y4_int + i1).clamp(first_y, last_y);
+                let span = clamped_span(simd, reference.row(row as usize), columns);
+                let sx = projected.sx4 + shear.beta * i1;
+                intermediate[(i1 + 7) as usize] =
+                    horizontal_row(simd, [span.0, span.1], sx, shear.alpha).into();
+            }
+        },
+    );
 }
 
 #[inline]

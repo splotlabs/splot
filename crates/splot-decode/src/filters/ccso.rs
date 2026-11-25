@@ -874,8 +874,11 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
             #[inline(always)]
             |centers: &[L], taps0: &[L], taps1: &[L]| -> Option<u8x32<S>> {
                 if L::u8_slice(centers).is_none() {
-                    let half = |at: usize| {
-                        index_u16([centers.get(at..)?, taps0.get(at..)?, taps1.get(at..)?])
+                    let half = {
+                        #[inline(always)]
+                        |at: usize| {
+                            index_u16([centers.get(at..)?, taps0.get(at..)?, taps1.get(at..)?])
+                        }
                     };
                     return Some(simd.combine_u8x16(half(0)?, half(step)?));
                 }
