@@ -137,8 +137,11 @@ fn window_range<S: Simd, W: WindowRows>(
     limit: u16,
     range: impl Fn(u16x16<S>, u16x16<S>) -> u16,
 ) -> u16 {
-    let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
-    macro_rules! rows_range {
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
+            macro_rules! rows_range {
         ($($row:literal)*) => {
             $({
                 const ROW: usize = $row;
@@ -155,15 +158,17 @@ fn window_range<S: Simd, W: WindowRows>(
             })*
         };
     }
-    rows_range!(6 7);
-    if range(low, high) > limit {
-        return ROUGH;
-    }
-    rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
-    match range(low, high) {
-        range if range > limit => ROUGH,
-        range => range,
-    }
+            rows_range!(6 7);
+            if range(low, high) > limit {
+                return ROUGH;
+            }
+            rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
+            match range(low, high) {
+                range if range > limit => ROUGH,
+                range => range,
+            }
+        },
+    )
 }
 
 /// Bit `lane` in each lane.
@@ -620,6 +625,11 @@ impl GdfSample for u16 {
         lanes.bitcast::<u16x16<S>>().store_slice(samples);
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "keep residual lanes inside the typed GDF row"
+    )]
+    #[inline(always)]
     fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], block: &GdfBlock) {
         let (residuals, _) = residuals.as_chunks::<16>();
         let (output, _) = output.as_chunks_mut::<16>();
@@ -645,6 +655,11 @@ impl GdfSample for u8 {
         simd.narrow_u16x8(low, high).store_slice(samples);
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "keep residual lanes inside the typed GDF row"
+    )]
+    #[inline(always)]
     fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], _block: &GdfBlock) {
         let (residual_pairs, residuals) = residuals.as_chunks::<32>();
         let (output_pairs, output) = output.as_chunks_mut::<32>();
@@ -1080,10 +1095,13 @@ fn classify_chunk<S: Simd>(
     next: [i16x16<S>; 4],
     tables: &[[i16; 16]; 4],
 ) -> i32x8<S> {
-    let strengths: [i32x8<S>; 4] = core::array::from_fn(|d| {
-        let columns = sums[d] + simd.slide_i16x16::<2>(sums[d], next[d]);
-        simd.pairwise_dot_product_i16x16(columns, i16x16::splat(simd, 4096))
-    });
+    let strengths: [i32x8<S>; 4] = core::array::from_fn(
+        #[inline(always)]
+        |d| {
+            let columns = sums[d] + simd.slide_i16x16::<2>(sums[d], next[d]);
+            simd.pairwise_dot_product_i16x16(columns, i16x16::splat(simd, 4096))
+        },
+    );
     let bit = |a: i32x8<S>, b: i32x8<S>, value: i32| {
         a.simd_le(b)
             .select(i32x8::splat(simd, value), i32x8::splat(simd, 0))

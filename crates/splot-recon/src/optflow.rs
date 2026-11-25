@@ -209,9 +209,10 @@ pub fn derive_optflow_mv_deltas_into_with<'a, B: SimdBackend, P: WindowSample>(
     };
     let block = (preds, starts, stride, [width, height], unit_size);
     let narrow = backend.narrow();
-    if let Err(error) =
-        narrow.vectorize(|| block_deltas(narrow.token(), block, weights, &mut scratch.deltas))
-    {
+    if let Err(error) = narrow.vectorize(
+        #[inline(always)]
+        || block_deltas(narrow.token(), block, weights, &mut scratch.deltas),
+    ) {
         scratch.deltas.clear();
         return Err(error);
     }
@@ -237,7 +238,11 @@ type Tile<'a, P> = ([&'a [P]; 2], [usize; 2], usize);
 /// The deltas of [`derive_optflow_mv_deltas_into`] over its validated block,
 /// one gradient unit (`W` and `H` 16, or 8 at a block narrower or lower
 /// than 16) at a time.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "retain the caller's SIMD target features"
+)]
+#[inline(always)]
 fn block_deltas<S: Simd, P: WindowSample>(
     simd: S,
     (preds, starts, stride, [width, height], unit_size): Block<'_, P>,
