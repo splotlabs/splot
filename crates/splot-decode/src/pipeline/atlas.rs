@@ -3,7 +3,6 @@
 
 //! Atlas availability and picture associations (AV2 §§ 6.8–6.9 and 7.3.8.4).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use splot_core::annexb::{AnnexBObuCursor, ObuEnvelope};
@@ -61,7 +60,7 @@ impl AtlasAssociation {
 /// Each extended layer, including the global scope, has eight atlas IDs.
 #[derive(Clone, Debug, Default)]
 pub struct ExternalAtlases {
-    pub(super) scopes: BTreeMap<ExtendedLayerId, ScopedAtlases>,
+    pub(super) scopes: Vec<Option<ScopedAtlases>>,
 }
 
 impl ExternalAtlases {
@@ -94,17 +93,22 @@ impl ExternalAtlases {
             ));
         }
         let layout = AtlasLayout::parse(envelope, true)?;
-        self.scopes
-            .entry(envelope.header.extended_layer_id)
-            .or_default()
-            .store(layout);
+        scope_mut(&mut self.scopes, envelope.header.extended_layer_id).store(layout);
         Ok(())
     }
 }
 
+pub(super) fn scope_mut<T: Default>(scopes: &mut Vec<Option<T>>, id: ExtendedLayerId) -> &mut T {
+    let index = usize::from(id.get());
+    if scopes.len() <= index {
+        scopes.resize_with(index + 1, || None);
+    }
+    scopes[index].get_or_insert_with(T::default)
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct ScopedAtlases {
-    layouts: BTreeMap<u8, Arc<AtlasLayout>>,
+    layouts: Option<Box<[Option<Arc<AtlasLayout>>; 8]>>,
 }
 
 impl ScopedAtlases {
@@ -114,8 +118,12 @@ impl ScopedAtlases {
     }
 
     fn store(&mut self, layout: AtlasLayout) {
-        self.layouts
-            .insert(layout.atlas.atlas_segment_id, Arc::new(layout));
+        let id = usize::from(layout.atlas.atlas_segment_id);
+        self.layouts.get_or_insert_with(Default::default)[id] = Some(Arc::new(layout));
+    }
+
+    fn get(&self, id: u8) -> Option<&Arc<AtlasLayout>> {
+        self.layouts.as_ref()?[usize::from(id)].as_ref()
     }
 
     pub(super) fn msdo_associations(
@@ -123,11 +131,12 @@ impl ScopedAtlases {
         xlayer: ExtendedLayerId,
         output: &mut Vec<AtlasAssociation>,
     ) {
-        for (&atlas_id, layout) in &self.layouts {
+        let Some(layouts) = &self.layouts else { return };
+        for layout in layouts.iter().flatten() {
             if let Some((index, id)) = layout.stream_segment(xlayer) {
                 output.push(AtlasAssociation {
                     scope: splot_core::types::GLOBAL_XLAYER_ID,
-                    atlas_id,
+                    atlas_id: layout.atlas.atlas_segment_id,
                     lcr_offset: None,
                     segment_id: Some(id),
                     segment_index: Some(index),
@@ -187,13 +196,15 @@ impl AtlasLayout {
     }
 }
 
+type LocalRecord = (ByteOffset, Arc<LcrLocalInfo>);
+
 #[derive(Default)]
 pub(super) struct LayerAtlases {
     pub(super) layouts: ScopedAtlases,
-    local_ids: u8,
-    records: BTreeMap<u8, (ByteOffset, Arc<LcrLocalInfo>)>,
+    pub(super) local_ids: u8,
+    records: Option<Box<[Option<LocalRecord>; 8]>>,
     active_global: Option<(ByteOffset, Arc<LcrGlobalInfo>)>,
-    active_local: Option<(ByteOffset, Arc<LcrLocalInfo>)>,
+    active_local: Option<LocalRecord>,
 }
 
 impl From<ScopedAtlases> for LayerAtlases {
@@ -216,7 +227,7 @@ impl LayerAtlases {
         info: LcrLocalInfo,
     ) -> Result<()> {
         if let Some(id) = info.local_atlas_id
-            && !self.layouts.layouts.contains_key(&id)
+            && self.layouts.get(id).is_none()
         {
             return Err(invalid(
                 offset,
@@ -230,10 +241,11 @@ impl LayerAtlases {
         if info.local_id != 0 {
             self.local_ids |= 1 << info.local_id;
         }
+        let id = usize::from(info.local_id);
         if info.local_atlas_id.is_some() || info.global_id != 0 {
-            self.records.insert(info.local_id, (offset, Arc::new(info)));
-        } else {
-            self.records.remove(&info.local_id);
+            self.records.get_or_insert_with(Default::default)[id] = Some((offset, Arc::new(info)));
+        } else if let Some(records) = &mut self.records {
+            records[id] = None;
         }
         Ok(())
     }
@@ -243,7 +255,10 @@ impl LayerAtlases {
         id: u8,
         global: impl FnOnce(u8) -> Option<(ByteOffset, Arc<LcrGlobalInfo>)>,
     ) {
-        self.active_local = self.records.get(&id).cloned();
+        self.active_local = self
+            .records
+            .as_ref()
+            .and_then(|records| records[usize::from(id)].clone());
         let global_id = if self.has_local(id) {
             self.active_local
                 .as_ref()
@@ -268,7 +283,7 @@ impl LayerAtlases {
     ) -> Result<()> {
         if let Some((offset, record)) = &self.active_global
             && record.xlayer_map & (1u32 << xlayer.get()) != 0
-            && (record.global_atlas_id.is_some() || globals.layouts.contains_key(&0))
+            && (record.global_atlas_id.is_some() || globals.get(0).is_some())
         {
             let info = record.payloads.iter().find(|p| p.xlayer_id == xlayer.get());
             output.push(globals.association(
@@ -309,7 +324,7 @@ impl ScopedAtlases {
         mlayer: EmbeddedLayerId,
         xlayer_info: Option<&LcrXlayerInfo>,
     ) -> Result<AtlasAssociation> {
-        let layout = self.layouts.get(&atlas_id);
+        let layout = self.get(atlas_id);
         let reference = xlayer_info.and_then(|info| {
             info.xlayer_atlas.or_else(|| {
                 let layer = info

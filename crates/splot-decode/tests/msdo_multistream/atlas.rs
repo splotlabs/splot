@@ -323,70 +323,221 @@ fn reading_atlas_geometry_respects_native_frame_limits_without_allocating_a_canv
     assert_eq!((info.width, info.height), (virtual_size, virtual_size));
 }
 
-#[test]
-fn local_atlas_precedes_the_first_decodable_frame_of_its_stream() {
-    use splot_core::headers::{layer_config_record::LayerConfigurationRecord, sequence::LcrId};
+const LOCAL_ATLAS_8: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/needs-external-hls/syn-atlas-local-8bit.annexb"
+);
 
-    let collision = parse_annex_b_obus(COLLISION_8).unwrap();
-    let atlas = collision.iter().find(|obu| obu.offset.get() == 58).unwrap();
-    let lcr = collision
-        .iter()
-        .find(|obu| obu.offset.get() == 1305)
+#[expect(clippy::panic, reason = "the fixture setup requires a parsed local LCR")]
+fn local_atlas_lcr_without_global_parent() -> (LcrId, Vec<u8>) {
+    use splot_core::headers::layer_config_record::LayerConfigurationRecord;
+
+    let obu = parse_annex_b_obus(COLLISION_8)
+        .unwrap()
+        .into_iter()
+        .find(|obu| {
+            obu.header.obu_type == ObuType::LayerConfigurationRecord
+                && !obu.header.extended_layer_id.is_global()
+        })
         .unwrap();
     let PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(mut record)) =
-        lcr.payload_status().unwrap()
+        obu.payload_status().unwrap()
     else {
-        panic!("expected the local LCR");
+        panic!("expected local LCR");
     };
     let LayerConfigurationRecord::Local(local) = &mut *record else {
-        panic!("expected the local LCR");
+        panic!("expected local LCR");
     };
     local.global_id = 0;
     let id = LcrId::from_bits(local.local_id);
     let mut bytes = Vec::new();
-    let mut atlas_offset = None;
-    for (tu, unit) in temporal_units(MSDO_OPS_RA).iter().enumerate().skip(2) {
-        for obu in parse_annex_b_obus(unit).unwrap() {
-            if obu.header.extended_layer_id.get() == 3 {
-                if tu == 2 && obu.header.obu_type == ObuType::SequenceHeader {
-                    atlas_offset = Some(bytes.len() as u64 + 1);
-                    write_obu(&mut bytes, atlas.header, atlas.payload);
-                }
-                if tu == 4 && obu.header.obu_type == ObuType::OperatingPointSet {
-                    write_parsed(
-                        &mut bytes,
-                        lcr.header,
-                        &ParsedObu::LayerConfigurationRecord(record.clone()),
-                    );
-                }
-                if tu == 4 && obu.header.obu_type == ObuType::SequenceHeader {
-                    let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut seq)) =
+    write_parsed(
+        &mut bytes,
+        obu.header,
+        &ParsedObu::LayerConfigurationRecord(record),
+    );
+    (id, bytes)
+}
+
+#[test]
+fn local_atlas_precedes_the_first_decodable_frame_of_its_stream() {
+    let (id, local_lcr) = local_atlas_lcr_without_global_parent();
+    let units = temporal_units(MSDO_OPS_RA);
+    for (retire_at_unaligned_rap, use_external_atlas) in
+        [(false, false), (true, false), (true, true)]
+    {
+        let mut bytes = if retire_at_unaligned_rap {
+            units[..2].concat()
+        } else {
+            Vec::new()
+        };
+        let mut external = splot_decode::ExternalAtlases::default();
+        let mut atlas_offset = None;
+        if use_external_atlas {
+            external
+                .insert(LOCAL_ATLAS_8, splot_core::span::ByteOffset::new(900))
+                .unwrap();
+            atlas_offset = Some(901);
+        }
+        for (tu, unit) in units.iter().enumerate().skip(2) {
+            for obu in parse_annex_b_obus(unit).unwrap() {
+                if retire_at_unaligned_rap && obu.header.obu_type == ObuType::Msdo {
+                    let PayloadStatus::Parsed(ParsedObu::Msdo(mut msdo)) =
                         obu.payload_status().unwrap()
                     else {
-                        panic!("expected a sequence header");
+                        panic!("expected MSDO");
                     };
-                    seq.general.seq_lcr_id = id;
-                    write_parsed(&mut bytes, obu.header, &ParsedObu::SequenceHeader(seq));
+                    msdo.multistream_level_idx += 1;
+                    write_parsed(&mut bytes, obu.header, &ParsedObu::Msdo(msdo));
                     continue;
                 }
+                if obu.header.extended_layer_id.get() == 3 {
+                    if tu == 2
+                        && !use_external_atlas
+                        && obu.header.obu_type == ObuType::SequenceHeader
+                    {
+                        atlas_offset = Some(bytes.len() as u64 + 1);
+                        bytes.extend_from_slice(LOCAL_ATLAS_8);
+                    }
+                    if tu == 4 && obu.header.obu_type == ObuType::OperatingPointSet {
+                        bytes.extend_from_slice(&local_lcr);
+                    }
+                    if tu == 4 && obu.header.obu_type == ObuType::SequenceHeader {
+                        let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut seq)) =
+                            obu.payload_status().unwrap()
+                        else {
+                            panic!("expected a sequence header");
+                        };
+                        seq.general.seq_lcr_id = id;
+                        write_parsed(&mut bytes, obu.header, &ParsedObu::SequenceHeader(seq));
+                        continue;
+                    }
+                }
+                write_obu(&mut bytes, obu.header, obu.payload);
             }
-            write_obu(&mut bytes, obu.header, obu.payload);
+        }
+        let mut decoder =
+            Decoder::new_with_external_atlases(DecoderSettings::default(), external.clone())
+                .unwrap();
+        let pictures = stream_pictures(&mut decoder, &bytes).unwrap();
+        // AVM donor output indices 5, 7, 8, 9, 10 and 11 survive unaligned access.
+        // The transition case also emits donor indices 0 through 3.
+        let native = if retire_at_unaligned_rap {
+            "0b301c2b9c4a946cd3d2516c703433b07d33da0d51345d4f0fa1306935fc990d"
+        } else {
+            "41f6c331f13e350167753d725765da86e88b6ac093db9038fc44a5864b82c3a1"
+        };
+        assert_eq!(sha256_hex(&raw_all_and_by_xlayer(&pictures).0), native);
+        let active: Vec<_> = pictures
+            .iter()
+            .filter(|p| p.extended_layer_id().get() == 3)
+            .collect();
+        let prior_pictures = if retire_at_unaligned_rap { 2 } else { 0 };
+        assert_eq!(active.len(), prior_pictures + 2);
+        assert!(
+            active[..prior_pictures]
+                .iter()
+                .all(|picture| picture.atlas_associations().is_empty())
+        );
+        let report = context(3, 2)
+            .with_external_atlases(external)
+            .decode_hash_report_bytes(&bytes, DecodeOptions::DEFAULT)
+            .unwrap();
+        assert_eq!(report.frames.len(), pictures.len());
+        for (frame, picture) in report.frames.iter().zip(&pictures) {
+            assert_eq!(frame.atlas_associations, picture.atlas_associations());
+        }
+        for picture in &active[prior_pictures..] {
+            let [local] = picture.atlas_associations() else {
+                panic!("expected only the local atlas");
+            };
+            assert_eq!(local.segment_id, Some(41));
+            assert_eq!(local.layout.as_ref().unwrap().external, use_external_atlas);
+            assert_eq!(
+                local.layout.as_ref().map(|layout| layout.offset.get()),
+                atlas_offset
+            );
         }
     }
-    let pictures = stream_decode(&bytes, &DecoderSettings::default()).unwrap();
-    let active: Vec<_> = pictures
+}
+
+#[test]
+fn pending_local_lcr_shadows_global_at_the_next_cmvs_boundary() {
+    let collision = parse_annex_b_obus(COLLISION_8).unwrap();
+    let global = collision
         .iter()
-        .filter(|p| p.extended_layer_id().get() == 3)
-        .collect();
-    assert_eq!(active.len(), 2);
-    for picture in active {
-        let [local] = picture.atlas_associations() else {
-            panic!("expected only the local atlas");
-        };
-        assert_eq!(local.segment_id, Some(41));
-        assert_eq!(
-            local.layout.as_ref().map(|layout| layout.offset.get()),
-            atlas_offset
-        );
+        .find(|obu| {
+            obu.header.extended_layer_id.is_global()
+                && obu.header.obu_type == ObuType::LayerConfigurationRecord
+        })
+        .unwrap();
+    let (id, local_lcr) = local_atlas_lcr_without_global_parent();
+    let units = temporal_units(MSDO_OPS_RA);
+    for include_local in [true, false] {
+        let mut stream = Vec::new();
+        let mut sequence_offset = None;
+        for (tu, unit) in units.iter().enumerate().take(5).skip(2) {
+            for obu in parse_annex_b_obus(unit).unwrap() {
+                let kind = obu.header.obu_type;
+                let x3 = obu.header.extended_layer_id.get() == 3;
+                if tu == 4 {
+                    if kind == ObuType::TemporalDelimiter {
+                        write_obu(&mut stream, obu.header, obu.payload);
+                        write_obu(&mut stream, global.header, global.payload);
+                    } else if x3 && kind == ObuType::SequenceHeader {
+                        let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut seq)) =
+                            obu.payload_status().unwrap()
+                        else {
+                            panic!("expected a sequence header");
+                        };
+                        seq.general.seq_lcr_id = id;
+                        sequence_offset = Some(stream.len() as u64 + 1);
+                        write_parsed(&mut stream, obu.header, &ParsedObu::SequenceHeader(seq));
+                    } else if x3 && kind == ObuType::ClosedLoopKey {
+                        write_obu(&mut stream, obu.header, obu.payload);
+                    }
+                    continue;
+                }
+                if tu == 2 && x3 && kind == ObuType::SequenceHeader {
+                    stream.extend_from_slice(LOCAL_ATLAS_8);
+                    if include_local {
+                        stream.extend_from_slice(&local_lcr);
+                    }
+                }
+                write_obu(&mut stream, obu.header, obu.payload);
+            }
+        }
+        let streaming = stream_decode(&stream, &DecoderSettings::default());
+        let batch = context(3, 2).decode_hash_report_bytes(&stream, DecodeOptions::DEFAULT);
+        if include_local {
+            let pictures = streaming.unwrap();
+            // AVM donor output indices 5, 7 and 8.
+            assert_eq!(
+                sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
+                "51e56b0ab0ec25c38846b7d054b2cf9de179f96b6d56555cfe4e36c544913d9b"
+            );
+            let report = batch.unwrap();
+            let last = pictures.last().unwrap();
+            assert_eq!(last.extended_layer_id().get(), 3);
+            let [association] = last.atlas_associations() else {
+                panic!("expected a local atlas")
+            };
+            assert_eq!(association.scope.get(), 3);
+            assert_eq!(association.segment_id, Some(41));
+            assert_eq!(
+                last.atlas_associations(),
+                report.frames.last().unwrap().atlas_associations
+            );
+        } else {
+            for err in [streaming.unwrap_err(), batch.unwrap_err()] {
+                let DecodeError::MalformedSource { issue } = err else {
+                    panic!("{err:?}")
+                };
+                assert_eq!(issue.spec_section(), Some("7.3.2"));
+                assert_eq!(
+                    issue.offset().map(splot_core::span::ByteOffset::get),
+                    sequence_offset
+                );
+            }
+        }
     }
 }
