@@ -68,6 +68,45 @@ for each 4×4 luma cell, including both references in compound prediction.
 | Sparse | TL2 | TL0 (196) |
 | Sparse | TL3 | TL0 (40), TL2 (240) |
 
+### Embedded fixture recipe
+
+The four `syn-mlayer2-reproducible-*` fixtures define their source I420
+samples in the same encoder harness as the temporal recipe. Each frame
+submits the same source picture to ML0 and ML1. The recipe checks the source
+hash, repeats the encode, and compares the result to the committed stream.
+It clears the local LCR's three-bit parent ID for these single-stream
+fixtures. Whole-stream and selected-layer Splot outputs must match the
+corresponding native AVM pictures. The combined fixture signals one ML0/TL0
+multi-frame header. The recipe checks that the first tile group of each
+picture references this header. The Rust test checks native output and
+layer IDs when only ML1/TL1 pictures are selected.
+
+Use the AVM revision and build configuration in the temporal recipe. Run
+this command from the Splot repository.
+
+```sh
+python3 tools/decoder-fixtures/generate.py embedded-fixtures \
+  --avm-source "$AVM_SOURCE" --avm-build "$AVM_BUILD" \
+  --splot target/debug/splot --stage "$(mktemp -d)"
+```
+
+AVM inspection counts references to ML0 in actual ML1 inter blocks.
+Use `AV2_SET_INSPECTION_CALLBACK` with an AVM build configured with
+`CONFIG_INSPECTION=1`. Wrap each Annex B temporal unit in one IVF record.
+For each decoded 4×4 luma cell, resolve each inter reference from
+`ifd_inspect` with `get_ref_frame_buf` and count its `mlayer_id`.
+
+| Fixture | ML0 references in each ML1 picture |
+| --- | --- |
+| 8-bit equal resolution | 512, 256, 256 |
+| 10-bit equal resolution | 512, 256, 256 |
+| 8-bit mixed resolution | 5948, 3004, 2780 |
+| 8-bit with two temporal layers and two tile groups | 1024, 512, 512, 512 |
+
+The count includes both references in compound prediction. The decoder-oracle
+pin `457cd58681a747465661baccb1f32095bc5b7774` produces the same decoded
+samples for all four streams.
+
 ## Committed Corpus
 
 `tests/conformance/manifest.toml` lists committed validator vectors and their
