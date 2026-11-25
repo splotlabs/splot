@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use splot_core::simd::SimdBackend;
+use splot_core::simd::{ResolvedBackend, SimdBackend};
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::DecodeOptions;
@@ -35,7 +35,7 @@ pub(crate) fn write_raw_stream_from_plan(
             super::track_flat_output_xlayer(&mut seen_xlayer, output.extended_layer_id)?;
             let frame = output.ready_frame()?;
             write_display_frame(
-                backend,
+                session.backend(),
                 &frame,
                 output.output_grain(options),
                 &mut spare,
@@ -48,7 +48,7 @@ pub(crate) fn write_raw_stream_from_plan(
 
 /// Writes one displayed frame.
 fn write_display_frame(
-    backend: impl SimdBackend,
+    backend: ResolvedBackend,
     frame: &PipelineDecodedFrame,
     display_grain: Option<&crate::pipeline::ActiveFilmGrain>,
     spare: &mut GrainPlanes,
@@ -79,6 +79,7 @@ pub(crate) fn discard_raw_stream_from_plan(
     session: &crate::pipeline::DecodeSession,
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
+    let grain_backend = session.backend();
     crate::pipeline::emit_frames(
         backend,
         source,
@@ -89,11 +90,17 @@ pub(crate) fn discard_raw_stream_from_plan(
             let grain = output.output_grain(options);
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
-                    write_display(backend, frame.get(), grain, &mut spare.eight, |_| Ok(()))
+                    write_display(grain_backend, frame.get(), grain, &mut spare.eight, |_| {
+                        Ok(())
+                    })
                 }
-                PipelineDecodedFrame::Ten(frame) => {
-                    write_display(backend, frame.get(), grain, &mut spare.ten, |_| Ok(()))
-                }
+                PipelineDecodedFrame::Ten(frame) => write_display(
+                    grain_backend,
+                    frame.get(),
+                    grain,
+                    &mut spare.ten,
+                    |_| Ok(()),
+                ),
             }
         },
     )?;

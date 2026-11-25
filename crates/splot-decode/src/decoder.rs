@@ -248,8 +248,7 @@ impl Picture {
         frame: &PipelineFrame,
         pool: Option<Arc<PlanePool>>,
         options: &DecodeOptions,
-        backend: impl SimdBackend,
-        resolved: ResolvedBackend,
+        backend: ResolvedBackend,
     ) -> Result<Self> {
         let grain = frame.output_grain(options);
         let samples = match frame.ready_frame()? {
@@ -269,7 +268,7 @@ impl Picture {
             extended_layer_id: frame.extended_layer_id,
             embedded_layer_id: frame.embedded_layer_id,
             temporal_layer_id: frame.temporal_layer_id,
-            backend: resolved,
+            backend,
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
@@ -300,7 +299,23 @@ impl Picture {
     /// # Errors
     /// Returns [`DecodeError::Reconstruction`] when the synthesis fails.
     pub fn apply_film_grain(&self) -> Result<Self> {
-        let samples = self.backend.enter(DeferredDisplay(self))?;
+        let grain = self.pending_grain.as_ref();
+        let pool = self.pool.as_ref();
+        let samples = match &self.samples {
+            Some(Samples::Eight(frame)) => Some(Samples::Eight(display(
+                self.backend,
+                frame.share(),
+                grain,
+                pool,
+            )?)),
+            Some(Samples::Ten(frame)) => Some(Samples::Ten(display(
+                self.backend,
+                frame.share(),
+                grain,
+                pool,
+            )?)),
+            None => None,
+        };
         Ok(Self {
             info: samples.as_ref().map_or(self.info, Samples::info),
             samples,
@@ -421,35 +436,10 @@ impl Drop for Picture {
     }
 }
 
-struct DeferredDisplay<'a>(&'a Picture);
-
-impl SimdScope<Result<Option<Samples>>> for DeferredDisplay<'_> {
-    fn run<B: SimdBackend>(self, backend: B) -> Result<Option<Samples>> {
-        let backend = backend.narrow();
-        let grain = self.0.pending_grain.as_ref();
-        let pool = self.0.pool.as_ref();
-        match &self.0.samples {
-            Some(Samples::Eight(frame)) => Ok(Some(Samples::Eight(display(
-                backend,
-                frame.share(),
-                grain,
-                pool,
-            )?))),
-            Some(Samples::Ten(frame)) => Ok(Some(Samples::Ten(display(
-                backend,
-                frame.share(),
-                grain,
-                pool,
-            )?))),
-            None => Ok(None),
-        }
-    }
-}
-
 /// The displayed form of `frame`: grain goes into planes from the decoder's
 /// pool, which the picture gives them back to when the caller drops it.
 fn display<T: ReconSample>(
-    backend: impl SimdBackend,
+    backend: ResolvedBackend,
     frame: SharedFrame<T>,
     grain: Option<&ActiveFilmGrain>,
     pool: Option<&Arc<PlanePool>>,
@@ -655,8 +645,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
                     frame,
                     session.planes(),
                     &options,
-                    backend,
-                    launch.resolved,
+                    session.backend(),
                 )?);
                 Ok(())
             },
