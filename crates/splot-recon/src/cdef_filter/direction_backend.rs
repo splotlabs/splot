@@ -171,7 +171,7 @@ mod tests {
         let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
         let run = |pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32| -> (usize, i32) {
             match resolved {
-                #[cfg(target_arch = "x86_64")]
+                #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
                 ResolvedBackend::Sse2(b) => cdef_direction_backend_audit_entry(b, pad, coeff_shift),
                 #[cfg(target_arch = "x86_64")]
                 ResolvedBackend::Avx2(b) => cdef_direction_backend_audit_entry(b, pad, coeff_shift),
