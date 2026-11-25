@@ -38,12 +38,21 @@ pub struct AtlasAssociation {
     pub lcr_offset: Option<ByteOffset>,
     /// Segment label for this picture, when specified.
     pub segment_id: Option<u8>,
+    segment_index: Option<usize>,
     /// LCR rendering priority, when specified.
     pub priority_order: Option<u8>,
     /// LCR rendering method, when specified.
     pub rendering_method: Option<u8>,
     /// Layout at the picture's source position. A referenced global atlas can be absent.
     pub layout: Option<Arc<AtlasLayout>>,
+}
+
+impl AtlasAssociation {
+    /// Returns the segment index in the attached layout, when available.
+    #[must_use]
+    pub const fn segment_index(&self) -> Option<usize> {
+        self.segment_index
+    }
 }
 
 /// Caller-supplied atlas OBUs for a new decode or a random access point.
@@ -122,12 +131,13 @@ impl ScopedAtlases {
         output: &mut Vec<AtlasAssociation>,
     ) {
         for (&atlas_id, layout) in &self.layouts {
-            if let Some(segment_id) = layout.stream_segment(xlayer) {
+            if let Some((index, id)) = layout.stream_segment(xlayer) {
                 output.push(AtlasAssociation {
                     scope: splot_core::types::GLOBAL_XLAYER_ID,
                     atlas_id,
                     lcr_offset: None,
-                    segment_id: Some(segment_id),
+                    segment_id: Some(id),
+                    segment_index: Some(index),
                     priority_order: None,
                     rendering_method: None,
                     layout: Some(layout.clone()),
@@ -155,7 +165,7 @@ impl AtlasLayout {
         })
     }
 
-    fn stream_segment(&self, xlayer: ExtendedLayerId) -> Option<u8> {
+    fn stream_segment(&self, xlayer: ExtendedLayerId) -> Option<(usize, u8)> {
         let index = match &self.atlas.mode_info {
             AtlasModeInfo::Multistream(info) | AtlasModeInfo::MultistreamAlpha(info) => info
                 .segments
@@ -167,7 +177,11 @@ impl AtlasLayout {
                 .position(|segment| segment.input_stream_id == Some(xlayer.get())),
             _ => None,
         }?;
-        self.atlas.label.segment_ids.get(index).copied()
+        self.atlas
+            .label
+            .segment_ids
+            .get(index)
+            .map(|&id| (index, id))
     }
 }
 
@@ -236,27 +250,40 @@ impl AtlasReference {
                 })
             })
         });
-        let segment_id = reference
-            .map(|r| r.atlas_segment_id)
-            .or_else(|| layout.and_then(|layout| layout.stream_segment(xlayer)));
-        if let (Some(id), Some(layout)) = (segment_id, layout)
-            && !layout.atlas.label.segment_ids.contains(&id)
-        {
-            return Err(invalid(
-                if layout.external {
-                    self.offset
-                } else {
-                    self.offset.max(layout.offset)
-                },
-                "6.9.2",
-                format!("atlas {} has no segment with ID {id}", self.id),
-            ));
-        }
+        let (segment_id, segment_index) = match (reference, layout) {
+            (Some(reference), Some(layout)) => {
+                let id = reference.atlas_segment_id;
+                // § 5.9.1 writes the inverse label map in ascending index order.
+                let index = layout
+                    .atlas
+                    .label
+                    .segment_ids
+                    .iter()
+                    .rposition(|label| *label == id)
+                    .ok_or_else(|| {
+                        invalid(
+                            if layout.external {
+                                self.offset
+                            } else {
+                                self.offset.max(layout.offset)
+                            },
+                            "6.9.2",
+                            format!("atlas {} has no segment with ID {id}", self.id),
+                        )
+                    })?;
+                (Some(id), Some(index))
+            }
+            (Some(reference), None) => (Some(reference.atlas_segment_id), None),
+            (None, layout) => layout
+                .and_then(|layout| layout.stream_segment(xlayer))
+                .map_or((None, None), |(index, id)| (Some(id), Some(index))),
+        };
         Ok(Some(AtlasAssociation {
             scope,
             atlas_id: self.id,
             lcr_offset: Some(self.offset),
             segment_id,
+            segment_index,
             priority_order: reference.map(|r| r.priority_order),
             rendering_method: reference.map(|r| r.rendering_method),
             layout: layout.cloned(),

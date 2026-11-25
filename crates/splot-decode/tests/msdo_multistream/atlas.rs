@@ -52,13 +52,7 @@ fn atlas_snapshots_follow_the_key_activation_and_keep_the_native_samples() {
                 let layout = global.layout.as_ref().unwrap();
                 assert!(!layout.external);
                 let id = global.segment_id.unwrap();
-                let index = layout
-                    .atlas
-                    .label
-                    .segment_ids
-                    .iter()
-                    .rposition(|v| *v == id)
-                    .unwrap();
+                let index = global.segment_index().unwrap();
                 let local_offset = match &associations[1..] {
                     [] => "-".to_owned(),
                     [local] => {
