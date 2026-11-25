@@ -374,6 +374,24 @@ pub(crate) fn filter_run<
         let (window, out) = (T::lane_rows(window), O::lanes_mut(output));
         return F::by_lane(t, window, rows, span, classes, (out, stride), max_sample);
     }
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = backend.avx2_token() {
+        // Keep weight setup, row arithmetic and stores in one target-feature scope.
+        return token.vectorize(
+            #[inline(always)]
+            || {
+                filter_run_groups::<L, F, T, O, ROWS, REACH>(
+                    backend,
+                    window,
+                    rows,
+                    span,
+                    classes,
+                    (output, stride),
+                    max_sample,
+                )
+            },
+        );
+    }
     filter_run_groups::<L, F, T, O, ROWS, REACH>(
         backend,
         window,
@@ -388,7 +406,11 @@ pub(crate) fn filter_run<
 /// [`filter_run`] on the [`filter16`] group kernel, groups outer and rows
 /// inner: the window and output rows are cut to the run once, so a group
 /// checks one length per plane, and cell weights are built once per group.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keeps the group loop and nested row kernel inside the target-feature scope"
+)]
+#[inline(always)]
 fn filter_run_groups<
     L: LrBackend,
     F: TapPairs,
