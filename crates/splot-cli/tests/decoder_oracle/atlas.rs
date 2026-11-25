@@ -3,13 +3,14 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
+use std::sync::Arc;
 
 use splot_core::stream_reader::TemporalUnitReader;
 use splot_core::types::ExtendedLayerId;
 use splot_decode::{
-    AtlasCompositor, BitDepth, DataProps, DecodeContext, DecodeLimits, DecodeOptions,
-    DecodeRuntimeConfig, Decoder, DecoderSettings, ExtendedLayerSelection, Picture, SendStatus,
-    ThreadCount,
+    AtlasCompositionError, AtlasCompositor, AtlasLayout, BitDepth, DataProps, DecodeContext,
+    DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig, Decoder,
+    DecoderSettings, ExtendedLayerSelection, Picture, SendStatus, ThreadCount,
 };
 
 use super::{append_raw, sha256_hex};
@@ -74,6 +75,15 @@ fn decode_timed(bytes: &[u8], pts: &[i64], threads: ThreadCount) -> Vec<Picture>
     pictures
 }
 
+fn global_layout(picture: &Picture) -> &Arc<AtlasLayout> {
+    picture
+        .atlas_associations()
+        .iter()
+        .find(|association| association.scope.is_global())
+        .and_then(|association| association.layout.as_ref())
+        .expect("global layout")
+}
+
 #[test]
 fn native_and_composite_output_match_independent_goldens() {
     let vectors = [
@@ -127,13 +137,9 @@ fn native_and_composite_output_match_independent_goldens() {
             for (time, mut group) in at_time {
                 assert_eq!(group.len(), 2);
                 group.reverse();
-                let layout = group[0]
-                    .atlas_associations()
-                    .iter()
-                    .find(|association| association.scope.is_global())
-                    .and_then(|association| association.layout.as_ref())
-                    .expect("global layout");
-                let canvas = compositor.compose(layout, time, &group).expect("compose");
+                let canvas = compositor
+                    .compose(global_layout(group[0]), time, &group)
+                    .expect("compose");
                 assert_eq!((canvas.width(), canvas.height()), (144, 64));
                 assert_eq!(canvas.pts(), time);
                 assert_eq!(canvas.bit_depth(), depth);
@@ -164,4 +170,38 @@ fn native_and_composite_output_match_independent_goldens() {
             }
         }
     }
+}
+
+#[test]
+fn missing_duplicate_stale_and_oversized_groups_return_typed_errors() {
+    let bytes = include_bytes!(
+        "../../../../tests/conformance/vectors/valid/syn-atlas-alpha-paired-8bit.obu"
+    );
+    let pics = decode_timed(bytes, &[0, 1, 2, 3], ThreadCount::from(1usize));
+    let first = global_layout(&pics[0]);
+    let mut compositor = AtlasCompositor::new(DecodeLimits::default());
+    assert!(matches!(
+        compositor.compose(first, 0, &[&pics[0]]),
+        Err(AtlasCompositionError::MissingPicture(7))
+    ));
+    assert!(matches!(
+        compositor.compose(first, 0, &[&pics[0], &pics[0]]),
+        Err(AtlasCompositionError::UnexpectedPicture(3))
+    ));
+    assert!(matches!(
+        compositor.compose(first, 0, &[&pics[0], &pics[3]]),
+        Err(AtlasCompositionError::TimestampMismatch(7))
+    ));
+    assert!(matches!(
+        compositor.compose(first, 2, &[&pics[4], &pics[5]]),
+        Err(AtlasCompositionError::StaleLayout(3))
+    ));
+    let mut limited = AtlasCompositor::new(
+        DecodeLimits::default().with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(100)),
+    );
+    assert!(matches!(
+        limited.compose(first, 0, &[&pics[0], &pics[1]]),
+        Err(AtlasCompositionError::Limit(_))
+    ));
+    assert!(compositor.compose(first, 0, &[&pics[0], &pics[1]]).is_ok());
 }
