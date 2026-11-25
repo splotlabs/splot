@@ -12,6 +12,7 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py bru-inactive-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py atlas-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py extended-layer-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py temporal-fixtures ...
   python3 tools/decoder-fixtures/generate.py embedded-fixtures ...
@@ -27,6 +28,8 @@ import argparse, hashlib, json, math, os, shutil, subprocess, sys
 from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+from atlas import generate as generate_atlas
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VALID = os.path.join(REPO, "tests/conformance/vectors/valid")
@@ -1655,6 +1658,9 @@ def main():
     i = sub.add_parser("bru-intrabc-fixtures"); i.add_argument("--stage", required=True)
     i.add_argument("--only", help="regenerate one fixture id")
     i.set_defaults(fn=cmd_bru_intrabc_fixtures)
+    a = sub.add_parser("atlas-fixtures")
+    a.add_argument("--stage", required=True)
+    a.set_defaults(fn=lambda args: generate_atlas(VALID, args.stage))
     multi = sub.add_parser("extended-layer-fixtures")
     multi.add_argument("--stage", required=True)
     multi.set_defaults(fn=cmd_extended_layer_fixtures)
