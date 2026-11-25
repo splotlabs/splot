@@ -25,7 +25,6 @@ const OBU_SEQUENCE_HEADER: u8 = 0x04;
 const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
 const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
 const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
-const OBU_METADATA_SHORT: u8 = 0x20;
 const OBU_REGULAR_TIP: u8 = 0x38;
 const OBU_OPERATING_POINT_SET: u8 = 0x48;
 const OBU_FILM_GRAIN: u8 = 0x5C;
@@ -419,48 +418,20 @@ fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter()
 }
 
 #[test]
-fn frame_unit_order_accepts_trailing_prefix_metadata_after_frame_and_rejects_frameless_tu() {
-    let prefix_metadata_obu = [0x02u8, OBU_METADATA_SHORT, 0x00];
-    let inter_trailing_tile = [
-        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-        obu(OBU_REGULAR_TILE_GROUP).as_slice(),
-        prefix_metadata_obu.as_slice(),
-    ]
-    .concat();
-    let inter_trailing_tip = [
-        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-        obu(OBU_REGULAR_TIP).as_slice(),
-        prefix_metadata_obu.as_slice(),
-    ]
-    .concat();
-    let key_trailing = [
-        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-        obu(OBU_SEQUENCE_HEADER).as_slice(),
-        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
-        prefix_metadata_obu.as_slice(),
-    ]
-    .concat();
-    let frameless_tu = [
-        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-        prefix_metadata_obu.as_slice(),
-    ]
-    .concat();
-    let trailing_seq = [
-        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-        obu(OBU_REGULAR_TILE_GROUP).as_slice(),
-        obu(OBU_SEQUENCE_HEADER).as_slice(),
-    ]
-    .concat();
-
-    assert!(require_inter_obu_order(&annexb_obus(&inter_trailing_tile)).is_ok());
-    assert!(require_inter_obu_order(&annexb_obus(&inter_trailing_tip)).is_ok());
-    assert!(require_key_ivf_obu_order(&annexb_obus(&key_trailing)).is_ok());
+fn leading_frame_rejects_misplaced_prefix_metadata()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(DEFAULT_QM_FIXTURE) else {
+        return Err("expected IVF fixture".into());
+    };
+    let mut bytes = ivf.frames[0].frame.payload.to_vec();
+    let metadata_start = bytes.len();
+    bytes.extend([5, 0x20, 0x22, 9, 0, 0x80]);
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
     assert_eq!(
-        unsupported_reason(require_inter_obu_order(&annexb_obus(&frameless_tu))),
-        Some("unexpected_inter_obu_order")
+        unsupported_reason(context.decode_hash_report_bytes(&bytes, DecodeOptions::default())),
+        Some("unexpected_leading_obu_after_key")
     );
-    assert_eq!(
-        unsupported_reason(require_inter_obu_order(&annexb_obus(&trailing_seq))),
-        Some("unexpected_inter_obu_order")
-    );
+    bytes[metadata_start + 2] |= 0x80;
+    context.decode_hash_report_bytes(&bytes, DecodeOptions::default())?;
+    Ok(())
 }
