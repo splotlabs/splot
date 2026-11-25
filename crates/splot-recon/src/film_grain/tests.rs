@@ -435,6 +435,125 @@ fn measure_wide_grain_noise_rows() {
     bench::<u16>(10, avx2, avx512);
 }
 
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn wide_luma_lookup_matches_the_exact_table() {
+    use super::{NoiseParams, add_luma_noise, noisy_row_scalar};
+    use fearless_simd::{Level, Simd};
+
+    let Some(simd) = Level::new().as_avx512() else {
+        assert!(std::env::var_os("SPLOT_REQUIRE_AVX512").is_none());
+        return;
+    };
+    let mut rng = TestRng(0x69c7_1941_9f31_5afa);
+    let table: [u8; 256] = core::array::from_fn(|i| match i % 8 {
+        0 => 0,
+        1 => 255,
+        _ => rng.next() as u8,
+    });
+    let coarse = core::array::from_fn(|i| i32::from(table[i.min(255)]));
+    let lut = super::ScaleLut::new(&coarse, 8);
+    for width in [1, 31, 32, 63, 64, 65, 127, 128, 255, 256, 257, 1920] {
+        let initial: Vec<u8> = (0..width).map(|i| i as u8).collect();
+        let noise: Vec<i16> = (0..width)
+            .map(|i| match i % 4 {
+                0 => -128,
+                1 => 127,
+                _ => i16::from(rng.next() as u8) - 128,
+            })
+            .collect();
+        for (min, max) in [(0, 255), (16, 235)] {
+            for shift in 8..=11 {
+                let params = NoiseParams {
+                    shift,
+                    min,
+                    max,
+                    narrow: true,
+                };
+                let mut expected = initial.clone();
+                noisy_row_scalar(
+                    &mut expected,
+                    &noise,
+                    &mut |_, sample| i32::from(sample),
+                    &lut,
+                    params,
+                )
+                .unwrap();
+                let mut actual = initial.clone();
+                simd.vectorize(
+                    #[inline(always)]
+                    || add_luma_noise(simd, &mut actual, &table, &noise, params),
+                );
+                assert_eq!(
+                    actual, expected,
+                    "width {width}, shift {shift}, range {min}..{max}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+#[ignore = "native AVX-512 timing"]
+fn measure_luma_grain_with_lookup() {
+    use super::{NoiseParams, add_luma_noise, add_noise_row, luma_scale_row};
+    use fearless_simd::{Level, Simd};
+    use std::{hint::black_box, time::Instant};
+
+    const WIDTH: usize = 1920;
+    const ROWS: u32 = 16_384;
+    let simd = Level::new().as_avx512().expect("AVX-512 required");
+    let params = NoiseParams {
+        shift: 8,
+        min: 0,
+        max: 255,
+        narrow: true,
+    };
+    let mut rng = TestRng(0x69c7_1941_9f31_5afa);
+    let initial: [u8; WIDTH] = core::array::from_fn(|_| rng.next() as u8);
+    let table: [u8; 256] = core::array::from_fn(|_| rng.next() as u8);
+    let exact = core::array::from_fn(|i| i16::from(table[i.min(255)]));
+    let noise: [i16; WIDTH] = core::array::from_fn(|_| i16::from(rng.next() as u8) - 128);
+    let measure = |fused: bool| {
+        let mut row = initial;
+        let mut scale = [0; WIDTH];
+        let start = Instant::now();
+        for _ in 0..ROWS {
+            let row = black_box(&mut row);
+            let noise = black_box(&noise);
+            if fused {
+                let table = black_box(&table);
+                simd.vectorize(
+                    #[inline(always)]
+                    || add_luma_noise(simd, row, table, noise, params),
+                );
+            } else {
+                luma_scale_row(&mut scale, row, black_box(&exact));
+                let scale = black_box(&scale);
+                simd.vectorize(
+                    #[inline(always)]
+                    || add_noise_row::<_, _, true>(simd, row, scale, noise, params),
+                )
+                .unwrap();
+            }
+        }
+        black_box(row);
+        start.elapsed().as_secs_f64() * 1.0e9 / f64::from(ROWS)
+    };
+    let _ = (measure(false), measure(true));
+    println!("width,round,existing_ns_per_row,fused_ns_per_row");
+    for round in 0..24 {
+        let (base, fused) = if round % 2 == 0 {
+            (measure(false), measure(true))
+        } else {
+            let fused = measure(true);
+            (measure(false), fused)
+        };
+        println!("{WIDTH},{},{base:.2},{fused:.2}", round + 1);
+    }
+}
+
 fn destination_allocation_is_retained<T: ReconSample + std::fmt::Debug + PartialEq>(
     samples: &[T],
 ) -> Vec<T> {

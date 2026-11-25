@@ -44,7 +44,7 @@ jobs:
       - name: Compare native wide rows with the scalar oracle
         run: |
           cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
-            film_grain::tests::wide_noise_matches_scalar_at_both_depths -- --exact
+            film_grain::tests::wide_
 
       - name: Fetch and verify the frozen EwoutH streams
         run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
