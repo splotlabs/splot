@@ -680,7 +680,7 @@ fn unaligned_rap_pre_skip_and_cmvs_transition() {
 }
 
 #[test]
-fn msdo_sequence_ends_before_single_stream_cvs() {
+fn multistream_sequence_ends_before_single_stream_cvs() {
     let units = temporal_units(MSDO_8BIT);
     let mut single_stream = Vec::new();
     let new_xlayer = ExtendedLayerId::from_bits(9);
@@ -693,8 +693,61 @@ fn msdo_sequence_ends_before_single_stream_cvs() {
         }
         write_obu(&mut single_stream, header, envelope.payload);
     }
+    let msdo_10bit_units = temporal_units(MSDO_10BIT);
+    let unused_lcr = parse_annex_b_obus(&msdo_10bit_units[0])
+        .unwrap()
+        .into_iter()
+        .find(|obu| {
+            obu.header.obu_type == ObuType::LayerConfigurationRecord
+                && obu.header.extended_layer_id.is_global()
+        })
+        .unwrap();
+    let global_lcr_only: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-xlayer3-7-global-lcr-isolation.obu"
+    );
+    let msdo_then_single = "64fdd83bafcdf7ceaf9b87d848b460f1f4ec7aa52d51dd10eaf0a2e6d4bfc6b4";
+    for (prior, available_lcr, avm_sha) in [
+        (MSDO_8BIT, None, msdo_then_single),
+        (MSDO_8BIT, Some(unused_lcr), msdo_then_single),
+        (
+            global_lcr_only,
+            None,
+            "ee5ee2e55a7d69117ab67ea6df4c5360de5ef1d23db63dbe788ea9e5ef4ff0c2",
+        ),
+    ] {
+        let mut combined = prior.to_vec();
+        for envelope in parse_annex_b_obus(&single_stream).unwrap() {
+            write_obu(&mut combined, envelope.header, envelope.payload);
+            if envelope.header.obu_type == ObuType::TemporalDelimiter
+                && let Some(lcr) = available_lcr
+            {
+                write_obu(&mut combined, lcr.header, lcr.payload);
+            }
+        }
+        let pictures = stream_decode(&combined, &DecoderSettings::default()).unwrap();
+        let (raw, _) = raw_all_and_by_xlayer(&pictures);
+        assert_eq!(pictures.len(), 9);
+        assert_eq!(sha256_hex(&raw), avm_sha);
+        assert_eq!(pictures.last().unwrap().extended_layer_id(), new_xlayer);
+        let report = context(3, 2)
+            .decode_hash_report_bytes(&combined, DecodeOptions::default())
+            .unwrap();
+        assert_eq!(report.frames.len(), 9);
+    }
+}
+
+#[test]
+fn standalone_cvs_reuses_available_sequence_after_cmvs_end() {
+    let units = temporal_units(MSDO_8BIT);
     let mut combined = MSDO_8BIT.to_vec();
-    combined.extend_from_slice(&single_stream);
+    for envelope in parse_annex_b_obus(&units[0]).unwrap() {
+        if envelope.header.obu_type == ObuType::TemporalDelimiter
+            || (envelope.header.obu_type == ObuType::ClosedLoopKey
+                && envelope.header.extended_layer_id.get() == 3)
+        {
+            write_obu(&mut combined, envelope.header, envelope.payload);
+        }
+    }
     let pictures = stream_decode(&combined, &DecoderSettings::default()).unwrap();
     let (raw, _) = raw_all_and_by_xlayer(&pictures);
     assert_eq!(pictures.len(), 9);
@@ -702,7 +755,73 @@ fn msdo_sequence_ends_before_single_stream_cvs() {
         sha256_hex(&raw),
         "64fdd83bafcdf7ceaf9b87d848b460f1f4ec7aa52d51dd10eaf0a2e6d4bfc6b4"
     );
-    assert_eq!(pictures.last().unwrap().extended_layer_id(), new_xlayer);
+    assert_eq!(pictures.last().unwrap().extended_layer_id().get(), 3);
+    let report = context(3, 2)
+        .decode_hash_report_bytes(&combined, DecodeOptions::default())
+        .unwrap();
+    assert_eq!(report.frames.len(), 9);
+}
+
+#[test]
+fn local_lcr_shadows_the_available_global_lcr_at_cmvs_end() {
+    let units = temporal_units(MSDO_10BIT);
+    let global_lcr = parse_annex_b_obus(&units[0])
+        .unwrap()
+        .into_iter()
+        .find(|obu| {
+            obu.header.obu_type == ObuType::LayerConfigurationRecord
+                && obu.header.extended_layer_id.is_global()
+        })
+        .unwrap();
+    let embedded: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-crossref-10bit.obu");
+    let xlayer = ExtendedLayerId::from_bits(2);
+    for keep_local in [true, false] {
+        let mut combined = MSDO_8BIT.to_vec();
+        for (index, envelope) in parse_annex_b_obus(embedded)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+        {
+            let mut header = envelope.header;
+            if !header.extended_layer_id.is_global() {
+                if !keep_local && header.obu_type == ObuType::LayerConfigurationRecord {
+                    continue;
+                }
+                header.extended_layer_id = xlayer;
+                header.has_header_extension = true;
+                header.header_size_bytes = 2;
+            }
+            write_obu(&mut combined, header, envelope.payload);
+            if index == 0 {
+                write_obu(&mut combined, global_lcr.header, global_lcr.payload);
+            }
+        }
+        let pictures = stream_decode(&combined, &DecoderSettings::default());
+        let report = context(3, 2).decode_hash_report_bytes(&combined, DecodeOptions::default());
+        if keep_local {
+            let pictures = pictures.unwrap();
+            let (raw, _) = raw_all_and_by_xlayer(&pictures);
+            assert_eq!(pictures.len(), 14);
+            assert_eq!(pictures.last().unwrap().extended_layer_id(), xlayer);
+            assert_eq!(
+                sha256_hex(&raw),
+                "217f4167763d3c7e4b572ff6992ad7bcae87042aeac00b34e02cb7dac07804ac"
+            );
+            assert_eq!(report.unwrap().frames.len(), 14);
+        } else {
+            for error in [pictures.unwrap_err(), report.unwrap_err()] {
+                assert!(
+                    matches!(
+                        error,
+                        DecodeError::MalformedSource { ref issue }
+                            if issue.spec_section() == Some("7.3.2")
+                    ),
+                    "got {error:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -1000,17 +1119,25 @@ fn negative_msdo_ops_lifecycle_ordering_doh_and_aggregate_limits() {
         );
     }
 
-    {
+    for keep_msdo in [false, true] {
         let mut bad = Vec::new();
         bad.extend_from_slice(&tus_8b[0]);
+        let resume = parse_annex_b_obus(&tus_8b[2]).unwrap();
+        let msdo = resume
+            .iter()
+            .find(|env| env.header.obu_type == ObuType::Msdo)
+            .unwrap();
         for env in parse_annex_b_obus(&tus_8b[1]).unwrap() {
             if env.header.extended_layer_id == GLOBAL_XLAYER_ID
                 || env.header.extended_layer_id.get() == 3
             {
                 write_obu(&mut bad, env.header, env.payload);
             }
+            if keep_msdo && env.header.obu_type == ObuType::TemporalDelimiter {
+                write_obu(&mut bad, msdo.header, msdo.payload);
+            }
         }
-        for env in parse_annex_b_obus(&tus_8b[2]).unwrap() {
+        for env in resume {
             if env.header.extended_layer_id.get() == 7 {
                 let mut hdr = env.header;
                 if let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut sh)) =
@@ -1025,14 +1152,25 @@ fn negative_msdo_ops_lifecycle_ordering_doh_and_aggregate_limits() {
             }
         }
         let err = stream_decode(&bad, &DecoderSettings::default()).unwrap_err();
-        assert!(
-            matches!(
-                &err,
-                DecodeError::MalformedSource { issue }
-                    if issue.spec_section() == Some("7.3.7")
-            ),
-            "got {err:?}"
-        );
+        if keep_msdo {
+            assert!(
+                matches!(
+                    &err,
+                    DecodeError::MalformedSource { issue }
+                        if issue.spec_section() == Some("7.3.7")
+                ),
+                "got {err:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    &err,
+                    DecodeError::UnsupportedFeature { unsupported }
+                        if unsupported.reason() == "missing_random_access_frame"
+                ),
+                "got {err:?}"
+            );
+        }
     }
 
     {

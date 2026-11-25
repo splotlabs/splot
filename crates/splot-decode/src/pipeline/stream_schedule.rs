@@ -16,7 +16,7 @@ use crate::error::Result;
 use crate::support::capability::missing_capability_message;
 use crate::{DecodeLimits, DecodeOptions, DecodePlannedObu};
 
-type OnSkippedTuFn<'a> = dyn FnMut(&[ObuEnvelope<'_>], bool, bool) -> Result<()> + 'a;
+type OnSkippedTuFn<'a> = dyn FnMut(&UnitBytes, &[ObuEnvelope<'_>], bool, bool) -> Result<()> + 'a;
 
 /// The temporal units the frame loop reads frame units from, one at a time.
 pub(super) struct RuntimeStream<'a> {
@@ -24,6 +24,7 @@ pub(super) struct RuntimeStream<'a> {
     buffers: &'a mut Vec<std::sync::Arc<Vec<u8>>>,
     limits: DecodeLimits,
     current: Option<SourceUnit>,
+    checked_rap_flags: Option<(bool, bool)>,
     /// The index of the current unit among the units read so far.
     record: usize,
     scan: CandidateScan,
@@ -40,6 +41,7 @@ impl<'a> RuntimeStream<'a> {
             buffers,
             limits: options.limits(),
             current: None,
+            checked_rap_flags: None,
             record: 0,
             scan: CandidateScan::new_with_selections(
                 options.temporal_layer_selection(),
@@ -81,6 +83,7 @@ impl<'a> RuntimeStream<'a> {
         let Some(unit) = self.source.next_unit(self.buffers)? else {
             return Ok(false);
         };
+        self.checked_rap_flags = None;
         if self.current.replace(unit).is_some() {
             self.record += 1;
         }
@@ -151,6 +154,10 @@ impl<'a> RuntimeStream<'a> {
         saw_unselected_xlayer_frame
     }
 
+    pub(super) const fn checked_rap_flags(&self) -> Option<(bool, bool)> {
+        self.checked_rap_flags
+    }
+
     pub(super) fn has_unfiltered_multistream_rap(&self, unit: &UnitBytes) -> Result<bool> {
         if self.scan.layer_filter().extended_filtering_disabled() {
             return Ok(false);
@@ -180,7 +187,8 @@ impl<'a> RuntimeStream<'a> {
                     process_skipped_unit(skipped, storage, filter, on_skipped)?;
                 }
                 if fresh {
-                    check_unit(&unit, storage, candidate.obu_type())?;
+                    self.checked_rap_flags =
+                        Some(check_unit(&unit, storage, candidate.obu_type())?);
                 }
                 return Ok(Some((candidate, unit)));
             }
@@ -245,13 +253,13 @@ fn first_unit_frame_is_key(obus: &[ObuEnvelope<'_>]) -> bool {
     while obus.get(index).is_some_and(is_pre_sequence_obu) {
         index += 1;
     }
-    if obus
+    if !obus
         .get(index)
         .is_some_and(|envelope| envelope.header.obu_type == ObuType::SequenceHeader)
     {
-        index += 1;
+        return false;
     }
-    index = skip_frame_prefix_obus(obus, index);
+    index = skip_frame_prefix_obus(obus, index + 1);
     obus.get(index)
         .is_some_and(|envelope| envelope.header.obu_type == ObuType::ClosedLoopKey)
 }
@@ -264,7 +272,12 @@ fn unit_order_check(
         .iter()
         .take_while(|envelope| envelope.header.obu_type != ObuType::ClosedLoopKey)
         .any(|envelope| is_inter_frame_obu(envelope.header.obu_type));
-    if (candidate_obu == Some(ObuType::ClosedLoopKey) && !has_prior_inter_frame)
+    if (candidate_obu == Some(ObuType::ClosedLoopKey)
+        && !has_prior_inter_frame
+        && obus
+            .iter()
+            .take_while(|env| env.header.obu_type != ObuType::ClosedLoopKey)
+            .any(|env| env.header.obu_type == ObuType::SequenceHeader))
         || first_unit_frame_is_key(obus)
     {
         require_key_ivf_obu_order
@@ -273,10 +286,12 @@ fn unit_order_check(
     }
 }
 
-fn validate_tu_multistream_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
+fn validate_tu_multistream_order(obus: &[ObuEnvelope<'_>]) -> Result<(bool, bool)> {
     let mut saw_msdo = false;
     let mut saw_after_msdo = false;
     let mut last_celu_xlayer: Option<u8> = None;
+    let mut has_rap = false;
+    let mut has_clk = false;
     for envelope in obus {
         let header = envelope.header;
         match header.obu_type {
@@ -315,6 +330,14 @@ fn validate_tu_multistream_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
                 saw_after_msdo = true;
             }
             _ => {
+                match header.obu_type {
+                    ObuType::ClosedLoopKey => {
+                        has_rap = true;
+                        has_clk = true;
+                    }
+                    ObuType::OpenLoopKey | ObuType::RasFrame => has_rap = true,
+                    _ => {}
+                }
                 let id = header.extended_layer_id.get();
                 if let Some(prev) = last_celu_xlayer
                     && id < prev
@@ -330,46 +353,27 @@ fn validate_tu_multistream_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok((has_rap, has_clk))
 }
 
 fn check_unit(
     unit: &UnitBytes,
     storage: &mut Vec<ObuEnvelope<'static>>,
     candidate_obu: ObuType,
-) -> Result<()> {
+) -> Result<(bool, bool)> {
     let mut obus = recycle(core::mem::take(storage));
     runtime_obus(unit.view(), &mut obus)?;
     let check = unit_order_check(&obus, Some(candidate_obu));
     check(&obus)?;
-    validate_tu_multistream_order(&obus)?;
+    let flags = validate_tu_multistream_order(&obus)?;
     *storage = recycle(obus);
-    Ok(())
+    Ok(flags)
 }
 
 pub(super) fn unit_rap_flags(unit: &UnitBytes) -> Result<(bool, bool)> {
     let mut obus = Vec::new();
     runtime_obus(unit.view(), &mut obus)?;
-    validate_tu_multistream_order(&obus)?;
-    Ok(tu_rap_flags(&obus))
-}
-
-fn tu_rap_flags(obus: &[ObuEnvelope<'_>]) -> (bool, bool) {
-    let mut has_rap = false;
-    let mut has_clk = false;
-    for env in obus {
-        match env.header.obu_type {
-            ObuType::ClosedLoopKey => {
-                has_rap = true;
-                has_clk = true;
-            }
-            ObuType::OpenLoopKey | ObuType::RasFrame => {
-                has_rap = true;
-            }
-            _ => {}
-        }
-    }
-    (has_rap, has_clk)
+    validate_tu_multistream_order(&obus)
 }
 
 fn process_skipped_unit(
@@ -382,15 +386,14 @@ fn process_skipped_unit(
     runtime_obus(unit.view(), &mut obus)?;
     let check = unit_order_check(&obus, None);
     let check_result = check(&obus).and_then(|()| validate_tu_multistream_order(&obus));
-    if check_result.is_ok() {
-        let (tu_has_rap, tu_has_clk) = tu_rap_flags(&obus);
+    if let Ok((tu_has_rap, tu_has_clk)) = check_result {
         obus.retain(|envelope| filter.is_obu_selected(envelope.header));
-        let callback_result = on_skipped(&obus, tu_has_rap, tu_has_clk);
+        let callback_result = on_skipped(unit, &obus, tu_has_rap, tu_has_clk);
         *storage = recycle(obus);
         return callback_result;
     }
     *storage = recycle(obus);
-    check_result
+    check_result.map(|_| ())
 }
 
 fn missing_inter_ivf_obu(offset: Option<ByteOffset>) -> crate::DecodeError {
@@ -451,7 +454,11 @@ fn inter_frame_envelope<'a>(
 pub(super) fn ivf_key_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
-) -> Result<(ObuEnvelope<'a>, &'a [ObuEnvelope<'a>], ObuEnvelope<'a>)> {
+) -> Result<(
+    Option<ObuEnvelope<'a>>,
+    &'a [ObuEnvelope<'a>],
+    ObuEnvelope<'a>,
+)> {
     let position = obus
         .iter()
         .position(|envelope| envelope.offset == candidate.offset())
@@ -464,34 +471,17 @@ pub(super) fn ivf_key_frame_unit<'a>(
             missing_capability_message!("frame.sequence repeated_key_frame_unit"),
         ));
     }
-    if let Some(start) = prefix_after_previous_inter_frame(position, obus) {
-        let sequence_envelope = obus[..position]
-            .iter()
-            .rev()
-            .take_while(|envelope| envelope.header.obu_type != ObuType::TemporalDelimiter)
-            .find(|envelope| {
-                envelope.header.obu_type == ObuType::SequenceHeader
-                    && envelope.header.extended_layer_id == key_envelope.header.extended_layer_id
-            })
-            .copied()
-            .ok_or_else(|| {
-                unsupported_at(
-                    "missing_sequence_header",
-                    candidate.offset(),
-                    missing_capability_message!("obu.order minimal_frame_unit"),
-                )
-            })?;
-        return Ok((sequence_envelope, &obus[start..position], key_envelope));
-    }
-    let ([_, sequence_envelope, first_key], indices) = require_key_frame_unit(obus)?;
-    if first_key.offset != candidate.offset() {
-        return Err(unsupported_at(
-            "unexpected_key_obu_order",
-            candidate.offset(),
-            missing_capability_message!("frame.sequence repeated_key_frame_unit"),
-        ));
-    }
-    Ok((sequence_envelope, &obus[..indices.frame], first_key))
+    let start = prefix_after_previous_inter_frame(position, obus).unwrap_or(0);
+    let sequence = obus[..position]
+        .iter()
+        .rev()
+        .take_while(|envelope| envelope.header.obu_type != ObuType::TemporalDelimiter)
+        .find(|envelope| {
+            envelope.header.obu_type == ObuType::SequenceHeader
+                && envelope.header.extended_layer_id == key_envelope.header.extended_layer_id
+        })
+        .copied();
+    Ok((sequence, &obus[start..position], key_envelope))
 }
 
 pub(super) fn leading_record_inter_frame_unit_start(
@@ -544,23 +534,7 @@ pub(super) fn require_inter_frame_units(
                 missing_capability_message!("inter.ivf_frame_unit_order"),
             ));
         };
-        if envelope.header.obu_type == ObuType::ClosedLoopKey {
-            let has_sequence = obus[..index]
-                .iter()
-                .rev()
-                .take_while(|prior| prior.header.obu_type != ObuType::TemporalDelimiter)
-                .any(|prior| {
-                    prior.header.obu_type == ObuType::SequenceHeader
-                        && prior.header.extended_layer_id == envelope.header.extended_layer_id
-                });
-            if !has_sequence {
-                return Err(unsupported_at(
-                    reason,
-                    envelope.offset,
-                    missing_capability_message!("inter.ivf_frame_unit_order"),
-                ));
-            }
-        } else {
+        if envelope.header.obu_type != ObuType::ClosedLoopKey {
             require_inter_frame_obu(envelope, reason)?;
         }
         index = skip_frame_suffix_obus(obus, index + 1);
