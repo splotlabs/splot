@@ -29,7 +29,7 @@ def hls(obu_type, xlayer, bits):
     return bytes((128 | (obu_type << 2), xlayer)) + int(bits, 2).to_bytes(len(bits) // 8, "big")
 
 
-def atlas(mode, xlayers, scope=31, labels=(41, 77)):
+def atlas(mode, xlayers, scope=31, labels=(41, 77), rectangles=None):
     bits = fixed(5, 3) + uvlc(mode)
     if mode == 0:
         # Two uniformly sized regions, one region per segment.
@@ -44,9 +44,10 @@ def atlas(mode, xlayers, scope=31, labels=(41, 77)):
             bits += "1"  # The first segment is the alpha plane of the second.
         if mode in (3, 4):
             bits += "0"  # Background values are absent.
-        for index, (xlayer, width) in enumerate(zip(xlayers, (64, 80))):
-            x = 64 if index and mode != 4 else 0
-            bits += fixed(xlayer, 5) + uvlc(x) + uvlc(0) + uvlc(width) + uvlc(64)
+        if rectangles is None:
+            rectangles = ((0, 0, 64, 64), (0 if mode == 4 else 64, 0, 80, 64))
+        for index, (xlayer, rectangle) in enumerate(zip(xlayers, rectangles, strict=True)):
+            bits += fixed(xlayer, 5) + "".join(uvlc(value) for value in rectangle)
             if mode == 4 and index == 0:
                 bits += "1"
     bits += "1" + "".join(fixed(label, 8) for label in labels)
