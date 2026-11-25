@@ -366,6 +366,7 @@ impl ValidatorContext {
             self.resolve_deferred_doh_constraint(options, report);
             self.resolve_deferred_lcr_msdo_agreement(options, report);
             self.resolve_deferred_cmvs_boundary(options, report);
+            self.resolve_global_lcr_group_agreement(completed_tu_index, options, report);
             self.commit_annex_a_iop_pending(completed_tu_index, options, report);
             self.complete_msdo_temporal_unit(report);
             self.complete_rap_replay_tu(completed_tu_index, options, report);

@@ -747,3 +747,142 @@ fn lcr_msdo_agreement_flags_earlier_nonconforming_msdo_overwritten_by_later() {
          overwrote the live MSDO record; report was: {report}"
     );
 }
+
+#[test]
+fn lcr_global_group_accepts_a_coordinated_switch() {
+    let mut data = Vec::new();
+    for id in [1, 2] {
+        data.extend(temporal_delimiter_obu());
+        data.extend(global_lcr_obu_agreement(id, 0b1001, None, None, false));
+        for xlayer in [0, 3] {
+            data.extend(seq_header_obu_lcr_ref(xlayer, 0, 2, true, id));
+            data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, xlayer, 0));
+        }
+    }
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "lcr/global-reference-mismatch"),
+        "{report}"
+    );
+}
+
+#[test]
+fn lcr_global_group_checks_direct_and_local_references() {
+    for (local_parent, peer_reference, expect_error) in [
+        (None, 2, true),
+        (None, 0, true),
+        (Some(0), 1, true),
+        (Some(2), 1, true),
+        (Some(1), 1, false),
+    ] {
+        let mut data = temporal_delimiter_obu();
+        for id in [1, 2] {
+            data.extend(global_lcr_obu_agreement(id, 0b1001, None, None, false));
+        }
+        data.extend(seq_header_obu_lcr_ref(0, 0, 2, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        if let Some(parent) = local_parent {
+            data.extend(super::lcr_atlas::local_lcr_obu(3, parent, 1, None));
+        }
+        data.extend(seq_header_obu_lcr_ref(3, 1, 2, true, peer_reference));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 3, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "lcr/global-reference-mismatch"
+                    && d.spec_section.as_deref() == Some("6.8.2")),
+            expect_error,
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn lcr_global_group_excludes_retired_layers() {
+    let mut data = temporal_delimiter_obu();
+    data.extend(global_lcr_obu_agreement(1, 0b1001, None, None, false));
+    for xlayer in [0, 3] {
+        data.extend(seq_header_obu_lcr_ref(xlayer, 0, 2, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, xlayer, 0));
+    }
+    data.extend(temporal_delimiter_obu());
+    data.extend(seq_header_obu_lcr_ref(7, 1, 2, true, 0));
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 7, 1));
+    data.extend(temporal_delimiter_obu());
+    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 7, 1));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "lcr/global-reference-mismatch"),
+        "{report}"
+    );
+}
+
+#[test]
+fn lcr_global_group_keeps_the_key_binding_across_inter_frames() {
+    use splot_core::annexb::parse_annex_b_obus;
+    use splot_core::types::ObuType;
+    use splot_core::write::{BitWriter, write_annexb_obu};
+
+    let fixture = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-xlayer3-7-9-shared-global-parent.obu"
+    );
+    let mut data = Vec::new();
+    let mut x7_sequence = None;
+    let mut tu = 0;
+    let mut inserted = false;
+    for envelope in parse_annex_b_obus(fixture).unwrap() {
+        let header = envelope.header;
+        if header.obu_type == ObuType::TemporalDelimiter {
+            tu += 1;
+        }
+        if header.extended_layer_id.get() == 7 {
+            if tu == 1 && header.obu_type == ObuType::SequenceHeader {
+                x7_sequence = Some(envelope);
+            }
+            if tu == 2 && header.obu_type == ObuType::RegularTileGroup && !inserted {
+                data.extend(super::lcr_atlas::local_lcr_obu(7, 0, 1, None));
+                let sequence = x7_sequence.unwrap();
+                let mut writer = BitWriter::new();
+                write_annexb_obu(&mut writer, &sequence.header, sequence.payload).unwrap();
+                data.extend(writer.into_bytes());
+                inserted = true;
+            }
+        }
+        let mut writer = BitWriter::new();
+        write_annexb_obu(&mut writer, &header, envelope.payload).unwrap();
+        data.extend(writer.into_bytes());
+    }
+    assert!(inserted);
+
+    let report = Validator::new(true).validate_bytes(&data);
+    assert_eq!(report.errors().count(), 0, "{report}");
+}
+
+#[test]
+fn lcr_global_group_checks_a_peer_that_did_not_switch() {
+    let mut data = temporal_delimiter_obu();
+    data.extend(global_lcr_obu_agreement(1, 0b1001, None, None, false));
+    for xlayer in [0, 3] {
+        data.extend(seq_header_obu_lcr_ref(xlayer, 0, 2, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, xlayer, 0));
+    }
+
+    data.extend(temporal_delimiter_obu());
+    data.extend(global_lcr_obu_agreement(2, 0b1001, None, None, false));
+    data.extend(seq_header_obu_lcr_ref(0, 0, 2, true, 2));
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report.errors().any(|diagnostic| {
+            diagnostic.rule_id == "lcr/global-reference-mismatch"
+                && diagnostic.message.contains("Extended layer 3")
+        }),
+        "{report}"
+    );
+}
