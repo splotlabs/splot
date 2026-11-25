@@ -199,9 +199,15 @@ fn diff_u8_simd<S: Simd>(
     chroma_mask: ChromaMask<'_>,
 ) {
     let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
-    diff_block(simd, output, preds, size, chroma_mask, |p0, p1, out| {
-        narrow_weighted(simd, (p0, p1), out, flip)
-    });
+    diff_block(
+        simd,
+        output,
+        preds,
+        size,
+        chroma_mask,
+        #[inline(always)]
+        |p0, p1, out| narrow_weighted(simd, (p0, p1), out, flip),
+    );
 }
 
 #[inline]
@@ -228,11 +234,19 @@ fn diff_wide_simd<S: Simd, O: WideSample>(
     chroma_mask: ChromaMask<'_>,
 ) {
     let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
-    diff_block(simd, output, preds, size, chroma_mask, |p0, p1, out| {
-        let m = wide_weight(simd, (p0, p1), flip, weights);
-        O::put(wide_blend(simd, (p0, p1), m, max), out);
-        m
-    });
+    diff_block(
+        simd,
+        output,
+        preds,
+        size,
+        chroma_mask,
+        #[inline(always)]
+        |p0, p1, out| {
+            let m = wide_weight(simd, (p0, p1), flip, weights);
+            O::put(wide_blend(simd, (p0, p1), m, max), out);
+            m
+        },
+    );
 }
 
 const LANES: usize = 8;
