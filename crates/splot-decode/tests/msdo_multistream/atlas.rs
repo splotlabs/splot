@@ -512,10 +512,10 @@ fn pending_local_lcr_shadows_global_at_the_next_cmvs_boundary() {
         let batch = context(3, 2).decode_hash_report_bytes(&stream, DecodeOptions::DEFAULT);
         if include_local {
             let pictures = streaming.unwrap();
-            // AVM donor output indices 5, 7 and 8.
             assert_eq!(
                 sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
-                "51e56b0ab0ec25c38846b7d054b2cf9de179f96b6d56555cfe4e36c544913d9b"
+                "51e56b0ab0ec25c38846b7d054b2cf9de179f96b6d56555cfe4e36c544913d9b",
+                "AVM donor output indices 5, 7 and 8"
             );
             let report = batch.unwrap();
             let last = pictures.last().unwrap();
@@ -725,7 +725,6 @@ fn derived_sef_selects_the_atlas_segment_of_the_reference_layer() {
         "bca7d45ad940d920c77414eea6516e243bd0ea98d58441a6de270fa1fb231033"
     );
     assert_eq!(pictures.len(), 4);
-    // The last SEF uses ML1/TL1 in its OBU and derives ML0/TL0 from its reference.
     for (pic, (mlayer, label)) in pictures.iter().zip([(0, 41), (1, 77), (0, 41), (0, 41)]) {
         let [association] = pic.atlas_associations() else {
             panic!("expected one global atlas")

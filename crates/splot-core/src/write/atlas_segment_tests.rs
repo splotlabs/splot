@@ -177,7 +177,6 @@ mod tests {
         bits.uvlc(50);
         bits.uvlc(50);
         bits.bit(1); // alpha_segment_flag[0]
-        // segment 1 (last -> alpha flag inferred 0):
         bits.f(1, 5);
         bits.uvlc(50);
         bits.uvlc(0);
@@ -224,8 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn signaled_label_ids_preserved_verbatim() {
-        // AV2 § 6.9.2 permits arbitrary explicit segment IDs.
+    fn explicit_labels_need_not_match_segment_indices() {
         let mut atlas = basic_atlas_signaled();
         let AtlasModeInfo::Basic(_) = &atlas.mode_info else {
             panic!("expected basic mode info");
