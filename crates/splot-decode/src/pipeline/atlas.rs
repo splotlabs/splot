@@ -190,7 +190,7 @@ impl AtlasLayout {
 #[derive(Default)]
 pub(super) struct LayerAtlases {
     pub(super) layouts: ScopedAtlases,
-    local_ids: u8,
+    pub(super) local_ids: u8,
     records: BTreeMap<u8, (ByteOffset, Arc<LcrLocalInfo>)>,
     active_global: Option<(ByteOffset, Arc<LcrGlobalInfo>)>,
     active_local: Option<(ByteOffset, Arc<LcrLocalInfo>)>,
