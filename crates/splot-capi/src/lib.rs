@@ -27,6 +27,9 @@
     reason = "the C ABI dereferences caller pointers; each block states its contract"
 )]
 
+mod atlas;
+pub use atlas::*;
+
 use core::ffi::{c_char, c_int, c_void};
 use core::num::NonZeroUsize;
 use core::ptr;
@@ -35,8 +38,8 @@ use splot_core::headers::content_interpretation::DerivedColorInfo;
 use splot_core::types::ExtendedLayerId;
 use splot_decode::{
     BitDepth, DataProps, Decoder, DecoderSettings, EmbeddedLayerSelection, ExtendedLayerSelection,
-    FrameDelay, FrameType, OperatingPointSelection, Picture, PictureSamples, PixelFormat, PlaneId,
-    PlaneRef, SendStatus, TemporalLayerSelection, ThreadCount,
+    ExternalAtlases, FrameDelay, FrameType, OperatingPointSelection, Picture, PictureSamples,
+    PixelFormat, PlaneId, PlaneRef, SendStatus, TemporalLayerSelection, ThreadCount,
 };
 
 /// The call succeeded.
@@ -63,7 +66,7 @@ pub struct SplotDecoder {
     drained: bool,
 }
 
-/// How [`splot_open`] sets up a decoder. Fill it with
+/// Settings for [`splot_open`] and [`splot_open_with_atlases`]. Fill them with
 /// [`splot_default_settings`] first.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -199,8 +202,12 @@ pub struct SplotPicture {
     pub embedded_layer_id: u8,
     /// Extended layer id (`obu_xlayer_id`, `0..=30`) of the picture.
     pub extended_layer_id: u8,
+    /// Immutable atlas snapshot. Null when the picture has no atlas association.
+    pub atlas: *const SplotPictureAtlas,
+    /// Number of associations accessible through `splot_atlas_info`.
+    pub atlas_count: usize,
     /// Reserved.
-    pub reserved: [usize; 3],
+    pub reserved: usize,
     /// The decoder's handle on the samples; do not touch.
     pub internal: *mut c_void,
 }
@@ -254,6 +261,14 @@ pub unsafe extern "C" fn splot_open(
     else {
         return SPLOT_EINVAL;
     };
+    open_decoder(out, settings, ExternalAtlases::default())
+}
+
+fn open_decoder(
+    out: &mut *mut SplotDecoder,
+    settings: &SplotSettings,
+    atlases: ExternalAtlases,
+) -> c_int {
     *out = ptr::null_mut();
     if settings.skip_film_grain > 1
         || settings.temporal_output_mask > 0x0F
@@ -332,7 +347,7 @@ pub unsafe extern "C" fn splot_open(
         .with_embedded_layer_selection(embedded_selection)
         .with_extended_layer_selection(extended_selection)
         .with_operating_point_selection(operating_point_selection);
-    match Decoder::new(settings) {
+    match Decoder::new_with_external_atlases(settings, atlases) {
         Ok(decoder) => {
             *out = Box::into_raw(Box::new(SplotDecoder {
                 decoder,
@@ -350,7 +365,7 @@ pub unsafe extern "C" fn splot_open(
 /// [`SPLOT_EINVAL`], [`SPLOT_EDECODE`] or [`SPLOT_ESTATE`].
 ///
 /// # Safety
-/// `decoder` is null or came from [`splot_open`]; `data` points to `size`
+/// `decoder` is null or points to an open decoder. `data` points to `size`
 /// readable bytes (it may be null when `size` is 0); `props` is null or
 /// points to a [`SplotDataProps`].
 #[unsafe(no_mangle)]
@@ -363,10 +378,9 @@ pub unsafe extern "C" fn splot_send_data(
     let Some(SplotDecoder { decoder, .. }) = (unsafe { decoder.as_mut() }) else {
         return SPLOT_EINVAL;
     };
-    let data: &[u8] = match (data.is_null(), size) {
-        (_, 0) => &[],
-        (true, _) => return SPLOT_EINVAL,
-        (false, size) => unsafe { core::slice::from_raw_parts(data, size) },
+    // SAFETY: The caller keeps the input readable for this call.
+    let Some(data) = (unsafe { borrowed_slice(data, size) }) else {
+        return SPLOT_EINVAL;
     };
     let props = unsafe { props.as_ref() }.copied().unwrap_or_default();
     let props = DataProps::default()
@@ -380,11 +394,28 @@ pub unsafe extern "C" fn splot_send_data(
     }
 }
 
+/// # Safety
+/// For a nonempty slice, the caller supplies one live, readable array of
+/// `count` initialized elements. Its bytes must remain immutable during the borrow.
+unsafe fn borrowed_slice<'a, T>(data: *const T, count: usize) -> Option<&'a [T]> {
+    if count == 0 {
+        return Some(&[]);
+    }
+    if data.is_null()
+        || !data.is_aligned()
+        || count.checked_mul(size_of::<T>())? > isize::MAX as usize
+    {
+        return None;
+    }
+    // SAFETY: The checks cover alignment and size. The caller guarantees the array.
+    Some(unsafe { core::slice::from_raw_parts(data, count) })
+}
+
 /// Ends the input; [`splot_get_picture`] then returns the remaining pictures
 /// and [`SPLOT_EOF`].
 ///
 /// # Safety
-/// `decoder` is null or came from [`splot_open`].
+/// `decoder` is null or points to an open decoder.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn splot_drain(decoder: *mut SplotDecoder) {
     if let Some(SplotDecoder { decoder, drained }) = unsafe { decoder.as_mut() } {
@@ -400,7 +431,7 @@ pub unsafe extern "C" fn splot_drain(decoder: *mut SplotDecoder) {
 /// Pictures already taken stay valid until released.
 ///
 /// # Safety
-/// `decoder` is null or came from [`splot_open`].
+/// `decoder` is null or points to an open decoder.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn splot_flush(decoder: *mut SplotDecoder) {
     if let Some(SplotDecoder { decoder, drained }) = unsafe { decoder.as_mut() } {
@@ -417,7 +448,7 @@ pub unsafe extern "C" fn splot_flush(decoder: *mut SplotDecoder) {
 /// `*out` is zeroed.
 ///
 /// # Safety
-/// `decoder` is null or came from [`splot_open`]. `out` is null or points to a
+/// `decoder` is null or points to an open decoder. `out` is null or points to a
 /// zeroed or released picture: this call overwrites `*out`, so a picture in
 /// `*out` that was not released with [`splot_picture_unref`] leaks.
 #[unsafe(no_mangle)]
@@ -486,10 +517,10 @@ pub unsafe extern "C" fn splot_apply_grain(
     if out.is_null() || picture.is_null() || ptr::eq(out, picture) {
         return SPLOT_EINVAL;
     }
-    let Some(source) = (unsafe { (*picture).internal.cast::<Picture>().as_ref() }) else {
+    let Some(source) = (unsafe { (*picture).internal.cast::<SplotPictureAtlas>().as_ref() }) else {
         return SPLOT_EINVAL;
     };
-    let (grained, code) = match source.apply_film_grain() {
+    let (grained, code) = match source.picture.apply_film_grain() {
         Ok(grained) => (c_picture(grained), SPLOT_OK),
         Err(_) => (empty_picture(), SPLOT_EDECODE),
     };
@@ -510,7 +541,7 @@ pub unsafe extern "C" fn splot_picture_unref(picture: *mut SplotPicture) {
     };
     let internal = core::mem::replace(picture, empty_picture()).internal;
     if !internal.is_null() {
-        drop(unsafe { Box::from_raw(internal.cast::<Picture>()) });
+        drop(unsafe { Box::from_raw(internal.cast::<SplotPictureAtlas>()) });
     }
 }
 
@@ -518,7 +549,7 @@ pub unsafe extern "C" fn splot_picture_unref(picture: *mut SplotPicture) {
 /// valid until released.
 ///
 /// # Safety
-/// `decoder` is null or points to null or to a decoder from [`splot_open`].
+/// `decoder` is null or points to a null handle or an open decoder handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn splot_close(decoder: *mut *mut SplotDecoder) {
     let Some(decoder) = (unsafe { decoder.as_mut() }) else {
@@ -563,7 +594,9 @@ const fn empty_picture() -> SplotPicture {
         temporal_layer_id: 0,
         embedded_layer_id: 0,
         extended_layer_id: 0,
-        reserved: [0; 3],
+        atlas: ptr::null(),
+        atlas_count: 0,
+        reserved: 0,
         internal: ptr::null_mut(),
     }
 }
@@ -624,7 +657,12 @@ fn c_picture(picture: Picture) -> SplotPicture {
     out.temporal_layer_id = picture.temporal_layer_id().get();
     out.embedded_layer_id = picture.embedded_layer_id().get();
     out.extended_layer_id = picture.extended_layer_id().get();
-    out.internal = Box::into_raw(Box::new(picture)).cast();
+    out.atlas_count = picture.atlas_associations().len();
+    let handle = Box::into_raw(Box::new(SplotPictureAtlas { picture }));
+    if out.atlas_count != 0 {
+        out.atlas = handle;
+    }
+    out.internal = handle.cast();
     out
 }
 

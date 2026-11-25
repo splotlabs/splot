@@ -12837,3 +12837,179 @@ output_scope = "Complete 64,512-byte 9-frame output for local OP (xlayer=3, ops_
 kind = "digest-equality"
 left = "avm-msdo-local-3-2-0-raw-sha256"
 right = "splot-msdo-local-3-2-0-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-atlas-global-local-id-scope-8bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "AVM decoded identical 8-bit native samples before and after adding scoped atlas metadata. A seek to the second key requires the local atlas sidecar."
+recorded_at = "2026-11-25"
+command = """Generate the input with python3 tools/decoder-fixtures/generate.py atlas-fixtures --stage OUT.
+Decode the seed and muxed streams with the pinned AVM decoder.
+To reproduce the order in the timeline TSV, log img->xlayer_id, d_w, d_h and bit_depth before avm_input_ctx.width = img->d_w in apps/avmdec.c.
+The atlas ID is 5 in both scopes. The second key activates the local LCR and replaces the global atlas.
+The mux recipe and §§ 5.8–5.9, 6.17.2 and 7.3.8.4 determine the expected associations.
+The fixture manifest records the build commands, native geometry and per-layer SHA-256 values."""
+
+[[evidence.fixture]]
+id = "seed"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu"
+sha256 = "3cab7d7226c08e0e9997fb99e2810cdeb5bf206496fcfc020b5f542559e638e1"
+size_bytes = 3753
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Committed project-owned synthetic streams encoded with AVM a1ec4594d97028ebc34083ec8346616d697c2fc9."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-8bit.obu"
+sha256 = "49ba47fc519fcec631acd85461d37ad0cc3e1f1a043b39b008a7e2daa3f69870"
+size_bytes = 3889
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Deterministic multiplex of the committed MSDO seed, LCRs and atlas descriptions. The frame payloads retain their original bytes."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-seed"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-33-g457cd58681."
+command_summary = "avmdec --all-layers --i420 --rawvideo on {fixture:seed}."
+output_digest_id = "avm-seed-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b"
+output_scope = "All 8 native 8-bit I420 pictures in emission order, 55296 bytes."
+
+[[evidence.reference_run]]
+id = "avm-input"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-33-g457cd58681."
+command_summary = "avmdec --all-layers --i420 --rawvideo on {fixture:input}."
+output_digest_id = "avm-input-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b"
+output_scope = "All 8 native 8-bit I420 pictures in emission order, 55296 bytes."
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "a244f563e871a4af2104efef1349ce19a7eb4c2e"
+version_summary = "Rust decoder with scoped atlas metadata and the committed mode-family fixtures."
+command_summary = "cargo test --locked -p splot-decode --test msdo_multistream atlas:: checked {fixture:input} with 1, 3 and 12 threads."
+output_digest_id = "splot-input-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b"
+output_scope = "8 native 8-bit I420 pictures in emission order, 55296 bytes. The test also checked each extended layer and the expected metadata timeline."
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-input-raw-sha256"
+right = "splot-input-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-seed-raw-sha256"
+right = "avm-input-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-atlas-global-local-id-scope-10bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "AVM decoded identical 10-bit native samples before and after adding scoped atlas metadata. A seek to the second key requires the local atlas sidecar."
+recorded_at = "2026-11-25"
+command = """Generate the input with python3 tools/decoder-fixtures/generate.py atlas-fixtures --stage OUT.
+Repeat the seed twice before decoding. Decode the seed and muxed streams with the pinned AVM decoder.
+To reproduce the order in the timeline TSV, log img->xlayer_id, d_w, d_h and bit_depth before avm_input_ctx.width = img->d_w in apps/avmdec.c.
+The atlas ID is 5 in both scopes. The second key activates the local LCR and replaces the global atlas.
+The mux recipe and §§ 5.8–5.9, 6.17.2 and 7.3.8.4 determine the expected associations.
+The fixture manifest records the build commands, native geometry and per-layer SHA-256 values."""
+
+[[evidence.fixture]]
+id = "seed"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-msdo-two-streams-10bit.obu"
+sha256 = "ad4458d25b0114f7ce114c2277717e5f813701cac7f014bd025584cf0e08d9cd"
+size_bytes = 5195
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Committed project-owned synthetic streams encoded with AVM a1ec4594d97028ebc34083ec8346616d697c2fc9."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-10bit.obu"
+sha256 = "65a6464fcd10909db9a00f2215a39d48cd79c2d554bb1e055dffd796d131019b"
+size_bytes = 10492
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Deterministic multiplex of the committed MSDO seed, LCRs and atlas descriptions. The frame payloads retain their original bytes."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-seed"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-33-g457cd58681."
+command_summary = "avmdec --all-layers --i420 --rawvideo on two consecutive copies of {fixture:seed}."
+output_digest_id = "avm-seed-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441"
+output_scope = "All 20 native 10-bit I420 pictures in emission order, 276480 bytes."
+
+[[evidence.reference_run]]
+id = "avm-input"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-33-g457cd58681."
+command_summary = "avmdec --all-layers --i420 --rawvideo on {fixture:input}."
+output_digest_id = "avm-input-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441"
+output_scope = "All 20 native 10-bit I420 pictures in emission order, 276480 bytes."
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "a244f563e871a4af2104efef1349ce19a7eb4c2e"
+version_summary = "Rust decoder with scoped atlas metadata and the committed mode-family fixtures."
+command_summary = "cargo test --locked -p splot-decode --test msdo_multistream atlas:: checked {fixture:input} with 1, 3 and 12 threads."
+output_digest_id = "splot-input-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441"
+output_scope = "20 native 10-bit I420 pictures in emission order, 276480 bytes. The test also checked each extended layer and the expected metadata timeline."
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-input-raw-sha256"
+right = "splot-input-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-seed-raw-sha256"
+right = "avm-input-raw-sha256"

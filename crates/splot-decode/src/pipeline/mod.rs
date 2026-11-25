@@ -38,6 +38,7 @@ pub(crate) mod frame_progress;
 pub(crate) mod frame_tasks;
 pub(crate) use frame_tasks::DecoderRowScheduler;
 use frame_tasks::SplitSample;
+pub(crate) mod atlas;
 pub(crate) mod inflight;
 pub(crate) mod output_effects;
 mod output_schedule;
@@ -205,8 +206,7 @@ pub(crate) fn emit_frames(
         source,
         options,
         &mut retained,
-        session.rows(),
-        session.backend(),
+        session,
         &mut preflight,
         &mut emit,
     );
@@ -733,8 +733,7 @@ fn drive_frames(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     retained: &mut frame_store::RetainedDecode,
-    rows: Option<&DecoderRowScheduler>,
-    backend: splot_core::simd::ResolvedBackend,
+    session: &DecodeSession,
     preflight: &mut dyn FnMut(Option<IvfHeader>) -> Result<()>,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
@@ -750,15 +749,14 @@ fn drive_frames(
         options,
         preflight,
         emit,
-        rows,
-        backend,
+        session,
         ring,
         pools,
         frames,
         input_scratch,
     );
     ring.harvest_all(pools);
-    if let Some(rows) = rows {
+    if let Some(rows) = session.rows() {
         pools.drain(rows);
     }
     match ring.take_failure() {
@@ -926,13 +924,14 @@ fn decode_frames_in_order(
     options: &DecodeOptions,
     preflight: &mut dyn FnMut(Option<IvfHeader>) -> Result<()>,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
-    rows: Option<&DecoderRowScheduler>,
-    backend: splot_core::simd::ResolvedBackend,
+    session: &DecodeSession,
     ring: &mut inflight::InflightRing,
     pools: &mut frame_tasks::RowPools,
     frames: &mut FrameStore,
     input_scratch: &mut InputScratch,
 ) -> Result<()> {
+    let rows = session.rows();
+    let backend = session.backend();
     options.validate_selections()?;
     let InputScratch {
         records,
@@ -942,7 +941,7 @@ fn decode_frames_in_order(
     let Some(mut leading_unit) = stream.first_unit()? else {
         return Ok(());
     };
-    let mut xlayers = XLayerTable::new();
+    let mut xlayers = XLayerTable::new(session.external_atlases.clone());
     let mut skipped_unselected_leading = false;
     let mut key_candidate = stream.first_candidate()?;
     if key_candidate.is_err() {
@@ -1095,6 +1094,7 @@ fn decode_frames_in_order(
                 if !xlayers.contains(candidate_xlayer) {
                     let (tu_has_rap, _) = unit_rap_flags(&unit)?;
                     if xlayers.should_skip_pre_rap_frame(candidate_xlayer, tu_has_rap) {
+                        xlayers.note_pre_rap_local_lcr(sef_prefix_obus, candidate_xlayer);
                         *obu_storage = recycle(obu_buffer);
                         continue;
                     }
@@ -1229,10 +1229,6 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
-                    let output_effects = layer
-                        .output_effect_state
-                        .finish_frame(sef_envelope.header.embedded_layer_id);
-                    let output_rate = output_effects.frame_rate(frame_rate);
                     if derive_order_hint {
                         layer.reference.mark_sef_derive_output(
                             slot,
@@ -1240,6 +1236,9 @@ fn decode_frames_in_order(
                         )?;
                     }
                     layer.reference.note_show_existing();
+                    let output_effects =
+                        xlayers.finish_frame(sef_envelope, false, output_mlayer)?;
+                    let output_rate = output_effects.frame_rate(frame_rate);
                     let sef_frame = PipelineFrame {
                         display_grain,
                         output_effects,
@@ -1364,6 +1363,7 @@ fn decode_frames_in_order(
                     if next_candidate.obu_type() != ObuType::RasFrame {
                         let (tu_has_rap, _) = unit_rap_flags(&unit)?;
                         if xlayers.should_skip_pre_rap_frame(candidate_xlayer, tu_has_rap) {
+                            xlayers.note_pre_rap_local_lcr(inter_prefix_obus, candidate_xlayer);
                             *obu_storage = recycle(obu_buffer);
                             continue;
                         }
@@ -1412,12 +1412,9 @@ fn decode_frames_in_order(
                         &mut output_effect_state,
                         &mut film_grain_slots,
                     )?;
-                    let has_local_lcr =
-                        output_effect_state.has_local_lcr_id(sequence.general.seq_lcr_id.get());
                     xlayers.validate_xlayer_lcr(
                         candidate_xlayer,
                         &sequence,
-                        has_local_lcr,
                         sequence_envelope.offset,
                         true,
                     )?;
@@ -1763,17 +1760,11 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let inter_output_effects = xlayers
-                    .get_mut(candidate_xlayer)
-                    .ok_or_else(|| {
-                        unsupported_at(
-                            "missing_random_access_frame",
-                            inter_envelope.offset,
-                            "decode runtime requires an active extended layer",
-                        )
-                    })?
-                    .output_effect_state
-                    .finish_frame(inter_envelope.header.embedded_layer_id);
+                let inter_output_effects = xlayers.finish_frame(
+                    inter_envelope,
+                    initializing_layer,
+                    inter_envelope.header.embedded_layer_id,
+                )?;
                 let inter_frame_rate = inter_output_effects.frame_rate(frame_rate);
                 let inter_update = frame_ref_update_from_core(
                     &inter_core,
@@ -1983,12 +1974,9 @@ fn decode_frames_in_order(
                         &mut output_effect_state,
                         &mut film_grain_slots,
                     )?;
-                    let has_local_lcr =
-                        output_effect_state.has_local_lcr_id(key_sequence.general.seq_lcr_id.get());
                     xlayers.validate_xlayer_lcr(
                         candidate_xlayer,
                         &key_sequence,
-                        has_local_lcr,
                         key_sequence_offset,
                         true,
                     )?;
@@ -2009,7 +1997,7 @@ fn decode_frames_in_order(
                     ));
                     frames.ensure_capacity_for_layers(xlayers.len(), ring.capacity());
                 } else {
-                    let has_local_lcr = {
+                    {
                         let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                             unsupported_at(
                                 "missing_random_access_frame",
@@ -2024,15 +2012,11 @@ fn decode_frames_in_order(
                             &mut layer.output_effect_state,
                             &mut layer.film_grain_slots,
                         )?;
-                        layer
-                            .output_effect_state
-                            .has_local_lcr_id(key_sequence.general.seq_lcr_id.get())
-                    };
+                    }
                     if starts_new_sequence || key_sequence_envelope.is_some() {
                         xlayers.validate_xlayer_lcr(
                             candidate_xlayer,
                             &key_sequence,
-                            has_local_lcr,
                             key_sequence_offset,
                             false,
                         )?;
@@ -2198,17 +2182,11 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let key_output_effects = xlayers
-                    .get_mut(candidate_xlayer)
-                    .ok_or_else(|| {
-                        unsupported_at(
-                            "missing_random_access_frame",
-                            key_envelope.offset,
-                            "decode runtime requires an active extended layer",
-                        )
-                    })?
-                    .output_effect_state
-                    .finish_frame(key_envelope.header.embedded_layer_id);
+                let key_output_effects = xlayers.finish_frame(
+                    key_envelope,
+                    true,
+                    key_envelope.header.embedded_layer_id,
+                )?;
                 admit_within_reference_store(
                     |xlayers, retained| {
                         let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {

@@ -47,6 +47,7 @@ use crate::headers::atlas_segment::{
     AtlasBasicInfo, AtlasBasicSegment, AtlasEnhancedInfo, AtlasLabelSegmentInfo, AtlasModeInfo,
     AtlasMultistreamInfo, AtlasMultistreamSegment, AtlasRegionInfo, AtlasRegionToSegmentMapping,
     AtlasSegment, AtlasSegmentMode, AtlasSegmentRegion, AtlasSingleInfo,
+    insert_atlas_input_stream_id,
 };
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
@@ -103,6 +104,7 @@ const MAX_ATLAS_ROWS: u32 = 64;
 ///     `num_atlas_segments_minus_1 + 1`.
 ///   - `"stream_id_gate"`: a basic-mode segment's `input_stream_id` presence disagrees
 ///     with `stream_id_present` (the parser reads it iff the flag is set).
+///   - `"duplicate_input_stream_id"`: two segments name the same input stream.
 ///   - `"alpha_segments_gate"`: the multistream `alpha_segments_present` presence
 ///     disagrees with the alpha-vs-non-alpha mode (`Some` only for `MULTISTREAM_ALPHA`),
 ///     or a non-last/last per-segment `alpha_segment_flag` disagrees with the § 6.9.5
@@ -313,8 +315,14 @@ fn write_basic_info(scratch: &mut BitWriter, info: &AtlasBasicInfo) -> WriteResu
     scratch.write_uvlc(info.width)?;
     scratch.write_uvlc(info.height)?;
     scratch.write_uvlc(info.num_atlas_segments_minus_1)?;
+    let mut seen_stream_ids = 0;
     for segment in &info.segments {
-        write_basic_segment(scratch, info.stream_id_present, segment)?;
+        write_basic_segment(
+            scratch,
+            info.stream_id_present,
+            segment,
+            &mut seen_stream_ids,
+        )?;
     }
     Ok(())
 }
@@ -325,12 +333,13 @@ fn write_basic_segment(
     scratch: &mut BitWriter,
     stream_id_present: bool,
     segment: &AtlasBasicSegment,
+    seen_stream_ids: &mut u32,
 ) -> WriteResult<()> {
     if stream_id_present {
         let stream_id = segment
             .input_stream_id
             .ok_or_else(|| non_canonical("stream_id_gate"))?;
-        scratch.write_bits_u8(stream_id, INPUT_STREAM_ID_BITS)?;
+        write_input_stream_id(scratch, stream_id, seen_stream_ids)?;
     } else if segment.input_stream_id.is_some() {
         return Err(non_canonical("stream_id_gate"));
     }
@@ -376,13 +385,14 @@ fn write_multistream_info(
 
     let alpha_coded = info.alpha_segments_present == Some(true);
     let last_index = info.num_atlas_segments_minus_1;
+    let mut seen_stream_ids = 0;
     for (i, segment) in info.segments.iter().enumerate() {
         let is_last = i as u32 == last_index;
         let codes_alpha = alpha_coded && !is_last;
         if !codes_alpha && segment.alpha_segment_flag {
             return Err(non_canonical("alpha_segments_gate"));
         }
-        write_multistream_segment(scratch, segment, codes_alpha)?;
+        write_multistream_segment(scratch, segment, codes_alpha, &mut seen_stream_ids)?;
     }
     Ok(())
 }
@@ -394,14 +404,23 @@ fn write_multistream_segment(
     scratch: &mut BitWriter,
     segment: &AtlasMultistreamSegment,
     codes_alpha: bool,
+    seen_stream_ids: &mut u32,
 ) -> WriteResult<()> {
-    scratch.write_bits_u8(segment.input_stream_id, INPUT_STREAM_ID_BITS)?;
+    write_input_stream_id(scratch, segment.input_stream_id, seen_stream_ids)?;
     scratch.write_uvlc(segment.top_left_pos_x)?;
     scratch.write_uvlc(segment.top_left_pos_y)?;
     scratch.write_uvlc(segment.width)?;
     scratch.write_uvlc(segment.height)?;
     if codes_alpha {
         scratch.write_flag(segment.alpha_segment_flag)?;
+    }
+    Ok(())
+}
+
+fn write_input_stream_id(scratch: &mut BitWriter, id: u8, seen: &mut u32) -> WriteResult<()> {
+    scratch.write_bits_u8(id, INPUT_STREAM_ID_BITS)?;
+    if !insert_atlas_input_stream_id(seen, id) {
+        return Err(non_canonical("duplicate_input_stream_id"));
     }
     Ok(())
 }

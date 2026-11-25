@@ -43,8 +43,7 @@ fn decode_hash_frames(
         session,
         |_| Ok(()),
         |output| {
-            let ready = output.ready_frame()?;
-            completed.push(hash_pipeline_frame(&ready, emitted));
+            completed.push(hash_pipeline_frame(output, emitted)?);
             emitted += 1;
             Ok(())
         },
@@ -57,23 +56,27 @@ fn decode_hash_frames(
 /// `emitted` is the frame's 0-based emission ordinal, counted where the driver
 /// hands the frame to the report; frame pipelining may finish frames out of
 /// order, but it never reorders emission.
-fn hash_pipeline_frame(frame: &PipelineDecodedFrame, emitted: u64) -> DecodeHashFrame {
-    match frame {
+fn hash_pipeline_frame(
+    output: &crate::pipeline::PipelineFrame,
+    emitted: u64,
+) -> Result<DecodeHashFrame> {
+    Ok(match output.ready_frame()? {
         PipelineDecodedFrame::Eight(frame) => {
             let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
-            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted)
+            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted, output)
         }
         PipelineDecodedFrame::Ten(frame) => {
             let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
-            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted)
+            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted, output)
         }
-    }
+    })
 }
 
 fn hash_frame_from_decoded<T: ReconSample>(
     frame: &DecodedFrame<T>,
     digest_hex: String,
     emitted: u64,
+    output: &crate::pipeline::PipelineFrame,
 ) -> DecodeHashFrame {
     let visible = frame.visible_luma_rect();
     let chroma = frame
@@ -83,6 +86,9 @@ fn hash_frame_from_decoded<T: ReconSample>(
         .flatten();
     DecodeHashFrame {
         output_index: emitted,
+        extended_layer_id: output.extended_layer_id,
+        embedded_layer_id: output.embedded_layer_id,
+        atlas_associations: output.output_effects.atlas.clone(),
         visible_luma_left: visible.x() as u32,
         visible_luma_top: visible.y() as u32,
         visible_luma_width: visible.width() as u32,

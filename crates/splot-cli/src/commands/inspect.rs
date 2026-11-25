@@ -54,10 +54,11 @@ use splot_core::headers::tile_group::{
 };
 use splot_core::hls::{MfhId, MultiFrameHeaderRecord, parse_multi_frame_header};
 use splot_core::ivf::{IvfFrame, IvfHeader, IvfWarning};
-use splot_core::obu::{ObuHeader, PayloadStatus};
+use splot_core::obu::{ObuHeader, ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
 
+use crate::commands::atlas::AtlasSegmentView;
 use crate::commands::read_input;
 
 /// Arguments for `splot inspect`.
@@ -92,6 +93,8 @@ struct InspectRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     operating_point_set: Option<OperatingPointSetView>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    atlas_segment: Option<AtlasSegmentView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     buffer_removal_timing: Option<BufferRemovalTimingView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     quantizer_matrix: Option<QuantizerMatrixView>,
@@ -124,6 +127,13 @@ impl InspectRecord {
         ivf_frame: Option<IvfFrame<'_>>,
     ) -> Self {
         let frame_cache = FrameInspectCache::new(obu, sequences, multi_frame_headers);
+        let payload = obu.payload_status();
+        let atlas_segment = match &payload {
+            Ok(PayloadStatus::Parsed(ParsedObu::AtlasSegment(atlas))) => {
+                Some(AtlasSegmentView::new(atlas))
+            }
+            _ => None,
+        };
         Self {
             index,
             byte_offset: obu.offset.get(),
@@ -131,7 +141,8 @@ impl InspectRecord {
             payload_len: obu.payload.len(),
             ivf_header: ivf_header.map(InspectIvfHeader::new),
             ivf_frame: ivf_frame.map(InspectIvfFrame::new),
-            payload_status: InspectPayloadStatus::new(obu),
+            payload_status: InspectPayloadStatus::new(payload),
+            atlas_segment,
             sequence_header: sequence_header_view(obu),
             content_interpretation: content_interpretation_view(obu),
             operating_point_set: operating_point_set_view(obu),
@@ -1718,8 +1729,8 @@ struct InspectPayloadStatus {
 }
 
 impl InspectPayloadStatus {
-    fn new(obu: &ObuEnvelope<'_>) -> Self {
-        match obu.payload_status() {
+    fn new(payload: splot_core::error::Result<PayloadStatus<'_, ParsedObu>>) -> Self {
+        match payload {
             Ok(PayloadStatus::Parsed(parsed)) => Self {
                 status: "parsed",
                 syntax: Some(parsed.syntax_name()),

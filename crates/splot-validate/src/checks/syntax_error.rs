@@ -210,6 +210,12 @@ fn atlas_segment_diagnostic(
 ) -> Diagnostic {
     let (rule_id, spec_section) = match kind {
         AtlasSegmentErrorKind::ModeOutOfRange => ("atlas/segment-mode-out-of-range", "6.9"),
+        AtlasSegmentErrorKind::MultistreamRequiresGlobalXlayer => {
+            ("atlas/multistream-requires-global-xlayer", "6.9")
+        }
+        AtlasSegmentErrorKind::DuplicateInputStreamId => {
+            ("atlas/duplicate-input-stream-id", "6.9.6")
+        }
         AtlasSegmentErrorKind::RegionDimensionOutOfRange => {
             ("atlas/region-dimension-out-of-range", "6.9.3.1")
         }

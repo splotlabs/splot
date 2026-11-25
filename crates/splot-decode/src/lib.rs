@@ -102,6 +102,7 @@ pub use hash_report::{
     DECODE_HASH_REPORT_RAW_INTERMEDIATE_OUTPUT_VARIANT, DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOutputVariant,
 };
+pub use pipeline::atlas::{AtlasAssociation, AtlasLayout, ExternalAtlases};
 pub use runtime::DecodeRuntimeConfig;
 pub use splot_core::headers::frame::FrameType;
 pub use splot_core::simd::{CpuCapabilities, SelectedBackend, SimdPolicy, UnsupportedBackendError};
