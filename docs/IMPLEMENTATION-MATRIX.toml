@@ -6922,7 +6922,7 @@ module = "crates/splot-cli/src/commands/encode.rs"
 change_id = "enc-low-delay"
 owner = "encoder"
 risk = "low"
-notes = "splot encode --low-delay (off by default) sets the preset fields mini_gop_size=1 and lookahead_frames=1 before --preset-set: every frame is an IPPP frame with immediate_output_frame = 1, coded in display order, and Encoder::receive_packet returns its packet right after send_frame (zero frame latency). References use the implicit get_ref_frames() map (§ 7.7); explicit_ref_frame_map is not needed because the implicit map already picks the latest past frames of an IPPP stream. Deferred (2026-10-26): use_bru backwards reference update (§ 5.18.2, § 5.20.5.2 bru_mode_info), because splot-decode parses the BRU header fields but does not decode BRU superblocks or the reference update, so encoder recon == decode cannot be checked."
+notes = "splot encode --low-delay (off by default) sets the preset fields mini_gop_size=1 and lookahead_frames=1 before --preset-set: every frame is an IPPP frame with immediate_output_frame = 1, coded in display order, and Encoder::receive_packet returns its packet right after send_frame (zero frame latency). References use the implicit get_ref_frames() map (§ 7.7); explicit_ref_frame_map is not needed because the implicit map already picks the latest past frames of an IPPP stream. The low-delay encoder does not emit backward reference updates (§ 5.18.2 and § 5.20.5.2)."
 
 [feature.status]
 mapped = "done"
@@ -20909,7 +20909,7 @@ id = "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
 name = "Tile partition traversal"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.18.2", "5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "5.20.10.4", "5.20.10.5", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2", "9.3"]
+spec_sections = ["5.18.2", "5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "5.20.10.4", "5.20.10.5", "6.19.2.1", "6.19.3", "7.2", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
@@ -20932,7 +20932,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs"
 change_id = "tile-partition-traversal-boundary"
 owner = "decoder"
 risk = "medium"
-notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. BRU superblocks read bru_mode, infer PARTITION_NONE and skip region_type when not BRU_ACTIVE, and decode their leaves through § 5.20.5.2 bru_mode_info; unsupported restoration combinations remain explicit gates."
+notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. BRU superblocks read bru_mode, infer PARTITION_NONE and skip region_type when not BRU_ACTIVE, and decode their leaves through § 5.20.5.2 bru_mode_info. The decoder checks the complete BRU region map against § 7.2 before it publishes reference state."
 
 [feature.status]
 mapped = "done"
@@ -20948,6 +20948,8 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
+    "crates/splot-decode/src/filters/bru.rs::tests",
+    "crates/splot-decode/src/prediction/inter/tests/bru_filters.rs::bru_gdf_vectors_exercise_partial_bru_gdf_modes_lr_and_reference_consumers",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_lr_symbol_precedes_partition_read",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::bru_inactive_superblock_reads_mode_then_infers_partition_none",
@@ -20970,6 +20972,9 @@ commands = [
     "cargo xtask check-feature-status",
 ]
 fixtures = [
+    "tests/conformance/vectors/valid/syn-bru-gdf-frame-8bit.ivf",
+    "tests/conformance/vectors/valid/syn-bru-gdf-frame-10bit.ivf",
+    "tests/conformance/vectors/valid/syn-bru-gdf-lr-10bit.ivf",
     "crates/splot-decode/src/bitstream/tile_payload.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition_allowed.rs",
