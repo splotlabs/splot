@@ -5,7 +5,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Write as _};
+use std::io::{self, BufReader, BufWriter, Read as _, Write as _};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -15,14 +15,19 @@ use anyhow::{Context as _, Result};
 use clap::{Args, ValueEnum};
 use serde::Serialize;
 use splot_core::simd::SimdBackend;
+use splot_core::span::ByteOffset;
+use splot_core::stream_reader::DEFAULT_MAX_UNIT_BYTES;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOptions, DecodeOutputError,
     DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, EmbeddedLayerId,
-    EmbeddedLayerSelection, ExtendedLayerId, ExtendedLayerSelection, OperatingPointSelection,
-    TemporalLayerId, TemporalLayerSelection, TypedDecodeContext, Y4mFrameRate,
+    EmbeddedLayerSelection, ExtendedLayerId, ExtendedLayerSelection, ExternalAtlases,
+    OperatingPointSelection, TemporalLayerId, TemporalLayerSelection, TypedDecodeContext,
+    Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
+
+use super::atlas::PictureAtlasView;
 
 static OUTPUT_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -65,6 +70,9 @@ pub(crate) struct DecodeArgs {
         requires_if("raw", "output")
     )]
     output_format: Option<DecodeOutputFormat>,
+    /// Supply one length-framed atlas OBU from this file. Repeat for additional atlases.
+    #[arg(long, value_name = "FILE")]
+    external_atlas: Vec<PathBuf>,
     /// Input AV2 bitstream.
     input: PathBuf,
     /// Output path for the selected artifact; `-` writes to stdout.
@@ -533,6 +541,8 @@ struct DecodeHashFrameJson<'a> {
     chroma_height: Option<u32>,
     bit_depth: u8,
     pixel_format: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    atlas: Option<PictureAtlasView<'a>>,
     hashes: Vec<DecodeHashEntryJson<'a>>,
 }
 
@@ -550,6 +560,7 @@ impl<'a> DecodeHashFrameJson<'a> {
             chroma_height: frame.chroma_height,
             bit_depth: frame.bit_depth,
             pixel_format: frame.pixel_format.as_str(),
+            atlas: PictureAtlasView::of(frame),
             hashes: frame.hashes.iter().map(DecodeHashEntryJson::new).collect(),
         }
     }
@@ -599,6 +610,9 @@ fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
         );
         println!("frame.pixel_format: {}", frame.pixel_format.as_str());
         println!("frame.bit_depth: {}", frame.bit_depth);
+        if let Some(atlas) = PictureAtlasView::of(frame) {
+            println!("frame.atlas: {}", serde_json::to_string(&atlas)?);
+        }
         for hash in &frame.hashes {
             println!(
                 "frame.hash: {} {} {} {}",
@@ -654,6 +668,11 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let context = DecodeContext::new(
         DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
     )?;
+    let context = if args.external_atlas.is_empty() {
+        context
+    } else {
+        context.with_external_atlases(read_external_atlases(&args.external_atlas)?)
+    };
     let stdout_carries_output = matches!(
         target,
         DecodeOutputTarget::Y4m { path } | DecodeOutputTarget::Raw { path } if is_stdout_path(path)
@@ -1058,8 +1077,30 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
     DecodeOutputError::io(operation, source).into()
 }
 
-/// Streams the input file, a pipe or FIFO included: decode reads it forward
-/// once.
+fn read_external_atlases(paths: &[PathBuf]) -> Result<ExternalAtlases> {
+    let mut atlases = ExternalAtlases::default();
+    let mut bytes = Vec::new();
+    for path in paths {
+        bytes.clear();
+        File::open(path)
+            .and_then(|file| {
+                file.take(DEFAULT_MAX_UNIT_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+            })
+            .with_context(|| format!("Cannot read external atlas {}.", path.display()))?;
+        anyhow::ensure!(
+            bytes.len() <= DEFAULT_MAX_UNIT_BYTES,
+            "External atlas {} exceeds the unit size limit of {DEFAULT_MAX_UNIT_BYTES} bytes.",
+            path.display(),
+        );
+        atlases
+            .insert(&bytes, ByteOffset::new(0))
+            .with_context(|| format!("Invalid external atlas {}.", path.display()))?;
+    }
+    Ok(atlases)
+}
+
+/// Read the input once in stream order, including pipes and FIFOs.
 fn open_decode_input(path: &Path) -> io::Result<BufReader<File>> {
     Ok(BufReader::new(File::open(path)?))
 }

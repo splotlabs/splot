@@ -15,6 +15,7 @@
 use crate::bitio::BitReader;
 use crate::error::{AtlasSegmentErrorKind, Error, Result};
 use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
+use crate::types::ExtendedLayerId;
 
 /// `MAX_NUM_ATLAS_SEGMENTS` (AV2 § 3): the conformance bound on atlas segment counts
 /// (AV2 § 6.9.6) and the safety bound on the segment loops.
@@ -54,6 +55,10 @@ impl AtlasSegmentMode {
             4 => Some(Self::MultistreamAlpha),
             _ => None,
         }
+    }
+
+    pub(crate) const fn requires_global_scope(self) -> bool {
+        matches!(self, Self::Multistream | Self::MultistreamAlpha)
     }
 
     /// Returns the `ats_atlas_segment_mode_idc` value for this mode.
@@ -257,12 +262,26 @@ pub struct AtlasLabelSegmentInfo {
 ///
 /// # Errors
 /// Returns descriptor errors (`uvlc`), [`Error::InvalidAtlasSegment`] for an
-/// out-of-range mode or segment / region count, or [`Error::UnexpectedEof`] if the
-/// payload ends mid-field.
+/// invalid mode, segment or region count, or duplicate input stream ID. Returns
+/// [`Error::UnexpectedEof`] if the payload ends mid-field.
 pub fn parse_atlas_segment(reader: &mut BitReader<'_>) -> Result<AtlasSegment> {
     let mut noop = NoopObserver;
     let mut sr = SyntaxReader::new(reader, &mut noop);
-    parse_atlas_segment_with_reader(&mut sr)
+    parse_atlas_segment_with_reader(&mut sr, None)
+}
+
+/// Parses an atlas payload and checks its mode against the OBU extended layer ID.
+///
+/// # Errors
+/// Returns the errors from [`parse_atlas_segment`] or
+/// [`Error::InvalidAtlasSegment`] if a multistream mode uses local scope.
+pub fn parse_scoped_atlas_segment(
+    reader: &mut BitReader<'_>,
+    xlayer: ExtendedLayerId,
+) -> Result<AtlasSegment> {
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_atlas_segment_with_reader(&mut sr, Some(xlayer))
 }
 
 /// Parses `atlas_segment_info_obu()` (AV2 v1.0.0 § 5.9) while reporting syntax
@@ -277,11 +296,12 @@ pub fn parse_atlas_segment_observed(
 ) -> Result<AtlasSegment> {
     let mut observer = observer;
     let mut sr = SyntaxReader::new(reader, &mut observer);
-    parse_atlas_segment_with_reader(&mut sr)
+    parse_atlas_segment_with_reader(&mut sr, None)
 }
 
 pub(crate) fn parse_atlas_segment_with_reader<O: SyntaxObserver>(
     sr: &mut SyntaxReader<'_, '_, O>,
+    xlayer: Option<ExtendedLayerId>,
 ) -> Result<AtlasSegment> {
     sr.in_struct("atlas_segment_info_obu", Some("5.9"), |sr| {
         let atlas_segment_id = sr.read_bits_u8("ats_atlas_segment_id", 3)?;
@@ -290,16 +310,28 @@ pub(crate) fn parse_atlas_segment_with_reader<O: SyntaxObserver>(
         let mode_offset = sr.byte_offset();
         let mode_bit_offset = sr.bit_offset();
         let mode_idc = sr.read_uvlc("ats_atlas_segment_mode_idc")?;
-        let Some(mode) = AtlasSegmentMode::from_idc(mode_idc) else {
-            return sr.fail(
-                mode_start,
-                Some("ats_atlas_segment_mode_idc"),
-                Error::InvalidAtlasSegment {
-                    offset: mode_offset,
-                    bit_offset: mode_bit_offset,
-                    kind: AtlasSegmentErrorKind::ModeOutOfRange,
-                },
-            );
+        let mode = match AtlasSegmentMode::from_idc(mode_idc) {
+            Some(mode)
+                if mode.requires_global_scope() && xlayer.is_some_and(|id| !id.is_global()) =>
+            {
+                Err(AtlasSegmentErrorKind::MultistreamRequiresGlobalXlayer)
+            }
+            Some(mode) => Ok(mode),
+            None => Err(AtlasSegmentErrorKind::ModeOutOfRange),
+        };
+        let mode = match mode {
+            Ok(mode) => mode,
+            Err(kind) => {
+                return sr.fail(
+                    mode_start,
+                    Some("ats_atlas_segment_mode_idc"),
+                    Error::InvalidAtlasSegment {
+                        offset: mode_offset,
+                        bit_offset: mode_bit_offset,
+                        kind,
+                    },
+                );
+            }
         };
 
         let (mode_info, num_segments) = match mode {
@@ -543,10 +575,15 @@ fn parse_ats_basic_info<O: SyntaxObserver>(
         }
 
         let mut segments = Vec::new();
+        let mut seen_stream_ids = 0;
         for i in 0..=num_atlas_segments_minus_1 {
             let seg = sr.in_loop_item("i", i as usize, |sr| {
                 let input_stream_id = if stream_id_present {
-                    Some(sr.read_bits_u8("ats_input_stream_id", 5)?)
+                    Some(read_input_stream_id(
+                        sr,
+                        "ats_input_stream_id",
+                        &mut seen_stream_ids,
+                    )?)
                 } else {
                     sr.absent("ats_input_stream_id", "!ats_basic_stream_id_present_flag");
                     None
@@ -634,9 +671,11 @@ fn parse_ats_multistream_info<O: SyntaxObserver>(
         };
 
         let mut segments = Vec::new();
+        let mut seen_stream_ids = 0;
         for i in 0..=num_atlas_segments_minus_1 {
             let seg = sr.in_loop_item("i", i as usize, |sr| {
-                let input_stream_id = sr.read_bits_u8("ats_msi_input_stream_id", 5)?;
+                let input_stream_id =
+                    read_input_stream_id(sr, "ats_msi_input_stream_id", &mut seen_stream_ids)?;
                 let top_left_pos_x = sr.read_uvlc("ats_msi_top_left_pos_x")?;
                 let top_left_pos_y = sr.read_uvlc("ats_msi_top_left_pos_y")?;
                 let seg_width = sr.read_uvlc("ats_msi_segment_width")?;
@@ -681,6 +720,36 @@ fn parse_ats_multistream_info<O: SyntaxObserver>(
     })
 }
 
+fn read_input_stream_id<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    field: &'static str,
+    seen: &mut u32,
+) -> Result<u8> {
+    let start = sr.rel_bit();
+    let offset = sr.byte_offset();
+    let bit_offset = sr.bit_offset();
+    let id = sr.read_bits_u8(field, 5)?;
+    if !insert_atlas_input_stream_id(seen, id) {
+        return sr.fail(
+            start,
+            Some(field),
+            Error::InvalidAtlasSegment {
+                offset,
+                bit_offset,
+                kind: AtlasSegmentErrorKind::DuplicateInputStreamId,
+            },
+        );
+    }
+    Ok(id)
+}
+
+pub(crate) fn insert_atlas_input_stream_id(seen: &mut u32, id: u8) -> bool {
+    let bit = 1 << id;
+    let new = *seen & bit == 0;
+    *seen |= bit;
+    new
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,6 +760,38 @@ mod tests {
     fn parse(bytes: &[u8]) -> Result<AtlasSegment> {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));
         parse_atlas_segment(&mut reader)
+    }
+
+    #[test]
+    fn dispatches_multistream_modes_only_in_global_scope() {
+        use crate::obu::{dispatch_obu_payload, read_obu_header_from_slice};
+
+        for (bytes, xlayer) in [([0xc4, 0x1f], 31), ([0xc4, 0x03], 3)] {
+            let header = read_obu_header_from_slice(&bytes, ByteOffset::new(0)).unwrap();
+            assert_eq!(header.obu_type, crate::types::ObuType::AtlasSegment);
+            assert_eq!(header.extended_layer_id.get(), xlayer);
+            assert_eq!(header.embedded_layer_id.get(), 0);
+            assert_eq!(header.temporal_layer_id.get(), 0);
+
+            for mode in [3, 4] {
+                let mut bits = Bits::default();
+                bits.f(0, 3);
+                bits.uvlc(mode);
+                let error = dispatch_obu_payload(header, &bits.into_bytes(), ByteOffset::new(2))
+                    .unwrap_err();
+                if xlayer == 31 {
+                    assert!(matches!(error, Error::UnexpectedEof { .. }));
+                } else {
+                    assert!(matches!(
+                        error,
+                        Error::InvalidAtlasSegment {
+                            kind: AtlasSegmentErrorKind::MultistreamRequiresGlobalXlayer,
+                            ..
+                        }
+                    ));
+                }
+            }
+        }
     }
 
     #[test]
@@ -723,8 +824,8 @@ mod tests {
         bits.uvlc(640); // ats_width
         bits.uvlc(480); // ats_height
         bits.uvlc(1); // ats_num_atlas_segments_minus_1 = 1 -> 2 segments
-        for _ in 0..2 {
-            bits.f(5, 5); // ats_input_stream_id
+        for id in [5, 9] {
+            bits.f(id, 5); // ats_input_stream_id
             bits.uvlc(0); // top_left_pos_x
             bits.uvlc(0); // top_left_pos_y
             bits.uvlc(100); // width
@@ -823,7 +924,12 @@ mod tests {
         bits.uvlc(50);
         bits.uvlc(50);
         bits.bit(0); // ats_signaled_atlas_segment_ids_flag
-        let record = parse(&bits.into_bytes()).unwrap();
+        let bytes = bits.into_bytes();
+        assert!(matches!(
+            parse(&bytes[..bytes.len() - 2]),
+            Err(Error::UnexpectedEof { .. })
+        ));
+        let record = parse(&bytes).unwrap();
         assert_eq!(record.mode, AtlasSegmentMode::MultistreamAlpha);
         assert_eq!(record.num_segments, 2);
         let AtlasModeInfo::MultistreamAlpha(msi) = &record.mode_info else {
@@ -882,6 +988,35 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn reports_truncated_atlas_fields_at_the_payload_end() {
+        use crate::obu::{dispatch_obu_payload_observed, read_obu_header_from_slice};
+        use crate::syntax::SyntaxRecorder;
+
+        let header = read_obu_header_from_slice(&[0xc4, 0x1f], ByteOffset::new(97)).unwrap();
+        let payload_start = ByteOffset::new(99);
+        for (bytes, field) in [
+            (&[0x05, 0x00][..], "ats_msi_width"),
+            (&[0x05, 0x40], "ats_msi_height"),
+            // Mode 0. The final offset in the explicit region rectangle is incomplete.
+            (&[0x1f, 0xbc], "ats_bottom_right_region_row_off"),
+            (&[0x05, 0x49, 0x40, 0xd2], "ats_msi_alpha_segment_flag"),
+        ] {
+            let mut recorder = SyntaxRecorder::with_default_limits();
+            let error = dispatch_obu_payload_observed(header, bytes, payload_start, &mut recorder)
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::UnexpectedEof { offset, needed: 1 }
+                if offset == payload_start.saturating_add(bytes.len() as u64)),
+                "{field}: {error}"
+            );
+            assert_eq!(
+                recorder.finish().error.unwrap().field.as_deref(),
+                Some(field)
+            );
+        }
     }
 
     #[test]

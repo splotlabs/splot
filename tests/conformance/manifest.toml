@@ -1372,6 +1372,21 @@ description = "Six 8-bit 256x128 frames (4x2 SB64), avmenc --enable-bru=1 --enab
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-gdf-frame-8bit.ivf"
+description = "Six 8-bit frames at 256x128. Partial BRU frames use frame-wide GDF. An active block in the next inter frame uses the refreshed BRU reference."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-gdf-frame-10bit.ivf"
+description = "Six 10-bit frames at 256x128. Partial BRU frames use frame-wide GDF. An active block in the next inter frame uses the refreshed BRU reference."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-gdf-lr-10bit.ivf"
+description = "Six 10-bit frames at 256x128. Partial BRU frames use Wiener nonseparable restoration and frame-wide GDF. An active block in the next inter frame uses the refreshed BRU reference."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-bru-gdf-multitile-8bit.ivf"
 description = "Six 8-bit 256x256 frames in 2x2 tiles (--tile-columns=1 --tile-rows=1 --disable-loopfilters-across-tiles=1) with avmenc --enable-bru=1 --enable-gdf=1 --gdf-unit-matches-sb=1 --enable-restoration=0 --qp=165: partial BRU superblocks apply per-block GDF within isolated tile bounds, followed by a reference consumer; validates clean."
 expect = "clean"
@@ -2903,6 +2918,34 @@ path = "vectors/valid/syn-tlayer4-reproducible-sparse.obu"
 description = "Five 64x64 8-bit 4:2:0 frames signal a sparse dependency map. Layers 2 and 3 exclude layer 1 from their dependencies. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
 expect = "clean"
 
+# Source I420 SHA-256: 33e129a615d52d1efb767fe543d1e4e9138961045a2b3a3f64da413155b4998d
+# Annex B SHA-256: df375b67903452bdfddf348002586384f8390bc6910d1880cc25d20d5b67b600
+[[vector]]
+path = "vectors/valid/syn-mlayer2-reproducible-8bit.obu"
+description = "Reproducible 8-bit I420 cross-layer predictions, ML0 64x64 and ML1 64x64. AVM outputs 6 pictures (36864 bytes, SHA-256 6b1c68c461792ee00843253575b70204a00059381fd76b8037387036e1cffcbc)."
+expect = "clean"
+
+# Source I420 SHA-256: 45a4add1eb104ef19c2a6c58fd7fdf8f6f2667e0e9f08f652b0f5167610539b5
+# Annex B SHA-256: 310aa226228f592dd3801d884025bb5ebde3e39c8e25a2bd4b1570be56225f31
+[[vector]]
+path = "vectors/valid/syn-mlayer2-reproducible-10bit.obu"
+description = "Reproducible 10-bit I420 cross-layer predictions, ML0 64x64 and ML1 64x64. AVM outputs 6 pictures (73728 bytes, SHA-256 c9d7de9c050d472aff6ccd3a9aea208e43b190d982b74391be371becf4ca8c74)."
+expect = "clean"
+
+# Source I420 SHA-256: be30dbcb82cf5413fee7644436835eea22116b33aad36cf416b6dd31b1697d66
+# Annex B SHA-256: e812ebde0d9f6c283640feb02daf8c764bb8f7e200e6d97905ef712dfcc22fa9
+[[vector]]
+path = "vectors/valid/syn-mlayer2-reproducible-mixedres-8bit.obu"
+description = "Reproducible 8-bit I420 cross-layer predictions, ML0 128x128 and ML1 256x256. AVM outputs 6 pictures (368640 bytes, SHA-256 b6975e368cbde9728aa1d76218e9c610c6260a6d218384d1302d6f10e962f3e5)."
+expect = "clean"
+
+# Source I420 SHA-256: aa536ca69716284731231b1de7558547a47c01437f495b8ec6d94decc5ac3a46
+# Annex B SHA-256: 4105853c1215760909ebff47b6bd4e5090a483ad789b71c45f8fe068a01d6142
+[[vector]]
+path = "vectors/valid/syn-mlayer2-reproducible-2d-8bit.obu"
+description = "Reproducible 8-bit I420 cross-layer predictions, ML0 128x64 and ML1 128x64. AVM outputs 8 pictures (98304 bytes, SHA-256 2735a0e58bf3ee19fb7ca625aad6bcadff45ce176b4e74e66f2356b795988600). Two tile groups per picture and a local OPS. Both layers reference ML0/TL0 multi-frame header 1."
+expect = "clean"
+
 [[vector]]
 path = "vectors/valid/syn-mlayer2-crossref-8bit.obu"
 description = "Six-frame 64x64 8-bit 4:2:0 Annex B stream encoded by AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) with two embedded layers (max_mlayer_id=1, IOP 1, local LCR, 3 temporal units across ML0 and ML1) and cross-layer prediction. Decodes identically to avmdec --all-layers across all 6 frames (36,864 bytes, SHA-256 8f798709cae451909159dde10c9581b07c373d6b6a71a6a43f450da11e018176); validates clean."
@@ -2984,4 +3027,98 @@ expect = "clean"
 [[vector]]
 path = "vectors/valid/syn-msdo-ops-random-access.obu"
 description = "Six-TU multi-extended-layer 8-bit 4:2:0 Profile 2 IOP 2 Annex B stream with OBU_MSDO ([0xD0, 0x1F]), global OPS ops_id 0 (OP 0 selecting xlayers 3 and 7 at tl0; OP 1 selecting xlayer 3 tl0..1), global OPS ops_id 1 (OP 0 inheriting xlayer 3 from ops_id 0 op_index 1 plus explicit xlayer 7 tl0), local OPS ops_id 2 on xlayer 3 (OP 0 selecting tl0), unaligned CLK random access on xlayer 7 at TU 2, and dual CLK at TU 4. Decodes identically to avmdec across --all-layers (SHA-256 abcb36ae31ba11246e8445e87f90fd6ffddab5c0eeaf15fdffbe2d53d83b6830), --select-ops=0,0, --select-ops=0,1, --select-ops=1,0, and --select-local-ops=3,2,0; validates clean."
+expect = "clean"
+
+# Atlas metadata. The local recipe is tools/decoder-fixtures/generate.py atlas-fixtures --stage DIR.
+# Its inputs are the committed 8-bit and 10-bit syn-msdo-two-streams vectors.
+# Build AVM 457cd58681a747465661baccb1f32095bc5b7774 (1.0.0-33-g457cd58681) with
+# cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release -DCONFIG_AV2_ENCODER=0 -DENABLE_TESTS=0 -DENABLE_DOCS=0
+# and cmake --build build --target avmdec. Decode each input with
+# avmdec --all-layers --i420 --rawvideo -o output.yuv INPUT. Hash the native I420 bytes.
+# To reproduce the per-layer hashes, split the output by the order in the corresponding TSV.
+# One 64x64 picture has 6144 samples. One 80x64 picture has 7680 samples. Ten-bit samples use two bytes.
+# Independent AVM verification logged img->xlayer_id, d_w, d_h and bit_depth in apps/avmdec.c
+# immediately before avm_input_ctx.width = img->d_w. The trace did not change the decoder.
+# The TSV offsets count from the start of the file to each atlas OBU header, after its length prefix.
+# The expected associations follow §§ 5.8–5.9, 6.9, 6.17.2 and 7.3.8.4.
+
+[[vector]]
+path = "vectors/needs-external-hls/syn-atlas-global-local-id-scope-10bit.obu"
+description = """
+Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 20 pictures in 276480 bytes. The local LCR also selects atlas ID 5 for the first extended layer. A seek to the second key needs the matching local atlas sidecar before its LCR. X2 SHA-256 a19c49839344102ea1dc266b86c2943e47ae2746145326bfa01f14f0819f507b. X9 SHA-256 366d1de38bc4faa23e6b65e81e9cd07ecfefd5f0c3ed163d459c4c561a2baac5.
+Stream SHA-256 65a6464fcd10909db9a00f2215a39d48cd79c2d554bb1e055dffd796d131019b.
+AVM native SHA-256 e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441.
+"""
+expect = { diagnostics = ["hls/unavailable-at-random-access-point"] }
+
+[[vector]]
+path = "vectors/needs-external-hls/syn-atlas-global-local-id-scope-8bit.obu"
+description = """
+Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 8 pictures in 55296 bytes. The local LCR also selects atlas ID 5 for the first extended layer. A seek to the second key needs the matching local atlas sidecar before its LCR. X3 SHA-256 a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe. X7 SHA-256 24f5d1b318ed0085b36d6371c3ff331fb4ec329b1ca252e93b40232b1e9f1d4a.
+Stream SHA-256 49ba47fc519fcec631acd85461d37ad0cc3e1f1a043b39b008a7e2daa3f69870.
+AVM native SHA-256 6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b.
+"""
+expect = { diagnostics = ["hls/unavailable-at-random-access-point"] }
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-0.obu"
+description = """
+Mode 0 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 bb9f795c8e61232d26271efff8d2083902bb3a48bf7af4bcc923fd5f9101c66a.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-1.obu"
+description = """
+Mode 1 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 db6bcf8b8f59636cab8cc44088d0a7030283722478c302bbb47e84759dab4e8a.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-2.obu"
+description = """
+Mode 2 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 63b12fd430b4877e866f8edb80aa0f8ef3f3e120f2fd1954408722f7d6ddb2e4.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-3.obu"
+description = """
+Mode 3 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 979728030ceaeb8ac8203b544a90a02b9aa36c21345f7076a3d7771f50cf277c.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-4.obu"
+description = """
+Mode 4 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 9d7f8df16e2d55d020e4df86146e4074b81df2fda7c4b45ea169d2b6983dfedd.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-multistream-10bit.obu"
+description = """
+Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 20 pictures in 276480 bytes. X2 SHA-256 a19c49839344102ea1dc266b86c2943e47ae2746145326bfa01f14f0819f507b. X9 SHA-256 366d1de38bc4faa23e6b65e81e9cd07ecfefd5f0c3ed163d459c4c561a2baac5.
+Stream SHA-256 efb64e2d9bbab5cfa7c3f18a6cdce218350bf29c6b02dacd0ff3bb6faea1f40b.
+AVM native SHA-256 e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-multistream-8bit.obu"
+description = """
+Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 8 pictures in 55296 bytes. X3 SHA-256 a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe. X7 SHA-256 24f5d1b318ed0085b36d6371c3ff331fb4ec329b1ca252e93b40232b1e9f1d4a.
+Stream SHA-256 2e5c2565be54bb7a5c6d51082e4385ba7879c381dd4b4ff2dc8dc5e0d84f7544.
+AVM native SHA-256 6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b.
+"""
 expect = "clean"

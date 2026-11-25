@@ -102,6 +102,12 @@ pub struct DecodeHashFrame {
     pub bit_depth: u8,
     /// Decoded output pixel format.
     pub pixel_format: PixelFormat,
+    /// Extended layer that produced this picture.
+    pub extended_layer_id: crate::ExtendedLayerId,
+    /// Embedded layer that produced this picture.
+    pub embedded_layer_id: crate::EmbeddedLayerId,
+    /// Atlas associations at the position of this picture.
+    pub atlas_associations: Vec<crate::AtlasAssociation>,
     /// Hashes computed for this output frame.
     pub hashes: Vec<DecodeHashEntry>,
 }

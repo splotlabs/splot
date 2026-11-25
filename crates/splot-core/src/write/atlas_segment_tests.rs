@@ -41,9 +41,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0, "reject left bits in the writer");
     }
 
-    // ===================================================================================
-    // Fixture builders (each yields a parser-producible model)
-    // ===================================================================================
 
     /// SINGLE_ATLAS (mode 2), unsignaled label.
     fn single_atlas() -> AtlasSegment {
@@ -65,8 +62,8 @@ mod tests {
         bits.uvlc(640); // width
         bits.uvlc(480); // height
         bits.uvlc(1); // num_atlas_segments_minus_1 = 1 -> 2 segments
-        for _ in 0..2 {
-            bits.f(5, 5); // input_stream_id
+        for id in [5, 9] {
+            bits.f(id, 5); // input_stream_id
             bits.uvlc(0); // top_left_pos_x
             bits.uvlc(0); // top_left_pos_y
             bits.uvlc(100); // width
@@ -76,6 +73,16 @@ mod tests {
         bits.f(10, 8); // ats_atlas_segment_id[0]
         bits.f(20, 8); // ats_atlas_segment_id[1]
         parse(bits)
+    }
+
+    #[test]
+    fn rejects_duplicate_atlas_input_stream_id() {
+        let mut atlas = basic_atlas_signaled();
+        let AtlasModeInfo::Basic(info) = &mut atlas.mode_info else {
+            panic!("expected basic atlas");
+        };
+        info.segments[1].input_stream_id = info.segments[0].input_stream_id;
+        reject(&atlas, "duplicate_input_stream_id");
     }
 
     /// BASIC_ATLAS (mode 1) without stream ids and with an unsignaled label.
@@ -164,14 +171,12 @@ mod tests {
         bits.f(255, 8); // red
         bits.f(0, 8); // green
         bits.f(0, 8); // blue
-        // segment 0 (not last -> alpha flag coded):
         bits.f(0, 5); // input_stream_id
         bits.uvlc(0);
         bits.uvlc(0);
         bits.uvlc(50);
         bits.uvlc(50);
         bits.bit(1); // alpha_segment_flag[0]
-        // segment 1 (last -> alpha flag inferred 0):
         bits.f(1, 5);
         bits.uvlc(50);
         bits.uvlc(0);
@@ -181,9 +186,6 @@ mod tests {
         parse(bits)
     }
 
-    // ===================================================================================
-    // Round-trips (one per mode + label / region-dim form)
-    // ===================================================================================
 
     #[test]
     fn single_atlas_round_trips() {
@@ -221,9 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn signaled_label_ids_preserved_verbatim() {
-        // §6.9.2: signaled ats_atlas_segment_id values are descriptive id assignments with no
-        // conformance requirement; arbitrary values round-trip verbatim.
+    fn explicit_labels_need_not_match_segment_indices() {
         let mut atlas = basic_atlas_signaled();
         let AtlasModeInfo::Basic(_) = &atlas.mode_info else {
             panic!("expected basic mode info");
