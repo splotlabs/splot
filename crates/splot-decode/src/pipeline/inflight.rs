@@ -675,7 +675,7 @@ impl InflightRing {
 /// never reaches drops the writer instead, settling the slot as failed.
 #[expect(clippy::too_many_arguments)]
 pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
-    backend: splot_core::simd::ResolvedBackend,
+    backend: impl splot_core::simd::SimdBackend,
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
     rows: Option<&super::frame_tasks::DecoderRowScheduler>,

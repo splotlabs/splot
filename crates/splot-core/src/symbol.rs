@@ -9,21 +9,21 @@
 //! before § 8.3 syntax-element CDF selection, tile CDF bank ownership,
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::Avx2;
 #[cfg(target_arch = "aarch64")]
 use fearless_simd::Neon;
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::SimdMask;
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Sse2;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use fearless_simd::{
     Bytes, Level, Select, Simd, SimdBase, SimdInt, SimdInto, i16x8, mask16x8, u16x8, u64x2,
 };
 
-/// The token of the lane reads: AVX2 on x86-64, NEON on AArch64.
+/// The token for the eight 16-bit symbol lanes.
 #[cfg(target_arch = "x86_64")]
-type LaneToken = Avx2;
-/// The token of the lane reads: AVX2 on x86-64, NEON on AArch64.
+type LaneToken = Sse2;
+/// The token for the eight 16-bit symbol lanes.
 #[cfg(target_arch = "aarch64")]
 type LaneToken = Neon;
 
@@ -219,7 +219,7 @@ fn adapt_row_lanes(
 #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn lane_token() -> Option<LaneToken> {
-    Level::baseline().as_avx2()
+    Level::baseline().as_sse2()
 }
 
 /// The lane token of this target, bound directly so the hot reads inline.
@@ -234,7 +234,7 @@ fn lane_token() -> Option<LaneToken> {
 fearless_simd::kernel!(
     /// The signed high half of each lane product (`pmulhw`).
     #[inline]
-    fn mul_high_avx2(token: Avx2, a: i16x8<Avx2>, b: i16x8<Avx2>) -> i16x8<Avx2> {
+    fn mul_high_sse2(token: Sse2, a: i16x8<Sse2>, b: i16x8<Sse2>) -> i16x8<Sse2> {
         core::arch::x86_64::_mm_mulhi_epi16(a.into(), b.into()).simd_into(token)
     }
 );
@@ -244,7 +244,7 @@ fearless_simd::kernel!(
 #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn mul_high(token: LaneToken, range7: u16, b: i16x8<LaneToken>) -> i16x8<LaneToken> {
-    mul_high_avx2(token, i16x8::splat(token, range7 as i16), b)
+    mul_high_sse2(token, i16x8::splat(token, range7 as i16), b)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -371,6 +371,17 @@ fn early_exit_search<T: CdfStorage, const N: usize>(
     (N - 1, 0, prev)
 }
 
+/// Number of low set bits in the prefix mask of a monotone CDF row.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[inline]
+fn prefix_len(mask: u64) -> u32 {
+    if cfg!(all(target_arch = "x86_64", not(target_feature = "popcnt"))) {
+        mask.trailing_ones()
+    } else {
+        mask.count_ones()
+    }
+}
+
 /// The lane search of [`early_exit_search`] in one register: the signed
 /// high-half multiply and the compare. The boundaries do not increase from
 /// lane to lane, so the symbol's two are the ones beside the last lane above
@@ -400,14 +411,14 @@ fn search_lanes<const N: usize>(
     if N <= 4 {
         let word = |lanes: i16x8<LaneToken>| lanes.bitcast::<u64x2<LaneToken>>().as_array()[0];
         let mask = word(token.to_vector_mask16x8(below));
-        let shift = mask.count_ones();
+        let shift = prefix_len(mask);
         let low = word(boundaries.bitcast());
         let cur = low.wrapping_shr(shift) as u16;
         let prev = ((low << 16) | u64::from(range)).wrapping_shr(shift) as u16;
         return (shift >> 4, cur, prev, below);
     }
     #[cfg(target_arch = "x86_64")]
-    let above = below.to_bitmask().count_ones();
+    let above = prefix_len(below.to_bitmask());
     // NEON has no `movemask`: one across-lane add of the `-1` lanes counts them.
     #[cfg(target_arch = "aarch64")]
     let above = u32::from(

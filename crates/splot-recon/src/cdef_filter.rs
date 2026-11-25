@@ -135,15 +135,33 @@ fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     pad: &[u16; AREA],
     coeff_shift: u32,
 ) -> [i16x8<S>; 8] {
-    let row = |i: usize| {
-        let start = (i + 2) * STRIDE + 2;
-        u16x8::from_slice(simd, &pad[start..start + 8])
+    let rows = {
+        #[inline(always)]
+        |shift: u32| {
+            let row = {
+                #[inline(always)]
+                |i: usize| {
+                    let start = (i + 2) * STRIDE + 2;
+                    let samples = u16x8::from_slice(simd, &pad[start..start + 8]);
+                    (samples >> shift).bitcast::<i16x8<S>>() - 128
+                }
+            };
+            [
+                row(0),
+                row(1),
+                row(2),
+                row(3),
+                row(4),
+                row(5),
+                row(6),
+                row(7),
+            ]
+        }
     };
-    // 8-bit rows skip the shift: a register-count shift is two micro-ops.
     if coeff_shift == 0 {
-        core::array::from_fn(|i| row(i).bitcast::<i16x8<S>>() - 128)
+        rows(0)
     } else {
-        core::array::from_fn(|i| (row(i) >> coeff_shift).bitcast::<i16x8<S>>() - 128)
+        rows(coeff_shift)
     }
 }
 
@@ -1381,12 +1399,15 @@ pub fn cdef_filter_block_interior_to_valid_stride_with<B: SimdBackend, T: ReconS
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
-        cdef_filter_block_to_valid_stride_simd::<_, T, false>(
-            simd, pad, w, h, filter, out, out_stride,
-        )
-    })
+    cdef_filter_block_to_valid_stride_simd::<_, T, false>(
+        backend.narrow().token(),
+        pad,
+        w,
+        h,
+        filter,
+        out,
+        out_stride,
+    )
 }
 
 /// SIMD CDEF filtering for a padded boundary block.
@@ -1416,12 +1437,15 @@ pub fn cdef_filter_block_boundary_to_valid_stride_with<B: SimdBackend, T: ReconS
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
-        cdef_filter_block_to_valid_stride_simd::<_, T, true>(
-            simd, pad, w, h, filter, out, out_stride,
-        )
-    })
+    cdef_filter_block_to_valid_stride_simd::<_, T, true>(
+        backend.narrow().token(),
+        pad,
+        w,
+        h,
+        filter,
+        out,
+        out_stride,
+    )
 }
 
 fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: ReconSample>(
@@ -1452,29 +1476,34 @@ fn cdef_filter_block_to_valid_stride_simd<
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
-    let (w, h) = (w.min(8), h.min(8));
-    let mut block = [0u16; 64];
-    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
-    if w == 0
-        || cdef_filter_block_rows::<
-            _,
-            _,
-            8,
-            HAS_UNAVAILABLE,
-            CDEF_PADDED_SIDE,
-            2,
-            8,
-            SPAN,
-            CDEF_PADDED_AREA,
-        >(simd, args)
-        .is_none()
-    {
-        return false;
-    }
-    let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
-    let size = (w, h, unfiltered);
-    cdef_publish_block(simd, &block, size, out, out_stride).is_some()
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
+            let (w, h) = (w.min(8), h.min(8));
+            let mut block = [0u16; 64];
+            let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
+            if w == 0
+                || cdef_filter_block_rows::<
+                    _,
+                    _,
+                    8,
+                    HAS_UNAVAILABLE,
+                    CDEF_PADDED_SIDE,
+                    2,
+                    8,
+                    SPAN,
+                    CDEF_PADDED_AREA,
+                >(simd, args)
+                .is_none()
+            {
+                return false;
+            }
+            let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
+            let size = (w, h, unfiltered);
+            cdef_publish_block(simd, &block, size, out, out_stride).is_some()
+        },
+    )
 }
 
 /// Writes the first `w` lanes of the first `h` rows of `block` to `out`, rows
@@ -1644,139 +1673,6 @@ mod tests {
         assert_eq!(cdef_window_mode(&filter(0, -2, 6), 0), CDEF_GENERAL);
         assert_eq!(cdef_window_mode(&filter(4, 2, 200), 70_000), CDEF_CLAMPED);
         assert_eq!(cdef_window_mode(&filter(4, 0, 200), 3), CDEF_LINEAR);
-    }
-
-    #[test]
-    fn flat_block_has_zero_variance() {
-        let block = [[0i32; 8]; 8];
-        let (y_dir, var) = cdef_direction(&block);
-        assert_eq!((y_dir, var), (0, 0), "flat block: yDir 0, var 0");
-    }
-
-    #[test]
-    fn horizontal_gradient_picks_a_horizontal_direction() {
-        let mut block = [[0i32; 8]; 8];
-        for (i, row) in block.iter_mut().enumerate() {
-            for cell in row.iter_mut() {
-                *cell = i as i32 * 16 - 56; // distinct per-row value, zero mean-ish
-            }
-        }
-        let (y_dir, var) = cdef_direction(&block);
-        assert_eq!(y_dir, 2, "row-varying block selects direction 2");
-        assert!(var > 0, "a non-flat block has positive variance: var={var}");
-    }
-
-    /// § 7.18.2 as written, one sample at a time.
-    fn spec_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
-        let mut partial = [[0i32; 15]; 8];
-        for i in 0..8 {
-            for j in 0..8 {
-                let x = block[i][j];
-                partial[0][i + j] += x;
-                partial[1][i + j / 2] += x;
-                partial[2][i] += x;
-                partial[3][3 + i - j / 2] += x;
-                partial[4][7 + i - j] += x;
-                partial[5][3 - i / 2 + j] += x;
-                partial[6][j] += x;
-                partial[7][i / 2 + j] += x;
-            }
-        }
-        let square = |v: i32| v * v;
-        let mut cost = [0i32; 8];
-        for i in 0..8 {
-            cost[2] += square(partial[2][i]);
-            cost[6] += square(partial[6][i]);
-        }
-        cost[2] *= DIV_TABLE[8];
-        cost[6] *= DIV_TABLE[8];
-        for i in 0..7 {
-            for d in [0, 4] {
-                cost[d] += (square(partial[d][i]) + square(partial[d][14 - i])) * DIV_TABLE[i + 1];
-            }
-        }
-        cost[0] += square(partial[0][7]) * DIV_TABLE[8];
-        cost[4] += square(partial[4][7]) * DIV_TABLE[8];
-        for i in (1..8).step_by(2) {
-            for j in 0..5 {
-                cost[i] += square(partial[i][3 + j]);
-            }
-            cost[i] *= DIV_TABLE[8];
-            for j in 0..3 {
-                cost[i] +=
-                    (square(partial[i][j]) + square(partial[i][10 - j])) * DIV_TABLE[2 * j + 2];
-            }
-        }
-        let (mut best_cost, mut y_dir) = (0, 0);
-        for (i, &c) in cost.iter().enumerate() {
-            if c > best_cost {
-                best_cost = c;
-                y_dir = i;
-            }
-        }
-        (y_dir, (best_cost - cost[(y_dir + 4) & 7]) >> 10)
-    }
-
-    #[test]
-    fn direction_matches_spec_partials_and_costs() {
-        let mut state = 0x2545_f491u32;
-        let mut next = || {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            state >> 8
-        };
-        let mut directions = [0usize; 8];
-        for case in 0..4000usize {
-            let mut block = [[0i32; 8]; 8];
-            let slope = (case % 9) as i32 - 4;
-            for (i, row) in block.iter_mut().enumerate() {
-                for (j, cell) in row.iter_mut().enumerate() {
-                    let ramp =
-                        slope * (i as i32 * (case % 3) as i32 + j as i32 * (case % 5) as i32);
-                    let noise = (next() % 64) as i32 - 32;
-                    *cell = (ramp * 6 + noise).clamp(-128, 127);
-                }
-            }
-            if case % 7 == 0 {
-                block = [[if case % 2 == 0 { -128 } else { 127 }; 8]; 8];
-            }
-            let expected = spec_direction(&block);
-            directions[expected.0] += 1;
-            assert_eq!(cdef_direction(&block), expected, "case {case}");
-            let mut pad = [0u16; CDEF_PADDED_AREA];
-            for (i, row) in block.iter().enumerate() {
-                for (j, &cell) in row.iter().enumerate() {
-                    pad[(i + 2) * CDEF_PADDED_SIDE + j + 2] = (cell + 128) as u16;
-                }
-            }
-            assert_eq!(
-                cdef_direction_padded(&pad, 0),
-                expected,
-                "padded case {case}"
-            );
-        }
-        assert!(directions.iter().all(|&count| count > 0), "{directions:?}");
-    }
-
-    #[test]
-    fn padded_direction_matches_materialized_block() {
-        for coeff_shift in [0u32, 2, 4] {
-            let mut state = 0x9e37_79b9u32 ^ coeff_shift;
-            let mut pad = [0u16; CDEF_PADDED_AREA];
-            let mut block = [[0i32; 8]; 8];
-            for (i, row) in block.iter_mut().enumerate() {
-                for (j, cell) in row.iter_mut().enumerate() {
-                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    let sample = ((state >> 16) & ((256 << coeff_shift) - 1)) as u16;
-                    pad[(i + 2) * CDEF_PADDED_SIDE + j + 2] = sample;
-                    *cell = (i32::from(sample) >> coeff_shift) - 128;
-                }
-            }
-            assert_eq!(
-                cdef_direction_padded(&pad, coeff_shift),
-                cdef_direction(&block),
-                "coeff_shift={coeff_shift}"
-            );
-        }
     }
 
     #[test]

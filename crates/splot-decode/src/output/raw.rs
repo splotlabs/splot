@@ -7,6 +7,7 @@
 
 use std::io::Write;
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::DecodeOptions;
@@ -16,6 +17,7 @@ use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn write_raw_stream_from_plan(
+    backend: impl SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
@@ -23,8 +25,8 @@ pub(crate) fn write_raw_stream_from_plan(
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
     let mut seen_xlayer = None;
-    let backend = session.backend();
     crate::pipeline::emit_frames(
+        backend,
         source,
         options,
         session,
@@ -46,7 +48,7 @@ pub(crate) fn write_raw_stream_from_plan(
 
 /// Writes one displayed frame.
 fn write_display_frame(
-    backend: splot_core::simd::ResolvedBackend,
+    backend: impl SimdBackend,
     frame: &PipelineDecodedFrame,
     display_grain: Option<&crate::pipeline::ActiveFilmGrain>,
     spare: &mut GrainPlanes,
@@ -71,13 +73,14 @@ fn write_display_frame(
 }
 
 pub(crate) fn discard_raw_stream_from_plan(
+    backend: impl SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
-    let backend = session.backend();
     crate::pipeline::emit_frames(
+        backend,
         source,
         options,
         session,

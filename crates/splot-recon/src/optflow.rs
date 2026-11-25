@@ -209,9 +209,10 @@ pub fn derive_optflow_mv_deltas_into_with<'a, B: SimdBackend, P: WindowSample>(
     };
     let block = (preds, starts, stride, [width, height], unit_size);
     let narrow = backend.narrow();
-    if let Err(error) =
-        narrow.vectorize(|| block_deltas(narrow.token(), block, weights, &mut scratch.deltas))
-    {
+    if let Err(error) = narrow.vectorize(
+        #[inline(always)]
+        || block_deltas(narrow.token(), block, weights, &mut scratch.deltas),
+    ) {
         scratch.deltas.clear();
         return Err(error);
     }
@@ -237,7 +238,11 @@ type Tile<'a, P> = ([&'a [P]; 2], [usize; 2], usize);
 /// The deltas of [`derive_optflow_mv_deltas_into`] over its validated block,
 /// one gradient unit (`W` and `H` 16, or 8 at a block narrower or lower
 /// than 16) at a time.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "retain the caller's SIMD target features"
+)]
+#[inline(always)]
 fn block_deltas<S: Simd, P: WindowSample>(
     simd: S,
     (preds, starts, stride, [width, height], unit_size): Block<'_, P>,
@@ -298,19 +303,25 @@ fn tile_sums<S: Simd, P: WindowSample, const W: usize, const H: usize>(
     (preds, at, stride): Tile<'_, P>,
     weights: Weights,
 ) -> [[i32; 5]; 4] {
-    let row = |row: usize| {
-        let [first, second] = [0, 1].map(|pred| {
-            let at = at[pred] + row * stride;
-            let lanes = if W == 16 {
-                sample_row(simd, preds[pred], at, weights.max)
-            } else {
-                sample_pair(simd, preds[pred], [at; 2], weights.max)
+    let row = {
+        #[inline(always)]
+        |row: usize| {
+            let offset = row * stride;
+            let load = |pred, at| {
+                let at = at + offset;
+                let lanes = if W == 16 {
+                    sample_row(simd, pred, at, weights.max)
+                } else {
+                    sample_pair(simd, pred, [at; 2], weights.max)
+                };
+                lanes.bitcast::<i16x16<S>>()
             };
-            lanes.bitcast::<i16x16<S>>()
-        });
-        weighted_difference_row(first, second, weights.distances, weights.downshift)
+            let first = load(preds[0], at[0]);
+            let second = load(preds[1], at[1]);
+            weighted_difference_row(first, second, weights.distances, weights.downshift)
+        }
     };
-    let [tmp0, tmp1, tmp2] = [0, 1, 2].map(|line| row(line).0);
+    let (tmp0, tmp1, tmp2) = (row(0).0, row(1).0, row(2).0);
     let mut tmp = [tmp0, tmp0, tmp0, tmp1, tmp2];
     let mut units = [[0; 5]; 4];
     for half in 0..H / 8 {

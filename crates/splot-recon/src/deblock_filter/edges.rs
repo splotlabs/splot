@@ -119,25 +119,30 @@ impl DeblockEdge {
     /// gives them.
     #[inline]
     pub fn from_words<S: Simd>(simd: S, words: [u16x16<S>; 4], out: &mut [Self; 16]) {
-        let [q_thr, side, widths, flags] = words;
-        let q_thr = q_thr.min(u16x16::splat(simd, MAX_Q_THR as u16));
-        let side = side.min(u16x16::splat(simd, MAX_SIDE as u16));
-        let (low, low_high) = simd.interleave_u16x16(q_thr, side);
-        let (high, high_high) = simd.interleave_u16x16(widths, flags & 3);
-        let edges = |low: u16x16<S>, high: u16x16<S>| {
-            let (first, second) = simd.interleave_u32x8(low.bitcast(), high.bitcast());
-            (
-                first.bitcast::<u64x4<S>>().to_array(),
-                second.bitcast::<u64x4<S>>().to_array(),
-            )
-        };
-        let (a, b) = edges(low, high);
-        let (c, d) = edges(low_high, high_high);
-        for (out, quad) in out.chunks_exact_mut(4).zip([a, b, c, d]) {
-            for (out, edge) in out.iter_mut().zip(quad) {
-                *out = Self(edge);
-            }
-        }
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                let [q_thr, side, widths, flags] = words;
+                let q_thr = q_thr.min(u16x16::splat(simd, MAX_Q_THR as u16));
+                let side = side.min(u16x16::splat(simd, MAX_SIDE as u16));
+                let (low, low_high) = simd.interleave_u16x16(q_thr, side);
+                let (high, high_high) = simd.interleave_u16x16(widths, flags & 3);
+                let edges = |low: u16x16<S>, high: u16x16<S>| {
+                    let (first, second) = simd.interleave_u32x8(low.bitcast(), high.bitcast());
+                    (
+                        first.bitcast::<u64x4<S>>().to_array(),
+                        second.bitcast::<u64x4<S>>().to_array(),
+                    )
+                };
+                let (a, b) = edges(low, high);
+                let (c, d) = edges(low_high, high_high);
+                for (out, quad) in out.chunks_exact_mut(4).zip([a, b, c, d]) {
+                    for (out, edge) in out.iter_mut().zip(quad) {
+                        *out = Self(edge);
+                    }
+                }
+            },
+        );
     }
 
     /// Whether the edge filters nothing.
@@ -873,17 +878,20 @@ fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
         return;
     }
     let chunk = (samples, stride, edges, max_sample);
-    match edges
-        .iter()
-        .fold(0, |widest, edge| widest.max(edge.max_width_pos()))
-    {
-        0 => {}
-        1 => portable_class::<S, E, VERTICAL, 1>(simd, chunk),
-        3 => portable_class::<S, E, VERTICAL, 3>(simd, chunk),
-        4 => portable_class::<S, E, VERTICAL, 4>(simd, chunk),
-        6 => portable_class::<S, E, VERTICAL, 6>(simd, chunk),
-        _ => portable_class::<S, E, VERTICAL, 8>(simd, chunk),
-    }
+    simd.vectorize(
+        #[inline(always)]
+        || match edges
+            .iter()
+            .fold(0, |widest, edge| widest.max(edge.max_width_pos()))
+        {
+            0 => {}
+            1 => portable_class::<S, E, VERTICAL, 1>(simd, chunk),
+            3 => portable_class::<S, E, VERTICAL, 3>(simd, chunk),
+            4 => portable_class::<S, E, VERTICAL, 4>(simd, chunk),
+            6 => portable_class::<S, E, VERTICAL, 6>(simd, chunk),
+            _ => portable_class::<S, E, VERTICAL, 8>(simd, chunk),
+        },
+    );
 }
 
 /// [`portable_chunk`] for the window from `s[-8]` of the chunk's first line
@@ -1282,11 +1290,14 @@ mod portable {
             let toward = |edge: i16x8<S>, inner: i16x8<S>, outer: i16x8<S>, n: i16| {
                 mean((edge - outer - (edge - inner) * n).abs())
             };
-            let ends = |dist: i16, end: i16x8<S>| {
-                let reach = dist as isize;
-                let neg = max_neg.simd_lt(splat(dist))
-                    | toward(em1, em2, e(-reach - 1), dist).simd_le(end);
-                neg & toward(e0, e1, e(reach), dist).simd_le(end)
+            let ends = {
+                #[inline(always)]
+                |dist: i16, end: i16x8<S>| {
+                    let reach = dist as isize;
+                    let neg = max_neg.simd_lt(splat(dist))
+                        | toward(em1, em2, e(-reach - 1), dist).simd_le(end);
+                    neg & toward(e0, e1, e(reach), dist).simd_le(end)
+                }
             };
             let three = three & ends(3, (side * 3) >> 4);
             index += count(two) + count(three);

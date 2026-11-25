@@ -8,6 +8,7 @@
 use std::io::Write;
 
 use splot_core::ivf::IvfHeader;
+use splot_core::simd::SimdBackend;
 use splot_recon::{BitDepth, DecodedFrame, ReconSample, Y4mError, Y4mFrameRate, Y4mWriter};
 
 use crate::DecodeOptions;
@@ -17,6 +18,7 @@ use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn write_y4m_stream_to_writer(
+    backend: impl SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
@@ -28,8 +30,8 @@ pub(crate) fn write_y4m_stream_to_writer(
     let mut seen_xlayer = None;
     let frame_rate_override = options.y4m_frame_rate_override();
     let mut spare = GrainPlanes::default();
-    let backend = session.backend();
     crate::pipeline::emit_frames(
+        backend,
         source,
         options,
         session,

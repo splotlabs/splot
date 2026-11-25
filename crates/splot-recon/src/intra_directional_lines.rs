@@ -639,20 +639,24 @@ fn line_lanes_u16<S: Simd>(simd: S, window: &[u16], taps: [i8; 4], max: u16, out
     };
     let (taps01, taps23) = (pair(taps[0], taps[1]), pair(taps[2], taps[3]));
     let max = i32::from(max);
-    store_chunks::<u16, 8>(out, |at| {
-        let load = |tap: usize| u16x8::from_slice(simd, &window[at + tap..at + tap + 8]);
-        let madd = |near: u16x8<S>, far: u16x8<S>, weights: i16x16<S>| {
-            let pairs = simd.combine_u16x8(
-                simd.zip_low_u16x8(near, far),
-                simd.zip_high_u16x8(near, far),
-            );
-            simd.pairwise_dot_product_i16x16(pairs.bitcast::<i16x16<S>>(), weights)
-        };
-        let sum = madd(load(0), load(1), taps01) + madd(load(2), load(3), taps23);
-        let values = ((sum + 64) >> 7).max(0).min(max);
-        let (low, high) = simd.split_u32x8(values.bitcast());
-        simd.relaxed_narrow_u32x4(low, high).into()
-    });
+    store_chunks::<u16, 8>(
+        out,
+        #[inline(always)]
+        |at| {
+            let load = |tap: usize| u16x8::from_slice(simd, &window[at + tap..at + tap + 8]);
+            let madd = |near: u16x8<S>, far: u16x8<S>, weights: i16x16<S>| {
+                let pairs = simd.combine_u16x8(
+                    simd.zip_low_u16x8(near, far),
+                    simd.zip_high_u16x8(near, far),
+                );
+                simd.pairwise_dot_product_i16x16(pairs.bitcast::<i16x16<S>>(), weights)
+            };
+            let sum = madd(load(0), load(1), taps01) + madd(load(2), load(3), taps23);
+            let values = ((sum + 64) >> 7).max(0).min(max);
+            let (low, high) = simd.split_u32x8(values.bitcast());
+            simd.relaxed_narrow_u32x4(low, high).into()
+        },
+    );
 }
 
 /// [`LineSample::small_lanes`] over `u16` samples: the bilinear form in `u16`

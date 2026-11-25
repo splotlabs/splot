@@ -20,6 +20,10 @@ const FIXTURES: &[(&str, &[u8])] = &[
         include_bytes!("../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf"),
     ),
     (
+        "tip",
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-frame-tip-families-64x64.ivf"),
+    ),
+    (
         "opfl_refine",
         include_bytes!(
             "../../../tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
@@ -110,20 +114,25 @@ impl DecodeScope<()> for TypedParityCheck<'_> {
     }
 }
 
-fn forced_policies() -> [(SimdPolicy, SelectedBackend, bool); 3] {
+fn forced_policies() -> [(SimdPolicy, SelectedBackend, bool); 4] {
     #[cfg(target_arch = "x86_64")]
-    let (avx2, avx512) = {
+    let (sse2, avx2, avx512) = {
         let level = fearless_simd::Level::new();
-        (level.as_avx2().is_some(), level.as_avx512().is_some())
+        (
+            level.as_sse2().is_some(),
+            level.as_avx2().is_some(),
+            level.as_avx512().is_some(),
+        )
     };
     #[cfg(not(target_arch = "x86_64"))]
-    let (avx2, avx512) = (false, false);
+    let (sse2, avx2, avx512) = (false, false, false);
     #[cfg(target_arch = "aarch64")]
     let neon = fearless_simd::Level::new().as_neon().is_some();
     #[cfg(not(target_arch = "aarch64"))]
     let neon = false;
 
     [
+        (SimdPolicy::Sse2, SelectedBackend::Sse2, sse2),
         (SimdPolicy::Avx2, SelectedBackend::Avx2, avx2),
         (SimdPolicy::Avx512, SelectedBackend::Avx512, avx512),
         (SimdPolicy::Neon, SelectedBackend::Neon, neon),
@@ -336,7 +345,14 @@ fn frozen_ewouth_streaming_parity() {
 fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
     let auto_ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
     #[cfg(target_arch = "x86_64")]
-    assert_eq!(auto_ctx.selected_backend(), SelectedBackend::Avx2);
+    assert_eq!(
+        auto_ctx.selected_backend(),
+        if fearless_simd::Level::new().as_avx2().is_some() {
+            SelectedBackend::Avx2
+        } else {
+            SelectedBackend::Sse2
+        }
+    );
     #[cfg(target_arch = "aarch64")]
     assert_eq!(auto_ctx.selected_backend(), SelectedBackend::Neon);
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -423,6 +439,7 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
                         "{label}"
                     );
                     let skipped = decode_streaming(&mut no_grain_decoder, &units);
+                    drop(no_grain_decoder);
                     assert_ne!(
                         raw_from_pictures(&skipped),
                         expected.raw,

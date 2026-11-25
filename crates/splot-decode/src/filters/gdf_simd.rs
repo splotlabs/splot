@@ -137,8 +137,11 @@ fn window_range<S: Simd, W: WindowRows>(
     limit: u16,
     range: impl Fn(u16x16<S>, u16x16<S>) -> u16,
 ) -> u16 {
-    let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
-    macro_rules! rows_range {
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
+            macro_rules! rows_range {
         ($($row:literal)*) => {
             $({
                 const ROW: usize = $row;
@@ -155,15 +158,17 @@ fn window_range<S: Simd, W: WindowRows>(
             })*
         };
     }
-    rows_range!(6 7);
-    if range(low, high) > limit {
-        return ROUGH;
-    }
-    rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
-    match range(low, high) {
-        range if range > limit => ROUGH,
-        range => range,
-    }
+            rows_range!(6 7);
+            if range(low, high) > limit {
+                return ROUGH;
+            }
+            rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
+            match range(low, high) {
+                range if range > limit => ROUGH,
+                range => range,
+            }
+        },
+    )
 }
 
 /// Bit `lane` in each lane.
@@ -620,6 +625,11 @@ impl GdfSample for u16 {
         lanes.bitcast::<u16x16<S>>().store_slice(samples);
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "keep residual lanes inside the typed GDF row"
+    )]
+    #[inline(always)]
     fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], block: &GdfBlock) {
         let (residuals, _) = residuals.as_chunks::<16>();
         let (output, _) = output.as_chunks_mut::<16>();
@@ -645,6 +655,11 @@ impl GdfSample for u8 {
         simd.narrow_u16x8(low, high).store_slice(samples);
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "keep residual lanes inside the typed GDF row"
+    )]
+    #[inline(always)]
     fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], _block: &GdfBlock) {
         let (residual_pairs, residuals) = residuals.as_chunks::<32>();
         let (output_pairs, output) = output.as_chunks_mut::<32>();
@@ -760,8 +775,13 @@ pub(super) fn sym_rows<B: splot_core::simd::SimdBackend, O: GdfSample>(
 ) {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
-        return inlane::InLane.rows(avx2, window, output, classes, (block, params));
+        return avx2.vectorize(
+            #[inline(always)]
+            || {
+                let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
+                inlane::InLane.rows(avx2, window, output, classes, (block, params));
+            },
+        );
     }
     sym_rows_portable(backend, window, output, classes, block, params);
 }
@@ -1015,7 +1035,30 @@ fn pair_sum<S: Simd>(simd: S, current: &GradChunk, previous: &GradChunk) -> [i16
     })
 }
 
-#[inline(never)]
+#[expect(clippy::inline_always)]
+#[inline(always)]
+fn scan_gradient_chunk<S: Simd>(
+    simd: S,
+    rows: &[[u16; TILE_STRIDE]; 4],
+    chunk: usize,
+    out: &mut GradChunk,
+    previous: &GradChunk,
+) -> [i16x16<S>; 4] {
+    let start = TAP_REACH - 2 + 16 * chunk;
+    let rows = rows.each_ref().map(|row| {
+        row.get(start..)
+            .and_then(<[u16]>::first_chunk::<18>)
+            .unwrap_or(&[0; 18])
+    });
+    let grad = pair_gradients(simd, rows);
+    store_gradients(grad, out);
+    core::array::from_fn(|d| {
+        grad[d] + u16x16::from_slice(simd, &previous[d]).bitcast::<i16x16<S>>()
+    })
+}
+
+#[expect(clippy::inline_always)]
+#[inline(always)]
 fn classify_tiled_gradient_row<S: Simd>(
     simd: S,
     rows: &[[u16; TILE_STRIDE]; 4],
@@ -1024,26 +1067,13 @@ fn classify_tiled_gradient_row<S: Simd>(
     classes: &mut [[i32; 8]],
     tables: &[[i16; 16]; 4],
 ) -> Option<()> {
-    let scan = |chunk: usize, out: &mut GradChunk, previous: &GradChunk| {
-        let start = TAP_REACH - 2 + 16 * chunk;
-        let rows = rows.each_ref().map(|row| {
-            row.get(start..)
-                .and_then(<[u16]>::first_chunk::<18>)
-                .unwrap_or(&[0; 18])
-        });
-        let grad = pair_gradients(simd, rows);
-        store_gradients(grad, out);
-        core::array::from_fn(|d| {
-            grad[d] + u16x16::from_slice(simd, &previous[d]).bitcast::<i16x16<S>>()
-        })
-    };
     let (first, current) = current.split_first_mut()?;
     let (prior, previous) = previous.split_first()?;
-    let mut sum = scan(0, first, prior);
+    let mut sum = scan_gradient_chunk(simd, rows, 0, first, prior);
     for (i, ((classes, current), previous)) in
         classes.iter_mut().zip(current).zip(previous).enumerate()
     {
-        let next = scan(i + 1, current, previous);
+        let next = scan_gradient_chunk(simd, rows, i + 1, current, previous);
         *classes = classify_chunk(simd, sum, next, tables).to_array();
         sum = next;
     }
@@ -1065,23 +1095,31 @@ fn classify_chunk<S: Simd>(
     next: [i16x16<S>; 4],
     tables: &[[i16; 16]; 4],
 ) -> i32x8<S> {
-    let strengths: [i32x8<S>; 4] = core::array::from_fn(|d| {
-        let columns = sums[d] + simd.slide_i16x16::<2>(sums[d], next[d]);
-        simd.pairwise_dot_product_i16x16(columns, i16x16::splat(simd, 4096))
-    });
+    let weight = i16x16::splat(simd, 4096);
+    let strength = {
+        #[inline(always)]
+        |sum, next| {
+            let columns = sum + simd.slide_i16x16::<2>(sum, next);
+            simd.pairwise_dot_product_i16x16(columns, weight)
+        }
+    };
+    let [sum0, sum1, sum2, sum3] = sums;
+    let [next0, next1, next2, next3] = next;
+    let (first, second) = (strength(sum0, next0), strength(sum1, next1));
+    let (third, fourth) = (strength(sum2, next2), strength(sum3, next3));
     let bit = |a: i32x8<S>, b: i32x8<S>, value: i32| {
         a.simd_le(b)
             .select(i32x8::splat(simd, value), i32x8::splat(simd, 0))
     };
-    let index = bit(strengths[0], strengths[1], 1) | bit(strengths[2], strengths[3], 2);
+    let index = bit(first, second, 1) | bit(third, fourth, 2);
     let high = i32x8::splat(simd, -65536);
     let combs = |low: i32x8<S>, high_half: i32x8<S>, [alpha, weight]: [&[i16; 16]; 2]| {
         let packed: i16x16<S> = ((low >> 16) | (high_half & high)).bitcast();
         let alpha = i16x16::from_slice(simd, alpha);
         simd.pairwise_dot_product_i16x16(packed.min(alpha), i16x16::from_slice(simd, weight))
     };
-    let bias = combs(strengths[0], strengths[1], [&tables[0], &tables[1]])
-        + combs(strengths[2], strengths[3], [&tables[2], &tables[3]]);
+    let bias = combs(first, second, [&tables[0], &tables[1]])
+        + combs(third, fourth, [&tables[2], &tables[3]]);
     (bias << 2) | index
 }
 
@@ -1135,14 +1173,19 @@ pub(super) fn filter_run<B: splot_core::simd::SimdBackend, O: GdfSample>(
 ) -> Option<()> {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return filter_run_with(
-            backend,
-            avx2,
-            inlane::InLane,
-            source,
-            block,
-            output,
-            scratch,
+        return avx2.vectorize(
+            #[inline(always)]
+            || {
+                filter_run_with(
+                    backend,
+                    avx2,
+                    inlane::InLane,
+                    source,
+                    block,
+                    output,
+                    scratch,
+                )
+            },
         );
     }
     splot_core::with_simd!(backend, simd => filter_run_with(backend, simd, Rough, source, block, output, scratch))

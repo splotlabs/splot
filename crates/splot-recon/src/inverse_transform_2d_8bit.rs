@@ -96,7 +96,11 @@ impl Load {
     /// Up to eight coefficients of `row` from `start`, zero past its end,
     /// dequantized to `±bound` when the input is quantized; `dc` marks lane
     /// 0 as the DC coefficient. No rescale or row clamp.
-    #[inline]
+    #[expect(
+        clippy::inline_always,
+        reason = "keep coefficient loads in the SIMD scope"
+    )]
+    #[inline(always)]
     fn coeffs<S: Simd>(
         self,
         simd: S,
@@ -117,7 +121,11 @@ impl Load {
         self.dequantize(simd, v, dc, bound)
     }
 
-    #[inline]
+    #[expect(
+        clippy::inline_always,
+        reason = "keep coefficient arithmetic alongside scoped SIMD loads"
+    )]
+    #[inline(always)]
     fn dequantize<S: Simd>(self, simd: S, v: i32x8<S>, dc: bool, bound: i32) -> i32x8<S> {
         let Some(dq) = self.dequant else {
             return v;
@@ -1481,7 +1489,11 @@ fn rescaled<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
 }
 
 /// The optional rescale and the row input clamp to `±bound`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep row input clamps in the SIMD scope"
+)]
+#[inline(always)]
 fn row_input<S: Simd>(v: i32x8<S>, rescale: bool, bound: i32) -> i32x8<S> {
     let v = rescaled(v, rescale);
     v.max(i32x8::splat(v.simd, -bound))

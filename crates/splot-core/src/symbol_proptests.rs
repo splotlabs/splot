@@ -337,11 +337,11 @@ fn trusted_read<const L: usize>(
 /// path, each on its own decoder and row copy.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn word_and_lane_read<const N: usize>(
+    token: LaneToken,
     (word, word_row): (&mut SymbolDecoder<'_>, &mut [u16]),
     (lane, lane_row): (&mut SymbolDecoder<'_>, &mut [u16]),
     update: bool,
 ) -> (u32, u32) {
-    let token = lane_token().expect("x86-64-v3 or NEON lanes");
     word.ensure_buffered(15);
     let initial = row_word::<N>(word_row);
     let from_word = word.read_trusted_word::<N>(word_row, initial, update).0;
@@ -354,15 +354,16 @@ fn word_and_lane_read<const N: usize>(
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn word_and_lane_read_n(
     n: usize,
+    token: LaneToken,
     word: (&mut SymbolDecoder<'_>, &mut [u16]),
     lane: (&mut SymbolDecoder<'_>, &mut [u16]),
     update: bool,
 ) -> (u32, u32) {
     match n {
-        3 => word_and_lane_read::<3>(word, lane, update),
-        4 => word_and_lane_read::<4>(word, lane, update),
-        5 => word_and_lane_read::<5>(word, lane, update),
-        _ => word_and_lane_read::<6>(word, lane, update),
+        3 => word_and_lane_read::<3>(token, word, lane, update),
+        4 => word_and_lane_read::<4>(token, word, lane, update),
+        5 => word_and_lane_read::<5>(token, word, lane, update),
+        _ => word_and_lane_read::<6>(token, word, lane, update),
     }
 }
 
@@ -380,6 +381,9 @@ proptest! {
         update in any::<bool>(),
         data in proptest::collection::vec(any::<u8>(), 2..24),
     ) {
+        let Some(token) = lane_token() else {
+            return Ok(());
+        };
         let mut row = [0u16; MAX_SYMBOLS + 1];
         let mut acc = 0u32;
         for (entry, gap) in row.iter_mut().take(n - 1).zip(&gaps) {
@@ -393,6 +397,7 @@ proptest! {
         for _ in 0..12 {
             let (from_word, from_lanes) = word_and_lane_read_n(
                 n,
+                token,
                 (&mut word, &mut word_row[..=n]),
                 (&mut lane, &mut lane_row[..=n]),
                 update,
@@ -412,12 +417,16 @@ proptest! {
         update in any::<bool>(),
         data in proptest::collection::vec(any::<u8>(), 2..16),
     ) {
+        let Some(token) = lane_token() else {
+            return Ok(());
+        };
         let (mut word_row, mut lane_row) = (row, row);
         let mut word = SymbolDecoder::new(&data).unwrap();
         let mut lane = SymbolDecoder::new(&data).unwrap();
         for _ in 0..8 {
             let (from_word, from_lanes) = word_and_lane_read_n(
                 n,
+                token,
                 (&mut word, &mut word_row[..=n]),
                 (&mut lane, &mut lane_row[..=n]),
                 update,

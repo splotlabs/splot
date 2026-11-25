@@ -276,7 +276,11 @@ fn sample_lanes<S: Simd, T: ReconSample>(simd: S, span: &[T], at: usize) -> u16x
 }
 
 /// `Min(Round2(top * (16 - v) + bottom * v, 8), max)` of two horizontal rows.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "retain the caller's SIMD target features"
+)]
+#[inline(always)]
 fn vertical_blend<S: Simd>(simd: S, top: u16x8<S>, bottom: u16x8<S>, v: u16, max: u16) -> u16x8<S> {
     let (top_low, top_high) = top.widening_mul(u16x8::splat(simd, 16 - v));
     let (bottom_low, bottom_high) = bottom.widening_mul(u16x8::splat(simd, v));

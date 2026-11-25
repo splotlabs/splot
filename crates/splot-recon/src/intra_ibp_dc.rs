@@ -444,7 +444,11 @@ fn ibp_dc_rows<S: Simd, P: IntraLaneSample, const W: usize, const C: usize>(
 /// `Round2(dc * (128 - inverse) + edge * inverse, 7)`: in wrapping `u16`
 /// lanes as `128 * dc + 64 + (edge - dc) * inverse`, exact since the sum fits,
 /// unless `wide` samples need `u32`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep DC blend arithmetic in the SIMD caller"
+)]
+#[inline(always)]
 fn ibp_dc_lanes<S: Simd>(
     simd: S,
     wide: bool,
@@ -467,7 +471,11 @@ fn ibp_dc_lanes<S: Simd>(
 
 /// `Round2(pred * weight + edge * (128 - weight), 7)` over 16 lanes, in `u16`
 /// lanes unless `wide` samples need `u32`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep wide blend arithmetic in the SIMD caller"
+)]
+#[inline(always)]
 pub(crate) fn blend_ibp_lanes<S: Simd>(
     simd: S,
     wide: bool,

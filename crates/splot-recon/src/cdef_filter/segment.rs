@@ -420,11 +420,11 @@ impl SegmentSimd for BaselineSegment {
 impl<B: SimdBackend> SegmentSimd for TypedSegment<B> {
     #[inline]
     fn gather<O>(self, op: impl SegmentGather<O>) -> Option<O> {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(avx2) = self.0.avx2_token() {
-            return op.run(avx2, MinPos);
-        }
         let narrow = self.0.narrow();
+        #[cfg(target_arch = "x86_64")]
+        if let Some(avx2) = narrow.avx2_token() {
+            return splot_core::with_simd!(narrow, _simd => op.run(avx2, MinPos));
+        }
         splot_core::with_simd!(narrow, simd => op.run(simd, Reduced))
     }
 }
@@ -622,11 +622,21 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample, const
                 }
             }
         }
-        let chunks = |[head, tail]: [u8x16<S>; 2]| {
-            let (first, second) = simd.split_u16x16(widen_u8(simd, head));
-            [first, second, simd.split_u16x16(widen_u8(simd, tail)).1]
+        let chunks = {
+            #[inline(always)]
+            |[head, tail]: [u8x16<S>; 2]| {
+                let (first, second) = simd.widen_u8x16(head);
+                [first, second, simd.widen_u8x16(tail).1]
+            }
         };
-        return Some(pair_ranges(simd, reduce, min.map(chunks), max.map(chunks)));
+        let [u_min, v_min] = min;
+        let [u_max, v_max] = max;
+        return Some(pair_ranges(
+            simd,
+            reduce,
+            [chunks(u_min), chunks(v_min)],
+            [chunks(u_max), chunks(v_max)],
+        ));
     }
     let (u_rows, v_rows) = (T::u16_slice(u_rows)?, T::u16_slice(v_rows)?);
     let mut min = [[u16x8::splat(simd, u16::MAX); 3]; 2];
@@ -1378,7 +1388,10 @@ pub fn cdef_filter_segment_with<B: SimdBackend, T: crate::ReconSample>(
 ) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
+        return avx2.vectorize(
+            #[inline(always)]
+            || segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output),
+        );
     }
     let narrow = backend.narrow();
     splot_core::with_simd!(narrow, simd => segment_with(

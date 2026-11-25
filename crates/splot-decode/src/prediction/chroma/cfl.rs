@@ -1674,38 +1674,44 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         periodic: bool,
         out: &mut [i16],
     ) {
-        let sub_x = if F < RUNTIME_WEIGHTS { 1 } else { self.sub_x };
-        let edge = (self.plane.width - 1) >> sub_x;
-        let inside = (edge + 1).saturating_sub(chroma_x0).min(out.len());
-        let (stored, past) = out.split_at_mut(inside);
-        for (g, group) in stored.chunks_mut(8).enumerate() {
-            let lanes = self.q3_group(
-                simd,
-                rows,
-                chroma_x0 + 8 * g,
-                clamp_first && g == 0,
-                periodic,
-            );
-            if let Ok(group) = <&mut [i16; 8]>::try_from(&mut *group) {
-                lanes.store_slice(group);
-            } else {
-                store_partial(lanes.into(), group);
-            }
-        }
-        if past.is_empty() {
-            return;
-        }
-        let clamp = periodic && (edge << sub_x).is_multiple_of(64);
-        let at_edge = |clamp: bool| self.q3_group(simd, rows, edge, clamp, false).as_slice()[0];
-        let from = usize::from(inside == 0);
-        if inside == 0 {
-            past[0] = at_edge(clamp_first || clamp);
-        }
-        let last = match stored.last() {
-            Some(&last) if inside > 1 || !clamp_first || clamp => last,
-            _ => at_edge(clamp),
-        };
-        past[from..].fill(last);
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                let sub_x = if F < RUNTIME_WEIGHTS { 1 } else { self.sub_x };
+                let edge = (self.plane.width - 1) >> sub_x;
+                let inside = (edge + 1).saturating_sub(chroma_x0).min(out.len());
+                let (stored, past) = out.split_at_mut(inside);
+                for (g, group) in stored.chunks_mut(8).enumerate() {
+                    let lanes = self.q3_group(
+                        simd,
+                        rows,
+                        chroma_x0 + 8 * g,
+                        clamp_first && g == 0,
+                        periodic,
+                    );
+                    if let Ok(group) = <&mut [i16; 8]>::try_from(&mut *group) {
+                        lanes.store_slice(group);
+                    } else {
+                        store_partial(lanes.into(), group);
+                    }
+                }
+                if past.is_empty() {
+                    return;
+                }
+                let clamp = periodic && (edge << sub_x).is_multiple_of(64);
+                let at_edge =
+                    |clamp: bool| self.q3_group(simd, rows, edge, clamp, false).as_slice()[0];
+                let from = usize::from(inside == 0);
+                if inside == 0 {
+                    past[0] = at_edge(clamp_first || clamp);
+                }
+                let last = match stored.last() {
+                    Some(&last) if inside > 1 || !clamp_first || clamp => last,
+                    _ => at_edge(clamp),
+                };
+                past[from..].fill(last);
+            },
+        );
     }
 
     /// Eight Q3 downsampled luma samples of chroma columns `x..x + 8`, the first one
@@ -1727,52 +1733,55 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         let sub_x = if F < RUNTIME_WEIGHTS { 1 } else { self.sub_x };
         let start = x << sub_x;
         let lead = usize::from(sub_x == 1);
-        let row_taps = |row: &[P], weights: [i32; 3]| {
-            let zero = u16x8::splat(simd, 0);
-            if weights == [0; 3] {
-                return zero;
-            }
-            let padded;
-            let taps = if let Some(taps) = start
-                .checked_sub(lead)
-                .and_then(|from| row.get(from..))
-                .and_then(<[P]>::first_chunk::<17>)
-            {
-                taps
-            } else {
-                padded = padded_taps(row, start, lead);
-                &padded
-            };
-            if lead == 0 {
-                return P::load_halves(simd, taps).0 * weights[1] as u16;
-            }
-            let (low, high) = P::load_halves(simd, &taps[1..]);
-            let centre = simd.unzip_low_u16x8(low, high);
-            let mut acc = centre * weights[1] as u16;
-            if weights[2] != 0 {
-                acc += simd.unzip_high_u16x8(low, high) * weights[2] as u16;
-            }
-            if weights[0] != 0 {
-                let (low, high) = P::load_halves(simd, taps);
-                let left = simd.unzip_low_u16x8(low, high);
-                let left = if clamp_first || periodic || x == 0 {
-                    let index = u16x8::from_slice(simd, &[0, 1, 2, 3, 4, 5, 6, 7]) + x as u16;
-                    let first = if clamp_first || x == 0 {
-                        x as u16
-                    } else {
-                        u16::MAX
-                    };
-                    let mut clamped = index.simd_eq(u16x8::splat(simd, first));
-                    if periodic {
-                        clamped |= (index & 31).simd_eq(zero);
-                    }
-                    clamped.select(centre, left)
+        let row_taps = {
+            #[inline(always)]
+            |row: &[P], weights: [i32; 3]| {
+                let zero = u16x8::splat(simd, 0);
+                if weights == [0; 3] {
+                    return zero;
+                }
+                let padded;
+                let taps = if let Some(taps) = start
+                    .checked_sub(lead)
+                    .and_then(|from| row.get(from..))
+                    .and_then(<[P]>::first_chunk::<17>)
+                {
+                    taps
                 } else {
-                    left
+                    padded = padded_taps(row, start, lead);
+                    &padded
                 };
-                acc += left * weights[0] as u16;
+                if lead == 0 {
+                    return P::load_halves(simd, taps).0 * weights[1] as u16;
+                }
+                let (low, high) = P::load_halves(simd, &taps[1..]);
+                let centre = simd.unzip_low_u16x8(low, high);
+                let mut acc = centre * weights[1] as u16;
+                if weights[2] != 0 {
+                    acc += simd.unzip_high_u16x8(low, high) * weights[2] as u16;
+                }
+                if weights[0] != 0 {
+                    let (low, high) = P::load_halves(simd, taps);
+                    let left = simd.unzip_low_u16x8(low, high);
+                    let left = if clamp_first || periodic || x == 0 {
+                        let index = u16x8::from_slice(simd, &[0, 1, 2, 3, 4, 5, 6, 7]) + x as u16;
+                        let first = if clamp_first || x == 0 {
+                            x as u16
+                        } else {
+                            u16::MAX
+                        };
+                        let mut clamped = index.simd_eq(u16x8::splat(simd, first));
+                        if periodic {
+                            clamped |= (index & 31).simd_eq(zero);
+                        }
+                        clamped.select(centre, left)
+                    } else {
+                        left
+                    };
+                    acc += left * weights[0] as u16;
+                }
+                acc
             }
-            acc
         };
         let [top, middle, bottom] = self.weights();
         let acc = row_taps(rows[0], top) + row_taps(rows[1], middle) + row_taps(rows[2], bottom);

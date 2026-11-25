@@ -423,10 +423,7 @@ impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
         output: &mut [u16],
         stride: usize,
     ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            cell::fullpel_u16_simd(narrow.token(), sources, origins, size, clip, output, stride);
-        });
+        splot_core::with_simd!(self.0.narrow(), simd => cell::fullpel_u16_simd(simd, sources, origins, size, clip, output, stride));
     }
 
     #[inline]
@@ -446,8 +443,7 @@ impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
 
     #[inline]
     fn refinemv_centre_sad(self, windows: [&[u16]; 2], geometry: [usize; 2]) -> Option<u32> {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| refinemv_window::centre_sad_generic(narrow.token(), windows, geometry))
+        splot_core::with_simd!(self.0.narrow(), simd => refinemv_window::centre_sad_generic(simd, windows, geometry))
     }
 
     #[inline]
@@ -458,16 +454,7 @@ impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
         allow_center: bool,
         shift: u32,
     ) -> (i32, i32) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            refinemv_window::search_words_generic(
-                narrow.token(),
-                windows,
-                geometry,
-                allow_center,
-                shift,
-            )
-        })
+        splot_core::with_simd!(self.0.narrow(), simd => refinemv_window::search_words_generic(simd, windows, geometry, allow_center, shift))
     }
 
     #[inline]

@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+name: Portable x86 downstream decoder
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  downstream-x86:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain and QEMU user-mode
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user
+
+      - name: Build a standalone Rust consumer with default compiler flags
+        run: |
+          consumer="$RUNNER_TEMP/splot-consumer"
+          mkdir -p "$consumer/src"
+          cp tests/downstream/portable-x86.rs "$consumer/src/main.rs"
+          cp Cargo.lock rust-toolchain.toml "$consumer/"
+          cat > "$consumer/Cargo.toml" <<MANIFEST
+          [package]
+          name = "splot-portable-x86"
+          version = "0.0.0"
+          edition = "2024"
+          publish = false
+
+          [dependencies]
+          splot-core = { path = "$GITHUB_WORKSPACE/crates/splot-core" }
+          splot-decode = { path = "$GITHUB_WORKSPACE/crates/splot-decode" }
+          MANIFEST
+          cd "$consumer"
+          cargo build --release
+
+      - name: Decode frozen 8-bit and 10-bit vectors on emulated SSE2 and AVX2
+        run: |
+          qemu-x86_64 --version
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import subprocess
+          import tomllib
+
+          consumer = Path(os.environ["RUNNER_TEMP"]) / "splot-consumer/target/release/splot-portable-x86"
+          conformance = Path("tests/conformance")
+          oracle = tomllib.loads((conformance / "decoder-oracle.toml").read_text())
+          fixtures = {entry["id"]: entry for entry in oracle["fixture"]}
+          for cpu, backend in [("qemu64,-pni,-sse4a", "sse2"), ("Haswell-noTSX", "avx2")]:
+              for fixture_id in ["syn-3frame-multiref-64x64", "syn-3frame-deblock-subpu-chroma-64x32-10bit-q90"]:
+                  fixture = conformance / "vectors/valid" / f"{fixture_id}.ivf"
+                  expected = fixtures[fixture_id]
+                  assert hashlib.sha256(fixture.read_bytes()).hexdigest() == expected["ivf_sha256"], fixture_id
+                  raw = subprocess.check_output(["qemu-x86_64", "-cpu", cpu, consumer, backend, fixture])
+                  digest = hashlib.sha256(raw).hexdigest()
+                  assert digest == expected["avm_raw_sha256"], (cpu, fixture_id, digest)
+                  print(f"{cpu} ({backend}) {fixture_id} {digest}")
+          PY

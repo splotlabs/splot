@@ -225,16 +225,14 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         max_sample: i16,
     ) -> Result<()> {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            prepared.clipped_sections(
-                TypedWarp(narrow),
-                narrow.token(),
-                reference,
-                block,
-                out,
-                max_sample,
-            )
-        })
+        prepared.clipped_sections(
+            TypedWarp(narrow),
+            narrow.token(),
+            reference,
+            block,
+            out,
+            max_sample,
+        )
     }
 
     #[inline]
@@ -247,11 +245,15 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         round1: u32,
     ) -> [i32; 16] {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            let simd = narrow.token();
-            let intermediate = ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
-            ext_unit::vertical(simd, &intermediate, phase_y, round1)
-        })
+        narrow.vectorize(
+            #[inline(always)]
+            || {
+                let simd = narrow.token();
+                let intermediate =
+                    ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
+                ext_unit::vertical(simd, &intermediate, phase_y, round1)
+            },
+        )
     }
 
     #[inline]
@@ -265,20 +267,23 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
     ) -> Result<()> {
         let narrow = self.0.narrow();
         let rows = output.as_chunks_mut::<WARPED_BLOCK_SIZE>().0;
-        narrow.vectorize(|| {
-            warp_predict_section(
-                TypedWarp(narrow),
-                narrow.token(),
-                reference,
-                params,
-                shear,
-                round1,
-                |row, rounded| {
-                    rounded.store_array(&mut rows[row]);
-                    Ok(())
-                },
-            )
-        })
+        narrow.vectorize(
+            #[inline(always)]
+            || {
+                warp_predict_section(
+                    TypedWarp(narrow),
+                    narrow.token(),
+                    reference,
+                    params,
+                    shear,
+                    round1,
+                    |row, rounded| {
+                        rounded.store_array(&mut rows[row]);
+                        Ok(())
+                    },
+                )
+            },
+        )
     }
 }
 
@@ -491,69 +496,82 @@ impl PreparedWarpPrediction {
         (output, stride): (&mut [T], usize),
         max_sample: i16,
     ) -> Result<()> {
-        if self.translation_two_tap_into(
-            simd,
-            reference,
-            [x, y, width, height],
-            output,
-            stride,
-            max_sample,
-        )? {
-            return Ok(());
-        }
-        for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
-            let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
-            let row = WarpPredictBlockParams {
-                block_x: x as i32,
-                block_y: (y + local_y) as i32,
-                ..self.params
-            };
-            let written = match output.get_mut(local_y * stride..) {
-                Some(target) if section_h == WARPED_BLOCK_SIZE => {
-                    let sections = width / WARPED_BLOCK_SIZE;
-                    eight_bit::put_row(
-                        runner,
-                        reference,
-                        &row,
-                        &self.shear,
-                        sections,
-                        target,
-                        stride,
-                    )
-                }
-                _ => 0,
-            };
-            for (section, local_x) in (0..width).step_by(WARPED_BLOCK_SIZE).enumerate() {
-                if section < 64 && written >> section & 1 != 0 {
-                    continue;
-                }
-                let params = WarpPredictBlockParams {
-                    block_x: (x + local_x) as i32,
-                    ..row
-                };
-                let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
-                let store = |row: usize, rounded: i32x8<S>| {
-                    if row >= section_h {
-                        return Ok(());
-                    }
-                    let start = (local_y + row) * stride + local_x;
-                    let (low, high) = rounded.split();
-                    let target = &mut output[start..start + section_w];
-                    store_clipped_row(simd, target, low.saturating_narrow(high), max_sample);
-                    Ok(())
-                };
-                warp_predict_section(
-                    runner,
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                if self.translation_two_tap_into(
                     simd,
                     reference,
-                    &params,
-                    &self.shear,
-                    INTER_ROUND1_NON_COMPOUND,
-                    store,
-                )?;
-            }
-        }
-        Ok(())
+                    [x, y, width, height],
+                    output,
+                    stride,
+                    max_sample,
+                )? {
+                    return Ok(());
+                }
+                for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
+                    let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
+                    let row = WarpPredictBlockParams {
+                        block_x: x as i32,
+                        block_y: (y + local_y) as i32,
+                        ..self.params
+                    };
+                    let written = match output.get_mut(local_y * stride..) {
+                        Some(target) if section_h == WARPED_BLOCK_SIZE => {
+                            let sections = width / WARPED_BLOCK_SIZE;
+                            eight_bit::put_row(
+                                runner,
+                                reference,
+                                &row,
+                                &self.shear,
+                                sections,
+                                target,
+                                stride,
+                            )
+                        }
+                        _ => 0,
+                    };
+                    for (section, local_x) in (0..width).step_by(WARPED_BLOCK_SIZE).enumerate() {
+                        if section < 64 && written >> section & 1 != 0 {
+                            continue;
+                        }
+                        let params = WarpPredictBlockParams {
+                            block_x: (x + local_x) as i32,
+                            ..row
+                        };
+                        let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
+                        let store = {
+                            #[inline(always)]
+                            |row: usize, rounded: i32x8<S>| {
+                                if row >= section_h {
+                                    return Ok(());
+                                }
+                                let start = (local_y + row) * stride + local_x;
+                                let (low, high) = rounded.split();
+                                let target = &mut output[start..start + section_w];
+                                store_clipped_row(
+                                    simd,
+                                    target,
+                                    low.saturating_narrow(high),
+                                    max_sample,
+                                );
+                                Ok(())
+                            }
+                        };
+                        warp_predict_section(
+                            runner,
+                            simd,
+                            reference,
+                            &params,
+                            &self.shear,
+                            INTER_ROUND1_NON_COMPOUND,
+                            store,
+                        )?;
+                    }
+                }
+                Ok(())
+            },
+        )
     }
 
     /// Predicts a whole translation-only block whose two phases both select a
@@ -1192,15 +1210,19 @@ fn row_invariant_intermediate<S: Simd, T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut Intermediate,
 ) {
-    let weights = column_weights(
-        simd,
-        core::array::from_fn(|col| warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))),
-    );
-    for (row, intermediate) in intermediate.iter_mut().enumerate() {
-        let [lo, hi] = warp_span(simd, reference.row(first_row + row), first_col);
-        let sum = tap_sum(sliding_windows(lo, hi), &weights);
-        *intermediate = round_intermediate(sum).to_array();
-    }
+    simd.vectorize(|| {
+        let weights = column_weights(
+            simd,
+            core::array::from_fn(|col| {
+                warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))
+            }),
+        );
+        for (row, intermediate) in intermediate.iter_mut().enumerate() {
+            let [lo, hi] = warp_span(simd, reference.row(first_row + row), first_col);
+            let sum = tap_sum(sliding_windows(lo, hi), &weights);
+            *intermediate = round_intermediate(sum).to_array();
+        }
+    });
 }
 
 /// Runs the § 7.13.3.19 vertical pass of a section with `delta == 0`, whose
@@ -1611,15 +1633,20 @@ fn build_intermediate<S: Simd, T: ReconSample>(
     projected: &ProjectedCenter,
     intermediate: &mut Intermediate,
 ) {
-    let first_col = projected.x4_int.saturating_sub(7);
-    let columns = clamped_columns(simd, reference.width(), first_col, [first_x, last_x]);
-    for i1 in -7i32..8 {
-        let row = (projected.y4_int + i1).clamp(first_y, last_y);
-        let span = clamped_span(simd, reference.row(row as usize), columns);
-        let sx = projected.sx4 + shear.beta * i1;
-        intermediate[(i1 + 7) as usize] =
-            horizontal_row(simd, [span.0, span.1], sx, shear.alpha).into();
-    }
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let first_col = projected.x4_int.saturating_sub(7);
+            let columns = clamped_columns(simd, reference.width(), first_col, [first_x, last_x]);
+            for i1 in -7i32..8 {
+                let row = (projected.y4_int + i1).clamp(first_y, last_y);
+                let span = clamped_span(simd, reference.row(row as usize), columns);
+                let sx = projected.sx4 + shear.beta * i1;
+                intermediate[(i1 + 7) as usize] =
+                    horizontal_row(simd, [span.0, span.1], sx, shear.alpha).into();
+            }
+        },
+    );
 }
 
 #[inline]
@@ -1631,11 +1658,16 @@ fn build_interior_intermediate<S: Simd, T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut Intermediate,
 ) {
-    for (row, intermediate) in intermediate.iter_mut().enumerate() {
-        let sx = projected.sx4 + shear.beta * (row as i32 - 7);
-        let span = warp_span(simd, reference.row(first_row + row), first_col);
-        *intermediate = horizontal_row(simd, span, sx, shear.alpha).into();
-    }
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            for (row, intermediate) in intermediate.iter_mut().enumerate() {
+                let sx = projected.sx4 + shear.beta * (row as i32 - 7);
+                let span = warp_span(simd, reference.row(first_row + row), first_col);
+                *intermediate = horizontal_row(simd, span, sx, shear.alpha).into();
+            }
+        },
+    );
 }
 
 /// Runs the § 7.13.3.19 horizontal pass for one intermediate row from its tap
@@ -1882,7 +1914,7 @@ fn rows_sum<S: Simd>(
             })
             .split()
         };
-        let [(r0, r1), (r2, r3), (r4, r5), (r6, r7)] = core::array::from_fn(pair);
+        let [(r0, r1), (r2, r3), (r4, r5), (r6, r7)] = [pair(0), pair(1), pair(2), pair(3)];
         tap_sum([r0, r1, r2, r3, r4, r5, r6, r7], weights)
     }
     #[cfg(not(target_arch = "x86_64"))]
