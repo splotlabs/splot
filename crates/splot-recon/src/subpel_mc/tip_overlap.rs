@@ -43,20 +43,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
     stride: usize,
     carry: &mut BilinearOverlapCarry<'a, T>,
 ) -> Result<bool> {
-    let Some((window, output, geometry, ref_stride, reuse)) =
-        prepare_12x12_overlap(reference, params, output, stride, carry)?
-    else {
-        return Ok(false);
-    };
-    let [_, _, h_phase, v_phase] = geometry;
-    let block = (window, ref_stride, output, stride, &mut carry.columns);
-    baseline_simd!(simd => if reuse {
-        bilinear_12x12_block::<_, T, true>(simd, block, (h_phase, v_phase));
-    } else {
-        bilinear_12x12_block::<_, T, false>(simd, block, (h_phase, v_phase));
-    });
-    carry.source = Some((reference.samples, ref_stride, geometry));
-    Ok(true)
+    predict_12x12_overlap(BaselineSubpel, reference, params, output, stride, carry)
 }
 
 /// Typed [`subpel_predict_12x12_bilinear_overlap_into`] using caller-selected `backend`.
@@ -71,6 +58,25 @@ pub fn subpel_predict_12x12_bilinear_overlap_into_with<'a, B: SimdBackend, T: Re
     stride: usize,
     carry: &mut BilinearOverlapCarry<'a, T>,
 ) -> Result<bool> {
+    predict_12x12_overlap(
+        TypedSubpel(backend),
+        reference,
+        params,
+        output,
+        stride,
+        carry,
+    )
+}
+
+#[inline]
+fn predict_12x12_overlap<'a, R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    reference: &ReferencePlaneView<'a, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    stride: usize,
+    carry: &mut BilinearOverlapCarry<'a, T>,
+) -> Result<bool> {
     let Some((window, output, geometry, ref_stride, reuse)) =
         prepare_12x12_overlap(reference, params, output, stride, carry)?
     else {
@@ -78,14 +84,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into_with<'a, B: SimdBackend, T: Re
     };
     let [_, _, h_phase, v_phase] = geometry;
     let block = (window, ref_stride, output, stride, &mut carry.columns);
-    let narrow = backend.narrow();
-    narrow.vectorize(|| {
-        if reuse {
-            bilinear_12x12_block::<_, T, true>(narrow.token(), block, (h_phase, v_phase));
-        } else {
-            bilinear_12x12_block::<_, T, false>(narrow.token(), block, (h_phase, v_phase));
-        }
-    });
+    runner.bilinear_12x12(block, (h_phase, v_phase), reuse);
     carry.source = Some((reference.samples, ref_stride, geometry));
     Ok(true)
 }
@@ -155,7 +154,7 @@ fn prepare_12x12_overlap<'a, 'o, T: ReconSample>(
 
 /// A source window and its stride, an output and its stride, and the carry
 /// columns.
-type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8]; 12]);
+pub(super) type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8]; 12]);
 
 /// Filters a 12x12 bilinear block whose 13x13 source window holds every tap
 /// unclamped into the strided output, keeping columns 4..12 in the carry
@@ -164,7 +163,7 @@ type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8
 /// rounding bias stays below `2^16` in `u16` lanes.
 #[expect(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
-fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
+pub(super) fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
     simd: S,
     block: Block12x12<'_, T>,
     (h_phase, v_phase): (i32, i32),

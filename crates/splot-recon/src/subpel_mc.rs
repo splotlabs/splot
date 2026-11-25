@@ -68,6 +68,169 @@ pub use tip_overlap::{
     subpel_predict_12x12_bilinear_overlap_into_with,
 };
 
+macro_rules! narrow_subpel_simd {
+    ($backend:expr, $simd:ident => $body:expr) => {{
+        let narrow = $backend.narrow();
+        narrow.vectorize(|| {
+            let $simd = narrow.token();
+            $body
+        })
+    }};
+}
+
+macro_rules! subpel_methods {
+    ($runner:ident, $($mode:tt)+) => {
+        simd_runner_methods! {
+            $($mode)+;
+
+            #[inline]
+            (fn emulate_chunks<T: block::Sample, const PADDED: bool>(
+                $runner,
+                window: &block::Window,
+                view: &ReferencePlaneView<'_, T>,
+                clip: [i32; 4],
+                stride: usize,
+                storage: &mut [T],
+            ) -> Option<()>) simd =>
+                window.emulate_chunks::<_, _, PADDED>(simd, view, clip, stride, storage);
+
+            #[inline]
+            (fn portable_predict<T: portable::Lanes>(
+                $runner,
+                block: &block::Block<'_, T>,
+                sink: &mut Sink<'_>,
+                stage: &mut [i16],
+            )) simd =>
+                portable::run(simd, block, sink, stage);
+
+            #[inline]
+            (fn portable_copy_compound_u16(
+                $runner,
+                blocks: [&block::Block<'_, u16>; 2],
+                forward: i32,
+                max: u16,
+                output: &mut [u16],
+                stride: usize,
+            )) simd =>
+                portable::copy_compound_u16(simd, blocks, forward, max, output, stride);
+
+            #[inline]
+            (fn portable_compound_u16(
+                $runner,
+                blocks: [&block::Block<'_, u16>; 2],
+                forward: i32,
+                max: u16,
+                stage: &mut [i16],
+                output: &mut [u16],
+                stride: usize,
+            )) simd =>
+                portable::compound_u16_simd(simd, blocks, forward, max, stage, output, stride);
+
+            #[inline]
+            (fn fullpel_u8(
+                $runner,
+                sources: [(&[u8], usize); 2],
+                origins: [usize; 2],
+                size: usize,
+                forward: i32,
+                output: &mut [u8],
+                stride: usize,
+            )) simd =>
+                cell::fullpel_u8_simd(simd, sources, origins, size, forward, output, stride);
+
+            #[inline]
+            (fn fullpel_u16(
+                $runner,
+                sources: [(&[u16], usize); 2],
+                origins: [usize; 2],
+                size: usize,
+                clip: (i32, u16),
+                output: &mut [u16],
+                stride: usize,
+            )) simd =>
+                cell::fullpel_u16_simd(simd, sources, origins, size, clip, output, stride);
+
+            #[inline]
+            (fn search_window_generic(
+                $runner,
+                samples: &[u8],
+                at: [usize; 2],
+                size: [usize; 2],
+                phases: [u8; 2],
+                output: &mut [u8],
+            )) simd =>
+                search_window::generic::window(simd, samples, at, size, phases, output);
+
+            #[inline]
+            (fn refinemv_centre_sad($runner, windows: [&[u16]; 2], geometry: [usize; 2]) -> Option<u32>) simd =>
+                refinemv_window::centre_sad_generic(simd, windows, geometry);
+
+            #[inline]
+            (fn refinemv_search_words(
+                $runner,
+                windows: [&[u16]; 2],
+                geometry: [usize; 2],
+                allow_center: bool,
+                shift: u32,
+            ) -> (i32, i32)) simd =>
+                refinemv_window::search_words_generic(simd, windows, geometry, allow_center, shift);
+
+            #[inline]
+            (fn refinemv_search_bytes_generic(
+                $runner,
+                windows: [&[u8]; 2],
+                geometry: [usize; 2],
+                allow_center: bool,
+            ) -> (i32, i32)) simd =>
+                search_window::generic::search(simd, windows, geometry, allow_center);
+
+            #[inline]
+            (fn refinemv_predict_window_generic<T: ReconSample, P: WindowSample>(
+                $runner,
+                samples: &[T],
+                plan: &refinemv_window::Plan,
+                size: [usize; 2],
+                window: &mut [P],
+            )) simd =>
+                refinemv_window::generic::window(simd, samples, plan, size, window);
+
+            #[inline]
+            (fn bilinear_u8_generic(
+                $runner,
+                samples: &[u8],
+                geometry: ([usize; 2], [usize; 2]),
+                phases: [u8; 2],
+                output: &mut [u16],
+                stride: usize,
+            )) simd =>
+                search_window::generic::block(simd, samples, geometry, phases, output, stride);
+
+            #[inline]
+            (fn refinemv_area_sad_u8(
+                $runner,
+                planes: [&[u8]; 2],
+                strides: [usize; 2],
+                size: [usize; 2],
+            ) -> u32) simd =>
+                search_window::generic::area_sad(simd, planes, [0; 2], strides, size);
+
+            #[inline]
+            (fn bilinear_12x12<T: ReconSample>(
+                $runner,
+                block: tip_overlap::Block12x12<'_, T>,
+                phases: (i32, i32),
+                reuse: bool,
+            )) simd => {
+                if reuse {
+                    tip_overlap::bilinear_12x12_block::<_, T, true>(simd, block, phases);
+                } else {
+                    tip_overlap::bilinear_12x12_block::<_, T, false>(simd, block, phases);
+                }
+            };
+        }
+    };
+}
+
 trait SubpelRunner: Copy {
     #[cfg(target_arch = "x86_64")]
     fn avx2_token(self) -> Option<fearless_simd::Avx2>;
@@ -75,94 +238,7 @@ trait SubpelRunner: Copy {
     #[cfg(target_arch = "aarch64")]
     fn neon_token(self) -> Option<fearless_simd::Neon>;
 
-    fn emulate_chunks<T: block::Sample, const PADDED: bool>(
-        self,
-        window: &block::Window,
-        view: &ReferencePlaneView<'_, T>,
-        clip: [i32; 4],
-        stride: usize,
-        storage: &mut [T],
-    ) -> Option<()>;
-
-    fn portable_predict<T: portable::Lanes>(
-        self,
-        block: &block::Block<'_, T>,
-        sink: &mut Sink<'_>,
-        stage: &mut [i16],
-    );
-
-    fn portable_copy_compound_u16(
-        self,
-        blocks: [&block::Block<'_, u16>; 2],
-        forward: i32,
-        max: u16,
-        output: &mut [u16],
-        stride: usize,
-    );
-
-    fn portable_compound_u16(
-        self,
-        blocks: [&block::Block<'_, u16>; 2],
-        forward: i32,
-        max: u16,
-        stage: &mut [i16],
-        output: &mut [u16],
-        stride: usize,
-    );
-
-    fn fullpel_u8(
-        self,
-        sources: [(&[u8], usize); 2],
-        origins: [usize; 2],
-        size: usize,
-        forward: i32,
-        output: &mut [u8],
-        stride: usize,
-    );
-
-    fn fullpel_u16(
-        self,
-        sources: [(&[u16], usize); 2],
-        origins: [usize; 2],
-        size: usize,
-        clip: (i32, u16),
-        output: &mut [u16],
-        stride: usize,
-    );
-
-    fn search_window_generic(
-        self,
-        samples: &[u8],
-        at: [usize; 2],
-        size: [usize; 2],
-        phases: [u8; 2],
-        output: &mut [u8],
-    );
-
-    fn refinemv_centre_sad(self, windows: [&[u16]; 2], geometry: [usize; 2]) -> Option<u32>;
-
-    fn refinemv_search_words(
-        self,
-        windows: [&[u16]; 2],
-        geometry: [usize; 2],
-        allow_center: bool,
-        shift: u32,
-    ) -> (i32, i32);
-
-    fn refinemv_search_bytes_generic(
-        self,
-        windows: [&[u8]; 2],
-        geometry: [usize; 2],
-        allow_center: bool,
-    ) -> (i32, i32);
-
-    fn refinemv_predict_window_generic<T: ReconSample, P: WindowSample>(
-        self,
-        samples: &[T],
-        plan: &refinemv_window::Plan,
-        size: [usize; 2],
-        window: &mut [P],
-    );
+    subpel_methods!(self, declare);
 }
 
 #[derive(Clone, Copy)]
@@ -186,127 +262,7 @@ impl SubpelRunner for BaselineSubpel {
         fearless_simd::Level::baseline().as_neon()
     }
 
-    #[inline]
-    fn emulate_chunks<T: block::Sample, const PADDED: bool>(
-        self,
-        window: &block::Window,
-        view: &ReferencePlaneView<'_, T>,
-        clip: [i32; 4],
-        stride: usize,
-        storage: &mut [T],
-    ) -> Option<()> {
-        baseline_simd!(simd => window.emulate_chunks::<_, _, PADDED>(simd, view, clip, stride, storage))
-    }
-
-    #[inline]
-    fn portable_predict<T: portable::Lanes>(
-        self,
-        block: &block::Block<'_, T>,
-        sink: &mut Sink<'_>,
-        stage: &mut [i16],
-    ) {
-        baseline_simd!(simd => portable::run(simd, block, sink, stage));
-    }
-
-    #[inline]
-    fn portable_copy_compound_u16(
-        self,
-        blocks: [&block::Block<'_, u16>; 2],
-        forward: i32,
-        max: u16,
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        baseline_simd!(simd => portable::copy_compound_u16(simd, blocks, forward, max, output, stride));
-    }
-
-    #[inline]
-    fn portable_compound_u16(
-        self,
-        blocks: [&block::Block<'_, u16>; 2],
-        forward: i32,
-        max: u16,
-        stage: &mut [i16],
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        baseline_simd!(simd => portable::compound_u16_simd(simd, blocks, forward, max, stage, output, stride));
-    }
-
-    #[inline]
-    fn fullpel_u8(
-        self,
-        sources: [(&[u8], usize); 2],
-        origins: [usize; 2],
-        size: usize,
-        forward: i32,
-        output: &mut [u8],
-        stride: usize,
-    ) {
-        baseline_simd!(simd => cell::fullpel_u8_simd(simd, sources, origins, size, forward, output, stride));
-    }
-
-    #[inline]
-    fn fullpel_u16(
-        self,
-        sources: [(&[u16], usize); 2],
-        origins: [usize; 2],
-        size: usize,
-        clip: (i32, u16),
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        baseline_simd!(simd => cell::fullpel_u16_simd(simd, sources, origins, size, clip, output, stride));
-    }
-
-    #[inline]
-    fn search_window_generic(
-        self,
-        samples: &[u8],
-        at: [usize; 2],
-        size: [usize; 2],
-        phases: [u8; 2],
-        output: &mut [u8],
-    ) {
-        baseline_simd!(simd => search_window::generic::window(simd, samples, at, size, phases, output));
-    }
-
-    #[inline]
-    fn refinemv_centre_sad(self, windows: [&[u16]; 2], geometry: [usize; 2]) -> Option<u32> {
-        baseline_simd!(simd => refinemv_window::centre_sad_generic(simd, windows, geometry))
-    }
-
-    #[inline]
-    fn refinemv_search_words(
-        self,
-        windows: [&[u16]; 2],
-        geometry: [usize; 2],
-        allow_center: bool,
-        shift: u32,
-    ) -> (i32, i32) {
-        baseline_simd!(simd => refinemv_window::search_words_generic(simd, windows, geometry, allow_center, shift))
-    }
-
-    #[inline]
-    fn refinemv_search_bytes_generic(
-        self,
-        windows: [&[u8]; 2],
-        geometry: [usize; 2],
-        allow_center: bool,
-    ) -> (i32, i32) {
-        baseline_simd!(simd => search_window::generic::search(simd, windows, geometry, allow_center))
-    }
-
-    #[inline]
-    fn refinemv_predict_window_generic<T: ReconSample, P: WindowSample>(
-        self,
-        samples: &[T],
-        plan: &refinemv_window::Plan,
-        size: [usize; 2],
-        window: &mut [P],
-    ) {
-        baseline_simd!(simd => refinemv_window::generic::window(simd, samples, plan, size, window));
-    }
+    subpel_methods!(self, baseline);
 }
 
 impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
@@ -324,179 +280,9 @@ impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
         self.0.neon_token()
     }
 
-    #[inline]
-    fn emulate_chunks<T: block::Sample, const PADDED: bool>(
-        self,
-        window: &block::Window,
-        view: &ReferencePlaneView<'_, T>,
-        clip: [i32; 4],
-        stride: usize,
-        storage: &mut [T],
-    ) -> Option<()> {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            window.emulate_chunks::<_, _, PADDED>(narrow.token(), view, clip, stride, storage)
-        })
-    }
-
-    #[inline]
-    fn portable_predict<T: portable::Lanes>(
-        self,
-        block: &block::Block<'_, T>,
-        sink: &mut Sink<'_>,
-        stage: &mut [i16],
-    ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| portable::run(narrow.token(), block, sink, stage));
-    }
-
-    #[inline]
-    fn portable_copy_compound_u16(
-        self,
-        blocks: [&block::Block<'_, u16>; 2],
-        forward: i32,
-        max: u16,
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            portable::copy_compound_u16(narrow.token(), blocks, forward, max, output, stride);
-        });
-    }
-
-    #[inline]
-    fn portable_compound_u16(
-        self,
-        blocks: [&block::Block<'_, u16>; 2],
-        forward: i32,
-        max: u16,
-        stage: &mut [i16],
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            portable::compound_u16_simd(
-                narrow.token(),
-                blocks,
-                forward,
-                max,
-                stage,
-                output,
-                stride,
-            );
-        });
-    }
-
-    #[inline]
-    fn fullpel_u8(
-        self,
-        sources: [(&[u8], usize); 2],
-        origins: [usize; 2],
-        size: usize,
-        forward: i32,
-        output: &mut [u8],
-        stride: usize,
-    ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            cell::fullpel_u8_simd(
-                narrow.token(),
-                sources,
-                origins,
-                size,
-                forward,
-                output,
-                stride,
-            );
-        });
-    }
-
-    #[inline]
-    fn fullpel_u16(
-        self,
-        sources: [(&[u16], usize); 2],
-        origins: [usize; 2],
-        size: usize,
-        clip: (i32, u16),
-        output: &mut [u16],
-        stride: usize,
-    ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            cell::fullpel_u16_simd(narrow.token(), sources, origins, size, clip, output, stride);
-        });
-    }
-
-    #[inline]
-    fn search_window_generic(
-        self,
-        samples: &[u8],
-        at: [usize; 2],
-        size: [usize; 2],
-        phases: [u8; 2],
-        output: &mut [u8],
-    ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            search_window::generic::window(narrow.token(), samples, at, size, phases, output);
-        });
-    }
-
-    #[inline]
-    fn refinemv_centre_sad(self, windows: [&[u16]; 2], geometry: [usize; 2]) -> Option<u32> {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| refinemv_window::centre_sad_generic(narrow.token(), windows, geometry))
-    }
-
-    #[inline]
-    fn refinemv_search_words(
-        self,
-        windows: [&[u16]; 2],
-        geometry: [usize; 2],
-        allow_center: bool,
-        shift: u32,
-    ) -> (i32, i32) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            refinemv_window::search_words_generic(
-                narrow.token(),
-                windows,
-                geometry,
-                allow_center,
-                shift,
-            )
-        })
-    }
-
-    #[inline]
-    fn refinemv_search_bytes_generic(
-        self,
-        windows: [&[u8]; 2],
-        geometry: [usize; 2],
-        allow_center: bool,
-    ) -> (i32, i32) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            search_window::generic::search(narrow.token(), windows, geometry, allow_center)
-        })
-    }
-
-    #[inline]
-    fn refinemv_predict_window_generic<T: ReconSample, P: WindowSample>(
-        self,
-        samples: &[T],
-        plan: &refinemv_window::Plan,
-        size: [usize; 2],
-        window: &mut [P],
-    ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            refinemv_window::generic::window(narrow.token(), samples, plan, size, window);
-        });
-    }
+    subpel_methods!(self, typed(narrow_subpel_simd, self.0));
 }
+
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
 /// reference coordinates (`startX` / `startY` / `stepX` / `stepY` units).
 const SCALE_SUBPEL_BITS: u32 = 10;

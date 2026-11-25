@@ -78,17 +78,7 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     output: &mut [u16],
     stride: usize,
 ) -> bool {
-    let Some((samples, geometry, phases)) = prepare_bilinear_u8(view, params, output, stride)
-    else {
-        return false;
-    };
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        avx2::block(t, samples, geometry, phases, output, stride);
-        return true;
-    }
-    baseline_simd!(simd => generic::block(simd, samples, geometry, phases, output, stride));
-    true
+    bilinear_u8(BaselineSubpel, view, params, output, stride)
 }
 
 /// Typed [`subpel_predict_bilinear_u8`] using caller-selected `backend`.
@@ -100,17 +90,27 @@ pub fn subpel_predict_bilinear_u8_with<B: SimdBackend, T: ReconSample>(
     output: &mut [u16],
     stride: usize,
 ) -> bool {
+    bilinear_u8(TypedSubpel(backend), view, params, output, stride)
+}
+
+#[inline]
+fn bilinear_u8<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
     let Some((samples, geometry, phases)) = prepare_bilinear_u8(view, params, output, stride)
     else {
         return false;
     };
     #[cfg(target_arch = "x86_64")]
-    if let Some(t) = backend.avx2_token() {
+    if let Some(t) = runner.avx2_token() {
         avx2::block(t, samples, geometry, phases, output, stride);
         return true;
     }
-    let narrow = backend.narrow();
-    narrow.vectorize(|| generic::block(narrow.token(), samples, geometry, phases, output, stride));
+    runner.bilinear_u8_generic(samples, geometry, phases, output, stride);
     true
 }
 
@@ -181,8 +181,7 @@ pub fn refinemv_area_sad_u8<T: ReconSample>(
     corners: [[usize; 2]; 2],
     size: [usize; 2],
 ) -> Option<u32> {
-    let (planes, strides) = prepare_area_sad_u8(views, corners, size)?;
-    Some(baseline_simd!(simd => generic::area_sad(simd, planes, [0; 2], strides, size)))
+    area_sad_u8(BaselineSubpel, views, corners, size)
 }
 
 /// Typed [`refinemv_area_sad_u8`] using caller-selected `backend`.
@@ -193,9 +192,18 @@ pub fn refinemv_area_sad_u8_with<B: SimdBackend, T: ReconSample>(
     corners: [[usize; 2]; 2],
     size: [usize; 2],
 ) -> Option<u32> {
+    area_sad_u8(TypedSubpel(backend), views, corners, size)
+}
+
+#[inline]
+fn area_sad_u8<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    views: [&ReferencePlaneView<'_, T>; 2],
+    corners: [[usize; 2]; 2],
+    size: [usize; 2],
+) -> Option<u32> {
     let (planes, strides) = prepare_area_sad_u8(views, corners, size)?;
-    let narrow = backend.narrow();
-    Some(narrow.vectorize(|| generic::area_sad(narrow.token(), planes, [0; 2], strides, size)))
+    Some(runner.refinemv_area_sad_u8(planes, strides, size))
 }
 
 #[inline]
@@ -853,7 +861,7 @@ pub(super) mod generic {
     /// The bilinear `w x h` block, `w` a multiple of 8, of the rows of
     /// `source` from `origin`, into `output` at `stride`.
     #[inline(never)]
-    pub(super) fn block<S: Simd>(
+    pub(in crate::subpel_mc) fn block<S: Simd>(
         simd: S,
         source: &[u8],
         ([origin, source_stride], [w, h]): ([usize; 2], [usize; 2]),
@@ -978,7 +986,7 @@ pub(super) mod generic {
     /// differences widened and summed in `u16` lanes.
     #[expect(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
-    pub(super) fn area_sad<S: Simd>(
+    pub(in crate::subpel_mc) fn area_sad<S: Simd>(
         simd: S,
         planes: [&[u8]; 2],
         starts: [usize; 2],

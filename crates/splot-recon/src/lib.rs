@@ -38,6 +38,29 @@ macro_rules! baseline_simd {
     };
 }
 
+// Keep the portable kernel call shared while emitting each backend's scope.
+macro_rules! simd_runner_methods {
+    (declare; $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
+        $($($signature)*;)*
+    };
+    (baseline; $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
+        $(
+            $(#[$attr])*
+            $($signature)* {
+                baseline_simd!($simd => $body)
+            }
+        )*
+    };
+    (typed($scope:ident, $backend:expr); $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
+        $(
+            $(#[$attr])*
+            $($signature)* {
+                $scope!($backend, $simd => $body)
+            }
+        )*
+    };
+}
+
 mod atlas_blend;
 mod blend_mask;
 mod cdef_filter;
