@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+name: Shared SIMD runners native ARM qualification
+
+on:
+  push:
+    branches: [test/shared-simd-runners-native-stage1, test/shared-simd-runners-native-final]
+
+permissions:
+  contents: read
+
+jobs:
+  native-arm:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      BASE: d04f4d61bed29288ab5109c4eaa543c5c152f9f9
+      CANDIDATE: 244a52ae5a90d8b63ff68cfb71f59990e3c84c00
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: harness
+          sparse-checkout: scripts/experiment-shared-simd-native.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.BASE }}
+          path: base
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.CANDIDATE }}
+          path: candidate
+      - name: Record the native host and release inputs
+        run: |
+          set -euo pipefail
+          mkdir results
+          {
+            uname -a
+            sw_vers
+            test "$(uname -m)" = arm64
+            test "$(arch)" = arm64
+            sysctl machdep.cpu.brand_string hw.model hw.logicalcpu hw.optional.neon
+            test "$(sysctl -n hw.optional.neon)" = 1
+            xcodebuild -version
+            cd candidate
+            rustup show active-toolchain || rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+            rustc -vV
+            cargo -V
+            cat .cargo/config.toml
+          } 2>&1 | tee results/host.txt
+      - name: Build each exact revision with its release profile
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          for variant in base candidate; do
+            (
+              cd "$root/$variant"
+              out="$root/results/$variant"
+              mkdir -p "$out"
+              variable=$(printf '%s' "$variant" | tr '[:lower:]' '[:upper:]')
+              revision=$(git rev-parse HEAD)
+              test "$revision" = "${!variable}"
+              printf '%s\n' "$revision" | tee "$out/revision.txt"
+              export CARGO_TARGET_DIR="$RUNNER_TEMP/splot-shared-simd-$variant"
+              cargo build --release --locked -p splot-cli 2>&1 | tee "$out/build.log"
+              cp "$CARGO_TARGET_DIR/release/splot" "$out/"
+              test "$(lipo -archs "$out/splot")" = arm64
+              shasum -a 256 "$out/splot" | tee "$out/binary-sha256.txt"
+            )
+          done
+      - name: Verify frozen AVM output and compare paired native throughput
+        run: |
+          set -euo pipefail
+          python3 candidate/scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth" 2>&1 | tee results/corpus.log
+          cp "$RUNNER_TEMP/ewouth/simd-cases.tsv" results/
+          python3 -u harness/scripts/experiment-shared-simd-native.py results "$RUNNER_TEMP/ewouth" \
+            2>&1 | tee results/comparison.log
+      - name: Require NEON in the candidate's native backend tests
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/splot-shared-simd-candidate"
+          cargo test --profile ci-release --locked -p splot-decode --test simd_backend_parity \
+            -- --nocapture 2>&1 | tee ../results/backend-tests.log
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shared-simd-runners-native
+          path: |
+            results/**/*.txt
+            results/**/*.log
+            results/**/*.tsv
+            results/**/*.csv
+          if-no-files-found: warn
