@@ -283,3 +283,43 @@ fn atlas_label_lookup_uses_the_inverse_map_and_reports_missing_labels() {
     );
     assert!(issue.message().contains("77"));
 }
+
+#[test]
+fn reading_atlas_geometry_respects_native_frame_limits_without_allocating_a_canvas() {
+    use splot_core::headers::atlas_segment::AtlasModeInfo;
+    let mode3 = include_bytes!("../../../../tests/conformance/vectors/valid/syn-atlas-mode-3.obu");
+    let mut bytes = Vec::new();
+    let virtual_size = 1 << 28;
+    for obu in parse_annex_b_obus(mode3).unwrap() {
+        if obu.header.obu_type == ObuType::AtlasSegment {
+            let PayloadStatus::Parsed(ParsedObu::AtlasSegment(mut layout)) =
+                obu.payload_status().unwrap()
+            else {
+                panic!("expected atlas payload");
+            };
+            let AtlasModeInfo::Multistream(info) = &mut layout.mode_info else {
+                panic!("expected mode 3");
+            };
+            info.width = virtual_size;
+            info.height = virtual_size;
+            write_parsed(&mut bytes, obu.header, &ParsedObu::AtlasSegment(layout));
+        } else {
+            write_obu(&mut bytes, obu.header, obu.payload);
+        }
+    }
+    let limits = DecodeLimits::DEFAULT
+        .with_max_frame_width(DecodeLimitThreshold::Max(80))
+        .with_max_frame_height(DecodeLimitThreshold::Max(64));
+    let report = context(1, 1)
+        .decode_hash_report_bytes(&bytes, DecodeOptions::new(limits))
+        .unwrap();
+    assert_eq!(report.frames.len(), 2);
+    let layout = report.frames[0].atlas_associations[0]
+        .layout
+        .as_ref()
+        .unwrap();
+    let AtlasModeInfo::Multistream(info) = &layout.atlas.mode_info else {
+        panic!("expected mode 3");
+    };
+    assert_eq!((info.width, info.height), (virtual_size, virtual_size));
+}
