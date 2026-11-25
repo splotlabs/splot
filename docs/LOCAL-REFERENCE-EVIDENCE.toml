@@ -12732,6 +12732,25 @@ output_digest_algorithm = "sha256"
 output_digest = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b"
 output_scope = "All 8 native 8-bit I420 pictures in emission order, 55296 bytes."
 
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "a244f563e871a4af2104efef1349ce19a7eb4c2e"
+version_summary = "Rust decoder with scoped atlas metadata and the committed mode-family fixtures."
+command_summary = "cargo test --locked -p splot-decode --test msdo_multistream atlas:: checked {fixture:input} with 1, 3 and 12 threads."
+output_digest_id = "splot-input-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b"
+output_scope = "8 native 8-bit I420 pictures in emission order, 55296 bytes. The test also checked each extended layer and the expected metadata timeline."
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-input-raw-sha256"
+right = "splot-input-raw-sha256"
+
 [[evidence.assertion]]
 kind = "digest-equality"
 left = "avm-seed-raw-sha256"
@@ -12800,6 +12819,25 @@ output_digest_id = "avm-input-raw-sha256"
 output_digest_algorithm = "sha256"
 output_digest = "e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441"
 output_scope = "All 20 native 10-bit I420 pictures in emission order, 276480 bytes."
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "a244f563e871a4af2104efef1349ce19a7eb4c2e"
+version_summary = "Rust decoder with scoped atlas metadata and the committed mode-family fixtures."
+command_summary = "cargo test --locked -p splot-decode --test msdo_multistream atlas:: checked {fixture:input} with 1, 3 and 12 threads."
+output_digest_id = "splot-input-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441"
+output_scope = "20 native 10-bit I420 pictures in emission order, 276480 bytes. The test also checked each extended layer and the expected metadata timeline."
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-input-raw-sha256"
+right = "splot-input-raw-sha256"
 
 [[evidence.assertion]]
 kind = "digest-equality"
