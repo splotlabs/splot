@@ -680,6 +680,32 @@ fn unaligned_rap_pre_skip_and_cmvs_transition() {
 }
 
 #[test]
+fn msdo_sequence_ends_before_single_stream_cvs() {
+    let units = temporal_units(MSDO_8BIT);
+    let mut single_stream = Vec::new();
+    let new_xlayer = ExtendedLayerId::from_bits(9);
+    for envelope in parse_annex_b_obus(&units[0]).unwrap() {
+        let mut header = envelope.header;
+        if header.extended_layer_id.get() == 3 {
+            header.extended_layer_id = new_xlayer;
+        } else if header.obu_type != ObuType::TemporalDelimiter {
+            continue;
+        }
+        write_obu(&mut single_stream, header, envelope.payload);
+    }
+    let mut combined = MSDO_8BIT.to_vec();
+    combined.extend_from_slice(&single_stream);
+    let pictures = stream_decode(&combined, &DecoderSettings::default()).unwrap();
+    let (raw, _) = raw_all_and_by_xlayer(&pictures);
+    assert_eq!(pictures.len(), 9);
+    assert_eq!(
+        sha256_hex(&raw),
+        "64fdd83bafcdf7ceaf9b87d848b460f1f4ec7aa52d51dd10eaf0a2e6d4bfc6b4"
+    );
+    assert_eq!(pictures.last().unwrap().extended_layer_id(), new_xlayer);
+}
+
+#[test]
 fn first_unit_order_uses_frames_outside_the_temporal_layer_selection() {
     let units = temporal_units(MSDO_OPS_RA);
     let rap = parse_annex_b_obus(&units[2]).unwrap();

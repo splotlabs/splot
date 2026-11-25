@@ -864,28 +864,20 @@ fn observe_global_and_cmvs(
     emission_queue: &mut output_schedule::EmissionQueue,
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
-    let (tu_has_rap, tu_has_clk) = if prefix_obus
-        .iter()
-        .any(|env| env.header.obu_type == ObuType::Msdo && env.header.extended_layer_id.is_global())
-    {
+    let check_cmvs_end = xlayers.needs_cmvs_boundary_check()
+        && prefix_obus
+            .iter()
+            .any(|env| env.header.obu_type == ObuType::TemporalDelimiter);
+    let (tu_has_rap, tu_has_clk) = if check_cmvs_end
+        || prefix_obus.iter().any(|env| {
+            env.header.obu_type == ObuType::Msdo && env.header.extended_layer_id.is_global()
+        }) {
         unit_rap_flags(unit)?
     } else {
         (false, false)
     };
-    if xlayers.observe_global_obus(prefix_obus, skipped_tu, tu_has_rap, tu_has_clk)? {
-        let flushed = xlayers.flush_all_outputs_and_invalidate();
-        if !flushed.is_empty() {
-            charge_emitted_outputs(
-                options,
-                frames,
-                xlayers.total_emitted_count(),
-                emission_queue,
-                &flushed,
-                emit,
-            )?;
-        }
-    }
-    Ok(())
+    xlayers.observe_global_obus(prefix_obus, skipped_tu, tu_has_rap, tu_has_clk)?;
+    drain_pending_cmvs_flushed(options, frames, xlayers, emission_queue, emit)
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -1871,7 +1863,6 @@ fn decode_frames_in_order(
                         .copied();
                     (sequence_envelope, prefix, frame)
                 };
-                let initializing_layer = !xlayers.contains(candidate_xlayer);
                 let (key_sequence, key_sequence_offset) = if let Some(envelope) =
                     key_sequence_envelope
                 {
@@ -1926,6 +1917,7 @@ fn decode_frames_in_order(
                 }
                 xlayers.note_celu_order(candidate_xlayer, key_envelope.offset)?;
                 xlayers.observe_other_non_global_prefix(key_prefix_obus, candidate_xlayer)?;
+                let initializing_layer = !xlayers.contains(candidate_xlayer);
                 if initializing_layer {
                     let mut output_effect_state = xlayers.create_effect_state(candidate_xlayer);
                     let mut film_grain_slots = FilmGrainSlots::new();

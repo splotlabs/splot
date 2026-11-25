@@ -688,6 +688,7 @@ pub(super) struct XLayerTable {
     rest: Vec<XLayerState>,
     global: GlobalHlsState,
     pending_cmvs_flushed: Vec<usize>,
+    prior_emitted_count: usize,
 }
 
 impl XLayerTable {
@@ -697,6 +698,7 @@ impl XLayerTable {
             rest: Vec::new(),
             global: GlobalHlsState::default(),
             pending_cmvs_flushed: Vec::new(),
+            prior_emitted_count: 0,
         }
     }
 
@@ -778,14 +780,19 @@ impl XLayerTable {
             .is_some_and(|layer| layer.discard_leading_frames)
     }
 
+    pub(super) fn needs_cmvs_boundary_check(&self) -> bool {
+        self.global.active_msdo.is_some() && self.global.global_lcrs.iter().all(Option::is_none)
+    }
+
     pub(super) fn observe_global_obus(
         &mut self,
         obus: &[ObuEnvelope<'_>],
         skipped_tu: bool,
         tu_has_rap: bool,
         tu_has_clk: bool,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let mut cmvs_reset = false;
+        let mut starts_temporal_unit = false;
         let has_layers = self.first.is_some();
         for envelope in obus {
             if !envelope.header.extended_layer_id.is_global() {
@@ -793,6 +800,7 @@ impl XLayerTable {
             }
             match envelope.header.obu_type {
                 ObuType::TemporalDelimiter => {
+                    starts_temporal_unit = true;
                     self.global.begin_temporal_unit();
                     for layer in self.iter_mut() {
                         layer.on_temporal_delimiter(skipped_tu);
@@ -900,10 +908,25 @@ impl XLayerTable {
                 _ => {}
             }
         }
-        Ok(cmvs_reset)
+        let cmvs_ended = starts_temporal_unit
+            && tu_has_clk
+            && !self.global.tu_saw_msdo
+            && self.needs_cmvs_boundary_check();
+        if cmvs_reset || cmvs_ended {
+            let flushed = self.flush_all_outputs_and_invalidate();
+            self.pending_cmvs_flushed.extend(flushed);
+        }
+        if cmvs_ended {
+            self.global.active_msdo = None;
+            self.global.cmvs_start_tu_index = None;
+            self.prior_emitted_count = self.total_emitted_count();
+            self.first = None;
+            self.rest.clear();
+        }
+        Ok(())
     }
 
-    pub(super) fn flush_all_outputs_and_invalidate(&mut self) -> Vec<usize> {
+    fn flush_all_outputs_and_invalidate(&mut self) -> Vec<usize> {
         let mut flushed = Vec::new();
         for layer in self.iter_mut() {
             flushed.extend(layer.scheduler.flush_all());
@@ -1036,10 +1059,7 @@ impl XLayerTable {
         tu_has_rap: bool,
         tu_has_clk: bool,
     ) -> Result<()> {
-        if self.observe_global_obus(obus, true, tu_has_rap, tu_has_clk)? {
-            let flushed = self.flush_all_outputs_and_invalidate();
-            self.pending_cmvs_flushed.extend(flushed);
-        }
+        self.observe_global_obus(obus, true, tu_has_rap, tu_has_clk)?;
         self.observe_other_non_global_prefix(obus, GLOBAL_XLAYER_ID)
     }
 
@@ -1264,7 +1284,11 @@ impl XLayerTable {
     }
 
     pub(super) fn total_emitted_count(&self) -> usize {
-        self.iter().map(|layer| layer.scheduler.emitted_count).sum()
+        self.prior_emitted_count
+            + self
+                .iter()
+                .map(|layer| layer.scheduler.emitted_count)
+                .sum::<usize>()
     }
 
     pub(super) fn flush_layer(&mut self, layer_pos: usize) -> Vec<usize> {
