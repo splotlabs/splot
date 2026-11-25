@@ -333,20 +333,6 @@ fn trusted_read<const L: usize>(
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-fn test_lane_token() -> Option<LaneToken> {
-    use crate::simd::{ResolvedBackend, SimdBackend, SimdPolicy, resolve_backend};
-    match resolve_backend(SimdPolicy::Avx2).ok()? {
-        ResolvedBackend::Avx2(backend) => Some(backend.token()),
-        _ => None,
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn test_lane_token() -> Option<LaneToken> {
-    lane_token()
-}
-
 /// One read of an `N`-ary row through the word path and one through the lane
 /// path, each on its own decoder and row copy.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -395,7 +381,7 @@ proptest! {
         update in any::<bool>(),
         data in proptest::collection::vec(any::<u8>(), 2..24),
     ) {
-        let Some(token) = test_lane_token() else {
+        let Some(token) = lane_token() else {
             return Ok(());
         };
         let mut row = [0u16; MAX_SYMBOLS + 1];
@@ -431,7 +417,7 @@ proptest! {
         update in any::<bool>(),
         data in proptest::collection::vec(any::<u8>(), 2..16),
     ) {
-        let Some(token) = test_lane_token() else {
+        let Some(token) = lane_token() else {
             return Ok(());
         };
         let (mut word_row, mut lane_row) = (row, row);
