@@ -46,6 +46,11 @@ jobs:
           cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test decoder_api \
             avx512_film_grain_matches_narrow_output_at_both_bit_depths -- --exact
 
+      - name: Compare native wide rows with the scalar oracle
+        run: |
+          cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
+            film_grain::tests::wide_noise_matches_scalar_at_both_depths -- --exact
+
       - name: Fetch and verify the frozen EwoutH streams
         run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
 
@@ -69,6 +74,5 @@ jobs:
         if: ${{ inputs.timing }}
         run: |
           core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          cargo test -p splot-recon --release --locked --lib --no-run
           taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
             film_grain::tests::measure_wide_grain_noise_rows -- --ignored --exact --nocapture

@@ -3,6 +3,7 @@
 
 use std::io::Write;
 
+use splot_core::simd::{Avx512Backend, ResolvedBackend, SimdBackend, resolve_backend};
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
 use splot_decode::{
     DataProps, DecodeError, Decoder, DecoderSettings, PictureSamples, PlaneId, SendStatus,
@@ -54,6 +55,12 @@ fn main() {
         assert!(!std::arch::is_x86_feature_detected!("sse3"));
     }
 
+    if let Ok(ResolvedBackend::Avx512(wide)) = resolve_backend(SimdPolicy::Avx512) {
+        let _: <Avx512Backend as SimdBackend>::Token = splot_core::with_simd!(wide, simd => simd);
+    }
+    if let Ok(ResolvedBackend::Avx2(narrow)) = resolve_backend(SimdPolicy::Avx2) {
+        assert!(narrow.static_avx2_token().is_some());
+    }
     let settings = DecoderSettings::default().with_threads(ThreadCount::from(3));
     let mut decoder = Decoder::new(settings).unwrap();
     assert_eq!(decoder.selected_backend().as_str(), expected_backend);

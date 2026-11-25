@@ -291,7 +291,15 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
 macro_rules! with_simd {
     ($backend:expr, $simd:ident => $body:expr) => {{
         let __backend = $backend;
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(
+            target_arch = "x86_64",
+            target_feature = "avx2",
+            target_feature = "fma",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "f16c",
+            target_feature = "lzcnt"
+        ))]
         {
             if let Some($simd) = $crate::simd::SimdBackend::static_avx2_token(__backend) {
                 $body
@@ -314,7 +322,15 @@ macro_rules! with_simd {
             }
         }
         #[cfg(not(any(
-            target_arch = "x86_64",
+            all(
+                target_arch = "x86_64",
+                target_feature = "avx2",
+                target_feature = "fma",
+                target_feature = "bmi1",
+                target_feature = "bmi2",
+                target_feature = "f16c",
+                target_feature = "lzcnt"
+            ),
             all(target_arch = "aarch64", target_feature = "neon")
         )))]
         {
@@ -387,7 +403,7 @@ impl SimdBackend for Avx2Backend {
 
     #[inline]
     fn static_avx2_token(self) -> Option<fearless_simd::Avx2> {
-        STATIC_AVX2.then_some(self.token)
+        Some(self.token)
     }
 }
 
