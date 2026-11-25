@@ -9,13 +9,15 @@ mod tests;
 
 use std::{io, sync::Arc};
 
-use splot_core::headers::atlas_segment::{AtlasModeInfo, AtlasMultistreamInfo};
+use splot_core::headers::atlas_segment::{
+    AtlasModeInfo, AtlasMultistreamInfo, AtlasMultistreamSegment,
+};
 use splot_core::headers::content_interpretation::{ColorPrimariesTriple, DerivedColorInfo};
 use splot_core::simd::{SimdBackend, SimdScope};
 use splot_core::types::GLOBAL_XLAYER_ID;
 use splot_recon::{PlaneRect, ReconError};
 
-use super::{Picture, PictureSamples};
+use super::{ContentInterpretation, Picture, PictureSamples};
 use crate::{
     AtlasLayout, BitDepth, DecodeLimitError, DecodeLimitName, DecodeLimitThreshold, DecodeLimits,
     PixelFormat, PlaneId, PlaneRef,
@@ -104,17 +106,19 @@ impl AtlasCompositor {
         pts: i64,
         pictures: &[&Picture],
     ) -> Result<AtlasComposite<'a>> {
-        let info = match &layout.atlas.mode_info {
-            AtlasModeInfo::Multistream(info) | AtlasModeInfo::MultistreamAlpha(info) => info,
-            _ => return Err(AtlasCompositionError::UnsupportedMode),
+        let (AtlasModeInfo::Multistream(info) | AtlasModeInfo::MultistreamAlpha(info)) =
+            &layout.atlas.mode_info
+        else {
+            return Err(AtlasCompositionError::UnsupportedMode);
         };
+        let (streams, has_alpha) = validate_segments(&info.segments, self.limits)?;
         let mut frames = [None; 31];
         for &picture in pictures {
             let xlayer = picture.extended_layer_id().get();
             let slot = frames
                 .get_mut(usize::from(xlayer))
                 .ok_or(AtlasCompositionError::UnexpectedPicture(xlayer))?;
-            if slot.replace(picture).is_some() {
+            if streams & (1 << xlayer) == 0 || slot.replace(picture).is_some() {
                 return Err(AtlasCompositionError::UnexpectedPicture(xlayer));
             }
             if picture.props().pts != pts {
@@ -122,59 +126,26 @@ impl AtlasCompositor {
             }
         }
         let mut texture: Option<&Picture> = None;
-        let mut pending_alpha = false;
-        let mut has_alpha = false;
-        let mut seen = 0u32;
         for (index, segment) in info.segments.iter().enumerate() {
             let id = segment.input_stream_id;
-            let frame = *frames
-                .get(usize::from(id))
-                .ok_or(AtlasCompositionError::InvalidLayout)?;
-            if seen & (1 << id) != 0
-                || segment.width == 0
-                || segment.height == 0
-                || (pending_alpha && segment.alpha_segment_flag)
-            {
-                return Err(AtlasCompositionError::InvalidLayout);
-            }
-            seen |= 1 << id;
-            let frame = frame.ok_or(AtlasCompositionError::MissingPicture(id))?;
-            let label = *layout
-                .atlas
-                .label
-                .segment_ids
-                .get(index)
-                .ok_or(AtlasCompositionError::InvalidLayout)?;
+            let frame = frames[usize::from(id)].ok_or(AtlasCompositionError::MissingPicture(id))?;
             if !frame.atlas_associations().iter().any(|association| {
                 association.scope == GLOBAL_XLAYER_ID
                     && association
                         .layout
                         .as_ref()
                         .is_some_and(|active| Arc::ptr_eq(active, layout))
-                    && association
-                        .segment_id
-                        .is_none_or(|segment_id| segment_id == label)
+                    && association.segment_index() == Some(index)
             }) {
                 return Err(AtlasCompositionError::StaleLayout(id));
             }
-            self.limits
-                .ensure(DecodeLimitName::MaxFrameWidth, u64::from(segment.width))?;
-            self.limits
-                .ensure(DecodeLimitName::MaxFrameHeight, u64::from(segment.height))?;
-            pending_alpha = segment.alpha_segment_flag;
-            has_alpha |= pending_alpha;
-            if !pending_alpha {
-                let color = frame
-                    .content_interpretation()
-                    .map_or(DerivedColorInfo::UNSPECIFIED, |ci| ci.derived_color());
-                let bt709 = ColorPrimariesTriple {
-                    color_primaries: 1,
-                    transfer_characteristics: 1,
-                    matrix_coefficients: 1,
-                };
-                if frame.pixel_format().is_monochrome()
-                    || color.full_range
-                    || (color != DerivedColorInfo::UNSPECIFIED && color.code_points != bt709)
+            if !segment.alpha_segment_flag {
+                let color = frame.content_interpretation().map_or(
+                    DerivedColorInfo::UNSPECIFIED,
+                    ContentInterpretation::derived_color,
+                );
+                if !compatible_color(color)
+                    || frame.pixel_format().is_monochrome()
                     || texture.is_some_and(|other| {
                         (other.bit_depth(), other.pixel_format())
                             != (frame.bit_depth(), frame.pixel_format())
@@ -185,18 +156,9 @@ impl AtlasCompositor {
                 texture = Some(frame);
             }
         }
-        if pending_alpha || info.width == 0 || info.height == 0 {
-            return Err(AtlasCompositionError::InvalidLayout);
-        }
-        for picture in pictures {
-            let id = picture.extended_layer_id().get();
-            if seen & (1 << id) == 0 {
-                return Err(AtlasCompositionError::UnexpectedPicture(id));
-            }
-        }
         let texture = texture.ok_or(AtlasCompositionError::InvalidLayout)?;
         let geometry = Geometry::new(
-            info,
+            [info.width, info.height],
             texture.pixel_format(),
             texture.bit_depth(),
             self.limits,
@@ -213,6 +175,44 @@ impl AtlasCompositor {
     }
 }
 
+fn validate_segments(
+    segments: &[AtlasMultistreamSegment],
+    limits: DecodeLimits,
+) -> Result<(u32, bool)> {
+    let mut streams = 0u32;
+    let mut pending_alpha = false;
+    let mut has_alpha = false;
+    for segment in segments {
+        let id = segment.input_stream_id;
+        if id >= GLOBAL_XLAYER_ID.get()
+            || streams & (1 << id) != 0
+            || segment.width == 0
+            || segment.height == 0
+            || (pending_alpha && segment.alpha_segment_flag)
+        {
+            return Err(AtlasCompositionError::InvalidLayout);
+        }
+        streams |= 1 << id;
+        limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(segment.width))?;
+        limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(segment.height))?;
+        pending_alpha = segment.alpha_segment_flag;
+        has_alpha |= pending_alpha;
+    }
+    if pending_alpha || streams == 0 {
+        return Err(AtlasCompositionError::InvalidLayout);
+    }
+    Ok((streams, has_alpha))
+}
+
+fn compatible_color(color: DerivedColorInfo) -> bool {
+    let bt709 = ColorPrimariesTriple {
+        color_primaries: 1,
+        transfer_characteristics: 1,
+        matrix_coefficients: 1,
+    };
+    !color.full_range && (color == DerivedColorInfo::UNSPECIFIED || color.code_points == bt709)
+}
+
 #[derive(Clone, Copy)]
 struct Geometry {
     size: [u32; 2],
@@ -224,27 +224,27 @@ struct Geometry {
 
 impl Geometry {
     fn new(
-        info: &AtlasMultistreamInfo,
+        size: [u32; 2],
         format: PixelFormat,
         depth: BitDepth,
         limits: DecodeLimits,
         has_alpha: bool,
     ) -> Result<Self> {
-        let size = [info.width, info.height];
+        let [width, height] = size;
         let chroma = [
-            info.width >> format.subsampling_x(),
-            info.height >> format.subsampling_y(),
+            width >> format.subsampling_x(),
+            height >> format.subsampling_y(),
         ];
         if chroma.contains(&0) {
             return Err(AtlasCompositionError::InvalidLayout);
         }
-        limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(info.width))?;
-        limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(info.height))?;
+        limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(width))?;
+        limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(height))?;
         let area = limits
             .ensure_mul(
                 DecodeLimitName::MaxLumaSamplesPerFrame,
-                u64::from(info.width),
-                u64::from(info.height),
+                u64::from(width),
+                u64::from(height),
             )?
             .actual();
         let uv = u64::from(chroma[0]) * u64::from(chroma[1]);
@@ -254,7 +254,7 @@ impl Geometry {
             .ok_or(AtlasCompositionError::InvalidLayout)?;
         let bytes = if depth == BitDepth::Eight { 1 } else { 2 };
         let scratch = if has_alpha {
-            u64::from(info.width) * (bytes + 2)
+            u64::from(width) * (bytes + 2)
         } else {
             0
         };
@@ -321,10 +321,10 @@ impl<'a> AtlasComposite<'a> {
         for plane in self.planes {
             match plane {
                 PictureSamples::Eight(view) => {
-                    splot_recon::write_visible_plane(BitDepth::Eight, view, writer)?
+                    splot_recon::write_visible_plane(BitDepth::Eight, view, writer)?;
                 }
                 PictureSamples::Ten(view) => {
-                    splot_recon::write_visible_plane(BitDepth::Ten, view, writer)?
+                    splot_recon::write_visible_plane(BitDepth::Ten, view, writer)?;
                 }
             }
         }
@@ -400,10 +400,12 @@ impl Storage {
 }
 
 fn resize<T: Default + Copy>(storage: &mut Vec<T>, len: usize) -> Result<&mut [T]> {
+    if len > storage.capacity() {
+        // Each call overwrites the old samples. Release them before reserving the replacement.
+        *storage = Vec::new();
+        storage.try_reserve_exact(len).map_err(|_| AtlasCompositionError::Allocation)?;
+    }
     if len > storage.len() {
-        storage
-            .try_reserve_exact(len - storage.len())
-            .map_err(|_| AtlasCompositionError::Allocation)?;
         storage.resize(len, T::default());
     }
     Ok(&mut storage[..len])

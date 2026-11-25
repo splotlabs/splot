@@ -137,3 +137,53 @@ fn limited_range_background_uses_bt709_coefficients() {
         [63, 102, 240]
     );
 }
+
+#[test]
+fn invalid_pairing_format_and_geometry_fail_before_allocation() {
+    let limits = DecodeLimits::default();
+    let texture = segment(3, 0, 0, 4, 4);
+    let alpha = AtlasMultistreamSegment {
+        alpha_segment_flag: true,
+        ..segment(9, 0, 0, 4, 4)
+    };
+    let second_alpha = AtlasMultistreamSegment {
+        input_stream_id: 1,
+        ..alpha
+    };
+    assert!(matches!(
+        validate_segments(&[alpha], limits),
+        Err(AtlasCompositionError::InvalidLayout)
+    ));
+    assert!(matches!(
+        validate_segments(&[alpha, second_alpha, texture], limits),
+        Err(AtlasCompositionError::InvalidLayout)
+    ));
+    assert!(matches!(
+        validate_segments(&[texture, texture], limits),
+        Err(AtlasCompositionError::InvalidLayout)
+    ));
+    assert!(matches!(
+        Geometry::new(
+            [u32::MAX; 2],
+            PixelFormat::Yuv444,
+            BitDepth::Ten,
+            limits,
+            true
+        ),
+        Err(AtlasCompositionError::InvalidLayout)
+    ));
+    let limited = limits.with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(64));
+    assert!(matches!(
+        Geometry::new([4; 2], PixelFormat::Yuv444, BitDepth::Ten, limited, false),
+        Err(AtlasCompositionError::Limit(_))
+    ));
+    let hdr = DerivedColorInfo {
+        code_points: ColorPrimariesTriple {
+            color_primaries: 9,
+            transfer_characteristics: 16,
+            matrix_coefficients: 9,
+        },
+        full_range: false,
+    };
+    assert!(!compatible_color(hdr));
+}
