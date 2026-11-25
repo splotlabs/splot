@@ -404,7 +404,9 @@ fn resize<T: Default + Copy>(storage: &mut Vec<T>, len: usize) -> Result<&mut [T
     if len > storage.capacity() {
         // Each call overwrites the old samples. Release them before reserving the replacement.
         *storage = Vec::new();
-        storage.try_reserve_exact(len).map_err(|_| AtlasCompositionError::Allocation)?;
+        storage
+            .try_reserve_exact(len)
+            .map_err(|_| AtlasCompositionError::Allocation)?;
     }
     if len > storage.len() {
         storage.resize(len, T::default());
