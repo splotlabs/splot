@@ -422,8 +422,7 @@ fn local_atlas_precedes_the_first_decodable_frame_of_its_stream() {
             Decoder::new_with_external_atlases(DecoderSettings::default(), external.clone())
                 .unwrap();
         let pictures = stream_pictures(&mut decoder, &bytes).unwrap();
-        // AVM donor output indices 5, 7, 8, 9, 10 and 11 survive unaligned access.
-        // The transition case also emits donor indices 0 through 3.
+        // AVM emits donor pictures 5, 7, 8, 9, 10 and 11 after access, plus 0–3 before transition.
         let native = if retire_at_unaligned_rap {
             "0b301c2b9c4a946cd3d2516c703433b07d33da0d51345d4f0fa1306935fc990d"
         } else {

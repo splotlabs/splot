@@ -225,8 +225,7 @@ mod tests {
 
     #[test]
     fn signaled_label_ids_preserved_verbatim() {
-        // §6.9.2: signaled ats_atlas_segment_id values are descriptive id assignments with no
-        // conformance requirement; arbitrary values round-trip verbatim.
+        // AV2 § 6.9.2 permits arbitrary explicit segment IDs.
         let mut atlas = basic_atlas_signaled();
         let AtlasModeInfo::Basic(_) = &atlas.mode_info else {
             panic!("expected basic mode info");
