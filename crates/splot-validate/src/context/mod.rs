@@ -116,6 +116,7 @@ use self::frame_header_copy::*;
 use self::frame_header_diagnostics::*;
 use self::hls::*;
 use self::lcr::*;
+use self::lcr_agreement::ActiveGlobalLcrReference;
 use self::metadata::*;
 use self::msdo::*;
 use self::ops::*;
@@ -229,6 +230,10 @@ pub(crate) struct ValidatorContext {
     /// later activation (a post-header redefinition is not the associated
     /// record).
     lcr_associations: BTreeMap<(ExtendedLayerId, SequenceHeaderId), LcrAssociation>,
+    global_lcr_group_start: Option<u64>,
+    active_global_lcr_references: [Option<ActiveGlobalLcrReference>; 32],
+    global_lcr_keys_in_tu: u32,
+    global_lcr_group_mismatches: u32,
     /// Stateful § 5.6 MSDO observer (AV2 § 5.6 / § 7.3.2); see [`MsdoObserver`]. Feeds
     /// the [`CmvsTracker`] the § 7.3.2 condition-2 "differs from the previous OBU_MSDO"
     /// signal and holds no diagnostics of its own.
@@ -583,6 +588,7 @@ impl ValidatorContext {
         self.resolve_deferred_doh_constraint(options, report);
         self.resolve_deferred_lcr_msdo_agreement(options, report);
         self.resolve_deferred_cmvs_boundary(options, report);
+        self.resolve_global_lcr_group_agreement(self.cvs.tu_index, options, report);
         self.commit_annex_a_iop_pending(self.cvs.tu_index, options, report);
         self.flush_annex_a_iop_window(options, report);
         self.complete_msdo_temporal_unit(report);

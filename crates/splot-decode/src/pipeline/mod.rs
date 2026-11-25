@@ -941,7 +941,14 @@ fn decode_frames_in_order(
     let Some(mut leading_unit) = stream.first_unit()? else {
         return Ok(());
     };
-    let mut xlayers = XLayerTable::new(session.external_atlases.clone());
+    let extended_layers_filtered = !matches!(
+        options.extended_layer_selection(),
+        crate::ExtendedLayerSelection::All
+    ) || matches!(
+        options.operating_point_selection(),
+        crate::OperatingPointSelection::Global { .. }
+    );
+    let mut xlayers = XLayerTable::new(session.external_atlases.clone(), extended_layers_filtered);
     let mut skipped_unselected_leading = false;
     let mut key_candidate = stream.first_candidate()?;
     if key_candidate.is_err() {
@@ -2366,6 +2373,7 @@ fn decode_frames_in_order(
     }
 
     if !output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+        xlayers.check_global_lcr_group()?;
         for layer_pos in 0..xlayers.len() {
             if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
                 break;

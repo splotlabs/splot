@@ -3004,8 +3004,13 @@ description = "Three-TU multi-extended-layer 10-bit 4:2:0 Profile 2 IOP 2 Annex 
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-xlayer3-7-9-shared-global-parent.obu"
+description = "Derived from syn-xlayer3-7-global-lcr-isolation.obu. Set bit 9 in each global LCR xlayer map. Before each xlayer 7 sequence header, insert local LCR payload 24 00 00 40. After each xlayer 7 coded unit, copy its OBUs to xlayer 9 by changing only their OBU header xlayer IDs. Xlayer 3 activates global LCR ID 1. Xlayers 7 and 9 use local LCR ID 1 with global parent ID 1. Strict validation checks all three xlayers. AVM a1ec4594d9 decodes 12 pictures to 101,376 raw I420 bytes with --all-layers --rawvideo --i420. SHA-256 f663b88af3601bac3ebd88e508c21e70d8a86632d6a7e03c1c8cd247e05e781b. The selected xlayer 7/9 decoder case excludes the direct activator and retains eight pictures."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-xlayer3-7-layered-mixed.obu"
-description = "Four-TU multi-extended-layer 8-bit 4:2:0 Profile 2 IOP 2 Annex B stream with an activated global LCR (id 1, xlayer_map 0x88, lcr_doh_constraint_flag 1) multiplexing a 2-mlayer x 2-tlayer sparse-state AVM stream at obu_xlayer_id 3 (seq_header_id 0, 64x64 8 frames across ML0..1 TL0..1 with local LCR and OPS) and an independent single-mlayer stream at obu_xlayer_id 7 (seq_header_id 1, MFH enabled, 96x64 4 frames). Decodes identically to component avmdec outputs (xlayer 3 49,152 bytes SHA-256 80f2b107ff4512837e25b724f380259077ad451f73e7cb2c046e64feee8062cc; xlayer 7 36,864 bytes SHA-256 8762b65ff05fd6aa3b144f2b0675544f17c61ae8fd8431dbe9f2c7aad9c1598b); validates clean."
+description = "Four-TU multi-extended-layer 8-bit 4:2:0 Profile 2 IOP 2 Annex B stream with an activated global LCR (id 1, xlayer_map 0x88, lcr_doh_constraint_flag 1) multiplexing a 2-mlayer x 2-tlayer sparse-state AVM stream at obu_xlayer_id 3 (seq_header_id 0, 64x64 8 frames across ML0..1 TL0..1 with a local LCR that references global LCR ID 1 and with OPS) and an independent single-mlayer stream at obu_xlayer_id 7 (seq_header_id 1, MFH enabled, 96x64 4 frames). Decodes identically to component avmdec outputs (xlayer 3 49,152 bytes SHA-256 80f2b107ff4512837e25b724f380259077ad451f73e7cb2c046e64feee8062cc; xlayer 7 36,864 bytes SHA-256 8762b65ff05fd6aa3b144f2b0675544f17c61ae8fd8431dbe9f2c7aad9c1598b); validates clean."
 expect = "clean"
 
 

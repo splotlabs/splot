@@ -5,6 +5,13 @@
 
 use super::*;
 
+#[derive(Debug)]
+pub(super) struct ActiveGlobalLcrReference {
+    activation_tu: u64,
+    id: Option<u8>,
+    direct_offset: Option<ByteOffset>,
+}
+
 impl ValidatorContext {
     /// Resolves "the activated global layer configuration record of the coded multistream
     /// video sequence" (AV2 § 6.8.2 / § 7.3.2) from the existing § 6.4.1 association chain:
@@ -20,10 +27,8 @@ impl ValidatorContext {
     /// staged-but-unreferenced header is not yet an activation (§ 7.3.6), and an
     /// observed-but-never-activated global LCR therefore satisfies nothing. The
     /// associations are scanned in ascending `obu_xlayer_id` order, so the first global
-    /// association found is deterministic; the § 6.8.2 "all extended layers reference the
-    /// same activated global LCR" rule (lines 1550-1551) that would reconcile divergent
-    /// resolutions is a separate, out-of-scope residual, so this takes the first resolved
-    /// record and the agreement checks compare the MSDO against it.
+    /// association found is deterministic. The group agreement check compares the
+    /// references at the end of the temporal unit.
     ///
     /// Two correctness properties of this resolution:
     ///
@@ -109,6 +114,114 @@ impl ValidatorContext {
             }
         }
         None
+    }
+
+    pub(super) fn activate_global_lcr_reference(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        sequence: SequenceHeaderId,
+    ) {
+        self.global_lcr_keys_in_tu |= 1 << xlayer.get();
+        let association = self.lcr_associations.get(&(xlayer, sequence));
+        self.active_global_lcr_references[usize::from(xlayer.get())] =
+            Some(ActiveGlobalLcrReference {
+                activation_tu: self.cvs.tu_index,
+                id: association.and_then(|association| association.global_reference),
+                direct_offset: association
+                    .and_then(|association| association.global_record.as_ref())
+                    .map(|record| record.offset),
+            });
+    }
+
+    pub(super) fn resolve_global_lcr_group_agreement(
+        &mut self,
+        completed_tu: u64,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let key_layers = core::mem::take(&mut self.global_lcr_keys_in_tu);
+        let Some(facts) = self.cmvs.last_completed else {
+            return;
+        };
+        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            return;
+        }
+
+        let activates_global = key_layers != 0
+            && self
+                .active_global_lcr_references
+                .iter()
+                .flatten()
+                .any(|active| {
+                    active.activation_tu == completed_tu && active.direct_offset.is_some()
+                });
+        let msdo_start = self
+            .cmvs
+            .current_cmvs_start_tu_index()
+            .filter(|_| self.cmvs.committed_inside());
+        if facts.has_clk && !facts.msdo_present && !activates_global {
+            self.global_lcr_group_start = None;
+            self.global_lcr_group_mismatches = 0;
+            return;
+        }
+        if facts.was_inside_before && msdo_start == Some(completed_tu) {
+            self.global_lcr_group_start = activates_global.then_some(completed_tu);
+            self.global_lcr_group_mismatches = 0;
+        }
+        if activates_global && self.global_lcr_group_start.is_none() {
+            self.global_lcr_group_start = Some(msdo_start.unwrap_or(completed_tu));
+        }
+        let Some(start) = self.global_lcr_group_start else {
+            return;
+        };
+
+        if key_layers == 0 && !facts.msdo_present {
+            return;
+        }
+        let declared = self
+            .msdo_substream_max
+            .as_ref()
+            .filter(|_| self.cmvs.state == super::cmvs::CmvsState::Inside);
+        let active_in_group = self
+            .active_global_lcr_references
+            .iter()
+            .zip(0u8..)
+            .filter_map(|(active, xlayer)| {
+                let active = active.as_ref()?;
+                (active.activation_tu >= start
+                    && declared.is_none_or(|msdo| msdo.ceilings.contains_key(&xlayer)))
+                .then_some((xlayer, active))
+            });
+        let Some((expected, offset)) = active_in_group
+            .clone()
+            .find_map(|(_, active)| active.id.zip(active.direct_offset))
+        else {
+            return;
+        };
+        let mut mismatches = 0;
+        for (xlayer, active) in active_in_group {
+            let global_reference = active.id;
+            if global_reference == Some(expected) {
+                continue;
+            }
+            let bit = 1 << xlayer;
+            mismatches |= bit;
+            if self.global_lcr_group_mismatches & bit != 0 {
+                continue;
+            }
+            let observed = global_reference.map_or_else(|| "none".to_owned(), |id| id.to_string());
+            report.push(
+                Diagnostic::error(
+                    "lcr/global-reference-mismatch",
+                    format!(
+                        "Extended layer {xlayer} references global LCR {observed}. Expected global LCR {expected}."
+                    ),
+                )
+                .with_spec_section("6.8.2")
+                .with_byte_offset(offset),
+            );
+        }
+        self.global_lcr_group_mismatches = mismatches;
     }
 
     /// Emits the § 6.8.2 MSDO↔global-LCR agreement diagnostics (mirror
@@ -464,6 +577,12 @@ impl ValidatorContext {
             Some(LcrAssociation {
                 lcr_is_global: false,
                 lcr_id: seq_lcr_id,
+                global_reference: self
+                    .hls
+                    .local_lcr_parents
+                    .get(&(xlayer, seq_lcr_id))
+                    .copied()
+                    .filter(|&id| id != 0),
                 maps: self
                     .hls
                     .local_lcr_embedded
@@ -481,6 +600,7 @@ impl ValidatorContext {
             Some(LcrAssociation {
                 lcr_is_global: true,
                 lcr_id: seq_lcr_id,
+                global_reference: Some(seq_lcr_id),
                 maps: self
                     .hls
                     .global_lcr_embedded

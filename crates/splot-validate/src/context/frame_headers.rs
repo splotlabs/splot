@@ -47,6 +47,9 @@ impl ValidatorContext {
 
         if let Some(seq_id) = resolved {
             let xlayer = obu.header.extended_layer_id;
+            if prefix.is_key_frame && !xlayer.is_global() {
+                self.activate_global_lcr_reference(xlayer, seq_id);
+            }
             let prior_seq = self.active_sequence_by_xlayer.get(&xlayer).copied();
             let prior_frame_confirmed = self.frame_confirmed_xlayers.contains(&xlayer);
             let prior_activation_cvs = self.frame_confirmed_activation_cvs.get(&xlayer).copied();

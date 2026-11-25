@@ -236,6 +236,7 @@ hand-crafted unit vectors only — `avm_diff` is never claimed for them.
 | `lcr/max-interop-reserved` | error | § 6.8.4 | a global LCR's lcr_max_interop is outside Annex A — Annex A.3 Table A.3 defines interoperability points 0, 1, 2, and 15 ("max"), so 3..=14 are reserved (mirror lines 1757-1759). Decidable from the parsed global LCR's lcr_aggregate_info alone |
 | `lcr/mlayer-dependency-missing` | error | § 6.8.9 | activated LCR lcr_mlayer_map includes an embedded layer without a layer the activated sequence header's MLayerDependencyMap requires |
 | `lcr/msdo-aggregate-mismatch` | error | § 6.8.2 | with lcr_aggregate_info_present_flag == 1, multistream_profile_idc is inconsistent with lcr_config_idc (Table A.6), its interop point != lcr_max_interop (Table A.1), multistream_level_idx != lcr_aggregate_level_idx, or multistream_tier != lcr_max_tier_flag (mirror lines 1657-1664) |
+| `lcr/global-reference-mismatch` | error | § 6.8.2 | An active extended layer does not reference the same global LCR as its peers. A local LCR can reference the global LCR. |
 | `lcr/msdo-doh-flag-mismatch` | error | § 6.8.2 | multistream_doh_constraint_flag != the activated global LCR's lcr_doh_constraint_flag (mirror line 1673) |
 | `lcr/msdo-stream-count-mismatch` | error | § 6.8.2 | num_streams_minus_2 + 2 != the activated global LCR's LcrMaxNumXLayerCount (mirror line 1650) |
 | `lcr/msdo-sub-xlayer-not-in-lcr` | error | § 6.8.2 | an MSDO sub_xlayer_id[i] is not in the activated global LCR's LcrXLayerID[] (mirror lines 1651-1652) |

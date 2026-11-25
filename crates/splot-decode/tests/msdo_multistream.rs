@@ -1528,3 +1528,93 @@ fn negative_msdo_ops_lifecycle_ordering_doh_and_aggregate_limits() {
         .unwrap_err();
     assert!(matches!(limited_bytes, DecodeError::Limit { .. }));
 }
+
+#[test]
+fn msdo_only_switch_clears_the_previous_global_lcr() {
+    let first_tu = &temporal_units(MSDO_10BIT)[0];
+    let mut data = first_tu.clone();
+    for raise_x9_ceiling in [false, true] {
+        for envelope in parse_annex_b_obus(first_tu).unwrap() {
+            let header = envelope.header;
+            match envelope.payload_status().unwrap() {
+                PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(_)) => {}
+                PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut sequence)) => {
+                    sequence.general.seq_lcr_id = LcrId::from_bits(0);
+                    write_parsed(&mut data, header, &ParsedObu::SequenceHeader(sequence));
+                }
+                PayloadStatus::Parsed(ParsedObu::Msdo(mut msdo)) if raise_x9_ceiling => {
+                    let substream = &mut msdo.sub_streams[1];
+                    assert_eq!(substream.sub_xlayer_id, 9);
+                    substream.sub_stream_max_level += 1;
+                    write_parsed(&mut data, header, &ParsedObu::Msdo(msdo));
+                }
+                _ => write_obu(&mut data, header, envelope.payload),
+            }
+        }
+    }
+
+    let pictures = stream_decode(&data, &DecoderSettings::default()).unwrap();
+    assert_eq!(pictures.len(), 6);
+    assert_eq!(
+        sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
+        "d0d884316a744753b962983bce246765c69e9d08ba06b94a3135be3bb6cab0e6"
+    );
+}
+
+#[test]
+fn filtered_msdo_does_not_activate_the_parent_of_a_local_lcr() {
+    use splot_core::headers::layer_config_record::LayerConfigurationRecord;
+
+    let mut data = Vec::new();
+    let mut msdo = Vec::new();
+    for envelope in parse_annex_b_obus(MSDO_10BIT).unwrap() {
+        let header = envelope.header;
+        match envelope.payload_status().unwrap() {
+            PayloadStatus::Parsed(ParsedObu::Msdo(_)) => {
+                write_obu(&mut msdo, header, envelope.payload);
+                data.extend(&msdo);
+                continue;
+            }
+            PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(mut record)) => {
+                let LayerConfigurationRecord::Global(global) = record.as_mut() else {
+                    panic!("expected a global LCR");
+                };
+                global.doh_constraint_flag = false;
+                write_parsed(
+                    &mut data,
+                    header,
+                    &ParsedObu::LayerConfigurationRecord(record),
+                );
+                continue;
+            }
+            PayloadStatus::Parsed(ParsedObu::SequenceHeader(_)) => {
+                let local = ObuHeader {
+                    obu_type: ObuType::LayerConfigurationRecord,
+                    ..header
+                };
+                let local_lcr_id1_parent1 = [0x24, 0, 0, 0x40];
+                write_obu(&mut data, local, &local_lcr_id1_parent1);
+            }
+            PayloadStatus::Parsed(ParsedObu::TemporalDelimiter) => {
+                write_obu(&mut data, header, envelope.payload);
+                data.extend(&msdo);
+                continue;
+            }
+            _ => {}
+        }
+        write_obu(&mut data, header, envelope.payload);
+    }
+
+    for selection in [
+        ExtendedLayerSelection::All,
+        ExtendedLayerSelection::OutputMask((1 << 2) | (1 << 9)),
+    ] {
+        let settings = DecoderSettings::default().with_extended_layer_selection(selection);
+        let pictures = stream_decode(&data, &settings).unwrap();
+        assert_eq!(pictures.len(), 10);
+        assert_eq!(
+            sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
+            SHA_MSDO_10BIT_ALL
+        );
+    }
+}
