@@ -622,11 +622,21 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample, const
                 }
             }
         }
-        let chunks = |[head, tail]: [u8x16<S>; 2]| {
-            let (first, second) = simd.split_u16x16(widen_u8(simd, head));
-            [first, second, simd.split_u16x16(widen_u8(simd, tail)).1]
+        let chunks = {
+            #[inline(always)]
+            |[head, tail]: [u8x16<S>; 2]| {
+                let (first, second) = simd.widen_u8x16(head);
+                [first, second, simd.widen_u8x16(tail).1]
+            }
         };
-        return Some(pair_ranges(simd, reduce, min.map(chunks), max.map(chunks)));
+        let [u_min, v_min] = min;
+        let [u_max, v_max] = max;
+        return Some(pair_ranges(
+            simd,
+            reduce,
+            [chunks(u_min), chunks(v_min)],
+            [chunks(u_max), chunks(v_max)],
+        ));
     }
     let (u_rows, v_rows) = (T::u16_slice(u_rows)?, T::u16_slice(v_rows)?);
     let mut min = [[u16x8::splat(simd, u16::MAX); 3]; 2];
