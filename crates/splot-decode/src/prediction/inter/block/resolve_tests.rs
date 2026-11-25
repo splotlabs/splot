@@ -128,3 +128,58 @@ fn new_nearmv_near_list_takes_the_frame_precision_global_mv() {
     assert_ne!(frame_global[1], block_global[1]);
     assert_eq!(mv[1], frame_global[1]);
 }
+
+#[test]
+fn local_intrabc_replays_chroma_partition_padding_in_leaf_order() {
+    use crate::bitstream::tile_payload::{BlockSize, PartitionTreeType, TilePartitionCall};
+    use crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState;
+
+    let core = rotzoom_core();
+    let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
+    let mut ibc = TileLocalIbcState::new(0..16, 0..16, 32, false).unwrap();
+    let mut state = MvResolutionState {
+        grid: &mut grid,
+        ref_mv_bank: &mut None,
+        warp_param_bank: &mut WarpParamBank::new(),
+        ibc_local: Some(&mut ibc),
+        core: &core,
+        temporal: None,
+        order_hints: OrderHintMvContext::new(1, &[], 0),
+        drl_reorder: DrlReorder::Disabled,
+        max_drl_bits_minus_1: 0,
+        frame_precision: MV_PRECISION_QUARTER_PEL,
+        tile_offset: ByteOffset::new(0),
+        sb_h4: 32,
+        mi_rows: MI_DIM,
+        mi_cols: MI_DIM,
+    };
+    let block = BlockSize::new(BLOCK_64X64).unwrap();
+    let mut entries = [
+        (0, 16, PartitionTreeType::LumaPart),
+        (16, 0, PartitionTreeType::ChromaPart),
+    ]
+    .map(|(row, col, tree)| {
+        let call = TilePartitionCall::root(row, col, block, true).with_tree_type(tree);
+        tile::ReconRowEntry::new(
+            DecodedLeafPublication::new(call, block, 31),
+            EntryState::OutOfFrame,
+        )
+    });
+
+    resolve_parsed_leaves_inner::<true>(
+        &[tile::ReconSuperblock {
+            origin: [0, 0],
+            entries: 0..entries.len(),
+            allow_extra_ibc_range: false,
+            bru_inactive: false,
+        }],
+        &mut entries,
+        &mut [],
+        &mut state,
+    )
+    .unwrap();
+
+    assert!(ibc.is_coded(16, 0));
+    assert_eq!(ibc.buffers().cur(), (1, 0));
+    assert_eq!(ibc.buffers().stored()[1], Some((0, 1)));
+}

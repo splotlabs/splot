@@ -133,26 +133,29 @@ fn resolve_parsed_leaves_inner<const LOCAL_IBC: bool>(
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         for entry in sb_entries {
             if LOCAL_IBC && matches!(entry.state, EntryState::OutOfFrame) {
-                if let Some(ibc) = state.ibc_local.as_mut()
-                    && let Some((mi_row, mi_col, n4w, n4h)) =
-                        entry.publication.luma_tree_block(superblock.origin)
-                {
+                if let Some(ibc) = state.ibc_local.as_mut() {
+                    let (mi_row, mi_col, n4w, n4h) = entry
+                        .publication
+                        .tree_block(superblock.origin)
+                        .ok_or_else(invalid_inter_tile_scheduling_state)?;
                     ibc.record_out_of_frame(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
                 }
                 continue;
             }
             if let EntryState::Intra(_) = entry.state {
-                if let Some((mi_row, mi_col, n4w, n4h)) =
-                    entry.publication.luma_tree_block(superblock.origin)
-                {
+                let luma_block = entry.publication.luma_tree_block(superblock.origin);
+                if let Some((mi_row, mi_col, n4w, n4h)) = luma_block {
                     state.grid.record_zero_motion(mi_row, mi_col, n4w, n4h);
                     if let Some(bank) = state.ref_mv_bank.as_mut() {
                         bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
                     }
-                    if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
-                        ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
-                        ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
-                    }
+                }
+                if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
+                    let (mi_row, mi_col, n4w, n4h) = luma_block
+                        .or_else(|| entry.publication.tree_block(superblock.origin))
+                        .ok_or_else(invalid_inter_tile_scheduling_state)?;
+                    ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
                 }
                 continue;
             }
@@ -161,21 +164,26 @@ fn resolve_parsed_leaves_inner<const LOCAL_IBC: bool>(
             };
             match slot {
                 LeafSlot::PendingInter(command) => {
-                    let luma_block = if LOCAL_IBC {
-                        entry.publication.luma_tree_block(superblock.origin)
+                    let tree_block = if LOCAL_IBC {
+                        Some(
+                            entry
+                                .publication
+                                .tree_block(superblock.origin)
+                                .ok_or_else(invalid_inter_tile_scheduling_state)?,
+                        )
                     } else {
                         None
                     };
                     if LOCAL_IBC
                         && let Some(ibc) = state.ibc_local.as_mut()
-                        && let Some((mi_row, mi_col, n4w, n4h)) = luma_block
+                        && let Some((mi_row, mi_col, n4w, n4h)) = tree_block
                     {
                         ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
                     }
                     *slot = LeafSlot::Inter(command.resolve(state)?);
                     if LOCAL_IBC
                         && let Some(ibc) = state.ibc_local.as_mut()
-                        && let Some((mi_row, mi_col, n4w, n4h)) = luma_block
+                        && let Some((mi_row, mi_col, n4w, n4h)) = tree_block
                     {
                         ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
                     }
