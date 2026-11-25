@@ -356,6 +356,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "splot-lr-avx2"
+version = "0.0.0"
+dependencies = [
+ "fearless_simd",
+ "splot-lr-kernel",
+]
+
+[[package]]
+name = "splot-lr-kernel"
+version = "0.0.0"
+dependencies = [
+ "fearless_simd",
+]
+
+[[package]]
 name = "splot-parallel"
 version = "0.0.0"
 dependencies = [
@@ -371,6 +386,8 @@ dependencies = [
  "fearless_simd",
  "sha2",
  "splot-core",
+ "splot-lr-avx2",
+ "splot-lr-kernel",
  "splot-tables",
  "thiserror",
 ]

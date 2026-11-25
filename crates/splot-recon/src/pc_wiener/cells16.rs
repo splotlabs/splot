@@ -12,13 +12,16 @@ use crate::lr_madd::{self, LaneClass, TapPairs};
 /// The § 7.20.4 taps for [`lr_madd`].
 pub(super) struct PcTaps;
 
+impl splot_lr_kernel::TapGeometry for PcTaps {
+    const RADIUS: usize = PC_WIENER_FILTER_TAP_RADIUS;
+    const TAPS: &'static [(isize, isize)] = &PC_WIENER_CONFIG;
+}
+
 impl TapPairs for PcTaps {
     #[cfg(target_arch = "x86_64")]
     lr_madd::madd_avx2!(PcTaps, 7, 22);
     #[cfg(target_arch = "aarch64")]
     lr_madd::by_lane_kernel!(PcTaps, 7, 22);
-    const RADIUS: usize = PC_WIENER_FILTER_TAP_RADIUS;
-    const TAPS: &'static [(isize, isize)] = &PC_WIENER_CONFIG;
 }
 
 /// Every class of every § 9.8 `Pc_Wiener_Filters` set as a [`LaneClass`]:

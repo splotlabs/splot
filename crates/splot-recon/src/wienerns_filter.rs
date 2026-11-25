@@ -29,6 +29,10 @@ use crate::lr_madd::{self, LrBackend, TapPairs};
 use crate::math::round2_i32;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use splot_core::simd::SimdBackend;
+use splot_lr_kernel::{LumaTaps, WIENER_NS_CONFIG_Y};
+pub use splot_lr_kernel::{
+    WIENER_NS_CONFIG_Y_PAIRS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
+};
 
 #[path = "wienerns_luma_u8.rs"]
 pub(crate) mod eight_bit;
@@ -39,68 +43,6 @@ use flat::LumaFlatGroup;
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
 const WIENER_NS_PREC_BITS: u32 = 7;
-
-/// Number of luma Wiener NS coefficient slots (`WIENER_NS_LUMA_COEFFS`) consumed
-/// by AV2 § 7.20.3 `Wiener_Ns_Config_Y`.
-pub const WIENER_NS_LUMA_COEFFS: usize = 16;
-
-/// Number of luma Wiener NS taps (`WIENER_NS_TAPS_Y`) in AV2 § 7.20.3.
-pub const WIENER_NS_LUMA_TAPS: usize = 32;
-
-/// Maximum absolute § 7.20.3 `Wiener_Ns_Config_Y` tap offset in either axis.
-///
-/// Callers that pre-resolve § 7.20.2 source samples may materialize a window
-/// extending this many samples beyond the output block on every side; the
-/// filter never reads farther.
-pub const WIENER_NS_LUMA_TAP_RADIUS: usize = 4;
-
-/// AV2 § 7.20.3 `Wiener_Ns_Config_Y`: `(dy, dx, coeff_index)`.
-const WIENER_NS_CONFIG_Y: [(isize, isize, usize); WIENER_NS_LUMA_TAPS] = [
-    (1, 0, 0),
-    (-1, 0, 0),
-    (0, 1, 1),
-    (0, -1, 1),
-    (2, 0, 2),
-    (-2, 0, 2),
-    (0, 2, 3),
-    (0, -2, 3),
-    (1, 1, 4),
-    (-1, -1, 4),
-    (-1, 1, 5),
-    (1, -1, 5),
-    (2, 1, 6),
-    (-2, -1, 6),
-    (2, -1, 7),
-    (-2, 1, 7),
-    (1, 2, 8),
-    (-1, -2, 8),
-    (1, -2, 9),
-    (-1, 2, 9),
-    (3, 0, 10),
-    (-3, 0, 10),
-    (0, 3, 11),
-    (0, -3, 11),
-    (4, 0, 12),
-    (-4, 0, 12),
-    (0, 4, 13),
-    (0, -4, 13),
-    (3, 3, 14),
-    (-3, -3, 14),
-    (3, -3, 15),
-    (-3, 3, 15),
-];
-
-/// First tap `(dy, dx, coeff_index)` of each § 7.20.3 `Wiener_Ns_Config_Y`
-/// symmetric pair; the partner tap is `(-dy, -dx, coeff_index)`.
-pub const WIENER_NS_CONFIG_Y_PAIRS: [(isize, isize, usize); WIENER_NS_LUMA_COEFFS] = {
-    let mut pairs = [(0isize, 0isize, 0usize); WIENER_NS_LUMA_COEFFS];
-    let mut j = 0;
-    while j < WIENER_NS_LUMA_COEFFS {
-        pairs[j] = WIENER_NS_CONFIG_Y[2 * j];
-        j += 1;
-    }
-    pairs
-};
 
 /// Caller-resolved parameters for AV2 § 7.20.3 luma Wiener NS filtering.
 ///
@@ -137,24 +79,11 @@ pub struct WienerNsLumaScratch {
 /// One class's coefficients and center scale.
 type PreparedLumaClass = lr_madd::LaneClass;
 
-/// The § 7.20.3 luma taps for [`lr_madd`].
-struct LumaTaps;
-
 impl TapPairs for LumaTaps {
     #[cfg(target_arch = "x86_64")]
     lr_madd::madd_avx2!(LumaTaps, 9, 24);
     #[cfg(target_arch = "aarch64")]
     lr_madd::by_lane_kernel!(LumaTaps, 9, 24);
-    const RADIUS: usize = WIENER_NS_LUMA_TAP_RADIUS;
-    const TAPS: &'static [(isize, isize)] = &{
-        let mut taps = [(0, 0); WIENER_NS_LUMA_COEFFS];
-        let mut j = 0;
-        while j < WIENER_NS_LUMA_COEFFS {
-            taps[j] = (WIENER_NS_CONFIG_Y_PAIRS[j].0, WIENER_NS_CONFIG_Y_PAIRS[j].1);
-            j += 1;
-        }
-        taps
-    };
 }
 
 /// Source columns one 16-sample vector row reads.
@@ -899,7 +828,7 @@ fn filter_luma_cell_groups<L: LrBackend, T: LumaSimdSource, O: LumaSimdOutput>(
         let Some(out) = output.get_mut((first - origin) * output_stride..) else {
             return Err(luma_segment_error(width));
         };
-        if !lr_madd::filter_run::<L, LumaTaps, T, O, LUMA_WINDOW_ROWS, CELL_REACH>(
+        if !filter_luma_run(
             backend,
             window,
             end - first,
@@ -913,6 +842,42 @@ fn filter_luma_cell_groups<L: LrBackend, T: LumaSimdSource, O: LumaSimdOutput>(
         x = run_end;
     }
     Ok(x)
+}
+
+#[inline]
+fn filter_luma_run<L: LrBackend, T: LumaSimdSource, O: LumaSimdOutput>(
+    backend: L,
+    window: &[&[T]],
+    rows: usize,
+    span: (usize, usize),
+    classes: lr_madd::Classes<'_>,
+    (output, stride): (&mut [O], usize),
+    max_sample: u16,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = backend.avx2_token()
+        && let Some(window) = T::u16_table(window)
+        && let Some(output) = O::u16_output(output)
+    {
+        return splot_lr_avx2::filter_luma_run(
+            token,
+            window,
+            rows,
+            span,
+            classes,
+            (output, stride),
+            max_sample,
+        );
+    }
+    lr_madd::filter_run::<L, LumaTaps, T, O, LUMA_WINDOW_ROWS, CELL_REACH>(
+        backend,
+        window,
+        rows,
+        span,
+        classes,
+        (output, stride),
+        max_sample,
+    )
 }
 
 /// The [`CELL_REACH`] columns from `x` of up to [`LUMA_WINDOW_ROWS`]` + 3`
@@ -940,6 +905,10 @@ pub(crate) trait LumaSimdOutput: Copy + eight_bit::ByteLaneOutput {
     /// Stores 16 values already within the sample range.
     fn store16(values: [u16; 16], output: &mut [Self; 16]);
 
+    /// The output when it takes the concrete AVX2 word-to-word run.
+    #[cfg(target_arch = "x86_64")]
+    fn u16_output(output: &mut [Self]) -> Option<&mut [u16]>;
+
     /// The output as samples of the AArch64 run kernel.
     #[cfg(target_arch = "aarch64")]
     fn lanes_mut(output: &mut [Self]) -> lr_madd::by_lane::Out<'_>;
@@ -954,6 +923,12 @@ impl LumaSimdOutput for u16 {
     #[inline]
     fn store16(values: [u16; 16], output: &mut [Self; 16]) {
         *output = values;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn u16_output(output: &mut [Self]) -> Option<&mut [u16]> {
+        Some(output)
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -972,6 +947,12 @@ impl LumaSimdOutput for u8 {
     #[inline]
     fn store16(values: [u16; 16], output: &mut [Self; 16]) {
         *output = values.map(|value| value as u8);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn u16_output(_output: &mut [Self]) -> Option<&mut [u16]> {
+        None
     }
 
     #[cfg(target_arch = "aarch64")]

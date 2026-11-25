@@ -53,5 +53,9 @@ if_not_else = "allow"
 fearless_simd.workspace = true
 sha2.workspace = true
 splot-core.workspace = true
+splot-lr-kernel.workspace = true
 splot-tables.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+splot-lr-avx2.workspace = true

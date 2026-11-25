@@ -1277,7 +1277,17 @@ const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
     ("splot-core", &["splot-tables"]),
     ("splot-parallel", &[]),
     ("splot-tables", &[]),
-    ("splot-recon", &["splot-core", "splot-tables"]),
+    ("splot-lr-kernel", &[]),
+    ("splot-lr-avx2", &["splot-lr-kernel"]),
+    (
+        "splot-recon",
+        &[
+            "splot-core",
+            "splot-tables",
+            "splot-lr-kernel",
+            "splot-lr-avx2",
+        ],
+    ),
     (
         "splot-decode",
         &["splot-core", "splot-recon", "splot-parallel"],
@@ -1514,11 +1524,19 @@ mod tests {
     }
 
     #[test]
-    fn dependency_direction_allows_recon_core_and_tables_only() -> Result<()> {
+    fn dependency_direction_allows_recon_core_tables_and_restoration() -> Result<()> {
         let Some(recon_deps) = allowed_internal_deps("splot-recon") else {
             bail!("splot-recon should have dependency policy");
         };
-        assert_eq!(recon_deps, ["splot-core", "splot-tables"]);
+        assert_eq!(
+            recon_deps,
+            [
+                "splot-core",
+                "splot-tables",
+                "splot-lr-kernel",
+                "splot-lr-avx2"
+            ]
+        );
         Ok(())
     }
 
