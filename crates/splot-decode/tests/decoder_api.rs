@@ -519,7 +519,16 @@ fn decoder_validates_simd_policy_once_and_retains_it_across_flush() {
     let mut decoder = Decoder::new(DecoderSettings::default()).unwrap();
     let initial = decoder.selected_backend();
     #[cfg(target_arch = "x86_64")]
-    assert_eq!(initial, SelectedBackend::Avx2);
+    assert_eq!(
+        initial,
+        if splot_core::simd::detect_capabilities().has_avx512() {
+            SelectedBackend::Avx512
+        } else if splot_core::simd::detect_capabilities().has_avx2() {
+            SelectedBackend::Avx2
+        } else {
+            SelectedBackend::Sse2
+        }
+    );
     #[cfg(target_arch = "aarch64")]
     assert_eq!(initial, SelectedBackend::Neon);
 

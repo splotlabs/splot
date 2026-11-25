@@ -195,11 +195,12 @@ cargo install --path crates/splot-cli --locked
 splot --help
 ```
 
-> **CPU requirements.** Checkout builds require an x86-64-v3 CPU on x86-64.
-> The decoder requires AVX2 and its associated CPU and OS features even when
-> a downstream crate builds with generic x86-64 flags. AArch64 uses NEON.
->
-> **Linux:** builds need glibc 2.36 or newer (Debian 12, Ubuntu 24.04).
+> **CPU requirements.** Release builds from this checkout target x86-64-v3.
+> The decoder detects AVX-512 at startup and can use it for selected operations.
+> AArch64 uses NEON. For older x86-64 CPUs, build with
+> `RUSTFLAGS="-C target-cpu=x86-64"`. That build can select SSE2, AVX2 or
+> AVX-512 at runtime. Its surrounding decoder code also targets baseline
+> x86-64, which can reduce throughput even when it selects an AVX2 kernel.
 
 ## Where it stands.
 

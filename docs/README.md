@@ -15,13 +15,23 @@ rustup show active-toolchain
 cargo build --release
 ```
 
-Checkout builds target `x86-64-v3` on x86-64. A generic downstream build
-can start on an older CPU, but opening the decoder requires the full
-`fearless_simd` AVX2 feature set. Auto selects AVX2 on qualified x86-64
-hosts and NEON on AArch64. Rust callers may request AVX-512 explicitly on
-capable hardware. The decoder currently reuses AVX2 kernels for that policy.
-Linux GNU builds link packed relative relocations (`DT_RELR`) and need glibc
-2.36 or newer.
+Checkout builds target `x86-64-v3` on x86-64. Auto checks CPU and OS
+capabilities at startup. A capable host can use AVX-512 for selected
+operations and AVX2 for the remaining work. AArch64 uses NEON.
+
+Cargo uses the consuming workspace's configuration when building splot as a
+dependency. With generic x86-64 flags the decoder can fall back to SSE2.
+On Linux GNU, this command builds a baseline CLI and C library while retaining
+the release's packed relative relocations and glibc 2.36 requirement.
+
+```bash
+RUSTFLAGS="-C target-cpu=x86-64 -C link-arg=-Wl,-z,pack-relative-relocs" \
+  cargo build --release --locked --target-dir target/baseline -p splot-cli -p splot-capi
+```
+
+The compiler target also affects parsing, motion prediction and the code
+around SIMD kernels. A generic build can therefore decode more slowly on the
+same AVX2 machine. [Performance measurements and follow-up](https://github.com/splotlabs/splot/issues/1934).
 
 ## Crates
 

@@ -21,6 +21,8 @@ macro_rules! with_auto_backend {
         match splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
             .expect("auto backend")
         {
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            splot_core::simd::ResolvedBackend::Sse2($backend) => $body,
             #[cfg(target_arch = "x86_64")]
             splot_core::simd::ResolvedBackend::Avx2($backend) => $body,
             #[cfg(target_arch = "x86_64")]
