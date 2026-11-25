@@ -78,13 +78,10 @@ pub fn subpel_predict_12x12_bilinear_overlap_into_with<'a, B: SimdBackend, T: Re
     };
     let [_, _, h_phase, v_phase] = geometry;
     let block = (window, ref_stride, output, stride, &mut carry.columns);
-    let narrow = backend.narrow();
-    narrow.vectorize(|| {
-        if reuse {
-            bilinear_12x12_block::<_, T, true>(narrow.token(), block, (h_phase, v_phase));
-        } else {
-            bilinear_12x12_block::<_, T, false>(narrow.token(), block, (h_phase, v_phase));
-        }
+    splot_core::with_simd!(backend.narrow(), simd => if reuse {
+        bilinear_12x12_block::<_, T, true>(simd, block, (h_phase, v_phase));
+    } else {
+        bilinear_12x12_block::<_, T, false>(simd, block, (h_phase, v_phase));
     });
     carry.source = Some((reference.samples, ref_stride, geometry));
     Ok(true)

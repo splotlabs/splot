@@ -226,6 +226,11 @@ fn centre_ends_search<R: SubpelRunner>(
     Some(sad - (sad >> 3) < (2 * (geometry[0] - 4) * geometry[1]) as u32)
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "keep the centre SAD in the caller's SIMD scope"
+)]
+#[inline(always)]
 pub(super) fn centre_sad_generic<S: fearless_simd::Simd>(
     simd: S,
     windows: [&[u16]; 2],
@@ -489,6 +494,11 @@ pub(super) mod generic {
     /// `Σ |a - b|` over every other row of the `(STRIDE - 4) x SAD_H` centres
     /// at `(2, 2)` of two `STRIDE`-wide windows of `AREA` samples, summed as
     /// the word search sums it, or `None` for a short window.
+    #[expect(
+        clippy::inline_always,
+        reason = "keep the centre SAD in the caller's SIMD scope"
+    )]
+    #[inline(always)]
     pub(super) fn centre_sad<
         S: Simd,
         const STRIDE: usize,

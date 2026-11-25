@@ -194,8 +194,9 @@ pub fn refinemv_area_sad_u8_with<B: SimdBackend, T: ReconSample>(
     size: [usize; 2],
 ) -> Option<u32> {
     let (planes, strides) = prepare_area_sad_u8(views, corners, size)?;
-    let narrow = backend.narrow();
-    Some(narrow.vectorize(|| generic::area_sad(narrow.token(), planes, [0; 2], strides, size)))
+    Some(
+        splot_core::with_simd!(backend.narrow(), simd => generic::area_sad(simd, planes, [0; 2], strides, size)),
+    )
 }
 
 #[inline]
