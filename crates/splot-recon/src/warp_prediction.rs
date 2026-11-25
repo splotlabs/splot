@@ -1207,15 +1207,19 @@ fn row_invariant_intermediate<S: Simd, T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut Intermediate,
 ) {
-    let weights = column_weights(
-        simd,
-        core::array::from_fn(|col| warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))),
-    );
-    for (row, intermediate) in intermediate.iter_mut().enumerate() {
-        let [lo, hi] = warp_span(simd, reference.row(first_row + row), first_col);
-        let sum = tap_sum(sliding_windows(lo, hi), &weights);
-        *intermediate = round_intermediate(sum).to_array();
-    }
+    simd.vectorize(|| {
+        let weights = column_weights(
+            simd,
+            core::array::from_fn(|col| {
+                warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))
+            }),
+        );
+        for (row, intermediate) in intermediate.iter_mut().enumerate() {
+            let [lo, hi] = warp_span(simd, reference.row(first_row + row), first_col);
+            let sum = tap_sum(sliding_windows(lo, hi), &weights);
+            *intermediate = round_intermediate(sum).to_array();
+        }
+    });
 }
 
 /// Runs the § 7.13.3.19 vertical pass of a section with `delta == 0`, whose
@@ -1902,7 +1906,7 @@ fn rows_sum<S: Simd>(
             })
             .split()
         };
-        let [(r0, r1), (r2, r3), (r4, r5), (r6, r7)] = core::array::from_fn(pair);
+        let [(r0, r1), (r2, r3), (r4, r5), (r6, r7)] = [pair(0), pair(1), pair(2), pair(3)];
         tap_sum([r0, r1, r2, r3, r4, r5, r6, r7], weights)
     }
     #[cfg(not(target_arch = "x86_64"))]
