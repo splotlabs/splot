@@ -761,4 +761,12 @@ fn derived_sef_uses_the_reference_layer_for_output() {
             mask,
         );
     }
+    verify_layer_subset(
+        fixture,
+        &all,
+        TemporalLayerSelection::OutputMask(0b10),
+        EmbeddedLayerSelection::All,
+        0b10,
+        0b11,
+    );
 }
