@@ -312,21 +312,29 @@ jobs:
         run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu
 
       # Every target runs, so that one crash does not hide another.
+      # Concurrent targets get 90 seconds to offset lower execution rates.
       - name: Fuzz each target of this group (per-target smoke)
         env:
           FEATURES: ${{ matrix.features }}
           TARGETS: ${{ matrix.targets }}
           RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
         run: |
-          failed=""
-          for target in $TARGETS; do
+          read -r -a fuzz_targets <<< "$TARGETS"
+          # shellcheck disable=SC2016
+          printf '%s\n' "${fuzz_targets[@]}" | xargs -r -n 1 -P 2 bash -o pipefail -c '
+            target=$1
             echo "=== fuzz $target ==="
-            cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 || failed="$failed $target"
-          done
-          if [ -n "$failed" ]; then
-            echo "::error::Fuzz targets failed:$failed"
-            exit 1
-          fi
+            if ! cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" \
+              --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu -- \
+              -max_total_time=90 -timeout=10 -rss_limit_mb=2048 2>&1 |
+              while IFS= read -r line || [[ -n "$line" ]]; do
+                printf "[%s] %s\n" "$target" "$line"
+              done
+            then
+              echo "::error::Fuzz target failed: $target"
+              exit 1
+            fi
+          ' _
 
       - name: Upload crash artifacts on failure
         if: failure()
@@ -385,18 +393,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-cov-v3-${{ hashFiles('rust-toolchain.toml') }}-
 
-      # The gate covers splot-validate and splot-tables; dropping splot-encode's
-      # tests does not lower it (96.32% -> 96.33% gated lines when measured).
+      - name: Measure validator and table coverage on PRs
+        if: github.event_name == 'pull_request'
+        run: cargo llvm-cov -p splot-validate -p splot-tables --all-features --locked --no-report
+
       - name: Coverage (workspace summary + lcov)
+        if: github.ref == 'refs/heads/main'
         run: |
           cargo llvm-cov --workspace --exclude splot-encode --all-features --locked --no-report
           cargo llvm-cov report --summary-only
           cargo llvm-cov report --lcov --output-path lcov.info
       # Keep the exclusion in sync with SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX in xtask.
-      - name: Gate splot-validate line coverage (>= 90%)
+      - name: Gate validator and table line coverage (>= 90%)
         run: cargo llvm-cov report --fail-under-lines 90 --ignore-filename-regex 'crates/splot-(core|parallel|recon|decode|encode|cli|capi)/|(^|/)xtask/|(^|/)fuzz/'
 
       - name: Upload lcov artifact
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-lcov
