@@ -1592,8 +1592,8 @@ fn filtered_msdo_does_not_activate_the_parent_of_a_local_lcr() {
                     obu_type: ObuType::LayerConfigurationRecord,
                     ..header
                 };
-                // Parent ID 1, local ID 1, no optional fields.
-                write_obu(&mut data, local, &[0x24, 0, 0, 0x40]);
+                let local_lcr_id1_parent1 = [0x24, 0, 0, 0x40];
+                write_obu(&mut data, local, &local_lcr_id1_parent1);
             }
             PayloadStatus::Parsed(ParsedObu::TemporalDelimiter) => {
                 write_obu(&mut data, header, envelope.payload);
