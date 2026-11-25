@@ -63,6 +63,10 @@ typedef enum SplotFrameType {
 // An open decoder.
 typedef struct SplotDecoder SplotDecoder;
 
+// Atlas metadata owned by one picture. Pointers into it remain valid until
+// the caller releases that picture with `splot_picture_unref`.
+typedef struct SplotPictureAtlas SplotPictureAtlas;
+
 // How [`splot_open`] sets up a decoder. Fill it with
 // [`splot_default_settings`] first.
 typedef struct SplotSettings {
@@ -159,11 +163,103 @@ typedef struct SplotPicture {
   uint8_t embedded_layer_id;
   // Extended layer id (`obu_xlayer_id`, `0..=30`) of the picture.
   uint8_t extended_layer_id;
+  // Immutable atlas snapshot. Null when the picture has no atlas association.
+  const struct SplotPictureAtlas *atlas;
+  // Number of associations accessible through `splot_atlas_info`.
+  size_t atlas_count;
   // Reserved.
-  size_t reserved[3];
+  size_t reserved;
   // The decoder's handle on the samples; do not touch.
   void *internal;
 } SplotPicture;
+
+// An optional eight-bit atlas field. Read `value` only when `present` is true.
+typedef struct SplotAtlasByte {
+  // True when the association or layout specifies this field.
+  bool present;
+  // The field value.
+  uint8_t value;
+} SplotAtlasByte;
+
+// One atlas association for the picture. Array pointers borrow the picture.
+typedef struct SplotAtlasInfo {
+  // The extended layer ID of the atlas. The global scope has ID 31.
+  uint8_t scope_xlayer_id;
+  // The referenced atlas ID.
+  uint8_t atlas_id;
+  // True when an LCR supplies this association.
+  bool has_lcr_offset;
+  // Source byte offset of the LCR when `has_lcr_offset` is true.
+  uint64_t lcr_offset;
+  // The segment associated with this picture.
+  struct SplotAtlasByte segment_id;
+  // The segment index when the available layout resolves the segment ID.
+  struct SplotAtlasByte segment_index;
+  // The LCR priority order for this association.
+  struct SplotAtlasByte priority_order;
+  // The LCR rendering method for this association.
+  struct SplotAtlasByte rendering_method;
+  // False when the bitstream omits an optional global layout.
+  bool has_layout;
+  // True when the layout comes from caller-supplied metadata.
+  bool external;
+  // Source byte offset of the atlas OBU when `has_layout` is true.
+  uint64_t atlas_offset;
+  // Atlas mode from AV2 Table 6.11. Valid when `has_layout` is true.
+  uint8_t mode;
+  // True when the atlas signals explicit segment IDs.
+  bool explicit_segment_ids;
+  // Segment IDs in atlas index order. The array has `segment_count` entries.
+  const uint8_t *segment_ids;
+  // Number of segments in the layout.
+  size_t segment_count;
+  // Canvas width for modes 1, 3 and 4. Nominal width for mode 2.
+  uint64_t width;
+  // Canvas height for modes 1, 3 and 4. Nominal height for mode 2.
+  uint64_t height;
+  // True when the layout specifies a background color.
+  bool has_background;
+  // Background red, green and blue, in order.
+  uint8_t background_rgb[3];
+  // True when mode 4 signals alpha segments.
+  bool alpha_segments_present;
+  // Number of region columns for mode 0.
+  uint32_t region_columns;
+  // Number of region rows for mode 0.
+  uint32_t region_rows;
+  // True when all mode 0 regions have the same dimensions.
+  bool uniform_spacing;
+  // Region widths minus one. Uniform spacing has one entry, otherwise one per column.
+  const uint32_t *column_widths_minus_1;
+  // Region heights minus one. Uniform spacing has one entry, otherwise one per row.
+  const uint32_t *row_heights_minus_1;
+  // True when each segment maps to one region in raster order.
+  bool single_region_per_segment;
+} SplotAtlasInfo;
+
+// Geometry and source of one indexed segment.
+typedef struct SplotAtlasSegment {
+  // The extended layer ID of the input stream, if present.
+  struct SplotAtlasByte input_stream_id;
+  // Horizontal position in the canvas for modes 1, 3 and 4.
+  uint32_t x;
+  // Vertical position in the canvas for modes 1, 3 and 4.
+  uint32_t y;
+  // Segment width for modes 1, 3 and 4.
+  uint32_t width;
+  // Segment height for modes 1, 3 and 4.
+  uint32_t height;
+  // True for an alpha segment in mode 4.
+  bool alpha;
+  // Mode 0 first column for an explicit region mapping.
+  uint32_t top_left_region_column;
+  // Mode 0 first row for an explicit region mapping.
+  uint32_t top_left_region_row;
+  // Mode 0 last column relative to the first column.
+  uint32_t bottom_right_region_column_off;
+  // Mode 0 last row relative to the first row.
+  uint32_t bottom_right_region_row_off;
+} SplotAtlasSegment;
 
 #ifdef __cplusplus
 extern "C" {
@@ -270,6 +366,21 @@ void splot_picture_unref(struct SplotPicture *picture);
 // # Safety
 // `decoder` is null or points to null or to a decoder from [`splot_open`].
 void splot_close(struct SplotDecoder **decoder);
+
+// Read association `index` from a picture's atlas snapshot.
+// Supply zero-initialized output storage. Returns `SPLOT_EINVAL` for null
+// pointers or an index outside the association array.
+int splot_atlas_info(const struct SplotPictureAtlas *snapshot,
+                     size_t index,
+                     struct SplotAtlasInfo *out);
+
+// Read one segment of association `index` from the picture's atlas snapshot.
+// Supply zero-initialized output storage. Returns `SPLOT_EINVAL` for null
+// pointers, an unavailable layout, or an index outside either array.
+int splot_atlas_segment(const struct SplotPictureAtlas *snapshot,
+                        size_t index,
+                        size_t segment_index,
+                        struct SplotAtlasSegment *out);
 
 #ifdef __cplusplus
 }  // extern "C"

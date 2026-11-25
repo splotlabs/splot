@@ -10,7 +10,7 @@
 use core::ptr;
 
 use splot_capi::*;
-use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
+use splot_core::stream_reader::TemporalUnitReader;
 use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig, ThreadCount};
 
 const FIXTURES: &[&[u8]] = &[
@@ -24,16 +24,18 @@ const FIXTURES: &[&[u8]] = &[
     include_bytes!("../../../tests/conformance/vectors/valid/syn-crop-intra-64x64-q80.ivf"),
 ];
 
+const ATLAS: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-8bit.obu"
+);
+
 const FILM_GRAIN: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf");
 
-fn units(ivf: &[u8]) -> Vec<Vec<u8>> {
-    let mut reader = TemporalUnitReader::new(ivf);
+fn units(stream: &[u8]) -> Vec<Vec<u8>> {
+    let mut reader = TemporalUnitReader::new(stream);
     let mut units = Vec::new();
-    while let Some(unit) = reader.next_unit().unwrap() {
-        if let StreamUnit::IvfFrame { payload, .. } = unit {
-            units.push(payload.to_vec());
-        }
+    while let Some(unit) = reader.next_temporal_unit().unwrap() {
+        units.push(unit.bytes.to_vec());
     }
     units
 }
@@ -76,9 +78,8 @@ fn append(picture: &SplotPicture, out: &mut Vec<u8>) {
     }
 }
 
-/// Decodes `ivf` through the C ABI and closes the decoder; the caller
-/// releases the pictures.
-fn pictures(ivf: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> {
+/// Decode the stream through the C ABI. The pictures survive decoder flush and close.
+fn pictures(stream: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> {
     let mut settings = SplotSettings {
         n_threads: 0,
         max_frame_delay: 0,
@@ -108,7 +109,7 @@ fn pictures(ivf: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> 
                 error => panic!("splot_get_picture failed: {error}"),
             }
         };
-        for (index, unit) in units(ivf).iter().enumerate() {
+        for (index, unit) in units(stream).iter().enumerate() {
             let props = SplotDataProps {
                 pts: index as i64 * 100,
                 duration: 100,
@@ -127,6 +128,7 @@ fn pictures(ivf: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> 
         take(decoder);
         let mut eof = core::mem::zeroed::<SplotPicture>();
         assert_eq!(splot_get_picture(decoder, &raw mut eof), SPLOT_EOF);
+        splot_flush(decoder);
         splot_close(&raw mut decoder);
         assert!(decoder.is_null());
         pictures
@@ -137,14 +139,27 @@ fn pictures(ivf: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> 
 fn decode(ivf: &[u8], threads: u32) -> (Vec<u8>, Vec<SplotDataProps>) {
     let mut raw = Vec::new();
     let mut props = Vec::new();
-    for mut picture in pictures(ivf, threads, 0) {
+    for picture in pictures(ivf, threads, 0) {
         append(&picture, &mut raw);
         props.push(picture.props);
         assert_eq!(picture.has_film_grain, 0);
-        unsafe { splot_picture_unref(&raw mut picture) };
-        assert!(picture.internal.is_null() && picture.data[0].is_null());
+        assert_eq!(picture.atlas_count, 0);
+        assert!(picture.atlas.is_null());
+        inspect_and_release(picture, |_| {});
     }
     (raw, props)
+}
+
+fn inspect_and_release(
+    mut picture: SplotPicture,
+    inspect: impl FnOnce(Option<&SplotPictureAtlas>),
+) {
+    unsafe {
+        inspect(picture.atlas.as_ref());
+        splot_picture_unref(&raw mut picture);
+    }
+    assert!(picture.internal.is_null() && picture.data[0].is_null() && picture.atlas.is_null());
+    assert_eq!(picture.atlas_count, 0);
 }
 
 fn batch_raw(ivf: &[u8], skip_film_grain: bool) -> Vec<u8> {
@@ -201,6 +216,54 @@ fn skipped_film_grain_is_left_out_and_applied_on_request() {
     }
 }
 
+#[test]
+fn retained_atlas_metadata_survives_layout_replacement_flush_and_close() {
+    let pictures = pictures(ATLAS, 3, 0);
+    assert_eq!(pictures.len(), 8);
+    for (n, picture) in pictures.into_iter().enumerate() {
+        let xlayer = if n % 2 == 0 { 3 } else { 7 };
+        let local = n >= 4 && xlayer == 3;
+        assert_eq!(picture.extended_layer_id, xlayer);
+        assert_eq!(picture.atlas_count, 1 + usize::from(local));
+        inspect_and_release(picture, |snapshot| {
+            let mut info = SplotAtlasInfo::default();
+            let mut segment = SplotAtlasSegment::default();
+            assert_eq!(splot_atlas_info(snapshot, 0, Some(&mut info)), SPLOT_OK);
+            assert!(info.has_layout && !info.external && info.explicit_segment_ids);
+            assert_eq!(
+                (info.scope_xlayer_id, info.atlas_id, info.segment_count),
+                (31, 5, 2)
+            );
+            assert_eq!(info.atlas_offset, if n < 4 { 37 } else { 1899 });
+            assert_eq!(info.mode, if n < 4 { 3 } else { 4 });
+            assert!(info.segment_id.present);
+            assert_eq!(info.segment_id.value, if xlayer == 3 { 41 } else { 77 });
+            assert_eq!(
+                splot_atlas_segment(snapshot, 0, usize::from(xlayer == 7), Some(&mut segment)),
+                SPLOT_OK
+            );
+            assert!(segment.input_stream_id.present);
+            assert_eq!(segment.input_stream_id.value, xlayer);
+            assert_eq!(
+                splot_atlas_segment(snapshot, 0, 2, Some(&mut segment)),
+                SPLOT_EINVAL
+            );
+            if local {
+                assert_eq!(splot_atlas_info(snapshot, 1, Some(&mut info)), SPLOT_OK);
+                assert!(info.has_layout && info.segment_id.present);
+                assert_eq!((info.scope_xlayer_id, info.atlas_id, info.mode), (3, 5, 2));
+                assert_eq!((info.atlas_offset, info.segment_id.value), (1932, 41));
+            }
+            assert_eq!(splot_atlas_info(snapshot, 2, Some(&mut info)), SPLOT_EINVAL);
+        });
+    }
+    assert_eq!(
+        splot_atlas_info(None, 0, Some(&mut SplotAtlasInfo::default())),
+        SPLOT_EINVAL
+    );
+    assert_eq!(splot_atlas_info(None, 0, None), SPLOT_EINVAL);
+}
+
 /// `skip_film_grain` and `has_film_grain` each took the first reserved byte:
 /// `reserved` was 32 bytes in the settings and 4 `usize` in the picture.
 #[test]
@@ -217,6 +280,18 @@ fn the_new_fields_keep_the_struct_layouts() {
     assert_eq!(offset_of!(SplotSettings, operating_point_ops_id), 18);
     assert_eq!(offset_of!(SplotSettings, operating_point_index), 19);
     assert_eq!(offset_of!(SplotSettings, reserved), 20);
+    assert_eq!(
+        offset_of!(SplotPicture, atlas_count),
+        offset_of!(SplotPicture, atlas) + size_of::<usize>()
+    );
+    assert_eq!(
+        offset_of!(SplotPicture, internal),
+        offset_of!(SplotPicture, atlas) + 3 * size_of::<usize>()
+    );
+    assert_eq!(
+        size_of::<SplotPicture>(),
+        offset_of!(SplotPicture, internal) + size_of::<usize>()
+    );
     assert_eq!(
         offset_of!(SplotPicture, internal),
         offset_of!(SplotPicture, has_film_grain) + 4 * size_of::<usize>()
