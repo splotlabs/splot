@@ -21,8 +21,8 @@ use splot_core::simd::SelectedBackend;
 use splot_core::tables::conversion::GAUSSIAN_SEQUENCE;
 
 use crate::{
-    DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, OutputIndex, Plane, PlaneId,
-    PlaneRect, PlaneSize, ReconError, ReconSample, Result,
+    DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, Plane, PlaneId, PlaneRect,
+    PlaneSize, ReconError, ReconSample, Result,
 };
 
 const LUMA_GRAIN_WIDTH: usize = 82;
@@ -150,7 +150,7 @@ fn apply_film_grain_simd<S: Simd, T: ReconSample>(
         synthesize(simd, &sources, &geometry, &grain, &mut spare, add_noise)?.into_iter();
 
     let info = DecodedFrameInfo::new(
-        OutputIndex::new(frame.output_index().get()),
+        frame.output_index(),
         frame.bit_depth(),
         pixel_format,
         PlaneSize::new(width, height)?,
@@ -608,21 +608,18 @@ impl GrainLanes for u16 {
 
     #[inline]
     fn load32<S: Simd>(simd: S, samples: &[Self; 32]) -> (i16x16<S>, i16x16<S>) {
-        let (low, high) = samples.split_at(16);
-        let load = |half: &[u16]| {
-            half.first_chunk::<16>()
-                .map_or_else(|| i16x16::splat(simd, 0), |half| Self::load16(simd, half))
-        };
-        (load(low), load(high))
+        let (halves, _) = samples.as_chunks::<16>();
+        (
+            Self::load16(simd, &halves[0]),
+            Self::load16(simd, &halves[1]),
+        )
     }
 
     #[inline]
     fn store32<S: Simd>(low: i16x16<S>, high: i16x16<S>, samples: &mut [Self; 32]) {
-        let (first, second) = samples.split_at_mut(16);
-        if let (Some(first), Some(second)) = (first.first_chunk_mut(), second.first_chunk_mut()) {
-            low.bitcast::<u16x16<S>>().store_array(first);
-            high.bitcast::<u16x16<S>>().store_array(second);
-        }
+        let (halves, _) = samples.as_chunks_mut::<16>();
+        low.bitcast::<u16x16<S>>().store_array(&mut halves[0]);
+        high.bitcast::<u16x16<S>>().store_array(&mut halves[1]);
     }
 }
 

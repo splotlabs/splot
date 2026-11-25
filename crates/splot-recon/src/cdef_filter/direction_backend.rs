@@ -40,33 +40,23 @@ pub fn cdef_direction_padded_with_backend<B: CdefDirectionBackend>(
     backend.cdef_direction_padded_impl(pad, coeff_shift)
 }
 
-mod sealed_backend {
-    pub trait Sealed {}
-
-    #[cfg(target_arch = "x86_64")]
-    impl Sealed for splot_core::simd::Sse2Backend {}
-
-    #[cfg(target_arch = "x86_64")]
-    impl Sealed for splot_core::simd::Avx2Backend {}
-
-    #[cfg(target_arch = "x86_64")]
-    impl Sealed for splot_core::simd::Avx512Backend {}
-
-    #[cfg(target_arch = "aarch64")]
-    impl Sealed for splot_core::simd::NeonBackend {}
-
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    impl Sealed for splot_core::simd::FallbackBackend {}
-}
-
 /// Sealed backend dispatch hook for padded AV2 § 7.18.2 CDEF direction search.
-pub trait CdefDirectionBackend: SimdBackend + sealed_backend::Sealed {
+pub trait CdefDirectionBackend: SimdBackend {
     /// Computes `(yDir, var)` on `pad` with pre-shift `coeff_shift`.
+    #[inline]
     fn cdef_direction_padded_impl(
         self,
         pad: &[u16; CDEF_PADDED_AREA],
         coeff_shift: u32,
-    ) -> (usize, i32);
+    ) -> (usize, i32) {
+        self.vectorize(|| {
+            let simd = self.token();
+            cdef_direction_rows(
+                simd,
+                cdef_direction_input::<_, CDEF_PADDED_SIDE, _>(simd, pad, coeff_shift),
+            )
+        })
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -97,58 +87,13 @@ impl CdefDirectionBackend for splot_core::simd::Avx2Backend {
 }
 
 #[cfg(target_arch = "x86_64")]
-impl CdefDirectionBackend for splot_core::simd::Avx512Backend {
-    #[inline]
-    fn cdef_direction_padded_impl(
-        self,
-        pad: &[u16; CDEF_PADDED_AREA],
-        coeff_shift: u32,
-    ) -> (usize, i32) {
-        self.vectorize(|| {
-            let simd = self.token();
-            cdef_direction_rows(
-                simd,
-                cdef_direction_input::<_, CDEF_PADDED_SIDE, _>(simd, pad, coeff_shift),
-            )
-        })
-    }
-}
+impl CdefDirectionBackend for splot_core::simd::Avx512Backend {}
 
 #[cfg(target_arch = "aarch64")]
-impl CdefDirectionBackend for splot_core::simd::NeonBackend {
-    #[inline]
-    fn cdef_direction_padded_impl(
-        self,
-        pad: &[u16; CDEF_PADDED_AREA],
-        coeff_shift: u32,
-    ) -> (usize, i32) {
-        self.vectorize(|| {
-            let simd = self.token();
-            cdef_direction_rows(
-                simd,
-                cdef_direction_input::<_, CDEF_PADDED_SIDE, _>(simd, pad, coeff_shift),
-            )
-        })
-    }
-}
+impl CdefDirectionBackend for splot_core::simd::NeonBackend {}
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-impl CdefDirectionBackend for splot_core::simd::FallbackBackend {
-    #[inline]
-    fn cdef_direction_padded_impl(
-        self,
-        pad: &[u16; CDEF_PADDED_AREA],
-        coeff_shift: u32,
-    ) -> (usize, i32) {
-        self.vectorize(|| {
-            let simd = self.token();
-            cdef_direction_rows(
-                simd,
-                cdef_direction_input::<_, CDEF_PADDED_SIDE, _>(simd, pad, coeff_shift),
-            )
-        })
-    }
-}
+impl CdefDirectionBackend for splot_core::simd::FallbackBackend {}
 
 #[cfg(test)]
 mod tests {
