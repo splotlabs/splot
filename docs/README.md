@@ -15,9 +15,19 @@ rustup show active-toolchain
 cargo build --release
 ```
 
-Checkout builds target `x86-64-v3` on x86-64. Auto checks CPU and OS
-capabilities at startup. A capable host can use AVX-512 for selected
-operations and AVX2 for the remaining work. AArch64 uses NEON.
+Checkout builds target `x86-64-v3` on x86-64. At startup, Auto asks
+`fearless_simd` for its Ice Lake AVX-512 capability, including OS register
+state and the required instruction extensions. On a qualifying host, display
+grain uses AVX-512 to round, add and clip groups of 32 samples on eligible
+8-bit and 10-bit rows. Other work uses AVX2. AArch64 uses NEON.
+
+Rust callers can request a backend through `SimdPolicy`. An unavailable
+request returns an error at startup. The C API uses Auto. A streaming decoder
+retains its selected backend across frames and flushes. For repeated
+synchronous decodes, `DecodeContext::with_typed_backend` selects once around
+the caller's loop. The ordinary synchronous methods enter that scope for each
+call. A deferred `Picture::apply_film_grain` uses the backend stored with the
+picture.
 
 Cargo uses the consuming workspace's configuration when building splot as a
 dependency. With generic x86-64 flags the decoder can fall back to SSE2.
