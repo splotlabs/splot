@@ -128,7 +128,10 @@ fn optional_global_and_required_local_have_distinct_outcomes() {
     let DecodeError::MalformedSource { issue } = error else {
         panic!("{error:?}");
     };
-    assert_eq!(issue.offset().map(|o| o.get()), first_local_lcr);
+    assert_eq!(
+        issue.offset().map(splot_core::span::ByteOffset::get),
+        first_local_lcr
+    );
     assert_eq!(issue.spec_section(), Some("7.3.8.4"));
 }
 
@@ -274,6 +277,9 @@ fn atlas_label_lookup_uses_the_inverse_map_and_reports_missing_labels() {
         panic!("{error:?}");
     };
     assert_eq!(issue.spec_section(), Some("6.9.2"));
-    assert_eq!(issue.offset().map(|o| o.get()), Some(37));
+    assert_eq!(
+        issue.offset().map(splot_core::span::ByteOffset::get),
+        Some(37)
+    );
     assert!(issue.message().contains("77"));
 }
