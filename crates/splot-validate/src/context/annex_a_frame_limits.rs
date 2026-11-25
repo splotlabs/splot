@@ -53,20 +53,9 @@ impl FrameAllocations {
             .and_then(|msdo| msdo.frame_level_limits(level, layer))
             .unwrap_or(native);
         let mut check = |kind: Limit, value: u64, max: u64, scaled: u64| {
-            let (output, bound, source) = if value > max {
-                (&mut report.diagnostics, max, "sequence level")
-            } else if value > scaled {
-                let mask = 1 << kind as u8;
-                let seen = &mut self.limits_seen[usize::from(layer.get())];
-                if *seen & mask != 0 {
-                    return;
-                }
-                *seen |= mask;
-                (&mut self.pending, scaled, "MSDO allocation")
-            } else {
-                return;
-            };
-            output.push(kind.diagnostic(value, bound, source, level, obu));
+            if value > scaled {
+                self.record_excess(kind, value, (max, scaled), level, obu, report);
+            }
         };
 
         if let Some(size) = size {
@@ -123,6 +112,30 @@ impl FrameAllocations {
                 size.width, size.height
             )).with_spec_section("A.4").with_byte_offset(obu.offset));
         }
+    }
+
+    #[cold]
+    fn record_excess(
+        &mut self,
+        kind: Limit,
+        value: u64,
+        (native, scaled): (u64, u64),
+        level: u8,
+        obu: &ObuEnvelope<'_>,
+        report: &mut ValidationReport,
+    ) {
+        let (output, bound, source) = if value > native {
+            (&mut report.diagnostics, native, "sequence level")
+        } else {
+            let seen = &mut self.limits_seen[usize::from(obu.header.extended_layer_id.get())];
+            let mask = 1 << kind as u8;
+            if *seen & mask != 0 {
+                return;
+            }
+            *seen |= mask;
+            (&mut self.pending, scaled, "MSDO allocation")
+        };
+        output.push(kind.diagnostic(value, bound, source, level, obu));
     }
 }
 
