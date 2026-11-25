@@ -25,7 +25,8 @@ pub(super) struct LumaBytesGather<'a> {
 }
 
 impl SegmentGather<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> for LumaBytesGather<'_> {
-    #[inline]
+    #[expect(clippy::inline_always, reason = "keeps the gather in its SIMD scope")]
+    #[inline(always)]
     fn run<S: SimdToken, R: LaneBounds<S>>(
         self,
         simd: S,

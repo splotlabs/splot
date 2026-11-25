@@ -10,6 +10,10 @@
 //! range.
 
 mod byte_filter;
+mod fused;
+pub use fused::{
+    CdefSegmentDestination, CdefSegmentScratch, CdefSegmentSource, CdefSegmentSources,
+};
 mod luma_bytes;
 mod pair_bytes;
 
@@ -87,6 +91,11 @@ impl CdefLumaSegment {
         self.gather_with_simd(TypedSegment(backend), samples, width, stride, origin)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "keeps the gather in the segment SIMD scope"
+    )]
+    #[inline(always)]
     fn gather_with_simd<S: SegmentSimd, T: crate::ReconSample>(
         &mut self,
         simd: S,
@@ -138,7 +147,11 @@ impl CdefLumaSegment {
         self.gather_bytes_with_simd(TypedSegment(backend), samples, width, stride, origin)
     }
 
-    #[inline]
+    #[expect(
+        clippy::inline_always,
+        reason = "keeps the gather in the segment SIMD scope"
+    )]
+    #[inline(always)]
     fn gather_bytes_with_simd<S: SegmentSimd>(
         &mut self,
         simd: S,
@@ -258,6 +271,11 @@ impl CdefPairSegment {
         self.gather_with_mode::<_, T, false>(TypedSegment(backend), u, v, width, stride, origin)
     }
 
+    #[expect(
+        clippy::inline_always,
+        reason = "keeps the gather in the segment SIMD scope"
+    )]
+    #[inline(always)]
     fn gather_with_mode<S: SegmentSimd, T: crate::ReconSample, const PACKED: bool>(
         &mut self,
         simd: S,
@@ -441,7 +459,8 @@ struct LumaPadGather<'a, T> {
 impl<T: crate::ReconSample> SegmentGather<[[u16; 2]; CDEF_SEGMENT_BLOCKS]>
     for LumaPadGather<'_, T>
 {
-    #[inline]
+    #[expect(clippy::inline_always, reason = "keeps the gather in its SIMD scope")]
+    #[inline(always)]
     fn run<S: SimdToken, R: LaneBounds<S>>(
         self,
         simd: S,
@@ -553,7 +572,8 @@ struct PairGather<'a, T, const PACKED: bool> {
 impl<T: crate::ReconSample, const PACKED: bool> SegmentGather<[u16; CDEF_SEGMENT_BLOCKS]>
     for PairGather<'_, T, PACKED>
 {
-    #[inline]
+    #[expect(clippy::inline_always, reason = "keeps the gather in its SIMD scope")]
+    #[inline(always)]
     fn run<S: SimdToken, R: LaneBounds<S>>(
         self,
         simd: S,

@@ -7,11 +7,11 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT, CDEF_PAIR_STRIDE,
-    CDEF_SEGMENT_BLOCKS, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter, CdefLumaSegment,
-    CdefPairSegment, CdefSegmentBlock, CdefStrengths, CdefUnitFilters, PlaneId, PlaneRect,
-    ReconSample, cdef_direction_padded_with, cdef_filter_block_boundary_to_valid_stride_with,
-    cdef_filter_block_chroma_pair_with, cdef_filter_block_interior_to_valid_stride_with,
-    cdef_filter_segment_with, cdef_publish_chroma_pair_with,
+    CDEF_SEGMENT_BLOCKS, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter, CdefSegmentBlock,
+    CdefSegmentScratch, CdefSegmentSource, CdefSegmentSources, CdefStrengths, CdefUnitFilters,
+    PlaneId, PlaneRect, ReconSample, cdef_direction_padded_with,
+    cdef_filter_block_boundary_to_valid_stride_with, cdef_filter_block_chroma_pair_with,
+    cdef_filter_block_interior_to_valid_stride_with, cdef_publish_chroma_pair_with,
 };
 
 use super::source::{DeblockedPlanes, FramePlane, StripeInitialization, StripePlane};
@@ -1090,13 +1090,6 @@ type DeblockedRows<'a, S> = (
     Option<FramePlane<'a, S>>,
 );
 
-/// One row segment's gathered luma taps and interleaved chroma-pair taps.
-#[derive(Default)]
-struct CdefSegmentScratch {
-    luma: CdefLumaSegment,
-    pair: CdefPairSegment,
-}
-
 /// CDEF over the `CDEF_SEGMENT_BLOCKS` blocks of the row segment at `(r, c)`
 /// with one gather per plane. Returns `false`, having written nothing, when a
 /// plane's tap reach is not interior, the planes hold neither `u16` nor `u8` samples, or chroma is
@@ -1145,18 +1138,18 @@ fn cdef_segment<B: SimdBackend, S: ReconSample>(
             ) else {
                 return Ok(false);
             };
-            let origin = (
-                left + CDEF_TAP_REACH,
-                top + CDEF_TAP_REACH - u_plane.origin_y(),
-            );
-            Some((u, v, u_plane.width(), u_plane.stride(), origin))
+            Some(CdefSegmentSource {
+                samples: [u, v],
+                width: u_plane.width(),
+                stride: u_plane.stride(),
+                origin: (
+                    left + CDEF_TAP_REACH,
+                    top + CDEF_TAP_REACH - u_plane.origin_y(),
+                ),
+            })
         }
         _ => None,
     };
-    let luma_origin = (
-        left + CDEF_TAP_REACH,
-        top + CDEF_TAP_REACH - y_plane.origin_y(),
-    );
     let Some(Some(unit)) = lookup.units.get(strength_index) else {
         return Ok(false);
     };
@@ -1164,49 +1157,15 @@ fn cdef_segment<B: SimdBackend, S: ReconSample>(
     if blocks.iter().all(|block| !block.luma && !block.chroma) {
         return Ok(true);
     }
-    let luma_bytes = unit.luma_bytes_suffice();
-    if luma_used {
-        let (width, stride) = (y_plane.width(), y_plane.stride());
-        let gathered = match (S::u16_slice(y_samples), S::u8_slice(y_samples)) {
-            (Some(y), _) => scratch
-                .luma
-                .gather_with(backend, y, width, stride, luma_origin),
-            (_, Some(y)) if luma_bytes => {
-                scratch
-                    .luma
-                    .gather_bytes_with(backend, y, width, stride, luma_origin)
-            }
-            (_, Some(y)) => scratch
-                .luma
-                .gather_with(backend, y, width, stride, luma_origin),
-            _ => false,
-        };
-        if !gathered {
-            return Err(CdefError::Workspace);
-        }
-    }
-    if let Some((u, v, width, stride, origin)) = chroma {
-        let gathered = match (
-            S::u16_slice(u),
-            S::u16_slice(v),
-            S::u8_slice(u),
-            S::u8_slice(v),
-        ) {
-            (Some(u), Some(v), _, _) => scratch
-                .pair
-                .gather_with(backend, u, v, width, stride, origin),
-            (_, _, Some(u), Some(v)) if unit.chroma_bytes_suffice() => scratch
-                .pair
-                .gather_bytes_with(backend, u, v, width, stride, origin),
-            (_, _, Some(u), Some(v)) => scratch
-                .pair
-                .gather_with(backend, u, v, width, stride, origin),
-            _ => false,
-        };
-        if !gathered {
-            return Err(CdefError::Workspace);
-        }
-    }
+    let luma = luma_used.then_some(CdefSegmentSource {
+        samples: y_samples,
+        width: y_plane.width(),
+        stride: y_plane.stride(),
+        origin: (
+            left + CDEF_TAP_REACH,
+            top + CDEF_TAP_REACH - y_plane.origin_y(),
+        ),
+    });
     let (x0, y0) = origin;
     let mut discarded;
     let luma_rows = if frame.filtered_y.samples().is_empty() {
@@ -1215,29 +1174,32 @@ fn cdef_segment<B: SimdBackend, S: ReconSample>(
     } else {
         plane_rows(&mut frame.filtered_y, (x0, y0), width)?
     };
-    let chroma_rows = match (chroma, frame.filtered_u.as_mut(), frame.filtered_v.as_mut()) {
-        (Some(_), Some(u), Some(v)) => Some([
+    let chroma_rows = match (
+        chroma.is_some(),
+        frame.filtered_u.as_mut(),
+        frame.filtered_v.as_mut(),
+    ) {
+        (true, Some(u), Some(v)) => Some([
             plane_rows(u, (x0 >> 1, y0 >> 1), width / 2)?,
             plane_rows(v, (x0 >> 1, y0 >> 1), width / 2)?,
         ]),
-        (Some(_), _, _) => return Err(CdefError::Workspace),
+        (true, _, _) => return Err(CdefError::Workspace),
         _ => None,
     };
-    let chroma = chroma_rows.map(|planes| (&scratch.pair, planes));
-    if !cdef_filter_segment_with(
+    if !scratch.filter_with(
         backend,
-        &scratch.luma,
+        CdefSegmentSources { luma, chroma },
         unit,
         blocks,
         lookup.fill_flat,
-        (luma_rows, chroma),
+        (luma_rows, chroma_rows),
     ) {
         return Err(CdefError::Workspace);
     }
     Ok(true)
 }
 
-/// Output samples from `(x, y)` on. [`cdef_filter_segment`] checks their
+/// Output samples from `(x, y)` on. [`CdefSegmentScratch::filter_with`] checks their
 /// vertical extent before writing.
 fn plane_rows<T: ReconSample>(
     plane: &mut StripePlane<T>,

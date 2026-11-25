@@ -1623,8 +1623,9 @@ fn cdef_filter_block_chroma_pair_rows<S: SimdToken>(
 
 mod segment;
 pub use segment::{
-    CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths,
-    CdefUnitFilters, cdef_filter_segment, cdef_filter_segment_with, cdef_publish_chroma_pair,
+    CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentDestination, CdefSegmentOutput,
+    CdefSegmentScratch, CdefSegmentSource, CdefSegmentSources, CdefStrengths, CdefUnitFilters,
+    cdef_filter_segment, cdef_filter_segment_with, cdef_publish_chroma_pair,
     cdef_publish_chroma_pair_with,
 };
 #[cfg(test)]
