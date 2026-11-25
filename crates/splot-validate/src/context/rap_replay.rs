@@ -9,10 +9,8 @@ use super::*;
 /// random-access-point availability replay (AV2 v1.0.0 § 7.3.8.1, mirror
 /// `07-decoding-process.md` lines 685-693).
 ///
-/// The key is whatever uniquely names the object within its family at the reference
-/// site: a `seq_header_id` for sequence headers, a `cur_mfh_id` (as `mfhId`) for
-/// multi-frame headers, an `(obu_xlayer_id, ops_id)` for operating point sets, an `fgm_id`
-/// slot for film-grain models, a custom quantizer-matrix level for quantizer matrices. The
+/// Sequence-header IDs, multi-frame-header IDs, grain slots and matrix levels belong
+/// to their individual extended layer (§ 7.1). OPS and LCR IDs also carry their scope. The
 /// quantizer-matrix and film-grain references are recorded from the parsed frame header; the
 /// replay tracks the OBU *send* (its temporal facts) and is disjoint from the linear
 /// availability state, so the quantizer matrix's reset/poison discipline (which governs only
@@ -21,10 +19,10 @@ use super::*;
 pub(super) enum RapHlsKey {
     /// Sequence header `seq_header_id` (§ 7.3.8.6), referenced by a frame header's
     /// `seq_header_id_in_frame_header` or a multi-frame header's `mfh_seq_header_id`.
-    SequenceHeader(u32),
+    SequenceHeader(ExtendedLayerId, u32),
     /// Multi-frame header `mfhId` (§ 7.3.8.7), referenced by a frame header's
     /// `cur_mfh_id`.
-    MultiFrameHeader(u32),
+    MultiFrameHeader(ExtendedLayerId, u32),
     /// Operating point set `(obu_xlayer_id, ops_id)` (§ 7.3.8.5), referenced by a
     /// buffer-removal-timing OBU's `br_ops_id`.
     OperatingPointSet { xlayer: u8, ops_id: u8 },
@@ -45,7 +43,7 @@ pub(super) enum RapHlsKey {
     /// `apply_grain == 1`. Film-grain availability is monotonic (no reset), so a model sent
     /// only before a random access point and not resent is unavailable from that start — the
     /// case the linear monotonic `frame-header/film-grain-model-unavailable` under-reports.
-    FilmGrain { slot: u8 },
+    FilmGrain { xlayer: ExtendedLayerId, slot: u8 },
     /// Custom quantizer-matrix level (§ 7.3.8.9), made available by a quantizer-matrix OBU
     /// (a `qm_bit_map` bit, or every level on a `qm_bit_map == 0` reset-to-defaults) and
     /// referenced by a frame `setup_qm_params()` with `using_qmatrix == 1`. The replay
@@ -54,15 +52,15 @@ pub(super) enum RapHlsKey {
     /// unavailable from that decode start regardless of reset_qm() (no level is available
     /// from a decode start without a quantizer-matrix OBU send at or after it; § 6.12 makes
     /// even a default matrix an in-OBU field).
-    QmLevel { level: u8 },
+    QmLevel { xlayer: ExtendedLayerId, level: u8 },
 }
 
 impl RapHlsKey {
     /// The human-readable family name used in the replay diagnostic message.
     pub(super) fn family(self) -> &'static str {
         match self {
-            Self::SequenceHeader(_) => "sequence header",
-            Self::MultiFrameHeader(_) => "multi-frame header",
+            Self::SequenceHeader(..) => "sequence header",
+            Self::MultiFrameHeader(..) => "multi-frame header",
             Self::OperatingPointSet { .. } => "operating point set",
             Self::LayerConfigurationRecord { xlayer, .. } if xlayer == GLOBAL_XLAYER_ID.get() => {
                 "global layer configuration record"
@@ -78,8 +76,8 @@ impl RapHlsKey {
     /// the § 7.3.8.1 general citation in the diagnostic message.
     pub(super) fn family_section(self) -> &'static str {
         match self {
-            Self::SequenceHeader(_) => "7.3.8.6",
-            Self::MultiFrameHeader(_) => "7.3.8.7",
+            Self::SequenceHeader(..) => "7.3.8.6",
+            Self::MultiFrameHeader(..) => "7.3.8.7",
             Self::OperatingPointSet { .. } => "7.3.8.5",
             Self::LayerConfigurationRecord { .. } => "7.3.8.3",
             Self::Atlas { .. } => "7.3.8.4",
@@ -91,8 +89,12 @@ impl RapHlsKey {
     /// A short identifier of the referenced object for the diagnostic message.
     pub(super) fn describe(self) -> String {
         match self {
-            Self::SequenceHeader(id) => format!("seq_header_id {id}"),
-            Self::MultiFrameHeader(id) => format!("mfhId {id}"),
+            Self::SequenceHeader(xlayer, id) => {
+                format!("seq_header_id {id} for obu_xlayer_id {}", xlayer.get())
+            }
+            Self::MultiFrameHeader(xlayer, id) => {
+                format!("mfhId {id} for obu_xlayer_id {}", xlayer.get())
+            }
             Self::OperatingPointSet { xlayer, ops_id } => {
                 format!("ops_id {ops_id} for obu_xlayer_id {xlayer}")
             }
@@ -105,8 +107,8 @@ impl RapHlsKey {
             Self::Atlas { xlayer, id } => {
                 format!("atlas_segment_id {id} for obu_xlayer_id {xlayer}")
             }
-            Self::FilmGrain { slot } => format!("fgm_id {slot}"),
-            Self::QmLevel { level } => format!("custom quantizer matrix level {level}"),
+            Self::FilmGrain { slot, .. } => format!("fgm_id {slot}"),
+            Self::QmLevel { level, .. } => format!("custom quantizer matrix level {level}"),
         }
     }
 }
@@ -142,8 +144,7 @@ pub(super) struct RapPendingReference {
     /// Global references use every layer's RAPs, since any layer can decode global HLS.
     pub(super) governing_xlayer: ExtendedLayerId,
     /// The object's (re)send events recorded in the *completed* prior temporal units
-    /// (object-keyed, cross-extended-layer — § 7.3.8.6 models the sequence-header memory as
-    /// a global `seq_header_id` namespace), snapshotted at reference time so a later resend
+    /// for this object's scope, snapshotted at reference time so a later resend
     /// cannot retroactively satisfy the reference. Their per-anchor visibility is resolved
     /// at completion.
     pub(super) promoted_events: Vec<RapResendEvent>,
@@ -162,8 +163,7 @@ pub(super) struct RapPendingReference {
 /// retain every anchor; correctness takes precedence over a tighter memory bound.
 #[derive(Debug, Default)]
 pub(super) struct RapReplayTracker {
-    /// Completed-TU resends per object, shared across layers (sequence ids are a
-    /// global namespace). Events older than every possible anchor are pruned.
+    /// Completed-TU resends per scoped object. Events older than every possible anchor are pruned.
     pub(super) resend_events: BTreeMap<RapHlsKey, Vec<RapResendEvent>>,
     /// Current-TU senders per object, snapshotted before each reference. Keep every
     /// sender: one visible send suffices. Completion promotes events and clears this.
@@ -424,11 +424,11 @@ pub(super) fn rap_replay_suppressed_by_external_hls(
         return false;
     };
     match key {
-        RapHlsKey::SequenceHeader(id) => set.has_sequence_header(id),
+        RapHlsKey::SequenceHeader(_, id) => set.has_sequence_header(id),
         RapHlsKey::OperatingPointSet { xlayer, ops_id } => {
             set.has_operating_point_set(xlayer, ops_id)
         }
-        RapHlsKey::MultiFrameHeader(_)
+        RapHlsKey::MultiFrameHeader(..)
         | RapHlsKey::LayerConfigurationRecord { .. }
         | RapHlsKey::Atlas { .. }
         | RapHlsKey::FilmGrain { .. }
@@ -472,17 +472,20 @@ impl ValidatorContext {
     ) {
         if !prefix.cur_mfh_id.is_zero()
             && prefix.cur_mfh_id.in_range()
-            && self.hls.multi_frame_header(prefix.cur_mfh_id).is_some()
+            && self
+                .hls
+                .multi_frame_header(xlayer, prefix.cur_mfh_id)
+                .is_some()
         {
             self.note_rap_reference(
-                RapHlsKey::MultiFrameHeader(prefix.cur_mfh_id.get()),
+                RapHlsKey::MultiFrameHeader(xlayer, prefix.cur_mfh_id.get()),
                 xlayer,
                 offset,
             );
         }
         if let Some(seq_id) = resolved {
             self.note_rap_reference(
-                RapHlsKey::SequenceHeader(u32::from(seq_id.get())),
+                RapHlsKey::SequenceHeader(xlayer, u32::from(seq_id.get())),
                 xlayer,
                 offset,
             );

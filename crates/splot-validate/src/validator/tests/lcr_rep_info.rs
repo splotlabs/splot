@@ -376,7 +376,7 @@ fn lcr_rep_info_redefinition_rechecks_affected_layer() {
 }
 
 #[test]
-fn lcr_rep_info_redefinition_of_only_dims_rechecks_all_layers_using_the_id() {
+fn lcr_rep_info_redefinition_changes_only_its_extended_layer() {
     let mut data = temporal_delimiter_obu();
     data.extend(local_lcr_obu_with_rep_info(0, 5, 16, 8, None, None)); // xlayer 0 LCR, width 16
     data.extend(seq_header_rep_obu_for_xlayer(
@@ -422,16 +422,16 @@ fn lcr_rep_info_redefinition_of_only_dims_rechecks_all_layers_using_the_id() {
     ));
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // re-activate seq 0 (xlayer 0)
     let report = Validator::new(false).validate_bytes(&data);
-    let xlayer_1_mismatch = report.errors().any(|d| {
-        d.rule_id == "lcr/rep-info-mismatch"
-            && d.spec_section.as_deref() == Some("6.8.8")
-            && d.message.contains("extended layer 1")
-    });
+    let mismatches: Vec<_> = report
+        .errors()
+        .filter(|d| {
+            d.rule_id == "lcr/rep-info-mismatch" && d.spec_section.as_deref() == Some("6.8.8")
+        })
+        .collect();
+    assert_eq!(mismatches.len(), 1, "{report}");
     assert!(
-        xlayer_1_mismatch,
-        "a redefinition changing only max_frame_width must re-run the § 6.8.8 \
-         agreement check for every extended layer the id is active for, including the \
-         non-activating xlayer 1; report was: {report}"
+        mismatches[0].message.contains("extended layer 0"),
+        "{report}"
     );
 }
 

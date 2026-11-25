@@ -106,9 +106,14 @@ impl ValidatorContext {
         first_picture_in_tu: bool,
         seq_id: SequenceHeaderId,
     ) -> Option<FrameHeaderCore> {
-        let active_sequence = self.sequence_headers.get(&seq_id)?;
+        let active_sequence = self
+            .hls
+            .sequence_header(obu.header.extended_layer_id, seq_id)?;
 
-        let mfh_record = self.hls.frame_mfh_record(obu, first_picture_in_tu, seq_id);
+        let mfh_record = parse_frame_prefix(obu, first_picture_in_tu).and_then(|prefix| {
+            self.hls
+                .frame_mfh_record(obu.header.extended_layer_id, prefix.cur_mfh_id, seq_id)
+        });
 
         let mut reference_scratch = ReferenceStateScratch::default();
         let reference_state = self
@@ -175,7 +180,9 @@ impl ValidatorContext {
         let seq_id = self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
-        let seq = self.sequence_headers.get(seq_id)?;
+        let seq = self
+            .hls
+            .sequence_header(obu.header.extended_layer_id, *seq_id)?;
         Some(seq.general.single_picture_header_flag)
     }
 
@@ -284,7 +291,10 @@ impl ValidatorContext {
                 let bits = self
                     .active_sequence_by_xlayer
                     .get(&obu.header.extended_layer_id)
-                    .and_then(|seq_id| self.sequence_headers.get(seq_id))
+                    .and_then(|seq_id| {
+                        self.hls
+                            .sequence_header(obu.header.extended_layer_id, *seq_id)
+                    })
                     .and_then(|seq| seq.inter.as_ref())
                     .map(|inter| u32::from(inter.order_hint_bits));
                 (flag_output, core.order_hint_lsb, bits)

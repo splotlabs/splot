@@ -375,9 +375,9 @@ impl ValidatorContext {
             return;
         };
         let anchor = self
-            .sequence_header_offsets
-            .get(&seq_header_id)
-            .copied()
+            .hls
+            .sequence(xlayer, seq_header_id)
+            .map(|stored| stored.offset)
             .unwrap_or(msdo_offset);
         let epoch = self.cvs.cvs_generation_epoch(xlayer);
         let value_space = annex_a_value_space_fingerprint(&general);
