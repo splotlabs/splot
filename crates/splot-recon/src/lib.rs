@@ -117,7 +117,7 @@ pub use cdef_filter::{
     cdef_filter_block_chroma_pair_with, cdef_filter_block_interior_to,
     cdef_filter_block_interior_to_valid_stride, cdef_filter_block_interior_to_valid_stride_with,
     cdef_filter_sample, cdef_filter_segment, cdef_filter_segment_with, cdef_publish_chroma_pair,
-    cdef_publish_chroma_pair_with,
+    cdef_publish_chroma_pair_with, initialize_cdef_block_experiment,
 };
 pub use coefficient_scan::{
     TransformClass, coefficient_scan_position, coefficient_scan_slice, tx_class,

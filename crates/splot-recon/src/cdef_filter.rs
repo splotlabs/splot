@@ -1626,7 +1626,7 @@ pub use segment::{
     CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentDestination, CdefSegmentOutput,
     CdefSegmentScratch, CdefSegmentSource, CdefSegmentSources, CdefStrengths, CdefUnitFilters,
     cdef_filter_segment, cdef_filter_segment_with, cdef_publish_chroma_pair,
-    cdef_publish_chroma_pair_with,
+    cdef_publish_chroma_pair_with, initialize_cdef_block_experiment,
 };
 #[cfg(test)]
 pub(crate) use segment::{cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment};

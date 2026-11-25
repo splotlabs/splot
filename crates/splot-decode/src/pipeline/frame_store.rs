@@ -58,6 +58,7 @@ impl DecodeSession {
         rows: Option<Arc<DecoderRowScheduler>>,
         backend: splot_core::simd::ResolvedBackend,
     ) -> Self {
+        splot_recon::initialize_cdef_block_experiment(backend);
         Self {
             frame_delay,
             external_atlases: crate::ExternalAtlases::default(),

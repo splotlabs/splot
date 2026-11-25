@@ -781,7 +781,7 @@ pub(crate) fn cdef_stripe_into<'a, B: SimdBackend, T: ReconSample>(
             }
         }
         let mut pad = [0u16; CDEF_PADDED_AREA];
-        let mut segment = CdefSegmentScratch::default();
+        let mut segment = CdefSegmentScratch::for_decode(backend);
         while r < r_end {
             let y = r * MI_SIZE;
             let reach = |plane: FramePlane<'a, T>, sub: usize| {

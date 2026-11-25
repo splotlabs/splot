@@ -45,9 +45,38 @@ pub type CdefSegmentDestination<'a, T> = ((&'a mut [T], usize), Option<[(&'a mut
 pub struct CdefSegmentScratch {
     luma: CdefLumaSegment,
     pair: CdefPairSegment,
+    #[cfg(target_arch = "x86_64")]
+    block_call: Option<table::BlockCall>,
+}
+
+/// Fixes the experimental CDEF call mode for this process at decoder startup.
+/// Only sessions carrying a validated AVX2 capability can use the table.
+#[doc(hidden)]
+pub fn initialize_cdef_block_experiment(backend: splot_core::simd::ResolvedBackend) {
+    #[cfg(target_arch = "x86_64")]
+    if matches!(
+        backend,
+        splot_core::simd::ResolvedBackend::Avx2(_) | splot_core::simd::ResolvedBackend::Avx512(_)
+    ) {
+        table::configure();
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = backend;
 }
 
 impl CdefSegmentScratch {
+    /// Binds the startup-selected block call before iterating a decode stripe.
+    #[doc(hidden)]
+    pub fn for_decode<B: SimdBackend>(backend: B) -> Self {
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = backend;
+        Self {
+            #[cfg(target_arch = "x86_64")]
+            block_call: backend.avx2_token().and_then(|_| table::selected()),
+            ..Self::default()
+        }
+    }
+
     /// Gathers a four-block interior segment, filters it and writes destination rows.
     /// The caller validates the tile halo and initializes skipped output samples.
     /// Returns `false` when a gather or filter cannot access the supplied rows.
@@ -64,24 +93,32 @@ impl CdefSegmentScratch {
     ) -> bool {
         #[cfg(target_arch = "x86_64")]
         if let Some(avx2) = backend.avx2_token() {
+            let block_call = self.block_call;
             return avx2.vectorize(
                 #[inline(always)]
                 || {
                     self.filter(
                         InScopeSegment(avx2, MinPos),
-                        InLane,
                         sources,
                         unit,
-                        blocks,
-                        fill_flat,
                         output,
+                        #[inline(always)]
+                        |segment, output| match block_call {
+                            Some(call) => table::filter_segment(
+                                call, avx2, segment, unit, blocks, fill_flat, output,
+                            ),
+                            None => {
+                                segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output)
+                            }
+                        },
                     )
                 },
             );
         }
         let narrow = backend.narrow();
-        splot_core::with_simd!(narrow, simd => self.filter(
-            InScopeSegment(simd, Reduced), Ordered, sources, unit, blocks, fill_flat, output,
+        splot_core::with_simd!(narrow, simd => self.filter(InScopeSegment(simd, Reduced), sources, unit, output,
+            #[inline(always)]
+            |segment, output| segment_with(simd, Ordered, segment, unit, blocks, fill_flat, output),
         ))
     }
 
@@ -89,17 +126,14 @@ impl CdefSegmentScratch {
         clippy::inline_always,
         reason = "gathers and filters in one SIMD scope"
     )]
-    #[expect(clippy::too_many_arguments)]
     #[inline(always)]
-    fn filter<S: SimdToken, R: LaneBounds<S>, Q: QuadLanes<S>, T: crate::ReconSample>(
+    fn filter<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample>(
         &mut self,
         simd: InScopeSegment<S, R>,
-        quads: Q,
         sources: CdefSegmentSources<'_, T>,
         unit: &CdefUnitFilters,
-        blocks: [CdefSegmentBlock; CDEF_SEGMENT_BLOCKS],
-        fill_flat: [bool; 3],
         (luma_out, chroma_out): CdefSegmentDestination<'_, T>,
+        run: impl FnOnce(&CdefLumaSegment, CdefSegmentOutput<'_, T>) -> bool,
     ) -> bool {
         if let Some(CdefSegmentSource {
             samples,
@@ -146,14 +180,6 @@ impl CdefSegmentScratch {
             (None, None) => None,
             _ => return false,
         };
-        segment_with(
-            simd.0,
-            quads,
-            &self.luma,
-            unit,
-            blocks,
-            fill_flat,
-            (luma_out, chroma),
-        )
+        run(&self.luma, (luma_out, chroma))
     }
 }
