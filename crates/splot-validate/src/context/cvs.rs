@@ -367,7 +367,7 @@ impl ValidatorContext {
             self.resolve_deferred_lcr_msdo_agreement(options, report);
             self.resolve_deferred_cmvs_boundary(options, report);
             self.commit_annex_a_iop_pending(completed_tu_index, options, report);
-            self.msdo_identity.complete_temporal_unit(report);
+            self.complete_msdo_temporal_unit(report);
             self.complete_rap_replay_tu(completed_tu_index, options, report);
             self.frames_seen_in_tu.clear();
             self.frame_unit.reset_temporal_unit(report);

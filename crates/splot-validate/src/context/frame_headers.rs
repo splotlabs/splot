@@ -107,7 +107,7 @@ impl ValidatorContext {
                     first_picture_in_tu,
                 );
             }
-            let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
+            let mfh_record = self.hls.frame_mfh_record(obu, first_picture_in_tu, seq_id);
             let mut rap_refs = FrameRapReferences::default();
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
                 let mut reference_scratch = ReferenceStateScratch::default();
@@ -120,7 +120,8 @@ impl ValidatorContext {
                     first_picture_in_tu,
                     active_sequence,
                     mfh_record,
-                    &FrameReferenceAvailability {
+                    FrameCheckState {
+                        allocations: &mut self.frame_allocations,
                         qm: &self.qm,
                         film_grain: &self.film_grain,
                         reference_buffer,

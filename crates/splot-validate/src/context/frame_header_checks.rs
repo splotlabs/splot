@@ -5,12 +5,9 @@
 
 use super::*;
 
-/// The cross-OBU HLS-availability state a frame's reference checks consult (AV2 § 7.3.8):
-/// per-level quantizer-matrix availability (§ 7.3.8.9 / § 6.17.6.2) and per-slot
-/// film-grain availability (§ 7.3.8.8 / § 6.17.10.1). Bundled so the frame-header check
-/// keeps one availability parameter as more reference families land.
-#[derive(Clone, Copy)]
-pub(super) struct FrameReferenceAvailability<'a> {
+/// State used to check a frame against earlier OBUs and the Annex A.4 allocation.
+pub(super) struct FrameCheckState<'a> {
+    pub(super) allocations: &'a mut FrameAllocations,
     /// Per-level custom quantizer-matrix availability (AV2 § 6.17.6.2).
     pub(super) qm: &'a QuantizerMatrixState,
     /// Per-slot film-grain model availability (AV2 § 6.17.10.1 / § 7.3.8.8).
@@ -51,16 +48,17 @@ pub(super) fn frame_header_core_checks(
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
     mfh_record: Option<&MultiFrameHeaderRecord>,
-    reference_state: &FrameReferenceAvailability<'_>,
+    state: FrameCheckState<'_>,
     options: &ValidationOptions,
     report: &mut ValidationReport,
 ) -> FrameRapReferences {
     const PRIMARY_REF_NONE: u8 = 7;
-    let FrameReferenceAvailability {
+    let FrameCheckState {
+        allocations,
         qm: qm_state,
         film_grain: film_grain_state,
         reference_buffer,
-    } = *reference_state;
+    } = state;
     if obu.header.obu_type == ObuType::RasFrame
         && let Some(inter) = active_sequence.inter.as_ref()
         && inter.long_term_frame_id_bits == 0
@@ -360,7 +358,7 @@ pub(super) fn frame_header_core_checks(
         report,
     );
 
-    frame_annex_a_level_checks(&core, active_sequence, obu, report);
+    allocations.check_frame(&core, active_sequence, obu, report);
 
     let qm_rap_levels = if let Some(setup_qm) = core.setup_qm_params.as_ref() {
         frame_qm_reference_checks(setup_qm, active_sequence, qm_state, options, obu, report)

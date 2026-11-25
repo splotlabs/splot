@@ -252,6 +252,12 @@ impl MsdoObserver {
 }
 
 impl ValidatorContext {
+    pub(super) fn complete_msdo_temporal_unit(&mut self, report: &mut ValidationReport) {
+        self.frame_allocations
+            .complete_temporal_unit(self.msdo_identity.current_tu_is_rap, report);
+        self.msdo_identity.complete_temporal_unit(report);
+    }
+
     /// Parses MSDO, records CMVS/IOP facts, payload identity and per-layer ceilings,
     /// then rechecks already-confirmed activations for MSDO-after-header ordering.
     /// Malformed payloads remain silent here; stateless MSDO syntax checks report them.
@@ -261,6 +267,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
+        self.frame_allocations.note_msdo();
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         let Ok(msdo) = parse_msdo(&mut reader) else {
             return;
@@ -274,6 +281,7 @@ impl ValidatorContext {
         {
             return;
         }
+        self.frame_allocations.latest = Some(msdo);
         let observation = self.msdo.observe(&msdo);
         self.cmvs.note_msdo(observation);
         self.annex_a_iop.note_msdo(

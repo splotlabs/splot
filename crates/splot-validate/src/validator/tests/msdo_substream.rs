@@ -16,6 +16,15 @@ pub(in crate::validator::tests) fn msdo_obu_configured(
     doh_constraint_flag: bool,
     entries: &[SubStreamEntry],
 ) -> Vec<u8> {
+    msdo_with_allocation(multistream_profile_idc, doh_constraint_flag, entries, None)
+}
+
+pub(in crate::validator::tests) fn msdo_with_allocation(
+    multistream_profile_idc: u32,
+    doh_constraint_flag: bool,
+    entries: &[SubStreamEntry],
+    large_index: Option<u32>,
+) -> Vec<u8> {
     assert!(entries.len() >= 2, "an MSDO has at least 2 sub-streams");
     let num_streams_minus_2 = (entries.len() - 2) as u32;
     let mut bits = Bits::default();
@@ -23,7 +32,10 @@ pub(in crate::validator::tests) fn msdo_obu_configured(
     bits.f(multistream_profile_idc, 5); // multistream_profile_idc
     bits.f(0, 5); // multistream_level_idx
     bits.bit(0); // multistream_tier
-    bits.bit(1); // multistream_even_allocation_flag
+    bits.bit(u8::from(large_index.is_none()));
+    if let Some(index) = large_index {
+        bits.f(index, 3);
+    }
     for &(sub_xlayer_id, max_profile, max_level, max_tier) in entries {
         bits.f(sub_xlayer_id, 5); // sub_xlayer_id
         bits.f(max_profile, 5); // sub_stream_max_profile

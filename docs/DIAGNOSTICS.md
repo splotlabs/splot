@@ -27,7 +27,7 @@ decoder-model constraints (Annex E) are out of scope. Hand-crafted unit vectors 
 | Rule ID | Severity | Section | Condition |
 |---|---|---|---|
 | `annex-a/frame-size-below-minimum` | error | § A.4 | a parsed intra frame's FrameWidth or FrameHeight is below 16 under a table-mapped seq_level_idx (not 31, not reserved) |
-| `annex-a/frame-size-exceeds-level` | error | § A.4 | FrameWidth*FrameHeight > MaxPicSize, FrameWidth > MaxHSize, or FrameHeight > MaxVSize for the activated seq_level_idx (Tables A.8) |
+| `annex-a/frame-size-exceeds-level` | error | § A.4 | FrameWidth * FrameHeight, FrameWidth, or FrameHeight exceeds its sequence level limit or active multistream allocation. |
 | `annex-a/high-tier-below-4-0` | warning | § A.4 | OPS signals ops_tier_flag == 1 with ops_level_idx < 4. The Table A.9 NOTE is informative, so this is advisory. |
 | `annex-a/layer-budget-exceeds-iop` | error | § A.2 | the coded (multistream) video sequence's layer counts exceed the activated interoperability point's Table A.3 budget: more extended layers than the max (4 for IOP 0-2), more embedded layers than the max (1 for IOP0, 2 for IOP1, 3 for IOP2), or the Extended-and-Embedded combination (E && M) which IOP0/IOP1 forbid (Table A.3, mirror lines 125-170). The Number-of-Extended-Layers and Number-of-Embedded-Layers counts are conservative lower bounds (under-counted when activations are missing, never over-counted), so a count exceeding its limit is a proven violation. The IOP is table-determined (reserved / Configurable / disagreeing profiles are skipped). The Table A.3 "Number of Layers" (sum across singlestreams) bound is a named residual |
 | `annex-a/lcr-required-for-iop` | error | § A.2 | a Table A.4 interoperability-point row requires a local or activated global OBU_LAYER_CONFIGURATION_RECORD (or the IOP2 either-or combinations) for the coded video sequence and none is present (Table A.4, mirror lines 191/197/199-200) |
@@ -35,7 +35,8 @@ decoder-model constraints (Annex E) are out of scope. Hand-crafted unit vectors 
 | `annex-a/msdo-required-for-iop` | error | § A.2 | a Table A.4 row requires an OBU_MSDO (a multi-extended-layer coded video sequence, or the IOP2 MSDO-or-activated-global-LCR either-or) and none is present (Table A.4, mirror lines 185/189/195) |
 | `annex-a/profile-chroma-format-mismatch` | error | § A.2 | chroma_format_idc is outside the activated profile's allowed set (Table A.1; profile 31 / reserved profiles are skipped) |
 | `annex-a/profile-reserved` | error | § A.2 | seq_profile_idc, an observed ops_seq_profile_idc, or a multistream_profile_idc (§ 6.6 binds its value space to seq_profile_idc / Table A.1; the spec's "Table A.4" cross-reference is an erratum) is in the reserved range 5-30 (Table A.1) |
-| `annex-a/tile-count-exceeds-level` | error | § A.4 | a parsed intra frame's NumTiles > MaxTiles or TileCols > MaxTileCols for the activated seq_level_idx (Table A.9) |
+| `annex-a/reference-count-exceeds-level` | error | § A.4 | NumRefFrames exceeds MaxLevelRefFrames for the active sequence and allocation. |
+| `annex-a/tile-count-exceeds-level` | error | § A.4 | NumTiles or TileCols exceeds its sequence level limit or active multistream allocation. |
 
 ### `atlas/`
 

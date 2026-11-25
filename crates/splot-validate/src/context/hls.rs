@@ -69,6 +69,22 @@ pub(super) enum HlsResolution {
 }
 
 impl HlsAvailabilityStore {
+    /// Resolves the frame prefix’s multi-frame-header reference against available in-band
+    /// HLS. Missing or incomplete prefixes and unavailable records return `None`.
+    pub(super) fn frame_mfh_record(
+        &self,
+        obu: &ObuEnvelope<'_>,
+        first_picture_in_tu: bool,
+        seq_id: SequenceHeaderId,
+    ) -> Option<&MultiFrameHeaderRecord> {
+        let prefix = parse_frame_prefix(obu, first_picture_in_tu)?;
+        if prefix.cur_mfh_id.is_zero() || !prefix.cur_mfh_id.in_range() {
+            return None;
+        }
+        let record = self.multi_frame_header(prefix.cur_mfh_id)?;
+        (record.mfh_seq_header_id == seq_id).then_some(record)
+    }
+
     /// Records a sequence header (by `seq_header_id`) as available in-band
     /// (AV2 § 7.3.8.6).
     pub(super) fn record_sequence_header(&mut self, seq_header_id: u32) {

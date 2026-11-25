@@ -108,7 +108,7 @@ impl ValidatorContext {
     ) -> Option<FrameHeaderCore> {
         let active_sequence = self.sequence_headers.get(&seq_id)?;
 
-        let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
+        let mfh_record = self.hls.frame_mfh_record(obu, first_picture_in_tu, seq_id);
 
         let mut reference_scratch = ReferenceStateScratch::default();
         let reference_state = self
@@ -187,22 +187,6 @@ impl ValidatorContext {
         }
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         reader.read_bit().ok().map(|bit| bit != 0)
-    }
-
-    /// Resolves the frame prefix’s multi-frame-header reference against available in-band
-    /// HLS. Missing or incomplete prefixes and unavailable records return `None`.
-    pub(super) fn resolve_frame_mfh_record(
-        &self,
-        obu: &ObuEnvelope<'_>,
-        first_picture_in_tu: bool,
-        seq_id: SequenceHeaderId,
-    ) -> Option<&MultiFrameHeaderRecord> {
-        let prefix = parse_frame_prefix(obu, first_picture_in_tu)?;
-        if prefix.cur_mfh_id.is_zero() || !prefix.cur_mfh_id.in_range() {
-            return None;
-        }
-        let record = self.hls.multi_frame_header(prefix.cur_mfh_id)?;
-        (record.mfh_seq_header_id == seq_id).then_some(record)
     }
 
     pub(super) fn frame_core_against_referenced_header(
