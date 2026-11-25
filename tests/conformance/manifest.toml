@@ -1362,6 +1362,21 @@ description = "Six 8-bit 256x128 frames (4x2 SB64), avmenc --enable-bru=1 --enab
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-gdf-frame-8bit.ivf"
+description = "Six 8-bit frames at 256x128. Partial BRU frames use frame-wide GDF. A subsequent inter frame retains a refreshed reference."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-gdf-frame-10bit.ivf"
+description = "Six 10-bit frames at 256x128. Partial BRU frames use frame-wide GDF. A subsequent inter frame retains a refreshed reference."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-gdf-lr-10bit.ivf"
+description = "Six 10-bit frames at 256x128. Partial BRU frames use Wiener nonseparable restoration and frame-wide GDF. A subsequent inter frame retains a refreshed reference."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-bru-gdf-multitile-8bit.ivf"
 description = "Six 8-bit 256x256 frames in 2x2 tiles (--tile-columns=1 --tile-rows=1 --disable-loopfilters-across-tiles=1) with avmenc --enable-bru=1 --enable-gdf=1 --gdf-unit-matches-sb=1 --enable-restoration=0 --qp=165: partial BRU superblocks apply per-block GDF within isolated tile bounds, followed by a reference consumer; validates clean."
 expect = "clean"

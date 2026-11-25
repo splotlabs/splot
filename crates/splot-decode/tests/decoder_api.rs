@@ -64,6 +64,12 @@ const BRU_GDF_BLOCK_8BIT: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-block-8bit.ivf");
 const BRU_GDF_BLOCK_10BIT: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-block-10bit.ivf");
+const BRU_GDF_FRAME_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-frame-8bit.ivf");
+const BRU_GDF_FRAME_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-frame-10bit.ivf");
+const BRU_GDF_LR_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-lr-10bit.ivf");
 const BRU_GDF_LR_8BIT: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-lr-8bit.ivf");
 const BRU_GDF_MULTITILE_8BIT: &[u8] =
@@ -842,6 +848,9 @@ fn bru_gdf_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
     let bru_gdf_fixtures = [
         ("syn-bru-gdf-block-8bit", BRU_GDF_BLOCK_8BIT),
         ("syn-bru-gdf-block-10bit", BRU_GDF_BLOCK_10BIT),
+        ("syn-bru-gdf-frame-8bit", BRU_GDF_FRAME_8BIT),
+        ("syn-bru-gdf-frame-10bit", BRU_GDF_FRAME_10BIT),
+        ("syn-bru-gdf-lr-10bit", BRU_GDF_LR_10BIT),
         ("syn-bru-gdf-lr-8bit", BRU_GDF_LR_8BIT),
         ("syn-bru-gdf-multitile-8bit", BRU_GDF_MULTITILE_8BIT),
     ];

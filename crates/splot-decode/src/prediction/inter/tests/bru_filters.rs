@@ -6,83 +6,75 @@ use super::*;
 use splot_core::write::{BitWriter, write_annexb_obu};
 
 #[test]
-fn bru_gdf_vectors_exercise_partial_bru_per_block_gdf_lr_and_reference_consumers() {
-    use crate::bitstream::tile_payload::BRU_ACTIVE;
+fn bru_gdf_vectors_exercise_partial_bru_gdf_modes_lr_and_reference_consumers() {
+    use crate::bitstream::tile_payload::{BRU_ACTIVE, LrUnitRestorationType};
 
-    let fixtures: [(&str, &[u8], bool); 4] = [
-        (
-            "syn-bru-gdf-block-8bit",
-            include_bytes!(
-                "../../../../../../tests/conformance/vectors/valid/syn-bru-gdf-block-8bit.ivf"
-            ),
-            false,
-        ),
-        (
-            "syn-bru-gdf-block-10bit",
-            include_bytes!(
-                "../../../../../../tests/conformance/vectors/valid/syn-bru-gdf-block-10bit.ivf"
-            ),
-            false,
-        ),
-        (
-            "syn-bru-gdf-lr-8bit",
-            include_bytes!(
-                "../../../../../../tests/conformance/vectors/valid/syn-bru-gdf-lr-8bit.ivf"
-            ),
-            true,
-        ),
-        (
-            "syn-bru-gdf-multitile-8bit",
-            include_bytes!(
-                "../../../../../../tests/conformance/vectors/valid/syn-bru-gdf-multitile-8bit.ivf"
-            ),
-            false,
-        ),
+    macro_rules! fixture {
+        ($name:literal) => {
+            (
+                $name,
+                include_bytes!(concat!(
+                    "../../../../../../tests/conformance/vectors/valid/",
+                    $name,
+                    ".ivf"
+                ))
+                .as_slice(),
+            )
+        };
+    }
+
+    let fixtures = [
+        (fixture!("syn-bru-gdf-block-8bit"), 4, true, false),
+        (fixture!("syn-bru-gdf-block-10bit"), 4, true, false),
+        (fixture!("syn-bru-gdf-multitile-8bit"), 3, true, false),
+        (fixture!("syn-bru-gdf-lr-8bit"), 4, true, true),
+        (fixture!("syn-bru-gdf-frame-8bit"), 4, false, false),
+        (fixture!("syn-bru-gdf-frame-10bit"), 4, false, false),
+        (fixture!("syn-bru-gdf-lr-10bit"), 3, false, true),
     ];
 
-    for (name, bytes, expect_lr) in fixtures {
+    for ((name, bytes), first_idx, per_block, restored) in fixtures {
         let (headers, audits) =
             crate::pipeline::collect_bru_lr_audit(bytes, &DecodeOptions::default())
                 .unwrap_or_else(|err| panic!("{name}: BRU+GDF audit decode failed: {err}"));
         assert_eq!(headers.len(), audits.len(), "{name}: header/audit mismatch");
-
-        let matching: Vec<_> = audits
-            .iter()
-            .enumerate()
-            .filter(|(_, audit)| {
-                let active_sbs = audit
-                    .superblock_modes
-                    .iter()
-                    .filter(|(_, _, mode)| *mode == Some(BRU_ACTIVE))
-                    .count();
-                let non_active_sbs = audit
-                    .superblock_modes
-                    .iter()
-                    .filter(|(_, _, mode)| mode.is_some() && *mode != Some(BRU_ACTIVE))
-                    .count();
-                let lr_matches = if expect_lr {
-                    audit.lr_uses_lr && !audit.post_bru_blocks.is_empty()
-                } else {
-                    !audit.lr_uses_lr
-                };
-                audit.use_bru
-                    && !audit.bru_inactive
-                    && active_sbs > 0
-                    && non_active_sbs > 0
-                    && audit.gdf_frame_enable
-                    && audit.gdf_per_block
-                    && audit.gdf_enabled_units > 0
-                    && audit.gdf_enabled_units < audit.gdf_total_units
-                    && lr_matches
-            })
-            .map(|(index, _)| index)
-            .collect();
+        let audit = &audits[first_idx];
         assert!(
-            !matching.is_empty(),
-            "{name}: expected at least one partial-BRU frame with active mixed per-block GDF (lr={expect_lr}); audits={audits:#?}"
+            audit.use_bru && !audit.bru_inactive,
+            "{name}: expected partial BRU"
         );
-
-        let first_idx = matching[0];
+        assert!(
+            audit
+                .superblock_modes
+                .iter()
+                .any(|(_, _, mode)| *mode == Some(BRU_ACTIVE)),
+            "{name}: missing active SB"
+        );
+        assert!(
+            audit
+                .superblock_modes
+                .iter()
+                .any(|(_, _, mode)| mode.is_some_and(|value| value != BRU_ACTIVE)),
+            "{name}: missing non-active SB"
+        );
+        assert!(audit.gdf_frame_enable, "{name}: expected GDF");
+        assert_eq!(audit.gdf_per_block, per_block, "{name}: GDF mode");
+        if per_block {
+            assert!(
+                (1..audit.gdf_total_units).contains(&audit.gdf_enabled_units),
+                "{name}: expected mixed GDF units"
+            );
+        }
+        assert_eq!(audit.lr_uses_lr, restored, "{name}: LR mode");
+        if restored {
+            assert!(
+                audit
+                    .post_bru_blocks
+                    .iter()
+                    .any(|block| block.restoration_type != LrUnitRestorationType::None),
+                "{name}: missing active LR unit"
+            );
+        }
         assert!(
             first_idx + 1 < headers.len(),
             "{name}: missing post-BRU consumer frame"
