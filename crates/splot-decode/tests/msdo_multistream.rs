@@ -466,8 +466,8 @@ fn msdo_reference_buffer_capacity_uses_the_sequence_maximum_before_frame_parse()
             tile.seq_tile_info_present_flag = false;
             tile.allow_tile_info_change = None;
             tile.params = None;
-            tile.seq_sb_col_starts = Default::default();
-            tile.seq_sb_row_starts = Default::default();
+            tile.seq_sb_col_starts = std::sync::Arc::default();
+            tile.seq_sb_row_starts = std::sync::Arc::default();
             count = seq.inter.as_ref().unwrap().num_ref_frames;
             write_parsed(&mut data, obu.header, &ParsedObu::SequenceHeader(seq));
         } else {
@@ -493,7 +493,7 @@ fn msdo_reference_buffer_capacity_uses_the_sequence_maximum_before_frame_parse()
 #[test]
 fn reserved_aggregate_level_fails_at_the_descriptor() {
     let data = edit_msdo(&temporal_units(MSDO_8BIT)[0], |msdo| {
-        msdo.multistream_level_idx = 22
+        msdo.multistream_level_idx = 22;
     });
     let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
     let DecodeError::MalformedSource { issue } = error else {
