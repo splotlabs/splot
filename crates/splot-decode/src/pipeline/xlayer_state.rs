@@ -1753,7 +1753,7 @@ mod tests {
         let prefix = &obus[..2];
         assert_eq!(prefix[0].header.obu_type, ObuType::TemporalDelimiter);
         assert_eq!(prefix[1].header.obu_type, ObuType::Msdo);
-        let mut layers = XLayerTable::new();
+        let mut layers = XLayerTable::new(crate::ExternalAtlases::default());
         for (has_msdo, rap, clk, mode) in [
             (true, true, true, true),
             (false, false, false, true),
