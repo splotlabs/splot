@@ -92,7 +92,8 @@ impl AtlasCompositor {
         }
     }
 
-    /// Composes exactly one group from the same decoder, global layout, and caller timestamp.
+    /// Composes one group of pictures that share a global layout and a presentation timestamp.
+    /// Supply timestamps in a common time base when you combine pictures from separate decoders.
     ///
     /// This operation selects limited-range BT.709 YCbCr. It interprets unspecified color as BT.709.
     /// All textures must use the same bit depth and chroma format. Alpha can use either bit depth.

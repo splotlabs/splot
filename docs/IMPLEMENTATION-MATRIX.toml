@@ -14489,6 +14489,38 @@ fixtures = ["crates/splot-decode/src/limits.rs", "crates/splot-decode/src/lib.rs
 diagnostics = []
 
 [[feature]]
+id = "DECODE-ATLAS-COMPOSITION"
+name = "Optional multistream atlas composition"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.9.3", "5.9.4", "6.9.4", "6.9.5", "Annex D"]
+sources = ["docs/spec/av2/1.0.0/annex-d-multistream-composition-process-informative.md"]
+crate = "splot-decode"
+module = "crates/splot-decode/src/decoder/composition.rs"
+change_id = "multistream-atlas-composition"
+owner = "decoder"
+risk = "medium"
+notes = "The optional compositor uses a shared global layout and a common presentation timestamp. It renders modes 3 and 4 in segment order with clipping and Annex D.5 alpha rounding. The Splot rendering policy uses limited-range BT.709 and nearest-neighbor scaling. The native picture and its references keep their original samples."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "pending"
+
+[feature.proof]
+tests = ["crates/splot-decode/src/decoder/composition/tests.rs", "crates/splot-cli/tests/decoder_oracle/atlas.rs"]
+commands = ["cargo test -p splot-decode --lib decoder::composition", "cargo test -p splot-cli --test decoder_oracle atlas::"]
+fixtures = ["tests/conformance/vectors/valid/syn-atlas-multistream-side-by-side-8bit.obu", "tests/conformance/vectors/valid/syn-atlas-multistream-side-by-side-10bit.obu", "tests/conformance/vectors/valid/syn-atlas-alpha-paired-8bit.obu", "tests/conformance/vectors/valid/syn-atlas-alpha-paired-10bit.obu"]
+diagnostics = []
+
+[[feature]]
 id = "DECODE-STREAMING-API"
 name = "Streaming decoder API"
 category = "infrastructure"
