@@ -6,104 +6,132 @@ use super::*;
 use splot_core::write::{BitWriter, write_annexb_obu};
 
 #[test]
-fn bru_gdf_vectors_exercise_partial_bru_per_block_gdf_lr_and_reference_consumers() {
-    use crate::bitstream::tile_payload::BRU_ACTIVE;
+fn bru_gdf_vectors_exercise_partial_bru_gdf_modes_lr_and_reference_consumers() {
+    use crate::bitstream::tile_payload::{BRU_ACTIVE, LrUnitRestorationType};
 
-    let fixtures: [(&str, &[u8], bool); 4] = [
-        (
-            "syn-bru-gdf-block-8bit",
-            include_bytes!(
-                "../../../../../../tests/conformance/vectors/valid/syn-bru-gdf-block-8bit.ivf"
-            ),
-            false,
-        ),
-        (
-            "syn-bru-gdf-block-10bit",
-            include_bytes!(
-                "../../../../../../tests/conformance/vectors/valid/syn-bru-gdf-block-10bit.ivf"
-            ),
-            false,
-        ),
-        (
-            "syn-bru-gdf-lr-8bit",
-            include_bytes!(
-                "../../../../../../tests/conformance/vectors/valid/syn-bru-gdf-lr-8bit.ivf"
-            ),
-            true,
-        ),
-        (
-            "syn-bru-gdf-multitile-8bit",
-            include_bytes!(
-                "../../../../../../tests/conformance/vectors/valid/syn-bru-gdf-multitile-8bit.ivf"
-            ),
-            false,
-        ),
+    macro_rules! fixture {
+        ($name:literal, $producer:literal, $per_block:literal, $restored:literal, $row:literal, $col:literal) => {
+            (
+                $name,
+                include_bytes!(concat!(
+                    "../../../../../../tests/conformance/vectors/valid/",
+                    $name,
+                    ".ivf"
+                ))
+                .as_slice(),
+                $producer,
+                $per_block,
+                $restored,
+                $row,
+                $col,
+            )
+        };
+    }
+
+    let fixtures = [
+        fixture!("syn-bru-gdf-block-8bit", 4, true, false, 18, 20),
+        fixture!("syn-bru-gdf-block-10bit", 4, true, false, 18, 20),
+        fixture!("syn-bru-gdf-multitile-8bit", 3, true, false, 0, 16),
+        fixture!("syn-bru-gdf-lr-8bit", 4, true, true, 18, 4),
+        fixture!("syn-bru-gdf-frame-8bit", 4, false, false, 0, 16),
+        fixture!("syn-bru-gdf-frame-10bit", 4, false, false, 0, 16),
+        fixture!("syn-bru-gdf-lr-10bit", 3, false, true, 0, 8),
     ];
 
-    for (name, bytes, expect_lr) in fixtures {
-        let (headers, audits) =
+    for (name, bytes, first_idx, per_block, restored, mi_row, mi_col) in fixtures {
+        let (frames, audits) =
             crate::pipeline::collect_bru_lr_audit(bytes, &DecodeOptions::default())
                 .unwrap_or_else(|err| panic!("{name}: BRU+GDF audit decode failed: {err}"));
-        assert_eq!(headers.len(), audits.len(), "{name}: header/audit mismatch");
-
-        let matching: Vec<_> = audits
-            .iter()
-            .enumerate()
-            .filter(|(_, audit)| {
-                let active_sbs = audit
-                    .superblock_modes
-                    .iter()
-                    .filter(|(_, _, mode)| *mode == Some(BRU_ACTIVE))
-                    .count();
-                let non_active_sbs = audit
-                    .superblock_modes
-                    .iter()
-                    .filter(|(_, _, mode)| mode.is_some() && *mode != Some(BRU_ACTIVE))
-                    .count();
-                let lr_matches = if expect_lr {
-                    audit.lr_uses_lr && !audit.post_bru_blocks.is_empty()
-                } else {
-                    !audit.lr_uses_lr
-                };
-                audit.use_bru
-                    && !audit.bru_inactive
-                    && active_sbs > 0
-                    && non_active_sbs > 0
-                    && audit.gdf_frame_enable
-                    && audit.gdf_per_block
-                    && audit.gdf_enabled_units > 0
-                    && audit.gdf_enabled_units < audit.gdf_total_units
-                    && lr_matches
-            })
-            .map(|(index, _)| index)
-            .collect();
+        assert_eq!(frames.len(), audits.len(), "{name}: header/audit mismatch");
+        let audit = &audits[first_idx];
         assert!(
-            !matching.is_empty(),
-            "{name}: expected at least one partial-BRU frame with active mixed per-block GDF (lr={expect_lr}); audits={audits:#?}"
+            audit.use_bru && !audit.bru_inactive,
+            "{name}: expected partial BRU"
         );
-
-        let first_idx = matching[0];
         assert!(
-            first_idx + 1 < headers.len(),
-            "{name}: missing post-BRU consumer frame"
+            audit
+                .superblock_modes
+                .iter()
+                .any(|(_, _, mode)| *mode == Some(BRU_ACTIVE)),
+            "{name}: missing active SB"
         );
-        let refreshed_mask = headers[first_idx].header.refresh_frame_flags.unwrap_or(0);
-        assert_ne!(
-            refreshed_mask, 0,
-            "{name} f{first_idx}: expected reference refresh"
+        assert!(
+            audit
+                .superblock_modes
+                .iter()
+                .any(|(_, _, mode)| mode.is_some_and(|value| value != BRU_ACTIVE)),
+            "{name}: missing non-active SB"
         );
-        let consumer_refs = &headers[first_idx + 1]
+        assert!(audit.gdf_frame_enable, "{name}: expected GDF");
+        assert_eq!(audit.gdf_per_block, per_block, "{name}: GDF mode");
+        if per_block {
+            assert!(
+                (1..audit.gdf_total_units).contains(&audit.gdf_enabled_units),
+                "{name}: expected mixed GDF units"
+            );
+        }
+        assert_eq!(audit.lr_uses_lr, restored, "{name}: LR mode");
+        if restored {
+            assert!(
+                audit
+                    .post_bru_blocks
+                    .iter()
+                    .any(|block| block.restoration_type != LrUnitRestorationType::None),
+                "{name}: missing active LR unit"
+            );
+        }
+        let refreshed_mask = frames[first_idx]
+            .header
+            .refresh_frame_flags
+            .expect("BRU refresh flags");
+        let slot = if first_idx == 3 { 1 } else { 2 };
+        assert_eq!(
+            refreshed_mask,
+            1 << slot,
+            "{name} f{first_idx}: BRU slot refresh"
+        );
+        let consumer_idx = first_idx + 1;
+        let consumer = &frames[consumer_idx];
+        assert!(
+            audits[consumer_idx].superblock_modes.contains(&(
+                mi_row / 16 * 16,
+                mi_col / 16 * 16,
+                Some(BRU_ACTIVE)
+            )),
+            "{name} f{consumer_idx}: expected an active consumer superblock"
+        );
+        let refs = &consumer
             .header
             .inter
             .as_ref()
             .expect("consumer inter control")
             .ref_frame_idx;
+        let field = consumer
+            .motion_field
+            .as_ref()
+            .expect("consumer motion field");
+        let producer_hint = frames[first_idx]
+            .header
+            .display_order_hint()
+            .expect("BRU order hint");
+        let mut matching_refs = refs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| field.stored_ref_order_hint(*index) == Some(producer_hint));
+        let (ref_index, &mapped_slot) = matching_refs.next().expect("producer reference");
         assert!(
-            consumer_refs
+            matching_refs.next().is_none(),
+            "{name}: ambiguous producer order hint"
+        );
+        assert_eq!(mapped_slot, slot, "{name}: expected the refreshed BRU slot");
+        let cell = field
+            .stored_cell(mi_row / 2, mi_col / 2)
+            .expect("consumer motion cell");
+        assert!(
+            [cell[0], cell[3]]
                 .iter()
-                .any(|&slot| (refreshed_mask & (1u32 << slot)) != 0),
-            "{name} f{}: expected ref consumer to retain refreshed slot from f{first_idx}",
-            first_idx + 1
+                .any(|&index| usize::from(index) == ref_index),
+            "{name} f{consumer_idx}: the active block at ({mi_row}, {mi_col}) must reference slot {slot} from f{first_idx}"
         );
     }
 }

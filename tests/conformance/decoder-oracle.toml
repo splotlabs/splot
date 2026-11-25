@@ -1936,6 +1936,27 @@ features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.mult
 ivf_sha256 = "d261de77c9e44f2f492f01634b57063155f1a7884842dfaa3df233e88d27e1d5"
 avm_raw_sha256 = "5163003e42407da7a8b5031854f38a2953eabc2bd9eb5e407e81cbb87e0370d8"
 
+# Six native 256x128 I420 pictures, 294912 raw bytes. Source Y4M SHA-256: dbf55de884a1843f0cdd2f4ab80627adf451f579630fff895edc5edda4740cd1
+[[fixture]]
+id = "syn-bru-gdf-frame-8bit"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.gdf", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "30968c195e9756ae374d1fb5267d44df0f239b252714b38b5afee2f08e808f45"
+avm_raw_sha256 = "b5406eb4a71169adc7a81ffc944a6f1b1803037cbe2feff653c1f291d73a62f3"
+
+# Six native 256x128 I420 pictures, 589824 raw bytes. Source Y4M SHA-256: 67ef57eb2cd2f6a47dbbdf70064f9118d6750f39529bf675fc630c6e696cdbf4
+[[fixture]]
+id = "syn-bru-gdf-frame-10bit"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.gdf", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "608b275ac15208a62700c952d29c08db99f9eb5828fa143a893bfa9046d42fbc"
+avm_raw_sha256 = "c6128a118506fdb1eaf3d67f6587daba05b1e704cd955cfc386a1ada41af90ca"
+
+# Six native 256x128 I420 pictures, 589824 raw bytes. Source Y4M SHA-256: a5603bc59b69c5f93f6c74fb1990314dade19670e78d33b8a2763b04a25fea44
+[[fixture]]
+id = "syn-bru-gdf-lr-10bit"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.gdf", "loop.loop_restoration", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "c749d47c4e60e4e81e97d8a67152545aeb25184d038e0074980a00d5eb794758"
+avm_raw_sha256 = "2070ddabf29df8784b579488738d28f00b20cbdf2d7007bac352979605de7e1b"
+
 [[fixture]]
 id = "syn-bru-gdf-multitile-8bit"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.bru", "inter.single_ref", "loop.gdf", "loop.gdf_multitile", "loop.gdf_per_block", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
