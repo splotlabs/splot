@@ -392,17 +392,16 @@ impl Storage {
 
     fn eight(&mut self, len: usize) -> Result<&mut [u8]> {
         self.ten = Vec::new();
-        resize(&mut self.eight, len)
+        overwrite_buffer(&mut self.eight, len)
     }
     fn ten(&mut self, len: usize) -> Result<&mut [u16]> {
         self.eight = Vec::new();
-        resize(&mut self.ten, len)
+        overwrite_buffer(&mut self.ten, len)
     }
 }
 
-fn resize<T: Default + Copy>(storage: &mut Vec<T>, len: usize) -> Result<&mut [T]> {
+fn overwrite_buffer<T: Default + Copy>(storage: &mut Vec<T>, len: usize) -> Result<&mut [T]> {
     if len > storage.capacity() {
-        // Each call overwrites the old samples. Release them before reserving the replacement.
         *storage = Vec::new();
         storage
             .try_reserve_exact(len)

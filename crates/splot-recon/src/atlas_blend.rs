@@ -105,8 +105,7 @@ impl<T: IntraLaneSample> AtlasSample for T {
             });
         }
         if width == source_width && step == 1 {
-            // splot-copy-ok: place a native row in the independent presentation canvas
-            out.copy_from_slice(&source[first as usize..][..out.len()]);
+            out.copy_from_slice(&source[first as usize..][..out.len()]); // splot-copy-ok: place a native row in the presentation canvas
             return Ok(());
         }
         let narrow = backend.narrow();

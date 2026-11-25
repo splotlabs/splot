@@ -109,7 +109,6 @@ fn native_and_composite_output_match_independent_goldens() {
         ),
     ];
     for (name, depth, composite_sha256) in vectors {
-        // In the nonmonotonic 10-bit stream, presentation timestamps differ from TU indices.
         let (bits, pts, native) = match depth {
             BitDepth::Eight => (8, &[0, 1, 2, 3][..], &NATIVE_8),
             BitDepth::Ten => (10, &[0, 3, 1, 2, 4, 5, 8, 6, 7, 9][..], &NATIVE_10),
