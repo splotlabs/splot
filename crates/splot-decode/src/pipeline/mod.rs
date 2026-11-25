@@ -337,6 +337,14 @@ fn parse_key_core_with_effects(
 ) -> Result<FrameHeaderCore> {
     let activation = parse_frame_core(envelope, sequence)?;
     if activation.cur_mfh_id.is_zero() {
+        if activation.referenced_sequence_header_id != Some(sequence.general.seq_header_id) {
+            return Err(unsupported_feature_at(
+                "sequence_header_unavailable",
+                envelope.offset,
+                "closed-loop key references a sequence header that is not available in-band",
+                "7.3.8.6",
+            ));
+        }
         return Ok(activation);
     }
     let record = effects.resolve_mfh_record(envelope, sequence, activation.cur_mfh_id)?;
