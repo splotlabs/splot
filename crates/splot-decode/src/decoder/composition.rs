@@ -359,6 +359,7 @@ impl<'a> SimdScope<Result<AtlasComposite<'a>>> for Render<'a, '_> {
         {
             *storage = Storage::default();
         }
+        let backend = backend.narrow();
         let planes = match self.geometry.depth {
             BitDepth::Eight => render::canvas(
                 backend,
