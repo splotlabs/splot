@@ -747,3 +747,77 @@ fn lcr_msdo_agreement_flags_earlier_nonconforming_msdo_overwritten_by_later() {
          overwrote the live MSDO record; report was: {report}"
     );
 }
+
+#[test]
+fn lcr_global_group_accepts_a_coordinated_switch() {
+    let mut data = Vec::new();
+    for id in [1, 2] {
+        data.extend(temporal_delimiter_obu());
+        data.extend(global_lcr_obu_agreement(id, 0b1001, None, None, false));
+        for xlayer in [0, 3] {
+            data.extend(seq_header_obu_lcr_ref(xlayer, 0, 2, true, id));
+            data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, xlayer, 0));
+        }
+    }
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "lcr/global-reference-mismatch"),
+        "{report}"
+    );
+}
+
+#[test]
+fn lcr_global_group_checks_direct_and_local_references() {
+    for (local_parent, peer_reference, expect_error) in [
+        (None, 2, true),
+        (None, 0, true),
+        (Some(0), 1, true),
+        (Some(2), 1, true),
+        (Some(1), 1, false),
+    ] {
+        let mut data = temporal_delimiter_obu();
+        for id in [1, 2] {
+            data.extend(global_lcr_obu_agreement(id, 0b1001, None, None, false));
+        }
+        data.extend(seq_header_obu_lcr_ref(0, 0, 2, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        if let Some(parent) = local_parent {
+            data.extend(super::lcr_atlas::local_lcr_obu(3, parent, 1, None));
+        }
+        data.extend(seq_header_obu_lcr_ref(3, 1, 2, true, peer_reference));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 3, 1));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "lcr/global-reference-mismatch"
+                    && d.spec_section.as_deref() == Some("6.8.2")),
+            expect_error,
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn lcr_global_group_excludes_retired_layers() {
+    let mut data = temporal_delimiter_obu();
+    data.extend(global_lcr_obu_agreement(1, 0b1001, None, None, false));
+    for xlayer in [0, 3] {
+        data.extend(seq_header_obu_lcr_ref(xlayer, 0, 2, true, 1));
+        data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, xlayer, 0));
+    }
+    data.extend(temporal_delimiter_obu());
+    data.extend(seq_header_obu_lcr_ref(7, 1, 2, true, 0));
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 7, 1));
+    data.extend(temporal_delimiter_obu());
+    data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 7, 1));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "lcr/global-reference-mismatch"),
+        "{report}"
+    );
+}

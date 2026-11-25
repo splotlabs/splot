@@ -62,6 +62,7 @@ pub(super) struct LcrAssociation {
     pub(super) lcr_is_global: bool,
     /// The associated record's id (the header's `seq_lcr_id`).
     pub(super) lcr_id: u8,
+    pub(super) global_reference: Option<u8>,
     /// The record's § 5.8.8 embedded-layer maps at observation time; `None`
     /// when it carried no embedded-layer info (§ 6.8.9 binds "if present").
     pub(super) maps: Option<LcrEmbeddedMaps>,
@@ -546,7 +547,8 @@ impl ValidatorContext {
                         );
                     }
                 }
-                self.hls.record_local_lcr(xlayer, info.local_id);
+                self.hls
+                    .record_local_lcr(xlayer, info.local_id, info.global_id);
                 self.rap_replay.note_resend(
                     RapHlsKey::LayerConfigurationRecord {
                         xlayer: xlayer.get(),

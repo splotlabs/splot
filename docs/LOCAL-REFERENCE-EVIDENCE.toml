@@ -12243,14 +12243,14 @@ feature_id = "DECODE-STREAM-STATE-PLANNER"
 decoder_support_rows = ["decode-stream-state"]
 kind = "reference-output-agreement"
 summary = "Local AVM generated a 2-mlayer by 2-tlayer sparse-state stream at obu_xlayer_id 3 (64x64, 8 frames) and an independent single-mlayer stream at obu_xlayer_id 7 (96x64, MFH signaled, 4 frames) multiplexed under Profile 2 IOP 2 and global LCR id 1; splot decodes each extended layer byte-for-byte identically to component avmdec runs."
-recorded_at = "2026-11-24"
-command = '''Multiplexed the 2-mlayer by 2-tlayer sparse-state AVM stream (extended layer 3, seq_header_id 0) and single-mlayer AVM stream (extended layer 7, seq_header_id 1, MFH enabled) under Profile 2 IOP 2 and global LCR id 1. Validated clean with splot validate --strict and verified byte-exact raw I420 parity per extended layer against avmdec.'''
+recorded_at = "2026-11-25"
+command = '''Multiplexed the 2-mlayer by 2-tlayer sparse-state AVM stream (extended layer 3, seq_header_id 0) and single-mlayer AVM stream (extended layer 7, seq_header_id 1, MFH enabled) under Profile 2 IOP 2 and global LCR id 1. Use global LCR ID 1 as the parent of the local LCR for extended layer 3. The first local LCR payload byte is 0x24. AVM a1ec4594d9 decoded 86,016 bytes with --all-layers --rawvideo --i420 --output-bit-depth=8 and SHA-256 1a340ca0c4e0df2d40e31fd4213dfc89c65c3fe1e8589b07fe451940db8ee373. The decoded bytes match the previous fixture.'''
 
 [[evidence.fixture]]
 id = "input"
 role = "input-bitstream"
 path = "tests/conformance/vectors/valid/syn-xlayer3-7-layered-mixed.obu"
-sha256 = "c9af7026fae77012458e3334742a65ffb1cbb4d362d836d0c71b295cced98751"
+sha256 = "1ba07607893bfbe793f7816de99a85836d680f7567aa9a8df546b852527d7a70"
 size_bytes = 8553
 format = "annex-b"
 provenance_kind = "avm-generated-from-project-owned-synthetic-input"

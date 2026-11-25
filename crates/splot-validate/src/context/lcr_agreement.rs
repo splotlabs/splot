@@ -71,10 +71,8 @@ impl ValidatorContext {
     /// staged-but-unreferenced header is not yet an activation (§ 7.3.6), and an
     /// observed-but-never-activated global LCR therefore satisfies nothing. The
     /// associations are scanned in ascending `obu_xlayer_id` order, so the first global
-    /// association found is deterministic; the § 6.8.2 "all extended layers reference the
-    /// same activated global LCR" rule (lines 1550-1551) that would reconcile divergent
-    /// resolutions is a separate, out-of-scope residual, so this takes the first resolved
-    /// record and the agreement checks compare the MSDO against it.
+    /// association found is deterministic. The group agreement check compares the
+    /// references at the end of the temporal unit.
     ///
     /// Two correctness properties of this resolution:
     ///
@@ -160,6 +158,92 @@ impl ValidatorContext {
             }
         }
         None
+    }
+
+    pub(super) fn resolve_global_lcr_group_agreement(
+        &mut self,
+        completed_tu: u64,
+        options: &ValidationOptions,
+        report: &mut ValidationReport,
+    ) {
+        let key_layers = core::mem::take(&mut self.global_lcr_keys_in_tu);
+        let Some(facts) = self.cmvs.last_completed else {
+            return;
+        };
+        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+            return;
+        }
+
+        let activates_global = key_layers != 0
+            && self
+                .activated_global_lcr_where(|xlayer, _| key_layers & (1 << xlayer.get()) != 0)
+                .is_some();
+        let cmvs_start = self.cmvs.current_cmvs_start_tu_index();
+        if facts.has_clk && !facts.msdo_present && !activates_global {
+            self.global_lcr_group_start = None;
+            self.global_lcr_group_mismatches = 0;
+            return;
+        }
+        if cmvs_start == Some(completed_tu) {
+            self.global_lcr_group_start = activates_global.then_some(completed_tu);
+            self.global_lcr_group_mismatches = 0;
+        }
+        if activates_global && self.global_lcr_group_start.is_none() {
+            self.global_lcr_group_start = Some(cmvs_start.unwrap_or(completed_tu));
+        }
+        let Some(start) = self.global_lcr_group_start else {
+            return;
+        };
+
+        let declared = self
+            .msdo_substream_max
+            .as_ref()
+            .filter(|_| self.cmvs.state == super::cmvs::CmvsState::Inside);
+        let active_in_group = |xlayer: ExtendedLayerId| {
+            declared.is_none_or(|msdo| msdo.ceilings.contains_key(&xlayer.get()))
+                && self
+                    .frame_confirmed_activation_tu
+                    .get(&xlayer)
+                    .is_some_and(|&tu| tu >= start)
+        };
+        let Some((expected, record)) =
+            self.activated_global_lcr_where(|xlayer, _| active_in_group(xlayer))
+        else {
+            return;
+        };
+        let offset = record.offset;
+        let mut mismatches = 0;
+        for &xlayer in &self.frame_confirmed_xlayers {
+            if !active_in_group(xlayer) {
+                continue;
+            }
+            let global_reference = self
+                .active_sequence_by_xlayer
+                .get(&xlayer)
+                .and_then(|&sequence| self.lcr_associations.get(&(xlayer, sequence)))
+                .and_then(|association| association.global_reference);
+            if global_reference == Some(expected) {
+                continue;
+            }
+            let bit = 1 << xlayer.get();
+            mismatches |= bit;
+            if self.global_lcr_group_mismatches & bit != 0 {
+                continue;
+            }
+            let observed = global_reference.map_or_else(|| "none".to_owned(), |id| id.to_string());
+            report.push(
+                Diagnostic::error(
+                    "lcr/global-reference-mismatch",
+                    format!(
+                        "Extended layer {} references global LCR {observed}. Expected global LCR {expected}.",
+                        xlayer.get()
+                    ),
+                )
+                .with_spec_section("6.8.2")
+                .with_byte_offset(offset),
+            );
+        }
+        self.global_lcr_group_mismatches = mismatches;
     }
 
     /// Emits the § 6.8.2 MSDO↔global-LCR agreement diagnostics (mirror
@@ -515,6 +599,12 @@ impl ValidatorContext {
             Some(LcrAssociation {
                 lcr_is_global: false,
                 lcr_id: seq_lcr_id,
+                global_reference: self
+                    .hls
+                    .local_lcr_parents
+                    .get(&(xlayer, seq_lcr_id))
+                    .copied()
+                    .filter(|&id| id != 0),
                 maps: self
                     .hls
                     .local_lcr_embedded
@@ -532,6 +622,7 @@ impl ValidatorContext {
             Some(LcrAssociation {
                 lcr_is_global: true,
                 lcr_id: seq_lcr_id,
+                global_reference: Some(seq_lcr_id),
                 maps: self
                     .hls
                     .global_lcr_embedded

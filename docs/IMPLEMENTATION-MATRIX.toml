@@ -1920,7 +1920,7 @@ module = "crates/splot-core/src/headers/layer_config_record.rs"
 change_id = "msdo-global-lcr-agreement"
 owner = "core"
 risk = "high"
-notes = "Global LCR validation checks the identifier, nonempty extended-layer map, and ignored dependency flag. Agreement with MSDO applies to activated global LCRs within the CMVS. Cross-layer use of the same global LCR and tile alignment remain outside these checks."
+notes = "Global LCR validation checks the identifier, nonempty extended-layer map, and ignored dependency flag. Agreement with MSDO applies to activated global LCRs within the CMVS. The active extended layers must agree on the global reference at the end of each temporal unit. A local LCR can name the common global parent. Tile alignment remains outside these checks."
 
 [feature.status]
 mapped = "done"
@@ -1935,10 +1935,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/write/layer_config_record_tests.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_stream_count_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_sub_xlayer_not_in_lcr_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_level_and_tier_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_interop_and_config_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_substream_ptl_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_doh_flag_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_doh_constraint_required_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_agreement_inert_for_unactivated_global_lcr"]
+tests = ["crates/splot-core/src/write/layer_config_record_tests.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_stream_count_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_sub_xlayer_not_in_lcr_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_level_and_tier_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_interop_and_config_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_substream_ptl_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_doh_flag_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_doh_constraint_required_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_agreement_inert_for_unactivated_global_lcr", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_global_group_checks_direct_and_local_references"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_msdo", "cargo test -p splot-validate lcr_doh"]
 fixtures = []
-diagnostics = ["lcr/msdo-stream-count-mismatch", "lcr/msdo-sub-xlayer-not-in-lcr", "lcr/msdo-aggregate-mismatch", "lcr/msdo-substream-ptl-mismatch", "lcr/msdo-doh-flag-mismatch", "lcr/doh-constraint-required"]
+diagnostics = ["lcr/global-reference-mismatch", "lcr/msdo-stream-count-mismatch", "lcr/msdo-sub-xlayer-not-in-lcr", "lcr/msdo-aggregate-mismatch", "lcr/msdo-substream-ptl-mismatch", "lcr/msdo-doh-flag-mismatch", "lcr/doh-constraint-required"]
 
 [[feature]]
 id = "AV2-5.8.2-LCR-LOCAL-INFO"

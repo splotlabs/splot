@@ -9,8 +9,9 @@ use std::fmt::Write as _;
 use std::io::{self, Read};
 
 use splot_core::annexb::parse_annex_b_obus;
+use splot_core::headers::layer_config_record::LayerConfigurationRecord;
 use splot_core::headers::metadata::MetadataType;
-use splot_core::headers::sequence::SequenceHeaderId;
+use splot_core::headers::sequence::{LcrId, SequenceHeaderId};
 use splot_core::obu::{ObuHeader, ParsedObu, PayloadStatus, read_obu_header_from_slice};
 use splot_core::span::ByteOffset;
 use splot_core::stream_reader::TemporalUnitReader;
@@ -966,4 +967,127 @@ fn negative_lcr_scope_corruption_isolation_and_aggregate_bounds() {
             .decode_hash_report_bytes(XLAYER3_7_10BIT, DecodeOptions::new(tight_ref_budget),),
         Err(DecodeError::Limit { .. })
     ));
+}
+
+#[test]
+fn global_lcr_ids_must_agree_after_all_xlayer_activations() {
+    for split_references in [false, true] {
+        let mut bytes = Vec::new();
+        for (tu, unit) in temporal_units(XLAYER3_7_ISOLATION).iter().enumerate() {
+            for envelope in parse_annex_b_obus(unit).unwrap() {
+                let header = envelope.header;
+                if let PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(mut record)) =
+                    envelope.payload_status().unwrap()
+                    && let LayerConfigurationRecord::Global(global) = record.as_mut()
+                {
+                    if split_references || tu < 2 {
+                        let mut obu = BitWriter::new();
+                        write_obu(&mut obu, header, envelope.payload);
+                        bytes.extend(obu.into_bytes());
+                    }
+                    if split_references || tu >= 2 {
+                        global.global_config_record_id = 2;
+                        bytes.extend(rewrite_complete_annexb(
+                            header,
+                            &ParsedObu::LayerConfigurationRecord(record),
+                        ));
+                    }
+                    continue;
+                }
+                if (split_references && header.extended_layer_id.get() == 7
+                    || !split_references && tu >= 2)
+                    && let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut sequence)) =
+                        envelope.payload_status().unwrap()
+                {
+                    sequence.general.seq_lcr_id = LcrId::from_bits(2);
+                    bytes.extend(rewrite_complete_annexb(
+                        header,
+                        &ParsedObu::SequenceHeader(sequence),
+                    ));
+                } else {
+                    let mut obu = BitWriter::new();
+                    write_obu(&mut obu, header, envelope.payload);
+                    bytes.extend(obu.into_bytes());
+                }
+            }
+        }
+        let batch = context(3, 2).decode_hash_report_bytes(&bytes, DecodeOptions::default());
+        let streaming = stream_decode_with_settings(&bytes, &DecoderSettings::default());
+        if split_references {
+            for error in [batch.unwrap_err(), streaming.unwrap_err()] {
+                assert!(
+                    matches!(
+                        error,
+                        DecodeError::MalformedSource { ref issue }
+                            if issue.spec_section() == Some("6.8.2")
+                    ),
+                    "got {error:?}"
+                );
+            }
+        } else {
+            assert_eq!(batch.unwrap().frames.len(), 8);
+            let pictures = streaming.unwrap();
+            assert_eq!(sha256_hex(&raw_for_xlayer(&pictures, 3)), SHA_ISO_X3);
+            assert_eq!(sha256_hex(&raw_for_xlayer(&pictures, 7)), SHA_ISO_X7);
+        }
+    }
+}
+
+#[test]
+fn global_lcr_ids_must_include_the_parent_of_each_local_lcr() {
+    let mut bytes = BitWriter::new();
+    for envelope in parse_annex_b_obus(XLAYER3_7_LAYERED_MIXED).unwrap() {
+        let mut payload = envelope.payload.to_vec();
+        if envelope.header.obu_type == ObuType::LayerConfigurationRecord
+            && envelope.header.extended_layer_id.get() == 3
+        {
+            assert_eq!(payload[0], 0x24);
+            payload[0] = 0x04;
+        }
+        write_obu(&mut bytes, envelope.header, &payload);
+    }
+    let bytes = bytes.into_bytes();
+    let error = context(1, 2)
+        .decode_hash_report_bytes(&bytes, DecodeOptions::default())
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            DecodeError::MalformedSource { ref issue }
+                if issue.spec_section() == Some("6.8.2")
+        ),
+        "got {error:?}"
+    );
+}
+
+#[test]
+fn filtered_local_lcr_peers_keep_the_common_parent_without_direct_activation() {
+    let bytes = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-xlayer3-7-9-shared-global-parent.obu"
+    );
+    for (selection, expected_count) in [
+        (ExtendedLayerSelection::All, 12),
+        (ExtendedLayerSelection::OutputMask((1 << 7) | (1 << 9)), 8),
+    ] {
+        let batch = context(3, 2)
+            .decode_hash_report_bytes(
+                bytes,
+                DecodeOptions::default().with_extended_layer_selection(selection),
+            )
+            .unwrap();
+        let streaming = stream_decode_with_settings(
+            bytes,
+            &DecoderSettings::default().with_extended_layer_selection(selection),
+        )
+        .unwrap();
+        assert_eq!(batch.frames.len(), expected_count);
+        assert_eq!(streaming.len(), expected_count);
+        assert_eq!(sha256_hex(&raw_for_xlayer(&streaming, 7)), SHA_ISO_X7);
+        assert_eq!(sha256_hex(&raw_for_xlayer(&streaming, 9)), SHA_ISO_X7);
+        if selection == ExtendedLayerSelection::All {
+            assert_eq!(sha256_hex(&raw_for_xlayer(&streaming, 3)), SHA_ISO_X3);
+        } else {
+            assert!(raw_for_xlayer(&streaming, 3).is_empty());
+        }
+    }
 }
