@@ -1887,7 +1887,9 @@ fn decode_frames_in_order(
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
                 {
-                    ivf_key_frame_unit(obus, next_candidate)?
+                    ivf_key_frame_unit(obus, next_candidate, |id| {
+                        xlayers.available_mfh_sequence(candidate_xlayer, id)
+                    })?
                 } else {
                     let (prefix, frame) = stream.inter_envelope(obus, next_candidate)?;
                     let sequence_envelope = prefix

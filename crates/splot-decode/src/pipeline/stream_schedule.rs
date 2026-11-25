@@ -8,6 +8,8 @@ use super::{PipelineFrameRate, unsupported, unsupported_at};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
+use splot_core::headers::sequence::SequenceHeaderId;
+use splot_core::hls::{MfhId, parse_multi_frame_header};
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::{GLOBAL_XLAYER_ID, ObuType};
@@ -471,9 +473,33 @@ pub(super) fn key_frame_activation(envelope: ObuEnvelope<'_>) -> Result<FrameHea
     })
 }
 
+pub(super) fn mfh_sequence_association(
+    envelope: ObuEnvelope<'_>,
+) -> Result<(MfhId, SequenceHeaderId)> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    let mfh = parse_multi_frame_header(&mut reader).map_err(|_| {
+        unsupported_at(
+            "multi_frame_header_parse",
+            envelope.offset,
+            "decode requires a complete multi-frame header OBU",
+        )
+    })?;
+    let id = MfhId::from_raw(mfh.mfh_id_minus_1.saturating_add(1));
+    let Some(sequence) = SequenceHeaderId::try_new(mfh.mfh_seq_header_id).filter(|_| id.in_range())
+    else {
+        return Err(unsupported_at(
+            "multi_frame_header_sequence_unavailable",
+            envelope.offset,
+            "multi-frame header OBU requires valid MFH and sequence header IDs",
+        ));
+    };
+    Ok((id, sequence))
+}
+
 pub(super) fn ivf_key_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
+    retained_mfh: impl FnOnce(MfhId) -> Option<SequenceHeaderId>,
 ) -> Result<(
     Option<ObuEnvelope<'a>>,
     &'a [ObuEnvelope<'a>],
@@ -493,6 +519,32 @@ pub(super) fn ivf_key_frame_unit<'a>(
     }
     let start = prefix_after_previous_inter_frame(position, obus).unwrap_or(0);
     let activation = key_frame_activation(key_envelope)?;
+    let mut sequence_id = activation.referenced_sequence_header_id;
+    if !activation.cur_mfh_id.is_zero() {
+        for envelope in obus[..position]
+            .iter()
+            .rev()
+            .take_while(|envelope| envelope.header.obu_type != ObuType::TemporalDelimiter)
+            .filter(|envelope| {
+                envelope.header.obu_type == ObuType::MultiFrameHeader
+                    && envelope.header.extended_layer_id == key_envelope.header.extended_layer_id
+            })
+        {
+            let (id, sequence) = mfh_sequence_association(*envelope)?;
+            if id == activation.cur_mfh_id {
+                sequence_id = Some(sequence);
+                break;
+            }
+        }
+        sequence_id = sequence_id.or_else(|| retained_mfh(activation.cur_mfh_id));
+    }
+    let Some(sequence_id) = sequence_id else {
+        return Err(unsupported_at(
+            "sequence_header_unavailable",
+            key_envelope.offset,
+            "closed-loop key requires an available sequence header",
+        ));
+    };
     let mut sequence = None;
     for envelope in obus[..position]
         .iter()
@@ -503,21 +555,18 @@ pub(super) fn ivf_key_frame_unit<'a>(
                 && envelope.header.extended_layer_id == key_envelope.header.extended_layer_id
         })
     {
-        if let Some(id) = activation.seq_header_id_in_frame_header {
-            let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-            let candidate_id =
-                reader
-                    .read_uvlc()
-                    .map_err(|error| DecodeError::MalformedSource {
-                        issue: DecodeSourceIssue::sequence_header_parse(
-                            envelope.offset,
-                            "5.4.1",
-                            error.to_string(),
-                        ),
-                    })?;
-            if candidate_id != id {
-                continue;
-            }
+        let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+        let candidate_id = reader
+            .read_uvlc()
+            .map_err(|error| DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::sequence_header_parse(
+                    envelope.offset,
+                    "5.4.1",
+                    error.to_string(),
+                ),
+            })?;
+        if candidate_id != u32::from(sequence_id.get()) {
+            continue;
         }
         sequence = Some(*envelope);
         break;

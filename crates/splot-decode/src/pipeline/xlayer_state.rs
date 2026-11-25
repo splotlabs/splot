@@ -13,7 +13,7 @@ use splot_core::headers::layer_config_record::{LayerConfigurationRecord, LcrGlob
 use splot_core::headers::metadata::{MetadataType, MetadataUnit};
 use splot_core::headers::operating_point_set::OperatingPointSet;
 use splot_core::headers::sequence::{ProfileIdc, SequenceHeader, SequenceHeaderId, Tier};
-use splot_core::hls::{MultistreamDecoderOperation, parse_msdo, parse_multi_frame_header};
+use splot_core::hls::{MfhId, MultistreamDecoderOperation, parse_msdo};
 use splot_core::obu::finish_obu_payload;
 use splot_core::span::ByteOffset;
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType};
@@ -24,7 +24,7 @@ use super::output_effects::{
     parse_validated_lcr,
 };
 use super::output_schedule::OutputScheduler;
-use super::stream_schedule::key_frame_activation;
+use super::stream_schedule::{key_frame_activation, mfh_sequence_association};
 use super::unsupported_feature_at;
 use crate::bitstream::ops_plan::validate_ops_semantics;
 use crate::bitstream::stream_plan::DecodeSourceIssue;
@@ -794,6 +794,17 @@ impl XLayerTable {
         self.available_hls(xlayer).map(|(sequence, _)| sequence)
     }
 
+    pub(super) fn available_mfh_sequence(
+        &self,
+        xlayer: ExtendedLayerId,
+        mfh_id: MfhId,
+    ) -> Option<SequenceHeaderId> {
+        self.available_hls(xlayer)?
+            .1
+            .mfh_record(mfh_id)
+            .map(|record| record.mfh_seq_header_id)
+    }
+
     fn available_hls(
         &self,
         xlayer: ExtendedLayerId,
@@ -900,13 +911,8 @@ impl XLayerTable {
                     );
                 }
                 ObuType::MultiFrameHeader if !env.header.extended_layer_id.is_global() => {
-                    let mut reader = BitReader::new(env.payload, env.payload_offset());
-                    let mfh = parse_multi_frame_header(&mut reader)
-                        .map_err(|error| malformed(env.offset, "5.7", error.to_string()))?;
-                    if let Some(sequence) = SequenceHeaderId::try_new(mfh.mfh_seq_header_id) {
-                        staged_mfhs
-                            .insert((xlayer, mfh.mfh_id_minus_1.saturating_add(1)), sequence);
-                    }
+                    let (id, sequence) = mfh_sequence_association(*env)?;
+                    staged_mfhs.insert((xlayer, id), sequence);
                 }
                 ObuType::ClosedLoopKey | ObuType::OpenLoopKey
                     if !env.header.extended_layer_id.is_global() =>
@@ -918,11 +924,12 @@ impl XLayerTable {
                     let hls = self.available_hls(env.header.extended_layer_id);
                     let sequence_id = prefix
                         .referenced_sequence_header_id
-                        .or_else(|| staged_mfhs.get(&(xlayer, prefix.cur_mfh_id.get())).copied())
+                        .or_else(|| staged_mfhs.get(&(xlayer, prefix.cur_mfh_id)).copied())
                         .or_else(|| {
-                            hls?.1
-                                .mfh_record(prefix.cur_mfh_id)
-                                .map(|mfh| mfh.mfh_seq_header_id)
+                            self.available_mfh_sequence(
+                                env.header.extended_layer_id,
+                                prefix.cur_mfh_id,
+                            )
                         });
                     if let Some(sequence_id) = sequence_id {
                         match global_associations.get(&(xlayer, sequence_id)) {

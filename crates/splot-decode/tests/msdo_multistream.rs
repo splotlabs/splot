@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::io::{self, Read};
 
 use splot_core::annexb::parse_annex_b_obus;
-use splot_core::headers::sequence::SequenceHeaderId;
+use splot_core::headers::sequence::{LcrId, SequenceHeaderId};
 use splot_core::obu::{ObuHeader, ParsedObu, PayloadStatus};
 use splot_core::stream_reader::TemporalUnitReader;
 use splot_core::types::{
@@ -773,6 +773,51 @@ fn standalone_cvs_reuses_available_sequence_after_cmvs_end() {
             .unwrap();
         assert_eq!(report.frames.len(), 9);
     }
+}
+
+#[test]
+fn standalone_cvs_reuses_available_mfh_after_cmvs_end() {
+    let prior: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-xlayer3-7-global-lcr-isolation.obu"
+    );
+    let units = temporal_units(prior);
+    let mut combined = prior.to_vec();
+    let xlayer = ExtendedLayerId::from_bits(7);
+    for envelope in parse_annex_b_obus(&units[0]).unwrap() {
+        if envelope.header.extended_layer_id == xlayer
+            && let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut sequence)) =
+                envelope.payload_status().unwrap()
+        {
+            sequence.general.seq_lcr_id = LcrId::from_bits(0);
+            write_parsed(
+                &mut combined,
+                envelope.header,
+                &ParsedObu::SequenceHeader(sequence.clone()),
+            );
+            sequence.general.seq_header_id = SequenceHeaderId::try_new(0).unwrap();
+            write_parsed(
+                &mut combined,
+                envelope.header,
+                &ParsedObu::SequenceHeader(sequence),
+            );
+        } else if envelope.header.obu_type == ObuType::TemporalDelimiter
+            || (envelope.header.extended_layer_id == xlayer
+                && envelope.header.obu_type == ObuType::ClosedLoopKey)
+        {
+            write_obu(&mut combined, envelope.header, envelope.payload);
+        }
+    }
+    let pictures = stream_decode(&combined, &DecoderSettings::default()).unwrap();
+    let (raw, _) = raw_all_and_by_xlayer(&pictures);
+    assert_eq!(
+        sha256_hex(&raw),
+        "b5d63982ae20876398411909697cd8299bea23ab6677b699ebc617b0b825e9c5"
+    );
+    assert_eq!(pictures.last().unwrap().extended_layer_id(), xlayer);
+    let report = context(3, 2)
+        .decode_hash_report_bytes(&combined, DecodeOptions::default())
+        .unwrap();
+    assert_eq!(report.frames.len(), 9);
 }
 
 #[test]
