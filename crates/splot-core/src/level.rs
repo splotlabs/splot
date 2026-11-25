@@ -66,6 +66,19 @@ fn level_group(level_idx: u8) -> Option<usize> {
     GROUP.get(usize::from(level_idx)).copied().map(usize::from)
 }
 
+// Annex A.4 multistream table (mirror lines 475–512). The columns
+// contain (MaxVSizeX, MaxHSizeX, MaxTileColsX) for scales 1.5, 4, 9.
+// For the absent rows at aggregate levels 0–3, Splot follows pinned
+// AVM 457cd58681a747465661baccb1f32095bc5b7774, level.c,
+// level_to_sub_stream_level_index(): use the level-4.0 table cells.
+const SUBSTREAM: [[(u16, u16, u8); 3]; 5] = [
+    [(1600, 896, 7), (960, 576, 4), (640, 384, 3)],
+    [(2560, 1472, 7), (1920, 1088, 4), (1280, 768, 3)],
+    [(5120, 2280, 13), (3840, 2176, 8), (2560, 1472, 5)],
+    [(10240, 5760, 26), (7680, 4320, 16), (5120, 2880, 11)],
+    [(20480, 11520, 52), (15360, 8640, 32), (10240, 5760, 21)],
+];
+
 impl MultistreamDecoderOperation {
     // Table column and ScaleFactorX as a numerator / denominator.
     fn allocation_scale(&self, xlayer: ExtendedLayerId) -> Option<(usize, u32, u32)> {
@@ -105,19 +118,6 @@ impl MultistreamDecoderOperation {
             .max_tiles
             .min(aggregate.max_tiles * denominator / numerator);
 
-        // Annex A.4 multistream table (mirror lines 475–512). The columns
-        // contain (MaxVSizeX, MaxHSizeX, MaxTileColsX) for scales 1.5, 4, 9.
-        // For the absent rows at aggregate levels 0–3, Splot follows pinned
-        // AVM 457cd58681a747465661baccb1f32095bc5b7774, level.c,
-        // level_to_sub_stream_level_index(): use the level-4.0 table cells.
-        // MaxTilesX above still uses the signaled aggregate level.
-        const SUBSTREAM: [[(u16, u16, u8); 3]; 5] = [
-            [(1600, 896, 7), (960, 576, 4), (640, 384, 3)],
-            [(2560, 1472, 7), (1920, 1088, 4), (1280, 768, 3)],
-            [(5120, 2280, 13), (3840, 2176, 8), (2560, 1472, 5)],
-            [(10240, 5760, 26), (7680, 4320, 16), (5120, 2880, 11)],
-            [(20480, 11520, 52), (15360, 8640, 32), (10240, 5760, 21)],
-        ];
         let (height, width, cols) = SUBSTREAM[group.saturating_sub(4)][column];
         // MaxHeaderRateX is 132 for every row.
         limits.max_header_rate = limits.max_header_rate.min(132);
