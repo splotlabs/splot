@@ -32,10 +32,10 @@ pub(super) fn add_luma_noise<S: Simd>(
         let len = tail.len();
         let mut row = [0; 64];
         let mut noise = [0; 64];
-        row[..len].copy_from_slice(tail);
-        noise[..len].copy_from_slice(tail_noise);
+        row[..len].copy_from_slice(tail); // splot-copy-ok: pad the final luma block
+        noise[..len].copy_from_slice(tail_noise); // splot-copy-ok: pad the matching noise block
         apply_block(simd, &mut row, &noise, tables, params);
-        tail.copy_from_slice(&row[..len]);
+        tail.copy_from_slice(&row[..len]); // splot-copy-ok: write only the visible tail
     }
 }
 
