@@ -9,6 +9,7 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py find
   python3 tools/decoder-fixtures/generate.py hashes [--out oracle.json]
   python3 tools/decoder-fixtures/generate.py coverage-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py bru-inactive-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py temporal-fixtures ...
@@ -1285,7 +1286,30 @@ BRU_INTRABC_FIXTURES = [
 ]
 
 
-def _run_bru_fixture_batch(fixtures, fixed_flags, label, args):
+BRU_INACTIVE_POSITIONS = [(8, 8), (36, 8), (64, 24), (16, 16), (48, 36),
+                          (16, 16), (20, 16), (92, 28)]
+
+
+def _bru_inactive_sample(t, x, y, plane, bit_depth):
+    left, top = BRU_INACTIVE_POSITIONS[t]
+    if left <= x < left + 24 and top <= y < top + 24:
+        value = (200, 64, 192)[plane]
+    elif plane == 0:
+        value = 82 if (x // 9 + y // 11) % 2 else 48
+    else:
+        value = (0, 118, 132)[plane]
+    return value << (bit_depth - 8)
+
+
+BRU_INACTIVE_FIXTURES = [
+    ("syn-bru-inactive-block-use-8bit", 128, 64, 8,
+     lambda t, x, y, p: _bru_inactive_sample(t, x, y, p, 8), []),
+    ("syn-bru-inactive-block-use-10bit", 128, 64, 10,
+     lambda t, x, y, p: _bru_inactive_sample(t, x, y, p, 10), []),
+]
+
+
+def _run_bru_fixture_batch(fixtures, fixed_flags, label, args, *, num_frames=6):
     avmenc = find("avmenc")
     avmdec = find("avmdec")
     stage = args.stage
@@ -1298,7 +1322,7 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args):
         ivf = os.path.join(stage, f"{fid}.ivf")
         repeat_ivf = os.path.join(stage, f"{fid}.repeat.ivf")
         raw = os.path.join(stage, f"{fid}.avm.raw")
-        _bru_lr_write_y4m(y4m, w, h, bd, sample_fn)
+        _bru_lr_write_y4m(y4m, w, h, bd, sample_fn, num_frames)
         encode = [
             avmenc, "--codec=av2", "--ivf", "-D", "--passes=1",
             "--lag-in-frames=0", "--kf-min-dist=9999", "--kf-max-dist=9999",
@@ -1315,6 +1339,16 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args):
         run_checked([avmdec, "--i420", "--rawvideo", "-o", raw, ivf])
         print(f"  {fid}: src={sha(y4m)} ivf={ivf_sha} avm_raw={sha(raw)} size={os.path.getsize(ivf)}")
     print(f"staged {len(selected)} {label} fixtures in {stage}")
+
+
+def cmd_bru_inactive_fixtures(args):
+    _run_bru_fixture_batch(
+        BRU_INACTIVE_FIXTURES,
+        ["--cpu-used=5", "--qp=220"],
+        "inactive BRU",
+        args,
+        num_frames=len(BRU_INACTIVE_POSITIONS),
+    )
 
 
 def cmd_bru_lr_fixtures(args):
@@ -1484,6 +1518,10 @@ def main():
     c = sub.add_parser("coverage-fixtures"); c.add_argument("--stage", required=True)
     c.add_argument("--only", help="regenerate one fixture id")
     c.set_defaults(fn=cmd_coverage_fixtures)
+    inactive = sub.add_parser("bru-inactive-fixtures")
+    inactive.add_argument("--stage", required=True)
+    inactive.add_argument("--only", help="regenerate one fixture id")
+    inactive.set_defaults(fn=cmd_bru_inactive_fixtures)
     b = sub.add_parser("bru-lr-fixtures"); b.add_argument("--stage", required=True)
     b.add_argument("--only", help="regenerate one fixture id")
     b.set_defaults(fn=cmd_bru_lr_fixtures)
