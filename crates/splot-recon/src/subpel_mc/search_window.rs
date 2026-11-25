@@ -942,28 +942,33 @@ pub(super) mod generic {
                 .map_or(zero, |lanes| u16x8::load_array_ref(simd, lanes))
         };
         let width = STRIDE - 4;
-        let sad = |dy: i32, dx: i32| -> u32 {
-            let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
-            let (a, b) = (start(dy, dx), start(-dy, -dx));
-            let mut sums = [zero; 3];
-            for row in (0..SAD_H).step_by(2) {
-                let diff = |at: usize| {
-                    let at = row * STRIDE + at;
-                    let (x, y) = (lanes(first, a + at), lanes(second, b + at));
-                    x.max(y) - x.min(y)
-                };
-                for (column, sum) in sums.iter_mut().enumerate().take(width / 8) {
-                    *sum += diff(8 * column);
-                }
-                sums[2] += diff(width - 8) & high;
-            }
-            let total = sums
-                .iter()
-                .fold(fearless_simd::u32x4::splat(simd, 0), |total, sum| {
-                    let (low, high) = sum.widen();
-                    total + low + high
-                });
-            total.reduce_sum() >> shift
+        let sad = |dy: i32, dx: i32| {
+            simd.vectorize(
+                #[inline(always)]
+                || {
+                    let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
+                    let (a, b) = (start(dy, dx), start(-dy, -dx));
+                    let mut sums = [zero; 3];
+                    for row in (0..SAD_H).step_by(2) {
+                        let diff = |at: usize| {
+                            let at = row * STRIDE + at;
+                            let (x, y) = (lanes(first, a + at), lanes(second, b + at));
+                            x.max(y) - x.min(y)
+                        };
+                        for (column, sum) in sums.iter_mut().enumerate().take(width / 8) {
+                            *sum += diff(8 * column);
+                        }
+                        sums[2] += diff(width - 8) & high;
+                    }
+                    let total =
+                        sums.iter()
+                            .fold(fearless_simd::u32x4::splat(simd, 0), |total, sum| {
+                                let (low, high) = sum.widen();
+                                total + low + high
+                            });
+                    total.reduce_sum() >> shift
+                },
+            )
         };
         super::best_offset(
             || sad(0, 0),

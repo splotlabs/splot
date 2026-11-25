@@ -873,17 +873,20 @@ fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
         return;
     }
     let chunk = (samples, stride, edges, max_sample);
-    match edges
-        .iter()
-        .fold(0, |widest, edge| widest.max(edge.max_width_pos()))
-    {
-        0 => {}
-        1 => portable_class::<S, E, VERTICAL, 1>(simd, chunk),
-        3 => portable_class::<S, E, VERTICAL, 3>(simd, chunk),
-        4 => portable_class::<S, E, VERTICAL, 4>(simd, chunk),
-        6 => portable_class::<S, E, VERTICAL, 6>(simd, chunk),
-        _ => portable_class::<S, E, VERTICAL, 8>(simd, chunk),
-    }
+    simd.vectorize(
+        #[inline(always)]
+        || match edges
+            .iter()
+            .fold(0, |widest, edge| widest.max(edge.max_width_pos()))
+        {
+            0 => {}
+            1 => portable_class::<S, E, VERTICAL, 1>(simd, chunk),
+            3 => portable_class::<S, E, VERTICAL, 3>(simd, chunk),
+            4 => portable_class::<S, E, VERTICAL, 4>(simd, chunk),
+            6 => portable_class::<S, E, VERTICAL, 6>(simd, chunk),
+            _ => portable_class::<S, E, VERTICAL, 8>(simd, chunk),
+        },
+    );
 }
 
 /// [`portable_chunk`] for the window from `s[-8]` of the chunk's first line
