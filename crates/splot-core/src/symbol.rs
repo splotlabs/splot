@@ -371,6 +371,17 @@ fn early_exit_search<T: CdfStorage, const N: usize>(
     (N - 1, 0, prev)
 }
 
+/// Number of low set bits in the prefix mask of a monotone CDF row.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[inline]
+fn prefix_len(mask: u64) -> u32 {
+    if cfg!(all(target_arch = "x86_64", not(target_feature = "popcnt"))) {
+        mask.trailing_ones()
+    } else {
+        mask.count_ones()
+    }
+}
+
 /// The lane search of [`early_exit_search`] in one register: the signed
 /// high-half multiply and the compare. The boundaries do not increase from
 /// lane to lane, so the symbol's two are the ones beside the last lane above
@@ -400,14 +411,14 @@ fn search_lanes<const N: usize>(
     if N <= 4 {
         let word = |lanes: i16x8<LaneToken>| lanes.bitcast::<u64x2<LaneToken>>().as_array()[0];
         let mask = word(token.to_vector_mask16x8(below));
-        let shift = mask.count_ones();
+        let shift = prefix_len(mask);
         let low = word(boundaries.bitcast());
         let cur = low.wrapping_shr(shift) as u16;
         let prev = ((low << 16) | u64::from(range)).wrapping_shr(shift) as u16;
         return (shift >> 4, cur, prev, below);
     }
     #[cfg(target_arch = "x86_64")]
-    let above = below.to_bitmask().count_ones();
+    let above = prefix_len(below.to_bitmask());
     // NEON has no `movemask`: one across-lane add of the `-1` lanes counts them.
     #[cfg(target_arch = "aarch64")]
     let above = u32::from(
