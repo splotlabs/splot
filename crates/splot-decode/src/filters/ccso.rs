@@ -766,32 +766,38 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
     let (class_weight0, class_weight1) =
         (config.max_edge_interval * config.max_band, config.max_band);
     let quant_step = u16x16::splat(simd, config.quant_step as u16);
-    let edge_u16 = |source: u16x16<S>, centers: u16x16<S>, weight: usize| {
-        let (weight, zero) = (u16x16::splat(simd, weight as u16), u16x16::splat(simd, 0));
-        let class = source
-            .saturating_add(quant_step)
-            .simd_ge(centers)
-            .select(weight, zero);
-        if config.edge_clf {
-            return class;
+    let edge_u16 = {
+        #[inline(always)]
+        |source: u16x16<S>, centers: u16x16<S>, weight: usize| {
+            let (weight, zero) = (u16x16::splat(simd, weight as u16), u16x16::splat(simd, 0));
+            let class = source
+                .saturating_add(quant_step)
+                .simd_ge(centers)
+                .select(weight, zero);
+            if config.edge_clf {
+                return class;
+            }
+            class
+                + source
+                    .simd_gt(centers.saturating_add(quant_step))
+                    .select(weight, zero)
         }
-        class
-            + source
-                .simd_gt(centers.saturating_add(quant_step))
-                .select(weight, zero)
     };
-    let index_u16 = |rows: [&[L]; 3]| -> Option<u8x16<S>> {
-        let [centers, row0, row1] =
-            rows.map(|row| ccso_luma::<S, u16x16<S>, SUB_X>(simd, L::u16_slice(row)?));
-        let centers = centers?;
-        let mut index = centers >> u32::from(config.band_shift);
-        if offset_rows.is_some() {
-            index = index
-                + edge_u16(row0?, centers, class_weight0)
-                + edge_u16(row1?, centers, class_weight1);
+    let index_u16 = {
+        #[inline(always)]
+        |rows: [&[L]; 3]| -> Option<u8x16<S>> {
+            let [centers, row0, row1] =
+                rows.map(|row| ccso_luma::<S, u16x16<S>, SUB_X>(simd, L::u16_slice(row)?));
+            let centers = centers?;
+            let mut index = centers >> u32::from(config.band_shift);
+            if offset_rows.is_some() {
+                index = index
+                    + edge_u16(row0?, centers, class_weight0)
+                    + edge_u16(row1?, centers, class_weight1);
+            }
+            let (low, high) = simd.split_u16x16(index);
+            Some(simd.narrow_u16x8(low, high))
         }
-        let (low, high) = simd.split_u16x16(index);
-        Some(simd.narrow_u16x8(low, high))
     };
     let quant_step = u8x16::splat(simd, config.quant_step.clamp(0, 255) as u8);
     let edge_u8 = |source: u8x16<S>, centers: u8x16<S>, weight: usize| {
@@ -843,37 +849,45 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
     if count >= 2 {
         let tables = tables.map(|table| simd.combine_u8x16(table, table));
         let quant_step = u8x32::splat(simd, config.quant_step.clamp(0, 255) as u8);
-        let edge = |source: u8x32<S>, centers: u8x32<S>, weight: usize| {
-            let (weight, zero) = (u8x32::splat(simd, weight as u8), u8x32::splat(simd, 0));
-            let class = source
-                .saturating_add(quant_step)
-                .simd_ge(centers)
-                .select(weight, zero);
-            if config.edge_clf {
-                return class;
+        let edge = {
+            #[inline(always)]
+            |source: u8x32<S>, centers: u8x32<S>, weight: usize| {
+                let (weight, zero) = (u8x32::splat(simd, weight as u8), u8x32::splat(simd, 0));
+                let class = source
+                    .saturating_add(quant_step)
+                    .simd_ge(centers)
+                    .select(weight, zero);
+                if config.edge_clf {
+                    return class;
+                }
+                class
+                    + source
+                        .simd_gt(centers.saturating_add(quant_step))
+                        .select(weight, zero)
             }
-            class
-                + source
-                    .simd_gt(centers.saturating_add(quant_step))
-                    .select(weight, zero)
         };
         let luma = |row: &[L]| ccso_luma::<S, u8x32<S>, SUB_X>(simd, L::u8_slice(row)?);
-        let wide_index = |centers: &[L], taps0: &[L], taps1: &[L]| -> Option<u8x32<S>> {
-            if L::u8_slice(centers).is_none() {
-                let half =
-                    |at: usize| index_u16([centers.get(at..)?, taps0.get(at..)?, taps1.get(at..)?]);
-                return Some(simd.combine_u8x16(half(0)?, half(step)?));
+        let wide_index = {
+            #[inline(always)]
+            |centers: &[L], taps0: &[L], taps1: &[L]| -> Option<u8x32<S>> {
+                if L::u8_slice(centers).is_none() {
+                    let half = |at: usize| {
+                        index_u16([centers.get(at..)?, taps0.get(at..)?, taps1.get(at..)?])
+                    };
+                    return Some(simd.combine_u8x16(half(0)?, half(step)?));
+                }
+                let (centers, row0, row1) = (luma(centers)?, luma(taps0)?, luma(taps1)?);
+                let mut index = match config.band_shift {
+                    shift @ 0..8 => centers >> u32::from(shift),
+                    _ => u8x32::splat(simd, 0),
+                };
+                if offset_rows.is_some() {
+                    index = index
+                        + edge(row0, centers, class_weight0)
+                        + edge(row1, centers, class_weight1);
+                }
+                Some(index)
             }
-            let (centers, row0, row1) = (luma(centers)?, luma(taps0)?, luma(taps1)?);
-            let mut index = match config.band_shift {
-                shift @ 0..8 => centers >> u32::from(shift),
-                _ => u8x32::splat(simd, 0),
-            };
-            if offset_rows.is_some() {
-                index =
-                    index + edge(row0, centers, class_weight0) + edge(row1, centers, class_weight1);
-            }
-            Some(index)
         };
         let wide_lanes = centers
             .chunks_exact(2 * step)
