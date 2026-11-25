@@ -3010,6 +3010,26 @@ expect = "clean"
 
 
 [[vector]]
+path = "vectors/valid/syn-msdo-reproducible-two-streams-8bit.obu"
+description = "Two independent 8-bit streams use extended layers 3 and 7. MSDO repeats at the aligned closed-loop key frames in temporal unit 2. Regenerate with tools/decoder-fixtures/msdo.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-reproducible-two-streams-10bit.obu"
+description = "Two independent 10-bit streams use extended layers 2 and 9. MSDO and global LCR enable the display order hint constraint. The coded order hints are 0, 3, 1, 2, and 4. Regenerate with tools/decoder-fixtures/msdo.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-reproducible-four-streams-obu-order.obu"
+description = "Four independent 8-bit streams use noncontiguous extended layers 1, 5, 12, and 20. Every stream emits three pictures. Regenerate with tools/decoder-fixtures/msdo.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-reproducible-ops-random-access.obu"
+description = "Two 8-bit streams use two temporal layers and independent key intervals. Global OPS 0 and 1 and local OPS 2 select output across unaligned and aligned random access points. Regenerate with tools/decoder-fixtures/msdo.py."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-msdo-two-streams-8bit.obu"
 description = "Four-TU multi-extended-layer 8-bit 4:2:0 Profile 0 IOP 0 Annex B stream governed solely by OBU_MSDO (0x50 1-byte header, seq_lcr_id 0, multistream_doh_constraint_flag 1, no global LCR) multiplexing independent AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) streams at obu_xlayer_id 3 (64x64, kf-min-dist 2) and obu_xlayer_id 7 (80x64, kf-min-dist 2) with RAP OBU_MSDO resend at TU 2. Decodes identically to avmdec --all-layers (55,296 bytes, SHA-256 6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b); validates clean."
 expect = "clean"
