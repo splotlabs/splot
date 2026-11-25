@@ -1,0 +1,8 @@
+GitHub Actions: https://github.com/splotlabs/splot/actions/runs/45697762251
+Base: d04f4d61bed29288ab5109c4eaa543c5c152f9f9
+Candidate: 503f8cb3959be615d0f962d8a79e1e349e7b3f21
+machdep.cpu.brand_string: Apple M1 (Virtual)
+hw.logicalcpu: 3
+MACH-O __TEXT,__text	base	8196772	9ad6cf976c879a314cb2c2ea0824e15a42801346ae0dd214a7935da11622bd72
+MACH-O __TEXT,__text	candidate	8196772	037cd94773556584e4b5b009f6653c10e4bfb299269caf5a883ef8b37be5dc98
+MACH-O __TEXT,__text equal: False
