@@ -10,6 +10,9 @@
 
 #![expect(clippy::expect_used, clippy::panic)]
 
+#[path = "decoder_oracle/atlas.rs"]
+mod atlas;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
