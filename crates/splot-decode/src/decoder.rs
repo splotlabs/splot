@@ -6,6 +6,9 @@
 //!
 //! Feature tracking: `DECODE-STREAMING-API`, `DECODE-ZERO-COPY-PICTURE`.
 
+mod composition;
+pub use composition::{AtlasComposite, AtlasCompositionError, AtlasCompositor};
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 

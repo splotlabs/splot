@@ -98,6 +98,24 @@ splot decode movie.ivf -o clean.y4m --skip-film-grain      # no film grain
 The decoder reads IVF files and raw Annex B streams. A raw stream has no frame
 rate, so give one for Y4M output: `--frame-rate 30:1`.
 
+### Compose a multistream atlas
+
+```bash
+splot compose atlas.obu -o canvas.yuv
+```
+
+For atlas modes 3 and 4, this command writes raw Y, U and V planes in display order.
+Ten-bit samples use little-endian 16-bit words. Use `-o -` for standard output.
+Splot uses nearest-neighbor scaling and limited-range BT.709 color for this presentation operation.
+AV2 § 7.3.1 gives all extended layers in one temporal unit the same output time.
+The command groups pictures by their input temporal unit and checks its active global atlas.
+Use `--atlas-id ID` to select a layout when several global atlases apply.
+At a random access point, use `--external-atlas FILE` to supply a missing atlas OBU with its Annex B length prefix. Repeat the option for each atlas.
+
+`--max-bytes` sets three separate limits, each 256 MiB by default.
+They apply to one decoded frame, the sample storage of all pending pictures, and the compositor's canvas with row scratch.
+The command accepts pictures within a window of 32 input temporal units. It reports late, missing, or duplicate contributions.
+
 ## Validate. With proof.
 
 Find out if a stream is correct, and if not, exactly where and why.
