@@ -167,3 +167,57 @@ fn pending_atlas_pictures_respect_the_byte_limit() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("Pending atlas pictures exceed"));
     assert!(result.stdout.is_empty());
 }
+
+#[test]
+fn external_atlas_restores_composition_at_random_access() {
+    use splot_core::types::ObuType;
+
+    let stream = std::fs::read(conformance_vector("syn-atlas-alpha-paired-8bit.obu")).unwrap();
+    let mut units = TemporalUnitReader::new(stream.as_slice());
+    let mut suffix = Vec::new();
+    let mut sidecar = Vec::new();
+    while let Some(unit) = units.next_temporal_unit().unwrap() {
+        if unit.index < 2 {
+            continue;
+        }
+        let mut start = 0;
+        for obu in parse_annex_b_obus(unit.bytes).unwrap() {
+            let end = (obu.offset.get() + u64::from(obu.size)) as usize;
+            let record = &unit.bytes[start..end];
+            if obu.header.obu_type == ObuType::AtlasSegment {
+                sidecar.extend_from_slice(record);
+            } else {
+                suffix.extend_from_slice(record);
+            }
+            start = end;
+        }
+    }
+    let input = temp_input("obu", &suffix);
+    let atlas = temp_input("annexb", &sidecar);
+    let output = temp_output("yuv");
+    std::fs::write(&output, b"existing").unwrap();
+    let args = [
+        "compose",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ];
+    let missing = splot(&args);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("Global atlas 5 is unavailable"));
+    assert_eq!(std::fs::read(&output).unwrap(), b"existing");
+    let mut args = args.to_vec();
+    args.extend(["--external-atlas", atlas.to_str().unwrap()]);
+    let result = splot(&args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let samples = std::fs::read(output).unwrap();
+    assert_eq!(samples.len(), 27_648);
+    assert_eq!(
+        sha256_hex(&samples),
+        "3be335cfc4560e3c6b1675729501fd20e288f23c09a537cc37c434b427a6390c"
+    );
+}

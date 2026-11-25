@@ -110,6 +110,7 @@ Splot uses nearest-neighbor scaling and limited-range BT.709 color for this pres
 AV2 § 7.3.1 gives all extended layers in one temporal unit the same output time.
 The command groups pictures by their input temporal unit and checks its active global atlas.
 Use `--atlas-id ID` to select a layout when several global atlases apply.
+At a random access point, use `--external-atlas FILE` to supply a missing atlas OBU with its Annex B length prefix. Repeat the option for each atlas.
 
 `--max-bytes` sets three separate limits, each 256 MiB by default.
 They apply to one decoded frame, the sample storage of all pending pictures, and the compositor's canvas with row scratch.

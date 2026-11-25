@@ -1102,7 +1102,7 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
     DecodeOutputError::io(operation, source).into()
 }
 
-fn read_external_atlases(paths: &[PathBuf]) -> Result<ExternalAtlases> {
+pub(super) fn read_external_atlases(paths: &[PathBuf]) -> Result<ExternalAtlases> {
     let mut atlases = ExternalAtlases::default();
     let mut bytes = Vec::new();
     for path in paths {

@@ -30,6 +30,9 @@ pub(crate) struct ComposeArgs {
     /// Write the raw composite planes to this file. Use '-' for standard output.
     #[arg(short, long)]
     output: PathBuf,
+    /// Supply one length-framed atlas OBU from this file. Repeat for additional atlases.
+    #[arg(long, value_name = "FILE")]
+    external_atlas: Vec<PathBuf>,
     /// Select a global atlas by ID when several layouts apply to the same picture.
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=7))]
     atlas_id: Option<u8>,
@@ -48,10 +51,11 @@ pub(crate) fn run(args: &ComposeArgs) -> Result<ExitCode> {
     let mut units = TemporalUnitReader::new(BufReader::new(input));
     let byte_limit = DecodeLimitThreshold::Max(args.max_bytes.get());
     let limits = DecodeLimits::default().with_max_decoded_frame_bytes(byte_limit);
-    let mut decoder = Decoder::new(
+    let mut decoder = Decoder::new_with_external_atlases(
         DecoderSettings::default()
             .with_threads(args.threads)
             .with_limits(limits),
+        super::decode::read_external_atlases(&args.external_atlas)?,
     )?;
     let mut output = CompositeOutput {
         compositor: AtlasCompositor::new(limits),
