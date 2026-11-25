@@ -12,7 +12,7 @@
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
-use splot_core::simd::SimdBackend;
+use splot_core::{simd::SimdBackend, with_simd};
 
 /// Expands `$body` with `$row` bound to each listed index below `$rows`, a
 /// constant, so a kernel's rows or ring phases unroll.
@@ -67,16 +67,6 @@ pub use tip_overlap::{
     BilinearOverlapCarry, subpel_predict_12x12_bilinear_overlap_into,
     subpel_predict_12x12_bilinear_overlap_into_with,
 };
-
-macro_rules! narrow_subpel_simd {
-    ($backend:expr, $simd:ident => $body:expr) => {{
-        let narrow = $backend.narrow();
-        narrow.vectorize(|| {
-            let $simd = narrow.token();
-            $body
-        })
-    }};
-}
 
 macro_rules! subpel_methods {
     ($runner:ident, $($mode:tt)+) => {
@@ -280,7 +270,7 @@ impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
         self.0.neon_token()
     }
 
-    subpel_methods!(self, typed(narrow_subpel_simd, self.0));
+    subpel_methods!(self, typed(with_simd, self.0.narrow()));
 }
 
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
