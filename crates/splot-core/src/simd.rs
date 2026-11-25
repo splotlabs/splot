@@ -521,11 +521,12 @@ impl SimdBackend for NeonBackend {
 /// Sealed SSE2 backend carrying a genuine [`fearless_simd::Sse2`] token.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
-pub struct Sse2Backend {
-    token: fearless_simd::Sse2,
-    // An uninhabited proof removes SSE2 dispatch at the full v3 floor.
-    _proof: <sse2_floor::BuildFloor as sse2_floor::Sse2Support>::Proof,
-}
+pub struct Sse2Backend(
+    (
+        fearless_simd::Sse2,
+        <sse2_floor::BuildFloor as sse2_floor::Sse2Support>::Proof,
+    ),
+);
 
 #[cfg(target_arch = "x86_64")]
 impl fmt::Debug for Sse2Backend {
@@ -556,12 +557,13 @@ impl SimdBackend for Sse2Backend {
 
     #[inline]
     fn token(self) -> Self::Token {
-        self.token
+        let (token, _) = self.0;
+        token
     }
 
     #[inline]
     fn vectorize<R>(self, f: impl FnOnce() -> R) -> R {
-        self.token.vectorize(f)
+        self.token().vectorize(f)
     }
 
     #[inline]
@@ -827,7 +829,8 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
             level
                 .as_sse2()
                 .zip(sse2_floor::BuildFloor::AVAILABLE)
-                .map(|(token, _proof)| ResolvedBackend::Sse2(Sse2Backend { token, _proof }))
+                .map(Sse2Backend)
+                .map(ResolvedBackend::Sse2)
                 .ok_or_else(err)
         }
         SelectedBackend::Neon | SelectedBackend::Fallback => Err(err()),

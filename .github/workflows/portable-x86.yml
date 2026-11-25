@@ -70,3 +70,11 @@ jobs:
                   assert digest == expected["avm_raw_sha256"], (cpu, fixture_id, digest)
                   print(f"{cpu} ({backend}) {fixture_id} {digest}")
           PY
+
+      - name: Resolve a partial AVX2 build on a CPU without FMA
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64 -C target-feature=+avx2
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: qemu-x86_64 -cpu Haswell-noTSX,-fma
+        run: |
+          cargo test --locked -p splot-core --target x86_64-unknown-linux-gnu --lib \
+            simd::tests::resolve_backend_matches_detected_host_capabilities -- --exact
