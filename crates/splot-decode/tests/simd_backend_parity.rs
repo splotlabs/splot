@@ -165,38 +165,121 @@ fn collect_context_outputs(ctx: &DecodeContext, bytes: &[u8]) -> ContextOutputs 
     ContextOutputs { hash, raw, y4m }
 }
 
+fn append_raw_picture(picture: &Picture, out: &mut Vec<u8>) {
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        match picture.plane(plane) {
+            Some(PictureSamples::Eight(plane)) => {
+                plane
+                    .visible_rows()
+                    .for_each(|row| out.extend_from_slice(row));
+            }
+            Some(PictureSamples::Ten(plane)) => plane
+                .visible_rows()
+                .flatten()
+                .for_each(|sample| out.extend_from_slice(&sample.to_le_bytes())),
+            None => {}
+        }
+    }
+}
+
 fn raw_from_pictures(pictures: &[Picture]) -> Vec<u8> {
     let mut out = Vec::new();
     for picture in pictures {
-        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-            match picture.plane(plane) {
-                Some(PictureSamples::Eight(plane)) => {
-                    plane
-                        .visible_rows()
-                        .for_each(|row| out.extend_from_slice(row));
-                }
-                Some(PictureSamples::Ten(plane)) => plane
-                    .visible_rows()
-                    .flatten()
-                    .for_each(|sample| out.extend_from_slice(&sample.to_le_bytes())),
-                None => {}
-            }
-        }
+        append_raw_picture(picture, &mut out);
     }
     out
 }
 
-fn decode_streaming(decoder: &mut Decoder, units: &[Vec<u8>]) -> Vec<Picture> {
-    let mut pictures = Vec::new();
+fn decode_streaming_into(decoder: &mut Decoder, units: &[Vec<u8>], mut emit: impl FnMut(Picture)) {
     for unit in units {
         while decoder.send_data(unit, DataProps::default()).unwrap() == SendStatus::Full {
-            pictures.extend(core::iter::from_fn(|| decoder.get_picture().unwrap()));
+            core::iter::from_fn(|| decoder.get_picture().unwrap()).for_each(&mut emit);
         }
-        pictures.extend(core::iter::from_fn(|| decoder.get_picture().unwrap()));
+        core::iter::from_fn(|| decoder.get_picture().unwrap()).for_each(&mut emit);
     }
     decoder.drain();
-    pictures.extend(core::iter::from_fn(|| decoder.get_picture().unwrap()));
+    core::iter::from_fn(|| decoder.get_picture().unwrap()).for_each(emit);
+}
+
+fn decode_streaming(decoder: &mut Decoder, units: &[Vec<u8>]) -> Vec<Picture> {
+    let mut pictures = Vec::new();
+    decode_streaming_into(decoder, units, |picture| pictures.push(picture));
     pictures
+}
+
+#[test]
+#[ignore = "requires the frozen EwoutH stream files and sha256sum"]
+fn frozen_ewouth_streaming_parity() {
+    use std::io::Write as _;
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
+    let case_list = PathBuf::from(std::env::var_os("SPLOT_EWOUTH_CASES").unwrap());
+    let corpus = case_list.parent().unwrap();
+    let cases = std::fs::read_to_string(&case_list).unwrap();
+    let mut policies = vec![
+        (SimdPolicy::Auto, SelectedBackend::Avx2),
+        (SimdPolicy::Avx2, SelectedBackend::Avx2),
+    ];
+    if std::env::var_os("SPLOT_REQUIRE_AVX512").is_some() {
+        policies.push((SimdPolicy::Avx512, SelectedBackend::Avx512));
+    }
+
+    assert!(!cases.trim().is_empty());
+    for line in cases.lines() {
+        let mut fields = line.split('\t');
+        let filename = fields.next().unwrap();
+        let digest = fields.next().unwrap();
+        let expected_frames: usize = fields.next().unwrap().parse().unwrap();
+        let expected_bytes: u64 = fields.next().unwrap().parse().unwrap();
+        assert!(fields.next().is_none());
+        let units = extract_units(&std::fs::read(corpus.join(filename)).unwrap());
+        assert!(!units.is_empty(), "{filename}");
+
+        for threads in [1usize, 7, 12] {
+            for &(policy, backend) in &policies {
+                let label = format!("{filename} threads={threads} policy={policy}");
+                let mut hash = Command::new("sha256sum")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let mut sink = hash.stdin.take().unwrap();
+                let mut raw = Vec::new();
+                let mut frames = 0;
+                let mut bytes = 0;
+                let start = Instant::now();
+                let mut decoder = Decoder::new(
+                    DecoderSettings::default()
+                        .with_threads(ThreadCount::from(threads))
+                        .with_frame_delay(FrameDelay::from(threads.min(4)))
+                        .with_simd_policy(policy),
+                )
+                .unwrap();
+                assert_eq!(decoder.selected_backend(), backend, "{label}");
+                decode_streaming_into(&mut decoder, &units, |picture| {
+                    raw.clear();
+                    append_raw_picture(&picture, &mut raw);
+                    sink.write_all(&raw).unwrap();
+                    frames += 1;
+                    bytes += raw.len() as u64;
+                });
+                drop(decoder);
+                drop(sink);
+                let output = hash.wait_with_output().unwrap();
+                let elapsed = start.elapsed().as_secs_f64();
+                assert!(output.status.success(), "{label}");
+                let actual = String::from_utf8(output.stdout).unwrap();
+                assert_eq!(actual.split_whitespace().next(), Some(digest), "{label}");
+                assert_eq!(frames, expected_frames, "{label}");
+                assert_eq!(bytes, expected_bytes, "{label}");
+                println!(
+                    "{label} selected={backend} frames={frames} sha256={digest} decode_and_hash_seconds={elapsed:.3}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
