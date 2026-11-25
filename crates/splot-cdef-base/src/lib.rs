@@ -106,11 +106,21 @@ pub fn gather_with<S: Simd>(
             }
         }
     }
-    let chunks = |[head, tail]: [u8x16<S>; 2]| {
-        let (first, second) = simd.split_u16x16(widen_u8(simd, head));
-        [first, second, simd.split_u16x16(widen_u8(simd, tail)).1]
+    let chunks = {
+        #[inline(always)]
+        |[head, tail]: [u8x16<S>; 2]| {
+            let (first, second) = simd.widen_u8x16(head);
+            [first, second, simd.widen_u8x16(tail).1]
+        }
     };
-    Some(pair_ranges(simd, bounds, min.map(chunks), max.map(chunks)))
+    let [u_min, v_min] = min;
+    let [u_max, v_max] = max;
+    Some(pair_ranges(
+        simd,
+        bounds,
+        [chunks(u_min), chunks(v_min)],
+        [chunks(u_max), chunks(v_max)],
+    ))
 }
 
 /// Gathers two byte planes into block-major interleaved, biased scratch.
