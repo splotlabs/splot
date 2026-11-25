@@ -79,12 +79,13 @@ fn bru_gdf_vectors_exercise_partial_bru_gdf_modes_lr_and_reference_consumers() {
             first_idx + 1 < headers.len(),
             "{name}: missing post-BRU consumer frame"
         );
-        let refreshed_mask = headers[first_idx].refresh_frame_flags.unwrap_or(0);
+        let refreshed_mask = headers[first_idx].header.refresh_frame_flags.unwrap_or(0);
         assert_ne!(
             refreshed_mask, 0,
             "{name} f{first_idx}: expected reference refresh"
         );
         let consumer_refs = &headers[first_idx + 1]
+            .header
             .inter
             .as_ref()
             .expect("consumer inter control")
@@ -282,12 +283,13 @@ fn bru_local_intrabc_vectors_exercise_mixed_bru_modes_same_frame_intrabc_lr_gdf_
             first_idx + 1 < headers.len(),
             "{name}: missing post-BRU consumer frame"
         );
-        let refreshed_mask = headers[first_idx].refresh_frame_flags.unwrap_or(0);
+        let refreshed_mask = headers[first_idx].header.refresh_frame_flags.unwrap_or(0);
         assert_ne!(
             refreshed_mask, 0,
             "{name} f{first_idx}: expected reference refresh"
         );
         let consumer_refs = &headers[first_idx + 1]
+            .header
             .inter
             .as_ref()
             .expect("consumer inter control")
