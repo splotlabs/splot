@@ -11,6 +11,7 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py coverage-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py temporal-fixtures ...
 
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
 .ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo). AVM decoder
@@ -20,6 +21,9 @@ fixtures (profiles, chroma formats, and one isolated intra tool each) so the cor
 is reproducible; move vetted `.ivf` into vectors/valid/ by hand.
 """
 import argparse, hashlib, json, math, os, shutil, subprocess, sys
+from collections import Counter
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VALID = os.path.join(REPO, "tests/conformance/vectors/valid")
@@ -1336,6 +1340,113 @@ def cmd_bru_intrabc_fixtures(args):
     )
 
 
+
+def signal_sparse_tlayers(data):
+    # The pinned encoder emits this SequenceHeader prefix for fixture 2.
+    # AV2 § 5.8.1 puts the TL dependency flag after the display and decoder models.
+    if not data.startswith(bytes.fromhex("01081804800a0c157ffc08")):
+        sys.exit("Unexpected sequence header. Check the AVM revision and build options.")
+
+    header_end = 2 + 1 + data[2]
+    bits = "".join(f"{byte:08b}" for byte in data[4:header_end]).rstrip("0")
+    # AV2 § 5.18.2 writes each row from the current layer down to layer zero.
+    rows = "11" "101" "1101"
+    bits = bits[:49] + "1" + rows + bits[50:]
+    bits += "0" * (-len(bits) % 8)
+    payload = int(bits, 2).to_bytes(len(bits) // 8, "big")
+    return data[:2] + bytes([len(payload) + 1]) + data[3:4] + payload + data[header_end:]
+
+
+def check_temporal_fixture(splot, avmdec, path, depth, frame_size, layers, groups):
+    run_checked([splot, "validate", "--strict", path])
+    obus = json.loads(run_checked([splot, "inspect", "--json", path]).stdout)
+    frames = [obu for obu in obus if "frame_header_core" in obu]
+    observed = [obu["header"]["temporal_layer_id"] for obu in frames]
+    tile_groups = [obu for obu in obus
+                   if obu["header"]["obu_type"] in ("ClosedLoopKey", "RegularTileGroup")]
+    if observed != layers or len(tile_groups) != len(layers) * groups:
+        sys.exit(f"Unexpected layers or tile groups in {path.name}.")
+    if groups == 2:
+        per_frame = Counter(obu["ivf_frame"]["index"] for obu in tile_groups)
+        if per_frame != dict.fromkeys(range(len(layers)), 2):
+            sys.exit(f"Expected two tile groups per frame in {path.name}.")
+    if any(obu["frame_header_core"]["frame_type"] != "inter" for obu in frames[1:]):
+        sys.exit(f"Expected an inter frame after the key frame in {path.name}.")
+
+    raw = run_checked([avmdec, "--rawvideo", "--i420", f"--output-bit-depth={depth}",
+                       "-o", "-", path]).stdout
+    if len(raw) != len(layers) * frame_size:
+        sys.exit(f"Unexpected decoded size for {path.name}.")
+    decode = [splot, "decode", "--output-format", "raw", "-o", "-"]
+    if run_checked([*decode, path]).stdout != raw:
+        sys.exit(f"Splot and AVM output differ for {path.name}.")
+
+    for layer in sorted(set(layers)):
+        subset = b"".join(raw[i * frame_size:(i + 1) * frame_size]
+                          for i, current in enumerate(layers) if current == layer)
+        if run_checked([*decode, "--temporal-output-mask", str(1 << layer),
+                        path]).stdout != subset:
+            sys.exit(f"Layer {layer} output differs for {path.name}.")
+    base = b"".join(raw[i * frame_size:(i + 1) * frame_size]
+                         for i, current in enumerate(layers) if current == 0)
+    if run_checked([*decode, "--temporal-layer", "0", path]).stdout != base:
+        sys.exit(f"Base layer output differs for {path.name}.")
+    print(f"{sha(path)}  {path.name}")
+    print(f"{hashlib.sha256(raw).hexdigest()}  {path.name} decoded I420")
+
+
+def cmd_temporal_fixtures(args):
+    revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+    actual = run_checked(["git", "-C", args.avm_source, "rev-parse", "HEAD"])
+    if actual.stdout.decode().strip() != revision:
+        sys.exit(f"Check out AVM revision {revision}.")
+
+    avmdec = args.avm_build / "avmdec"
+    version = run_checked([avmdec, "--help"]).stdout
+    if f"-g{revision[:10]}".encode() not in version:
+        sys.exit(f"Build avmdec at revision {revision}.")
+
+    specs = [
+        ("syn-tlayer2-reproducible-8bit.ivf", 8, 12288, [0, 1, 0, 1], 2,
+         "aa536ca69716284731231b1de7558547a47c01437f495b8ec6d94decc5ac3a46"),
+        ("syn-tlayer2-reproducible-10bit.ivf", 10, 12288, [0, 1, 0, 1], 1,
+         "2b830b7920d09315c5d74d7eb2dcbc79858e0106a05f09428b82b7637e5824f7"),
+        ("syn-tlayer4-reproducible-sparse.obu", 8, 6144, [0, 1, 2, 3, 0], 1,
+         "703087d9408ac4adef3e4618c9b183a1cb8c282d114863bec1bf19023959a18c"),
+    ]
+    for name, *_ in specs:
+        if (args.stage / name).exists():
+            sys.exit(f"Use a stage directory without {name}.")
+    with TemporaryDirectory() as work:
+        runner = Path(work) / "encode-temporal"
+        source = Path(__file__).with_name("encode-temporal.c")
+        run_checked([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                     "-I", args.avm_source, source, args.avm_build / "libavm.a",
+                     "-pthread", "-lm", "-o", runner])
+        for index, (name, depth, frame_size, layers, groups, source_sha256) in enumerate(specs):
+            raw = Path(work) / "source.i420"
+            command = [runner, str(index), raw]
+            data = run_checked(command).stdout
+            if sha(raw) != source_sha256:
+                sys.exit(f"Source I420 bytes differ for {name}.")
+            if data != run_checked(command).stdout or sha(raw) != source_sha256:
+                sys.exit(f"Repeated encodes produced different bytes for {name}.")
+            print(f"{source_sha256}  {name} source I420")
+            if index == 2:
+                data = signal_sparse_tlayers(data)
+            if data != (Path(VALID) / name).read_bytes():
+                sys.exit(f"Generated bytes differ from the committed fixture {name}.")
+            path = Path(work) / name
+            path.write_bytes(data)
+            check_temporal_fixture(args.splot, avmdec, path, depth, frame_size,
+                                   layers, groups)
+
+        args.stage.mkdir(parents=True, exist_ok=True)
+        for name, *_ in specs:
+            with (args.stage / name).open("xb") as target:
+                target.write((Path(work) / name).read_bytes())
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1353,6 +1464,12 @@ def main():
     i = sub.add_parser("bru-intrabc-fixtures"); i.add_argument("--stage", required=True)
     i.add_argument("--only", help="regenerate one fixture id")
     i.set_defaults(fn=cmd_bru_intrabc_fixtures)
+    t = sub.add_parser("temporal-fixtures")
+    t.add_argument("--stage", type=Path, required=True)
+    t.add_argument("--avm-source", type=Path, required=True)
+    t.add_argument("--avm-build", type=Path, required=True)
+    t.add_argument("--splot", type=Path, required=True)
+    t.set_defaults(fn=cmd_temporal_fixtures)
     args = p.parse_args()
     args.fn(args)
 
