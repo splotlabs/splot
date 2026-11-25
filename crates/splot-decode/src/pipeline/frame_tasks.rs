@@ -142,11 +142,25 @@ impl FrameWork for DecoderWork {
     }
 
     fn claim_critical(&self) -> Option<Claim> {
-        delegate_work!(self, frame => frame.claim_critical())
+        match self {
+            Self::Split8(frame) => frame.claim_critical(),
+            Self::Split16(frame) => frame.claim_critical(),
+            Self::Tip8(frame) => frame.claim_critical(),
+            Self::Tip16(frame) => frame.claim_critical(),
+            Self::Finish8(_) | Self::Finish16(_) => None,
+        }
     }
 
     fn run(&self, claim: Claim, worker: usize) {
-        delegate_work!(self, frame => frame.run(claim, worker));
+        struct Scope<'a>(&'a DecoderWork, Claim, usize);
+        impl splot_core::simd::SimdScope<()> for Scope<'_> {
+            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
+                self.0.run_with_backend(backend, self.1, self.2);
+            }
+        }
+        if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
+            backend.enter(Scope(self, claim, worker));
+        }
     }
 
     fn done(&self) -> bool {
@@ -164,30 +178,7 @@ impl DecoderWork {
         worker: usize,
     ) {
         let narrow = backend.narrow();
-        match self {
-            Self::Split8(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Split16(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Tip8(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Tip16(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Finish8(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Finish16(frame) => frame.run_with_backend(narrow, claim, worker),
-        }
-    }
-}
-
-pub(crate) trait IntoDecoderWork: FrameWork + 'static {
-    fn into_decoder_work(slot: Arc<Self>) -> DecoderWork;
-}
-
-impl<T: SplitSample> IntoDecoderWork for TipFrame<T> {
-    fn into_decoder_work(slot: Arc<Self>) -> DecoderWork {
-        T::tip_work(slot)
-    }
-}
-
-impl<T: SplitSample> IntoDecoderWork for FinishFrame<T> {
-    fn into_decoder_work(slot: Arc<Self>) -> DecoderWork {
-        T::finish_work(slot)
+        delegate_work!(self, frame => frame.run_with_backend(narrow, claim, worker));
     }
 }
 
@@ -639,9 +630,7 @@ impl<T: SplitSample> SplitFrame<T> {
         }
         self.notify();
     }
-}
 
-impl<T: SplitSample> FrameWork for SplitFrame<T> {
     /// The parse and its tiles: the next frame's parse waits for its CDFs.
     fn claim_critical(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
@@ -715,28 +704,14 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
         None
     }
 
+    fn done(&self) -> bool {
+        self.failed.load(Ordering::Acquire) || self.stages[OUTPUT].is_finished()
+    }
+
     /// Runs the claimed row, then the row it released when that one is next
     /// (a projected band's resolve, a resolved band's first batch or the next
     /// band, a batch's commit, a commit's frontier row or the next commit),
     /// without a scan or a wake.
-    fn run(&self, claim: Claim, worker: usize) {
-        struct Scope<'a, T: SplitSample>(&'a SplitFrame<T>, Claim, usize);
-        impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
-            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                self.0.run_with_backend(backend.narrow(), self.1, self.2);
-            }
-        }
-        if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
-            backend.enter(Scope(self, claim, worker));
-        }
-    }
-
-    fn done(&self) -> bool {
-        self.failed.load(Ordering::Acquire) || self.stages[OUTPUT].is_finished()
-    }
-}
-
-impl<T: SplitSample> SplitFrame<T> {
     fn run_with_backend<B: splot_core::simd::SimdBackend>(
         &self,
         backend: B,
@@ -1198,9 +1173,7 @@ impl<T: SplitSample> TipFrame<T> {
         }
         self.wake.notify();
     }
-}
 
-impl<T: SplitSample> FrameWork for TipFrame<T> {
     /// The init, which settles the CDFs the next frame's parse loads.
     fn claim_critical(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) || self.stages[TIP_INIT].is_finished() {
@@ -1249,26 +1222,12 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
         self.claim_band().or_else(|| self.claim_finish())
     }
 
-    /// Runs the claimed row, then a band the projection admitted or the
-    /// finish the last band released, without a scan or a wake.
-    fn run(&self, claim: Claim, worker: usize) {
-        struct Scope<'a, T: SplitSample>(&'a TipFrame<T>, Claim, usize);
-        impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
-            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                self.0.run_with_backend(backend.narrow(), self.1, self.2);
-            }
-        }
-        if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
-            backend.enter(Scope(self, claim, worker));
-        }
-    }
-
     fn done(&self) -> bool {
         self.failed.load(Ordering::Acquire) || self.stages[TIP_FINISH].is_finished()
     }
-}
 
-impl<T: SplitSample> TipFrame<T> {
+    /// Runs the claimed row, then a band the projection admitted or the
+    /// finish the last band released, without a scan or a wake.
     fn run_with_backend<B: splot_core::simd::SimdBackend>(
         &self,
         backend: B,
@@ -1513,9 +1472,7 @@ impl<T: SplitSample> FinishFrame<T> {
             self.fail(error);
         }
     }
-}
 
-impl<T: SplitSample> FrameWork for FinishFrame<T> {
     fn claim(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
             return None;
@@ -1542,26 +1499,12 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         None
     }
 
-    #[inline(never)]
-    fn run(&self, claim: Claim, worker: usize) {
-        struct Scope<'a, T: SplitSample>(&'a FinishFrame<T>, Claim, usize);
-        impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
-            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                self.0.run_with_backend(backend.narrow(), self.1, self.2);
-            }
-        }
-        if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
-            backend.enter(Scope(self, claim, worker));
-        }
-    }
-
     fn done(&self) -> bool {
         self.failed.load(Ordering::Acquire) || self.stages[FINISH_OUTPUT].is_finished()
     }
 }
 
-/// A growable pool of reusable frame works, for the frame kinds the in-flight
-/// ring already bounds. Without a row scheduler the work runs inline.
+/// A growable pool of reusable frame slots, bounded by the in-flight ring.
 pub(crate) struct WorkPool<W> {
     slots: Vec<Arc<W>>,
 }
@@ -1572,7 +1515,7 @@ impl<W> Default for WorkPool<W> {
     }
 }
 
-impl<W: IntoDecoderWork> WorkPool<W> {
+impl<W> WorkPool<W> {
     /// The index of an idle slot reset for reuse, or of a new one.
     fn reserve(&mut self, make: impl FnOnce() -> W, reset: impl Fn(&mut W) -> bool) -> usize {
         let idle = self
@@ -1585,30 +1528,13 @@ impl<W: IntoDecoderWork> WorkPool<W> {
         })
     }
 
-    fn push_slot_with(
-        &mut self,
-        rows: Option<&DecoderRowScheduler>,
-        index: usize,
-        arm: impl FnOnce(&mut W),
-        run_inline: impl Fn(&W, Claim),
-    ) -> Result<()> {
+    fn arm(&mut self, index: usize, arm: impl FnOnce(&mut W)) -> Result<&Arc<W>> {
         let slot = self
             .slots
             .get_mut(index)
             .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
         arm(Arc::get_mut(slot).ok_or_else(inter::invalid_inter_tile_scheduling_state)?);
-        if let Some(rows) = rows {
-            rows.push(W::into_decoder_work(Arc::clone(slot)));
-            return Ok(());
-        }
-        while let Some(claim) = slot.claim() {
-            run_inline(slot, claim);
-        }
-        if slot.done() {
-            Ok(())
-        } else {
-            Err(inter::invalid_inter_tile_scheduling_state())
-        }
+        Ok(slot)
     }
 
     fn drain(&mut self, rows: &DecoderRowScheduler) {
@@ -1717,16 +1643,23 @@ impl RowPools {
             },
             TipFrame::reset,
         );
-        tip.push_slot_with(
-            rows,
-            index,
-            |work| {
-                work.options = *options;
-                work.inline = rows.is_none();
-                work.arm(inputs);
-            },
-            |slot, claim| slot.run_with_backend(backend, claim, 0),
-        )
+        let slot = tip.arm(index, |work| {
+            work.options = *options;
+            work.inline = rows.is_none();
+            work.arm(inputs);
+        })?;
+        if let Some(rows) = rows {
+            rows.push(T::tip_work(Arc::clone(slot)));
+            return Ok(());
+        }
+        while let Some(claim) = slot.claim() {
+            slot.run_with_backend(backend, claim, 0);
+        }
+        if slot.done() {
+            Ok(())
+        } else {
+            Err(inter::invalid_inter_tile_scheduling_state())
+        }
     }
 
     /// Hands one walked frame's filter phase to the scheduler, or runs it inline.
@@ -1750,12 +1683,9 @@ impl RowPools {
         let index = pools
             .finish
             .reserve(|| FinishFrame::new(rows.wake()), FinishFrame::reset);
-        pools.finish.push_slot_with(
-            Some(rows),
-            index,
-            |work| work.arm(finish, walked),
-            |slot, claim| slot.run_with_backend(backend, claim, 0),
-        )
+        let slot = pools.finish.arm(index, |work| work.arm(finish, walked))?;
+        rows.push(T::finish_work(Arc::clone(slot)));
+        Ok(())
     }
 
     /// Waits for every work in every pool to finish.

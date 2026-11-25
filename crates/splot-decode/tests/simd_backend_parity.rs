@@ -36,8 +36,14 @@ const FIXTURES: &[(&str, &[u8])] = &[
         ),
     ),
     (
-        "film_grain",
+        "film_grain_8bit",
         include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf"),
+    ),
+    (
+        "film_grain_10bit",
+        include_bytes!(
+            "../../../tests/conformance/vectors/valid/syn-3frame-filmgrain-inter-64x64-10bit.ivf"
+        ),
     ),
     (
         "lr_wienerns_8bit",
@@ -369,6 +375,9 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
 
     let mut policies = vec![(SimdPolicy::Auto, auto_ctx.selected_backend())];
     policies.extend(supported_forced_policies());
+    if auto_ctx.selected_backend() == SelectedBackend::Avx512 {
+        assert!(policies.contains(&(SimdPolicy::Avx2, SelectedBackend::Avx2)));
+    }
     if std::env::var_os("SPLOT_REQUIRE_AVX512").is_some() {
         assert!(
             policies.contains(&(SimdPolicy::Avx512, SelectedBackend::Avx512)),
@@ -433,7 +442,8 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
                 );
                 assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
 
-                if name == "film_grain" {
+                if matches!(name, "film_grain_8bit" | "film_grain_10bit") {
+                    assert!(pass1.iter().any(Picture::has_film_grain), "{label}");
                     let mut no_grain_decoder = Decoder::new(
                         DecoderSettings::default()
                             .with_threads(ThreadCount::from(threads))

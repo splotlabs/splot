@@ -41,11 +41,6 @@ jobs:
       - name: Require and exercise the forced AVX-512 backend
         run: cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test simd_backend_parity
 
-      - name: Check wide grain through synchronous and streaming APIs
-        run: |
-          cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test decoder_api \
-            avx512_film_grain_matches_narrow_output_at_both_bit_depths -- --exact
-
       - name: Compare native wide rows with the scalar oracle
         run: |
           cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
