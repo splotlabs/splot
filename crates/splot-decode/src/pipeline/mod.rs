@@ -938,19 +938,11 @@ fn decode_frames_in_order(
         *obu_storage = recycle(leading_buffer);
         key_candidate?
     } else {
-        let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
-        match require_leading_frame_unit(leading_obus) {
-            Ok((_, suffix_end)) => {
-                require_inter_frame_units(
-                    leading_obus,
-                    suffix_end,
-                    "unexpected_leading_obu_after_key",
-                )?;
-            }
-            Err(error) if !stream.has_unfiltered_multistream_rap(&leading_unit)? => {
-                return Err(error);
-            }
-            Err(_) => {}
+        let leading_obus = stream.leading_obus(&leading_unit, &mut leading_buffer)?;
+        if let Err(error) = require_leading_frame_unit(leading_obus)
+            && !stream.has_unfiltered_multistream_rap(&leading_unit)?
+        {
+            return Err(error);
         }
         preflight(stream.ivf_header())?;
         *obu_storage = recycle(leading_buffer);

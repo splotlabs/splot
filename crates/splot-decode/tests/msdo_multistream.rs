@@ -32,6 +32,8 @@ const MSDO_4STREAM: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-msdo-four-streams-obu-order.obu");
 const MSDO_OPS_RA: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-msdo-ops-random-access.obu");
+const MLAYER2_CROSSREF_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-crossref-8bit.obu");
 
 const SHA_MSDO_8BIT_ALL: &str = "6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b";
 const SHA_MSDO_8BIT_X3: &str = "a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe";
@@ -677,6 +679,71 @@ fn unaligned_rap_pre_skip_and_cmvs_transition() {
     let (raw_cmvs, _) = raw_all_and_by_xlayer(&pics_cmvs);
     assert_eq!(pics_cmvs.len(), 8);
     assert_eq!(sha256_hex(&raw_cmvs), SHA_MSDO_8BIT_ALL);
+}
+
+#[test]
+fn first_unit_order_uses_frames_outside_the_embedded_layer_selection() {
+    let embedded_units = temporal_units(MLAYER2_CROSSREF_8BIT);
+    let embedded_obus = parse_annex_b_obus(&embedded_units[0]).unwrap();
+    let multistream_units = temporal_units(MSDO_8BIT);
+    let multistream_obus = parse_annex_b_obus(&multistream_units[0]).unwrap();
+    let delimiter = &multistream_obus[0];
+    let xlayer = ExtendedLayerId::from_bits(3);
+    let other_xlayer = ExtendedLayerId::from_bits(7);
+    let mut bytes = Vec::new();
+    write_obu(&mut bytes, delimiter.header, delimiter.payload);
+    bytes.extend(make_msdo_obu(false, 0, true, &[(3, 2, 1, 0), (7, 2, 1, 0)]));
+    for obu in &embedded_obus[1..] {
+        let header = ObuHeader {
+            has_header_extension: true,
+            extended_layer_id: xlayer,
+            header_size_bytes: 2,
+            ..obu.header
+        };
+        write_obu(&mut bytes, header, obu.payload);
+    }
+    for obu in multistream_obus
+        .iter()
+        .filter(|obu| obu.header.extended_layer_id == other_xlayer)
+    {
+        write_obu(&mut bytes, obu.header, obu.payload);
+    }
+
+    let all = stream_decode(&bytes, &DecoderSettings::default()).unwrap();
+    assert_eq!(all.len(), 3);
+    let enhancement = EmbeddedLayerId::from_bits(1);
+    let selected = stream_decode(
+        &bytes,
+        &DecoderSettings::default()
+            .with_embedded_layer_selection(EmbeddedLayerSelection::Target(enhancement)),
+    )
+    .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].extended_layer_id(), xlayer);
+    assert_eq!(selected[0].embedded_layer_id(), enhancement);
+    assert_eq!(
+        raw_all_and_by_xlayer(&selected).0,
+        raw_all_and_by_xlayer(&all[1..2]).0
+    );
+}
+
+#[test]
+fn first_unit_order_rejects_misplaced_metadata_at_an_unaligned_rap() {
+    let units = temporal_units(MSDO_OPS_RA);
+    let mut bytes = units[2].clone();
+    let obus = parse_annex_b_obus(&bytes).unwrap();
+    let header = ObuHeader {
+        obu_type: ObuType::MetadataShort,
+        ..obus.last().unwrap().header
+    };
+    write_obu(&mut bytes, header, &[0x22, 9, 0, 0x80]);
+
+    let result = context(1, 1).decode_hash_report_bytes(&bytes, DecodeOptions::default());
+    assert!(matches!(
+        result,
+        Err(DecodeError::UnsupportedFeature { unsupported })
+            if unsupported.reason() == "unexpected_leading_obu_after_key"
+    ));
 }
 
 #[test]
