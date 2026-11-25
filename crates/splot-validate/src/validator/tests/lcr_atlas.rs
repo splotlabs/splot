@@ -286,6 +286,20 @@ fn atlas_local_atlas_unavailable_is_flagged() {
 }
 
 #[test]
+fn atlas_global_id_does_not_supply_required_local_atlas() {
+    let mut data = temporal_delimiter_obu();
+    data.extend(atlas_obu(31, 4));
+    data.extend(local_lcr_obu(3, 0, 1, Some(4)));
+    let report = Validator::new(false).validate_bytes(&data);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.rule_id == "atlas/local-atlas-unavailable"),
+        "{report}"
+    );
+}
+
+#[test]
 fn atlas_local_atlas_unavailable_is_suppressed_under_external_hls() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
     let mut data = temporal_delimiter_obu();
@@ -306,6 +320,7 @@ fn atlas_local_atlas_unavailable_is_suppressed_under_external_hls() {
 fn atlas_local_atlas_available_is_accepted() {
     let mut data = temporal_delimiter_obu();
     data.extend(atlas_obu(3, 4));
+    data.extend(temporal_delimiter_obu());
     data.extend(local_lcr_obu(3, 0, 1, Some(4)));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(

@@ -530,6 +530,25 @@ fn inspect_json_surfaces_operating_point_set() {
 }
 
 #[test]
+fn inspect_json_lists_each_atlas_mode_and_its_segment_labels() {
+    for mode in 0..=4 {
+        let path = common::conformance_vector(&format!("syn-atlas-mode-{mode}.obu"));
+        let records = inspect_json(&path);
+        let atlas = records
+            .as_array()
+            .expect("OBU records")
+            .iter()
+            .find_map(|record| record.get("atlas_segment"))
+            .expect("atlas segment OBU");
+        assert_eq!(atlas["mode"], mode);
+        assert_eq!(atlas["atlas_id"], 5);
+        assert_eq!(atlas["explicit_segment_ids"], true);
+        let labels = if mode == 2 { vec![41] } else { vec![41, 77] };
+        assert_eq!(atlas["segment_ids"], serde_json::json!(labels));
+    }
+}
+
+#[test]
 fn inspect_json_surfaces_buffer_removal_timing() {
     let path = fixture("buffer-removal-timing.av2");
     let json = inspect_json(&path);

@@ -348,8 +348,8 @@
         bits.uvlc(640); // ats_width
         bits.uvlc(480); // ats_height
         bits.uvlc(1); // ats_num_atlas_segments_minus_1 = 1 -> 2 segments
-        for _ in 0..2 {
-            bits.f(7, 5); // ats_input_stream_id
+        for id in [7, 11] {
+            bits.f(id, 5); // ats_input_stream_id
             bits.uvlc(0); // top_left_pos_x
             bits.uvlc(0); // top_left_pos_y
             bits.uvlc(100); // width

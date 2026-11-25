@@ -28,6 +28,7 @@ use crate::support::decode_buffers::DecodeBuffers;
 /// The frame-pipelining depth of one context and the decoder state it keeps
 /// between decode calls, as dav2d keeps its frame contexts.
 pub(crate) struct DecodeSession {
+    pub(crate) external_atlases: crate::ExternalAtlases,
     frame_delay: NonZeroUsize,
     /// Immutable concrete SIMD backend validated when the session opened.
     backend: splot_core::simd::ResolvedBackend,
@@ -59,6 +60,7 @@ impl DecodeSession {
     ) -> Self {
         Self {
             frame_delay,
+            external_atlases: crate::ExternalAtlases::default(),
             backend,
             rows,
             retained: Mutex::new(None),

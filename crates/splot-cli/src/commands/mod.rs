@@ -8,6 +8,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
+mod atlas;
 pub(crate) mod decode;
 pub(crate) mod encode;
 pub(crate) mod explain;
