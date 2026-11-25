@@ -6,13 +6,15 @@
 use super::{PipelineFrameRate, unsupported, unsupported_at};
 
 use splot_core::annexb::ObuEnvelope;
+use splot_core::bitio::BitReader;
+use splot_core::headers::frame::{FrameHeaderPrefix, parse_frame_header_prefix};
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::{GLOBAL_XLAYER_ID, ObuType};
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, recycle, runtime_obus};
-use crate::bitstream::stream_plan::{ActiveLayerFilter, CandidateScan};
-use crate::error::Result;
+use crate::bitstream::stream_plan::{ActiveLayerFilter, CandidateScan, DecodeSourceIssue};
+use crate::error::{DecodeError, Result};
 use crate::support::capability::missing_capability_message;
 use crate::{DecodeLimits, DecodeOptions, DecodePlannedObu};
 
@@ -451,6 +453,24 @@ fn inter_frame_envelope<'a>(
     Ok((&obus[td_index..position], inter_envelope))
 }
 
+pub(super) fn key_frame_activation(envelope: ObuEnvelope<'_>) -> Result<FrameHeaderPrefix> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    if reader.read_bit().map_or(true, |flag| flag == 0) {
+        return Err(unsupported_at(
+            "tile_group_prefix_parse",
+            envelope.offset,
+            "decode runtime requires a parseable first tile-group prefix",
+        ));
+    }
+    parse_frame_header_prefix(&mut reader, envelope.header.obu_type, None).map_err(|_| {
+        unsupported_at(
+            "frame_header_parse",
+            envelope.offset,
+            "decode runtime requires a parseable key frame header",
+        )
+    })
+}
+
 pub(super) fn ivf_key_frame_unit<'a>(
     obus: &'a [ObuEnvelope<'a>],
     candidate: &DecodePlannedObu,
@@ -472,15 +492,36 @@ pub(super) fn ivf_key_frame_unit<'a>(
         ));
     }
     let start = prefix_after_previous_inter_frame(position, obus).unwrap_or(0);
-    let sequence = obus[..position]
+    let activation = key_frame_activation(key_envelope)?;
+    let mut sequence = None;
+    for envelope in obus[..position]
         .iter()
         .rev()
         .take_while(|envelope| envelope.header.obu_type != ObuType::TemporalDelimiter)
-        .find(|envelope| {
+        .filter(|envelope| {
             envelope.header.obu_type == ObuType::SequenceHeader
                 && envelope.header.extended_layer_id == key_envelope.header.extended_layer_id
         })
-        .copied();
+    {
+        if let Some(id) = activation.seq_header_id_in_frame_header {
+            let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+            let candidate_id =
+                reader
+                    .read_uvlc()
+                    .map_err(|error| DecodeError::MalformedSource {
+                        issue: DecodeSourceIssue::sequence_header_parse(
+                            envelope.offset,
+                            "5.4.1",
+                            error.to_string(),
+                        ),
+                    })?;
+            if candidate_id != id {
+                continue;
+            }
+        }
+        sequence = Some(*envelope);
+        break;
+    }
     Ok((sequence, &obus[start..position], key_envelope))
 }
 

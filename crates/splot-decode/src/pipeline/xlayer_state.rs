@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
-use splot_core::headers::frame::{FrameHeaderCore, parse_frame_header_prefix};
+use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::layer_config_record::{LayerConfigurationRecord, LcrGlobalInfo};
 use splot_core::headers::metadata::{MetadataType, MetadataUnit};
 use splot_core::headers::operating_point_set::OperatingPointSet;
@@ -24,6 +24,7 @@ use super::output_effects::{
     parse_validated_lcr,
 };
 use super::output_schedule::OutputScheduler;
+use super::stream_schedule::key_frame_activation;
 use super::unsupported_feature_at;
 use crate::bitstream::ops_plan::validate_ops_semantics;
 use crate::bitstream::stream_plan::DecodeSourceIssue;
@@ -910,9 +911,10 @@ impl XLayerTable {
                 ObuType::ClosedLoopKey | ObuType::OpenLoopKey
                     if !env.header.extended_layer_id.is_global() =>
                 {
-                    let mut reader = BitReader::new(env.payload, env.payload_offset());
-                    let prefix = parse_frame_header_prefix(&mut reader, env.header.obu_type, None)
-                        .map_err(|error| malformed(env.offset, "5.18.2", error.to_string()))?;
+                    if env.payload.first().is_some_and(|first| first & 0x80 == 0) {
+                        continue;
+                    }
+                    let prefix = key_frame_activation(*env)?;
                     let hls = self.available_hls(env.header.extended_layer_id);
                     let sequence_id = prefix
                         .referenced_sequence_header_id

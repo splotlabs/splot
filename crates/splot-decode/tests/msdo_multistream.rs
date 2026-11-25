@@ -739,27 +739,40 @@ fn multistream_sequence_ends_before_single_stream_cvs() {
 #[test]
 fn standalone_cvs_reuses_available_sequence_after_cmvs_end() {
     let units = temporal_units(MSDO_8BIT);
-    let mut combined = MSDO_8BIT.to_vec();
-    for envelope in parse_annex_b_obus(&units[0]).unwrap() {
-        if envelope.header.obu_type == ObuType::TemporalDelimiter
-            || (envelope.header.obu_type == ObuType::ClosedLoopKey
-                && envelope.header.extended_layer_id.get() == 3)
-        {
-            write_obu(&mut combined, envelope.header, envelope.payload);
+    for stage_unused_sequence in [false, true] {
+        let mut combined = MSDO_8BIT.to_vec();
+        for envelope in parse_annex_b_obus(&units[0]).unwrap() {
+            if envelope.header.obu_type == ObuType::TemporalDelimiter
+                || (envelope.header.obu_type == ObuType::ClosedLoopKey
+                    && envelope.header.extended_layer_id.get() == 3)
+            {
+                write_obu(&mut combined, envelope.header, envelope.payload);
+            } else if stage_unused_sequence
+                && envelope.header.extended_layer_id.get() == 3
+                && let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut header)) =
+                    envelope.payload_status().unwrap()
+            {
+                header.general.seq_header_id = SequenceHeaderId::try_new(1).unwrap();
+                write_parsed(
+                    &mut combined,
+                    envelope.header,
+                    &ParsedObu::SequenceHeader(header),
+                );
+            }
         }
+        let pictures = stream_decode(&combined, &DecoderSettings::default()).unwrap();
+        let (raw, _) = raw_all_and_by_xlayer(&pictures);
+        assert_eq!(pictures.len(), 9);
+        assert_eq!(
+            sha256_hex(&raw),
+            "64fdd83bafcdf7ceaf9b87d848b460f1f4ec7aa52d51dd10eaf0a2e6d4bfc6b4"
+        );
+        assert_eq!(pictures.last().unwrap().extended_layer_id().get(), 3);
+        let report = context(3, 2)
+            .decode_hash_report_bytes(&combined, DecodeOptions::default())
+            .unwrap();
+        assert_eq!(report.frames.len(), 9);
     }
-    let pictures = stream_decode(&combined, &DecoderSettings::default()).unwrap();
-    let (raw, _) = raw_all_and_by_xlayer(&pictures);
-    assert_eq!(pictures.len(), 9);
-    assert_eq!(
-        sha256_hex(&raw),
-        "64fdd83bafcdf7ceaf9b87d848b460f1f4ec7aa52d51dd10eaf0a2e6d4bfc6b4"
-    );
-    assert_eq!(pictures.last().unwrap().extended_layer_id().get(), 3);
-    let report = context(3, 2)
-        .decode_hash_report_bytes(&combined, DecodeOptions::default())
-        .unwrap();
-    assert_eq!(report.frames.len(), 9);
 }
 
 #[test]
