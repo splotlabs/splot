@@ -1091,7 +1091,7 @@ fn decode_frames_in_order(
                 if !xlayers.contains(candidate_xlayer) {
                     let (tu_has_rap, _) = unit_rap_flags(&unit)?;
                     if xlayers.should_skip_pre_rap_frame(candidate_xlayer, tu_has_rap) {
-                        xlayers.observe_pre_rap_atlases(sef_prefix_obus, candidate_xlayer)?;
+                        xlayers.note_pre_rap_local_lcr(sef_prefix_obus, candidate_xlayer);
                         *obu_storage = recycle(obu_buffer);
                         continue;
                     }
@@ -1350,7 +1350,7 @@ fn decode_frames_in_order(
                     if next_candidate.obu_type() != ObuType::RasFrame {
                         let (tu_has_rap, _) = unit_rap_flags(&unit)?;
                         if xlayers.should_skip_pre_rap_frame(candidate_xlayer, tu_has_rap) {
-                            xlayers.observe_pre_rap_atlases(inter_prefix_obus, candidate_xlayer)?;
+                            xlayers.note_pre_rap_local_lcr(inter_prefix_obus, candidate_xlayer);
                             *obu_storage = recycle(obu_buffer);
                             continue;
                         }
@@ -1399,12 +1399,9 @@ fn decode_frames_in_order(
                         &mut output_effect_state,
                         &mut film_grain_slots,
                     )?;
-                    let has_local_lcr =
-                        output_effect_state.has_local_lcr_id(sequence.general.seq_lcr_id.get());
                     xlayers.validate_xlayer_lcr(
                         candidate_xlayer,
                         &sequence,
-                        has_local_lcr,
                         sequence_envelope.offset,
                         true,
                     )?;
@@ -1958,12 +1955,9 @@ fn decode_frames_in_order(
                         &mut output_effect_state,
                         &mut film_grain_slots,
                     )?;
-                    let has_local_lcr =
-                        output_effect_state.has_local_lcr_id(key_sequence.general.seq_lcr_id.get());
                     xlayers.validate_xlayer_lcr(
                         candidate_xlayer,
                         &key_sequence,
-                        has_local_lcr,
                         key_sequence_offset,
                         true,
                     )?;
@@ -1984,7 +1978,7 @@ fn decode_frames_in_order(
                     ));
                     frames.ensure_capacity_for_layers(xlayers.len(), ring.capacity());
                 } else {
-                    let has_local_lcr = {
+                    {
                         let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                             unsupported_at(
                                 "missing_random_access_frame",
@@ -1999,15 +1993,11 @@ fn decode_frames_in_order(
                             &mut layer.output_effect_state,
                             &mut layer.film_grain_slots,
                         )?;
-                        layer
-                            .output_effect_state
-                            .has_local_lcr_id(key_sequence.general.seq_lcr_id.get())
-                    };
+                    }
                     if starts_new_sequence || key_sequence_envelope.is_some() {
                         xlayers.validate_xlayer_lcr(
                             candidate_xlayer,
                             &key_sequence,
-                            has_local_lcr,
                             key_sequence_offset,
                             false,
                         )?;

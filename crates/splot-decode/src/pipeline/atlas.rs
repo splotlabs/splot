@@ -11,6 +11,7 @@ use splot_core::headers::atlas_segment::{AtlasModeInfo, AtlasSegment, parse_scop
 use splot_core::headers::layer_config_record::{
     LcrGlobalInfo, LcrLocalInfo, LcrXlayerAtlasRef, LcrXlayerInfo,
 };
+use splot_core::headers::sequence::SequenceHeaderId;
 use splot_core::obu::finish_obu_payload;
 use splot_core::span::ByteOffset;
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId};
@@ -198,13 +199,33 @@ impl AtlasLayout {
 
 type LocalRecord = (ByteOffset, Arc<LcrLocalInfo>);
 
+pub(super) type GlobalRecord = (u64, ByteOffset, Arc<LcrGlobalInfo>);
+
+/// The § 6.4.1 association uses the records available before the sequence header.
+#[derive(Default, Clone)]
+pub(super) struct SequenceLcr {
+    pub(super) local_parent: Option<u8>,
+    local: Option<LocalRecord>,
+    pub(super) global: Option<GlobalRecord>,
+}
+
+impl SequenceLcr {
+    pub(super) fn direct_global_for(&self, xlayer: ExtendedLayerId) -> bool {
+        self.local_parent.is_none()
+            && self
+                .global
+                .as_ref()
+                .is_some_and(|(_, _, global)| global.xlayer_map & (1 << xlayer.get()) != 0)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct LayerAtlases {
     pub(super) layouts: ScopedAtlases,
     pub(super) local_ids: u8,
     records: Option<Box<[Option<LocalRecord>; 8]>>,
-    active_global: Option<(ByteOffset, Arc<LcrGlobalInfo>)>,
-    active_local: Option<LocalRecord>,
+    sequences: Vec<SequenceLcr>,
+    pub(super) active: SequenceLcr,
 }
 
 impl From<ScopedAtlases> for LayerAtlases {
@@ -238,9 +259,7 @@ impl LayerAtlases {
                 ),
             ));
         }
-        if info.local_id != 0 {
-            self.local_ids |= 1 << info.local_id;
-        }
+        self.local_ids |= 1 << info.local_id;
         let id = usize::from(info.local_id);
         if info.local_atlas_id.is_some() || info.global_id != 0 {
             self.records.get_or_insert_with(Default::default)[id] = Some((offset, Arc::new(info)));
@@ -250,27 +269,46 @@ impl LayerAtlases {
         Ok(())
     }
 
-    pub(super) fn activate(
+    pub(super) fn bind(
         &mut self,
+        sequence: SequenceHeaderId,
         id: u8,
-        global: impl FnOnce(u8) -> Option<(ByteOffset, Arc<LcrGlobalInfo>)>,
+        globals: &[Option<GlobalRecord>; 8],
     ) {
-        self.active_local = self
+        let index = usize::from(sequence.get());
+        if id == 0 {
+            if let Some(binding) = self.sequences.get_mut(index) {
+                *binding = SequenceLcr::default();
+            }
+            return;
+        }
+        let local = self
             .records
             .as_ref()
             .and_then(|records| records[usize::from(id)].clone());
-        let global_id = if self.has_local(id) {
-            self.active_local
-                .as_ref()
-                .map_or(0, |(_, record)| record.global_id)
-        } else {
-            id
+        let local_parent = self
+            .has_local(id)
+            .then(|| local.as_ref().map_or(0, |(_, record)| record.global_id));
+        let global = globals[usize::from(local_parent.unwrap_or(id))].clone();
+        if self.sequences.len() <= index {
+            if local_parent.is_none() && global.is_none() {
+                return;
+            }
+            self.sequences.resize_with(index + 1, SequenceLcr::default);
+        }
+        self.sequences[index] = SequenceLcr {
+            local_parent,
+            local,
+            global,
         };
-        self.active_global = if global_id == 0 {
-            None
-        } else {
-            global(global_id)
-        };
+    }
+
+    pub(super) fn binding(&self, sequence: SequenceHeaderId) -> Option<&SequenceLcr> {
+        self.sequences.get(usize::from(sequence.get()))
+    }
+
+    pub(super) fn activate(&mut self, sequence: SequenceHeaderId) {
+        self.active = self.binding(sequence).cloned().unwrap_or_default();
     }
 
     pub(super) fn snapshot(
@@ -281,7 +319,7 @@ impl LayerAtlases {
         mlayer: EmbeddedLayerId,
         output: &mut Vec<AtlasAssociation>,
     ) -> Result<()> {
-        if let Some((offset, record)) = &self.active_global
+        if let Some((_, offset, record)) = &self.active.global
             && record.xlayer_map & (1u32 << xlayer.get()) != 0
             && (record.global_atlas_id.is_some() || globals.get(0).is_some())
         {
@@ -298,7 +336,7 @@ impl LayerAtlases {
         } else if msdo_stream {
             globals.msdo_associations(xlayer, output);
         }
-        if let Some((offset, record)) = &self.active_local
+        if let Some((offset, record)) = &self.active.local
             && let Some(id) = record.local_atlas_id
         {
             output.push(self.layouts.association(
