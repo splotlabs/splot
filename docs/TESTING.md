@@ -16,7 +16,7 @@
 7. External streams: CI fetches upstream dav2d test data (HEAD) and pinned EwoutH/AV2 samples.
    `scripts/check-external-vectors.py` checks complete decoded output against
    recorded hashes. `tests/conformance/ewouth-av2.toml` records AVM SHA-256
-   hashes and output sizes for all 88 samples at 1 and 8 threads.
+   hashes and output sizes for all 88 samples at 1 and 7 threads.
 
 ## Commands
 

@@ -71,6 +71,7 @@ use crate::reference_state::{
     SlotState, is_key_or_switch, slot_facts,
 };
 
+mod annex_a_frame_limits;
 mod annex_a_iop;
 mod annex_a_value_space;
 mod cmvs;
@@ -102,6 +103,7 @@ mod tests;
 mod tile_groups;
 mod timecode;
 
+use self::annex_a_frame_limits::FrameAllocations;
 use self::annex_a_iop::*;
 use self::annex_a_value_space::*;
 use self::cmvs::*;
@@ -114,6 +116,7 @@ use self::frame_header_copy::*;
 use self::frame_header_diagnostics::*;
 use self::hls::*;
 use self::lcr::*;
+use self::lcr_agreement::ActiveGlobalLcrReference;
 use self::metadata::*;
 use self::msdo::*;
 use self::ops::*;
@@ -227,6 +230,10 @@ pub(crate) struct ValidatorContext {
     /// later activation (a post-header redefinition is not the associated
     /// record).
     lcr_associations: BTreeMap<(ExtendedLayerId, SequenceHeaderId), LcrAssociation>,
+    global_lcr_group_start: Option<u64>,
+    active_global_lcr_references: [Option<ActiveGlobalLcrReference>; 32],
+    global_lcr_keys_in_tu: u32,
+    global_lcr_group_mismatches: u32,
     /// Stateful § 5.6 MSDO observer (AV2 § 5.6 / § 7.3.2); see [`MsdoObserver`]. Feeds
     /// the [`CmvsTracker`] the § 7.3.2 condition-2 "differs from the previous OBU_MSDO"
     /// signal and holds no diagnostics of its own.
@@ -311,6 +318,7 @@ pub(crate) struct ValidatorContext {
     /// descoped Table A.4 IOP-presence machinery (`msdo-global-lcr-agreement`) will
     /// reuse.
     msdo_substream_max: Option<MsdoSubstreamMax>,
+    frame_allocations: FrameAllocations,
     /// Every OBU_MSDO observed, accumulated for the § 6.8.2 MSDO↔global-LCR *agreement*
     /// (mirror lines 1646-1648: the constraints hold "when both an OBU_MSDO and an activated
     /// global LCR ... are present in the same coded multistream video sequence"). The live
@@ -580,9 +588,10 @@ impl ValidatorContext {
         self.resolve_deferred_doh_constraint(options, report);
         self.resolve_deferred_lcr_msdo_agreement(options, report);
         self.resolve_deferred_cmvs_boundary(options, report);
+        self.resolve_global_lcr_group_agreement(self.cvs.tu_index, options, report);
         self.commit_annex_a_iop_pending(self.cvs.tu_index, options, report);
         self.flush_annex_a_iop_window(options, report);
-        self.msdo_identity.complete_temporal_unit(report);
+        self.complete_msdo_temporal_unit(report);
         self.complete_rap_replay_tu(self.cvs.tu_index, options, report);
         let scope_keys: Vec<ExtendedLayerId> = self.scan_type.scopes.keys().copied().collect();
         for scope_key in scope_keys {

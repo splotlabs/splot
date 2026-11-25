@@ -5,13 +5,8 @@
 //! (AV2 v1.0.0 Annex A,
 //! `docs/spec/av2/1.0.0/annex-a-profiles-levels-and-tiers.md`).
 //!
-//! This module holds the table data transcribed **verbatim** from the committed
-//! spec mirror — the AV2 profile definitions (Annex A.2 Table A.1) and the static
-//! level limits (Annex A.4 Tables A.7/A.8/A.9) — plus pure helper functions over
-//! them. Every value cell carries a mirror line citation; the rate columns
-//! (`MaxDisplayRate`/`MaxDecodeRate`/`MaxHeaderRate`/`MainMbps`/`HighMbps`/`MainCR`/
-//! `HighCR`) are deliberately **not** transcribed: they belong to the Annex E
-//! decoder-model change (Feature ID `AV2-E-DECODER-MODEL`).
+//! This module holds profile definitions and value-space checks. Frame limits
+//! come from [`splot_core::level`] so decode and validation use the same levels.
 //!
 //! The check wiring that consumes these tables lives in
 //! [`crate::context`]; the rule semantics and the Table A.4 interoperability-point
@@ -34,180 +29,7 @@ pub(crate) const LAST_RESERVED_LEVEL_IDX: u8 = 30;
 /// 16" and "FrameHeight is greater than or equal to 16").
 pub(crate) const MIN_FRAME_DIMENSION: u32 = 16;
 
-/// The static level limits for one `LevelIdx` (Annex A.4 Tables A.8/A.9).
-///
-/// `max_h_size` and `max_v_size` share a single column in Table A.8 — its header is
-/// "MaxHSize/MaxVSize" (mirror lines 330-331) — so one transcribed value bounds both
-/// `FrameWidth <= MaxHSize` and `FrameHeight <= MaxVSize` (Annex A.4, mirror lines
-/// 619-620). It is modeled as one field, [`LevelLimits::max_h_v_size`], to make the
-/// shared column explicit and rule out a transposition.
-#[expect(clippy::struct_field_names)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LevelLimits {
-    /// `MaxPicSize` in luma samples (Annex A.4 Table A.8, mirror lines 330-379).
-    pub(crate) max_pic_size: u64,
-    /// The shared `MaxHSize`/`MaxVSize` value in luma samples (Annex A.4 Table A.8
-    /// column "MaxHSize/MaxVSize", mirror lines 330-379).
-    pub(crate) max_h_v_size: u32,
-    /// `MaxTiles` (Annex A.4 Table A.9, mirror lines 385-432).
-    pub(crate) max_tiles: u32,
-    /// `MaxTileCols` (Annex A.4 Table A.9, mirror lines 385-432).
-    pub(crate) max_tile_cols: u32,
-}
-
-/// `LevelLimits` indexed by `seq_level_idx` for the defined levels `0..=21`
-/// (Annex A.4 Table A.7 maps these to levels 2.0..=8.3, mirror lines 269-319).
-///
-/// Each row's `max_pic_size` / `max_h_v_size` come from Table A.8 (mirror lines
-/// 330-379, columns "MaxPicSize" and "MaxHSize/MaxVSize") and its `max_tiles` /
-/// `max_tile_cols` from Table A.9 (mirror lines 385-432, columns "MaxTiles" and
-/// "MaxTileCols"). Reserved indices `22..=30` (Table A.7, mirror line 321) and the
-/// Maximum-parameters index `31` (mirror line 323) are not in this table; the lookup
-/// returns `None` for any index outside `0..=21`. The rate columns are intentionally
-/// omitted (owned by `AV2-E-DECODER-MODEL`).
-const LEVEL_LIMITS: [LevelLimits; 22] = [
-    LevelLimits {
-        max_pic_size: 147_456,
-        max_h_v_size: 640,
-        max_tiles: 8,
-        max_tile_cols: 4,
-    },
-    LevelLimits {
-        max_pic_size: 278_784,
-        max_h_v_size: 880,
-        max_tiles: 8,
-        max_tile_cols: 4,
-    },
-    LevelLimits {
-        max_pic_size: 665_856,
-        max_h_v_size: 1360,
-        max_tiles: 16,
-        max_tile_cols: 6,
-    },
-    LevelLimits {
-        max_pic_size: 1_065_024,
-        max_h_v_size: 1720,
-        max_tiles: 16,
-        max_tile_cols: 6,
-    },
-    LevelLimits {
-        max_pic_size: 2_359_296,
-        max_h_v_size: 2560,
-        max_tiles: 32,
-        max_tile_cols: 8,
-    },
-    LevelLimits {
-        max_pic_size: 2_359_296,
-        max_h_v_size: 2560,
-        max_tiles: 32,
-        max_tile_cols: 8,
-    },
-    LevelLimits {
-        max_pic_size: 8_912_896,
-        max_h_v_size: 4975,
-        max_tiles: 64,
-        max_tile_cols: 8,
-    },
-    LevelLimits {
-        max_pic_size: 8_912_896,
-        max_h_v_size: 4975,
-        max_tiles: 64,
-        max_tile_cols: 8,
-    },
-    LevelLimits {
-        max_pic_size: 8_912_896,
-        max_h_v_size: 4975,
-        max_tiles: 64,
-        max_tile_cols: 8,
-    },
-    LevelLimits {
-        max_pic_size: 8_912_896,
-        max_h_v_size: 4975,
-        max_tiles: 64,
-        max_tile_cols: 8,
-    },
-    LevelLimits {
-        max_pic_size: 35_651_584,
-        max_h_v_size: 9951,
-        max_tiles: 128,
-        max_tile_cols: 16,
-    },
-    LevelLimits {
-        max_pic_size: 35_651_584,
-        max_h_v_size: 9951,
-        max_tiles: 128,
-        max_tile_cols: 16,
-    },
-    LevelLimits {
-        max_pic_size: 35_651_584,
-        max_h_v_size: 9951,
-        max_tiles: 128,
-        max_tile_cols: 16,
-    },
-    LevelLimits {
-        max_pic_size: 35_651_584,
-        max_h_v_size: 9951,
-        max_tiles: 128,
-        max_tile_cols: 16,
-    },
-    LevelLimits {
-        max_pic_size: 142_606_336,
-        max_h_v_size: 19902,
-        max_tiles: 256,
-        max_tile_cols: 32,
-    },
-    LevelLimits {
-        max_pic_size: 142_606_336,
-        max_h_v_size: 19902,
-        max_tiles: 256,
-        max_tile_cols: 32,
-    },
-    LevelLimits {
-        max_pic_size: 142_606_336,
-        max_h_v_size: 19902,
-        max_tiles: 256,
-        max_tile_cols: 32,
-    },
-    LevelLimits {
-        max_pic_size: 142_606_336,
-        max_h_v_size: 19902,
-        max_tiles: 256,
-        max_tile_cols: 32,
-    },
-    LevelLimits {
-        max_pic_size: 530_841_600,
-        max_h_v_size: 38400,
-        max_tiles: 512,
-        max_tile_cols: 64,
-    },
-    LevelLimits {
-        max_pic_size: 530_841_600,
-        max_h_v_size: 38400,
-        max_tiles: 512,
-        max_tile_cols: 64,
-    },
-    LevelLimits {
-        max_pic_size: 530_841_600,
-        max_h_v_size: 38400,
-        max_tiles: 512,
-        max_tile_cols: 64,
-    },
-    LevelLimits {
-        max_pic_size: 530_841_600,
-        max_h_v_size: 38400,
-        max_tiles: 512,
-        max_tile_cols: 64,
-    },
-];
-
-/// Returns the [`LevelLimits`] for `level_idx`, or `None` when `level_idx` is not a
-/// table-mapped level (a reserved `22..=30`, the Maximum-parameters `31`, or any
-/// `5`-bit value above `31`). Bounds-checked: no indexing panic for any `u8` input
-/// (Annex A.4 Tables A.7/A.8/A.9).
-#[must_use]
-pub(crate) fn level_limits(level_idx: u8) -> Option<LevelLimits> {
-    LEVEL_LIMITS.get(level_idx as usize).copied()
-}
+pub(crate) use splot_core::level::level_limits;
 
 /// The interoperability point a profile signals (Annex A.2 Table A.1 column
 /// "Interoperability point", mirror lines 61-91).
@@ -310,37 +132,37 @@ mod tests {
     fn level_limits_match_mirror_spot_values() {
         let level_2_0 = level_limits(0).unwrap();
         assert_eq!(level_2_0.max_pic_size, 147_456);
-        assert_eq!(level_2_0.max_h_v_size, 640);
+        assert_eq!(level_2_0.max_width, 640);
         assert_eq!(level_2_0.max_tiles, 8);
         assert_eq!(level_2_0.max_tile_cols, 4);
 
         let level_5_3 = level_limits(9).unwrap();
         assert_eq!(level_5_3.max_pic_size, 8_912_896);
-        assert_eq!(level_5_3.max_h_v_size, 4975);
+        assert_eq!(level_5_3.max_width, 4975);
         assert_eq!(level_5_3.max_tiles, 64);
         assert_eq!(level_5_3.max_tile_cols, 8);
 
         let level_8_3 = level_limits(21).unwrap();
         assert_eq!(level_8_3.max_pic_size, 530_841_600);
-        assert_eq!(level_8_3.max_h_v_size, 38400);
+        assert_eq!(level_8_3.max_width, 38400);
         assert_eq!(level_8_3.max_tiles, 512);
         assert_eq!(level_8_3.max_tile_cols, 64);
 
         let level_4_0 = level_limits(4).unwrap();
         assert_eq!(level_4_0.max_pic_size, 2_359_296);
-        assert_eq!(level_4_0.max_h_v_size, 2560);
+        assert_eq!(level_4_0.max_width, 2560);
         assert_eq!(level_4_0.max_tiles, 32);
         assert_eq!(level_4_0.max_tile_cols, 8);
 
         let level_6_0 = level_limits(10).unwrap();
         assert_eq!(level_6_0.max_pic_size, 35_651_584);
-        assert_eq!(level_6_0.max_h_v_size, 9951);
+        assert_eq!(level_6_0.max_width, 9951);
         assert_eq!(level_6_0.max_tiles, 128);
         assert_eq!(level_6_0.max_tile_cols, 16);
 
         let level_7_0 = level_limits(14).unwrap();
         assert_eq!(level_7_0.max_pic_size, 142_606_336);
-        assert_eq!(level_7_0.max_h_v_size, 19902);
+        assert_eq!(level_7_0.max_width, 19902);
         assert_eq!(level_7_0.max_tiles, 256);
         assert_eq!(level_7_0.max_tile_cols, 32);
     }

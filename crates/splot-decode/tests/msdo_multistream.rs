@@ -27,6 +27,9 @@ use splot_decode::{
     SendStatus, TemporalLayerSelection, ThreadCount,
 };
 
+#[path = "msdo_multistream/reproducible.rs"]
+mod reproducible;
+
 const MSDO_8BIT: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu");
 const MSDO_10BIT: &[u8] =
@@ -339,6 +342,231 @@ fn make_msdo_obu(ext_header: bool, lvl: u8, doh_flag: bool, subs: &[(u8, u8, u8,
     let mut out = Vec::new();
     write_obu(&mut out, header, &payload);
     out
+}
+
+fn edit_msdo(
+    bytes: &[u8],
+    edit: impl Fn(&mut splot_core::hls::MultistreamDecoderOperation),
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    for obu in parse_annex_b_obus(bytes).unwrap() {
+        if obu.header.obu_type == ObuType::Msdo {
+            let PayloadStatus::Parsed(ParsedObu::Msdo(mut msdo)) = obu.payload_status().unwrap()
+            else {
+                unreachable!()
+            };
+            edit(&mut msdo);
+            write_parsed(&mut data, obu.header, &ParsedObu::Msdo(msdo));
+        } else {
+            write_obu(&mut data, obu.header, obu.payload);
+        }
+    }
+    data
+}
+
+#[test]
+fn uneven_msdo_allocation_resolves_noncontiguous_layers_before_picture_allocation() {
+    for (large_index, small_xlayer) in [(0, 7), (1, 3)] {
+        let data = edit_msdo(MSDO_8BIT, |msdo| {
+            msdo.multistream_even_allocation_flag = false;
+            msdo.multistream_large_picture_idc = Some(large_index);
+        });
+        let obus = parse_annex_b_obus(&data).unwrap();
+        let small_key = obus
+            .iter()
+            .find(|obu| {
+                obu.header.obu_type == ObuType::ClosedLoopKey
+                    && obu.header.extended_layer_id.get() == small_xlayer
+            })
+            .unwrap();
+        let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
+        let DecodeError::MalformedSource { issue } = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(
+            issue.kind(),
+            splot_decode::DecodeSourceIssueKind::FrameHeaderConformanceError
+        );
+        assert_eq!(issue.spec_section(), Some("A.4"));
+        assert_eq!(issue.offset(), Some(small_key.offset));
+        assert_eq!(
+            issue.message(),
+            format!("extended layer {small_xlayer} frame exceeds MaxTiles: 1 > 0")
+        );
+    }
+}
+
+#[test]
+fn msdo_frame_width_uses_the_allocated_layer_and_aggregate_level() {
+    let seed = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-gdf-xtile-lr-512x256-q190.ivf"
+    );
+    let ivf = splot_core::ivf::parse_ivf_partial(seed);
+    let obus = parse_annex_b_obus(ivf.frames[0].payload).unwrap();
+    for aggregate_level in [4, 6] {
+        let mut data = Vec::new();
+        write_obu(&mut data, obus[0].header, obus[0].payload);
+        let descriptor = make_msdo_obu(false, aggregate_level, true, &[(3, 0, 0, 0), (7, 0, 0, 0)]);
+        data.extend(edit_msdo(&descriptor, |msdo| {
+            msdo.multistream_even_allocation_flag = false;
+            msdo.multistream_large_picture_idc = Some(1);
+        }));
+        for xlayer in [3, 7] {
+            for obu in &obus[1..] {
+                let header = ObuHeader {
+                    has_header_extension: true,
+                    header_size_bytes: 2,
+                    extended_layer_id: ExtendedLayerId::from_bits(xlayer),
+                    ..obu.header
+                };
+                write_obu(&mut data, header, obu.payload);
+            }
+        }
+        let result = stream_decode(&data, &DecoderSettings::default());
+        if aggregate_level == 4 {
+            let error = result.unwrap_err();
+            let DecodeError::MalformedSource { issue } = error else {
+                panic!("{error:?}")
+            };
+            assert_eq!(issue.spec_section(), Some("A.4"));
+            assert_eq!(
+                issue.message(),
+                "extended layer 3 frame exceeds MaxHSize: 512 > 384"
+            );
+        } else {
+            let pics = result.unwrap();
+            assert_eq!(pics.len(), 2);
+            assert_eq!(pics[0].extended_layer_id().get(), 3);
+            assert_eq!(pics[1].extended_layer_id().get(), 7);
+        }
+    }
+}
+
+#[test]
+fn msdo_reference_buffer_capacity_uses_the_sequence_maximum_before_frame_parse() {
+    use splot_core::headers::sequence::{FrameDimensionBits, FrameHeight, FrameWidth, LevelIdx};
+
+    let first_tu = edit_msdo(&temporal_units(MSDO_8BIT)[0], |msdo| {
+        msdo.multistream_level_idx = 4;
+        msdo.multistream_even_allocation_flag = false;
+        msdo.multistream_large_picture_idc = Some(1);
+        msdo.sub_streams[0].sub_stream_max_level = 4;
+    });
+    let mut data = Vec::new();
+    let mut count = 0;
+    for obu in parse_annex_b_obus(&first_tu).unwrap() {
+        if obu.header.extended_layer_id.get() == 3 && obu.header.obu_type == ObuType::SequenceHeader
+        {
+            let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut seq)) =
+                obu.payload_status().unwrap()
+            else {
+                unreachable!()
+            };
+            seq.general.seq_level_idx = LevelIdx::from_bits(4);
+            seq.general.max_frame_width = FrameWidth::from_minus_1(1279);
+            seq.general.max_frame_height = FrameHeight::from_minus_1(1023);
+            seq.general.frame_width_bits = FrameDimensionBits::from_minus_1(10);
+            seq.general.frame_height_bits = FrameDimensionBits::from_minus_1(9);
+            let tile = seq.tile.as_mut().unwrap();
+            tile.seq_tile_info_present_flag = false;
+            tile.allow_tile_info_change = None;
+            tile.params = None;
+            tile.seq_sb_col_starts = std::sync::Arc::default();
+            tile.seq_sb_row_starts = std::sync::Arc::default();
+            count = seq.inter.as_ref().unwrap().num_ref_frames;
+            write_parsed(&mut data, obu.header, &ParsedObu::SequenceHeader(seq));
+        } else {
+            write_obu(&mut data, obu.header, obu.payload);
+        }
+    }
+    assert!(count > 1);
+    let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
+    let DecodeError::MalformedSource { issue } = error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(
+        issue.kind(),
+        splot_decode::DecodeSourceIssueKind::SequenceHeaderConformanceError
+    );
+    assert_eq!(issue.spec_section(), Some("A.4"));
+    assert_eq!(
+        issue.message(),
+        format!("extended layer 3 sequence exceeds MaxLevelRefFrames: {count} > 1")
+    );
+}
+
+#[test]
+fn reserved_aggregate_level_fails_at_the_descriptor() {
+    let data = edit_msdo(&temporal_units(MSDO_8BIT)[0], |msdo| {
+        msdo.multistream_level_idx = 22;
+    });
+    let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
+    let DecodeError::MalformedSource { issue } = error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(issue.spec_section(), Some("A.4"));
+    assert_eq!(
+        issue.message(),
+        "OBU_MSDO uses reserved multistream_level_idx 22"
+    );
+}
+
+#[test]
+fn activated_sequence_must_respect_its_msdo_level_ceiling() {
+    use splot_core::headers::sequence::LevelIdx;
+
+    let first_tu = &temporal_units(MSDO_8BIT)[0];
+    let mut data = Vec::new();
+    let mut ceiling = None;
+    for obu in parse_annex_b_obus(first_tu).unwrap() {
+        match obu.header.obu_type {
+            ObuType::Msdo => {
+                let PayloadStatus::Parsed(ParsedObu::Msdo(msdo)) = obu.payload_status().unwrap()
+                else {
+                    unreachable!()
+                };
+                ceiling = Some(
+                    msdo.sub_streams()
+                        .iter()
+                        .find(|sub| sub.sub_xlayer_id == 7)
+                        .unwrap()
+                        .sub_stream_max_level,
+                );
+            }
+            ObuType::SequenceHeader if obu.header.extended_layer_id.get() == 7 => {
+                let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut seq)) =
+                    obu.payload_status().unwrap()
+                else {
+                    unreachable!()
+                };
+                seq.general.seq_level_idx = LevelIdx::from_bits(ceiling.unwrap() + 1);
+                write_parsed(&mut data, obu.header, &ParsedObu::SequenceHeader(seq));
+                continue;
+            }
+            _ => {}
+        }
+        write_obu(&mut data, obu.header, obu.payload);
+    }
+    let offset = parse_annex_b_obus(&data)
+        .unwrap()
+        .iter()
+        .find(|obu| {
+            obu.header.extended_layer_id.get() == 7
+                && obu.header.obu_type == ObuType::SequenceHeader
+        })
+        .unwrap()
+        .offset;
+    let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
+    let DecodeError::MalformedSource { issue } = error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(issue.spec_section(), Some("6.6"));
+    assert_eq!(issue.offset(), Some(offset));
+    assert!(
+        issue
+            .message()
+            .contains("extended layer 7 sequence PTL exceeds OBU_MSDO ceiling")
+    );
 }
 
 #[test]
@@ -1299,4 +1527,94 @@ fn negative_msdo_ops_lifecycle_ordering_doh_and_aggregate_limits() {
         )
         .unwrap_err();
     assert!(matches!(limited_bytes, DecodeError::Limit { .. }));
+}
+
+#[test]
+fn msdo_only_switch_clears_the_previous_global_lcr() {
+    let first_tu = &temporal_units(MSDO_10BIT)[0];
+    let mut data = first_tu.clone();
+    for raise_x9_ceiling in [false, true] {
+        for envelope in parse_annex_b_obus(first_tu).unwrap() {
+            let header = envelope.header;
+            match envelope.payload_status().unwrap() {
+                PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(_)) => {}
+                PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut sequence)) => {
+                    sequence.general.seq_lcr_id = LcrId::from_bits(0);
+                    write_parsed(&mut data, header, &ParsedObu::SequenceHeader(sequence));
+                }
+                PayloadStatus::Parsed(ParsedObu::Msdo(mut msdo)) if raise_x9_ceiling => {
+                    let substream = &mut msdo.sub_streams[1];
+                    assert_eq!(substream.sub_xlayer_id, 9);
+                    substream.sub_stream_max_level += 1;
+                    write_parsed(&mut data, header, &ParsedObu::Msdo(msdo));
+                }
+                _ => write_obu(&mut data, header, envelope.payload),
+            }
+        }
+    }
+
+    let pictures = stream_decode(&data, &DecoderSettings::default()).unwrap();
+    assert_eq!(pictures.len(), 6);
+    assert_eq!(
+        sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
+        "d0d884316a744753b962983bce246765c69e9d08ba06b94a3135be3bb6cab0e6"
+    );
+}
+
+#[test]
+fn filtered_msdo_does_not_activate_the_parent_of_a_local_lcr() {
+    use splot_core::headers::layer_config_record::LayerConfigurationRecord;
+
+    let mut data = Vec::new();
+    let mut msdo = Vec::new();
+    for envelope in parse_annex_b_obus(MSDO_10BIT).unwrap() {
+        let header = envelope.header;
+        match envelope.payload_status().unwrap() {
+            PayloadStatus::Parsed(ParsedObu::Msdo(_)) => {
+                write_obu(&mut msdo, header, envelope.payload);
+                data.extend(&msdo);
+                continue;
+            }
+            PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(mut record)) => {
+                let LayerConfigurationRecord::Global(global) = record.as_mut() else {
+                    panic!("expected a global LCR");
+                };
+                global.doh_constraint_flag = false;
+                write_parsed(
+                    &mut data,
+                    header,
+                    &ParsedObu::LayerConfigurationRecord(record),
+                );
+                continue;
+            }
+            PayloadStatus::Parsed(ParsedObu::SequenceHeader(_)) => {
+                let local = ObuHeader {
+                    obu_type: ObuType::LayerConfigurationRecord,
+                    ..header
+                };
+                let local_lcr_id1_parent1 = [0x24, 0, 0, 0x40];
+                write_obu(&mut data, local, &local_lcr_id1_parent1);
+            }
+            PayloadStatus::Parsed(ParsedObu::TemporalDelimiter) => {
+                write_obu(&mut data, header, envelope.payload);
+                data.extend(&msdo);
+                continue;
+            }
+            _ => {}
+        }
+        write_obu(&mut data, header, envelope.payload);
+    }
+
+    for selection in [
+        ExtendedLayerSelection::All,
+        ExtendedLayerSelection::OutputMask((1 << 2) | (1 << 9)),
+    ] {
+        let settings = DecoderSettings::default().with_extended_layer_selection(selection);
+        let pictures = stream_decode(&data, &settings).unwrap();
+        assert_eq!(pictures.len(), 10);
+        assert_eq!(
+            sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
+            SHA_MSDO_10BIT_ALL
+        );
+    }
 }

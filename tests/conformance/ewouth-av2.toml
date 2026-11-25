@@ -13,7 +13,7 @@ avm_revision = "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03"
 avm_version = "1.0.0-63-g3efe9fa8e"
 hd_release = "hd-streams-2026-10"
 hd_avm_revision = "9c72cb56a7814da244eadbe48019844f491d6b8c"
-threads = [1, 8]
+threads = [1, 7]
 
 [[stream]]
 path = "Aerial3200_1920x1080_5994_10bit_420_qp135_551f.ivf"
