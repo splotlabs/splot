@@ -7,7 +7,7 @@ mod render;
 #[cfg(test)]
 mod tests;
 
-use std::{io, sync::Arc};
+use std::io;
 
 use splot_core::headers::atlas_segment::{
     AtlasModeInfo, AtlasMultistreamInfo, AtlasMultistreamSegment,
@@ -93,7 +93,7 @@ impl AtlasCompositor {
     }
 
     /// Composes one group of pictures that share a global layout and a presentation timestamp.
-    /// Supply timestamps in a common time base when you combine pictures from separate decoders.
+    /// Separate decoders must use a common time base and matching atlas contents, origin and source offset.
     ///
     /// This operation selects limited-range BT.709 YCbCr. It interprets unspecified color as BT.709.
     /// All textures must use the same bit depth and chroma format. Alpha can use either bit depth.
@@ -103,7 +103,7 @@ impl AtlasCompositor {
     /// Returns immediately if an input is missing, stale, incompatible, or exceeds a limit.
     pub fn compose<'a>(
         &'a mut self,
-        layout: &Arc<AtlasLayout>,
+        layout: &AtlasLayout,
         pts: i64,
         pictures: &[&Picture],
     ) -> Result<AtlasComposite<'a>> {
@@ -134,8 +134,8 @@ impl AtlasCompositor {
                 association.scope == GLOBAL_XLAYER_ID
                     && association
                         .layout
-                        .as_ref()
-                        .is_some_and(|active| Arc::ptr_eq(active, layout))
+                        .as_deref()
+                        .is_some_and(|active| std::ptr::eq(active, layout) || active == layout)
                     && association.segment_index() == Some(index)
             }) {
                 return Err(AtlasCompositionError::StaleLayout(id));
