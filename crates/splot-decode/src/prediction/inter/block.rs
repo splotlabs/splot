@@ -634,10 +634,21 @@ fn validate_bru_regions(
     work_units: &[crate::bitstream::tile_payload::DecodeTileWorkUnit],
 ) -> Result<()> {
     if let Some(modes) = modes {
-        let tile = work_units
-            .first()
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        modes.validate_regions(tile.tile_byte_span().start)?;
+        modes.validate_regions(|row, col| {
+            let Some(tile) = work_units.iter().find(|tile| {
+                let rows = tile.mi_row_range();
+                let cols = tile.mi_col_range();
+                (rows.start as usize..rows.end as usize).contains(&row)
+                    && (cols.start as usize..cols.end as usize).contains(&col)
+            }) else {
+                return invalid_inter_tile_scheduling_state();
+            };
+            crate::pipeline::malformed_tile_payload(
+                tile.tile_byte_span().start,
+                "7.2",
+                "The BRU superblock modes do not form a valid region.",
+            )
+        })?;
     }
     Ok(())
 }

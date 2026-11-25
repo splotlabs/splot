@@ -6,8 +6,6 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use splot_core::span::ByteOffset;
-
 use crate::bitstream::tile_payload::{BRU_ACTIVE, BRU_INACTIVE};
 use crate::error::Result;
 
@@ -129,26 +127,20 @@ impl BruModeMap {
     /// unclipped rectangle edges therefore cannot contain active cells. The
     /// check can clip rectangles to the frame and reject inactive cells as
     /// soon as a rectangle covers them. Clipping preserves rectangle overlap.
-    pub(crate) fn validate_regions(&self, offset: ByteOffset) -> Result<()> {
-        let invalid = || {
-            crate::pipeline::malformed_tile_payload(
-                offset,
-                "7.2",
-                "The BRU superblock modes do not form a valid region.",
-            )
-        };
-        let rows = self
-            .modes
-            .len()
-            .checked_div(self.sb_cols)
-            .ok_or_else(invalid)?;
+    pub(crate) fn validate_regions(
+        &self,
+        invalid: impl Fn(usize, usize) -> crate::error::DecodeError,
+    ) -> Result<()> {
         let stride = self.sb_cols;
         let len = self.modes.len();
+        let rows = len.checked_div(stride).ok_or_else(|| invalid(0, 0))?;
+        let invalid_at = |index| {
+            invalid(
+                (index / stride) << self.sb_shift,
+                (index % stride) << self.sb_shift,
+            )
+        };
         let mut owners = Vec::new();
-        owners
-            .try_reserve_exact(len)
-            .map_err(|_| region_allocation_error())?;
-        owners.resize(len, usize::MAX);
         let mut regions: Vec<RegionEntry> = Vec::new();
         let mut pending = Vec::new();
 
@@ -156,7 +148,13 @@ impl BruModeMap {
             match mode.load(Ordering::Acquire) {
                 BRU_ACTIVE => {}
                 BRU_INACTIVE | BRU_SUPPORT => continue,
-                _ => return Err(invalid()),
+                _ => return Err(invalid_at(index)),
+            }
+            if owners.is_empty() {
+                owners
+                    .try_reserve_exact(len)
+                    .map_err(|_| region_allocation_error())?;
+                owners.resize(len, usize::MAX);
             }
             let row = index / stride;
             let col = index % stride;
@@ -201,7 +199,7 @@ impl BruModeMap {
                         let owner = &mut owners[index];
                         if *owner == usize::MAX {
                             if self.modes[index].load(Ordering::Acquire) == BRU_INACTIVE {
-                                return Err(invalid());
+                                return Err(invalid_at(index));
                             }
                         } else {
                             let other = region_root(&mut regions, *owner);
@@ -270,10 +268,20 @@ fn extend_region(bounds: &mut Region, other: Region, pending: &mut Vec<Region>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use splot_core::span::ByteOffset;
+
+    fn validate_at_col(map: &BruModeMap) -> Result<()> {
+        map.validate_regions(|_, col| {
+            crate::pipeline::malformed_tile_payload(
+                ByteOffset::new(col as u64),
+                "7.2",
+                "Invalid BRU superblock.",
+            )
+        })
+    }
 
     #[test]
     fn validate_regions_checks_the_expansion_across_overlapping_rectangles() {
-        let offset = ByteOffset::new(17);
         let map = BruModeMap::new(7 * 16, 10 * 16, 16).unwrap();
         for row in 0..7 {
             for col in 0..10 {
@@ -285,20 +293,18 @@ mod tests {
         }
 
         map.set(0, 9 * 16, BRU_INACTIVE);
-        map.validate_regions(offset).unwrap();
+        validate_at_col(&map).unwrap();
         map.set(0, 8 * 16, BRU_INACTIVE);
-        let Err(crate::error::DecodeError::MalformedSource { issue }) =
-            map.validate_regions(offset)
+        let Err(crate::error::DecodeError::MalformedSource { issue }) = validate_at_col(&map)
         else {
             panic!("Expected a malformed BRU region.");
         };
         assert_eq!(issue.spec_section(), Some("7.2"));
-        assert_eq!(issue.offset(), Some(offset));
+        assert_eq!(issue.offset(), Some(ByteOffset::new(8 * 16)));
     }
 
     #[test]
     fn validate_regions_merges_previously_disjoint_regions() {
-        let offset = ByteOffset::new(0);
         let map = BruModeMap::new(4 * 16, 8 * 16, 16).unwrap();
         for row in 0..4 {
             for col in 0..8 {
@@ -308,22 +314,21 @@ mod tests {
         for (row, col) in [(0, 1), (0, 6), (2, 2), (2, 4)] {
             map.set(row * 16, col * 16, BRU_ACTIVE);
         }
-        map.validate_regions(offset).unwrap();
+        validate_at_col(&map).unwrap();
         map.set(3 * 16, 7 * 16, BRU_INACTIVE);
-        assert!(map.validate_regions(offset).is_err());
+        assert!(validate_at_col(&map).is_err());
     }
 
     #[test]
     fn validate_regions_accepts_active_superblocks_at_frame_edges() {
         let map = BruModeMap::new(16, 32, 16).unwrap();
-        let offset = ByteOffset::new(0);
         map.set(0, 0, BRU_ACTIVE);
         map.set(0, 16, BRU_ACTIVE);
-        map.validate_regions(offset).unwrap();
+        validate_at_col(&map).unwrap();
         map.set(0, 16, BRU_INACTIVE);
-        assert!(map.validate_regions(offset).is_err());
+        assert!(validate_at_col(&map).is_err());
         map.set(0, 16, BRU_UNSET);
-        assert!(map.validate_regions(offset).is_err());
+        assert!(validate_at_col(&map).is_err());
     }
 
     #[test]
