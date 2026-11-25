@@ -1,0 +1,42 @@
+--- a/crates/splot-core/src/simd.rs
++++ b/crates/splot-core/src/simd.rs
+@@ -653,9 +653,6 @@
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ #[non_exhaustive]
+ pub enum ResolvedBackend {
+-    /// x86-64 AVX2 backend token.
+-    #[cfg(target_arch = "x86_64")]
+-    Avx2(Avx2Backend),
+     /// x86-64 AVX-512 backend token.
+     #[cfg(target_arch = "x86_64")]
+     Avx512(Avx512Backend),
+@@ -682,8 +679,6 @@
+     pub const fn kind(self) -> SelectedBackend {
+         match self {
+             #[cfg(target_arch = "x86_64")]
+-            Self::Avx2(_) => SelectedBackend::Avx2,
+-            #[cfg(target_arch = "x86_64")]
+             Self::Sse2(_) => SelectedBackend::Sse2,
+             #[cfg(target_arch = "x86_64")]
+             Self::Avx512(_) => SelectedBackend::Avx512,
+@@ -704,8 +699,6 @@
+     #[inline]
+     pub fn enter<R>(self, scope: impl SimdScope<R>) -> R {
+         match self {
+-            #[cfg(target_arch = "x86_64")]
+-            Self::Avx2(backend) => scope.run(backend),
+             #[cfg(target_arch = "x86_64")]
+             Self::Sse2(backend) => scope.run(backend),
+             #[cfg(target_arch = "x86_64")]
+@@ -832,10 +825,7 @@
+
+     #[cfg(target_arch = "x86_64")]
+     match selected {
+-        SelectedBackend::Avx2 => level
+-            .as_avx2()
+-            .map(|token| ResolvedBackend::Avx2(Avx2Backend { token }))
+-            .ok_or_else(err),
++        SelectedBackend::Avx2 => Err(err()),
+         SelectedBackend::Avx512 => level
+             .as_avx512()
+             .zip(level.as_avx2())
