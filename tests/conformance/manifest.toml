@@ -1373,17 +1373,17 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-bru-gdf-frame-8bit.ivf"
-description = "Six 8-bit frames at 256x128. Partial BRU frames use frame-wide GDF. A subsequent inter frame retains a refreshed reference."
+description = "Six 8-bit frames at 256x128. Partial BRU frames use frame-wide GDF. An active block in the next inter frame uses the refreshed BRU reference."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-bru-gdf-frame-10bit.ivf"
-description = "Six 10-bit frames at 256x128. Partial BRU frames use frame-wide GDF. A subsequent inter frame retains a refreshed reference."
+description = "Six 10-bit frames at 256x128. Partial BRU frames use frame-wide GDF. An active block in the next inter frame uses the refreshed BRU reference."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-bru-gdf-lr-10bit.ivf"
-description = "Six 10-bit frames at 256x128. Partial BRU frames use Wiener nonseparable restoration and frame-wide GDF. A subsequent inter frame retains a refreshed reference."
+description = "Six 10-bit frames at 256x128. Partial BRU frames use Wiener nonseparable restoration and frame-wide GDF. An active block in the next inter frame uses the refreshed BRU reference."
 expect = "clean"
 
 [[vector]]

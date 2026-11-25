@@ -1112,7 +1112,7 @@ def _bru_gdf_sharp_shape(dx, dy, phase):
     return 128 + (ring + edge) // 2
 
 
-def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth):
+def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth, translated_consumer=False):
     shift = bit_depth - 8
     if plane > 0:
         return (128 + int(24 * math.sin(x * 0.08 + y * 0.06))) << shift
@@ -1123,6 +1123,8 @@ def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth):
         val = _bru_gdf_sharp_shape(x % 64, y - 64, 7)
     elif t == 4 and 66 <= x < 190 and 2 <= y < 62:
         val = _bru_gdf_sharp_shape(x % 64, y, 13)
+    elif translated_consumer and t == 5 and 66 <= x < 190 and 2 <= y < 62:
+        val = _bru_gdf_sharp_shape((x - 2) % 64, y, 13)
     elif t == 5 and 76 <= x < 120 and 72 <= y < 118:
         val = _bru_gdf_sharp_shape(x - 64, y - 64, 19)
     return int(round(val)) << shift
@@ -1163,7 +1165,7 @@ def _bru_gdf_sample_multitile(t, x, y, plane):
 def _bru_gdf_stripe_fixtures(mode, search_flags):
     flags = [*search_flags, "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]
     return [(f"syn-bru-gdf-{mode}-{depth}bit", 256, 128, depth,
-             lambda t, x, y, p, bd=depth: _bru_gdf_sample_stripe(t, x, y, p, bd), flags)
+             lambda t, x, y, p, bd=depth: _bru_gdf_sample_stripe(t, x, y, p, bd, mode == "frame"), flags)
             for depth in (8, 10)]
 
 
@@ -1376,7 +1378,8 @@ def cmd_bru_gdf_fixtures(args):
 
     Rebuild avmenc. Set AVM_BUILD to the directory containing this encoder and the pristine avmdec.
     Run bru-gdf-fixtures --frame-wide --stage <dir> to regenerate the three streams.
-    The frame-wide pair uses the per-block sources with a bounded partition search.
+    The frame-wide pair uses a bounded partition search. Its last picture translates the textured patch
+    from picture 4 by two pixels so an active inter block uses its filtered reference.
     The 10-bit LR stream uses the scaled 8-bit LR source and enables restoration.
     """
     fixtures = BRU_GDF_FIXTURES
