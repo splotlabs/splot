@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+name: Compare the draft and main at x86-64-v3
+on:
+  push:
+    branches: [experiment/simd-1934-v3-screen]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        include:
+          - variant: main
+            ref: d171d82416a67140e1f6696eeba8e08e56af5763
+            extra: --cfg disable_dispatch_avx512
+          - variant: base
+            ref: d49defcf1768fc83db0ff6892421ad16eeeedf2e
+            extra: --cfg disable_dispatch_avx512
+          - variant: draft
+            ref: 29e001679265816c1e0fed9e09a5e32efe1a2d47
+            extra: --cfg disable_dispatch_avx512
+          - variant: autowide
+            ref: 29e001679265816c1e0fed9e09a5e32efe1a2d47
+            extra: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - name: Build the release CLI with matched v3 flags
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
+          RUSTFLAGS: -C target-cpu=x86-64-v3 -C link-arg=-Wl,-z,pack-relative-relocs ${{ matrix.extra }}
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          cargo build --release --locked -j1 -p splot-cli
+          install -d playback
+          cp target/release/splot playback/
+          git rev-parse HEAD > playback/revision.txt
+          echo "$RUSTFLAGS" > playback/flags.txt
+          rustc -vV > playback/toolchain.txt
+          cd playback
+          sha256sum splot > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playback-${{ matrix.variant }}
+          path: playback
+          retention-days: 3
+          if-no-files-found: error
