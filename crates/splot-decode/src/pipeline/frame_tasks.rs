@@ -1611,15 +1611,6 @@ impl<W: IntoDecoderWork> WorkPool<W> {
         }
     }
 
-    fn push_slot(
-        &mut self,
-        rows: Option<&DecoderRowScheduler>,
-        index: usize,
-        arm: impl FnOnce(&mut W),
-    ) -> Result<()> {
-        self.push_slot_with(rows, index, arm, |slot, claim| slot.run(claim, 0))
-    }
-
     fn drain(&mut self, rows: &DecoderRowScheduler) {
         for slot in &mut self.slots {
             rows.wait(|| Arc::strong_count(slot) == 1);
@@ -1707,7 +1698,7 @@ impl RowPools {
     /// Hands one TIP output frame to the scheduler, or decodes it inline.
     pub(crate) fn push_tip<T: SplitSample>(
         &mut self,
-        backend: splot_core::simd::ResolvedBackend,
+        backend: impl splot_core::simd::SimdBackend,
         rows: Option<&DecoderRowScheduler>,
         options: &DecodeOptions,
         inputs: TipFrameInputs<T>,
@@ -1734,54 +1725,37 @@ impl RowPools {
                 work.inline = rows.is_none();
                 work.arm(inputs);
             },
-            |slot, claim| {
-                struct Scope<'a, T: SplitSample>(&'a TipFrame<T>, Claim);
-                impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
-                    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                        self.0.run_with_backend(backend.narrow(), self.1, 0);
-                    }
-                }
-                backend.enter(Scope(slot, claim));
-            },
+            |slot, claim| slot.run_with_backend(backend, claim, 0),
         )
     }
 
     /// Hands one walked frame's filter phase to the scheduler, or runs it inline.
     pub(crate) fn push_finish<T: SplitSample>(
         &mut self,
-        backend: splot_core::simd::ResolvedBackend,
+        backend: impl splot_core::simd::SimdBackend,
         rows: Option<&DecoderRowScheduler>,
         finish: PendingFinish<T>,
         walked: super::frame_engine::finish::WalkedFrame<T>,
     ) -> Result<()> {
         let pools = T::pools(self);
         let Some(rows) = rows else {
-            struct Scope<'a, T: SplitSample>(
-                super::frame_engine::finish::WalkedFrame<T>,
-                PendingFinish<T>,
-                &'a mut Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
-            );
-            impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
-                fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                    let narrow = backend.narrow();
-                    let frontier = self
-                        .0
-                        .into_frontier(self.1.progress_handle(), self.2.take());
-                    match frontier.and_then(|frontier| frontier.run_inline(narrow)) {
-                        Ok(filter) => *self.2 = Some(self.1.run_owned_finish(filter)),
-                        Err(error) => self.1.fail(error),
-                    }
-                }
+            let frontier =
+                walked.into_frontier(finish.progress_handle(), pools.inline_filter_shell.take());
+            match frontier.and_then(|frontier| frontier.run_inline(backend)) {
+                Ok(filter) => pools.inline_filter_shell = Some(finish.run_owned_finish(filter)),
+                Err(error) => finish.fail(error),
             }
-            backend.enter(Scope(walked, finish, &mut pools.inline_filter_shell));
             return Ok(());
         };
         let index = pools
             .finish
             .reserve(|| FinishFrame::new(rows.wake()), FinishFrame::reset);
-        pools
-            .finish
-            .push_slot(Some(rows), index, |work| work.arm(finish, walked))
+        pools.finish.push_slot_with(
+            Some(rows),
+            index,
+            |work| work.arm(finish, walked),
+            |slot, claim| slot.run_with_backend(backend, claim, 0),
+        )
     }
 
     /// Waits for every work in every pool to finish.

@@ -103,8 +103,8 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        let _ = self.backend;
-        self.context.decode_hash_report(&mut reader, &options)
+        self.context
+            .decode_hash_report(self.backend.narrow(), &mut reader, &options)
     }
 
     /// Decodes the supported envelope and discards each displayed frame.
@@ -116,8 +116,8 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<()> {
-        let _ = self.backend;
-        self.context.decode_discard(&mut reader, &options)
+        self.context
+            .decode_discard(self.backend.narrow(), &mut reader, &options)
     }
 
     /// [`Self::decode_raw_reader`] over in-memory bytes.
@@ -143,8 +143,8 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        let _ = self.backend;
-        self.context.decode_raw(&mut reader, &options, &mut writer)
+        self.context
+            .decode_raw(self.backend.narrow(), &mut reader, &options, &mut writer)
     }
 
     /// [`Self::decode_y4m_reader`] over in-memory bytes.
@@ -170,8 +170,8 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        let _ = self.backend;
-        self.context.decode_y4m(&mut reader, &options, &mut writer)
+        self.context
+            .decode_y4m(self.backend.narrow(), &mut reader, &options, &mut writer)
     }
 }
 
@@ -330,11 +330,13 @@ impl DecodeContext {
 
     fn decode_hash_report(
         &self,
+        backend: impl SimdBackend,
         reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
     ) -> Result<DecodeHashReport> {
         Self::run(reader, options, |source| {
             crate::output::hash::decode_hash_report_from_plan(
+                backend,
                 source,
                 options,
                 self.threads(),
@@ -373,11 +375,17 @@ impl DecodeContext {
 
     fn decode_discard(
         &self,
+        backend: impl SimdBackend,
         reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
     ) -> Result<()> {
         Self::run(reader, options, |source| {
-            crate::output::raw::discard_raw_stream_from_plan(source, options, &self.session)
+            crate::output::raw::discard_raw_stream_from_plan(
+                backend,
+                source,
+                options,
+                &self.session,
+            )
         })
     }
 
@@ -439,12 +447,19 @@ impl DecodeContext {
 
     fn decode_raw(
         &self,
+        backend: impl SimdBackend,
         reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
         writer: &mut (dyn std::io::Write + Send),
     ) -> Result<()> {
         Self::run(reader, options, |source| {
-            crate::output::raw::write_raw_stream_from_plan(source, options, &self.session, writer)
+            crate::output::raw::write_raw_stream_from_plan(
+                backend,
+                source,
+                options,
+                &self.session,
+                writer,
+            )
         })
     }
 
@@ -487,12 +502,19 @@ impl DecodeContext {
 
     fn decode_y4m(
         &self,
+        backend: impl SimdBackend,
         reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
         writer: &mut (dyn std::io::Write + Send),
     ) -> Result<()> {
         Self::run(reader, options, |source| {
-            crate::output::y4m::write_y4m_stream_to_writer(source, options, &self.session, writer)
+            crate::output::y4m::write_y4m_stream_to_writer(
+                backend,
+                source,
+                options,
+                &self.session,
+                writer,
+            )
         })
     }
 

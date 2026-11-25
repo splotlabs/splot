@@ -20,6 +20,10 @@ const FIXTURES: &[(&str, &[u8])] = &[
         include_bytes!("../../../tests/conformance/vectors/valid/syn-3frame-multiref-64x64.ivf"),
     ),
     (
+        "tip",
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-frame-tip-families-64x64.ivf"),
+    ),
+    (
         "opfl_refine",
         include_bytes!(
             "../../../tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
@@ -290,6 +294,7 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
                         "{label}"
                     );
                     let skipped = decode_streaming(&mut no_grain_decoder, &units);
+                    drop(no_grain_decoder);
                     assert_ne!(
                         raw_from_pictures(&skipped),
                         expected.raw,
