@@ -44,6 +44,7 @@ const LAYER_VALUES: u8 = 3;
 pub(crate) struct FrameOutputEffects {
     pub(crate) content_interpretation: Option<ContentInterpretation>,
     pub(crate) metadata: Vec<MetadataUnit>,
+    pub(crate) atlas: Vec<crate::AtlasAssociation>,
 }
 
 impl FrameOutputEffects {
@@ -52,6 +53,7 @@ impl FrameOutputEffects {
         Self {
             content_interpretation: None,
             metadata: Vec::new(),
+            atlas: Vec::new(),
         }
     }
 
@@ -193,7 +195,6 @@ pub(crate) struct OutputEffectState {
     active_xlayer: ExtendedLayerId,
     local_lcr_tu: Option<u64>,
     local_lcr_in_cvs: bool,
-    local_lcr_ids: u8,
     global_lcr_xlayers: [Option<u32>; 8],
     brt_count: BrtCount,
     second_brt_offset: Option<ByteOffset>,
@@ -220,7 +221,6 @@ impl OutputEffectState {
             active_xlayer,
             local_lcr_tu: None,
             local_lcr_in_cvs: false,
-            local_lcr_ids: 0,
             global_lcr_xlayers: [None; 8],
             brt_count: BrtCount::None,
             second_brt_offset: None,
@@ -234,12 +234,9 @@ impl OutputEffectState {
         self.tu_index = tu_index;
     }
 
-    pub(super) fn local_lcr_ids(&self) -> u8 {
-        self.local_lcr_ids
-    }
-
-    pub(crate) fn has_local_lcr_id(&self, id: u8) -> bool {
-        (1..=7).contains(&id) && (self.local_lcr_ids & (1u8 << id)) != 0
+    pub(super) fn note_local_lcr(&mut self) {
+        self.local_lcr_tu = Some(self.tu_index);
+        self.local_lcr_in_cvs = true;
     }
 
     pub(crate) fn apply_global_lcr(&mut self, id: u8, xlayer_map: u32) {
@@ -277,7 +274,7 @@ impl OutputEffectState {
     ) -> Result<()> {
         match envelope.header.obu_type {
             ObuType::TemporalDelimiter => self.begin_temporal_unit(),
-            ObuType::LayerConfigurationRecord => self.observe_lcr(envelope)?,
+            ObuType::LayerConfigurationRecord => self.note_local_lcr(),
             ObuType::OperatingPointSet => self.observe_ops(envelope)?,
             ObuType::MultiFrameHeader => self.observe_mfh(envelope, sequence)?,
             ObuType::BufferRemovalTiming => self.observe_brt(envelope)?,
@@ -474,6 +471,7 @@ impl OutputEffectState {
         let idx = usize::from(mlayer.get());
         let effects = FrameOutputEffects {
             content_interpretation: self.content_interpretation.get(idx).copied().flatten(),
+            atlas: Vec::new(),
             metadata: self
                 .metadata
                 .iter()
@@ -701,23 +699,6 @@ impl OutputEffectState {
         }
         if let Some(slot) = self.ci_in_current_tu.get_mut(idx) {
             *slot = Some(content);
-        }
-        Ok(())
-    }
-
-    fn observe_lcr(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
-        match parse_validated_lcr(envelope)? {
-            LayerConfigurationRecord::Global(info) => {
-                self.apply_global_lcr(info.global_config_record_id, info.xlayer_map);
-            }
-            LayerConfigurationRecord::Local(info) => {
-                self.local_lcr_tu = Some(self.tu_index);
-                self.local_lcr_in_cvs = true;
-                if (1..=7).contains(&info.local_id) {
-                    self.local_lcr_ids |= 1u8 << info.local_id;
-                }
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -1034,6 +1015,16 @@ pub(crate) fn parse_validated_lcr(envelope: ObuEnvelope<'_>) -> Result<LayerConf
                 ),
             });
         }
+    } else if let LayerConfigurationRecord::Local(info) = &record
+        && info.local_id == 0
+    {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::obu_payload_parse(
+                envelope.offset,
+                "6.8.3",
+                "lcr_local_id must be in 1..=7".to_owned(),
+            ),
+        });
     }
     Ok(record)
 }
@@ -1829,7 +1820,7 @@ mod tests {
         assert!(state.validate_annex_a_lcr(frame_obu, &sequence).is_ok());
 
         state.global_lcr_xlayers[1] = None;
-        state.observe_lcr(lcr_obu).unwrap();
+        state.observe_prefix_obu(lcr_obu, &sequence).unwrap();
         assert!(state.local_lcr_in_cvs);
         sequence.general.seq_profile_idc = splot_core::headers::sequence::ProfileIdc::from_bits(1);
         assert!(state.validate_annex_a_lcr(frame_obu, &sequence).is_ok());

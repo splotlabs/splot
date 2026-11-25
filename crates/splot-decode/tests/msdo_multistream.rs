@@ -5,6 +5,9 @@
 
 #![expect(clippy::unwrap_used)]
 
+#[path = "msdo_multistream/atlas.rs"]
+mod atlas;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{self, Read};
@@ -238,7 +241,10 @@ fn temporal_units(bytes: &[u8]) -> Vec<Vec<u8>> {
 }
 
 fn stream_decode(bytes: &[u8], settings: &DecoderSettings) -> Result<Vec<Picture>, DecodeError> {
-    let mut decoder = Decoder::new(*settings)?;
+    stream_pictures(&mut Decoder::new(*settings)?, bytes)
+}
+
+fn stream_pictures(decoder: &mut Decoder, bytes: &[u8]) -> Result<Vec<Picture>, DecodeError> {
     let mut pictures = Vec::new();
     for (idx, unit) in temporal_units(bytes).iter().enumerate() {
         let props = DataProps::default().with_pts(i64::try_from(idx).unwrap());
