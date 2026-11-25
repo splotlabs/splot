@@ -165,12 +165,12 @@ impl DecoderWork {
     ) {
         let narrow = backend.narrow();
         match self {
-            Self::Split8(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Split16(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Split8(frame) => frame.run_with_backend(backend, claim, worker),
+            Self::Split16(frame) => frame.run_with_backend(backend, claim, worker),
             Self::Tip8(frame) => frame.run_with_backend(narrow, claim, worker),
             Self::Tip16(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Finish8(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Finish16(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Finish8(frame) => frame.run_with_backend(backend, claim, worker),
+            Self::Finish16(frame) => frame.run_with_backend(backend, claim, worker),
         }
     }
 }
@@ -723,7 +723,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
         struct Scope<'a, T: SplitSample>(&'a SplitFrame<T>, Claim, usize);
         impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
             fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                self.0.run_with_backend(backend.narrow(), self.1, self.2);
+                self.0.run_with_backend(backend, self.1, self.2);
             }
         }
         if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
@@ -743,19 +743,20 @@ impl<T: SplitSample> SplitFrame<T> {
         mut claim: Claim,
         worker: usize,
     ) {
+        let narrow = backend.narrow();
         loop {
             let outcome = match claim.stage {
                 PARSE => self.parse().map(|()| true),
                 PREPARE => self.prepare().map(|()| true),
                 ATTACH => self.attach().map(|()| true),
                 RESOLVE => self.resolve(claim.row),
-                COMMIT => self.commit(backend, claim.row, worker).map(|()| true),
-                FRONTIER => self.frontier(backend, claim.row).map(|()| true),
-                PRECOMPUTE => self.precompute(backend, claim.row, worker).map(|()| true),
+                COMMIT => self.commit(narrow, claim.row, worker).map(|()| true),
+                FRONTIER => self.frontier(narrow, claim.row).map(|()| true),
+                PRECOMPUTE => self.precompute(narrow, claim.row, worker).map(|()| true),
                 TILE => self.parse_tile(claim.row).map(|()| true),
                 PROJECT => self
                     .recon_state()
-                    .and_then(|recon| recon.project(backend, claim.row))
+                    .and_then(|recon| recon.project(narrow, claim.row))
                     .map(|()| true),
                 FILTER => {
                     run_filter_stripe(backend, &self.filter_jobs, &self.filter_error, claim.row)
@@ -1500,7 +1501,7 @@ impl<T: SplitSample> FinishFrame<T> {
             FINISH_INIT => self.init(),
             FINISH_ADVANCE => self.advance(narrow, claim.row),
             FINISH_FILTER => {
-                run_filter_stripe(narrow, &self.filter_jobs, &self.filter_error, claim.row)
+                run_filter_stripe(backend, &self.filter_jobs, &self.filter_error, claim.row)
             }
             _ => self.output(),
         };
@@ -1547,7 +1548,7 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         struct Scope<'a, T: SplitSample>(&'a FinishFrame<T>, Claim, usize);
         impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
             fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                self.0.run_with_backend(backend.narrow(), self.1, self.2);
+                self.0.run_with_backend(backend, self.1, self.2);
             }
         }
         if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {

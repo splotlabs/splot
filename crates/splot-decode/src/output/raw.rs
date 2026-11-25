@@ -35,7 +35,7 @@ pub(crate) fn write_raw_stream_from_plan(
             super::track_flat_output_xlayer(&mut seen_xlayer, output.extended_layer_id)?;
             let frame = output.ready_frame()?;
             write_display_frame(
-                backend,
+                backend.narrow(),
                 &frame,
                 output.output_grain(options),
                 &mut spare,
@@ -88,11 +88,17 @@ pub(crate) fn discard_raw_stream_from_plan(
         |output| {
             let grain = output.output_grain(options);
             match &output.ready_frame()? {
-                PipelineDecodedFrame::Eight(frame) => {
-                    write_display(backend, frame.get(), grain, &mut spare.eight, |_| Ok(()))
-                }
+                PipelineDecodedFrame::Eight(frame) => write_display(
+                    backend.narrow(),
+                    frame.get(),
+                    grain,
+                    &mut spare.eight,
+                    |_| Ok(()),
+                ),
                 PipelineDecodedFrame::Ten(frame) => {
-                    write_display(backend, frame.get(), grain, &mut spare.ten, |_| Ok(()))
+                    write_display(backend.narrow(), frame.get(), grain, &mut spare.ten, |_| {
+                        Ok(())
+                    })
                 }
             }
         },

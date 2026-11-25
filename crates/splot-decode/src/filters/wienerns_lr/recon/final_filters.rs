@@ -1142,7 +1142,7 @@ impl StripeChain<'_> {
                 match block.restoration_type {
                     LrUnitRestorationType::PcWiener => {
                         self.compute_pc_wiener_block(
-                            backend,
+                            backend.narrow(),
                             &block,
                             frame.deblocked_y,
                             &frame.cdef_y,
@@ -1231,7 +1231,7 @@ impl StripeChain<'_> {
                     return Err(super::lr_pipeline_state_error());
                 }
                 self.compute_chroma_lr_block(
-                    backend,
+                    backend.narrow(),
                     plane_id,
                     &block,
                     lr_unit_filters,
@@ -1550,7 +1550,7 @@ impl StripeChain<'_> {
                 .tail(WIENER_NS_LUMA_TAP_RADIUS)
                 .ok_or_else(super::lr_pipeline_state_error)?;
             for_each_lr_strip(
-                backend,
+                backend.narrow(),
                 rows,
                 col,
                 block.width,
@@ -1573,7 +1573,7 @@ impl StripeChain<'_> {
                     }
                     let cell_subclass_map = if num_classes > 1 {
                         Some(self.luma_lr_cell_subclasses(
-                            backend,
+                            backend.narrow(),
                             &sub,
                             &window,
                             qindex,

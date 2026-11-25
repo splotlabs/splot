@@ -612,7 +612,7 @@ struct DriverLaunch {
 impl SimdScope<Result<std::thread::JoinHandle<()>>> for DriverLaunch {
     fn run<B: SimdBackend>(self, backend: B) -> Result<std::thread::JoinHandle<()>> {
         splot_parallel::spawn_thread("splot-driver", move || {
-            run_driver_session(backend.narrow(), self);
+            run_driver_session(backend, self);
         })
         .map_err(Into::into)
     }
@@ -640,7 +640,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
                     frame,
                     session.planes(),
                     &options,
-                    backend,
+                    backend.narrow(),
                     launch.resolved,
                 )?);
                 Ok(())

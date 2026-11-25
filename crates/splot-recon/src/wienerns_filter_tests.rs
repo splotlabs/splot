@@ -1627,3 +1627,44 @@ fn typed_luma_padded_matches_oracle_across_backend_scratch_reuse() {
         }
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn wiener_ns_luma_avx512_vnni_matches_avx2_for_byte_and_word_rows() {
+    use splot_core::simd::{ResolvedBackend, SimdBackend, SimdPolicy, resolve_backend};
+
+    let Ok(ResolvedBackend::Avx512(backend)) = resolve_backend(SimdPolicy::Avx512) else {
+        assert!(
+            std::env::var_os("SPLOT_REQUIRE_AVX512").is_none(),
+            "qualification requires the full AVX-512 token"
+        );
+        return;
+    };
+    let avx512 = backend.token();
+    let avx2 = backend.narrow().token();
+
+    for pattern in 0..64 {
+        let words: [[u16; 24]; 9] = core::array::from_fn(|row| {
+            core::array::from_fn(|col| ((row * 229 + col * 113 + pattern * 347) % 1024) as u16)
+        });
+        let bytes = words.map(|row| row.map(|sample| sample as u8));
+        let weights: [lr_madd::MaddWeights; 9] = core::array::from_fn(|pair| {
+            core::array::from_fn(|half| {
+                core::array::from_fn(|lane| {
+                    ((pair * 23 + half * 5 + lane * 3 + pattern) % 43) as i16 - 21
+                })
+            })
+        });
+
+        let expected_words = LumaTaps::avx2(avx2, &words.each_ref(), &weights, 1023).unwrap();
+        let expected_bytes = LumaTaps::avx2(avx2, &bytes.each_ref(), &weights, 255).unwrap();
+        assert_eq!(
+            LumaTaps::avx512(avx512, &words.each_ref(), &weights, 1023),
+            Some(expected_words)
+        );
+        assert_eq!(
+            LumaTaps::avx512(avx512, &bytes.each_ref(), &weights, 255),
+            Some(expected_bytes)
+        );
+    }
+}

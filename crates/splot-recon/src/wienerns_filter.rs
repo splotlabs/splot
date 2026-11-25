@@ -143,6 +143,8 @@ struct LumaTaps;
 impl TapPairs for LumaTaps {
     #[cfg(target_arch = "x86_64")]
     lr_madd::madd_avx2!(LumaTaps, 9, 24);
+    #[cfg(target_arch = "x86_64")]
+    lr_madd::madd_avx2!(vnni LumaTaps, 9, 24);
     #[cfg(target_arch = "aarch64")]
     lr_madd::by_lane_kernel!(LumaTaps, 9, 24);
     const RADIUS: usize = WIENER_NS_LUMA_TAP_RADIUS;
@@ -316,7 +318,7 @@ pub fn wiener_ns_filter_luma_block_padded_into_with<B: SimdBackend, T: ReconSamp
     source: &WienerNsLumaPaddedSource<'_, T>,
     scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
-    let backend = lr_madd::TypedLr(backend.narrow());
+    let backend = lr_madd::TypedLr(backend);
     let subclasses = params
         .subclasses
         .map_or(LumaSubclassLayout::Uniform, LumaSubclassLayout::Samples);
@@ -369,7 +371,7 @@ pub fn wiener_ns_filter_luma_block_padded_cells_into_with<B: SimdBackend, T: Rec
     cell_subclasses: &[u8],
     scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
-    let backend = lr_madd::TypedLr(backend.narrow());
+    let backend = lr_madd::TypedLr(backend);
     wiener_ns_filter_luma_block_padded_layout_into(
         backend,
         output,

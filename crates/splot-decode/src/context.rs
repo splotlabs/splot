@@ -32,7 +32,7 @@ pub struct DecodeContext {
     session: crate::pipeline::DecodeSession,
 }
 
-use splot_core::simd::{NarrowSimdScope, SelectedBackend, SimdBackend, SimdScope};
+use splot_core::simd::{ConcreteSimdScope, SelectedBackend, SimdBackend, SimdScope};
 
 /// Scoped synchronous callback entered once with a concrete compile-time [`SimdBackend`].
 pub trait DecodeScope<R> {
@@ -103,7 +103,7 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        self.backend.enter_narrow(HashReport {
+        self.backend.enter_concrete(HashReport {
             context: self.context,
             reader: &mut reader,
             options: &options,
@@ -119,7 +119,7 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<()> {
-        self.backend.enter_narrow(Discard {
+        self.backend.enter_concrete(Discard {
             context: self.context,
             reader: &mut reader,
             options: &options,
@@ -149,7 +149,7 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        self.backend.enter_narrow(Raw {
+        self.backend.enter_concrete(Raw {
             context: self.context,
             reader: &mut reader,
             options: &options,
@@ -180,7 +180,7 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        self.backend.enter_narrow(Y4m {
+        self.backend.enter_concrete(Y4m {
             context: self.context,
             reader: &mut reader,
             options: &options,
@@ -199,9 +199,14 @@ macro_rules! decode_request {
             $($field: $ty,)*
         }
 
-        impl NarrowSimdScope<Result<$output>> for $request<'_> {
+        impl ConcreteSimdScope<Result<$output>> for $request<'_> {
             #[cfg(target_arch = "x86_64")]
             fn run_avx2(self, backend: splot_core::simd::Avx2Backend) -> Result<$output> {
+                self.context.$method(backend, self.reader, self.options $(, self.$field)*)
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            fn run_avx512(self, backend: splot_core::simd::Avx512Backend) -> Result<$output> {
                 self.context.$method(backend, self.reader, self.options $(, self.$field)*)
             }
 

@@ -39,6 +39,9 @@ jobs:
       - name: Require and exercise the forced AVX-512 backend
         run: cargo test -p splot-decode --release --locked --test simd_backend_parity
 
+      - name: Check Wiener VNNI rows against AVX2
+        run: cargo test -p splot-recon --lib --release --locked wiener_ns_luma_avx512_vnni_matches_avx2_for_byte_and_word_rows
+
       - name: Fetch and verify the frozen EwoutH streams
         run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
 

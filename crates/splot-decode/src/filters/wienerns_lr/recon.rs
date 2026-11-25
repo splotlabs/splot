@@ -578,7 +578,7 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
         mut self,
         backend: B,
     ) -> Result<OwnedFilterFinish<T>> {
-        while let Some(job) = self.advance(backend)? {
+        while let Some(job) = self.advance(backend.narrow())? {
             job.run(backend)?;
         }
         self.finish()
@@ -1118,8 +1118,15 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 filtered_u: u,
                 filtered_v: v,
                 ..
-            } =
-                self.cdef_ccso_range(backend, deblocked, &chain, start, end, Some(target), false)?;
+            } = self.cdef_ccso_range(
+                backend.narrow(),
+                deblocked,
+                &chain,
+                start,
+                end,
+                Some(target),
+                false,
+            )?;
             return Ok(final_filters::FilteredStripe { y: luma, u, v });
         }
         let deblocked = if chroma_in_place {
@@ -1167,7 +1174,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 .map(|(core, edged)| core.over(edged))
         });
         let cdef = self.cdef_ccso_range(
-            backend,
+            backend.narrow(),
             crate::filters::source::DeblockedPlanes {
                 y: full[0].or(planes[0]).ok_or_else(lr_pipeline_state_error)?,
                 u: full[1].or(planes[1]),
@@ -1187,7 +1194,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             filtered_u: cdef.filtered_u,
             filtered_v: cdef.filtered_v,
         };
-        let cdef_overlap = self.cdef_overlap_planes(backend, deblocked, &chain, start, end)?;
+        let cdef_overlap =
+            self.cdef_overlap_planes(backend.narrow(), deblocked, &chain, start, end)?;
         let mut frame = chain.apply_lr_stripe(
             backend,
             &self.core,
@@ -1209,7 +1217,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                     (None, &mut frame.cdef_y)
                 };
             crate::filters::gdf::apply_stripe(
-                backend,
+                backend.narrow(),
                 &self.core,
                 frame.deblocked_y,
                 separate_cdef_luma,

@@ -550,7 +550,7 @@ fn decode_key_frame_with_effects(
     let (frame, frame_cdfs, ccso_header, ccso_grid, segment_ids, motion_field) =
         with_sample!(sequence, T, {
             let walk = frame_engine::walk_frame::<_, T>(
-                backend,
+                backend.narrow(),
                 &mut T::pools(pools).scratch,
                 candidate,
                 bytes,
@@ -609,7 +609,7 @@ struct RowSchedulerLaunch {
 
 impl splot_core::simd::SimdScope<Result<Arc<DecoderRowScheduler>>> for RowSchedulerLaunch {
     fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> Result<Arc<DecoderRowScheduler>> {
-        spawn_row_scheduler(self.threads, backend.narrow())
+        spawn_row_scheduler(self.threads, backend)
     }
 }
 
@@ -628,7 +628,9 @@ fn run_typed_worker<B: splot_core::simd::SimdBackend>(
     worker_loop: splot_parallel::WorkerLoop<frame_tasks::DecoderWork>,
 ) {
     worker_loop.run(|work, claim, worker| {
-        backend.vectorize(|| work.run_with_backend(backend, claim, worker));
+        splot_core::simd::SimdBackend::vectorize(backend.narrow(), || {
+            work.run_with_backend(backend, claim, worker);
+        });
     });
 }
 
@@ -1567,7 +1569,7 @@ fn decode_frames_in_order(
                             });
                         let core = Arc::clone(&inter_core);
                         pools.push_tip::<T>(
-                            backend,
+                            backend.narrow(),
                             rows,
                             options,
                             frame_tasks::TipFrameInputs {
@@ -1599,7 +1601,7 @@ fn decode_frames_in_order(
                         };
                         let mut product_writers = frames.reserve_products()?;
                         let walk = frame_engine::walk_frame(
-                            backend,
+                            backend.narrow(),
                             &mut T::pools(pools).scratch,
                             next_candidate,
                             unit.view(),

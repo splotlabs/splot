@@ -47,15 +47,23 @@ pub(crate) fn write_y4m_stream_to_writer(
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Eight)?;
-                    write_display(backend, frame.get(), grain, &mut spare.eight, |display| {
-                        write_y4m_frame(&mut writer, &mut target, display, frame_rate)
-                    })
+                    write_display(
+                        backend.narrow(),
+                        frame.get(),
+                        grain,
+                        &mut spare.eight,
+                        |display| write_y4m_frame(&mut writer, &mut target, display, frame_rate),
+                    )
                 }
                 PipelineDecodedFrame::Ten(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Ten)?;
-                    write_display(backend, frame.get(), grain, &mut spare.ten, |display| {
-                        write_y4m_frame(&mut writer, &mut target, display, frame_rate)
-                    })
+                    write_display(
+                        backend.narrow(),
+                        frame.get(),
+                        grain,
+                        &mut spare.ten,
+                        |display| write_y4m_frame(&mut writer, &mut target, display, frame_rate),
+                    )
                 }
             }
         },

@@ -32,6 +32,11 @@ pub(crate) trait LrBackend: Copy {
     #[cfg(target_arch = "x86_64")]
     fn avx2_token(self) -> Option<fearless_simd::Avx2>;
 
+    #[cfg(target_arch = "x86_64")]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        None
+    }
+
     /// Carried AArch64 NEON token, when guaranteed by this backend.
     #[cfg(target_arch = "aarch64")]
     fn neon_token(self) -> Option<fearless_simd::Neon>;
@@ -113,6 +118,12 @@ impl<B: SimdBackend> LrBackend for TypedLr<B> {
     #[inline(always)]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
         self.0.avx2_token()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        self.0.avx512_token()
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -498,6 +509,16 @@ pub(crate) trait TapPairs {
         weights: &[MaddWeights],
         max_sample: u16,
     ) -> Option<[u16; 16]>;
+    #[cfg(target_arch = "x86_64")]
+    fn avx512<T: LumaSimdSource, const ROWS: usize, const REACH: usize>(
+        _token: fearless_simd::Avx512,
+        _window: &[&[T; REACH]; ROWS],
+        _weights: &[MaddWeights],
+        _max_sample: u16,
+    ) -> Option<[u16; 16]> {
+        None
+    }
+
     /// The [`by_lane`] run kernel.
     #[cfg(target_arch = "aarch64")]
     fn by_lane(
@@ -608,6 +629,12 @@ pub(crate) fn filter16<
     weights: &[MaddWeights],
     max_sample: u16,
 ) -> [u16; 16] {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = backend.avx512_token()
+        && let Some(values) = F::avx512(token, window, weights, max_sample)
+    {
+        return values;
+    }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = backend.avx2_token()
         && let Some(values) = F::avx2(token, window, weights, max_sample)
@@ -727,25 +754,35 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
 #[cfg(target_arch = "x86_64")]
 macro_rules! madd_avx2 {
     ($taps:ty, $rows:literal, $reach:literal) => {
+        $crate::lr_madd::madd_avx2!(@kernel avx2, Avx2, $taps, $rows, $reach, |sum, values, weights| {
+            _mm256_add_epi32(sum, _mm256_madd_epi16(values, weights))
+        });
+    };
+    (vnni $taps:ty, $rows:literal, $reach:literal) => {
+        $crate::lr_madd::madd_avx2!(@kernel avx512, Avx512, $taps, $rows, $reach, |sum, values, weights| {
+            _mm256_dpwssd_epi32(sum, values, weights)
+        });
+    };
+    (@kernel $method:ident, $token:ident, $taps:ty, $rows:literal, $reach:literal, $madd:expr) => {
         #[inline(always)]
-        fn avx2<
+        fn $method<
             T: $crate::wienerns_filter::LumaSimdSource,
             const ROWS: usize,
             const REACH: usize,
         >(
-            t: fearless_simd::Avx2,
+            t: fearless_simd::$token,
             window: &[&[T; REACH]; ROWS],
             weights: &[$crate::lr_madd::MaddWeights],
             max_sample: u16,
         ) -> Option<[u16; 16]> {
             use core::arch::x86_64::*;
-            use fearless_simd::{Avx2, SimdBase, SimdInto, i16x16, u8x16, u16x16};
+            use fearless_simd::{$token, SimdBase, SimdInto, i16x16, u8x16, u16x16};
             use $crate::lr_madd::MaddWeights;
 
-            $crate::lr_madd::madd_row_kernel!(words, u16, $taps, $rows, $reach, |t, lanes| {
+            $crate::lr_madd::madd_row_kernel!(words, $token, $madd, u16, $taps, $rows, $reach, |t, lanes| {
                 u16x16::load_array_ref(t, lanes).into()
             });
-            $crate::lr_madd::madd_row_kernel!(bytes, u8, $taps, $rows, $reach, |t, lanes| {
+            $crate::lr_madd::madd_row_kernel!(bytes, $token, $madd, u8, $taps, $rows, $reach, |t, lanes| {
                 _mm256_cvtepu8_epi16(u8x16::load_array_ref(t, lanes).into())
             });
 
@@ -779,11 +816,11 @@ pub(crate) use madd_avx2;
 /// zero-extending 16 samples `$lanes` to word lanes.
 #[cfg(target_arch = "x86_64")]
 macro_rules! madd_row_kernel {
-    ($name:ident, $sample:ty, $taps:ty, $rows:literal, $reach:literal, |$t:ident, $lanes:ident| $words:block) => {
+    ($name:ident, $token:ident, $madd:expr, $sample:ty, $taps:ty, $rows:literal, $reach:literal, |$t:ident, $lanes:ident| $words:block) => {
         fearless_simd::kernel!(
             #[inline(always)]
             fn $name(
-                $t: Avx2,
+                $t: $token,
                 window: &[&[$sample; $reach]; $rows],
                 weights: &[MaddWeights],
                 max_sample: u16,
@@ -811,15 +848,10 @@ macro_rules! madd_row_kernel {
                     i16x16::load_array_ref($t, &weights[half]).into()
                 };
                 let mut sums = [_mm256_setzero_si256(); 2];
+                let madd = $madd;
                 let mut add = |a: __m256i, b: __m256i, weights: &MaddWeights| {
-                    sums[0] = _mm256_add_epi32(
-                        sums[0],
-                        _mm256_madd_epi16(_mm256_unpacklo_epi16(a, b), half(weights, 0)),
-                    );
-                    sums[1] = _mm256_add_epi32(
-                        sums[1],
-                        _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), half(weights, 1)),
-                    );
+                    sums[0] = madd(sums[0], _mm256_unpacklo_epi16(a, b), half(weights, 0));
+                    sums[1] = madd(sums[1], _mm256_unpackhi_epi16(a, b), half(weights, 1));
                 };
                 let pairs = taps.len() / 2;
                 for (pair, weights) in weights.iter().enumerate().take(pairs) {
@@ -835,7 +867,7 @@ macro_rules! madd_row_kernel {
                     ),
                     _mm256_set1_epi16(max_sample as i16),
                 );
-                let values: u16x16<Avx2> = values.simd_into($t);
+                let values: u16x16<$token> = values.simd_into($t);
                 values.into()
             }
         );

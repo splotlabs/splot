@@ -156,12 +156,16 @@ impl UnsupportedBackendError {
     }
 }
 
-/// Internal bridge for library-owned code generation of narrow decode paths.
+/// Internal bridge for library-owned code generation of concrete decode paths.
 #[doc(hidden)]
-pub trait NarrowSimdScope<R> {
+pub trait ConcreteSimdScope<R> {
     /// Runs on the x86-64 AVX2 backend selected for narrow kernels.
     #[cfg(target_arch = "x86_64")]
     fn run_avx2(self, backend: Avx2Backend) -> R;
+
+    /// Runs on the x86-64 AVX-512 backend.
+    #[cfg(target_arch = "x86_64")]
+    fn run_avx512(self, backend: Avx512Backend) -> R;
 
     /// Runs on the AArch64 NEON backend.
     #[cfg(target_arch = "aarch64")]
@@ -195,14 +199,21 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
     /// Converts `self` to its narrower compute backend with zero runtime checks.
     fn narrow(self) -> Self::Narrow;
 
-    /// Enters a concrete narrow-kernel scope without selecting a backend again.
+    /// Enters the concrete backend scope without selecting a backend again.
     #[doc(hidden)]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R;
+    fn enter_concrete<R>(self, scope: impl ConcreteSimdScope<R>) -> R;
 
     /// Returns the carried `Avx2` token on x86-64 AVX2/AVX-512 backends.
     #[cfg(target_arch = "x86_64")]
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        None
+    }
+
+    /// Returns the carried AVX-512 token when this backend proves its feature set.
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
         None
     }
 
@@ -336,8 +347,8 @@ impl SimdBackend for Avx2Backend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
-        scope.run_avx2(self.narrow())
+    fn enter_concrete<R>(self, scope: impl ConcreteSimdScope<R>) -> R {
+        scope.run_avx2(self)
     }
 
     #[inline]
@@ -403,8 +414,13 @@ impl SimdBackend for Avx512Backend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
-        scope.run_avx2(self.narrow())
+    fn enter_concrete<R>(self, scope: impl ConcreteSimdScope<R>) -> R {
+        scope.run_avx512(self)
+    }
+
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        Some(self.token)
     }
 
     #[inline]
@@ -463,7 +479,7 @@ impl SimdBackend for NeonBackend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+    fn enter_concrete<R>(self, scope: impl ConcreteSimdScope<R>) -> R {
         scope.run_neon(self.narrow())
     }
 
@@ -528,7 +544,7 @@ impl SimdBackend for FallbackBackend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+    fn enter_concrete<R>(self, scope: impl ConcreteSimdScope<R>) -> R {
         scope.run_fallback(self.narrow())
     }
 }
