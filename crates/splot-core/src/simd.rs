@@ -174,9 +174,9 @@ impl UnsupportedBackendError {
     }
 }
 
-/// Internal bridge for library-owned code generation of narrow decode paths.
+/// Internal bridge for library-owned code generation of typed decode paths.
 #[doc(hidden)]
-pub trait NarrowSimdScope<R> {
+pub trait StaticSimdScope<R> {
     /// Runs on the x86-64 baseline backend.
     #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     fn run_sse2(self, backend: Sse2Backend) -> R;
@@ -184,6 +184,10 @@ pub trait NarrowSimdScope<R> {
     /// Runs on the x86-64 AVX2 backend selected for narrow kernels.
     #[cfg(target_arch = "x86_64")]
     fn run_avx2(self, backend: Avx2Backend) -> R;
+
+    /// Runs on the x86-64 AVX-512 backend.
+    #[cfg(target_arch = "x86_64")]
+    fn run_avx512(self, backend: Avx512Backend) -> R;
 
     /// Runs on the AArch64 NEON backend.
     #[cfg(target_arch = "aarch64")]
@@ -217,9 +221,9 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
     /// Converts `self` to its narrower compute backend with zero runtime checks.
     fn narrow(self) -> Self::Narrow;
 
-    /// Enters a concrete narrow-kernel scope without selecting a backend again.
+    /// Enters a concrete backend scope without selecting a backend again.
     #[doc(hidden)]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R;
+    fn enter_static<R>(self, scope: impl StaticSimdScope<R>) -> R;
 
     /// Returns the carried `Avx2` token on x86-64 AVX2/AVX-512 backends.
     #[cfg(target_arch = "x86_64")]
@@ -358,7 +362,7 @@ impl SimdBackend for Avx2Backend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+    fn enter_static<R>(self, scope: impl StaticSimdScope<R>) -> R {
         scope.run_avx2(self.narrow())
     }
 
@@ -425,8 +429,8 @@ impl SimdBackend for Avx512Backend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
-        scope.run_avx2(self.narrow())
+    fn enter_static<R>(self, scope: impl StaticSimdScope<R>) -> R {
+        scope.run_avx512(self)
     }
 
     #[inline]
@@ -485,7 +489,7 @@ impl SimdBackend for NeonBackend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+    fn enter_static<R>(self, scope: impl StaticSimdScope<R>) -> R {
         scope.run_neon(self.narrow())
     }
 
@@ -550,7 +554,7 @@ impl SimdBackend for Sse2Backend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+    fn enter_static<R>(self, scope: impl StaticSimdScope<R>) -> R {
         scope.run_sse2(self)
     }
 }
@@ -605,7 +609,7 @@ impl SimdBackend for FallbackBackend {
     }
 
     #[inline]
-    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+    fn enter_static<R>(self, scope: impl StaticSimdScope<R>) -> R {
         scope.run_fallback(self.narrow())
     }
 }
