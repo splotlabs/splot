@@ -3015,6 +3015,26 @@ expect = "clean"
 
 
 [[vector]]
+path = "vectors/valid/syn-msdo-reproducible-two-streams-8bit.obu"
+description = "Two independent 8-bit streams use extended layers 3 and 7. MSDO repeats at the aligned closed-loop key frames in temporal unit 2. Regenerate with tools/decoder-fixtures/msdo.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-reproducible-two-streams-10bit.obu"
+description = "Two independent 10-bit streams use extended layers 2 and 9. MSDO and global LCR enable the display order hint constraint. The coded order hints are 0, 3, 1, 2, and 4. Regenerate with tools/decoder-fixtures/msdo.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-reproducible-four-streams-obu-order.obu"
+description = "Four independent 8-bit streams use noncontiguous extended layers 1, 5, 12, and 20. Every stream emits three pictures. Regenerate with tools/decoder-fixtures/msdo.py."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-msdo-reproducible-ops-random-access.obu"
+description = "Two 8-bit streams use two temporal layers and independent key intervals. Global OPS 0 and 1 and local OPS 2 select output across unaligned and aligned random access points. Regenerate with tools/decoder-fixtures/msdo.py."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-msdo-two-streams-8bit.obu"
 description = "Four-TU multi-extended-layer 8-bit 4:2:0 Profile 0 IOP 0 Annex B stream governed solely by OBU_MSDO (0x50 1-byte header, seq_lcr_id 0, multistream_doh_constraint_flag 1, no global LCR) multiplexing independent AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) streams at obu_xlayer_id 3 (64x64, kf-min-dist 2) and obu_xlayer_id 7 (80x64, kf-min-dist 2) with RAP OBU_MSDO resend at TU 2. Decodes identically to avmdec --all-layers (55,296 bytes, SHA-256 6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b); validates clean."
 expect = "clean"
@@ -3125,5 +3145,57 @@ description = """
 Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 8 pictures in 55296 bytes. X3 SHA-256 a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe. X7 SHA-256 24f5d1b318ed0085b36d6371c3ff331fb4ec329b1ca252e93b40232b1e9f1d4a.
 Stream SHA-256 2e5c2565be54bb7a5c6d51082e4385ba7879c381dd4b4ff2dc8dc5e0d84f7544.
 AVM native SHA-256 6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-multistream-side-by-side-8bit.obu"
+description = """
+The mode 3 side-by-side atlas replaces both segment rectangles at the second key. Global ID 5 retains segment labels 41 and 77.
+Stream SHA-256 5af76bd7879d3b48009fecc06b589629ee76a38c86d622f4ead4404911f8368d.
+AVM decoded 4 native I420 pictures per layer at 8 bits.
+X3 contains 24576 bytes with SHA-256 a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe.
+X7 contains 30720 bytes with SHA-256 24f5d1b318ed0085b36d6371c3ff331fb4ec329b1ca252e93b40232b1e9f1d4a.
+The independent nearest-neighbor oracle produced 4 composite 144x64 pictures with SHA-256 85b9b854163552e0c00ee6d0acc5b5ce36356da01f4e3b4d0357a303626cc249.
+See tools/decoder-fixtures/atlas_composition.py for source SHA-256, segment geometry, output order, and the generation command.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-alpha-paired-8bit.obu"
+description = """
+The mode 4 alpha atlas replaces both segment rectangles at the second key. Global ID 5 retains segment labels 41 and 77.
+Stream SHA-256 4e2ad0f22db22a557db1d058a3c44da6384ab84fce4dd03d849fa80867175af8.
+AVM decoded 4 native I420 pictures per layer at 8 bits.
+X3 contains 24576 bytes with SHA-256 a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe.
+X7 contains 30720 bytes with SHA-256 24f5d1b318ed0085b36d6371c3ff331fb4ec329b1ca252e93b40232b1e9f1d4a.
+The independent nearest-neighbor oracle produced 4 composite 144x64 pictures with SHA-256 20a8e51779232b000421884c4b7e4b8f8fa74780d7c1fa93f9f1259dfe159d2d.
+See tools/decoder-fixtures/atlas_composition.py for source SHA-256, segment geometry, output order, and the generation command.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-multistream-side-by-side-10bit.obu"
+description = """
+The mode 3 side-by-side atlas replaces both segment rectangles at the second key. Global ID 5 retains segment labels 41 and 77.
+Stream SHA-256 67c565161b94bd4bcd76a3de40d0ec784ddf438838b89d310809e1b7dafa82db.
+AVM decoded 10 native I420 pictures per layer at 10 bits.
+X2 contains 122880 bytes with SHA-256 a19c49839344102ea1dc266b86c2943e47ae2746145326bfa01f14f0819f507b.
+X9 contains 153600 bytes with SHA-256 366d1de38bc4faa23e6b65e81e9cd07ecfefd5f0c3ed163d459c4c561a2baac5.
+The independent nearest-neighbor oracle produced 10 composite 144x64 pictures with SHA-256 748bcce6e28d05c5bd9348e5dc37a159dd324eeeaca674c45f2d9d88a599c313.
+See tools/decoder-fixtures/atlas_composition.py for source SHA-256, segment geometry, output order, and the generation command.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-alpha-paired-10bit.obu"
+description = """
+The mode 4 alpha atlas replaces both segment rectangles at the second key. Global ID 5 retains segment labels 41 and 77.
+Stream SHA-256 d78175fbf6ad90435a9d1d24077c0062433619e99cc6ae2291aa25688e5ab7cb.
+AVM decoded 10 native I420 pictures per layer at 10 bits.
+X2 contains 122880 bytes with SHA-256 a19c49839344102ea1dc266b86c2943e47ae2746145326bfa01f14f0819f507b.
+X9 contains 153600 bytes with SHA-256 366d1de38bc4faa23e6b65e81e9cd07ecfefd5f0c3ed163d459c4c561a2baac5.
+The independent nearest-neighbor oracle produced 10 composite 144x64 pictures with SHA-256 2286b9dc5c613cf1da66d598a6a67bc2da6ad37095006fd3a19ce4124f49adb4.
+See tools/decoder-fixtures/atlas_composition.py for source SHA-256, segment geometry, output order, and the generation command.
 """
 expect = "clean"

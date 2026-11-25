@@ -75,3 +75,13 @@ pub(crate) fn conformance_vector(name: &str) -> PathBuf {
         .join("../../tests/conformance/vectors/valid")
         .join(name)
 }
+
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(64);
+    for b in Sha256::digest(bytes) {
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
+}

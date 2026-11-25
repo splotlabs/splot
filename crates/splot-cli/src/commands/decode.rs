@@ -818,25 +818,51 @@ fn publish_output(
     artifact: OutputArtifact,
     write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
+    publish_output_with(path, artifact, write, |error| {
+        matches!(error, DecodeError::Output {
+            source: DecodeOutputError::Io { source, .. },
+        } if source.kind() == io::ErrorKind::BrokenPipe)
+    })
+}
+
+pub(super) fn publish_composite(
+    path: &Path,
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> Result<()>,
+) -> Result<()> {
+    publish_output_with(path, RAW_OUTPUT, write, |error| {
+        error.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|io| io.kind() == io::ErrorKind::BrokenPipe)
+        })
+    })
+}
+
+fn publish_output_with<E: From<DecodeError>>(
+    path: &Path,
+    artifact: OutputArtifact,
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> Result<(), E>,
+    ignore_stream_error: impl FnOnce(&E) -> bool,
+) -> Result<(), E> {
     if is_stdout_path(path) {
-        return write_stream_output(io::stdout(), artifact, write);
+        return write_stream_output(io::stdout(), artifact, write, ignore_stream_error);
     }
     if fs::metadata(path).is_ok_and(|metadata| !metadata.is_file() && !metadata.is_dir()) {
         let file = OpenOptions::new()
             .write(true)
             .open(path)
             .map_err(|source| output_io(artifact.write_stream_operation, source))?;
-        return write_stream_output(file, artifact, write);
+        return write_stream_output(file, artifact, write, ignore_stream_error);
     }
 
     let (parent, final_name) = output_parent_and_name(path, artifact)?;
     let mut output = AtomicOutput::new(parent, final_name, artifact);
 
     if let Err(error) = write(&mut output) {
-        let error = output.take_write_error().unwrap_or(error);
+        let error = output.take_write_error().map_or(error, E::from);
         return Err(output.cleanup(error));
     }
-    output.finish()
+    output.finish().map_err(E::from)
 }
 
 struct AtomicOutput<'a> {
@@ -879,7 +905,7 @@ impl<'a> AtomicOutput<'a> {
         self.write_error.take()
     }
 
-    fn cleanup(mut self, error: DecodeError) -> DecodeError {
+    fn cleanup<E: From<DecodeError>>(mut self, error: E) -> E {
         self.file.take();
         match self.temp_path.take() {
             Some(path) => cleanup_temp_file(&path, self.artifact, error),
@@ -948,21 +974,20 @@ impl io::Write for AtomicOutput<'_> {
     }
 }
 
-fn write_stream_output(
+fn write_stream_output<E: From<DecodeError>>(
     output: impl io::Write + Send,
     artifact: OutputArtifact,
-    write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
-) -> core::result::Result<(), DecodeError> {
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> Result<(), E>,
+    ignore_error: impl FnOnce(&E) -> bool,
+) -> Result<(), E> {
     let mut output = BufWriter::new(output);
     let result = write(&mut output).and_then(|()| {
         output
             .flush()
-            .map_err(|source| output_io(artifact.write_stream_operation, source))
+            .map_err(|source| E::from(output_io(artifact.write_stream_operation, source)))
     });
     match result {
-        Err(DecodeError::Output {
-            source: DecodeOutputError::Io { source, .. },
-        }) if source.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) if ignore_error(&error) => Ok(()),
         result => result,
     }
 }
@@ -1058,11 +1083,11 @@ fn temp_file_name(artifact: OutputArtifact, nonce: usize, attempt: usize) -> OsS
     .into()
 }
 
-fn cleanup_temp_file(path: &Path, artifact: OutputArtifact, error: DecodeError) -> DecodeError {
+fn cleanup_temp_file<E: From<DecodeError>>(path: &Path, artifact: OutputArtifact, error: E) -> E {
     match fs::remove_file(path) {
         Ok(()) => error,
         Err(source) if source.kind() == io::ErrorKind::NotFound => error,
-        Err(source) => output_io(artifact.cleanup_temp_operation, source),
+        Err(source) => output_io(artifact.cleanup_temp_operation, source).into(),
     }
 }
 
@@ -1077,7 +1102,7 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
     DecodeOutputError::io(operation, source).into()
 }
 
-fn read_external_atlases(paths: &[PathBuf]) -> Result<ExternalAtlases> {
+pub(super) fn read_external_atlases(paths: &[PathBuf]) -> Result<ExternalAtlases> {
     let mut atlases = ExternalAtlases::default();
     let mut bytes = Vec::new();
     for path in paths {

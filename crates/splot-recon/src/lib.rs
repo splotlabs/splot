@@ -38,6 +38,7 @@ macro_rules! baseline_simd {
     };
 }
 
+mod atlas_blend;
 mod blend_mask;
 mod cdef_filter;
 mod coefficient_scan;
@@ -97,6 +98,7 @@ mod wienerns_filter;
 mod workspace;
 mod y4m;
 
+pub use atlas_blend::{AtlasAlphaRow, AtlasSample};
 pub use blend_mask::{
     blend_diff_weighted_u8, blend_diff_weighted_u8_with, blend_diff_weighted_wide,
     blend_diff_weighted_wide_with, blend_mask_u8, blend_mask_u8_with, blend_mask_wide,
@@ -142,7 +144,9 @@ pub use frame::{
     SharedFrame, SharedFrameShell,
 };
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
-pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput, visible_byte_len};
+pub use hash_input::{
+    DecodedFrameHash, DecodedFrameHashInput, visible_byte_len, write_visible_plane,
+};
 pub use intra::{
     IntraDcEdge, IntraDcEdges, IntraRectBlockSize, IntraSquareBlockSize,
     SquareIntraPredictionBlock, SquareIntraPredictionRows, average_intra_predictions,
