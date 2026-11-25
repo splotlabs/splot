@@ -19,6 +19,8 @@ import tomllib
 ROUNDS = 24
 GRAIN = "Noise_Ocean_1920x1080_60fps_filmgrain_qp135_130f.ivf"
 TEN_BIT = "RitualDance_1920x1080_60fps_10bit_420_qp135_600f.ivf"
+# AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 with --i420 --threads=1 --skip-film-grain.
+GRAIN_OFF_SHA256 = "d9c7bcd31ad76c5a20b3dd8601f26d9d289ba56c3b2838f67b4a3a591aa5ded6"
 
 
 def decode(binary, source, threads, *options):
@@ -47,7 +49,7 @@ def interval(ratios):
 
 
 def check_hashes(out, data, cases, binaries):
-    grain_off = None
+    grain_off = (GRAIN_OFF_SHA256, cases[GRAIN][2])
     for case, (checksum, frames, size) in cases.items():
         reference = None
         for variant, binary in binaries.items():
@@ -73,10 +75,6 @@ def check_hashes(out, data, cases, binaries):
                 actual = raw_digest(decode(
                     binary, data / case, 1, "--output-format", "raw", "-o", "-", "--skip-film-grain"
                 ))
-                if grain_off is None:
-                    grain_off = actual
-                    if actual[0] == checksum or actual[1] != size:
-                        raise SystemExit(f"{variant} {case}: The grain-off output is incorrect.")
                 check_raw(actual, grain_off, f"{variant} CLI grain-off")
             if case in (GRAIN, TEN_BIT):
                 for link in ("shared", "static"):

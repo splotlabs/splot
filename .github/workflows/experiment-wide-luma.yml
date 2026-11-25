@@ -19,7 +19,7 @@ jobs:
       CARGO_PROFILE_RELEASE_STRIP: none
       SPLOT_REQUIRE_AVX512: "1"
       CONTROL: d04f4d61bed29288ab5109c4eaa543c5c152f9f9
-      CANDIDATE: 0e60acf6282c863148ba77a8f52afc5813307210
+      CANDIDATE: 8f83d1927324d7f08d4ab6ee0e47875a61d9f190
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,6 +62,9 @@ jobs:
             printf '%s\n' "$revision" > "$dir/revision.sha"
             cargo build --release --locked -j1 -p splot-cli -p splot-capi
             cp target/release/splot "$dir/splot"
+            objcopy -O binary --only-section=.text "$dir/splot" "$RUNNER_TEMP/splot.text"
+            sha256sum "$RUNNER_TEMP/splot.text" > "$dir/splot-text.txt"
+            rm "$RUNNER_TEMP/splot.text"
             strip --strip-all -o "$dir/splot.stripped" "$dir/splot"
             strip --strip-all -o "$dir/libsplot_capi.so" target/release/libsplot_capi.so
             cp target/release/libsplot_capi.a "$dir/libsplot_capi.a"
@@ -103,8 +106,30 @@ jobs:
       - name: Compare complete hashes, release sizes and paired playback
         shell: bash
         run: |
-          python3 "$RUNNER_TEMP/qualify-wide-luma.py" "$EVIDENCE" "$RUNNER_TEMP/ewouth" |
+          python3 "$RUNNER_TEMP/qualify-wide-luma.py" "$EVIDENCE" "$RUNNER_TEMP/ewouth" 2>&1 |
             tee "$EVIDENCE/report.log"
+
+      - name: Record one-worker retired instructions if the runner permits
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if ! test -s "$EVIDENCE/paired.csv"; then
+            exit 0
+          fi
+          if ! command -v perf >/dev/null ||
+            ! perf stat --no-big-num -x , -e instructions:u true > "$EVIDENCE/perf-probe.log" 2>&1 ||
+            ! grep -Eq '^[0-9]+,,instructions:u,' "$EVIDENCE/perf-probe.log"; then
+            echo "This runner does not provide retired-instruction counters." | tee "$EVIDENCE/instructions.log"
+            exit 0
+          fi
+          core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          source="$RUNNER_TEMP/ewouth/Noise_Ocean_1920x1080_60fps_filmgrain_qp135_130f.ivf"
+          for variant in control candidate; do
+            taskset -c "$core" perf stat --no-big-num -x , -r 3 -e instructions:u \
+              -o "$EVIDENCE/$variant/instructions.csv" \
+              "$EVIDENCE/$variant/splot" decode "$source" --threads 1 --frame-delay 1 --output-format null
+            grep -Eq '^[0-9]+,,instructions:u,' "$EVIDENCE/$variant/instructions.csv"
+          done
 
       - name: Publish the qualification summary
         if: ${{ always() }}
