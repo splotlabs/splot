@@ -15,9 +15,11 @@ rustup show active-toolchain
 cargo build --release
 ```
 
-x86-64 builds target `x86-64-v3` (AVX2/FMA/BMI2) for decode throughput; an
-older CPU traps with `SIGILL`. Use `RUSTFLAGS="-C target-cpu=x86-64"` for a
-portable baseline. `aarch64` uses 128-bit NEON as its baseline.
+Checkout builds target `x86-64-v3` on x86-64. A generic downstream build
+can start on an older CPU, but opening the decoder requires the full
+`fearless_simd` AVX2 feature set. Auto selects AVX2 on qualified x86-64
+hosts and NEON on AArch64. Rust callers may request AVX-512 explicitly on
+capable hardware. The decoder currently reuses AVX2 kernels for that policy.
 Linux GNU builds link packed relative relocations (`DT_RELR`) and need glibc
 2.36 or newer.
 

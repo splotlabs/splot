@@ -156,6 +156,22 @@ impl UnsupportedBackendError {
     }
 }
 
+/// Internal bridge for library-owned code generation of narrow decode paths.
+#[doc(hidden)]
+pub trait NarrowSimdScope<R> {
+    /// Runs on the x86-64 AVX2 backend selected for narrow kernels.
+    #[cfg(target_arch = "x86_64")]
+    fn run_avx2(self, backend: Avx2Backend) -> R;
+
+    /// Runs on the AArch64 NEON backend.
+    #[cfg(target_arch = "aarch64")]
+    fn run_neon(self, backend: NeonBackend) -> R;
+
+    /// Runs on the fallback backend.
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    fn run_fallback(self, backend: FallbackBackend) -> R;
+}
+
 /// Sealed compile-time SIMD backend token contract.
 pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
     /// Underlying `fearless_simd` token type carried by value.
@@ -178,6 +194,10 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
 
     /// Converts `self` to its narrower compute backend with zero runtime checks.
     fn narrow(self) -> Self::Narrow;
+
+    /// Enters a concrete narrow-kernel scope without selecting a backend again.
+    #[doc(hidden)]
+    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R;
 
     /// Returns the carried `Avx2` token on x86-64 AVX2/AVX-512 backends.
     #[cfg(target_arch = "x86_64")]
@@ -316,6 +336,11 @@ impl SimdBackend for Avx2Backend {
     }
 
     #[inline]
+    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+        scope.run_avx2(self.narrow())
+    }
+
+    #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
         Some(self.token)
     }
@@ -378,6 +403,11 @@ impl SimdBackend for Avx512Backend {
     }
 
     #[inline]
+    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+        scope.run_avx2(self.narrow())
+    }
+
+    #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
         Some(self.avx2)
     }
@@ -430,6 +460,11 @@ impl SimdBackend for NeonBackend {
     #[inline]
     fn narrow(self) -> Self::Narrow {
         self
+    }
+
+    #[inline]
+    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+        scope.run_neon(self.narrow())
     }
 
     #[inline]
@@ -490,6 +525,11 @@ impl SimdBackend for FallbackBackend {
     #[inline]
     fn narrow(self) -> Self::Narrow {
         self
+    }
+
+    #[inline]
+    fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
+        scope.run_fallback(self.narrow())
     }
 }
 
