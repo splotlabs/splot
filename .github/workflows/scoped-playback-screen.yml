@@ -1,42 +1,37 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-name: Build matched binaries for native AVX2 playback
+name: Compare release throughput on native AVX-512 hardware
 on:
   push:
     branches: [experiment/simd-1934-scoped-screen]
 permissions:
   contents: read
+  actions: read
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      matrix:
-        include:
-          - variant: release-final
-            ref: c9a9a960d9630c5033c3a16e7fa4c12d99dea916
-          - variant: release-parent
-            ref: 9df30e915bd27da01769ccf41bb53bfa99d69063
+  native:
+    runs-on: ${{ vars.SPLOT_AVX512_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ matrix.ref }}
           persist-credentials: false
-      - name: Build the release CLI and C library with symbols
-        env:
-          CARGO_PROFILE_RELEASE_STRIP: none
+      - name: Require a native wide host
         run: |
-          rustup show active-toolchain || rustup toolchain install
-          cargo build --release --locked -j1 -p splot-cli -p splot-capi
-          install -d playback
-          cp target/release/splot target/release/libsplot_capi.so playback/
-          git rev-parse HEAD > playback/revision.txt
-          rustc -vV > playback/toolchain.txt
-          cd playback
-          sha256sum splot libsplot_capi.so > SHA256SUMS
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          lscpu
+          grep -qw avx512vbmi2 /proc/cpuinfo
+      - name: Fetch fixed release binaries and inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 45673211431 -n playback-frozen-v3 -D "$RUNNER_TEMP/frozen"
+          gh run download 45674741726 -n playback-release-parent -D "$RUNNER_TEMP/parent"
+          gh run download 45674741726 -n playback-release-final -D "$RUNNER_TEMP/candidate"
+          python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
+      - name: Compare full hashes and warmed native decode
+        run: python3 scripts/compare-release-v3.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
         with:
-          name: playback-${{ matrix.variant }}
-          path: playback
-          retention-days: 1
-          if-no-files-found: error
+          name: native-release-timings
+          path: ${{ runner.temp }}/xeon-release.csv
+          retention-days: 5
