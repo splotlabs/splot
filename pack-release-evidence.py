@@ -27,9 +27,11 @@ for glob in ('local-results.md','qualify.py','matched-*.py','native-wide-oracle.
              '*-timings.csv','*-timings.md','*-perf-summary.txt','ci-perf-original.log','ci-perf-typed.log','ci-perf-release.log',
              'native-wide-*-result.log','wide-unavailable.log'):
     for f in here.glob(glob): add(f)
-for sub in ('native','baseline','matched','typed-screen','final-screen','xeon-release','consumer-sizes','lifecycle','codegen-negative','platform-consumers','isa-control'):
+for sub in ('native','baseline','matched','typed-screen','final-screen','xeon-release','consumer-sizes','lifecycle','codegen-negative','platform-consumers','isa-control','portable-release'):
     for pattern in ('*.txt','*.log','*.csv','*.tsv','*.cg','*.py','*.md','*.c','*.patch','workflow.yml','SHA256SUMS','*.sha256','*.time','*/build.time','*/build.log','*/linked-sizes.txt','*/revision.txt','traces/*.cg','traces/*.log'):
         for f in (here/sub).glob(pattern): add(f)
+for pattern in ('profile/*.cg','profile/*.log','profile/*.tsv','profile/*.md','profile/*.py','profile/*.txt','*.rs'):
+    for f in (here/'portable-release').glob(pattern): add(f)
 for pattern in ('syn-*.json',):
     for f in (here/'lifecycle').glob(pattern): add(f)
 for f in (here/'codegen-negative').glob('*.asm'): add(f)
@@ -56,7 +58,7 @@ for folder in ('apple-arm64-83566cc2', 'neon-only-1993'):
     for pattern in ('*.csv','*.tsv','*.md','*summary*.txt','*hash*.txt','*/revision.txt','*/linked-size.txt','*/backend-tests.log','backend-tests.log','linked-size.txt','comparison.log','check-linked-dispatch.py','disassembly.sha256'):
         for f in part.glob(pattern):
             add(f, folder + '/' + str(f.relative_to(part)))
-for pattern in ('*.md','*.py','*.cg','*.tsv','*.SHA256SUMS','*job.log','*/sizes.txt','*/row.log','*/*.csv','*/*.tsv','*/*.asm','*/SHA256SUMS','*/candidate.sha','*/control.sha'):
+for pattern in ('*.md','*.py','*.cg','*.tsv','*.SHA256SUMS','*job.log','*/sizes.txt','*/row.log','*/playback.log','*/*.csv','*/*.tsv','*/*.asm','*/SHA256SUMS','*/candidate.sha','*/control.sha'):
     for f in (here.parent/'grain-lut').glob(pattern):
         add(f,'grain-lut/'+str(f.relative_to(here.parent/'grain-lut')))
 def digest(b): return hashlib.sha256(b).hexdigest()

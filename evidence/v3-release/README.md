@@ -14,6 +14,19 @@ The snapshots retain adverse and inconclusive results. The Xeon runs compare for
 | 91fbc921 | Release head. Restores the public macro contract for generic Rust callers using concrete backend tokens |
 | 83566cc2 | Same decoding algorithms with measured artifact budgets, a build-floor policy check and a native timing workflow update |
 
+## Optional generic build of the actual release
+
+The archived portable tuning draft and the shipped release have different source. On the i7-12700H, two builds from the exact same release head `91fbc921` used the same compiler, release profile, packed relocations, Auto, one worker, and the same AVX2 CPU. The only intended codegen change was the compiler floor. Ten warmed alternating pairs per case gave the following paired changes in elapsed time. Each generic run was slower, and all four raw prefix hashes matched. Two independent observers linked to the exact release libraries confirmed that both the core resolver and the public decode context selected AVX2 at both compiler floors.
+
+| Stream | Displayed frames | Generic versus shipped v3 [95% interval] |
+|---|---:|---:|
+| Noise Ocean | 16 | +173.16% [+162.82%, +179.80%] |
+| RitualDance, 10-bit | 16 | +619.68% [+614.56%, +634.92%] |
+| BlueSky | 64 | +535.32% [+518.00%, +542.70%] |
+| OldTown, tiles 4×2 | 16 | +797.11% [+754.62%, +799.77%] |
+
+The optional generic CLI measured 17,971,192 bytes and its C library 14,160,096 bytes. The matched v3 artifacts were 12,508,104 and 8,583,376 bytes. On the first four RitualDance frames Callgrind counted 8,363,079,041 guest instructions for generic and 1,917,583,024 for v3. A separately profiled symbolized generic link made 447,245,274 calls to generated Fearless SIMD primitive wrappers in those four frames. The matched symbolized v3 build recorded zero such calls. Primitive bodies accounted for 2.108 billion extra instructions, GDF functions another 2.458 billion. These instruction counts and sixteen-frame elapsed times refer to different windows. The symbolized links matched their exact local instruction totals within 2,098 instructions. `portable-release/` contains the build receipts, pairwise CPU/wall timings, raw hashes, and public backend observer. The separately tuned draft's +9.46% to +13.53% figures remain in the [original archive](../measurements.tar.xz).
+
 ## Results
 
 - All 63 native streaming hash comparisons passed for the fully typed decoder on a Xeon 6975P-C using Auto, AVX2 and AVX-512 across seven frozen streams and three worker counts. Auto selected AVX-512 on this host. [Correctness and backend selection](https://github.com/splotlabs/splot/actions/runs/45674678371).
@@ -42,5 +55,9 @@ The snapshots retain adverse and inconclusive results. The Xeon runs compare for
 
 - The production CLI and C library rebuilt from 91fbc921 match the archived c9a9a960 audited ELF products byte-for-byte after identical stripping. Their SHA-256s, compiler settings, and the single-policy control's matched sections are recorded in `isa-control/`. The dual release costs 47,008 CLI bytes and 31,824 library bytes over the single AVX-512 control at the same compiler floor. [Same-ISA control build](https://github.com/splotlabs/splot/actions/runs/45682290560).
 - Exact-head native tests passed all 63 full AVM comparisons with Auto, AVX2 and AVX-512. The synchronous/streaming/deferred grain test and the independent random/tail scalar comparison both executed on the wide host. [Final native release oracle](https://github.com/splotlabs/splot/actions/runs/45680321894).
+
+- Across 216 paired native comparisons of the final dual artifact against the single-wide control, no one of nine intervals was wholly above zero. On grained Noise, the dual artifact measured +0.01% [−0.27%, +0.20%], −0.16% [−0.81%, +0.39%] and −0.73% [−1.42%, +0.18%] at 1, 7 and 12 workers. The seven-worker BlueSky median was +1.37% [−0.51%, +1.91%]. Both binaries matched the complete AVM output for all seven streams. The archive includes all rows. The dual artifact executed safely on the AVX2 workstation. The matched single-wide control returned an unsupported-backend error before producing output on that machine. [Same-ISA timing](https://github.com/splotlabs/splot/actions/runs/45682290560).
+
+- A corrected variant of the rejected lookup experiment, tracked in [#2007](https://github.com/splotlabs/splot/issues/2007), kept the complete 64-pixel operation in the AVX-512 scope. On a native AMD EPYC 9V74 it reduced the 8-bit 1920-sample row time by 72.60% [−73.04%, −71.96%]. Whole 130-frame grained Noise playback improved 4.11% [−4.29%, −3.85%] at one worker and 7.34% [−8.30%, −6.90%] at seven. All four AVM inputs matched. The CLI grew another 1,600 bytes. These results belong to the isolated prototype. #2006 ships the earlier scaled-noise operation. [Prototype qualification](https://github.com/splotlabs/splot/actions/runs/45682311244).
 
 The earlier portable-floor experiments remain in the [original archive](../measurements.tar.xz). The [performance tracker](https://github.com/splotlabs/splot/issues/1934) links the outstanding work.
