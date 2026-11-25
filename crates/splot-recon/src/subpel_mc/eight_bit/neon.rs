@@ -20,7 +20,7 @@
 use super::super::block::{Block, Geometry, Sink, Taps, Window, is_cell};
 use super::super::cell::{Cell, Plane, Written};
 use super::super::rows::{Average, Out, Prep, Put, rows, rows_mut, span, store_pair};
-use super::super::{CellPlacement, ReferencePlaneView};
+use super::super::{CellPlacement, ReferencePlaneView, SubpelRunner};
 use super::pairs;
 use core::arch::aarch64::*;
 use fearless_simd::{Bytes, Neon, Simd, SimdBase, SimdFrom, i8x16, i16x8, i32x4, u8x16, u64x2};
@@ -423,7 +423,7 @@ pub(in crate::subpel_mc) struct Windows<'a, 'b>(
 /// returns `false` without writing when a clamped row cannot load 16
 /// samples or the output cannot hold the cell.
 #[inline]
-pub(in crate::subpel_mc) fn compound_windows(
+pub(in crate::subpel_mc) fn compound_windows<R: SubpelRunner>(
     t: Neon,
     views: [&ReferencePlaneView<'_, u8>; 2],
     windows: &[Window; 2],
@@ -435,7 +435,7 @@ pub(in crate::subpel_mc) fn compound_windows(
     let references = views.map(|view| (view.samples, view.geometry()));
     let windows = [&windows[0], &windows[1]];
     let job = Windows(references, windows, bounds, forward, output, stride);
-    dot::run(t, job)
+    dot::run::<R, _>(t, job)
 }
 
 /// The kernels of a [`Program`] of `size`-square cells.
@@ -445,7 +445,7 @@ pub(in crate::subpel_mc) struct Programs<'a, 'b>(Program<'a, 'b>, usize, &'a mut
 /// windows are read in place or by clamped rows and columns into both
 /// `planes`, and returns their bits.
 #[inline]
-pub(in crate::subpel_mc) fn program(
+pub(in crate::subpel_mc) fn program<R: SubpelRunner>(
     t: Neon,
     planes: &mut [Option<Plane<'_, '_, u8>>; 2],
     (filter, size): (usize, usize),
@@ -468,17 +468,22 @@ pub(in crate::subpel_mc) fn program(
         cells,
         forward,
     };
-    dot::run(t, Programs(program, size, &mut written));
+    dot::run::<R, _>(t, Programs(program, size, &mut written));
     written
 }
 
 /// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits.
 #[inline]
-pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut Sink<'_>) -> bool {
+pub(in crate::subpel_mc) fn predict<R: SubpelRunner>(
+    _runner: R,
+    t: Neon,
+    block: &Block<'_, u8>,
+    sink: &mut Sink<'_>,
+) -> bool {
     let w = block.w;
     match sink {
         Sink::Put { output, stride } => {
-            dot::run(
+            dot::run::<R, _>(
                 t,
                 Strip(
                     block,
@@ -490,7 +495,7 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             );
         }
         Sink::PutWide { output, stride, .. } => {
-            dot::run(
+            dot::run::<R, _>(
                 t,
                 Strip(
                     block,
@@ -502,7 +507,7 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             );
         }
         Sink::Prep { output, stride } => {
-            dot::run(
+            dot::run::<R, _>(
                 t,
                 Strip(
                     block,
@@ -514,7 +519,7 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             );
         }
         Sink::PrepNarrow { output, stride } => {
-            dot::run(
+            dot::run::<R, _>(
                 t,
                 Strip(
                     block,
@@ -532,7 +537,7 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             stride,
         } => {
             let (forward, stride) = (*forward, *stride);
-            dot::run(
+            dot::run::<R, _>(
                 t,
                 Strip(
                     block,
@@ -553,7 +558,7 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
             stride,
         } => {
             let (forward, stride) = (*forward, *stride);
-            dot::run(
+            dot::run::<R, _>(
                 t,
                 Strip(
                     block,
@@ -574,19 +579,21 @@ pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut S
 
 /// Stores the `Clip1` single-reference prediction of `block`.
 #[inline]
-pub(in crate::subpel_mc) fn put(
+pub(in crate::subpel_mc) fn put<R: SubpelRunner>(
+    _runner: R,
     t: Neon,
     block: &Block<'_, u8>,
     output: &mut [u8],
     stride: usize,
 ) -> bool {
-    dot::run(t, Strip(block, &mut Put { output, stride }));
+    dot::run::<R, _>(t, Strip(block, &mut Put { output, stride }));
     true
 }
 
 /// [`put`] of two blocks of one window into `outputs`.
 #[inline]
-pub(in crate::subpel_mc) fn put_pair(
+pub(in crate::subpel_mc) fn put_pair<R: SubpelRunner>(
+    _runner: R,
     t: Neon,
     blocks: [&Block<'_, u8>; 2],
     [(first, first_stride), (second, second_stride)]: [(&mut [u8], usize); 2],
@@ -599,7 +606,7 @@ pub(in crate::subpel_mc) fn put_pair(
         output: second,
         stride: second_stride,
     };
-    dot::run(
+    dot::run::<R, _>(
         t,
         Strips([Strip(blocks[0], first), Strip(blocks[1], second)]),
     );
@@ -609,13 +616,14 @@ pub(in crate::subpel_mc) fn put_pair(
 /// The COMPOUND_AVERAGE of each of `P` 4x4 or 8x8 register cell pairs into
 /// its output.
 #[inline]
-pub(in crate::subpel_mc) fn compound_cell<const P: usize>(
+pub(in crate::subpel_mc) fn compound_cell<R: SubpelRunner, const P: usize>(
+    _runner: R,
     t: Neon,
     pairs: [[&Block<'_, u8>; 2]; P],
     forward: i32,
     outputs: [(&mut [u8], usize); P],
 ) -> bool {
-    dot::run(t, Compound::<true, P>(pairs, forward, outputs));
+    dot::run::<R, _>(t, Compound::<true, P>(pairs, forward, outputs));
     true
 }
 
@@ -649,13 +657,14 @@ fearless_simd::kernel!(
 /// The COMPOUND_AVERAGE of each of `P` compound pairs into its output, the
 /// first predictor staged for the second.
 #[inline]
-pub(in crate::subpel_mc) fn compound_strips<const P: usize>(
+pub(in crate::subpel_mc) fn compound_strips<R: SubpelRunner, const P: usize>(
+    _runner: R,
     t: Neon,
     pairs: [[&Block<'_, u8>; 2]; P],
     forward: i32,
     outputs: [(&mut [u8], usize); P],
 ) -> bool {
-    dot::run(t, Compound::<false, P>(pairs, forward, outputs));
+    dot::run::<R, _>(t, Compound::<false, P>(pairs, forward, outputs));
     true
 }
 

@@ -69,6 +69,9 @@ pub use tip_overlap::{
 };
 
 trait SubpelRunner: Copy {
+    #[cfg(target_arch = "aarch64")]
+    const NEON_SUBPEL_DOT: Option<splot_core::simd::NeonSubpelDot> = None;
+
     #[cfg(target_arch = "x86_64")]
     fn avx2_token(self) -> Option<fearless_simd::Avx2>;
 
@@ -310,6 +313,9 @@ impl SubpelRunner for BaselineSubpel {
 }
 
 impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
+    #[cfg(target_arch = "aarch64")]
+    const NEON_SUBPEL_DOT: Option<splot_core::simd::NeonSubpelDot> = B::NEON_SUBPEL_DOT;
+
     #[cfg(target_arch = "x86_64")]
     #[expect(clippy::inline_always, reason = "one check per kernel call")]
     #[inline(always)]

@@ -49,9 +49,18 @@ macro_rules! kernel_or {
 
 #[cfg(target_arch = "aarch64")]
 macro_rules! kernel_or {
+    ($runner:expr, compound_fullpel($($arg:expr),* $(,)?), $fallback:expr) => {
+        if let Some(t) = $runner.neon_token() {
+            if !neon::compound_fullpel(t, $($arg),*) {
+                $fallback
+            }
+        } else {
+            $fallback
+        }
+    };
     ($runner:expr, $f:ident($($arg:expr),* $(,)?), $fallback:expr) => {
         if let Some(t) = $runner.neon_token() {
-            if !neon::$f(t, $($arg),*) {
+            if !neon::$f($runner, t, $($arg),*) {
                 $fallback
             }
         } else {
@@ -362,7 +371,7 @@ pub(super) fn compound_windows<R: SubpelRunner>(
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(t) = runner.neon_token() {
-        return neon::compound_windows(t, views, windows, bounds, forward, output, stride);
+        return neon::compound_windows::<R>(t, views, windows, bounds, forward, output, stride);
     }
     generic::compound_windows(runner, views, windows, bounds, forward, output, stride)
 }
@@ -382,7 +391,7 @@ pub(super) fn program<R: SubpelRunner>(
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(t) = runner.neon_token() {
-        return neon::program(t, planes, (filter, size), cells, clip);
+        return neon::program::<R>(t, planes, (filter, size), cells, clip);
     }
     generic::program(runner, planes, (filter, size), cells, clip)
 }
