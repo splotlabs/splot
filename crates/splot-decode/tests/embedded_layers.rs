@@ -727,3 +727,45 @@ fn reject_mlayer_dependency_violation_annex_a_profile_and_missing_lcr() {
         ));
     }
 }
+
+#[test]
+fn derived_sef_uses_the_reference_layer_for_output() {
+    let fixture =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-derived-sef-8bit.obu");
+    let [base, enhancement, hidden, ..] = CROSSREF_8BIT_FRAMES else {
+        panic!("Missing AVM frame expectations.");
+    };
+    let all = [*base, *enhancement, *base, *hidden];
+    // Base-only extraction omits the SEF OBU on the enhancement layer.
+    let base_only = [*base, *base];
+    for (selection, expected, mask) in [
+        (EmbeddedLayerSelection::All, all.as_slice(), 0b11),
+        (
+            EmbeddedLayerSelection::BASE_ONLY,
+            base_only.as_slice(),
+            0b01,
+        ),
+        (
+            EmbeddedLayerSelection::OutputMask(0b10),
+            all.as_slice(),
+            0b10,
+        ),
+    ] {
+        verify_layer_subset(
+            fixture,
+            expected,
+            TemporalLayerSelection::All,
+            selection,
+            0x0f,
+            mask,
+        );
+    }
+    verify_layer_subset(
+        fixture,
+        &all,
+        TemporalLayerSelection::OutputMask(0b10),
+        EmbeddedLayerSelection::All,
+        0b10,
+        0b11,
+    );
+}

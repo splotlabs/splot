@@ -448,35 +448,41 @@ fn temporal_layer_and_output_mask_match_batch_decoder_and_report_layer_ids() {
 fn embedded_output_mask_matches_batch_decoder_and_reports_embedded_layer_ids() {
     const MLAYER_8BIT: &[u8] =
         include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-crossref-8bit.obu");
+    check_embedded_output_masks(
+        MLAYER_8BIT,
+        &[
+            (0, &[0, 1, 0, 1, 0, 1]),
+            (1, &[0, 0, 0]),
+            (2, &[1, 1, 1]),
+            (3, &[0, 1, 0, 1, 0, 1]),
+        ],
+    );
+}
+
+#[test]
+fn derived_sef_reports_the_reference_layers_to_the_c_host() {
+    const DERIVED_SEF: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-derived-sef-8bit.obu");
+    check_embedded_output_masks(
+        DERIVED_SEF,
+        &[
+            (0, &[0, 1, 0, 0]),
+            (1, &[0, 0]),
+            (2, &[1]),
+            (3, &[0, 1, 0, 0]),
+        ],
+    );
+}
+
+fn check_embedded_output_masks(fixture: &[u8], cases: &[(u8, &[u8])]) {
     let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
-    let mut reader = TemporalUnitReader::new(MLAYER_8BIT);
+    let mut reader = TemporalUnitReader::new(fixture);
     let mut stream_units = Vec::new();
     while let Some(unit) = reader.next_temporal_unit().unwrap() {
         stream_units.push(unit.bytes.to_vec());
     }
 
-    for (mask, selection, expected_mlayers) in [
-        (
-            0u8,
-            splot_decode::EmbeddedLayerSelection::All,
-            vec![0u8, 1, 0, 1, 0, 1],
-        ),
-        (
-            1u8,
-            splot_decode::EmbeddedLayerSelection::BASE_ONLY,
-            vec![0u8, 0, 0],
-        ),
-        (
-            2u8,
-            splot_decode::EmbeddedLayerSelection::OutputMask(2),
-            vec![1u8, 1, 1],
-        ),
-        (
-            3u8,
-            splot_decode::EmbeddedLayerSelection::OutputMask(3),
-            vec![0u8, 1, 0, 1, 0, 1],
-        ),
-    ] {
+    for &(mask, expected_mlayers) in cases {
         let mut settings = core::mem::MaybeUninit::<SplotSettings>::uninit();
         let mut decoder = ptr::null_mut();
         let mut raw = Vec::new();
@@ -494,6 +500,7 @@ fn embedded_output_mask_matches_batch_decoder_and_reports_embedded_layer_ids() {
                     SPLOT_OK => {
                         append(&picture, &mut raw);
                         seen_mlayers.push(picture.embedded_layer_id);
+                        assert_eq!(picture.temporal_layer_id, 0);
                         splot_picture_unref(&raw mut picture);
                     }
                     SPLOT_EAGAIN | SPLOT_EOF => break,
@@ -517,10 +524,15 @@ fn embedded_output_mask_matches_batch_decoder_and_reports_embedded_layer_ids() {
         }
 
         assert_eq!(seen_mlayers, expected_mlayers);
+        let selection = if mask == 0 {
+            splot_decode::EmbeddedLayerSelection::All
+        } else {
+            splot_decode::EmbeddedLayerSelection::OutputMask(mask)
+        };
         let mut expected = Vec::new();
         context
             .decode_raw_bytes(
-                MLAYER_8BIT,
+                fixture,
                 DecodeOptions::default().with_embedded_layer_selection(selection),
                 &mut expected,
             )

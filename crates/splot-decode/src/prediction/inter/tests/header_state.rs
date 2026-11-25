@@ -1697,7 +1697,7 @@ fn inspect_bru_refresh_fixture(
     expected_frames: usize,
     src_index: usize,
     inactive_index: usize,
-    expect_distinct_slot: bool,
+    next_motion_cell: Option<(usize, usize)>,
 ) {
     let options = DecodeOptions::default();
     let frames = crate::pipeline::collect_frames_from_plan(bytes, &options, 1, |frame| {
@@ -1723,7 +1723,7 @@ fn inspect_bru_refresh_fixture(
         usize::try_from(inter_inactive.bru_ref.expect("bru_ref")).expect("bru_ref fits usize");
     assert!(bru_ref > 0, "expected nonzero bru_ref, got {bru_ref}");
     let ref_slot = inter_inactive.ref_frame_idx[bru_ref];
-    if expect_distinct_slot {
+    if next_motion_cell.is_some() {
         assert_ne!(
             usize::try_from(ref_slot).expect("ref_slot"),
             bru_ref,
@@ -1757,14 +1757,26 @@ fn inspect_bru_refresh_fixture(
         _ => panic!("mismatched frame bit depths"),
     }
 
-    if expected_frames > inactive_index + 1 {
-        let (ref core_next, _, _, ref decoded_next) = frames[inactive_index + 1];
+    if let Some((row, col)) = next_motion_cell {
+        let (ref core_next, ref mf_next, _, ref decoded_next) = frames[inactive_index + 1];
         let inter_next = core_next.inter.as_ref().expect("next inter control");
+        let mf_next = mf_next.as_ref().expect("next motion field");
+        let cell = mf_next.stored_cell(row, col).expect("next motion cell");
+        let inactive_hint = core_inactive
+            .display_order_hint()
+            .expect("inactive order hint");
+        assert_ne!(
+            core_inactive.display_order_hint(),
+            frames[src_index].0.display_order_hint()
+        );
         assert!(
-            inter_next.ref_frame_idx.contains(&ref_slot),
-            "frame {} must retain frame {inactive_index}'s refreshed slot {ref_slot} in {:?}",
-            inactive_index + 1,
-            inter_next.ref_frame_idx
+            [cell[0], cell[3]].iter().any(|&index| {
+                let index = usize::from(index);
+                inter_next.ref_frame_idx.get(index) == Some(&ref_slot)
+                    && mf_next.stored_ref_order_hint(index) == Some(inactive_hint)
+            }),
+            "frame {} must use refreshed slot {ref_slot} at motion cell ({row}, {col})",
+            inactive_index + 1
         );
         match (decoded_inactive, decoded_next) {
             (PipelineDecodedFrame::Eight(inactive), PipelineDecodedFrame::Eight(next)) => {
@@ -1780,9 +1792,20 @@ fn inspect_bru_refresh_fixture(
 
 #[test]
 fn bru_inactive_refresh_vectors_exercise_nonzero_bru_ref_slot_reuse() {
-    inspect_bru_refresh_fixture(BRU_INACTIVE_FIXTURE, 5, 2, 4, false);
-    inspect_bru_refresh_fixture(BRU_INACTIVE_REFRESH_8BIT_FIXTURE, 8, 3, 5, true);
-    inspect_bru_refresh_fixture(BRU_INACTIVE_REFRESH_10BIT_FIXTURE, 8, 3, 5, true);
+    inspect_bru_refresh_fixture(BRU_INACTIVE_FIXTURE, 5, 2, 4, None);
+    inspect_bru_refresh_fixture(BRU_INACTIVE_REFRESH_8BIT_FIXTURE, 8, 3, 5, Some((0, 8)));
+    inspect_bru_refresh_fixture(BRU_INACTIVE_REFRESH_10BIT_FIXTURE, 8, 3, 5, Some((7, 8)));
+    for fixture in [
+        include_bytes!(
+            "../../../../../../tests/conformance/vectors/valid/syn-bru-inactive-block-use-8bit.ivf"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../../../../tests/conformance/vectors/valid/syn-bru-inactive-block-use-10bit.ivf"
+        ),
+    ] {
+        inspect_bru_refresh_fixture(fixture, 8, 3, 5, Some((0, 0)));
+    }
 }
 
 #[test]
