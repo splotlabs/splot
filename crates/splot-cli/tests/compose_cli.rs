@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+//! End-to-end checks for atlas presentation and raw canvas output.
+
 mod common;
 
 use common::{conformance_vector, sha256_hex, splot, temp_input, temp_output};
@@ -13,22 +15,22 @@ fn atlas_presentation_matches_independent_raw_planes() {
     for (fixture, bytes, digest) in [
         (
             "syn-atlas-multistream-side-by-side-8bit.obu",
-            55296,
+            55_296,
             "85b9b854163552e0c00ee6d0acc5b5ce36356da01f4e3b4d0357a303626cc249",
         ),
         (
             "syn-atlas-alpha-paired-8bit.obu",
-            55296,
+            55_296,
             "20a8e51779232b000421884c4b7e4b8f8fa74780d7c1fa93f9f1259dfe159d2d",
         ),
         (
             "syn-atlas-multistream-side-by-side-10bit.obu",
-            276480,
+            276_480,
             "748bcce6e28d05c5bd9348e5dc37a159dd324eeeaca674c45f2d9d88a599c313",
         ),
         (
             "syn-atlas-alpha-paired-10bit.obu",
-            276480,
+            276_480,
             "2286b9dc5c613cf1da66d598a6a67bc2da6ad37095006fd3a19ce4124f49adb4",
         ),
     ] {
