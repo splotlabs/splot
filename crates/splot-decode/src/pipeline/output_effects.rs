@@ -234,6 +234,10 @@ impl OutputEffectState {
         self.tu_index = tu_index;
     }
 
+    pub(super) fn local_lcr_ids(&self) -> u8 {
+        self.local_lcr_ids
+    }
+
     pub(crate) fn has_local_lcr_id(&self, id: u8) -> bool {
         (1..=7).contains(&id) && (self.local_lcr_ids & (1u8 << id)) != 0
     }
