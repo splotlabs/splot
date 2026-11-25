@@ -41,9 +41,6 @@ mod tests {
         assert_eq!(writer.bit_len(), 0, "reject left bits in the writer");
     }
 
-    // ===================================================================================
-    // Fixture builders (each yields a parser-producible model)
-    // ===================================================================================
 
     /// SINGLE_ATLAS (mode 2), unsignaled label.
     fn single_atlas() -> AtlasSegment {
@@ -174,7 +171,6 @@ mod tests {
         bits.f(255, 8); // red
         bits.f(0, 8); // green
         bits.f(0, 8); // blue
-        // segment 0 (not last -> alpha flag coded):
         bits.f(0, 5); // input_stream_id
         bits.uvlc(0);
         bits.uvlc(0);
@@ -191,9 +187,6 @@ mod tests {
         parse(bits)
     }
 
-    // ===================================================================================
-    // Round-trips (one per mode + label / region-dim form)
-    // ===================================================================================
 
     #[test]
     fn single_atlas_round_trips() {

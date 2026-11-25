@@ -203,7 +203,6 @@ fn external_atlas_supports_random_access_and_flush() {
         for (picture, frame) in previous.iter().zip(&expected.frames) {
             assert_eq!(picture.atlas_associations(), frame.atlas_associations);
         }
-        // Remove the in-band replacement. Only the caller's atlas remains on the next decode.
         let mut no_replacement = Vec::new();
         for obu in parse_annex_b_obus(rap).unwrap() {
             if obu.header.obu_type != ObuType::AtlasSegment
