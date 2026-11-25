@@ -17,7 +17,7 @@ use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
-use splot_core::types::ObuType;
+use splot_core::types::{EmbeddedLayerId, ObuType};
 #[cfg(test)]
 use splot_recon::DecodedFrame;
 
@@ -938,7 +938,7 @@ fn decode_frames_in_order(
         *obu_storage = recycle(leading_buffer);
         key_candidate?
     } else {
-        let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
+        let leading_obus = stream.leading_obus(&leading_unit, &mut leading_buffer)?;
         if let Err(error) = require_leading_frame_unit(leading_obus)
             && !stream.has_unfiltered_multistream_rap(&leading_unit)?
         {
@@ -1159,7 +1159,7 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let (sef_frame, ordering) = {
+                let (sef_frame, ordering, output_mlayer) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1179,7 +1179,8 @@ fn decode_frames_in_order(
                         )
                     })?;
                     let source_index = layer.reference.frame_index_for_slot(slot)?;
-                    if sef_core.derive_sef_order_hint == Some(true) {
+                    let derive_order_hint = sef_core.derive_sef_order_hint == Some(true);
+                    if derive_order_hint {
                         layer.reference.mark_sef_derive_output(
                             slot,
                             layer.scheduler.already_emitted(source_index),
@@ -1193,6 +1194,11 @@ fn decode_frames_in_order(
                             "show-existing-frame output requires its retained decoded frame",
                         )
                     })?;
+                    let output_mlayer = show_existing_output_layer(
+                        derive_order_hint,
+                        sef_envelope.header.embedded_layer_id,
+                        source.embedded_layer_id,
+                    );
                     let sef_frame = PipelineFrame {
                         display_grain,
                         output_effects,
@@ -1218,7 +1224,7 @@ fn decode_frames_in_order(
                             "show-existing-frame output requires a derived display order hint",
                         )
                     })?;
-                    (sef_frame, ordering)
+                    (sef_frame, ordering, output_mlayer)
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -1236,17 +1242,27 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
+                    let sef_ordering = output_ordering(
+                        ordering,
+                        output_mlayer,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    let sef_tu_limit = output_ordering(
+                        ordering,
+                        EmbeddedLayerId::BASE,
+                        layer.sequence.general.max_mlayer_id,
+                    );
                     layer.scheduler.note_frame(
                         next_candidate.obu_type(),
                         first_picture_in_tu,
-                        ordering,
+                        sef_tu_limit,
                         true,
                         false,
                     );
                     if !sef_emit_allowed {
                         layer.scheduler.suppress(frame_index);
                     }
-                    layer.scheduler.on_immediate(frame_index, ordering);
+                    layer.scheduler.on_immediate(frame_index, sef_ordering);
                 }
                 let (newly, total_emitted) = xlayers.newly_and_total(candidate_xlayer);
                 charge_emitted_outputs(
@@ -1744,7 +1760,7 @@ fn decode_frames_in_order(
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
                 let inter_key_or_switch = is_key_or_switch(&inter_core);
-                {
+                let (inter_ordering, inter_tu_limit) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1752,17 +1768,28 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
+                    let inter_ordering = output_ordering(
+                        inter_hint,
+                        inter_envelope.header.embedded_layer_id,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    let inter_tu_limit = output_ordering(
+                        inter_hint,
+                        EmbeddedLayerId::BASE,
+                        layer.sequence.general.max_mlayer_id,
+                    );
                     if !inter_emit_allowed {
                         layer.scheduler.suppress(frame_index);
                     }
                     layer.scheduler.refresh(
                         inter_update.refresh_frame_flags,
                         frame_index,
-                        inter_hint,
+                        inter_ordering,
                         inter_implicit,
                         inter_key_or_switch || initializing_layer,
                     );
-                }
+                    (inter_ordering, inter_tu_limit)
+                };
                 let (newly_refresh, total_emitted) = xlayers.newly_and_total(candidate_xlayer);
                 charge_emitted_outputs(
                     options,
@@ -1791,12 +1818,12 @@ fn decode_frames_in_order(
                     layer.scheduler.note_frame(
                         next_candidate.obu_type(),
                         first_picture_in_tu,
-                        inter_hint,
+                        inter_tu_limit,
                         inter_immediate,
                         inter_implicit,
                     );
                     if inter_immediate && !layer.scheduler.already_emitted(frame_index) {
-                        layer.scheduler.on_immediate(frame_index, inter_hint);
+                        layer.scheduler.on_immediate(frame_index, inter_ordering);
                         true
                     } else {
                         false
@@ -2207,7 +2234,7 @@ fn decode_frames_in_order(
                     key_envelope.header.embedded_layer_id,
                     key_envelope.header.temporal_layer_id,
                 );
-                {
+                let (key_ordering, key_tu_limit) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -2215,17 +2242,28 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
+                    let key_ordering = output_ordering(
+                        key_hint,
+                        key_envelope.header.embedded_layer_id,
+                        layer.sequence.general.max_mlayer_id,
+                    );
+                    let key_tu_limit = output_ordering(
+                        key_hint,
+                        EmbeddedLayerId::BASE,
+                        layer.sequence.general.max_mlayer_id,
+                    );
                     if !key_emit_allowed {
                         layer.scheduler.suppress(frame_index);
                     }
                     layer.scheduler.refresh(
                         key_update.refresh_frame_flags,
                         frame_index,
-                        key_hint,
+                        key_ordering,
                         key_implicit,
                         true,
                     );
-                }
+                    (key_ordering, key_tu_limit)
+                };
                 let (newly_refresh, total_emitted) = xlayers.newly_and_total(candidate_xlayer);
                 charge_emitted_outputs(
                     options,
@@ -2257,12 +2295,12 @@ fn decode_frames_in_order(
                     layer.scheduler.note_frame(
                         next_candidate.obu_type(),
                         first_picture_in_tu,
-                        key_hint,
+                        key_tu_limit,
                         key_immediate,
                         key_implicit,
                     );
                     if key_immediate && !layer.scheduler.already_emitted(frame_index) {
-                        layer.scheduler.on_immediate(frame_index, key_hint);
+                        layer.scheduler.on_immediate(frame_index, key_ordering);
                         true
                     } else {
                         false

@@ -24,7 +24,7 @@ def verify_input(source, expected):
         raise SystemExit(f"{source.name}: input SHA-256 differs: {actual}.")
 
 
-def verify_non_normative_12bit_rejection(splot, source, width, output):
+def rejection_diagnostic(splot, source, width, output):
     result = subprocess.run(
         [str(splot), "decode", "--json", f"--threads={width}",
          "--output-format=raw", f"--output={output}", source],
@@ -34,7 +34,7 @@ def verify_non_normative_12bit_rejection(splot, source, width, output):
     )
     if result.returncode == 0:
         raise SystemExit(
-            f"{source.name}, {width} threads: expected non-normative 12-bit rejection, but decode succeeded."
+            f"{source.name}, {width} threads: expected decode to reject the stream."
         )
     try:
         diagnostic = json.loads(result.stdout)
@@ -43,18 +43,43 @@ def verify_non_normative_12bit_rejection(splot, source, width, output):
             f"{source.name}, {width} threads: failed to parse rejection JSON (exit {result.returncode}): "
             f"{exc}; stdout={result.stdout!r}, stderr={result.stderr!r}"
         ) from exc
+    if output.exists() or not isinstance(diagnostic, dict):
+        raise SystemExit(f"{source.name}, {width} threads: expected a diagnostic and no output file.")
+    return diagnostic
+
+
+def verify_non_normative_12bit_rejection(splot, source, width, output):
+    diagnostic = rejection_diagnostic(splot, source, width, output)
     if (
-        not isinstance(diagnostic, dict)
-        or diagnostic.get("rule_id") != "decode/malformed-source"
+        diagnostic.get("rule_id") != "decode/malformed-source"
         or diagnostic.get("source_issue_kind") != "sequence_header_parse_error"
         or "bit_depth_idc must be less than or equal to 1" not in diagnostic.get("parser_message", "")
     ):
         raise SystemExit(
             f"{source.name}, {width} threads: expected bit_depth_idc rejection, got {diagnostic!r}."
         )
-    if output.exists():
-        raise SystemExit(f"{source.name}, {width} threads: rejected decode unexpectedly created output.")
     print(f"{source.name}, {width} threads: rejected (non-normative 12-bit)", flush=True)
+
+
+def verify_timing_info2(splot, source, threads, output):
+    data = source.read_bytes()
+    if hashlib.sha256(data).hexdigest() != "712aff94509ad7c79a8afa7424b6da523418d5ebd4edd0b11b7bbc5696f4d9f1":
+        return source
+    for width in threads:
+        output.unlink(missing_ok=True)
+        diagnostic = rejection_diagnostic(splot, source, width, output)
+        if (diagnostic.get("rule_id"), diagnostic.get("unsupported_reason"), diagnostic.get("byte_offset")) != (
+            "decode/unsupported-feature", "unexpected_leading_obu_after_key", 883
+        ):
+            raise SystemExit(f"{source.name}: unexpected metadata order diagnostic {diagnostic!r}.")
+
+    # Set metadata_is_suffix on the five temporal point OBUs (AV2 § 7.3.3).
+    corrected = bytearray(data)
+    for offset in (884, 1094, 1152, 1165, 1179):
+        corrected[offset] |= 0x80
+    corrected_path = output.with_name("timing-info2-suffix.obu")
+    corrected_path.write_bytes(corrected)
+    return corrected_path
 
 
 def check(corpus, root, splot, thread_override=None, fetch=None):
@@ -130,6 +155,7 @@ def check(corpus, root, splot, thread_override=None, fetch=None):
 
     verified = 0
     rejected = 0
+    corrected = 0
     with tempfile.TemporaryDirectory() as temp:
         output = pathlib.Path(temp) / "decoded.raw"
         for stream in sorted(streams, key=lambda stream: stream["path"]):
@@ -142,6 +168,11 @@ def check(corpus, root, splot, thread_override=None, fetch=None):
                     verify_non_normative_12bit_rejection(splot, source, width, output)
                 rejected += 1
                 continue
+            if corpus == "dav2d" and source.name == "avm.bus.64x64.l5.timing-info2.obu":
+                checked_source = verify_timing_info2(splot, source, threads, output)
+                if checked_source != source:
+                    corrected += 1
+                    source = checked_source
             for width in threads:
                 output.unlink(missing_ok=True)
                 subprocess.run(
@@ -160,8 +191,9 @@ def check(corpus, root, splot, thread_override=None, fetch=None):
                     raise SystemExit(f"{source.name}: decoded output size differs.")
                 print(f"{source.name}, {width} threads: {actual}", flush=True)
             verified += 1
-    if rejected:
-        print(f"Verified {verified} {corpus} streams; rejected {rejected} non-normative 12-bit streams.")
+    if rejected or corrected:
+        print(f"{corpus} hash matches: {verified - corrected} original, {corrected} corrected. "
+              f"Expected rejections: {rejected} non-normative 12-bit, {corrected} misplaced metadata.")
     else:
         print(f"Verified all {verified} {corpus} streams.")
 
