@@ -14,7 +14,7 @@ use fearless_simd::Neon;
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::SimdMask;
 #[cfg(target_arch = "x86_64")]
-use fearless_simd::Sse2;
+use fearless_simd::{Avx2, Sse2};
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use fearless_simd::{
     Bytes, Level, Select, Simd, SimdBase, SimdInt, SimdInto, i16x8, mask16x8, u16x8, u64x2,
@@ -170,7 +170,7 @@ fn adapt_probability_lanes<const L: usize>(
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn load_row_lanes(token: LaneToken, row: &[u16], len: usize) -> u16x8<LaneToken> {
+fn load_row_lanes<S: Simd>(token: S, row: &[u16], len: usize) -> u16x8<S> {
     if len >= 8 {
         return u16x8::from_slice(token, &row[..8]);
     }
@@ -230,35 +230,50 @@ fn lane_token() -> Option<LaneToken> {
     Level::baseline().as_neon()
 }
 
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// The signed high half of each lane product (`pmulhw`).
-    #[inline]
-    fn mul_high_sse2(token: Sse2, a: i16x8<Sse2>, b: i16x8<Sse2>) -> i16x8<Sse2> {
-        core::arch::x86_64::_mm_mulhi_epi16(a.into(), b.into()).simd_into(token)
-    }
-);
-
-/// `(range7 * b) >> 16` in each lane, the signed high half of the product.
-#[cfg(target_arch = "x86_64")]
-#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
-#[inline(always)]
-fn mul_high(token: LaneToken, range7: u16, b: i16x8<LaneToken>) -> i16x8<LaneToken> {
-    mul_high_sse2(token, i16x8::splat(token, range7 as i16), b)
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+trait SymbolLane: Simd {
+    fn mul_high(self, range7: u16, b: i16x8<Self>) -> i16x8<Self>;
 }
 
+#[cfg(target_arch = "x86_64")]
+macro_rules! x86_symbol_lane {
+    ($token:ident) => {
+        impl SymbolLane for $token {
+            #[inline]
+            fn mul_high(self, range7: u16, b: i16x8<Self>) -> i16x8<Self> {
+                fearless_simd::kernel!(
+                    #[inline]
+                    fn kernel(token: $token, a: i16x8<$token>, b: i16x8<$token>) -> i16x8<$token> {
+                        core::arch::x86_64::_mm_mulhi_epi16(a.into(), b.into()).simd_into(token)
+                    }
+                );
+                kernel(self, i16x8::splat(self, range7 as i16), b)
+            }
+        }
+    };
+}
+
+#[cfg(target_arch = "x86_64")]
+x86_symbol_lane!(Sse2);
+#[cfg(target_arch = "x86_64")]
+x86_symbol_lane!(Avx2);
+
 #[cfg(target_arch = "aarch64")]
-fearless_simd::kernel!(
-    /// `(range7 * b) >> 16` in each lane, as `sqdmulh` of `range7 / 2`:
-    /// `range7` is even and below `2^15`, so the doubled product is exact
-    /// and never saturates.
+impl SymbolLane for Neon {
     #[inline]
-    fn mul_high(token: Neon, range7: u16, b: i16x8<Neon>) -> i16x8<Neon> {
-        use core::arch::aarch64::{vdupq_n_s16, vqdmulhq_s16};
-        debug_assert!(range7.is_multiple_of(2) && range7 < 1 << 15);
-        vqdmulhq_s16(vdupq_n_s16((range7 >> 1) as i16), b.into()).simd_into(token)
+    fn mul_high(self, range7: u16, b: i16x8<Self>) -> i16x8<Self> {
+        fearless_simd::kernel!(
+            // The doubled product of range7 / 2 is exact and does not saturate.
+            #[inline]
+            fn kernel(token: Neon, range7: u16, b: i16x8<Neon>) -> i16x8<Neon> {
+                use core::arch::aarch64::{vdupq_n_s16, vqdmulhq_s16};
+                debug_assert!(range7.is_multiple_of(2) && range7 < 1 << 15);
+                vqdmulhq_s16(vdupq_n_s16((range7 >> 1) as i16), b.into()).simd_into(token)
+            }
+        );
+        kernel(self, range7, b)
     }
-);
+}
 
 /// The shift of the § 8.2.6 use count in the adaptation state `cdf[N - 1]`,
 /// whose low bits hold the `Para_Adjustment_List` row: `index | count << 7`.
@@ -393,23 +408,23 @@ fn prefix_len(mask: u64) -> u32 {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn search_lanes<const N: usize>(
-    token: LaneToken,
-    row: u16x8<LaneToken>,
+fn search_lanes<const N: usize, S: SymbolLane>(
+    token: S,
+    row: u16x8<S>,
     past: [u16; 8],
     increments: [u16; 8],
     range7: u16,
     threshold: i16,
     range: u16,
-) -> (u32, u16, u16, mask16x8<LaneToken>) {
+) -> (u32, u16, u16, mask16x8<S>) {
     let probabilities = row | u16x8::load_array(token, past);
     let f = u16x8::splat(token, CDF_PROB_SCALE as u16).saturating_sub(probabilities);
     let pp4 = ((f >> EC_PROB_SHIFT) << 6) + u16x8::load_array(token, increments);
-    let scaled = mul_high(token, range7, pp4.bitcast());
-    let boundaries: u16x8<LaneToken> = (scaled << 3).bitcast();
+    let scaled = token.mul_high(range7, pp4.bitcast());
+    let boundaries: u16x8<S> = (scaled << 3).bitcast();
     let below = scaled.simd_gt(i16x8::splat(token, threshold));
     if N <= 4 {
-        let word = |lanes: i16x8<LaneToken>| lanes.bitcast::<u64x2<LaneToken>>().as_array()[0];
+        let word = |lanes: i16x8<S>| lanes.bitcast::<u64x2<S>>().as_array()[0];
         let mask = word(token.to_vector_mask16x8(below));
         let shift = prefix_len(mask);
         let low = word(boundaries.bitcast());
@@ -452,14 +467,14 @@ const fn row_lanes<const N: usize>() -> usize {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn row_search_lanes<const N: usize>(
-    token: LaneToken,
+fn row_search_lanes<const N: usize, S: SymbolLane>(
+    token: S,
     cdf: &[u16],
     symbol_value: u32,
     range: u32,
-) -> (u32, u32, u32, u16x8<LaneToken>, mask16x8<LaneToken>) {
+) -> (u32, u32, u32, u16x8<S>, mask16x8<S>) {
     let value = load_row_lanes(token, cdf, row_lanes::<N>());
-    let (above, cur, prev, below) = search_lanes::<N>(
+    let (above, cur, prev, below) = search_lanes::<N, _>(
         token,
         value,
         const { past_row_lanes::<N>() },
@@ -476,11 +491,11 @@ fn row_search_lanes<const N: usize>(
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
-fn adapt_lanes<const N: usize>(
-    token: LaneToken,
+fn adapt_lanes<const N: usize, S: SymbolLane>(
+    token: S,
     cdf: &mut [u16],
-    value: u16x8<LaneToken>,
-    below: mask16x8<LaneToken>,
+    value: u16x8<S>,
+    below: mask16x8<S>,
     rate: u32,
 ) {
     let shrunk = value - (value >> rate);
@@ -492,7 +507,7 @@ fn adapt_lanes<const N: usize>(
     if row_lanes::<N>() >= 8 {
         adapted.store_slice(&mut cdf[..8]);
     } else {
-        let words = *adapted.bitcast::<u64x2<LaneToken>>().as_array();
+        let words = *adapted.bitcast::<u64x2<S>>().as_array();
         for (lane, entry) in cdf.iter_mut().take(4).enumerate() {
             *entry = (words[0] >> (16 * lane)) as u16;
         }
@@ -1053,6 +1068,44 @@ impl<'a> SymbolDecoder<'a> {
             .unwrap_or(0)
     }
 
+    /// [`Self::read_trusted`] using the caller's selected AVX2 backend when available.
+    #[expect(
+        clippy::inline_always,
+        reason = "keep trusted reads in the caller's SIMD scope"
+    )]
+    #[inline(always)]
+    pub fn read_trusted_with<B: crate::simd::SimdBackend, const L: usize>(
+        &mut self,
+        backend: B,
+        cdf: &mut [u16; L],
+    ) -> u32 {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(token) = backend.avx2_token()
+            && (4..=9).contains(&L)
+        {
+            return token.vectorize(
+                #[inline(always)]
+                || {
+                    self.ensure_buffered(15);
+                    let value = (self.dif >> SV_SHIFT) as u32;
+                    let update = self.config.cdf_update == CdfUpdateMode::Enabled;
+                    match L {
+                        4 => self.read_trusted_lanes::<3>(token, cdf, value, update),
+                        5 => self.read_trusted_lanes::<4>(token, cdf, value, update),
+                        6 => self.read_trusted_lanes::<5>(token, cdf, value, update),
+                        7 => self.read_trusted_lanes::<6>(token, cdf, value, update),
+                        8 => self.read_trusted_lanes::<7>(token, cdf, value, update),
+                        9 => self.read_trusted_lanes::<8>(token, cdf, value, update),
+                        _ => unreachable!("checked trusted row length"),
+                    }
+                },
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = backend;
+        self.read_trusted(cdf)
+    }
+
     /// [`Self::read_trusted`] of a row of three to five symbols, from its
     /// first entries as `carried`, the word the previous read of the same
     /// row returned, or from memory when `None`. Returns the symbol and the
@@ -1309,18 +1362,18 @@ impl<'a> SymbolDecoder<'a> {
     #[inline(always)]
     fn read_trusted_lanes<const N: usize>(
         &mut self,
-        token: LaneToken,
+        token: impl SymbolLane,
         cdf: &mut [u16],
         symbol_value: u32,
         update: bool,
     ) -> u32 {
         let (symbol, cur, prev, value, below) =
-            row_search_lanes::<N>(token, cdf, symbol_value, self.range());
+            row_search_lanes::<N, _>(token, cdf, symbol_value, self.range());
         self.consume(cur << 16, prev << 16);
         if update {
             let state = cdf[N - 1];
             let rate = trusted_rate::<N>(state);
-            adapt_lanes::<N>(token, cdf, value, below, rate & RATE_BITS);
+            adapt_lanes::<N, _>(token, cdf, value, below, rate & RATE_BITS);
             cdf[N - 1] = counted(state, rate);
         }
         symbol
@@ -1645,3 +1698,56 @@ mod tests;
 #[cfg(test)]
 #[path = "symbol_proptests.rs"]
 mod proptests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[test]
+fn typed_trusted_reads_match_baseline_at_every_row_width() {
+    use crate::simd::{ResolvedBackend, SimdPolicy, resolve_backend};
+
+    fn compare<B: crate::simd::SimdBackend, const L: usize>(
+        backend: B,
+        config: SymbolDecoderConfig,
+        bytes: &[u8],
+    ) {
+        let mut baseline_row = [0; L];
+        for (position, value) in baseline_row[..L - 2].iter_mut().enumerate() {
+            *value = ((position + 1) * 32768 / (L - 1)) as u16;
+        }
+        let mut typed_row = baseline_row;
+        let mut baseline = SymbolDecoder::with_config(bytes, config).unwrap();
+        let mut typed = SymbolDecoder::with_config(bytes, config).unwrap();
+        for _ in 0..128 {
+            assert_eq!(
+                typed.read_trusted_with(backend, &mut typed_row),
+                baseline.read_trusted(&mut baseline_row)
+            );
+            assert_eq!(typed_row, baseline_row);
+            assert_eq!(typed.checkpoint(), baseline.checkpoint());
+        }
+    }
+
+    let bytes: [u8; 256] = core::array::from_fn(|i| (47 * i + i / 7) as u8);
+    let sse2 = resolve_backend(SimdPolicy::Sse2).unwrap();
+    let avx2 = resolve_backend(SimdPolicy::Avx2).ok();
+    for backend in [Some(sse2), avx2].into_iter().flatten() {
+        macro_rules! compare_rows {
+            ($backend:expr) => {
+                for mode in [CdfUpdateMode::Enabled, CdfUpdateMode::Disabled] {
+                    let config = SymbolDecoderConfig::new().with_cdf_update_mode(mode);
+                    compare::<_, 3>($backend, config, &bytes);
+                    compare::<_, 4>($backend, config, &bytes);
+                    compare::<_, 5>($backend, config, &bytes);
+                    compare::<_, 6>($backend, config, &bytes);
+                    compare::<_, 7>($backend, config, &bytes);
+                    compare::<_, 8>($backend, config, &bytes);
+                    compare::<_, 9>($backend, config, &bytes);
+                }
+            };
+        }
+        match backend {
+            ResolvedBackend::Sse2(backend) => compare_rows!(backend),
+            ResolvedBackend::Avx2(backend) => compare_rows!(backend),
+            _ => unreachable!("requested SSE2 or AVX2"),
+        }
+    }
+}
