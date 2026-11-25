@@ -94,6 +94,14 @@ pub fn write_complete_obu(
             payload: payload.syntax_name(),
         });
     }
+    if let ParsedObu::AtlasSegment(atlas) = payload
+        && atlas.mode.requires_global_scope()
+        && !header.extended_layer_id.is_global()
+    {
+        return Err(WriteError::NonCanonicalAtlasSegment {
+            what: "multistream_requires_global_xlayer",
+        });
+    }
     let mut scratch = BitWriter::new();
     write_obu_header(&mut scratch, header)?;
     write_obu_payload_inner(

@@ -309,7 +309,8 @@ impl ValidatorContext {
     /// parse and a valid § 5.2.1 payload tail.
     pub(super) fn observe_atlas_segment(&mut self, obu: &ObuEnvelope<'_>) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        let Ok(atlas) = parse_atlas_segment(&mut reader) else {
+        let Ok(atlas) = parse_scoped_atlas_segment(&mut reader, obu.header.extended_layer_id)
+        else {
             return;
         };
         if finish_obu_payload(

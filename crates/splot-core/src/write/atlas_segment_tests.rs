@@ -65,8 +65,8 @@ mod tests {
         bits.uvlc(640); // width
         bits.uvlc(480); // height
         bits.uvlc(1); // num_atlas_segments_minus_1 = 1 -> 2 segments
-        for _ in 0..2 {
-            bits.f(5, 5); // input_stream_id
+        for id in [5, 9] {
+            bits.f(id, 5); // input_stream_id
             bits.uvlc(0); // top_left_pos_x
             bits.uvlc(0); // top_left_pos_y
             bits.uvlc(100); // width
@@ -76,6 +76,16 @@ mod tests {
         bits.f(10, 8); // ats_atlas_segment_id[0]
         bits.f(20, 8); // ats_atlas_segment_id[1]
         parse(bits)
+    }
+
+    #[test]
+    fn rejects_duplicate_atlas_input_stream_id() {
+        let mut atlas = basic_atlas_signaled();
+        let AtlasModeInfo::Basic(info) = &mut atlas.mode_info else {
+            panic!("expected basic atlas");
+        };
+        info.segments[1].input_stream_id = info.segments[0].input_stream_id;
+        reject(&atlas, "duplicate_input_stream_id");
     }
 
     /// BASIC_ATLAS (mode 1) without stream ids and with an unsignaled label.
