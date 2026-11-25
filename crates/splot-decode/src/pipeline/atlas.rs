@@ -259,9 +259,7 @@ impl LayerAtlases {
                 ),
             ));
         }
-        if info.local_id != 0 {
-            self.local_ids |= 1 << info.local_id;
-        }
+        self.local_ids |= 1 << info.local_id;
         let id = usize::from(info.local_id);
         if info.local_atlas_id.is_some() || info.global_id != 0 {
             self.records.get_or_insert_with(Default::default)[id] = Some((offset, Arc::new(info)));
@@ -277,6 +275,13 @@ impl LayerAtlases {
         id: u8,
         globals: &[Option<GlobalRecord>; 8],
     ) {
+        let index = usize::from(sequence.get());
+        if id == 0 {
+            if let Some(binding) = self.sequences.get_mut(index) {
+                *binding = SequenceLcr::default();
+            }
+            return;
+        }
         let local = self
             .records
             .as_ref()
@@ -285,7 +290,6 @@ impl LayerAtlases {
             .has_local(id)
             .then(|| local.as_ref().map_or(0, |(_, record)| record.global_id));
         let global = globals[usize::from(local_parent.unwrap_or(id))].clone();
-        let index = usize::from(sequence.get());
         if self.sequences.len() <= index {
             if local_parent.is_none() && global.is_none() {
                 return;

@@ -610,3 +610,51 @@ fn sequence_header_binds_its_lcr_before_a_later_local_record() {
         }
     }
 }
+
+#[test]
+fn local_record_with_id_zero_fails_at_its_obu() {
+    use splot_core::headers::layer_config_record::LayerConfigurationRecord;
+
+    let mut bytes = Vec::new();
+    let mut invalid_offset = None;
+    for obu in parse_annex_b_obus(COLLISION_8).unwrap() {
+        if invalid_offset.is_none()
+            && obu.header.obu_type == ObuType::LayerConfigurationRecord
+            && !obu.header.extended_layer_id.is_global()
+        {
+            let PayloadStatus::Parsed(ParsedObu::LayerConfigurationRecord(mut record)) =
+                obu.payload_status().unwrap()
+            else {
+                panic!("expected the local LCR");
+            };
+            let LayerConfigurationRecord::Local(local) = &mut *record else {
+                panic!("expected the local LCR");
+            };
+            local.local_id = 0;
+            invalid_offset = Some(obu.offset);
+            write_parsed(
+                &mut bytes,
+                obu.header,
+                &ParsedObu::LayerConfigurationRecord(record),
+            );
+        } else {
+            write_obu(&mut bytes, obu.header, obu.payload);
+        }
+    }
+    for error in [
+        stream_decode(&bytes, &DecoderSettings::default()).unwrap_err(),
+        context(2, 2)
+            .decode_hash_report_reader(ChunkedReader::new(&bytes, 3), DecodeOptions::DEFAULT)
+            .unwrap_err(),
+    ] {
+        let DecodeError::MalformedSource { issue } = error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            issue.kind(),
+            splot_decode::DecodeSourceIssueKind::ObuPayloadParseError
+        );
+        assert_eq!(issue.spec_section(), Some("6.8.3"));
+        assert_eq!(issue.offset(), invalid_offset);
+    }
+}

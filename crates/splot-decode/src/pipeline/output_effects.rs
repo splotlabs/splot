@@ -1015,6 +1015,16 @@ pub(crate) fn parse_validated_lcr(envelope: ObuEnvelope<'_>) -> Result<LayerConf
                 ),
             });
         }
+    } else if let LayerConfigurationRecord::Local(info) = &record
+        && info.local_id == 0
+    {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::obu_payload_parse(
+                envelope.offset,
+                "6.8.3",
+                "lcr_local_id must be in 1..=7".to_owned(),
+            ),
+        });
     }
     Ok(record)
 }
