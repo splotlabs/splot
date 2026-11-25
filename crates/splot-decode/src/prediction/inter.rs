@@ -12,7 +12,7 @@ use splot_core::headers::frame::{
     TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
-use splot_core::hls::MultiFrameHeaderRecord;
+use splot_core::hls::{MfhId, MultiFrameHeaderRecord};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
@@ -1648,23 +1648,32 @@ pub(crate) fn parse_inter_frame_activation(
     )
 }
 
-pub(crate) fn parse_validated_inter_frame_core_with_mfh(
+pub(crate) fn parse_validated_inter_frame_core<'a>(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     reference: &ReferenceMetadata,
     first_picture_in_tu: bool,
-    mfh_record: Option<&MultiFrameHeaderRecord>,
+    resolve_mfh: impl FnOnce(MfhId) -> Result<&'a MultiFrameHeaderRecord>,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
-    validate_obu_layer_ids(envelope, sequence, frame_index)?;
-    let mut core = parse_inter_or_sef_core(
+    let mut core = parse_inter_frame_activation(
         envelope,
         sequence,
         reference,
         first_picture_in_tu,
-        mfh_record,
         frame_index,
     )?;
+    if !core.cur_mfh_id.is_zero() {
+        let record = resolve_mfh(core.cur_mfh_id)?;
+        core = parse_inter_or_sef_core(
+            envelope,
+            sequence,
+            reference,
+            first_picture_in_tu,
+            Some(record),
+            frame_index,
+        )?;
+    }
     if envelope.header.obu_type.is_sef() {
         validate_sef_frame_core(&core, reference, envelope.offset, frame_index)?;
         validate_sef_layer_dependency(

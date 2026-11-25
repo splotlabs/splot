@@ -394,24 +394,12 @@ fn parse_inter_core_with_effects(
     first_picture_in_tu: bool,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
-    let activation = inter::parse_inter_frame_activation(
+    inter::parse_validated_inter_frame_core(
         envelope,
         sequence,
         reference,
         first_picture_in_tu,
-        frame_index,
-    )?;
-    let record = if activation.cur_mfh_id.is_zero() {
-        None
-    } else {
-        Some(effects.resolve_mfh_record(envelope, sequence, activation.cur_mfh_id)?)
-    };
-    inter::parse_validated_inter_frame_core_with_mfh(
-        envelope,
-        sequence,
-        reference,
-        first_picture_in_tu,
-        record,
+        |id| effects.resolve_mfh_record(envelope, sequence, id),
         frame_index,
     )
 }
