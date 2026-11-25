@@ -15,9 +15,10 @@ rustup show active-toolchain
 cargo build --release
 ```
 
-x86-64 builds use the portable SSE2 instruction set at startup. The decoder
-selects AVX2 on hosts with the required CPU and OS support and SSE2 on other
-x86-64 hosts. AArch64 uses 128-bit NEON.
+The x86-64 decoder selects AVX2 at startup when the CPU and OS support
+the full feature set, and SSE2 otherwise. AArch64 uses NEON. Rust callers
+may request AVX-512 explicitly on capable hardware. The decoder currently
+reuses AVX2 kernels for that policy.
 Linux GNU builds link packed relative relocations (`DT_RELR`) and need glibc
 2.36 or newer.
 

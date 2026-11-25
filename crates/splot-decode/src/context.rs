@@ -32,7 +32,7 @@ pub struct DecodeContext {
     session: crate::pipeline::DecodeSession,
 }
 
-use splot_core::simd::{SelectedBackend, SimdBackend, SimdScope};
+use splot_core::simd::{NarrowSimdScope, SelectedBackend, SimdBackend, SimdScope};
 
 /// Scoped synchronous callback entered once with a concrete compile-time [`SimdBackend`].
 pub trait DecodeScope<R> {
@@ -103,8 +103,11 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        self.context
-            .decode_hash_report(self.backend.narrow(), &mut reader, &options)
+        self.backend.enter_narrow(HashReport {
+            context: self.context,
+            reader: &mut reader,
+            options: &options,
+        })
     }
 
     /// Decodes the supported envelope and discards each displayed frame.
@@ -116,8 +119,11 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<()> {
-        self.context
-            .decode_discard(self.backend.narrow(), &mut reader, &options)
+        self.backend.enter_narrow(Discard {
+            context: self.context,
+            reader: &mut reader,
+            options: &options,
+        })
     }
 
     /// [`Self::decode_raw_reader`] over in-memory bytes.
@@ -143,8 +149,12 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        self.context
-            .decode_raw(self.backend.narrow(), &mut reader, &options, &mut writer)
+        self.backend.enter_narrow(Raw {
+            context: self.context,
+            reader: &mut reader,
+            options: &options,
+            writer: &mut writer,
+        })
     }
 
     /// [`Self::decode_y4m_reader`] over in-memory bytes.
@@ -170,10 +180,52 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        self.context
-            .decode_y4m(self.backend.narrow(), &mut reader, &options, &mut writer)
+        self.backend.enter_narrow(Y4m {
+            context: self.context,
+            reader: &mut reader,
+            options: &options,
+            writer: &mut writer,
+        })
     }
 }
+
+// Concrete entry points keep the decoder's generic kernels in this crate.
+macro_rules! decode_request {
+    ($request:ident, $method:ident, $output:ty $(, $field:ident: $ty:ty)*) => {
+        struct $request<'a> {
+            context: &'a DecodeContext,
+            reader: &'a mut (dyn Read + Send),
+            options: &'a DecodeOptions,
+            $($field: $ty,)*
+        }
+
+        impl NarrowSimdScope<Result<$output>> for $request<'_> {
+            #[cfg(target_arch = "x86_64")]
+            fn run_sse2(self, backend: splot_core::simd::Sse2Backend) -> Result<$output> {
+                self.context.$method(backend, self.reader, self.options $(, self.$field)*)
+            }
+            #[cfg(target_arch = "x86_64")]
+            fn run_avx2(self, backend: splot_core::simd::Avx2Backend) -> Result<$output> {
+                self.context.$method(backend, self.reader, self.options $(, self.$field)*)
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            fn run_neon(self, backend: splot_core::simd::NeonBackend) -> Result<$output> {
+                self.context.$method(backend, self.reader, self.options $(, self.$field)*)
+            }
+
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            fn run_fallback(self, backend: splot_core::simd::FallbackBackend) -> Result<$output> {
+                self.context.$method(backend, self.reader, self.options $(, self.$field)*)
+            }
+        }
+    };
+}
+
+decode_request!(HashReport, decode_hash_report, DecodeHashReport);
+decode_request!(Discard, decode_discard, ());
+decode_request!(Raw, decode_raw, (), writer: &'a mut (dyn std::io::Write + Send));
+decode_request!(Y4m, decode_y4m, (), writer: &'a mut (dyn std::io::Write + Send));
 
 struct ContextScopeAdapter<'a, S> {
     context: &'a DecodeContext,

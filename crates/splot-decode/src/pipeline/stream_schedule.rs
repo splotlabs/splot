@@ -205,9 +205,24 @@ impl<'a> RuntimeStream<'a> {
         buffer: &'s mut Vec<ObuEnvelope<'u>>,
     ) -> Result<&'s [ObuEnvelope<'u>]> {
         runtime_obus(unit.view(), buffer)?;
+        self.retain_selected_obus(buffer);
+        Ok(buffer)
+    }
+
+    pub(super) fn leading_obus<'s, 'u>(
+        &self,
+        unit: &'u UnitBytes,
+        buffer: &'s mut Vec<ObuEnvelope<'u>>,
+    ) -> Result<&'s [ObuEnvelope<'u>]> {
+        runtime_obus(unit.view(), buffer)?;
+        require_inter_frame_units(buffer, 1, "unexpected_leading_obu_after_key")?;
+        self.retain_selected_obus(buffer);
+        Ok(buffer)
+    }
+
+    fn retain_selected_obus(&self, buffer: &mut Vec<ObuEnvelope<'_>>) {
         let filter = self.scan.layer_filter();
         buffer.retain(|envelope| filter.is_obu_selected(envelope.header));
-        Ok(buffer)
     }
 
     pub(super) fn inter_envelope<'o>(

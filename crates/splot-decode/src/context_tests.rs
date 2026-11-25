@@ -70,7 +70,7 @@ fn a_context_reused_across_streams_decodes_like_a_new_one() {
 
 #[test]
 fn context_validates_simd_policy_at_startup() {
-    use crate::{DecodeError, SelectedBackend, SimdPolicy};
+    use crate::SelectedBackend;
 
     let ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
     #[cfg(target_arch = "x86_64")]
@@ -87,6 +87,8 @@ fn context_validates_simd_policy_at_startup() {
 
     #[cfg(target_arch = "x86_64")]
     {
+        use crate::{DecodeError, SimdPolicy};
+
         let err =
             DecodeContext::new(DecodeRuntimeConfig::default().with_simd_policy(SimdPolicy::Neon))
                 .unwrap_err();

@@ -43,6 +43,7 @@ struct BaselineInterIntra;
 #[derive(Clone, Copy)]
 struct TypedInterIntra<B>(B);
 
+#[cfg(target_arch = "x86_64")]
 #[inline]
 fn can_use_bawp_u8_avx2(width: usize, height: usize, max_sample: i32) -> bool {
     max_sample == 0xff
