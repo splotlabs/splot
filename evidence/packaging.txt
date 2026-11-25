@@ -1,0 +1,12 @@
+missing records and scripts added: 197
+omitted environment files: 6
+omitted log authorization lines: 14
+omitted log environment lines: 1197
+omitted opaque binary records: 4
+scrubbed filesystem paths: 2649
+scrubbed host fields: 47
+scrubbed host identifiers: 0
+scrubbed organization addresses: 0
+updated snapshots preserved: 265
+verified original members: 599
+published members: 1058
