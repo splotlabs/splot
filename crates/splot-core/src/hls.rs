@@ -448,6 +448,113 @@ mod tests {
     }
 
     #[test]
+    fn msdo_allocation_combines_native_and_aggregate_levels_by_xlayer() {
+        use crate::headers::sequence::Tier;
+        use crate::level::LevelRate;
+        use crate::types::ExtendedLayerId;
+
+        let bytes = msdo_bits(0).into_bytes();
+        let mut msdo = parse_msdo(&mut BitReader::new(&bytes, ByteOffset::new(0))).unwrap();
+        let large = ExtendedLayerId::from_bits(11);
+        let small = ExtendedLayerId::from_bits(3);
+        msdo.sub_streams[0].sub_xlayer_id = small.get();
+        msdo.sub_streams[1].sub_xlayer_id = large.get();
+
+        for level in 0..=4 {
+            msdo.multistream_level_idx = level;
+            let even = msdo.frame_level_limits(21, small).unwrap();
+            // Splot uses the AVM 4.0 geometry and header-rate cells at levels 0–3.
+            assert_eq!(
+                (
+                    even.max_width,
+                    even.max_height,
+                    even.max_tile_cols,
+                    even.max_header_rate
+                ),
+                (576, 960, 4, 132)
+            );
+            assert_eq!(even.max_pic_size, 552_960);
+            // Table A.9 still selects MaxTiles from the signaled aggregate level.
+            assert_eq!(even.max_tiles, [2, 2, 4, 4, 8][usize::from(level)]);
+        }
+        msdo.multistream_even_allocation_flag = false;
+        msdo.multistream_large_picture_idc = Some(1);
+        let full = msdo.frame_level_limits(21, large).unwrap();
+        assert_eq!(
+            (
+                full.max_width,
+                full.max_height,
+                full.max_tiles,
+                full.max_tile_cols
+            ),
+            (896, 1600, 21, 7)
+        );
+        let reduced = msdo.frame_level_limits(21, small).unwrap();
+        assert_eq!(
+            (
+                reduced.max_width,
+                reduced.max_height,
+                reduced.max_tiles,
+                reduced.max_tile_cols
+            ),
+            (384, 640, 3, 3)
+        );
+        let native = msdo.frame_level_limits(0, large).unwrap();
+        assert_eq!(
+            (
+                native.max_pic_size,
+                native.max_width,
+                native.max_height,
+                native.max_tiles
+            ),
+            (147_456, 640, 640, 8)
+        );
+        assert!(msdo.frame_level_limits(31, large).is_none());
+
+        msdo.multistream_tier = 1;
+        let rates = msdo.rate_limits(21, Tier::Main, large).unwrap();
+        assert_eq!(
+            rates.display,
+            LevelRate {
+                units: 141_557_760,
+                seconds: 3
+            }
+        );
+        assert_eq!(
+            rates.bitrate,
+            LevelRate {
+                units: 60_000_000,
+                seconds: 3
+            }
+        );
+        assert_eq!(rates.min_compression_basis, 8);
+        let rates = msdo.rate_limits(21, Tier::High, small).unwrap();
+        assert_eq!(
+            rates.decode,
+            LevelRate {
+                units: 77_856_768,
+                seconds: 9
+            }
+        );
+        assert_eq!(rates.min_compression_basis, 4);
+        let native_rates = msdo.rate_limits(0, Tier::Main, large).unwrap();
+        assert_eq!(
+            native_rates.bitrate,
+            LevelRate {
+                units: 1_500_000,
+                seconds: 1
+            }
+        );
+        msdo.multistream_level_idx = 0;
+        assert!(msdo.rate_limits(4, Tier::Main, large).is_none());
+        msdo.multistream_level_idx = 31;
+        assert_eq!(
+            msdo.frame_level_limits(4, large),
+            crate::level::level_limits(4)
+        );
+    }
+
+    #[test]
     fn parses_minimal_msdo() {
         let data = msdo_bits(0).into_bytes();
         let mut reader = BitReader::new(&data, ByteOffset::new(0));

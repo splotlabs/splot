@@ -69,26 +69,26 @@ pub(super) fn frame_annex_a_level_checks(
                 .with_byte_offset(obu.offset),
             );
         }
-        if width > limits.max_h_v_size {
+        if width > limits.max_width {
             report.push(
                 Diagnostic::error(
                     "annex-a/frame-size-exceeds-level",
                     format!(
                         "FrameWidth {width} exceeds MaxHSize {} for seq_level_idx {level_idx}",
-                        limits.max_h_v_size
+                        limits.max_width
                     ),
                 )
                 .with_spec_section("A.4")
                 .with_byte_offset(obu.offset),
             );
         }
-        if height > limits.max_h_v_size {
+        if height > limits.max_height {
             report.push(
                 Diagnostic::error(
                     "annex-a/frame-size-exceeds-level",
                     format!(
                         "FrameHeight {height} exceeds MaxVSize {} for seq_level_idx {level_idx}",
-                        limits.max_h_v_size
+                        limits.max_height
                     ),
                 )
                 .with_spec_section("A.4")

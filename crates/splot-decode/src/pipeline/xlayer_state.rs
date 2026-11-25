@@ -250,6 +250,8 @@ pub(super) struct GlobalHlsState {
     active_msdo: Option<ActiveMsdo>,
     cmvs_start_tu_index: Option<u64>,
     tu_saw_msdo: bool,
+    /// MultiStreamDecoderMode from the most recent RAP (§ 7.4.1).
+    multistream_decoder_mode: bool,
     tu_saw_non_msdo_prefix: bool,
     last_celu_xlayer: Option<u8>,
     tu_order_hint_bits: Option<u8>,
@@ -469,6 +471,16 @@ fn parse_validated_msdo(envelope: ObuEnvelope<'_>) -> Result<MultistreamDecoderO
             format!(
                 "OBU_MSDO uses reserved multistream_profile_idc {}",
                 msdo.multistream_profile_idc.get()
+            ),
+        ));
+    }
+    if matches!(msdo.multistream_level_idx, 22..=30) {
+        return Err(malformed(
+            envelope.offset,
+            "A.4",
+            format!(
+                "OBU_MSDO uses reserved multistream_level_idx {}",
+                msdo.multistream_level_idx
             ),
         ));
     }
@@ -1079,6 +1091,9 @@ impl XLayerTable {
                 _ => {}
             }
         }
+        if tu_has_rap && (starts_temporal_unit || self.global.tu_saw_msdo) {
+            self.global.multistream_decoder_mode = self.global.tu_saw_msdo;
+        }
         let starts_cvs_without_msdo =
             starts_temporal_unit && tu_has_clk && !self.global.tu_saw_msdo;
         if starts_cvs_without_msdo
@@ -1152,6 +1167,71 @@ impl XLayerTable {
             ));
         }
         self.global.last_celu_xlayer = Some(xlayer.get());
+        Ok(())
+    }
+
+    pub(super) fn check_msdo_frame_limits(
+        &self,
+        xlayer: ExtendedLayerId,
+        sequence_level: u8,
+        core: &FrameHeaderCore,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        if !self.global.multistream_decoder_mode {
+            return Ok(());
+        }
+        let Some(active) = &self.global.active_msdo else {
+            return Ok(());
+        };
+        let Some(limits) = active.msdo.frame_level_limits(sequence_level, xlayer) else {
+            return Ok(());
+        };
+        let check = |name, value: u64, limit: u64| {
+            if value > limit {
+                Err(DecodeError::MalformedSource {
+                    issue: DecodeSourceIssue::frame_header_conformance(
+                        offset,
+                        None,
+                        "A.4",
+                        format!(
+                            "extended layer {} frame exceeds {name}: {value} > {limit}",
+                            xlayer.get()
+                        ),
+                    ),
+                })
+            } else {
+                Ok(())
+            }
+        };
+        if let Some(size) = core.frame_size {
+            check(
+                "MaxHSize",
+                u64::from(size.width),
+                u64::from(limits.max_width),
+            )?;
+            check(
+                "MaxVSize",
+                u64::from(size.height),
+                u64::from(limits.max_height),
+            )?;
+            check(
+                "MaxPicSize",
+                u64::from(size.width) * u64::from(size.height),
+                limits.max_pic_size,
+            )?;
+        }
+        if let Some(tile) = &core.tile_info {
+            check(
+                "MaxTileCols",
+                u64::from(tile.tile_cols),
+                u64::from(limits.max_tile_cols),
+            )?;
+            check(
+                "MaxTiles",
+                u64::from(tile.tile_cols) * u64::from(tile.tile_rows),
+                u64::from(limits.max_tiles),
+            )?;
+        }
         Ok(())
     }
 
@@ -1500,6 +1580,39 @@ impl XLayerTable {
                 .map_or_else(Vec::new, |layer| layer.scheduler.flush_all())
         } else {
             self.rest[layer_pos - 1].scheduler.flush_all()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::XLayerTable;
+    use splot_core::annexb::parse_annex_b_obus;
+    use splot_core::types::ObuType;
+
+    #[test]
+    fn only_an_msdo_at_a_random_access_point_selects_mode_one() {
+        let stream = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu"
+        );
+        let obus = parse_annex_b_obus(stream).unwrap();
+        let prefix = &obus[..2];
+        assert_eq!(prefix[0].header.obu_type, ObuType::TemporalDelimiter);
+        assert_eq!(prefix[1].header.obu_type, ObuType::Msdo);
+        let mut layers = XLayerTable::new();
+        for (has_msdo, rap, clk, mode) in [
+            (true, true, true, true),
+            (false, false, false, true),
+            (false, true, false, false),
+            (true, false, false, false),
+            (true, true, false, true),
+        ] {
+            let end = if has_msdo { 2 } else { 1 };
+            layers
+                .observe_global_obus(&prefix[..end], false, rap, clk, None)
+                .unwrap();
+            assert!(layers.global.active_msdo.is_some());
+            assert_eq!(layers.global.multistream_decoder_mode, mode);
         }
     }
 }

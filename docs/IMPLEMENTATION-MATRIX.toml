@@ -4329,7 +4329,7 @@ module = "crates/splot-validate/src/annex_a.rs"
 change_id = "annex-a-profile-level-skeleton"
 owner = "validator"
 risk = "high"
-notes = "Checks level/tier value space, frame dimensions, and tile-count limits from resolved sequence/frame state; configurable and reserved levels skip undefined static limits. Remaining coverage includes rate/buffer constraints, per-tile scaling, multistream scaling, still-picture conditions, and OPS-level frame checks requiring operating-point membership. Interoperability layer-budget checks are tracked by AV2-A-PROFILES. Differential status remains separate from static validation coverage."
+notes = "Checks level/tier value space, frame dimensions, and tile-count limits from resolved sequence/frame state; configurable and reserved levels skip undefined static limits. In decoder mode 1, decode applies the native and MSDO frame-size and tile maxima before reconstruction. For missing aggregate level 0–3 table cells, Splot uses the level-4.0 dimensions, tile-column count, and header rate from AVM 457cd58681a747465661baccb1f32095bc5b7774 level_to_sub_stream_level_index(). Other quantities use their signaled level. Core derives timing-dependent rate limits. Remaining checks include observed rate/buffer constraints, per-tile scaling, validator multistream scaling, still-picture conditions, and OPS-level frame checks requiring operating-point membership. Interoperability layer-budget checks are tracked by AV2-A-PROFILES. Differential status remains separate from static validation coverage."
 
 [feature.status]
 mapped = "done"

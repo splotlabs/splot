@@ -335,6 +335,180 @@ fn make_msdo_obu(ext_header: bool, lvl: u8, doh_flag: bool, subs: &[(u8, u8, u8,
     out
 }
 
+fn edit_msdo(
+    bytes: &[u8],
+    edit: impl Fn(&mut splot_core::hls::MultistreamDecoderOperation),
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    for obu in parse_annex_b_obus(bytes).unwrap() {
+        if obu.header.obu_type == ObuType::Msdo {
+            let PayloadStatus::Parsed(ParsedObu::Msdo(mut msdo)) = obu.payload_status().unwrap()
+            else {
+                unreachable!()
+            };
+            edit(&mut msdo);
+            write_parsed(&mut data, obu.header, &ParsedObu::Msdo(msdo));
+        } else {
+            write_obu(&mut data, obu.header, obu.payload);
+        }
+    }
+    data
+}
+
+#[test]
+fn uneven_msdo_allocation_resolves_noncontiguous_layers_before_picture_allocation() {
+    for (large_index, small_xlayer) in [(0, 7), (1, 3)] {
+        let data = edit_msdo(MSDO_8BIT, |msdo| {
+            msdo.multistream_even_allocation_flag = false;
+            msdo.multistream_large_picture_idc = Some(large_index);
+        });
+        let obus = parse_annex_b_obus(&data).unwrap();
+        let small_key = obus
+            .iter()
+            .find(|obu| {
+                obu.header.obu_type == ObuType::ClosedLoopKey
+                    && obu.header.extended_layer_id.get() == small_xlayer
+            })
+            .unwrap();
+        let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
+        let DecodeError::MalformedSource { issue } = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(
+            issue.kind(),
+            splot_decode::DecodeSourceIssueKind::FrameHeaderConformanceError
+        );
+        assert_eq!(issue.spec_section(), Some("A.4"));
+        assert_eq!(issue.offset(), Some(small_key.offset));
+        assert_eq!(
+            issue.message(),
+            format!("extended layer {small_xlayer} frame exceeds MaxTiles: 1 > 0")
+        );
+    }
+}
+
+#[test]
+fn msdo_frame_width_uses_the_allocated_layer_and_aggregate_level() {
+    let seed = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-gdf-xtile-lr-512x256-q190.ivf"
+    );
+    let ivf = splot_core::ivf::parse_ivf_partial(seed);
+    let obus = parse_annex_b_obus(ivf.frames[0].payload).unwrap();
+    // Each native picture is 512x256. At aggregate level 4 the small
+    // stream is limited to 384 samples horizontally. At level 6 it gets 768.
+    for aggregate_level in [4, 6] {
+        let mut data = Vec::new();
+        write_obu(&mut data, obus[0].header, obus[0].payload);
+        let descriptor = make_msdo_obu(false, aggregate_level, true, &[(3, 0, 0, 0), (7, 0, 0, 0)]);
+        data.extend(edit_msdo(&descriptor, |msdo| {
+            msdo.multistream_even_allocation_flag = false;
+            msdo.multistream_large_picture_idc = Some(1);
+        }));
+        for xlayer in [3, 7] {
+            for obu in &obus[1..] {
+                let header = ObuHeader {
+                    has_header_extension: true,
+                    header_size_bytes: 2,
+                    extended_layer_id: ExtendedLayerId::from_bits(xlayer),
+                    ..obu.header
+                };
+                write_obu(&mut data, header, obu.payload);
+            }
+        }
+        let result = stream_decode(&data, &DecoderSettings::default());
+        if aggregate_level == 4 {
+            let error = result.unwrap_err();
+            let DecodeError::MalformedSource { issue } = error else {
+                panic!("{error:?}")
+            };
+            assert_eq!(issue.spec_section(), Some("A.4"));
+            assert_eq!(
+                issue.message(),
+                "extended layer 3 frame exceeds MaxHSize: 512 > 384"
+            );
+        } else {
+            let pics = result.unwrap();
+            assert_eq!(pics.len(), 2);
+            assert_eq!(pics[0].extended_layer_id().get(), 3);
+            assert_eq!(pics[1].extended_layer_id().get(), 7);
+        }
+    }
+}
+
+#[test]
+fn reserved_aggregate_level_fails_at_the_descriptor() {
+    let data = edit_msdo(&temporal_units(MSDO_8BIT)[0], |msdo| {
+        msdo.multistream_level_idx = 22
+    });
+    let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
+    let DecodeError::MalformedSource { issue } = error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(issue.spec_section(), Some("A.4"));
+    assert_eq!(
+        issue.message(),
+        "OBU_MSDO uses reserved multistream_level_idx 22"
+    );
+}
+
+#[test]
+fn activated_sequence_must_respect_its_msdo_level_ceiling() {
+    use splot_core::headers::sequence::LevelIdx;
+
+    let first_tu = &temporal_units(MSDO_8BIT)[0];
+    let mut data = Vec::new();
+    let mut ceiling = None;
+    for obu in parse_annex_b_obus(first_tu).unwrap() {
+        match obu.header.obu_type {
+            ObuType::Msdo => {
+                let PayloadStatus::Parsed(ParsedObu::Msdo(msdo)) = obu.payload_status().unwrap()
+                else {
+                    unreachable!()
+                };
+                ceiling = Some(
+                    msdo.sub_streams()
+                        .iter()
+                        .find(|sub| sub.sub_xlayer_id == 7)
+                        .unwrap()
+                        .sub_stream_max_level,
+                );
+            }
+            ObuType::SequenceHeader if obu.header.extended_layer_id.get() == 7 => {
+                let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut seq)) =
+                    obu.payload_status().unwrap()
+                else {
+                    unreachable!()
+                };
+                seq.general.seq_level_idx = LevelIdx::from_bits(ceiling.unwrap() + 1);
+                write_parsed(&mut data, obu.header, &ParsedObu::SequenceHeader(seq));
+                continue;
+            }
+            _ => {}
+        }
+        write_obu(&mut data, obu.header, obu.payload);
+    }
+    let offset = parse_annex_b_obus(&data)
+        .unwrap()
+        .iter()
+        .find(|obu| {
+            obu.header.extended_layer_id.get() == 7
+                && obu.header.obu_type == ObuType::SequenceHeader
+        })
+        .unwrap()
+        .offset;
+    let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
+    let DecodeError::MalformedSource { issue } = error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(issue.spec_section(), Some("6.6"));
+    assert_eq!(issue.offset(), Some(offset));
+    assert!(
+        issue
+            .message()
+            .contains("extended layer 7 sequence PTL exceeds OBU_MSDO ceiling")
+    );
+}
+
 #[test]
 fn msdo_routing_header_and_layer_scope() {
     for prefix in [&[0x01u8, 0x50][..], &[0x02u8, 0xD0, 0x1F][..]] {
