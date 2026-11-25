@@ -137,10 +137,6 @@ impl TapGeometry for LumaTaps {
 /// Each output row `r` uses source window rows `r..r + ROWS`. Each group
 /// reads `REACH` source samples per row starting at its output column.
 /// Returns `false` for invalid geometry or short source, output or class spans.
-#[expect(
-    clippy::inline_always,
-    reason = "keeps weight setup and row arithmetic inside the selected SIMD scope"
-)]
 #[inline(always)]
 pub fn filter_run_groups<T, O, const ROWS: usize, const REACH: usize>(
     window: &[&[T]],
