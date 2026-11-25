@@ -4329,25 +4329,25 @@ module = "crates/splot-validate/src/annex_a.rs"
 change_id = "annex-a-profile-level-skeleton"
 owner = "validator"
 risk = "high"
-notes = "Checks level/tier value space, frame dimensions, and tile-count limits from resolved sequence/frame state; configurable and reserved levels skip undefined static limits. In decoder mode 1, decode applies the native and MSDO frame-size and tile maxima before reconstruction. For missing aggregate level 0–3 table cells, Splot uses the level-4.0 dimensions, tile-column count, and header rate from AVM 457cd58681a747465661baccb1f32095bc5b7774 level_to_sub_stream_level_index(). Other quantities use their signaled level. Video reference-buffer limits use the allocated picture area and the extra buffer required for global intra block copy with filtering. Remaining checks include timing-dependent rate/buffer constraints, per-tile scaling, still-picture conditions, and OPS-level frame checks requiring operating-point membership. Interoperability layer-budget checks are tracked by AV2-A-PROFILES. Differential status remains separate from static validation coverage."
+notes = "Checks level/tier value space, frame dimensions, and tile-count limits from resolved sequence/frame state; configurable and reserved levels skip undefined static limits. For decoder mode 1, core derives the lower of the native and MSDO frame-size and tile maxima. Decode checks them before reconstruction. Validation applies the limits for the mode selected at the most recent random access point. For missing aggregate level 0–3 table cells, Splot uses the level-4.0 dimensions, tile-column count, and header rate from AVM 457cd58681a747465661baccb1f32095bc5b7774 level_to_sub_stream_level_index(). Other quantities use their signaled level. Video reference-buffer limits use the allocated picture area and the extra buffer required for global intra block copy with filtering. Remaining checks include timing-dependent rate/buffer constraints, per-tile scaling, still-picture conditions, and OPS-level frame checks requiring operating-point membership. Interoperability layer-budget checks are tracked by AV2-A-PROFILES. Differential status remains separate from static validation coverage."
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "partial"
 parse = "not-applicable"
 validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
+decode_check = "partial"
 tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/annex_a.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs"]
-commands = ["cargo test -p splot-validate annex_a"]
-fixtures = []
-diagnostics = ["annex-a/level-reserved", "annex-a/high-tier-below-4-0", "annex-a/frame-size-exceeds-level", "annex-a/frame-size-below-minimum", "annex-a/tile-count-exceeds-level"]
+tests = ["crates/splot-core/src/level.rs::tests", "crates/splot-core/src/hls.rs::tests::msdo_allocation_combines_native_and_aggregate_levels_by_xlayer", "crates/splot-decode/tests/msdo_multistream.rs::msdo_frame_width_uses_the_allocated_layer_and_aggregate_level", "crates/splot-validate/src/annex_a.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs"]
+commands = ["cargo test -p splot-validate annex_a", "cargo test -p splot-core --lib", "cargo test -p splot-decode --test msdo_multistream"]
+fixtures = ["tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu", "tests/conformance/vectors/valid/syn-gdf-xtile-lr-512x256-q190.ivf"]
+diagnostics = ["annex-a/reference-count-exceeds-level", "annex-a/level-reserved", "annex-a/high-tier-below-4-0", "annex-a/frame-size-exceeds-level", "annex-a/frame-size-below-minimum", "annex-a/tile-count-exceeds-level"]
 
 [[feature]]
 id = "AV2-E-DECODER-MODEL"
