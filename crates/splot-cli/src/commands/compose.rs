@@ -20,6 +20,8 @@ use splot_decode::{
     DecoderSettings, Picture, PictureSamples, PlaneId, SendStatus, ThreadCount,
 };
 
+const REORDER_WINDOW: usize = 32;
+
 /// Arguments for optional atlas presentation.
 #[derive(Args, Debug)]
 pub(crate) struct ComposeArgs {
@@ -32,7 +34,7 @@ pub(crate) struct ComposeArgs {
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
     /// Set separate byte limits for one decoded frame, all pending pictures, and the canvas with scratch.
-    /// The compositor can hold 32 incomplete presentation times.
+    /// The compositor accepts pictures within a window of 32 input temporal units.
     #[arg(long, default_value = "268435456")]
     max_bytes: NonZeroU64,
 }
@@ -53,7 +55,8 @@ pub(crate) fn run(args: &ComposeArgs) -> Result<ExitCode> {
         pending: VecDeque::new(),
         retained_bytes: 0,
         max_bytes: args.max_bytes.get(),
-        emitted: false,
+        completed: [None; REORDER_WINDOW],
+        latest_unit: 0,
     };
     super::decode::publish_composite(&args.output, |writer| {
         while let Some(unit) = units.next_temporal_unit()? {
@@ -89,7 +92,7 @@ pub(crate) fn run(args: &ComposeArgs) -> Result<ExitCode> {
             );
         }
         ensure!(
-            output.emitted,
+            output.completed.iter().any(Option::is_some),
             "The stream has no multistream atlas to compose."
         );
         Ok(())
@@ -112,7 +115,8 @@ struct CompositeOutput {
     pending: VecDeque<PresentationGroup>,
     retained_bytes: u64,
     max_bytes: u64,
-    emitted: bool,
+    completed: [Option<u64>; REORDER_WINDOW],
+    latest_unit: u64,
 }
 
 impl CompositeOutput {
@@ -143,13 +147,19 @@ impl CompositeOutput {
         }
         let props = picture.props();
         let (unit, pts) = (props.user_data, props.pts);
+        self.latest_unit = self.latest_unit.max(unit);
+        let oldest = self.latest_unit.saturating_sub(REORDER_WINDOW as u64 - 1);
+        ensure!(
+            unit >= oldest && self.pending.iter().all(|group| group.unit >= oldest),
+            "Pictures exceed the reorder window of {REORDER_WINDOW} temporal units."
+        );
+        ensure!(
+            !self.completed.contains(&Some(unit)),
+            "Temporal unit {unit} has an additional picture after composition."
+        );
         let group = if let Some(index) = self.pending.iter().position(|group| group.unit == unit) {
             &mut self.pending[index]
         } else {
-            ensure!(
-                self.pending.len() < 32,
-                "The stream exceeds the limit of 32 incomplete presentation times."
-            );
             self.pending.push_back_mut(PresentationGroup {
                 unit,
                 pts,
@@ -199,7 +209,7 @@ impl CompositeOutput {
                 .compose(&group.layout, group.pts, &pictures)?;
             canvas.write_raw(writer)?;
             self.retained_bytes -= group.bytes;
-            self.emitted = true;
+            self.completed[(group.unit % REORDER_WINDOW as u64) as usize] = Some(group.unit);
         }
         Ok(())
     }

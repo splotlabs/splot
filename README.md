@@ -111,7 +111,7 @@ All contributing pictures must share a temporal unit and its active global atlas
 
 `--max-bytes` sets three separate limits, each 256 MiB by default.
 They apply to one decoded frame, the sample storage of all pending pictures, and the compositor's canvas with row scratch.
-The command retains at most 32 pending presentation times.
+The command accepts pictures within a window of 32 input temporal units. It reports late, missing, or duplicate contributions.
 
 ## Validate. With proof.
 

@@ -5,6 +5,7 @@ mod common;
 
 use common::{conformance_vector, splot, temp_input, temp_output};
 use sha2::{Digest as _, Sha256};
+use splot_core::annexb::parse_annex_b_obus;
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::stream_reader::TemporalUnitReader;
 
@@ -80,7 +81,12 @@ fn a_failed_composition_preserves_existing_output() {
     let output = temp_output("yuv");
     std::fs::write(&output, b"existing").unwrap();
     let mut bytes = std::fs::read(conformance_vector("syn-atlas-alpha-paired-8bit.obu")).unwrap();
-    bytes.pop();
+    let last_left = parse_annex_b_obus(&bytes)
+        .unwrap()
+        .into_iter()
+        .rfind(|obu| obu.header.extended_layer_id.get() == 3)
+        .unwrap();
+    bytes.truncate((last_left.offset.get() + u64::from(last_left.size)) as usize);
     let input = temp_input("obu", &bytes);
     let result = splot(&[
         "compose",
@@ -89,5 +95,6 @@ fn a_failed_composition_preserves_existing_output() {
         output.to_str().unwrap(),
     ]);
     assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("lacks one or more atlas pictures"));
     assert_eq!(std::fs::read(output).unwrap(), b"existing");
 }
