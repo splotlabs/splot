@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 120
     env:
       BASE: d04f4d61bed29288ab5109c4eaa543c5c152f9f9
-      CANDIDATE: 244a52ae5a90d8b63ff68cfb71f59990e3c84c00
+      CANDIDATE: 7f27dc8b5c93f19289bac7fe3fee262777a20efc
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: never
     steps:
