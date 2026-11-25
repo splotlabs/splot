@@ -1,0 +1,17 @@
+x86_64-linux: splot is 12507640 bytes (budget 12519000) (.text 10539607, .rodata 1717282)
+x86_64-linux: libsplot_capi is 8582752 bytes (budget 8585000) (.text 6797187, .rodata 1282444)
+### Decode instructions: head vs base `d04f4d61bed2`
+| Stream | Frames | Base | Head | Change | A/A spread | Limit | Verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| DOTA2 | 20 | 3574279288 | 3574279902 | +0.000% | 0.0000% | 0.10% | Ok |
+| RitualDance | 16 | 4244905470 | 4244905478 | +0.000% | 0.0000% | 0.10% | Ok |
+| Slides1 | 16 | 1382466818 | 1382466826 | +0.000% | 0.0000% | 0.10% | Ok |
+| Noise_Ocean | 16 | 1204237423 | 1204237431 | +0.000% | 0.0000% | 0.10% | Ok |
+| old_town_cross | 10 | 2601603911 | 2601603919 | +0.000% | 0.0000% | 0.10% | Ok |
+| Total |  | 13007492910 | 13007493556 | +0.000% |  | 0.05% | Ok |
+clip            preset       fps    instructions        baseline   delta%  sha256
+inter-128x96         6     3.696     12788829009     12797600660   -0.069  95d03e8f320b7b217bcff3e1938b872d9b0210706f9ee7653dee73229e29cf63
+inter-128x96        10    32.413      1425380305      1426934575   -0.109  82a12c2942521d84cf5d88b364c1a29a9615e623f2df4778805da083dbe6bdfa
+intra-176x144        6     0.611     18658395498     18678939902   -0.110  56ff79b34a2122952ffbbc735581f85b666e2eaa5366c2fdfecd207c718ac7f9
+intra-176x144       10     6.013      1961713621      1966010061   -0.219  f0c8a4986abc0e28ebc4fe54ae36a0f894e710d64ed11d048064a3e8f71d9bf5
+intra-64x64          0     0.433     27923637195     27915017087   +0.031  38f9336142004d9ee4f422f2e56c507854e6b2f3dba657ad816764231f1a2a8b

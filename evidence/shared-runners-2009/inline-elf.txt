@@ -1,0 +1,61 @@
+identical .tm_clone_table 0 
+identical .data 97504 2f54b43f26f1d4ae2e7c9cacdafd4c209ad5c222999417ef686420b012715661
+identical .note.ABI-tag 32 6e48317ad93a8ac2dc04321465ede06d1274543fc8ab172e68171a9d684bb313
+identical .tbss 13880 
+identical .dynstr 1302 898a31e000d631513cdcb13d13c90a9ef6776147b83ed957bba7dc76735e9f12
+identical .dynsym 2112 823e53051a040a26dfcd5d8605a9f2eb915700ccef0facf3a1957b50abbeda39
+identical .init 27 27c47c43210a378b1a7d6266624150fb71a6efb1fcc8b0beb90d5ed210fbecba
+identical .text 10539607 3e47c5dbc905870ea86e2d0e944bfbecb2408a8b8003fb2b88369528e8fd5b5a
+identical .fini_array 8 fe61c7355604360367f1e884b23497fa8523de2252e8584de4220ee513a415b1
+identical .gnu.version_r 336 0582897544a4ba0cdbe9daa9e69d2bce05d1385dc671ab3202d74426805cabc0
+identical .relr.dyn 2280 ed4334ddc7050cc34dd353264235df0be43b17d2aa5ec64d4d949622ceebfb45
+identical .rodata 1717346 557bd102321d5ddab5bade35bf12fab8efc48544a7cc85a817fdec1dc2206774
+identical .plt 48 c0e389220d92ea69e47eda03f4ce4a308f1ec8f8c1a7e72c7c3e61fec6960906
+identical .interp 28 9097c98ea70f6f3b01d50145eb72bf55ad1f4e9713bccf27bd6405d6254eed00
+different .note.gnu.build-id (36, '0x2e4') (36, '0x2e4')
+identical .relro_padding 3136 
+identical .bss 304 
+identical .tdata 1528 96efe740a772076d202ce7f09d2c1f122bccdc539113054b26ae5d7b3fff7361
+identical .init_array 16 7e46edc5ab538a554b7961d130e7f449bb2bea6fa5b714bfdfe7df8d63fd302b
+identical .gnu.hash 28 87f80aa8e04f52b5b6a1a975885f5908682a565e91d8a923545fcc6397c96668
+identical .fini 13 6a4f3e5efc7c1f7ee7d6f21afd9ed040ba1d7f0b97bb12b016f5b176cc558bd8
+different .data.rel.ro (124992, '0xbb5100') (124992, '0xbb5100')
+46 bytes differ in .data.rel.ro
+0xb7f8 crates/splot-recon/src/intra_directional_lines.rs:522:28 -> 423:28
+0xc228 crates/splot-recon/src/secondary_transform.rs:678:10 -> 623:10
+0xc468 crates/splot-recon/src/inverse_transform_2d_outer.rs:598:20 -> 597:20
+0xc480 crates/splot-recon/src/inverse_transform_2d_outer.rs:527:38 -> 526:38
+0xc970 crates/splot-recon/src/intra_directional_lines.rs:1507:28 -> 1408:28
+0xc988 crates/splot-recon/src/intra_directional_lines.rs:1466:31 -> 1367:31
+0xc9a0 crates/splot-recon/src/intra_directional_lines.rs:1250:34 -> 1151:34
+0xca00 crates/splot-recon/src/subpel_mc/tip_overlap.rs:226:36 -> 225:36
+0xdc18 crates/splot-recon/src/subpel_mc.rs:1862:34 -> 1648:34
+0xdc30 crates/splot-recon/src/subpel_mc.rs:2002:41 -> 1788:41
+0xdc48 crates/splot-recon/src/subpel_mc.rs:1850:34 -> 1636:34
+0xdc60 crates/splot-recon/src/intra_directional_lines.rs:1478:35 -> 1379:35
+0xdc78 crates/splot-recon/src/intra_directional_lines.rs:1260:42 -> 1161:42
+0xe598 crates/splot-recon/src/intra_directional_lines.rs:1473:52 -> 1374:52
+0xe5b0 crates/splot-recon/src/intra_directional_lines.rs:643:64 -> 544:64
+0xe5c8 crates/splot-recon/src/intra_directional_lines.rs:715:65 -> 616:65
+0xea68 crates/splot-recon/src/intra_directional_lines.rs:746:37 -> 647:37
+0xea80 crates/splot-recon/src/intra_directional_lines.rs:746:47 -> 647:47
+0xea98 crates/splot-recon/src/intra_directional_lines.rs:746:57 -> 647:57
+0xeab0 crates/splot-recon/src/intra_directional_lines.rs:746:67 -> 647:67
+0xf110 crates/splot-recon/src/subpel_mc.rs:930:22 -> 716:22
+0xf128 crates/splot-recon/src/subpel_mc.rs:885:19 -> 671:19
+0x105d0 crates/splot-recon/src/intra_directional_lines.rs:784:33 -> 685:33
+0x105e8 crates/splot-recon/src/intra_directional_lines.rs:784:43 -> 685:43
+0x10600 crates/splot-recon/src/intra_directional_lines.rs:784:53 -> 685:53
+0x10618 crates/splot-recon/src/intra_directional_lines.rs:784:63 -> 685:63
+0x13488 crates/splot-recon/src/subpel_mc.rs:2002:41 -> 1788:41
+0x149c0 crates/splot-recon/src/subpel_mc.rs:930:22 -> 716:22
+0x149d8 crates/splot-recon/src/subpel_mc.rs:885:19 -> 671:19
+0x17da0 crates/splot-recon/src/secondary_transform.rs:678:10 -> 623:10
+0x17db8 crates/splot-recon/src/inverse_transform_2d_outer.rs:527:38 -> 526:38
+0x17e60 crates/splot-recon/src/subpel_mc.rs:1850:34 -> 1636:34
+identical .dynamic 496 e6b87181c898f2266d0b8420cdf01de6e40301fff797e1b2292794866822c81f
+identical .rela.dyn 2064 53c5fe970f2ea0b1f73a2be244eab2f1b14a9b7b3a283398ca713f2cdabb81ce
+identical .got.plt 40 4118976111c5a5d86d148858316f6ee17bd9fd3c021d3884d097a3d814668665
+identical .gnu.version 176 cef4a5d06ab0bb7a06a4b2295a3ebef4c3309fab93877ab82efaad1ff1bbdc79
+identical .got 14440 3724acbb7bef7d59c00bbac61ed0929799dad4b9c9d3a47e28927bf111681dea
+identical .rela.plt 48 d9518278aa702da0df3ee197dc80a20339161ac7f2ff90cdd734ca92a4eb1c90

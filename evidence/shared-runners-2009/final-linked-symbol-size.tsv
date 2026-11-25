@@ -1,0 +1,9 @@
+-1156	[2521]	[1365]	splot_recon::intra_directional_angle::lines::write_one_sided::<splot_recon::intra_directional_angle::lines::TypedLines<splot_core::simd::Avx2Backend>, u16, splot_recon::intra_directional_angle::write_bilinear_lines<splot_recon::intra_directional_angle::lines::TypedLines<splot_core::simd::Avx2Backend>, u16>::{closure#0}>::{closure#0}
+-1088	[1817]	[729]	splot_recon::intra_directional_angle::lines::write_middle::<splot_recon::intra_directional_angle::lines::TypedLines<splot_core::simd::Avx2Backend>, u16>::{closure#0}
+1030	[]	[1030]	<splot_recon::intra_directional_angle::lines::TypedLines<splot_core::simd::Avx2Backend> as splot_recon::intra_directional_angle::lines::LineRunner>::four_tap_u16
+-1027	[2213]	[1186]	splot_recon::intra_directional_angle::lines::write_one_sided::<splot_recon::intra_directional_angle::lines::TypedLines<splot_core::simd::Avx2Backend>, u16, splot_recon::intra_directional_angle::write_one_sided_idif_lines<splot_recon::intra_directional_angle::lines::TypedLines<splot_core::simd::Avx2Backend>, u16>::{closure#0}>::{closure#0}
+545	[]	[545]	<splot_recon::intra_directional_angle::lines::TypedLines<splot_core::simd::Avx2Backend> as splot_recon::intra_directional_angle::lines::LineRunner>::bilinear_u16
+-524	[3728]	[3204]	splot_recon::intra_directional_angle::predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with::<splot_core::simd::Avx2Backend, u16>
+-234	[234]	[]	splot_recon::intra_directional_angle::lines::line_lanes_u16::<fearless_simd::generated::avx2::Avx2>::{closure#1}
+-125	[6325]	[6200]	splot_recon::intra_directional_angle::predict_intra_directional_angle_rect_into_with::<splot_core::simd::Avx2Backend, u16>
+-114	[114]	[]	splot_recon::intra_directional_angle::lines::bilinear_lanes_u16::<fearless_simd::generated::avx2::Avx2>::{closure#0}

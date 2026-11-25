@@ -1,0 +1,28 @@
+different .got (14440, '0xbd3b30') (14440, '0xbd30c0')
+different .plt (48, '0xbb3ac0') (48, '0xbb3050')
+identical .gnu.hash 28 87f80aa8e04f52b5b6a1a975885f5908682a565e91d8a923545fcc6397c96668
+identical .dynsym 2112 823e53051a040a26dfcd5d8605a9f2eb915700ccef0facf3a1957b50abbeda39
+different .data.rel.ro (124992, '0xbb5100') (124992, '0xbb4690')
+different .bss (304, '0xbf00a0') (304, '0xbef630')
+different .note.gnu.build-id (36, '0x2e4') (36, '0x2e4')
+different .got.plt (40, '0xbd7398') (40, '0xbd6928')
+different .fini_array (8, '0xbb50e8') (8, '0xbb4678')
+different .relr.dyn (2280, '0x1a90') (2280, '0x1a90')
+identical .gnu.version 176 cef4a5d06ab0bb7a06a4b2295a3ebef4c3309fab93877ab82efaad1ff1bbdc79
+different .init_array (16, '0xbb50f0') (16, '0xbb4680')
+different .tm_clone_table (0, '0xbd83c0') (0, '0xbd7950')
+different .rela.plt (48, '0x2378') (48, '0x2378')
+identical .gnu.version_r 336 0582897544a4ba0cdbe9daa9e69d2bce05d1385dc671ab3202d74426805cabc0
+different .rela.dyn (2064, '0x1280') (2064, '0x1280')
+different .rodata (1717346, '0x23c0') (1717346, '0x23c0')
+different .data (97504, '0xbd83c0') (97504, '0xbd7950')
+identical .note.ABI-tag 32 6e48317ad93a8ac2dc04321465ede06d1274543fc8ab172e68171a9d684bb313
+identical .dynstr 1302 898a31e000d631513cdcb13d13c90a9ef6776147b83ed957bba7dc76735e9f12
+different .fini (13, '0xbb3aa4') (13, '0xbb3034')
+different .text (10539607, '0x1a6830') (10536935, '0x1a6830')
+different .relro_padding (3136, '0xbd73c0') (1712, '0xbd6950')
+different .dynamic (496, '0xbd3940') (496, '0xbd2ed0')
+different .tdata (1528, '0xbb4af0') (1528, '0xbb4080')
+different .init (27, '0xbb3a88') (27, '0xbb3018')
+identical .interp 28 9097c98ea70f6f3b01d50145eb72bf55ad1f4e9713bccf27bd6405d6254eed00
+different .tbss (13880, '0xbb50e8') (13880, '0xbb4678')
