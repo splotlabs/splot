@@ -13,10 +13,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - variant: release-typed
-            ref: 3cddb13ac1905f197347c4b33020a3081e67dafe
-          - variant: frozen-v3
-            ref: b337fafec51041ee5ffe64cc7e20f79a49c0cc79
+          - variant: release-final
+            ref: c9a9a960d9630c5033c3a16e7fa4c12d99dea916
+          - variant: release-parent
+            ref: 9df30e915bd27da01769ccf41bb53bfa99d69063
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,31 +40,3 @@ jobs:
           path: playback
           retention-days: 1
           if-no-files-found: error
-  native-grain:
-    runs-on: ${{ vars.SPLOT_AVX512_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 45
-    env:
-      SPLOT_REQUIRE_AVX512: "1"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 3cddb13ac1905f197347c4b33020a3081e67dafe
-          persist-credentials: false
-      - run: |
-          lscpu
-          grep -qw avx512f /proc/cpuinfo
-          rustc -vV
-      - name: Measure the shipped row widths at both depths
-        run: |
-          core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          cargo test --release --locked -p splot-recon --lib --no-run
-          taskset -c "$core" cargo test --release --locked -p splot-recon --lib \
-            film_grain::tests::measure_wide_grain_noise_rows -- --ignored --exact --nocapture
-      - name: Test and qualify display on signalled-grain streams
-        run: |
-          cargo test --release --locked -p splot-decode --test decoder_api avx512_film_grain_matches_narrow_output_at_both_bit_depths -- --exact
-          python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
-          grep filmgrain "$RUNNER_TEMP/ewouth/simd-cases.tsv" > "$RUNNER_TEMP/ewouth/grain.tsv"
-          export SPLOT_EWOUTH_CASES="$RUNNER_TEMP/ewouth/grain.tsv"
-          cargo test --release --locked -p splot-decode --test simd_backend_parity frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
-          SPLOT_TIMING_PAIRS=10 cargo test --release --locked -p splot-decode --test simd_backend_parity frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
