@@ -355,26 +355,11 @@ impl<S: SimdToken> LaneBounds<S> for Reduced {
 struct MinPos;
 
 #[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    #[inline(always)]
-    fn minpos_bounds(t: Avx2, min: u16x8<Avx2>, max: u16x8<Avx2>) -> [u16; 2] {
-        use core::arch::x86_64::{
-            _mm_cvtsi128_si32, _mm_minpos_epu16, _mm_set1_epi16, _mm_xor_si128,
-        };
-        let _ = t;
-        let least = _mm_cvtsi128_si32(_mm_minpos_epu16(min.into())) as u16;
-        let flipped = _mm_xor_si128(max.into(), _mm_set1_epi16(-1));
-        let greatest = !(_mm_cvtsi128_si32(_mm_minpos_epu16(flipped)) as u16);
-        [least, greatest]
-    }
-);
-
-#[cfg(target_arch = "x86_64")]
 impl LaneBounds<Avx2> for MinPos {
     #[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
     #[inline(always)]
     fn bounds(self, simd: Avx2, min: u16x8<Avx2>, max: u16x8<Avx2>) -> [u16; 2] {
-        minpos_bounds(simd, min, max)
+        splot_cdef_base::minpos_bounds(simd, min, max)
     }
 }
 
@@ -589,44 +574,39 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample, const
     let u_rows = reach_rows(u_samples, width, stride, origin, (PAIR_SPAN, PAIR_ROWS))?;
     let v_rows = reach_rows(v_samples, width, stride, origin, (PAIR_SPAN, PAIR_ROWS))?;
     if let (Some(u_rows), Some(v_rows)) = (T::u8_slice(u_rows), T::u8_slice(v_rows)) {
-        let bias = u8x16::splat(simd, 0x80);
-        let mut min = [[u8x16::splat(simd, u8::MAX); 2]; 2];
-        let mut max = [[u8x16::splat(simd, 0); 2]; 2];
-        for row in 0..PAIR_ROWS {
-            let rows = [u_rows, v_rows].map(|rows| rows.get(row * stride..)?.get(..PAIR_SPAN));
-            let [Some(u_row), Some(v_row)] = rows else {
-                return None;
-            };
-            for (half, start) in [0, PAIR_SPAN - 16].into_iter().enumerate() {
-                let planes =
-                    [u_row, v_row].map(|row| u8x16::from_slice(simd, &row[start..start + 16]));
-                for plane in 0..2 {
-                    min[plane][half] = min[plane][half].min(planes[plane]);
-                    max[plane][half] = max[plane][half].max(planes[plane]);
-                }
-                let pairs = [
-                    simd.zip_low_u8x16(planes[0], planes[1]),
-                    simd.zip_high_u8x16(planes[0], planes[1]),
-                ];
-                for (index, pair) in pairs.into_iter().enumerate() {
-                    let at = if PACKED {
-                        let block = 2 * index + half;
-                        block * PAIR_BYTE_BLOCK + row * LUMA_BYTE_STRIDE
-                    } else {
-                        row * CDEF_PAIR_SEGMENT_STRIDE + 2 * start + 16 * index
-                    };
-                    (pair ^ bias).store_slice(&mut bytes[at..at + 16]);
-                    if !PACKED {
-                        widen_u8(simd, pair).store_slice(&mut pad[at..at + 16]);
-                    }
-                }
+        let rows = [u_rows, v_rows];
+        let bounds = |min, max| reduce.bounds(simd, min, max);
+        if PACKED {
+            const {
+                assert!(PAIR_SPAN == splot_cdef_base::SPAN && PAIR_ROWS == splot_cdef_base::ROWS);
+                assert!(PAIR_BYTE_BLOCK == splot_cdef_base::PACKED_BLOCK && LUMA_BYTE_STRIDE == 16);
             }
+            let packed = bytes.first_chunk_mut::<{ splot_cdef_base::PACKED_BYTES }>()?;
+            #[cfg(target_arch = "x86_64")]
+            match simd.level() {
+                Level::Avx2(token) => {
+                    return splot_cdef_avx2::gather_packed(token, rows, stride, packed);
+                }
+                Level::Sse2(token) => {
+                    return splot_cdef_base::gather_packed(token, rows, stride, packed);
+                }
+                _ => {}
+            }
+            return splot_cdef_base::gather_packed_with(simd, rows, stride, packed, bounds);
         }
-        let chunks = |[head, tail]: [u8x16<S>; 2]| {
-            let (first, second) = simd.split_u16x16(widen_u8(simd, head));
-            [first, second, simd.split_u16x16(widen_u8(simd, tail)).1]
-        };
-        return Some(pair_ranges(simd, reduce, min.map(chunks), max.map(chunks)));
+        let bias = u8x16::splat(simd, 0x80);
+        return splot_cdef_base::gather_with(
+            simd,
+            rows,
+            stride,
+            bounds,
+            |row, half, index, pair| {
+                let start = half * (PAIR_SPAN - 16);
+                let at = row * CDEF_PAIR_SEGMENT_STRIDE + 2 * start + 16 * index;
+                (pair ^ bias).store_slice(&mut bytes[at..at + 16]);
+                widen_u8(simd, pair).store_slice(&mut pad[at..at + 16]);
+            },
+        );
     }
     let (u_rows, v_rows) = (T::u16_slice(u_rows)?, T::u16_slice(v_rows)?);
     let mut min = [[u16x8::splat(simd, u16::MAX); 3]; 2];
@@ -650,32 +630,12 @@ fn gather_pair_with<S: SimdToken, R: LaneBounds<S>, T: crate::ReconSample, const
                 .store_slice(&mut lanes[2 * start + 8..2 * start + 16]);
         }
     }
-    Some(pair_ranges(simd, reduce, min, max))
-}
-
-/// The larger plane window range of each block from the column-wise least
-/// and greatest of the two planes' rows at the chunk starts of
-/// [`pair_eighths`].
-#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
-#[inline(always)]
-fn pair_ranges<S: SimdToken, R: LaneBounds<S>>(
-    simd: S,
-    reduce: R,
-    min: [[u16x8<S>; 3]; 2],
-    max: [[u16x8<S>; 3]; 2],
-) -> [u16; CDEF_SEGMENT_BLOCKS] {
-    let range = |plane: usize, block: usize| {
-        let pick = |[first, second, third]: [u16x8<S>; 3]| match block {
-            0 => first,
-            1 => simd.slide_u16x8::<4>(first, second),
-            2 => second,
-            _ => third,
-        };
-        let [least, greatest] = reduce.bounds(simd, pick(min[plane]), pick(max[plane]));
-        greatest - least
-    };
-    let block = |block: usize| range(0, block).max(range(1, block));
-    [block(0), block(1), block(2), block(3)]
+    Some(splot_cdef_base::pair_ranges(
+        simd,
+        |min, max| reduce.bounds(simd, min, max),
+        min,
+        max,
+    ))
 }
 
 /// The 8-column chunks of a chroma row from columns 0, 8 and

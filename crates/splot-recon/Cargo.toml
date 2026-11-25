@@ -52,6 +52,10 @@ if_not_else = "allow"
 [dependencies]
 fearless_simd.workspace = true
 sha2.workspace = true
+splot-cdef-base.workspace = true
 splot-core.workspace = true
 splot-tables.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+splot-cdef-avx2.workspace = true

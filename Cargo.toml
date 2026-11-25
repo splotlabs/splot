@@ -6,6 +6,8 @@ members = [
     "crates/splot-core",
     "crates/splot-parallel",
     "crates/splot-tables",
+    "crates/splot-cdef-base",
+    "crates/splot-cdef-avx2",
     "crates/splot-recon",
     "crates/splot-decode",
     "crates/splot-validate",
@@ -30,6 +32,8 @@ publish = false
 splot-core = { path = "crates/splot-core", version = "0.0.0" }
 splot-parallel = { path = "crates/splot-parallel", version = "0.0.0" }
 splot-tables = { path = "crates/splot-tables", version = "0.0.0" }
+splot-cdef-base = { path = "crates/splot-cdef-base", version = "0.0.0" }
+splot-cdef-avx2 = { path = "crates/splot-cdef-avx2", version = "0.0.0" }
 splot-recon = { path = "crates/splot-recon", version = "0.0.0" }
 splot-decode = { path = "crates/splot-decode", version = "0.0.0" }
 splot-validate = { path = "crates/splot-validate", version = "0.0.0" }

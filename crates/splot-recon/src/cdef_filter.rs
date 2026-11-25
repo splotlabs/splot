@@ -41,6 +41,7 @@ use fearless_simd::{
 };
 
 use crate::ReconSample;
+use splot_cdef_base::widen_u8;
 use splot_core::simd::SimdBackend;
 
 mod direction_backend;
@@ -673,13 +674,6 @@ fn cdef_row_pair_i16<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
 #[inline(always)]
 fn widen_i8<S: SimdToken>(simd: S, lanes: i8x16<S>) -> i16x16<S> {
     simd.widen_i8x32(simd.combine_i8x16(lanes, lanes)).0
-}
-
-/// [`widen_i8`] for `u8` lanes.
-#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
-#[inline(always)]
-fn widen_u8<S: SimdToken>(simd: S, lanes: u8x16<S>) -> u16x16<S> {
-    simd.widen_u8x32(simd.combine_u8x16(lanes, lanes)).0
 }
 
 /// `i16` lanes narrowed to `i8` with saturation.
