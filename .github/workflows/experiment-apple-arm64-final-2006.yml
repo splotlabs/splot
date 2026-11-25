@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+name: Final typed release on Apple Silicon (#2006)
+
+on:
+  push:
+    branches: [test/simd-83566cc2-apple-arm64]
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      CANDIDATE: 83566cc2a716603280a8b0773fc026f1fe86676e
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.CANDIDATE }}
+      - name: Record the native host and exact release inputs
+        run: |
+          set -euo pipefail
+          mkdir results
+          {
+            revision=$(git rev-parse HEAD)
+            test "$revision" = "$CANDIDATE"
+            printf '%s\n' "$revision"
+            uname -a
+            sw_vers
+            test "$(uname -m)" = arm64
+            test "$(arch)" = arm64
+            sysctl machdep.cpu.brand_string hw.model hw.ncpu hw.optional.neon
+            test "$(sysctl -n hw.optional.neon)" = 1
+            xcodebuild -version
+            rustup toolchain install 1.100.0 --profile minimal
+            rustc +1.100.0 -vV
+            cargo +1.100.0 -V
+            cat .cargo/config.toml
+          } 2>&1 | tee results/host.txt
+      - name: Build and measure linked arm64 release products
+        run: |
+          set -euo pipefail
+          cargo +1.100.0 build --release --locked -j1 -p splot-cli -p splot-capi \
+            2>&1 | tee results/release-build.log
+          cli="$PWD/target/release/splot"
+          library="$PWD/target/release/libsplot_capi.dylib"
+          {
+            file "$cli" "$library"
+            test "$(lipo -archs "$cli")" = arm64
+            test "$(lipo -archs "$library")" = arm64
+            stat -f '%z %N' "$cli" "$library"
+            shasum -a 256 "$cli" "$library"
+            size -m "$cli" "$library"
+            otool -L "$cli" "$library"
+          } | tee results/linked-size.txt
+      - name: Check the loaded C dylib and native backend lifecycle
+        run: |
+          set -euo pipefail
+          library="$PWD/target/release/libsplot_capi.dylib"
+          cc -Wall -Wextra -I crates/splot-capi/include crates/splot-capi/examples/decode.c \
+            "$library" -Wl,-rpath,"$PWD/target/release" -o results/capi-decode
+          otool -L results/capi-decode | tee results/capi-link.txt
+          DYLD_LIBRARY_PATH="$PWD/target/release" DYLD_PRINT_LIBRARIES=1 results/capi-decode \
+            tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf results/capi.raw \
+            2>&1 | tee results/capi-run.txt
+          printf '%s  %s\n' d67b6682c3ae18e7ad78ddfc07311fbb605920bf1bb599495ffa7dc7225b2db2 results/capi.raw \
+            | shasum -a 256 --check | tee results/capi-hash.txt
+          cargo +1.100.0 test --profile ci-release --locked -j1 -p splot-decode --test simd_backend_parity \
+            -- --test-threads=1 --nocapture 2>&1 | tee results/backend-tests.log
+      - name: Verify every frozen decoded output on the release binary
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth" 2>&1 | tee results/corpus.log
+          cp "$RUNNER_TEMP/ewouth/simd-cases.tsv" results/
+          python3 -u - <<'PY' 2>&1 | tee results/avm-hashes.tsv
+          import hashlib
+          import os
+          from pathlib import Path
+          import subprocess
+
+          corpus = Path(os.environ["RUNNER_TEMP"]) / "ewouth"
+          binary = Path("target/release/splot").resolve()
+          cases = (corpus / "simd-cases.tsv").read_text().splitlines()
+          assert len(cases) == 7
+          for line in cases:
+              name, expected, frames, expected_size = line.split("\t")
+              for threads in (1, 7, 12):
+                  command = [
+                      binary, "decode", "--threads", str(threads), "--frame-delay", "1",
+                      "--output-format", "raw", "-o", "-", corpus / name,
+                  ]
+                  digest = hashlib.sha256()
+                  size = 0
+                  with subprocess.Popen(command, stdout=subprocess.PIPE) as decode:
+                      while chunk := decode.stdout.read(1 << 20):
+                          digest.update(chunk)
+                          size += len(chunk)
+                      code = decode.wait()
+                  actual = digest.hexdigest()
+                  assert (code, size, actual) == (0, int(expected_size), expected)
+                  print("PASS", name, threads, frames, size, actual, sep="\t", flush=True)
+          PY
+      - name: Upload exact-head native evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: splot-83566cc2-apple-arm64
+          path: |
+            results/*.txt
+            results/*.log
+            results/*.tsv
+          if-no-files-found: warn
