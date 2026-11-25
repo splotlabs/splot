@@ -769,3 +769,101 @@ fn derived_sef_uses_the_reference_layer_for_output() {
         0b11,
     );
 }
+
+#[test]
+fn reproducible_embedded_fixtures_match_avm() {
+    let equal_size = [(64, 64); 2];
+    let fixtures = [
+        (
+            include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-reproducible-8bit.obu").as_slice(),
+            [
+                "535b93ba28e4d92a65d75326e0dc2fb0a6eb4955ceb392f3f876083aa99bb43d",
+                "b9a036ae922c285d02f682eed315be2228137bd25986c419df52ab4a53cc631f",
+                "c5b91fb56eb11a167be79d6911ed5bb55741e889a5953e930ac208b64a6bde1a",
+                "16c8e352af3bbd3d747149ba7968703fe64c2dcacadc3ae1c14905f16d035b97",
+                "b5b01b45428d5a41d777cb7ec08c4a4f4b79e24e5070226fcb0408d0413d887b",
+                "1d7e030876b05ebfb017d6d6639befa9181fd42bab1e822a4e16edfbec1f3c6a",
+            ].as_slice(),
+            equal_size,
+            false,
+        ),
+        (
+            include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-reproducible-10bit.obu").as_slice(),
+            [
+                "6e77a0f1ebdee145364ea6264a21a7d1ac6d822f97c0a5c362c826f5a228700e",
+                "d473de8f487b0b3b621dedea21573bee8e09bf21299c4e6c279c69e3c8f2d312",
+                "8626238320544ac17b1b4c6974685bac1cdfc6783831badef251ab7b54ca262a",
+                "72f8e55188e44c04ff19f846a96a67e86619fe2ab636b51d86955ef1fa3752b9",
+                "2bbec173a99e27e8c5773d322db69c2b602d2f24ecb904acd5ef358511632128",
+                "389fd774a7748dba125d0d4b8d80af915af01001e5111b2f13f8d29c173cffc0",
+            ].as_slice(),
+            equal_size,
+            false,
+        ),
+        (
+            include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-reproducible-mixedres-8bit.obu").as_slice(),
+            [
+                "2aa346ae9b3cc3a1c89a505218e11b872a2799df55b246bd16a64f04ba54f7ab",
+                "95a60a72938f95213e62371f3f64fb06948950389f25b8ce11e9ddc3b0a33af9",
+                "bd4c25dd8cb3e28d34b7788409a794e54c594a181f7a170fe9f4f7440900189f",
+                "51f7e021535871d38009ab00dbe63e90ca52871dbf51a33ac883d6e2f1b66a06",
+                "e98555a53b61ba790bf9e707305803b2606ab40b7f4e7798e69df99549128cc0",
+                "6dbe99b98a191dbdeffb8c4c8a6b92c4dd7f0b8c6a44be5c8a1ea54740018ae0",
+            ].as_slice(),
+            [(128, 128), (256, 256)],
+            false,
+        ),
+        (
+            include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-reproducible-2d-8bit.obu").as_slice(),
+            [
+                "741e58d04df4e817f808f868a1209a0064c2c18f3f07ba8893220894ad7b7de8",
+                "3b47b376808d3a4b007379ac54a0dc55c9503a9473dd03948365edb2dec74e35",
+                "96e141e927f8c322c08fe760da7e680dee240bebe785705b31ba8d5f970a4e1a",
+                "10ea15ddf6a4246177a891e3270fb4ea6e2b1954a19661d5ca26d80ea1d472ec",
+                "97eb10984a653ef0b26e663640cde35c78bccb6fde6418f9721c426a86b2f1db",
+                "e87820ff20d49994b6afc7350472b456ae574431e3ef82da9d7b9657a1dc7896",
+                "969912ccbe05db7e5482bc8392ea58abec362ecb4d5923f7fdad66b3aa5025d2",
+                "d592eab8e864d8fea43aa99f70b5fb856cb9c93e968eee901fcc798bba599786",
+            ].as_slice(),
+            [(128, 64); 2],
+            true,
+        ),
+    ];
+    for (fixture, digests, dimensions, has_temporal_layers) in fixtures {
+        let expected: Vec<FrameExpectation> = digests
+            .iter()
+            .enumerate()
+            .map(|(index, &digest)| {
+                let mlayer = u8::from(!index.is_multiple_of(2));
+                let tlayer = u8::from(has_temporal_layers && index >= 2);
+                let (width, height) = dimensions[usize::from(mlayer)];
+                (digest, mlayer, tlayer, width, height)
+            })
+            .collect();
+        for (selection, mask) in [
+            (EmbeddedLayerSelection::All, 0b11),
+            (EmbeddedLayerSelection::BASE_ONLY, 0b01),
+            (EmbeddedLayerSelection::OutputMask(0b10), 0b10),
+        ] {
+            verify_layer_subset(
+                fixture,
+                &expected,
+                TemporalLayerSelection::All,
+                selection,
+                0x0f,
+                mask,
+            );
+        }
+
+        if has_temporal_layers {
+            verify_layer_subset(
+                fixture,
+                &expected,
+                TemporalLayerSelection::OutputMask(0b10),
+                EmbeddedLayerSelection::OutputMask(0b10),
+                0b10,
+                0b10,
+            );
+        }
+    }
+}
