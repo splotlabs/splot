@@ -2933,3 +2933,97 @@ expect = "clean"
 path = "vectors/valid/syn-msdo-ops-random-access.obu"
 description = "Six-TU multi-extended-layer 8-bit 4:2:0 Profile 2 IOP 2 Annex B stream with OBU_MSDO ([0xD0, 0x1F]), global OPS ops_id 0 (OP 0 selecting xlayers 3 and 7 at tl0; OP 1 selecting xlayer 3 tl0..1), global OPS ops_id 1 (OP 0 inheriting xlayer 3 from ops_id 0 op_index 1 plus explicit xlayer 7 tl0), local OPS ops_id 2 on xlayer 3 (OP 0 selecting tl0), unaligned CLK random access on xlayer 7 at TU 2, and dual CLK at TU 4. Decodes identically to avmdec across --all-layers (SHA-256 abcb36ae31ba11246e8445e87f90fd6ffddab5c0eeaf15fdffbe2d53d83b6830), --select-ops=0,0, --select-ops=0,1, --select-ops=1,0, and --select-local-ops=3,2,0; validates clean."
 expect = "clean"
+
+# Atlas metadata. The local recipe is tools/decoder-fixtures/generate.py atlas-fixtures --stage DIR.
+# Its inputs are the committed 8-bit and 10-bit syn-msdo-two-streams vectors.
+# Build AVM 457cd58681a747465661baccb1f32095bc5b7774 (1.0.0-33-g457cd58681) with
+# cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release -DCONFIG_AV2_ENCODER=0 -DENABLE_TESTS=0 -DENABLE_DOCS=0
+# and cmake --build build --target avmdec. Decode each input with
+# avmdec --all-layers --i420 --rawvideo -o output.yuv INPUT. Hash the native I420 bytes.
+# To reproduce the per-layer hashes, split the output by the order in the corresponding TSV.
+# One 64x64 picture has 6144 samples. One 80x64 picture has 7680 samples. Ten-bit samples use two bytes.
+# Independent AVM verification logged img->xlayer_id, d_w, d_h and bit_depth in apps/avmdec.c
+# immediately before avm_input_ctx.width = img->d_w. The trace did not change the decoder.
+# The TSV offsets count from the start of the file to each atlas OBU header, after its length prefix.
+# The expected associations follow §§ 5.8–5.9, 6.9, 6.17.2 and 7.3.8.4.
+
+[[vector]]
+path = "vectors/needs-external-hls/syn-atlas-global-local-id-scope-10bit.obu"
+description = """
+Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 20 pictures in 276480 bytes. The local LCR also selects atlas ID 5 for the first extended layer. A seek to the second key needs the matching local atlas sidecar before its LCR. X2 SHA-256 a19c49839344102ea1dc266b86c2943e47ae2746145326bfa01f14f0819f507b. X9 SHA-256 366d1de38bc4faa23e6b65e81e9cd07ecfefd5f0c3ed163d459c4c561a2baac5.
+Stream SHA-256 65a6464fcd10909db9a00f2215a39d48cd79c2d554bb1e055dffd796d131019b.
+AVM native SHA-256 e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441.
+"""
+expect = { diagnostics = ["hls/unavailable-at-random-access-point"] }
+
+[[vector]]
+path = "vectors/needs-external-hls/syn-atlas-global-local-id-scope-8bit.obu"
+description = """
+Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 8 pictures in 55296 bytes. The local LCR also selects atlas ID 5 for the first extended layer. A seek to the second key needs the matching local atlas sidecar before its LCR. X3 SHA-256 a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe. X7 SHA-256 24f5d1b318ed0085b36d6371c3ff331fb4ec329b1ca252e93b40232b1e9f1d4a.
+Stream SHA-256 49ba47fc519fcec631acd85461d37ad0cc3e1f1a043b39b008a7e2daa3f69870.
+AVM native SHA-256 6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b.
+"""
+expect = { diagnostics = ["hls/unavailable-at-random-access-point"] }
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-0.obu"
+description = """
+Mode 0 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
+Stream SHA-256 1bdca6bc9ac3e5652bd925ab6e6ab4cfddd12c50c6013af75c83a9310ce12fab.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-1.obu"
+description = """
+Mode 1 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
+Stream SHA-256 5c9ecfba2b51ac57632f527ef5130b84abe96c7d5b19c9e63399750ed738edb3.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-2.obu"
+description = """
+Mode 2 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
+Stream SHA-256 103034ee5c31ca9c5a9231875f2c687124371b7f7d774cab1c9e40dee65b40f0.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-3.obu"
+description = """
+Mode 3 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
+Stream SHA-256 d0109bc99d6bb4401c33cf41647711027b04bb435aa32f8e16569455c1e8abeb.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-mode-4.obu"
+description = """
+Mode 4 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
+Stream SHA-256 b283c4bc1268a485c1e637e7d609b347a72757f24ea9ed3a5caffe5fe80859c1.
+AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-multistream-10bit.obu"
+description = """
+Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 20 pictures in 276480 bytes. X2 SHA-256 a19c49839344102ea1dc266b86c2943e47ae2746145326bfa01f14f0819f507b. X9 SHA-256 366d1de38bc4faa23e6b65e81e9cd07ecfefd5f0c3ed163d459c4c561a2baac5.
+Stream SHA-256 efb64e2d9bbab5cfa7c3f18a6cdce218350bf29c6b02dacd0ff3bb6faea1f40b.
+AVM native SHA-256 e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-atlas-multistream-8bit.obu"
+description = """
+Global atlas ID 5 changes from mode 3 to mode 4 at the second key. AVM produced 8 pictures in 55296 bytes. X3 SHA-256 a76f8a3d2bd55c7af06aa183f96977f144498c31587aa62a8bdcbe4534cb3fbe. X7 SHA-256 24f5d1b318ed0085b36d6371c3ff331fb4ec329b1ca252e93b40232b1e9f1d4a.
+Stream SHA-256 2e5c2565be54bb7a5c6d51082e4385ba7879c381dd4b4ff2dc8dc5e0d84f7544.
+AVM native SHA-256 6cdd94998ec0e812fb8c8b029221f95527872abee3c1a9a30dbbaf3e94e5d97b.
+"""
+expect = "clean"

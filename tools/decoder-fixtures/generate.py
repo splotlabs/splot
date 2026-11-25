@@ -11,6 +11,7 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py coverage-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
   python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py atlas-fixtures --stage <dir>
 
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
 .ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo). AVM decoder
@@ -20,6 +21,7 @@ fixtures (profiles, chroma formats, and one isolated intra tool each) so the cor
 is reproducible; move vetted `.ivf` into vectors/valid/ by hand.
 """
 import argparse, hashlib, json, math, os, shutil, subprocess, sys
+from atlas import generate as generate_atlas
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VALID = os.path.join(REPO, "tests/conformance/vectors/valid")
@@ -1353,6 +1355,9 @@ def main():
     i = sub.add_parser("bru-intrabc-fixtures"); i.add_argument("--stage", required=True)
     i.add_argument("--only", help="regenerate one fixture id")
     i.set_defaults(fn=cmd_bru_intrabc_fixtures)
+    a = sub.add_parser("atlas-fixtures")
+    a.add_argument("--stage", required=True)
+    a.set_defaults(fn=lambda args: generate_atlas(VALID, args.stage))
     args = p.parse_args()
     args.fn(args)
 
