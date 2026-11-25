@@ -402,7 +402,7 @@ fn measure_wide_grain_noise_rows() {
             .collect();
         let narrow = || {
             measure(&row, &scale, &noise, |row, scale, noise| {
-                add_noise_row::<_, _, false>(avx2, row, scale, noise, params).unwrap()
+                add_noise_row::<_, _, false>(avx2, row, scale, noise, params).unwrap();
             })
         };
         let wide = || {
@@ -412,7 +412,7 @@ fn measure_wide_grain_noise_rows() {
                         #[inline(always)]
                         || add_noise_row::<_, _, true>(avx512, row, scale, noise, params),
                     )
-                    .unwrap()
+                    .unwrap();
             })
         };
         let _ = (narrow(), wide());
