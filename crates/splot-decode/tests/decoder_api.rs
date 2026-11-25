@@ -572,6 +572,22 @@ fn bru_inactive_and_refresh_vectors_match_batch_and_chunked_streaming() {
             8,
             Some((3, 5)),
         ),
+        (
+            "syn-bru-inactive-block-use-8bit",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-bru-inactive-block-use-8bit.ivf"
+            ),
+            8,
+            Some((3, 5)),
+        ),
+        (
+            "syn-bru-inactive-block-use-10bit",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-bru-inactive-block-use-10bit.ivf"
+            ),
+            8,
+            Some((3, 5)),
+        ),
         ("syn-bru-inter-128x64-q220", BRU_INTER_CONTROL, 5, None),
         (
             "syn-bru-multitile-256x128-q220",
