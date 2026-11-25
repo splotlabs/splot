@@ -998,12 +998,10 @@ mod tests {
         let header = read_obu_header_from_slice(&[0xc4, 0x1f], ByteOffset::new(97)).unwrap();
         let payload_start = ByteOffset::new(99);
         for (bytes, field) in [
-            // Mode 4. The width or height UVLC has no terminating one.
             (&[0x05, 0x00][..], "ats_msi_width"),
             (&[0x05, 0x40], "ats_msi_height"),
             // Mode 0. The final offset in the explicit region rectangle is incomplete.
             (&[0x1f, 0xbc], "ats_bottom_right_region_row_off"),
-            // Mode 4. The first of two segments ends immediately before its alpha flag.
             (&[0x05, 0x49, 0x40, 0xd2], "ats_msi_alpha_segment_flag"),
         ] {
             let mut recorder = SyntaxRecorder::with_default_limits();
