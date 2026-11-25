@@ -31,6 +31,43 @@ The multiple-BRT recipe distinguishes native monochrome output from forced I420.
 Only redistributable inputs and recorded hashes are committed; reference tools
 and instrumentation remain local.
 
+### Temporal fixture recipe
+
+The three `syn-tlayer*-reproducible-*` fixtures exercise the same temporal
+layer patterns as the earlier dependent and sparse fixtures. The recipe
+defines its own I420 inputs. It checks that two AVM runs reproduce the committed
+streams. It also compares complete output and temporal layer selections between
+Splot and AVM. The recipe revision and the decoder oracle pin produce the same
+decoded bytes for all three streams.
+
+Use an AVM checkout at `a1ec4594d97028ebc34083ec8346616d697c2fc9`.
+Set `AVM_SOURCE` to its absolute path. Set `AVM_BUILD` to a new build
+directory. Run these commands from the Splot repository.
+
+```sh
+cmake -S "$AVM_SOURCE" -B "$AVM_BUILD" -DCMAKE_BUILD_TYPE=Release \
+  -DAVM_TARGET_CPU=generic -DCONFIG_ML_PART_SPLIT=0 \
+  -DCONFIG_DIP_EXT_PRUNING=0 -DCONFIG_TENSORFLOW_LITE=0 \
+  -DENABLE_TESTS=0 -DENABLE_EXAMPLES=0 -DENABLE_TOOLS=0
+cmake --build "$AVM_BUILD" --target avm avmdec --parallel
+cargo build -p splot-cli --locked
+python3 tools/decoder-fixtures/generate.py temporal-fixtures \
+  --avm-source "$AVM_SOURCE" --avm-build "$AVM_BUILD" \
+  --splot target/debug/splot --stage "$(mktemp -d)"
+```
+
+AVM's inspection callback confirms that both TL1 frames in each two-layer
+stream use TL0 inter references. It also confirms that the sparse stream's TL2
+frame uses TL0 and its TL3 frame uses TL0 and TL2. The trace counts references
+for each 4×4 luma cell, including both references in compound prediction.
+
+| Fixture | Frame | References by layer |
+| --- | --- | --- |
+| 8-bit two-layer | First and second TL1 | TL0 (560 and 580) |
+| 10-bit two-layer | First and second TL1 | TL0 (252 and 316) |
+| Sparse | TL2 | TL0 (196) |
+| Sparse | TL3 | TL0 (40), TL2 (240) |
+
 ## Committed Corpus
 
 `tests/conformance/manifest.toml` lists committed validator vectors and their

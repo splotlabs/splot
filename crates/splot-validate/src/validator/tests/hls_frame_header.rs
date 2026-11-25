@@ -142,3 +142,21 @@ pub(in crate::validator::tests) fn seq_obu_layer(seq_header_id: u32, xlayer: u8)
 }
 
 pub(in crate::validator::tests) const RAP_RULE: &str = "hls/unavailable-at-random-access-point";
+
+#[test]
+fn frame_references_only_resolve_in_its_extended_layer() {
+    let mut data = td_and_seq_header(3, 0, 0);
+    data.extend(multi_frame_header_obu(3));
+    data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 3));
+    data.extend(super::celu::celu_clk_mfh_ref(1, 1, 4, 0, true));
+    let report = Validator::new(false).validate_bytes(&data);
+    for rule in [
+        "hls/unavailable-sequence-header",
+        "hls/unavailable-multi-frame-header",
+    ] {
+        assert!(
+            report.errors().any(|d| d.rule_id == rule),
+            "{rule}: {report}"
+        );
+    }
+}

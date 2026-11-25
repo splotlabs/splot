@@ -489,13 +489,17 @@ fn annex_a_value_space_silent_for_external_only_activation() {
 }
 
 #[test]
-fn annex_a_value_space_redefinition_rechecks_all_layers_using_the_id() {
+fn annex_a_value_space_redefinition_affects_only_its_extended_layer() {
     let mut data = temporal_delimiter_obu();
-    data.extend(annex_a_seq_obu(AnnexASeq {
-        seq_id: 0,
-        level_idx: 0,
-        ..AnnexASeq::base()
-    }));
+    for layer in [0, 1] {
+        data.extend(annex_b_obu_with_header(
+            &layer_obu_header(1, 0, 0, layer),
+            &annex_a_seq_payload(AnnexASeq {
+                level_idx: 0,
+                ..AnnexASeq::base()
+            }),
+        ));
+    }
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0)); // CLK xlayer 0 ref seq 0
     data.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 1, 0)); // CLK xlayer 1 ref seq 0
     data.extend(temporal_delimiter_obu());
@@ -512,12 +516,9 @@ fn annex_a_value_space_redefinition_rechecks_all_layers_using_the_id() {
             d.rule_id == "annex-a/level-reserved" && d.spec_section.as_deref() == Some("A.4")
         })
         .count();
-    assert!(
-        reserved_level_count >= 2,
-        "a redefinition flipping the level to reserved must re-run the Annex A check \
-         for every extended layer (0 and 1) the id is active for, firing once per \
-         affected layer key; got {reserved_level_count} reserved-level diagnostics. \
-         report was: {report}"
+    assert_eq!(
+        reserved_level_count, 1,
+        "Only the redefined header has a reserved level. {report}"
     );
 }
 

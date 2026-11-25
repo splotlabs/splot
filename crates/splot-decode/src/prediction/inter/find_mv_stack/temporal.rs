@@ -527,6 +527,11 @@ impl TemporalMotionField {
     }
 
     #[cfg(test)]
+    pub(in crate::prediction::inter) fn stored_ref_order_hint(&self, index: usize) -> Option<u32> {
+        self.ref_order_hints.get(index).copied().flatten()
+    }
+
+    #[cfg(test)]
     fn set_cell(&mut self, y8: usize, x8: usize, cell: TemporalMotionCell) {
         if let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8)
             && let TemporalMotionStorage::Contiguous(cells) = &mut self.storage

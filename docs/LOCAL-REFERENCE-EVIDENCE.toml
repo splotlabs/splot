@@ -12066,6 +12066,176 @@ left = "avm-mlayer-tlayer-sparse-state-raw-sha256"
 right = "splot-mlayer-tlayer-sparse-state-raw-sha256"
 
 [[evidence]]
+id = "lref-avm-syn-xlayer-independent-reset-10bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "AVM and Splot decode identical native 10-bit I420 samples with sequence header ID 0 active in both extended layers. Four pictures from extended layer 3 at 64x64 then 80x64. Four 96x64 pictures from extended layer 7."
+recorded_at = "2026-11-25"
+command = """Set AVM_BUILD to the build directory of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9.
+Run python3 tools/decoder-fixtures/generate.py extended-layer-fixtures --stage /tmp/splot-extended.
+The recipe verifies the complete AVM multiplexed output against the independent AVM component decodes.
+Run cargo test --locked -p splot-decode --test extended_layers regenerated:: to compare the full Splot output and each selected extended layer."""
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-xlayer-independent-reset-10bit.obu"
+sha256 = "02278916839fcb4d5af56808a4b3f4d9b12e04f5e871c76f247eb6666a5e8e27"
+size_bytes = 7116
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "The extended-layer-fixtures recipe writes synthetic I420 source pictures, invokes AVM and multiplexes the component OBUs. The sparse variant uses the committed syn-mlayer-tlayer-sparse-state.obu for extended layer 3."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "Unmodified AVM encoder and decoder at the recorded revision."
+command_summary = "avmdec --all-layers --rawvideo --i420 -o all.yuv {fixture:input}"
+output_digest_id = "avm-full-raw"
+output_digest_algorithm = "sha256"
+output_digest = "64e3f689e23f99b8f2191a3baef6dab2d8d9c75a193bf59f1658407b6a7e73c0"
+output_scope = "All 8 pictures in presentation order, 129024 bytes of native 10-bit raw I420 including film grain."
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot-decode"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "The regenerated fixture test uses the streaming decoder and chunked reader."
+command_summary = "cargo test --locked -p splot-decode --test extended_layers regenerated:: checks all pictures, then selects each extended layer at 1, 3 and 12 threads."
+output_digest_id = "splot-full-raw"
+output_digest_algorithm = "sha256"
+output_digest = "64e3f689e23f99b8f2191a3baef6dab2d8d9c75a193bf59f1658407b6a7e73c0"
+output_scope = "All 8 pictures in presentation order, 129024 bytes of native 10-bit raw I420 including film grain."
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-full-raw"
+right = "splot-full-raw"
+
+
+[[evidence]]
+id = "lref-avm-syn-xlayer-independent-reset-8bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "AVM and Splot decode identical native 8-bit I420 samples with sequence header ID 0 active in both extended layers. Four pictures from extended layer 3 at 64x64 then 80x64. Four 96x64 pictures from extended layer 7."
+recorded_at = "2026-11-25"
+command = """Set AVM_BUILD to the build directory of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9.
+Run python3 tools/decoder-fixtures/generate.py extended-layer-fixtures --stage /tmp/splot-extended.
+The recipe verifies the complete AVM multiplexed output against the independent AVM component decodes.
+Run cargo test --locked -p splot-decode --test extended_layers regenerated:: to compare the full Splot output and each selected extended layer."""
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-xlayer-independent-reset-8bit.obu"
+sha256 = "a3ce74997b80711b96422576f3af7e043bded19b7234f77abead8214e8be62a8"
+size_bytes = 6880
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "The extended-layer-fixtures recipe writes synthetic I420 source pictures, invokes AVM and multiplexes the component OBUs. The sparse variant uses the committed syn-mlayer-tlayer-sparse-state.obu for extended layer 3."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "Unmodified AVM encoder and decoder at the recorded revision."
+command_summary = "avmdec --all-layers --rawvideo --i420 -o all.yuv {fixture:input}"
+output_digest_id = "avm-full-raw"
+output_digest_algorithm = "sha256"
+output_digest = "816f3401a23ab9ce43d7384dc7f4a5b3dee2f7e4d1518367ad51e182d2d1e108"
+output_scope = "All 8 pictures in presentation order, 64512 bytes of native 8-bit raw I420 including film grain."
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot-decode"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "The regenerated fixture test uses the streaming decoder and chunked reader."
+command_summary = "cargo test --locked -p splot-decode --test extended_layers regenerated:: checks all pictures, then selects each extended layer at 1, 3 and 12 threads."
+output_digest_id = "splot-full-raw"
+output_digest_algorithm = "sha256"
+output_digest = "816f3401a23ab9ce43d7384dc7f4a5b3dee2f7e4d1518367ad51e182d2d1e108"
+output_scope = "All 8 pictures in presentation order, 64512 bytes of native 8-bit raw I420 including film grain."
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-full-raw"
+right = "splot-full-raw"
+
+
+[[evidence]]
+id = "lref-avm-syn-xlayer-independent-sparse-8bit"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "AVM and Splot decode identical native 8-bit I420 samples with sequence header ID 0 active in both extended layers. Eight 64x64 pictures from the sparse component and four 96x64 pictures from the independent component."
+recorded_at = "2026-11-25"
+command = """Set AVM_BUILD to the build directory of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9.
+Run python3 tools/decoder-fixtures/generate.py extended-layer-fixtures --stage /tmp/splot-extended.
+The recipe verifies the complete AVM multiplexed output against the independent AVM component decodes.
+Run cargo test --locked -p splot-decode --test extended_layers regenerated:: to compare the full Splot output and each selected extended layer."""
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-xlayer-independent-sparse-8bit.obu"
+sha256 = "96f10762d860f57fa786ff8e7e455e55fad66870f53dc4d68857badbde2e8b52"
+size_bytes = 5363
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "The extended-layer-fixtures recipe writes synthetic I420 source pictures, invokes AVM and multiplexes the component OBUs. The sparse variant uses the committed syn-mlayer-tlayer-sparse-state.obu for extended layer 3."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "Unmodified AVM encoder and decoder at the recorded revision."
+command_summary = "avmdec --all-layers --rawvideo --i420 -o all.yuv {fixture:input}"
+output_digest_id = "avm-full-raw"
+output_digest_algorithm = "sha256"
+output_digest = "82653d6b8266b055b89c6f366f4f4efa450a455d048602da73e0d4ac61f3ffa8"
+output_scope = "All 12 pictures in presentation order, 86016 bytes of native 8-bit raw I420 including film grain."
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot-decode"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "The regenerated fixture test uses the streaming decoder and chunked reader."
+command_summary = "cargo test --locked -p splot-decode --test extended_layers regenerated:: checks all pictures, then selects each extended layer at 1, 3 and 12 threads."
+output_digest_id = "splot-full-raw"
+output_digest_algorithm = "sha256"
+output_digest = "82653d6b8266b055b89c6f366f4f4efa450a455d048602da73e0d4ac61f3ffa8"
+output_scope = "All 12 pictures in presentation order, 86016 bytes of native 8-bit raw I420 including film grain."
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-full-raw"
+right = "splot-full-raw"
+
+[[evidence]]
 id = "lref-avm-syn-xlayer3-7-global-lcr-isolation"
 feature_id = "DECODE-STREAM-STATE-PLANNER"
 decoder_support_rows = ["decode-stream-state"]

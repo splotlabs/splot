@@ -191,9 +191,11 @@ pub struct SplotPicture {
     pub has_film_grain: u8,
     /// A [`SplotFrameType`] value: the type of the frame this picture shows.
     pub frame_type: u8,
-    /// Temporal layer id (`obu_tlayer_id`, `0..=3`) of the picture.
+    /// Temporal layer ID (`obu_tlayer_id`, `0..=3`) of the output picture.
+    /// A show-existing frame with a derived order hint uses the reference layer ID.
     pub temporal_layer_id: u8,
-    /// Embedded layer id (`obu_mlayer_id`, `0..=7`) of the picture.
+    /// Embedded layer ID (`obu_mlayer_id`, `0..=7`) of the output picture.
+    /// A show-existing frame with a derived order hint uses the reference layer ID.
     pub embedded_layer_id: u8,
     /// Extended layer id (`obu_xlayer_id`, `0..=30`) of the picture.
     pub extended_layer_id: u8,
