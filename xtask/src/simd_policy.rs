@@ -6,10 +6,11 @@
 //! Decoder runtime crates must resolve CPU SIMD capabilities once at session or
 //! decoder startup and propagate the chosen concrete `SimdBackend` statically.
 //! Runtime ISA probing (`Level::new`, `is_x86_feature_detected!`,
-//! `is_aarch64_feature_detected!`) is restricted to `crates/splot-core/src/simd.rs`,
-//! and ambient or per-call dispatch (`Level::baseline`, `baseline_simd!`,
-//! `fearless_simd::dispatch!`) is banned outside tests and the designated
-//! constant-folded symbol helper.
+//! `is_aarch64_feature_detected!`) is restricted to `crates/splot-core/src/simd.rs`
+//! in decoder crates. Shared reconstruction kernels cannot select a new `Level`.
+//! Ambient or per-call dispatch in decoder crates
+//! (`Level::baseline`, `baseline_simd!`, `fearless_simd::dispatch!`) is banned
+//! outside tests. The symbol helper can use the compile-time baseline token.
 
 use std::fmt;
 use std::path::Path;
@@ -44,6 +45,7 @@ const AMBIENT_DISPATCH_NEEDLES: &[&str] = &[
     "Level::baseline",
     "baseline_simd!",
     "fearless_simd::dispatch!",
+    "use fearless_simd::dispatch",
 ];
 
 /// A single policy violation reported by [`evaluate_simd_policy`].
@@ -73,17 +75,20 @@ impl fmt::Display for SimdViolation {
 pub(crate) fn evaluate_simd_policy(sources: &[SourceLine]) -> Vec<SimdViolation> {
     let mut violations = Vec::new();
     for line in sources {
-        if line.in_test
-            || !DECODER_RUNTIME_CRATE_PREFIXES
-                .iter()
-                .any(|prefix| line.path.starts_with(prefix))
-        {
+        if line.in_test {
+            continue;
+        }
+        let decoder_runtime = DECODER_RUNTIME_CRATE_PREFIXES
+            .iter()
+            .any(|prefix| line.path.starts_with(prefix));
+        let shared_recon = line.path.starts_with("crates/splot-recon/");
+        if !decoder_runtime && !shared_recon {
             continue;
         }
         let code = line.text.split("//").next().unwrap_or(line.text.as_str());
         if line.path != RUNTIME_PROBE_ALLOWLIST {
             for &needle in RUNTIME_PROBE_NEEDLES {
-                if code.contains(needle) {
+                if (decoder_runtime || needle == "Level::new") && code.contains(needle) {
                     violations.push(SimdViolation {
                         path: line.path.clone(),
                         line_no: line.line_no,
@@ -93,9 +98,11 @@ pub(crate) fn evaluate_simd_policy(sources: &[SourceLine]) -> Vec<SimdViolation>
                 }
             }
         }
-        if line.path != BASELINE_DISPATCH_ALLOWLIST {
+        if decoder_runtime {
             for &needle in AMBIENT_DISPATCH_NEEDLES {
-                if code.contains(needle) {
+                if code.contains(needle)
+                    && !(line.path == BASELINE_DISPATCH_ALLOWLIST && needle == "Level::baseline")
+                {
                     violations.push(SimdViolation {
                         path: line.path.clone(),
                         line_no: line.line_no,
@@ -177,6 +184,47 @@ mod tests {
             ),
         ];
         assert!(evaluate_simd_policy(&lines).is_empty());
+    }
+
+    #[test]
+    fn flags_imported_dispatch_and_shared_kernel_probes() {
+        let lines = [
+            src(
+                "crates/splot-decode/src/example.rs",
+                1,
+                "use fearless_simd::dispatch as select_backend;",
+                false,
+            ),
+            src(
+                "crates/splot-decode/src/example.rs",
+                2,
+                "dispatch!(stage, frame);",
+                false,
+            ),
+            src(
+                "crates/splot-recon/src/example.rs",
+                3,
+                "let level = Level::new();",
+                false,
+            ),
+            src(
+                "crates/splot-recon/src/example.rs",
+                4,
+                "baseline_simd!(simd => encoder_kernel(simd));",
+                false,
+            ),
+            src(
+                "crates/splot-core/src/symbol.rs",
+                5,
+                "fearless_simd::dispatch!(level, simd => read_symbol(simd));",
+                false,
+            ),
+        ];
+        let violations = evaluate_simd_policy(&lines);
+        assert_eq!(violations.len(), 3);
+        assert_eq!(violations[0].needle, "fearless_simd::dispatch!");
+        assert_eq!(violations[1].needle, "use fearless_simd::dispatch");
+        assert_eq!(violations[2].needle, "Level::new");
     }
 
     #[test]
