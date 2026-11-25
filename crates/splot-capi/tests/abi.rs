@@ -87,7 +87,11 @@ fn pictures(ivf: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPicture> 
         embedded_output_mask: 1,
         reserved0: 1,
         extended_output_mask: 1,
-        reserved: [1; 24],
+        operating_point_scope: 1,
+        operating_point_xlayer_id: 1,
+        operating_point_ops_id: 1,
+        operating_point_index: 1,
+        reserved: [1; 20],
     };
     let mut decoder = ptr::null_mut();
     unsafe {
@@ -208,7 +212,11 @@ fn the_new_fields_keep_the_struct_layouts() {
     assert_eq!(offset_of!(SplotSettings, embedded_output_mask), 10);
     assert_eq!(offset_of!(SplotSettings, reserved0), 11);
     assert_eq!(offset_of!(SplotSettings, extended_output_mask), 12);
-    assert_eq!(offset_of!(SplotSettings, reserved), 16);
+    assert_eq!(offset_of!(SplotSettings, operating_point_scope), 16);
+    assert_eq!(offset_of!(SplotSettings, operating_point_xlayer_id), 17);
+    assert_eq!(offset_of!(SplotSettings, operating_point_ops_id), 18);
+    assert_eq!(offset_of!(SplotSettings, operating_point_index), 19);
+    assert_eq!(offset_of!(SplotSettings, reserved), 20);
     assert_eq!(
         offset_of!(SplotPicture, internal),
         offset_of!(SplotPicture, has_film_grain) + 4 * size_of::<usize>()
@@ -282,11 +290,11 @@ fn null_and_bad_arguments_are_refused() {
             extended_output_mask,
             reserved,
         ) in [
-            (0, 0, 0, 0, 0, [1; 24]),
-            (0, 0, 0, 1, 0, [0; 24]),
-            (0, 0, 0, 0, 1u32 << 31, [0; 24]),
-            (2, 0, 0, 0, 0, [0; 24]),
-            (0, 0x10, 0, 0, 0, [0; 24]),
+            (0, 0, 0, 0, 0, [1; 20]),
+            (0, 0, 0, 1, 0, [0; 20]),
+            (0, 0, 0, 0, 1u32 << 31, [0; 20]),
+            (2, 0, 0, 0, 0, [0; 20]),
+            (0, 0x10, 0, 0, 0, [0; 20]),
         ] {
             let settings = SplotSettings {
                 n_threads: 1,
@@ -296,6 +304,10 @@ fn null_and_bad_arguments_are_refused() {
                 embedded_output_mask,
                 reserved0,
                 extended_output_mask,
+                operating_point_scope: 0,
+                operating_point_xlayer_id: 0,
+                operating_point_ops_id: 0,
+                operating_point_index: 0,
                 reserved,
             };
             assert_eq!(
@@ -622,5 +634,144 @@ fn extended_output_mask_matches_batch_decoder_and_reports_extended_layer_ids() {
         } else {
             assert!(raw_x7.is_empty());
         }
+    }
+}
+
+#[test]
+fn operating_point_selection_matches_batch_decoder_and_rejects_invalid() {
+    const MSDO_OPS: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-msdo-ops-random-access.obu");
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+    let mut reader = TemporalUnitReader::new(MSDO_OPS);
+    let mut stream_units = Vec::new();
+    while let Some(unit) = reader.next_temporal_unit().unwrap() {
+        stream_units.push(unit.bytes.to_vec());
+    }
+
+    for (scope, xlayer, ops_id, op_idx, ext_mask) in [
+        (0u8, 1u8, 0u8, 0u8, 0u32),
+        (3u8, 0u8, 0u8, 0u8, 0u32),
+        (1u8, 1u8, 0u8, 0u8, 0u32),
+        (1u8, 0u8, 16u8, 0u8, 0u32),
+        (1u8, 0u8, 0u8, 7u8, 0u32),
+        (2u8, 31u8, 0u8, 0u8, 0u32),
+        (1u8, 0u8, 0u8, 1u8, 1u32 << 3),
+    ] {
+        let mut s_uninit = core::mem::MaybeUninit::<SplotSettings>::uninit();
+        unsafe {
+            splot_default_settings(s_uninit.as_mut_ptr());
+            let mut s = s_uninit.assume_init();
+            s.operating_point_scope = scope;
+            s.operating_point_xlayer_id = xlayer;
+            s.operating_point_ops_id = ops_id;
+            s.operating_point_index = op_idx;
+            s.extended_output_mask = ext_mask;
+            let mut bad_decoder = ptr::null_mut();
+            assert_eq!(splot_open(&raw mut bad_decoder, &raw const s), SPLOT_EINVAL);
+            assert!(bad_decoder.is_null());
+        }
+    }
+
+    for (scope, xlayer, ops_id, op_idx, selection, expected_xlayers) in [
+        (
+            1u8,
+            0u8,
+            0u8,
+            1u8,
+            splot_decode::OperatingPointSelection::Global {
+                ops_id: 0,
+                op_index: 1,
+            },
+            vec![3u8, 3, 3, 3, 3, 3],
+        ),
+        (
+            1u8,
+            0u8,
+            1u8,
+            0u8,
+            splot_decode::OperatingPointSelection::Global {
+                ops_id: 1,
+                op_index: 0,
+            },
+            vec![3u8, 7, 3, 3, 7, 3, 3, 7, 3],
+        ),
+        (
+            2u8,
+            3u8,
+            2u8,
+            0u8,
+            splot_decode::OperatingPointSelection::Local {
+                xlayer_id: splot_core::types::ExtendedLayerId::from_bits(3),
+                ops_id: 2,
+                op_index: 0,
+            },
+            vec![3u8, 7, 7, 3, 7, 7, 3, 7, 7],
+        ),
+    ] {
+        let mut s_uninit = core::mem::MaybeUninit::<SplotSettings>::uninit();
+        let mut decoder = ptr::null_mut();
+        let mut raw_x3 = Vec::new();
+        let mut raw_x7 = Vec::new();
+        let mut seen_xlayers = Vec::new();
+        unsafe {
+            splot_default_settings(s_uninit.as_mut_ptr());
+            let mut settings = s_uninit.assume_init();
+            settings.n_threads = 1;
+            settings.operating_point_scope = scope;
+            settings.operating_point_xlayer_id = xlayer;
+            settings.operating_point_ops_id = ops_id;
+            settings.operating_point_index = op_idx;
+            assert_eq!(splot_open(&raw mut decoder, &raw const settings), SPLOT_OK);
+
+            let mut take = |decoder: *mut SplotDecoder| loop {
+                let mut picture = core::mem::zeroed::<SplotPicture>();
+                match splot_get_picture(decoder, &raw mut picture) {
+                    SPLOT_OK => {
+                        match picture.extended_layer_id {
+                            3 => append(&picture, &mut raw_x3),
+                            7 => append(&picture, &mut raw_x7),
+                            other => panic!("unexpected extended_layer_id {other}"),
+                        }
+                        seen_xlayers.push(picture.extended_layer_id);
+                        splot_picture_unref(&raw mut picture);
+                    }
+                    SPLOT_EAGAIN | SPLOT_EOF => break,
+                    error => panic!("splot_get_picture failed: {error}"),
+                }
+            };
+
+            for unit in &stream_units {
+                loop {
+                    match splot_send_data(decoder, unit.as_ptr(), unit.len(), ptr::null()) {
+                        SPLOT_OK => break,
+                        SPLOT_EAGAIN => take(decoder),
+                        error => panic!("splot_send_data failed: {error}"),
+                    }
+                }
+                take(decoder);
+            }
+            splot_drain(decoder);
+            take(decoder);
+            splot_close(&raw mut decoder);
+        }
+
+        assert_eq!(seen_xlayers, expected_xlayers);
+        let report = context
+            .decode_hash_report_bytes(
+                MSDO_OPS,
+                DecodeOptions::default().with_operating_point_selection(selection),
+            )
+            .unwrap();
+        assert_eq!(report.frames.len(), seen_xlayers.len());
+        if !raw_x7.is_empty() {
+            let x7_frames = seen_xlayers
+                .iter()
+                .fold(0usize, |acc, &x| acc + usize::from(x == 7));
+            assert_eq!(raw_x7.len(), x7_frames * 80 * 64 * 3 / 2);
+        }
+        let x3_frames = seen_xlayers
+            .iter()
+            .fold(0usize, |acc, &x| acc + usize::from(x == 3));
+        assert_eq!(raw_x3.len(), x3_frames * 64 * 64 * 3 / 2);
     }
 }

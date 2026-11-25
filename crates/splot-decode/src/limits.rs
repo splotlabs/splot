@@ -9,7 +9,9 @@ use core::{fmt, num::NonZeroU64};
 
 use splot_recon::Y4mFrameRate;
 
-use crate::{EmbeddedLayerSelection, ExtendedLayerSelection, TemporalLayerSelection};
+use crate::{
+    EmbeddedLayerSelection, ExtendedLayerSelection, OperatingPointSelection, TemporalLayerSelection,
+};
 
 const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
 
@@ -43,6 +45,7 @@ pub struct DecodeOptions {
     temporal_layer_selection: TemporalLayerSelection,
     embedded_layer_selection: EmbeddedLayerSelection,
     extended_layer_selection: ExtendedLayerSelection,
+    operating_point_selection: OperatingPointSelection,
 }
 
 impl DecodeOptions {
@@ -55,6 +58,7 @@ impl DecodeOptions {
         temporal_layer_selection: TemporalLayerSelection::All,
         embedded_layer_selection: EmbeddedLayerSelection::All,
         extended_layer_selection: ExtendedLayerSelection::All,
+        operating_point_selection: OperatingPointSelection::None,
     };
 
     /// Creates decoder options from caller-provided resource limits.
@@ -68,6 +72,7 @@ impl DecodeOptions {
             temporal_layer_selection: TemporalLayerSelection::All,
             embedded_layer_selection: EmbeddedLayerSelection::All,
             extended_layer_selection: ExtendedLayerSelection::All,
+            operating_point_selection: OperatingPointSelection::None,
         }
     }
 
@@ -165,6 +170,33 @@ impl DecodeOptions {
     ) -> Self {
         self.extended_layer_selection = selection;
         self
+    }
+
+    /// Returns the caller-requested operating-point selection policy.
+    #[must_use]
+    pub const fn operating_point_selection(self) -> OperatingPointSelection {
+        self.operating_point_selection
+    }
+
+    /// Returns a copy with the requested operating-point selection policy.
+    #[must_use]
+    pub const fn with_operating_point_selection(
+        mut self,
+        selection: OperatingPointSelection,
+    ) -> Self {
+        self.operating_point_selection = selection;
+        self
+    }
+
+    pub(crate) fn validate_selections(self) -> crate::Result<()> {
+        self.temporal_layer_selection.validate()?;
+        self.embedded_layer_selection.validate()?;
+        self.extended_layer_selection.validate()?;
+        self.operating_point_selection.validate_with(
+            self.temporal_layer_selection,
+            self.embedded_layer_selection,
+            self.extended_layer_selection,
+        )
     }
 }
 

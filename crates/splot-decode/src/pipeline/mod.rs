@@ -12,12 +12,8 @@ use core::num::NonZeroUsize;
 use std::sync::Arc;
 
 use splot_core::annexb::ObuEnvelope;
-use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{FrameHeaderCore, TxMode};
 use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
-use splot_core::headers::tile_group::{
-    FrameHeaderCopyOutcome, RecordedFrameHeaderBits, parse_frame_header_copy,
-};
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
@@ -27,11 +23,7 @@ use splot_recon::DecodedFrame;
 
 use crate::DecodeIvfFrameContext as IvfFrameContext;
 use crate::bitstream::byte_stream::{InputScratch, SourceBytes, UnitSource, recycle};
-use crate::bitstream::tile_payload::{
-    FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
-    FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCdfSubset,
-    GeneralIntraBlockModeError, GeneralIntraResidualError, TileGroupPositionFacts,
-};
+use crate::bitstream::tile_payload::{GeneralIntraBlockModeError, GeneralIntraResidualError};
 use crate::error::{DecodeError, Result};
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
@@ -51,6 +43,7 @@ pub(crate) mod output_effects;
 mod output_schedule;
 mod runtime_support;
 mod stream_schedule;
+mod tile_plan;
 mod xlayer_state;
 
 use frame_lifecycle::*;
@@ -61,7 +54,6 @@ pub(crate) use frame_lifecycle::{
 };
 use output_effects::{FrameOutputEffects, OutputEffectState};
 use output_schedule::*;
-use runtime_support::decode_tile_boundary_error;
 pub(crate) use runtime_support::{
     ensure_runtime_limits, malformed_tile_payload, unsupported, unsupported_at,
     unsupported_feature_at, unsupported_with_spec,
@@ -840,6 +832,62 @@ fn push_split_inter<T: SplitSample>(
     Ok((slot, core, publications, motion))
 }
 
+fn drain_pending_cmvs_flushed(
+    options: &DecodeOptions,
+    frames: &FrameStore,
+    xlayers: &mut XLayerTable,
+    emission_queue: &mut output_schedule::EmissionQueue,
+    emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
+) -> Result<()> {
+    let flushed = xlayers.take_pending_cmvs_flushed();
+    if flushed.is_empty() {
+        return Ok(());
+    }
+    charge_emitted_outputs(
+        options,
+        frames,
+        xlayers.total_emitted_count(),
+        emission_queue,
+        &flushed,
+        emit,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn observe_global_and_cmvs(
+    xlayers: &mut XLayerTable,
+    prefix_obus: &[ObuEnvelope<'_>],
+    unit: &crate::bitstream::byte_stream::UnitBytes,
+    skipped_tu: bool,
+    options: &DecodeOptions,
+    frames: &FrameStore,
+    emission_queue: &mut output_schedule::EmissionQueue,
+    emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
+) -> Result<()> {
+    let (tu_has_rap, tu_has_clk) = if prefix_obus
+        .iter()
+        .any(|env| env.header.obu_type == ObuType::Msdo && env.header.extended_layer_id.is_global())
+    {
+        unit_rap_flags(unit)?
+    } else {
+        (false, false)
+    };
+    if xlayers.observe_global_obus(prefix_obus, skipped_tu, tu_has_rap, tu_has_clk)? {
+        let flushed = xlayers.flush_all_outputs_and_invalidate();
+        if !flushed.is_empty() {
+            charge_emitted_outputs(
+                options,
+                frames,
+                xlayers.total_emitted_count(),
+                emission_queue,
+                &flushed,
+                emit,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[expect(clippy::too_many_arguments)]
 fn decode_frames_in_order(
     source: &mut dyn UnitSource,
@@ -853,9 +901,7 @@ fn decode_frames_in_order(
     frames: &mut FrameStore,
     input_scratch: &mut InputScratch,
 ) -> Result<()> {
-    options.temporal_layer_selection().validate()?;
-    options.embedded_layer_selection().validate()?;
-    options.extended_layer_selection().validate()?;
+    options.validate_selections()?;
     let InputScratch {
         records,
         obus: obu_storage,
@@ -871,14 +917,15 @@ fn decode_frames_in_order(
         let mut scan_buffer = recycle(core::mem::take(obu_storage));
         if stream.unit_only_filtered_unselected_xlayer(&leading_unit, &mut scan_buffer) {
             skipped_unselected_leading = true;
+            let (tu_has_rap, tu_has_clk) = unit_rap_flags(&leading_unit)?;
             let filtered = stream.obus(&leading_unit, &mut scan_buffer)?;
-            xlayers.observe_global_obus(filtered, true)?;
+            xlayers.observe_global_obus(filtered, true, tu_has_rap, tu_has_clk)?;
             *obu_storage = recycle(scan_buffer);
-            if let Some((candidate, unit)) =
-                stream.candidate(obu_storage, &mut || Ok(()), &mut |skipped| {
-                    xlayers.observe_skipped(skipped)
-                })?
-            {
+            if let Some((candidate, unit)) = stream.candidate(
+                obu_storage,
+                &mut || Ok(()),
+                &mut |skipped, has_rap, has_clk| xlayers.observe_skipped(skipped, has_rap, has_clk),
+            )? {
                 leading_unit = unit;
                 key_candidate = Ok(candidate);
             }
@@ -892,7 +939,11 @@ fn decode_frames_in_order(
         key_candidate?
     } else {
         let leading_obus = stream.obus(&leading_unit, &mut leading_buffer)?;
-        require_leading_frame_unit(leading_obus)?;
+        if let Err(error) = require_leading_frame_unit(leading_obus)
+            && !stream.has_unfiltered_multistream_rap(&leading_unit)?
+        {
+            return Err(error);
+        }
         preflight(stream.ivf_header())?;
         *obu_storage = recycle(leading_buffer);
         key_candidate?
@@ -934,13 +985,21 @@ fn decode_frames_in_order(
             }
         }
         frames.reserve()?;
-        let candidate = match pending_first.take() {
-            Some(first) => Some(first),
-            None => stream.candidate(
+        let candidate = if let Some(first) = pending_first.take() {
+            Some(first)
+        } else {
+            let found = stream.candidate(
                 obu_storage,
                 &mut || emission_queue.flush(frames, emit),
-                &mut |skipped_obus| xlayers.observe_skipped(skipped_obus),
-            )?,
+                &mut |skipped_obus, has_rap, has_clk| {
+                    xlayers.observe_skipped(skipped_obus, has_rap, has_clk)
+                },
+            )?;
+            drain_pending_cmvs_flushed(options, frames, &mut xlayers, &mut emission_queue, emit)?;
+            if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+                break;
+            }
+            found
         };
         let Some((next_candidate, unit)) = candidate else {
             break;
@@ -953,12 +1012,25 @@ fn decode_frames_in_order(
             let mut obu_buffer = recycle(core::mem::take(obu_storage));
             let obus = stream.obus(&unit, &mut obu_buffer)?;
             let (prefix_obus, _) = stream.inter_envelope(obus, next_candidate)?;
-            xlayers.observe_global_obus(prefix_obus, false)?;
+            observe_global_and_cmvs(
+                &mut xlayers,
+                prefix_obus,
+                &unit,
+                false,
+                options,
+                frames,
+                &mut emission_queue,
+                emit,
+            )?;
+            xlayers.note_celu_order(candidate_xlayer, next_candidate.offset())?;
             xlayers.observe_other_non_global_prefix(prefix_obus, candidate_xlayer)?;
             if let Some(layer) = xlayers.get_mut(candidate_xlayer) {
                 layer.begin_discarded_leading_frame();
             }
             *obu_storage = recycle(obu_buffer);
+            if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+                break;
+            }
             continue;
         }
         match next_candidate.obu_type() {
@@ -973,8 +1045,29 @@ fn decode_frames_in_order(
                     sef_envelope.header.temporal_layer_id,
                 );
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
-                xlayers.observe_global_obus(sef_prefix_obus, false)?;
+                observe_global_and_cmvs(
+                    &mut xlayers,
+                    sef_prefix_obus,
+                    &unit,
+                    false,
+                    options,
+                    frames,
+                    &mut emission_queue,
+                    emit,
+                )?;
+                if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+                    *obu_storage = recycle(obu_buffer);
+                    break;
+                }
+                xlayers.note_celu_order(candidate_xlayer, sef_envelope.offset)?;
                 xlayers.observe_other_non_global_prefix(sef_prefix_obus, candidate_xlayer)?;
+                if !xlayers.contains(candidate_xlayer) {
+                    let (tu_has_rap, _) = unit_rap_flags(&unit)?;
+                    if xlayers.should_skip_pre_rap_frame(candidate_xlayer, tu_has_rap) {
+                        *obu_storage = recycle(obu_buffer);
+                        continue;
+                    }
+                }
                 let Some(layer) = xlayers.get_mut(candidate_xlayer) else {
                     return Err(unsupported_at(
                         "missing_random_access_frame",
@@ -996,6 +1089,11 @@ fn decode_frames_in_order(
                 layer
                     .reference
                     .prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                let sef_order_hint_bits = layer
+                    .sequence
+                    .inter
+                    .as_ref()
+                    .map_or(0, |inter| inter.order_hint_bits);
                 let sef_core = {
                     let bit_depth = layer.sequence.general.bit_depth_idc;
                     with_sample_bit_depth!(bit_depth, T, {
@@ -1010,6 +1108,13 @@ fn decode_frames_in_order(
                         )?
                     })
                 };
+                xlayers.check_tu_doh(
+                    candidate_xlayer,
+                    sef_order_hint_bits,
+                    sef_core.display_order_hint(),
+                    true,
+                    sef_envelope.offset,
+                )?;
                 let total_emitted = xlayers.total_emitted_count();
                 if sef_emit_allowed {
                     let next_output_frame_count =
@@ -1191,11 +1296,30 @@ fn decode_frames_in_order(
                     inter_envelope.header.temporal_layer_id,
                 );
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
-                xlayers.observe_global_obus(inter_prefix_obus, false)?;
+                observe_global_and_cmvs(
+                    &mut xlayers,
+                    inter_prefix_obus,
+                    &unit,
+                    false,
+                    options,
+                    frames,
+                    &mut emission_queue,
+                    emit,
+                )?;
+                if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+                    *obu_storage = recycle(obu_buffer);
+                    break;
+                }
+                xlayers.note_celu_order(candidate_xlayer, inter_envelope.offset)?;
                 xlayers.observe_other_non_global_prefix(inter_prefix_obus, candidate_xlayer)?;
                 let initializing_layer = !xlayers.contains(candidate_xlayer);
                 if initializing_layer {
                     if next_candidate.obu_type() != ObuType::RasFrame {
+                        let (tu_has_rap, _) = unit_rap_flags(&unit)?;
+                        if xlayers.should_skip_pre_rap_frame(candidate_xlayer, tu_has_rap) {
+                            *obu_storage = recycle(obu_buffer);
+                            continue;
+                        }
                         return Err(unsupported_at(
                             "missing_random_access_frame",
                             inter_envelope.offset,
@@ -1241,10 +1365,12 @@ fn decode_frames_in_order(
                         &mut output_effect_state,
                         &mut film_grain_slots,
                     )?;
+                    let has_local_lcr =
+                        output_effect_state.has_local_lcr_id(sequence.general.seq_lcr_id.get());
                     xlayers.validate_xlayer_lcr(
                         candidate_xlayer,
                         &sequence,
-                        &output_effect_state,
+                        has_local_lcr,
                         sequence_envelope.offset,
                         true,
                     )?;
@@ -1357,7 +1483,7 @@ fn decode_frames_in_order(
                     }
                 }
                 let frame_index = frames.len();
-                let (inter_core, user_qm) = {
+                let (inter_core, user_qm, inter_order_hint_bits) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1365,6 +1491,11 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
+                    let order_hint_bits = layer
+                        .sequence
+                        .inter
+                        .as_ref()
+                        .map_or(0, |inter| inter.order_hint_bits);
                     with_sample_bit_depth!(bit_depth, T, {
                         let inter_state = layer.reference.state::<T>(frames)?;
                         let inter_core = parse_inter_core_with_effects(
@@ -1390,9 +1521,16 @@ fn decode_frames_in_order(
                             first_picture_in_tu,
                             ivf_frame_index,
                         )?;
-                        Result::Ok((inter_core, user_qm))
+                        Result::Ok((inter_core, user_qm, order_hint_bits))
                     })?
                 };
+                xlayers.check_tu_doh(
+                    candidate_xlayer,
+                    inter_order_hint_bits,
+                    inter_core.display_order_hint(),
+                    frame_is_output(&inter_core),
+                    inter_envelope.offset,
+                )?;
                 if inter_emit_allowed && frame_is_output(&inter_core) {
                     let next_output_frame_count = checked_add(
                         DecodeLimitName::MaxOutputFrames,
@@ -1766,7 +1904,21 @@ fn decode_frames_in_order(
                         "open-loop-key sequence activation changed NumRefFrames inside the active coded video sequence",
                     ));
                 }
-                xlayers.observe_global_obus(key_prefix_obus, false)?;
+                observe_global_and_cmvs(
+                    &mut xlayers,
+                    key_prefix_obus,
+                    &unit,
+                    false,
+                    options,
+                    frames,
+                    &mut emission_queue,
+                    emit,
+                )?;
+                if output_frame_limit_reached(options, xlayers.total_emitted_count()) {
+                    *obu_storage = recycle(obu_buffer);
+                    break;
+                }
+                xlayers.note_celu_order(candidate_xlayer, key_envelope.offset)?;
                 xlayers.observe_other_non_global_prefix(key_prefix_obus, candidate_xlayer)?;
                 if initializing_layer {
                     let mut output_effect_state = xlayers.create_effect_state(candidate_xlayer);
@@ -1778,10 +1930,12 @@ fn decode_frames_in_order(
                         &mut output_effect_state,
                         &mut film_grain_slots,
                     )?;
+                    let has_local_lcr =
+                        output_effect_state.has_local_lcr_id(key_sequence.general.seq_lcr_id.get());
                     xlayers.validate_xlayer_lcr(
                         candidate_xlayer,
                         &key_sequence,
-                        &output_effect_state,
+                        has_local_lcr,
                         key_sequence_offset,
                         true,
                     )?;
@@ -1802,36 +1956,34 @@ fn decode_frames_in_order(
                     ));
                     frames.ensure_capacity_for_layers(xlayers.len(), ring.capacity());
                 } else {
-                    if let Some(seq_env) = key_sequence_envelope {
-                        let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
+                    let has_local_lcr = {
+                        let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                             unsupported_at(
                                 "missing_random_access_frame",
                                 key_envelope.offset,
                                 "decode runtime requires an active extended layer",
                             )
                         })?;
+                        XLayerTable::apply_non_global_prefix(
+                            key_prefix_obus,
+                            candidate_xlayer,
+                            &key_sequence,
+                            &mut layer.output_effect_state,
+                            &mut layer.film_grain_slots,
+                        )?;
+                        layer
+                            .output_effect_state
+                            .has_local_lcr_id(key_sequence.general.seq_lcr_id.get())
+                    };
+                    if let Some(seq_env) = key_sequence_envelope {
                         xlayers.validate_xlayer_lcr(
                             candidate_xlayer,
                             &key_sequence,
-                            &layer.output_effect_state,
+                            has_local_lcr,
                             seq_env.offset,
                             false,
                         )?;
                     }
-                    let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
-                        unsupported_at(
-                            "missing_random_access_frame",
-                            key_envelope.offset,
-                            "decode runtime requires an active extended layer",
-                        )
-                    })?;
-                    XLayerTable::apply_non_global_prefix(
-                        key_prefix_obus,
-                        candidate_xlayer,
-                        &key_sequence,
-                        &mut layer.output_effect_state,
-                        &mut layer.film_grain_slots,
-                    )?;
                 }
                 let first_picture_in_tu = if initializing_layer {
                     true
@@ -1932,6 +2084,16 @@ fn decode_frames_in_order(
                     )?;
                     (key_core, key_user_qm, key_display_grain)
                 };
+                xlayers.check_tu_doh(
+                    candidate_xlayer,
+                    key_sequence
+                        .inter
+                        .as_ref()
+                        .map_or(0, |inter| inter.order_hint_bits),
+                    key_core.display_order_hint(),
+                    frame_is_output(&key_core),
+                    key_envelope.offset,
+                )?;
                 if starts_new_sequence && !initializing_layer {
                     let (key_reference, flushed) = {
                         let key_reference =
@@ -2225,224 +2387,10 @@ mod general_intra_lossless_smooth_tests;
 #[cfg(test)]
 mod general_intra_tests;
 
-#[derive(Clone, Copy)]
-pub(crate) enum TileFactsKind {
-    Intra,
-    Inter,
-}
-#[expect(clippy::too_many_arguments)]
-pub(crate) fn derive_tile_plan_with<'payload>(
-    candidate: &DecodePlannedObu,
-    bytes: SourceBytes<'payload>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    options: &DecodeOptions,
-    kind: TileFactsKind,
-    initial_cdfs: Option<&Arc<FrameCdfSubset>>,
-    scratch: &mut crate::bitstream::tile_payload::TilePayloadScratch,
-) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> {
-    let envelope = planned_envelope(bytes, candidate)?;
-    let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
-        unsupported_at(
-            "missing_tq_entropy_config",
-            envelope.offset,
-            "decode runtime requires sequence transform/quant/entropy config",
-        )
-    })?;
-    let coeff = FrameCandidateCoeffFacts::from_tq(tq);
-    let facts = match kind {
-        TileFactsKind::Intra => FrameCandidateTileFacts::from_frame_core(core, coeff),
-        TileFactsKind::Inter => FrameCandidateTileFacts::from_inter_frame_core(core, coeff),
-    }
-    .map_err(|error| decode_tile_boundary_error(error, envelope.offset))?;
-    let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
-    let candidates = core::iter::once(candidate.clone()).chain(
-        crate::bitstream::stream_plan::tile_group_continuations(bytes, candidate),
-    );
-    let group_count = candidates.clone().count();
-    let recorded_header = record_frame_header(envelope, core, group_count > 1)?;
-    let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> = None;
-    for (group_index, group_candidate) in candidates.enumerate() {
-        if group_index != 0 {
-            core::mem::swap(
-                &mut scratch.work_units,
-                &mut scratch.continuation_work_units,
-            );
-        }
-        let group_envelope = planned_envelope(bytes, &group_candidate)?;
-        let group_facts = if group_index == 0 {
-            facts
-        } else {
-            facts.with_tile_group_structure_start_bits(continuation_structure_start_bits(
-                group_envelope,
-                recorded_header.as_ref().ok_or_else(|| {
-                    unsupported_at(
-                        "frame_header_copy_source_truncated",
-                        envelope.offset,
-                        "first tile-group frame header was not recorded for continuation validation",
-                    )
-                })?,
-            )?)
-        };
-        let mut input = FrameCandidateTileBoundaryInput::new(
-            &group_candidate,
-            bytes,
-            group_envelope,
-            TileGroupPositionFacts::new(group_index == 0, group_index + 1 == group_count),
-            group_facts,
-            cdf,
-            options.limits(),
-        );
-        if let Some(cdfs) = initial_cdfs {
-            input = input.with_initial_cdfs(Arc::clone(cdfs));
-        }
-        let group_plan =
-            crate::bitstream::tile_payload::plan_derived_tile_payload_boundary_with_scratch(
-                &input, scratch,
-            )
-            .map_err(|error| decode_tile_boundary_error(error, group_envelope.offset))?;
-        if let Some(plan) = merged.as_mut() {
-            plan.append_continuation(group_plan, &mut scratch.continuation_work_units)
-                .map_err(FrameCandidateTileBoundaryError::from)
-                .map_err(|error| decode_tile_boundary_error(error, group_envelope.offset))?;
-        } else {
-            merged = Some(group_plan);
-        }
-    }
-    merged.ok_or_else(|| {
-        unsupported_at(
-            "missing_tile_group",
-            envelope.offset,
-            "decode runtime requires at least one tile group for a coded frame",
-        )
-    })
-}
+#[cfg(test)]
+use tile_plan::continuation_structure_start_bits;
+pub(crate) use tile_plan::{TileFactsKind, derive_tile_plan, derive_tile_plan_with};
 
-fn planned_envelope<'a>(
-    bytes: SourceBytes<'a>,
-    planned: &DecodePlannedObu,
-) -> Result<ObuEnvelope<'a>> {
-    let start = planned.offset().get();
-    let payload = start
-        .checked_add(u64::from(planned.header().header_size_bytes))
-        .zip(start.checked_add(u64::from(planned.size())))
-        .and_then(|(payload_start, end)| bytes.get(payload_start, end))
-        .ok_or_else(|| {
-            unsupported_at(
-                "source_range_out_of_bounds",
-                planned.offset(),
-                "planned tile-group payload is outside the decode input",
-            )
-        })?;
-    Ok(ObuEnvelope {
-        offset: planned.offset(),
-        size: planned.size(),
-        header: planned.header(),
-        payload,
-    })
-}
-
-/// Checks the first tile group's frame header and, only when continuation
-/// groups will compare against it, keeps a copy of its bits.
-fn record_frame_header(
-    envelope: ObuEnvelope<'_>,
-    core: &FrameHeaderCore,
-    continuations: bool,
-) -> Result<Option<RecordedFrameHeaderBits>> {
-    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-    if reader.read_bit().ok() != Some(1) {
-        return Err(unsupported_at(
-            "missing_first_tile_group",
-            envelope.offset,
-            "coded frame must begin with is_first_tile_group equal to 1",
-        ));
-    }
-    let truncated = || {
-        unsupported_at(
-            "frame_header_copy_source_truncated",
-            envelope.offset,
-            "first tile-group frame header could not be recorded for continuation validation",
-        )
-    };
-    if !continuations {
-        return if reader.remaining_bits() < core.consumed_bits {
-            Err(truncated())
-        } else {
-            Ok(None)
-        };
-    }
-    RecordedFrameHeaderBits::record(&mut reader, core.consumed_bits)
-        .map(Some)
-        .map_err(|_| truncated())
-}
-
-fn continuation_structure_start_bits(
-    envelope: ObuEnvelope<'_>,
-    recorded: &RecordedFrameHeaderBits,
-) -> Result<u64> {
-    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-    if reader.read_bit().ok() != Some(0) {
-        return Err(unsupported_at(
-            "unexpected_first_tile_group",
-            envelope.offset,
-            "tile-group continuation must set is_first_tile_group to 0",
-        ));
-    }
-    let frame_header_present = reader.read_bit().map_err(|_| {
-        unsupported_at(
-            "tile_group_prefix_parse",
-            envelope.offset,
-            "tile-group continuation ends before frame_header_present_flag",
-        )
-    })? != 0;
-    if frame_header_present {
-        match parse_frame_header_copy(&mut reader, recorded) {
-            FrameHeaderCopyOutcome::Matches => {}
-            FrameHeaderCopyOutcome::Mismatch { .. } => {
-                return Err(unsupported_at(
-                    "frame_header_copy_mismatch",
-                    envelope.offset,
-                    "tile-group continuation frame_header_copy differs from the first group",
-                ));
-            }
-            FrameHeaderCopyOutcome::Truncated { .. } => {
-                return Err(unsupported_at(
-                    "frame_header_copy_truncated",
-                    envelope.offset,
-                    "tile-group continuation ends inside frame_header_copy",
-                ));
-            }
-            _ => {
-                return Err(unsupported_at(
-                    "frame_header_copy_invalid",
-                    envelope.offset,
-                    "tile-group continuation frame_header_copy is invalid",
-                ));
-            }
-        }
-    }
-    Ok(reader.consumed_bits())
-}
-
-pub(crate) fn derive_tile_plan<'payload>(
-    candidate: &DecodePlannedObu,
-    bytes: SourceBytes<'payload>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    options: &DecodeOptions,
-) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> {
-    let mut scratch = crate::bitstream::tile_payload::TilePayloadScratch::default();
-    derive_tile_plan_with(
-        candidate,
-        bytes,
-        sequence,
-        core,
-        options,
-        TileFactsKind::Intra,
-        None,
-        &mut scratch,
-    )
-}
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;

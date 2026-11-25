@@ -15,7 +15,7 @@ use common::{
 };
 
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
-const UNSUPPORTED_MULTISTREAM: &[u8] = &[0x01, 0x50];
+const INVALID_MSDO_LAYER_SCOPE: &[u8] = &[0x02, 0xD0, 0x03];
 const MALFORMED_ANNEX_B: &[u8] = &[0x05, 0x10];
 const LOCAL_DECODER_MISSION_ENV: &str = "SPLOT_LOCAL_DECODER_MISSION_IVF";
 
@@ -821,7 +821,7 @@ fn decode_malformed_source_json_mode_emits_detail_fields() {
 
 #[test]
 fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
-    let input = temp_input("av2", UNSUPPORTED_MULTISTREAM);
+    let input = temp_input("av2", INVALID_MSDO_LAYER_SCOPE);
     let output = temp_output("y4m");
     let original_output = b"unsupported output sentinel";
     std::fs::write(&output, original_output).expect("write temporary output sentinel");
@@ -838,9 +838,9 @@ fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "7.1");
+    assert_eq!(json["spec_section"], "6.2.2");
     assert_eq!(json["detail_kind"], "unsupported_structure");
-    assert_eq!(json["unsupported_reason"], "multistream_selection");
+    assert_eq!(json["unsupported_reason"], "invalid_layer_scope");
     assert_eq!(json["obu_type"], "OBU_MSDO");
     assert_eq!(json["byte_offset"], 1);
     assert_eq!(

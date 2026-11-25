@@ -541,7 +541,7 @@ pub(super) fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
 mod tests {
 
     use super::*;
-    use crate::pipeline::FrameCdfSubset;
+    use crate::bitstream::tile_payload::FrameCdfSubset;
     use crate::pipeline::frame_lifecycle::PipelineDecodedFrame;
     use crate::pipeline::inflight::PipelineFrameSlot;
     use crate::pipeline::output_effects::FrameOutputEffects;

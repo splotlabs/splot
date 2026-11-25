@@ -85,8 +85,18 @@ typedef struct SplotSettings {
   // Bitmask (`1..=0x7fffffff`) of extended layers (`1 << extended_layer_id`) to emit.
   // `0` emits all extended layers (default). Bit 31 (`0x80000000`) is invalid.
   uint32_t extended_output_mask;
+  // Operating-point selection scope: `0` = none (default), `1` = global OPS,
+  // `2` = local OPS on `operating_point_xlayer_id`. Cannot be non-zero when
+  // any output mask is non-zero.
+  uint8_t operating_point_scope;
+  // Target extended layer (`0..=30`) when `operating_point_scope == 2`; keep zero otherwise.
+  uint8_t operating_point_xlayer_id;
+  // `ops_id` (`0..=15`) when `operating_point_scope != 0`; keep zero otherwise.
+  uint8_t operating_point_ops_id;
+  // Operating-point index (`0..=6`) when `operating_point_scope != 0`; keep zero otherwise.
+  uint8_t operating_point_index;
   // Reserved; keep zero.
-  uint8_t reserved[24];
+  uint8_t reserved[20];
 } SplotSettings;
 
 // Caller data that goes with one temporal unit to the pictures it codes.
@@ -171,8 +181,9 @@ void splot_default_settings(struct SplotSettings *settings);
 // Opens a decoder and stores it in `*out`.
 //
 // Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a
-// `skip_film_grain` above 1, `temporal_output_mask` above `15`, or nonzero
-// reserved bytes, or [`SPLOT_EDECODE`] when the worker pool cannot start.
+// `skip_film_grain` above 1, `temporal_output_mask` above `15`, invalid
+// operating-point settings, or nonzero reserved bytes, or [`SPLOT_EDECODE`]
+// when the worker pool cannot start.
 //
 // # Safety
 // `out` is null or writable; `settings` is null or points to a

@@ -19,8 +19,8 @@ use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOptions, DecodeOutputError,
     DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, EmbeddedLayerId,
-    EmbeddedLayerSelection, ExtendedLayerId, ExtendedLayerSelection, TemporalLayerId,
-    TemporalLayerSelection, TypedDecodeContext, Y4mFrameRate,
+    EmbeddedLayerSelection, ExtendedLayerId, ExtendedLayerSelection, OperatingPointSelection,
+    TemporalLayerId, TemporalLayerSelection, TypedDecodeContext, Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -140,6 +140,22 @@ pub(crate) struct DecodeArgs {
         conflicts_with = "extended_layer"
     )]
     extended_output_mask: Option<ExtendedLayerSelection>,
+    /// Operating point to decode: `global:OPS_ID:OP_INDEX` or
+    /// `local:XLAYER:OPS_ID:OP_INDEX`.
+    #[arg(
+        long,
+        value_name = "SPEC",
+        value_parser = parse_operating_point,
+        conflicts_with_all = [
+            "temporal_layer",
+            "temporal_output_mask",
+            "embedded_layer",
+            "embedded_output_mask",
+            "extended_layer",
+            "extended_output_mask",
+        ]
+    )]
+    operating_point: Option<OperatingPointSelection>,
 }
 
 fn parse_layer_arg(value: &str, max: u8, name: &str) -> core::result::Result<Option<u8>, String> {
@@ -214,6 +230,37 @@ fn parse_extended_output_mask(value: &str) -> core::result::Result<ExtendedLayer
         0x7FFF_FFFF,
         "extended",
     )?))
+}
+
+fn parse_u8_bounded(value: &str, max: u8, name: &str) -> core::result::Result<u8, String> {
+    match value.parse::<u8>() {
+        Ok(parsed) if parsed <= max => Ok(parsed),
+        _ => Err(format!("{name} must be an integer in 0..={max}")),
+    }
+}
+
+fn parse_operating_point(value: &str) -> core::result::Result<OperatingPointSelection, String> {
+    let parts: Vec<&str> = value.split(':').collect();
+    match parts.as_slice() {
+        [scope, ops_id, op_index] if scope.eq_ignore_ascii_case("global") => {
+            Ok(OperatingPointSelection::Global {
+                ops_id: parse_u8_bounded(ops_id, 15, "ops_id")?,
+                op_index: parse_u8_bounded(op_index, 6, "op_index")?,
+            })
+        }
+        [scope, xlayer, ops_id, op_index] if scope.eq_ignore_ascii_case("local") => {
+            let xlayer_id = parse_u8_bounded(xlayer, 30, "extended layer")?;
+            Ok(OperatingPointSelection::Local {
+                xlayer_id: ExtendedLayerId::from_bits(xlayer_id),
+                ops_id: parse_u8_bounded(ops_id, 15, "ops_id")?,
+                op_index: parse_u8_bounded(op_index, 6, "op_index")?,
+            })
+        }
+        _ => Err(
+            "operating point must be 'global:OPS_ID:OP_INDEX' or 'local:XLAYER:OPS_ID:OP_INDEX'"
+                .to_owned(),
+        ),
+    }
 }
 
 fn parse_y4m_frame_rate(value: &str) -> core::result::Result<Y4mFrameRate, String> {
@@ -600,7 +647,8 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
         .with_skip_film_grain(args.skip_film_grain)
         .with_temporal_layer_selection(temporal_layer_selection)
         .with_embedded_layer_selection(embedded_layer_selection)
-        .with_extended_layer_selection(extended_layer_selection);
+        .with_extended_layer_selection(extended_layer_selection)
+        .with_operating_point_selection(args.operating_point.unwrap_or_default());
     let input = open_decode_input(&args.input)
         .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
     let context = DecodeContext::new(

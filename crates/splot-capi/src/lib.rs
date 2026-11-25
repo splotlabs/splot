@@ -32,10 +32,11 @@ use core::num::NonZeroUsize;
 use core::ptr;
 
 use splot_core::headers::content_interpretation::DerivedColorInfo;
+use splot_core::types::ExtendedLayerId;
 use splot_decode::{
     BitDepth, DataProps, Decoder, DecoderSettings, EmbeddedLayerSelection, ExtendedLayerSelection,
-    FrameDelay, FrameType, Picture, PictureSamples, PixelFormat, PlaneId, PlaneRef, SendStatus,
-    TemporalLayerSelection, ThreadCount,
+    FrameDelay, FrameType, OperatingPointSelection, Picture, PictureSamples, PixelFormat, PlaneId,
+    PlaneRef, SendStatus, TemporalLayerSelection, ThreadCount,
 };
 
 /// The call succeeded.
@@ -86,8 +87,18 @@ pub struct SplotSettings {
     /// Bitmask (`1..=0x7fffffff`) of extended layers (`1 << extended_layer_id`) to emit.
     /// `0` emits all extended layers (default). Bit 31 (`0x80000000`) is invalid.
     pub extended_output_mask: u32,
+    /// Operating-point selection scope: `0` = none (default), `1` = global OPS,
+    /// `2` = local OPS on `operating_point_xlayer_id`. Cannot be non-zero when
+    /// any output mask is non-zero.
+    pub operating_point_scope: u8,
+    /// Target extended layer (`0..=30`) when `operating_point_scope == 2`; keep zero otherwise.
+    pub operating_point_xlayer_id: u8,
+    /// `ops_id` (`0..=15`) when `operating_point_scope != 0`; keep zero otherwise.
+    pub operating_point_ops_id: u8,
+    /// Operating-point index (`0..=6`) when `operating_point_scope != 0`; keep zero otherwise.
+    pub operating_point_index: u8,
     /// Reserved; keep zero.
-    pub reserved: [u8; 24],
+    pub reserved: [u8; 20],
 }
 
 /// Caller data that goes with one temporal unit to the pictures it codes.
@@ -213,7 +224,11 @@ pub unsafe extern "C" fn splot_default_settings(settings: *mut SplotSettings) {
             embedded_output_mask: 0,
             reserved0: 0,
             extended_output_mask: 0,
-            reserved: [0; 24],
+            operating_point_scope: 0,
+            operating_point_xlayer_id: 0,
+            operating_point_ops_id: 0,
+            operating_point_index: 0,
+            reserved: [0; 20],
         };
     }
 }
@@ -221,8 +236,9 @@ pub unsafe extern "C" fn splot_default_settings(settings: *mut SplotSettings) {
 /// Opens a decoder and stores it in `*out`.
 ///
 /// Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a
-/// `skip_film_grain` above 1, `temporal_output_mask` above `15`, or nonzero
-/// reserved bytes, or [`SPLOT_EDECODE`] when the worker pool cannot start.
+/// `skip_film_grain` above 1, `temporal_output_mask` above `15`, invalid
+/// operating-point settings, or nonzero reserved bytes, or [`SPLOT_EDECODE`]
+/// when the worker pool cannot start.
 ///
 /// # Safety
 /// `out` is null or writable; `settings` is null or points to a
@@ -245,6 +261,48 @@ pub unsafe extern "C" fn splot_open(
     {
         return SPLOT_EINVAL;
     }
+    let has_output_masks = settings.temporal_output_mask != 0
+        || settings.embedded_output_mask != 0
+        || settings.extended_output_mask != 0;
+    let operating_point_selection = match settings.operating_point_scope {
+        0 => {
+            if settings.operating_point_xlayer_id != 0
+                || settings.operating_point_ops_id != 0
+                || settings.operating_point_index != 0
+            {
+                return SPLOT_EINVAL;
+            }
+            OperatingPointSelection::None
+        }
+        1 => {
+            if has_output_masks
+                || settings.operating_point_xlayer_id != 0
+                || settings.operating_point_ops_id > 15
+                || settings.operating_point_index > 6
+            {
+                return SPLOT_EINVAL;
+            }
+            OperatingPointSelection::Global {
+                ops_id: settings.operating_point_ops_id,
+                op_index: settings.operating_point_index,
+            }
+        }
+        2 => {
+            if has_output_masks
+                || settings.operating_point_xlayer_id > 30
+                || settings.operating_point_ops_id > 15
+                || settings.operating_point_index > 6
+            {
+                return SPLOT_EINVAL;
+            }
+            OperatingPointSelection::Local {
+                xlayer_id: ExtendedLayerId::from_bits(settings.operating_point_xlayer_id),
+                ops_id: settings.operating_point_ops_id,
+                op_index: settings.operating_point_index,
+            }
+        }
+        _ => return SPLOT_EINVAL,
+    };
     let temporal_selection = if settings.temporal_output_mask != 0 {
         TemporalLayerSelection::OutputMask(settings.temporal_output_mask)
     } else {
@@ -270,7 +328,8 @@ pub unsafe extern "C" fn splot_open(
         .with_skip_film_grain(settings.skip_film_grain == 1)
         .with_temporal_layer_selection(temporal_selection)
         .with_embedded_layer_selection(embedded_selection)
-        .with_extended_layer_selection(extended_selection);
+        .with_extended_layer_selection(extended_selection)
+        .with_operating_point_selection(operating_point_selection);
     match Decoder::new(settings) {
         Ok(decoder) => {
             *out = Box::into_raw(Box::new(SplotDecoder {
