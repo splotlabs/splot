@@ -980,13 +980,13 @@ impl XLayerTable {
             active
                 .global
                 .as_ref()
-                .map(|(_, offset, record)| (record.global_config_record_id, *offset))
+                .map(|(_, offset, record)| (Arc::clone(record), *offset))
         };
         let mut expected = active_layers().find_map(|layer| reference(layer, true));
         if expected.is_none() && self.extended_layers_filtered {
             expected = active_layers().find_map(|layer| reference(layer, false));
         }
-        let Some((expected_id, lcr_offset)) = expected else {
+        let Some((expected_record, lcr_offset)) = expected else {
             if self.global.active_msdo.is_some() {
                 return Ok(());
             }
@@ -996,6 +996,7 @@ impl XLayerTable {
                 "multistream decode requires MSDO or an activated global LCR".to_owned(),
             ));
         };
+        let expected_id = expected_record.global_config_record_id;
         for layer in active_layers() {
             let id = self
                 .layer_atlases(layer.xlayer_id)
@@ -1013,11 +1014,8 @@ impl XLayerTable {
                 ));
             }
         }
-        for (id, active) in self.global.activated_global_lcrs.iter_mut().enumerate() {
-            if id != usize::from(expected_id) {
-                *active = None;
-            }
-        }
+        self.global.activated_global_lcrs.fill(None);
+        self.global.activated_global_lcrs[usize::from(expected_id)] = Some(expected_record);
         Ok(())
     }
 
