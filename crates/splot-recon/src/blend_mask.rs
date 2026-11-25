@@ -219,9 +219,16 @@ fn blend_wide_simd<S: Simd, O: WideSample>(
     size: (usize, usize),
     max: i32,
 ) {
-    mask_block(output, preds, mask, size, |p0, p1, m, out| {
-        O::put(wide_blend(simd, (p0, p1), load_bytes(simd, *m), max), out);
-    });
+    mask_block(
+        output,
+        preds,
+        mask,
+        size,
+        #[inline(always)]
+        |p0, p1, m, out| {
+            O::put(wide_blend(simd, (p0, p1), load_bytes(simd, *m), max), out);
+        },
+    );
 }
 
 #[inline]
@@ -597,7 +604,11 @@ fn to_bytes<S: Simd>(values: u16x8<S>) -> [u8; LANES] {
 /// predictors and mask are packed: whole chunks in place, an overlapping
 /// last chunk when `w % 8 != 0`, and `8 / w` rows in one chunk when `w` is
 /// 1, 2 or 4.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep the supplied-mask pixel loop in the selected SIMD target"
+)]
+#[inline(always)]
 fn mask_block<P: Copy + Default, O: Copy + Default>(
     (output, stride): (&mut [O], usize),
     preds: [&[P]; 2],
@@ -629,7 +640,11 @@ fn mask_block<P: Copy + Default, O: Copy + Default>(
 
 /// [`mask_block`] of a block at least 8 wide: `8 * N` wide, or `w` wide when
 /// `N == 0`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep the supplied-mask pixel loop in the selected SIMD target"
+)]
+#[inline(always)]
 fn rows_block<P: Copy, O: Copy, const N: usize>(
     (output, stride): (&mut [O], usize),
     [p0, p1]: [&[P]; 2],
@@ -667,7 +682,11 @@ fn rows_block<P: Copy, O: Copy, const N: usize>(
 
 /// [`mask_block`] of a `W`-wide block: each chunk is `8 / W` packed rows,
 /// and a last part chunk is padded.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep the supplied-mask pixel loop in the selected SIMD target"
+)]
+#[inline(always)]
 fn small_block<P: Copy + Default, O: Copy + Default, const W: usize>(
     (output, stride): (&mut [O], usize),
     [p0, p1]: [&[P]; 2],
