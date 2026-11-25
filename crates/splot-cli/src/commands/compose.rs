@@ -235,3 +235,58 @@ impl CompositeOutput {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_extra_picture_after_a_completed_atlas_is_rejected() -> Result<()> {
+        let stream = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-atlas-alpha-paired-8bit.obu"
+        );
+        let mut units = TemporalUnitReader::new(&stream[..]);
+        let first = units
+            .next_temporal_unit()?
+            .context("Missing first temporal unit")?;
+        let decode_first = || -> Result<Decoder> {
+            let mut decoder =
+                Decoder::new(DecoderSettings::default().with_threads(ThreadCount::from(1usize)))?;
+            assert_eq!(
+                decoder.send_data(
+                    first.bytes,
+                    DataProps::default().with_pts(0).with_user_data(0)
+                )?,
+                SendStatus::Accepted,
+            );
+            decoder.drain();
+            Ok(decoder)
+        };
+        let mut output = CompositeOutput {
+            compositor: AtlasCompositor::new(DecodeLimits::default()),
+            atlas_id: None,
+            pending: VecDeque::new(),
+            retained_bytes: 0,
+            max_bytes: 1 << 20,
+            completed: [None; REORDER_WINDOW],
+            latest_unit: 0,
+        };
+        let mut raw = Vec::new();
+        let mut decoder = decode_first()?;
+        while let Some(picture) = decoder.get_picture()? {
+            output.push(picture, &mut raw)?;
+        }
+        let written = raw.len();
+        assert_eq!(written, 144 * 64 * 3 / 2);
+        let extra = decode_first()?
+            .get_picture()?
+            .context("Missing repeated picture")?;
+        let error = output.push(extra, &mut raw).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Temporal unit 0 has an additional picture after composition."
+        );
+        assert_eq!(raw.len(), written);
+        Ok(())
+    }
+}

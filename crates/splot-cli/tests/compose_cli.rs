@@ -133,21 +133,6 @@ fn late_atlas_pictures_obey_the_reorder_window_boundary() -> anyhow::Result<()> 
 }
 
 #[test]
-fn an_extra_picture_after_a_completed_atlas_is_rejected() -> anyhow::Result<()> {
-    let mut units = atlas_units("syn-atlas-alpha-paired-8bit.obu")?;
-    let second = units.remove(1);
-    units[0].extend(second);
-    let result = compose_at_one_timestamp(&units)?;
-    assert!(!result.status.success());
-    assert!(
-        String::from_utf8_lossy(&result.stderr)
-            .contains("Temporal unit 0 has an additional picture after composition")
-    );
-    assert_eq!(result.stdout.len(), 144 * 64 * 3 / 2);
-    Ok(())
-}
-
-#[test]
 fn a_failed_composition_preserves_existing_output() {
     let output = temp_output("yuv");
     std::fs::write(&output, b"existing").unwrap();
