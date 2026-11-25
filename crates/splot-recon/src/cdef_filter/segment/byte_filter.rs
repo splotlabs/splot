@@ -213,21 +213,25 @@ pub(super) fn cdef_filter_rows_wide8<
             let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
             let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
             for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
-                let byte_quad = |view: &[u8; SPAN8]| -> Option<i8x32<S>> {
-                    if STRIDE == LUMA_BYTE_STRIDE {
-                        let pair = |row: usize| {
-                            let at = row * STRIDE;
-                            Some(u8x32::from_slice(simd, view.get(at..at + 32)?).bitcast())
+                let byte_quad = {
+                    // Keep vector loads and the row unpack in the surrounding SIMD scope.
+                    #[inline(always)]
+                    |view: &[u8; SPAN8]| -> Option<i8x32<S>> {
+                        if STRIDE == LUMA_BYTE_STRIDE {
+                            let pair = |row: usize| {
+                                let at = row * STRIDE;
+                                Some(u8x32::from_slice(simd, view.get(at..at + 32)?).bitcast())
+                            };
+                            return Some(quads.padded_rows(simd, pair(first)?, pair(first + 2)?));
+                        }
+                        let row = |index: usize| -> Option<u64x2<S>> {
+                            let at = (first + Q::ROWS[index]) * STRIDE;
+                            Some(u8x16::from_slice(simd, view.get(at..at + 16)?).bitcast())
                         };
-                        return Some(quads.padded_rows(simd, pair(first)?, pair(first + 2)?));
+                        let low = simd.zip_low_u64x2(row(0)?, row(1)?);
+                        let high = simd.zip_low_u64x2(row(2)?, row(3)?);
+                        Some(simd.combine_u64x2(low, high).bitcast())
                     }
-                    let row = |index: usize| -> Option<u64x2<S>> {
-                        let at = (first + Q::ROWS[index]) * STRIDE;
-                        Some(u8x16::from_slice(simd, view.get(at..at + 16)?).bitcast())
-                    };
-                    let low = simd.zip_low_u64x2(row(0)?, row(1)?);
-                    let high = simd.zip_low_u64x2(row(2)?, row(3)?);
-                    Some(simd.combine_u64x2(low, high).bitcast())
                 };
                 let center_signed = byte_quad(center_bytes)?;
                 let center = quads.widen(simd, center_signed).map(|center| center + 128);
