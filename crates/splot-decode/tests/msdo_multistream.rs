@@ -460,6 +460,14 @@ fn msdo_reference_buffer_capacity_uses_the_sequence_maximum_before_frame_parse()
             seq.general.max_frame_height = FrameHeight::from_minus_1(1023);
             seq.general.frame_width_bits = FrameDimensionBits::from_minus_1(10);
             seq.general.frame_height_bits = FrameDimensionBits::from_minus_1(9);
+            // The original sequence tile grid describes the 64x64 seed.
+            // Signal frame-level tile information for the new sequence size.
+            let tile = seq.tile.as_mut().unwrap();
+            tile.seq_tile_info_present_flag = false;
+            tile.allow_tile_info_change = None;
+            tile.params = None;
+            tile.seq_sb_col_starts = Default::default();
+            tile.seq_sb_row_starts = Default::default();
             count = seq.inter.as_ref().unwrap().num_ref_frames;
             write_parsed(&mut data, obu.header, &ParsedObu::SequenceHeader(seq));
         } else {

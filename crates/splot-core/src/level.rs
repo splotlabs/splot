@@ -164,7 +164,7 @@ impl FrameLevelLimits {
             .checked_mul(8)?
             .checked_div(area)?
             .saturating_sub(u64::from(reserve));
-        (u64::from(count) > slots).then(|| (count, slots as u8))
+        (u64::from(count) > slots).then_some((count, slots as u8))
     }
 }
 
