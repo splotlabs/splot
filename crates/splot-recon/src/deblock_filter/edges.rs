@@ -1302,20 +1302,23 @@ mod portable {
             let three = three & ends(3, (side * 3) >> 4);
             index += count(two) + count(three);
             if widest > 3 {
-                let wide = |previous, dist: i16, q_first: i32, end| {
-                    let q_limit = (q * q_first as i16) >> 4;
-                    previous
-                        & max_pos.simd_ge(splat(dist))
-                        & transition.simd_le(q_limit)
-                        & ends(dist.min(7), end)
-                };
-                let four = wide(three, 4, Q_FIRST[0], side >> 2);
+                macro_rules! wide {
+                    ($previous:expr, $distance:literal, $q_first:expr, $end:expr) => {{
+                        const DISTANCE: i16 = $distance;
+                        let q_limit = (q * $q_first as i16) >> 4;
+                        $previous
+                            & max_pos.simd_ge(splat(DISTANCE))
+                            & transition.simd_le(q_limit)
+                            & ends(DISTANCE.min(7), $end)
+                    }};
+                }
+                let four = wide!(three, 4, Q_FIRST[0], side >> 2);
                 index += count(four);
                 if widest > 4 {
-                    let six = wide(four, 6, Q_FIRST[2], (side * 6) >> 4);
+                    let six = wide!(four, 6, Q_FIRST[2], (side * 6) >> 4);
                     index += count(six);
                     if widest > 6 {
-                        index += count(wide(six, 8, Q_FIRST[4], side >> 1));
+                        index += count(wide!(six, 8, Q_FIRST[4], side >> 1));
                     }
                 }
             }
