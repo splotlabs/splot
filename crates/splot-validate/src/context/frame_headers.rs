@@ -127,7 +127,8 @@ impl ValidatorContext {
                     first_picture_in_tu,
                     &stored.header,
                     mfh_record,
-                    &FrameReferenceAvailability {
+                    FrameCheckState {
+                        allocations: &mut self.frame_allocations,
                         qm: &state.qm,
                         film_grain: &state.film_grain,
                         reference_buffer,

@@ -1568,6 +1568,12 @@ fn decode_frames_in_order(
                         Result::Ok((inter_core, user_qm, order_hint_bits))
                     })?
                 };
+                xlayers.check_msdo_frame_limits(
+                    candidate_xlayer,
+                    None,
+                    &inter_core,
+                    inter_envelope.offset,
+                )?;
                 xlayers.check_tu_doh(
                     candidate_xlayer,
                     inter_order_hint_bits,
@@ -2115,6 +2121,12 @@ fn decode_frames_in_order(
                     )?;
                     (key_core, key_user_qm, key_display_grain)
                 };
+                xlayers.check_msdo_frame_limits(
+                    candidate_xlayer,
+                    Some(&key_sequence),
+                    &key_core,
+                    key_envelope.offset,
+                )?;
                 xlayers.check_tu_doh(
                     candidate_xlayer,
                     key_sequence

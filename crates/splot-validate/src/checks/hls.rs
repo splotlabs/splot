@@ -100,6 +100,19 @@ impl Check for MsdoSyntax {
                         );
                     }
                 }
+                if crate::annex_a::is_reserved_level(msdo.multistream_level_idx) {
+                    report.push(
+                        Diagnostic::error(
+                            "annex-a/level-reserved",
+                            format!(
+                                "multistream_level_idx {} is reserved by Table A.7.",
+                                msdo.multistream_level_idx
+                            ),
+                        )
+                        .with_spec_section("A.4")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
                 if msdo.multistream_profile_idc.is_reserved() {
                     report.push(
                         Diagnostic::error(
