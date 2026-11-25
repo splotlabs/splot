@@ -89,8 +89,11 @@ pub(super) fn cdef_filter_rows_u8_quad<
                         cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first + 2)?,
                     ])
                 };
-                let quad = |view: &[u16; SPAN]| -> Option<u8x32<S>> {
-                    Some(quads.pack(simd, pairs(view)?.map(|pair| pair - base)))
+                let quad = {
+                    #[inline(always)]
+                    |view: &[u16; SPAN]| -> Option<u8x32<S>> {
+                        Some(quads.pack(simd, pairs(view)?.map(|pair| pair - base)))
+                    }
                 };
                 let centers = pairs(center_view)?;
                 let center = quads.pack(simd, centers.map(|pair| pair - base));
