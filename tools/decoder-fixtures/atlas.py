@@ -53,10 +53,10 @@ def atlas(mode, xlayers, scope=31, labels=(41, 77)):
     return hls(17, scope, bits)
 
 
-def global_lcr(xlayers):
+def global_lcr(xlayers, second_segment=77):
     bits = fixed(1, 3) + fixed(sum(1 << x for x in xlayers), 31)
     bits += "00101" + fixed(0, 7) + "10" + fixed(5, 3) + fixed(0, 5)
-    for payload in (embedded_info(), fixed(0, 8) + fixed(77, 8) + fixed(0, 16)):
+    for payload in (embedded_info(), fixed(0, 8) + fixed(second_segment, 8) + fixed(0, 16)):
         bits += fixed(len(payload) // 8, 8) + payload
     return hls(16, 31, bits)
 
@@ -162,10 +162,13 @@ def generate(valid, stage):
     for obu in obus(seed):
         if first_tu and obu == b"\x08":
             break
+        if (obu[0] >> 2) & 31 == 1:
+            obu = with_lcr(obu, 8)
         first_tu.append(frame(obu))
     for mode in range(5):
         labels = (41,) if mode == 2 else (41, 77)
         layout = frame(atlas(mode, (3, 7), labels=labels))
+        record = frame(global_lcr((3, 7), labels[-1]))
         (clean / f"syn-atlas-mode-{mode}.obu").write_bytes(
-            b"".join(first_tu[:2] + [layout] + first_tu[2:])
+            b"".join(first_tu[:2] + [record, layout] + first_tu[2:])
         )
