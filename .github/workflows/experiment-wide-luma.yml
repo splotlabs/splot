@@ -19,7 +19,7 @@ jobs:
       CARGO_PROFILE_RELEASE_STRIP: none
       SPLOT_REQUIRE_AVX512: "1"
       CONTROL: d04f4d61bed29288ab5109c4eaa543c5c152f9f9
-      CANDIDATE: 5b78d3c1e4c965deb0c1b7f5779fa88d34429412
+      CANDIDATE: 0e60acf6282c863148ba77a8f52afc5813307210
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,12 +32,14 @@ jobs:
           EVIDENCE="$RUNNER_TEMP/wide-luma"
           printf "EVIDENCE=%s\n" "$EVIDENCE" >> "$GITHUB_ENV"
           mkdir -p "$EVIDENCE"
-          rustup show active-toolchain || rustup toolchain install
-          rustc -vV | tee "$EVIDENCE/rustc.txt"
           lscpu | tee "$EVIDENCE/cpu.txt"
           test "$(uname -m)" = x86_64
-          grep -qw avx512vbmi /proc/cpuinfo
-          grep -qw avx512_vbmi2 /proc/cpuinfo
+          if ! grep -qw avx512vbmi /proc/cpuinfo || ! grep -qw avx512_vbmi2 /proc/cpuinfo; then
+            echo "This runner lacks AVX-512 VBMI or VBMI2." >&2
+            exit 1
+          fi
+          rustup show active-toolchain || rustup toolchain install
+          rustc -vV | tee "$EVIDENCE/rustc.txt"
           git merge-base --is-ancestor "$CONTROL" "$CANDIDATE"
           git rev-parse "$CONTROL" "$CANDIDATE" | tee "$EVIDENCE/revisions.txt"
           python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
