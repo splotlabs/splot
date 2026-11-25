@@ -149,6 +149,19 @@ pub(super) fn output_ordering(
     u64::from(order_hint) * stride + u64::from(embedded_layer_id.get())
 }
 
+/// AV2 §§ 7.2 and 7.21.6 use the reference buffer's layer for a derived SEF.
+pub(super) fn show_existing_output_layer(
+    derive_order_hint: bool,
+    obu_mlayer: EmbeddedLayerId,
+    reference_mlayer: EmbeddedLayerId,
+) -> EmbeddedLayerId {
+    if derive_order_hint {
+        reference_mlayer
+    } else {
+        obu_mlayer
+    }
+}
+
 pub(super) struct OutputScheduler {
     pub(super) pending: Vec<Option<(usize, u64)>>,
     emitted: Vec<usize>,
@@ -510,6 +523,22 @@ mod open_loop_tests {
             scheduler.pending[2],
             Some((12, output_ordering(6, ml0, max_mlayer)))
         );
+    }
+
+    #[test]
+    fn derived_sef_uses_reference_layer_when_releasing_implicit_output() {
+        let base = EmbeddedLayerId::BASE;
+        let enhancement = EmbeddedLayerId::from_bits(1);
+        for (derived, expected) in [(true, &[1][..]), (false, &[1, 2][..])] {
+            let mut scheduler = OutputScheduler::new(2);
+            scheduler.refresh(1, 2, output_ordering(3, base, enhancement), true, false);
+            let output_mlayer = show_existing_output_layer(derived, enhancement, base);
+            let ordering = output_ordering(2, output_mlayer, enhancement);
+
+            scheduler.on_immediate(1, ordering);
+
+            assert_eq!(scheduler.newly(), expected);
+        }
     }
 
     #[test]

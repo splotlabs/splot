@@ -1159,7 +1159,7 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let (sef_frame, ordering) = {
+                let (sef_frame, ordering, output_mlayer) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1179,7 +1179,8 @@ fn decode_frames_in_order(
                         )
                     })?;
                     let source_index = layer.reference.frame_index_for_slot(slot)?;
-                    if sef_core.derive_sef_order_hint == Some(true) {
+                    let derive_order_hint = sef_core.derive_sef_order_hint == Some(true);
+                    if derive_order_hint {
                         layer.reference.mark_sef_derive_output(
                             slot,
                             layer.scheduler.already_emitted(source_index),
@@ -1193,6 +1194,11 @@ fn decode_frames_in_order(
                             "show-existing-frame output requires its retained decoded frame",
                         )
                     })?;
+                    let output_mlayer = show_existing_output_layer(
+                        derive_order_hint,
+                        sef_envelope.header.embedded_layer_id,
+                        source.embedded_layer_id,
+                    );
                     let sef_frame = PipelineFrame {
                         display_grain,
                         output_effects,
@@ -1218,7 +1224,7 @@ fn decode_frames_in_order(
                             "show-existing-frame output requires a derived display order hint",
                         )
                     })?;
-                    (sef_frame, ordering)
+                    (sef_frame, ordering, output_mlayer)
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -1238,7 +1244,7 @@ fn decode_frames_in_order(
                     })?;
                     let sef_ordering = output_ordering(
                         ordering,
-                        sef_envelope.header.embedded_layer_id,
+                        output_mlayer,
                         layer.sequence.general.max_mlayer_id,
                     );
                     let sef_tu_limit = output_ordering(
