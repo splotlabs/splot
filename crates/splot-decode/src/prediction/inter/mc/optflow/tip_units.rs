@@ -78,44 +78,46 @@ pub(crate) fn refine_tip_units<B: splot_core::simd::SimdBackend, T: ReconSample>
             candidates.iter().copied().any(fullpel_candidates) && fullpel_run_pairs(cells, columns);
         return Ok(());
     }
-    let mut fullpel = false;
-    let mut fullpel_views = None;
-    let mut luma = LumaReference::pair(sink.info(), block, offset);
-    let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
-    for (row, candidates) in candidates.chunks(columns).enumerate() {
-        for (col, &mvs) in candidates.iter().enumerate() {
-            let rect = McBlockRect::from_luma_rect(
-                block.rect.luma_x + col * 8,
-                block.rect.luma_y + row * 8,
-                8,
-                8,
-            );
-            if fullpel_candidates(mvs) {
-                fullpel = true;
-                if let Some(views) = fullpel_views
-                    .get_or_insert_with(|| TipFullpelViews::new(sink, block, (rect, mvs), offset))
-                    && let Some(cell) = views.motion_cell(backend, sink, block, (rect, mvs))?
-                {
-                    cells.push(cell);
-                    continue;
+    splot_core::with_simd!(backend, _simd => {
+        let mut fullpel = false;
+        let mut fullpel_views = None;
+        let mut luma = LumaReference::pair(sink.info(), block, offset);
+        let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
+        for (row, candidates) in candidates.chunks(columns).enumerate() {
+            for (col, &mvs) in candidates.iter().enumerate() {
+                let rect = McBlockRect::from_luma_rect(
+                    block.rect.luma_x + col * 8,
+                    block.rect.luma_y + row * 8,
+                    8,
+                    8,
+                );
+                if fullpel_candidates(mvs) {
+                    fullpel = true;
+                    if let Some(views) = fullpel_views
+                        .get_or_insert_with(|| TipFullpelViews::new(sink, block, (rect, mvs), offset))
+                        && let Some(cell) = views.motion_cell(backend, sink, block, (rect, mvs))?
+                    {
+                        cells.push(cell);
+                        continue;
+                    }
                 }
+                let refined = super::super::refinemv::tip_refinemv_optflow_motion_cell(
+                    backend,
+                    block,
+                    (rect, mvs),
+                    search,
+                    &mut luma,
+                    &mut carries,
+                )?;
+                cells.push(match refined {
+                    Some(cell) => cell,
+                    None => tip_unit_motion_cell(backend, sink, block, (rect, mvs), &mut luma)?,
+                });
             }
-            let refined = super::super::refinemv::tip_refinemv_optflow_motion_cell(
-                backend,
-                block,
-                (rect, mvs),
-                search,
-                &mut luma,
-                &mut carries,
-            )?;
-            cells.push(match refined {
-                Some(cell) => cell,
-                None => tip_unit_motion_cell(backend, sink, block, (rect, mvs), &mut luma)?,
-            });
         }
-    }
-    *fullpel_runs = fullpel && fullpel_run_pairs(cells, columns);
-    Ok(())
+        *fullpel_runs = fullpel && fullpel_run_pairs(cells, columns);
+        Ok(())
+    })
 }
 
 /// The cells of units without optical flow: each unit's § 7.13.3.6 search
