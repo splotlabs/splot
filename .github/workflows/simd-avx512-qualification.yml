@@ -43,7 +43,7 @@ jobs:
 
       - name: Check wide grain through synchronous and streaming APIs
         run: |
-          cargo test -p splot-decode --release --locked --test decoder_api \
+          cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test decoder_api \
             avx512_film_grain_matches_narrow_output_at_both_bit_depths -- --exact
 
       - name: Fetch and verify the frozen EwoutH streams
