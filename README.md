@@ -1,5 +1,7 @@
 # SIMD playback performance evidence
 
+[Release measurements for v3 plus runtime AVX-512](evidence/v3-release/README.md)
+
 November 25, 2026 evidence snapshot for [performance tracker #1934](https://github.com/splotlabs/splot/issues/1934) and [SIMD epic #1882](https://github.com/splotlabs/splot/issues/1882). Distribution retains the **x86-64-v3 floor**. The selected direction permits **startup-selected runtime AVX-512 on capable hardware**, with AVX2 for narrower work. The local playback comparisons below ran on an AVX2-only i7-12700H. Qualification of actual wide compute comes from separate native hardware experiments.
 
 [Download the measurements](evidence/measurements.tar.xz) · [Member manifest](evidence/files.tsv) · [Archive checksums](evidence/SHA256SUMS) · [Packaging record](evidence/packaging.txt)

@@ -172,7 +172,8 @@ def publish():
         for name in ("measurements.tar.xz", "files.tsv", "packaging.txt", "xeon-vnni-pairs.csv"):
             print(f"{digest((OUTPUT / name).read_bytes())}  {name}", file=f)
 
-original()
-supplement(SOURCE)
-supplement(HERE.parent / "splot-1934-gdf-leaf/target/gdf-leaf-audit", "gdf-explicit-leaf/")
-publish()
+if __name__ == "__main__":
+    original()
+    supplement(SOURCE)
+    supplement(HERE.parent / "splot-1934-gdf-leaf/target/gdf-leaf-audit", "gdf-explicit-leaf/")
+    publish()
