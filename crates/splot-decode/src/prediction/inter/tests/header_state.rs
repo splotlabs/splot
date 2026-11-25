@@ -1028,12 +1028,12 @@ fn sef_reference_slot_out_of_range_is_a_malformed_source_diagnostic() {
         envelope.size = u32::from(envelope.header.header_size_bytes)
             + u32::try_from(payload.len()).expect("payload length fits u32");
 
-        let error = super::super::parse_validated_inter_frame_core_with_mfh(
+        let error = super::super::parse_validated_inter_frame_core(
             envelope,
             &sequence,
             &reference,
             true,
-            None,
+            |_| panic!("unexpected multi-frame header reference"),
             Some(frame_index),
         )
         .expect_err("out-of-range SEF reference slot");
@@ -1309,12 +1309,12 @@ fn single_picture_tip_obu_is_a_malformed_source_diagnostic() {
     envelope.header.obu_type = splot_core::types::ObuType::RegularTip;
     envelope.payload = &payload;
     let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    let error = super::super::parse_validated_inter_frame_core_with_mfh(
+    let error = super::super::parse_validated_inter_frame_core(
         envelope,
         &sequence,
         &reference,
         true,
-        None,
+        |_| panic!("unexpected multi-frame header reference"),
         Some(frame_index),
     )
     .expect_err("TIP OBU under a single-picture sequence");
