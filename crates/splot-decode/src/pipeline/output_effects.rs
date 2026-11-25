@@ -195,7 +195,6 @@ pub(crate) struct OutputEffectState {
     active_xlayer: ExtendedLayerId,
     local_lcr_tu: Option<u64>,
     local_lcr_in_cvs: bool,
-    pub(super) atlas: super::atlas::LayerAtlases,
     global_lcr_xlayers: [Option<u32>; 8],
     brt_count: BrtCount,
     second_brt_offset: Option<ByteOffset>,
@@ -222,7 +221,6 @@ impl OutputEffectState {
             active_xlayer,
             local_lcr_tu: None,
             local_lcr_in_cvs: false,
-            atlas: super::atlas::LayerAtlases::default(),
             global_lcr_xlayers: [None; 8],
             brt_count: BrtCount::None,
             second_brt_offset: None,
@@ -236,8 +234,9 @@ impl OutputEffectState {
         self.tu_index = tu_index;
     }
 
-    pub(crate) fn has_local_lcr_id(&self, id: u8) -> bool {
-        self.atlas.has_local(id)
+    pub(super) fn note_local_lcr(&mut self) {
+        self.local_lcr_tu = Some(self.tu_index);
+        self.local_lcr_in_cvs = true;
     }
 
     pub(crate) fn apply_global_lcr(&mut self, id: u8, xlayer_map: u32) {
@@ -275,8 +274,7 @@ impl OutputEffectState {
     ) -> Result<()> {
         match envelope.header.obu_type {
             ObuType::TemporalDelimiter => self.begin_temporal_unit(),
-            ObuType::LayerConfigurationRecord => self.observe_lcr(envelope)?,
-            ObuType::AtlasSegment => self.atlas.layouts.observe(envelope)?,
+            ObuType::LayerConfigurationRecord => self.note_local_lcr(),
             ObuType::OperatingPointSet => self.observe_ops(envelope)?,
             ObuType::MultiFrameHeader => self.observe_mfh(envelope, sequence)?,
             ObuType::BufferRemovalTiming => self.observe_brt(envelope)?,
@@ -701,21 +699,6 @@ impl OutputEffectState {
         }
         if let Some(slot) = self.ci_in_current_tu.get_mut(idx) {
             *slot = Some(content);
-        }
-        Ok(())
-    }
-
-    fn observe_lcr(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
-        match parse_validated_lcr(envelope)? {
-            LayerConfigurationRecord::Global(info) => {
-                self.apply_global_lcr(info.global_config_record_id, info.xlayer_map);
-            }
-            LayerConfigurationRecord::Local(info) => {
-                self.local_lcr_tu = Some(self.tu_index);
-                self.local_lcr_in_cvs = true;
-                self.atlas.observe_local_lcr(envelope.offset, info)?;
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -1827,7 +1810,7 @@ mod tests {
         assert!(state.validate_annex_a_lcr(frame_obu, &sequence).is_ok());
 
         state.global_lcr_xlayers[1] = None;
-        state.observe_lcr(lcr_obu).unwrap();
+        state.observe_prefix_obu(lcr_obu, &sequence).unwrap();
         assert!(state.local_lcr_in_cvs);
         sequence.general.seq_profile_idc = splot_core::headers::sequence::ProfileIdc::from_bits(1);
         assert!(state.validate_annex_a_lcr(frame_obu, &sequence).is_ok());

@@ -543,3 +543,70 @@ fn pending_local_lcr_shadows_global_at_the_next_cmvs_boundary() {
         }
     }
 }
+
+#[test]
+fn sequence_header_binds_its_lcr_before_a_later_local_record() {
+    let obus = parse_annex_b_obus(COLLISION_8).unwrap();
+    for resend_header in [false, true] {
+        let mut bytes = Vec::new();
+        let mut tu = 0;
+        let mut global_lcr = Vec::new();
+        let mut global_atlas = Vec::new();
+        let mut local_lcr = 0;
+        let mut local_atlas = 0;
+        for obu in &obus {
+            let kind = obu.header.obu_type;
+            let layer = obu.header.extended_layer_id;
+            if kind == ObuType::TemporalDelimiter {
+                tu += 1;
+            }
+            if tu == 3 && layer.get() == 3 && kind == ObuType::SequenceHeader && !resend_header {
+                continue;
+            }
+            let offset = bytes.len() as u64 + 1;
+            match (kind, layer.is_global()) {
+                (ObuType::LayerConfigurationRecord, true) => global_lcr.push(offset),
+                (ObuType::AtlasSegment, true) => global_atlas.push(offset),
+                (ObuType::LayerConfigurationRecord, false) => local_lcr = offset,
+                (ObuType::AtlasSegment, false) => local_atlas = offset,
+                _ => {}
+            }
+            write_obu(&mut bytes, obu.header, obu.payload);
+        }
+        let pictures = stream_decode(&bytes, &DecoderSettings::default()).unwrap();
+        let report = context(2, 2)
+            .decode_hash_report_reader(ChunkedReader::new(&bytes, 3), DecodeOptions::DEFAULT)
+            .unwrap();
+        assert_eq!(
+            sha256_hex(&raw_all_and_by_xlayer(&pictures).0),
+            SHA_MSDO_8BIT_ALL
+        );
+        assert_eq!(pictures.len(), 8);
+        assert_eq!(report.frames.len(), pictures.len());
+        for (index, (pic, frame)) in pictures.iter().zip(&report.frames).enumerate() {
+            let second = index >= 4;
+            let x3 = pic.extended_layer_id().get() == 3;
+            let associations = pic.atlas_associations();
+            assert_eq!(frame.atlas_associations, associations);
+            let expect_local = x3 && second && resend_header;
+            assert_eq!(associations.len(), 1 + usize::from(expect_local));
+            let global = &associations[0];
+            assert!(global.scope.is_global());
+            let rebind = second && (!x3 || resend_header);
+            assert_eq!(
+                global.lcr_offset.unwrap().get(),
+                global_lcr[usize::from(rebind)]
+            );
+            assert_eq!(
+                global.layout.as_ref().unwrap().offset.get(),
+                global_atlas[usize::from(second)]
+            );
+            if expect_local {
+                let local = &associations[1];
+                assert_eq!(local.scope.get(), 3);
+                assert_eq!(local.lcr_offset.unwrap().get(), local_lcr);
+                assert_eq!(local.layout.as_ref().unwrap().offset.get(), local_atlas);
+            }
+        }
+    }
+}
