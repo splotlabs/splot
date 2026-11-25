@@ -6,7 +6,7 @@
 
 #![expect(clippy::unwrap_used)]
 
-use splot_core::simd::{SimdBackend, detect_capabilities};
+use splot_core::simd::SimdBackend;
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
 use splot_decode::{
     DataProps, DecodeContext, DecodeError, DecodeHashReport, DecodeOptions, DecodeRuntimeConfig,
@@ -110,57 +110,30 @@ impl DecodeScope<()> for TypedParityCheck<'_> {
     }
 }
 
-fn supported_forced_policies() -> Vec<(SimdPolicy, SelectedBackend)> {
-    let caps = detect_capabilities();
-    let mut policies = Vec::new();
+fn forced_policies() -> [(SimdPolicy, SelectedBackend, bool); 3] {
     #[cfg(target_arch = "x86_64")]
-    {
-        if caps.has_avx2() {
-            policies.push((SimdPolicy::Avx2, SelectedBackend::Avx2));
-        }
-        if caps.has_avx512() {
-            policies.push((SimdPolicy::Avx512, SelectedBackend::Avx512));
-        }
-    }
+    let (avx2, avx512) = {
+        let level = fearless_simd::Level::new();
+        (level.as_avx2().is_some(), level.as_avx512().is_some())
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let (avx2, avx512) = (false, false);
     #[cfg(target_arch = "aarch64")]
-    if caps.has_neon() {
-        policies.push((SimdPolicy::Neon, SelectedBackend::Neon));
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        let _ = caps;
-        policies.push((SimdPolicy::Auto, SelectedBackend::Fallback));
-    }
-    policies
+    let neon = fearless_simd::Level::new().as_neon().is_some();
+    #[cfg(not(target_arch = "aarch64"))]
+    let neon = false;
+
+    [
+        (SimdPolicy::Avx2, SelectedBackend::Avx2, avx2),
+        (SimdPolicy::Avx512, SelectedBackend::Avx512, avx512),
+        (SimdPolicy::Neon, SelectedBackend::Neon, neon),
+    ]
 }
 
-fn unsupported_policies() -> Vec<SimdPolicy> {
-    let caps = detect_capabilities();
-    let mut policies = Vec::new();
-    #[cfg(target_arch = "x86_64")]
-    {
-        policies.push(SimdPolicy::Neon);
-        if !caps.has_avx2() {
-            policies.push(SimdPolicy::Avx2);
-        }
-        if !caps.has_avx512() {
-            policies.push(SimdPolicy::Avx512);
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        policies.push(SimdPolicy::Avx2);
-        policies.push(SimdPolicy::Avx512);
-        if !caps.has_neon() {
-            policies.push(SimdPolicy::Neon);
-        }
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        let _ = caps;
-        policies.extend([SimdPolicy::Avx2, SimdPolicy::Avx512, SimdPolicy::Neon]);
-    }
-    policies
+fn supported_forced_policies() -> impl Iterator<Item = (SimdPolicy, SelectedBackend)> {
+    forced_policies()
+        .into_iter()
+        .filter_map(|(policy, backend, supported)| supported.then_some((policy, backend)))
 }
 
 fn extract_units(ivf: &[u8]) -> Vec<Vec<u8>> {
@@ -184,6 +157,11 @@ fn collect_context_outputs(ctx: &DecodeContext, bytes: &[u8]) -> ContextOutputs 
     let mut y4m = Vec::new();
     ctx.decode_y4m_bytes(bytes, options, &mut y4m).unwrap();
     ctx.decode_discard_reader(bytes, options).unwrap();
+    assert!(
+        !hash.frames.is_empty(),
+        "fixture decoded to no frame hashes"
+    );
+    assert!(!raw.is_empty(), "fixture decoded to no visible samples");
     ContextOutputs { hash, raw, y4m }
 }
 
@@ -223,9 +201,6 @@ fn decode_streaming(decoder: &mut Decoder, units: &[Vec<u8>]) -> Vec<Picture> {
 
 #[test]
 fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
-    let forced = supported_forced_policies();
-    assert!(!forced.is_empty());
-
     let auto_ctx = DecodeContext::new(DecodeRuntimeConfig::default()).unwrap();
     #[cfg(target_arch = "x86_64")]
     assert_eq!(auto_ctx.selected_backend(), SelectedBackend::Avx2);
@@ -234,6 +209,15 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     assert_eq!(auto_ctx.selected_backend(), SelectedBackend::Fallback);
 
+    let mut policies = vec![(SimdPolicy::Auto, auto_ctx.selected_backend())];
+    policies.extend(supported_forced_policies());
+    if std::env::var_os("SPLOT_REQUIRE_AVX512").is_some() {
+        assert!(
+            policies.contains(&(SimdPolicy::Avx512, SelectedBackend::Avx512)),
+            "qualification requires the full fearless_simd AVX-512 token on this host"
+        );
+    }
+
     for &(name, bytes) in FIXTURES {
         let units = extract_units(bytes);
         let expected = collect_context_outputs(&auto_ctx, bytes);
@@ -241,9 +225,6 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
         for &threads in &[1usize, 3, 8] {
             let delay = threads.min(4);
             let mut thread_expected: Option<ContextOutputs> = None;
-            let mut policies = vec![(SimdPolicy::Auto, auto_ctx.selected_backend())];
-            policies.extend_from_slice(&forced);
-
             for &(policy, expected_backend) in &policies {
                 let label = format!("{name} threads={threads} policy={policy}");
                 let ctx = DecodeContext::new(
@@ -287,6 +268,11 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
                 assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
                 let pass2 = decode_streaming(&mut decoder, &units);
                 assert_eq!(raw_from_pictures(&pass2), expected.raw, "stream2 {label}");
+                assert_eq!(
+                    raw_from_pictures(&pass1),
+                    expected.raw,
+                    "pictures retained across reuse {label}"
+                );
                 assert_eq!(decoder.selected_backend(), expected_backend, "{label}");
 
                 if name == "film_grain" {
@@ -298,7 +284,17 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
                             .with_simd_policy(policy),
                     )
                     .unwrap();
+                    assert_eq!(
+                        no_grain_decoder.selected_backend(),
+                        expected_backend,
+                        "{label}"
+                    );
                     let skipped = decode_streaming(&mut no_grain_decoder, &units);
+                    assert_ne!(
+                        raw_from_pictures(&skipped),
+                        expected.raw,
+                        "skipped grain must change the output {label}"
+                    );
                     let applied: Vec<Picture> = skipped
                         .iter()
                         .map(|p| p.apply_film_grain().unwrap())
@@ -316,17 +312,20 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
 
 #[test]
 fn unsupported_forced_policies_fail_closed_in_decoder_and_context() {
-    for policy in unsupported_policies() {
+    for (policy, _, supported) in forced_policies() {
+        if supported {
+            continue;
+        }
         let ctx_err = DecodeContext::new(DecodeRuntimeConfig::default().with_simd_policy(policy))
             .unwrap_err();
         assert!(
-            matches!(ctx_err, DecodeError::UnsupportedBackend { .. }),
+            matches!(ctx_err, DecodeError::UnsupportedBackend { source } if source.requested() == policy),
             "{policy}: {ctx_err}"
         );
         let dec_err =
             Decoder::new(DecoderSettings::default().with_simd_policy(policy)).unwrap_err();
         assert!(
-            matches!(dec_err, DecodeError::UnsupportedBackend { .. }),
+            matches!(dec_err, DecodeError::UnsupportedBackend { source } if source.requested() == policy),
             "{policy}: {dec_err}"
         );
     }
@@ -467,7 +466,13 @@ fn malformed_input_and_early_drop_preserve_backend_and_recover() {
             )
             .unwrap();
             assert_eq!(partial.selected_backend(), expected_backend);
-            let _ = partial.send_data(&opfl_units[0], DataProps::default());
+            assert_eq!(
+                partial
+                    .send_data(&opfl_units[0], DataProps::default())
+                    .unwrap(),
+                SendStatus::Accepted,
+                "early drop {policy}"
+            );
             drop(partial);
         }
 
@@ -479,6 +484,19 @@ fn malformed_input_and_early_drop_preserve_backend_and_recover() {
         )
         .unwrap();
         assert_eq!(fresh.selected_backend(), expected_backend);
+        assert_eq!(
+            fresh
+                .send_data(&opfl_units[0], DataProps::default())
+                .unwrap(),
+            SendStatus::Accepted,
+            "live flush {policy}"
+        );
+        fresh.flush();
+        assert_eq!(fresh.selected_backend(), expected_backend);
+        assert!(
+            fresh.wait_picture().unwrap().is_none(),
+            "live flush {policy}"
+        );
         let full = decode_streaming(&mut fresh, &opfl_units);
         assert_eq!(raw_from_pictures(&full), opfl_expected.raw);
         assert_eq!(fresh.selected_backend(), expected_backend);
