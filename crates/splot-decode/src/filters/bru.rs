@@ -127,6 +127,8 @@ impl BruModeMap {
     /// unclipped rectangle edges therefore cannot contain active cells. The
     /// check can clip rectangles to the frame and reject inactive cells as
     /// soon as a rectangle covers them. Clipping preserves rectangle overlap.
+    /// When one enclosing rectangle contains no inactive cells, the check
+    /// can accept every region inside it without merging their rectangles.
     pub(crate) fn validate_regions(
         &self,
         invalid: impl Fn(usize, usize) -> crate::error::DecodeError,
@@ -140,21 +142,66 @@ impl BruModeMap {
                 (index % stride) << self.sb_shift,
             )
         };
+        let mut bounds = Region {
+            top: rows,
+            bottom: 0,
+            left: stride,
+            right: 0,
+        };
+        let mut has_inactive = false;
+        for (row, modes) in self.modes.chunks_exact(stride).enumerate() {
+            for (col, mode) in modes.iter().enumerate() {
+                match mode.load(Ordering::Acquire) {
+                    BRU_ACTIVE => {
+                        bounds.top = bounds.top.min(row);
+                        bounds.bottom = row;
+                        bounds.left = bounds.left.min(col);
+                        bounds.right = bounds.right.max(col);
+                    }
+                    BRU_INACTIVE => has_inactive = true,
+                    BRU_SUPPORT => {}
+                    _ => return Err(invalid_at(row * stride + col)),
+                }
+            }
+        }
+        if !has_inactive || bounds.top == rows {
+            return Ok(());
+        }
+
+        let top = bounds.top.saturating_sub(1);
+        let bottom = (bounds.bottom + 1).min(rows - 1);
+        let left = bounds.left.saturating_sub(1);
+        let right = (bounds.right + 1).min(stride - 1);
+        if (top..=bottom).all(|row| {
+            self.modes[row * stride + left..=row * stride + right]
+                .iter()
+                .all(|mode| mode.load(Ordering::Acquire) != BRU_INACTIVE)
+        }) {
+            return Ok(());
+        }
+        self.validate_merged_regions(rows, invalid_at)
+    }
+
+    /// Checks exact region boundaries when inactive cells separate active areas.
+    #[cold]
+    fn validate_merged_regions(
+        &self,
+        rows: usize,
+        invalid_at: impl Fn(usize) -> crate::error::DecodeError,
+    ) -> Result<()> {
+        let stride = self.sb_cols;
+        let len = self.modes.len();
         let mut owners = Vec::new();
+        owners
+            .try_reserve_exact(len)
+            .map_err(|_| region_allocation_error())?;
+        owners.resize(len, usize::MAX);
         let mut regions: Vec<RegionEntry> = Vec::new();
         let mut pending = Vec::new();
 
         for (index, mode) in self.modes.iter().enumerate() {
-            match mode.load(Ordering::Acquire) {
-                BRU_ACTIVE => {}
-                BRU_INACTIVE | BRU_SUPPORT => continue,
-                _ => return Err(invalid_at(index)),
-            }
-            if owners.is_empty() {
-                owners
-                    .try_reserve_exact(len)
-                    .map_err(|_| region_allocation_error())?;
-                owners.resize(len, usize::MAX);
+            if mode.load(Ordering::Acquire) != BRU_ACTIVE {
+                continue;
             }
             let row = index / stride;
             let col = index % stride;
@@ -317,6 +364,24 @@ mod tests {
         validate_at_col(&map).unwrap();
         map.set(3 * 16, 7 * 16, BRU_INACTIVE);
         assert!(validate_at_col(&map).is_err());
+    }
+
+    #[test]
+    fn validate_regions_accepts_inactive_superblocks_between_separate_regions() {
+        let map = BruModeMap::new(16, 5 * 16, 16).unwrap();
+        for (col, mode) in [
+            BRU_ACTIVE,
+            BRU_SUPPORT,
+            BRU_INACTIVE,
+            BRU_SUPPORT,
+            BRU_ACTIVE,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            map.set(0, col * 16, mode);
+        }
+        validate_at_col(&map).unwrap();
     }
 
     #[test]
