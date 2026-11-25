@@ -20,7 +20,7 @@ pub(crate) struct BruModeMap {
     modes: Box<[AtomicU8]>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Region {
     top: usize,
     bottom: usize,
@@ -29,11 +29,13 @@ struct Region {
 }
 
 impl Region {
-    fn covers(self, other: Self) -> bool {
-        self.top <= other.top
-            && self.bottom >= other.bottom
-            && self.left <= other.left
-            && self.right >= other.right
+    fn with_margin(self, rows: usize, cols: usize) -> Self {
+        Self {
+            top: self.top.saturating_sub(1),
+            bottom: (self.bottom + 1).min(rows),
+            left: self.left.saturating_sub(1),
+            right: (self.right + 1).min(cols),
+        }
     }
 }
 
@@ -147,9 +149,9 @@ impl BruModeMap {
                 match mode.load(Ordering::Acquire) {
                     BRU_ACTIVE => {
                         bounds.top = bounds.top.min(row);
-                        bounds.bottom = row;
+                        bounds.bottom = row + 1;
                         bounds.left = bounds.left.min(col);
-                        bounds.right = bounds.right.max(col);
+                        bounds.right = bounds.right.max(col + 1);
                     }
                     BRU_INACTIVE => has_inactive = true,
                     BRU_SUPPORT => {}
@@ -161,12 +163,9 @@ impl BruModeMap {
             return Ok(());
         }
 
-        let top = bounds.top.saturating_sub(1);
-        let bottom = (bounds.bottom + 1).min(rows - 1);
-        let left = bounds.left.saturating_sub(1);
-        let right = (bounds.right + 1).min(stride - 1);
-        if (top..=bottom).all(|row| {
-            self.modes[row * stride + left..=row * stride + right]
+        let bounds = bounds.with_margin(rows, stride);
+        if (bounds.top..bounds.bottom).all(|row| {
+            self.modes[row * stride + bounds.left..row * stride + bounds.right]
                 .iter()
                 .all(|mode| mode.load(Ordering::Acquire) != BRU_INACTIVE)
         }) {
@@ -204,14 +203,15 @@ impl BruModeMap {
             let row = index / stride;
             let col = index % stride;
             let anchor = Region {
-                top: row.saturating_sub(1),
-                bottom: (row + 1).min(rows - 1),
-                left: col.saturating_sub(1),
-                right: (col + 1).min(stride - 1),
-            };
+                top: row,
+                bottom: row + 1,
+                left: col,
+                right: col + 1,
+            }
+            .with_margin(rows, stride);
             let owner = if owners[index] == usize::MAX {
-                (anchor.top..=anchor.bottom)
-                    .flat_map(|row| row * stride + anchor.left..=row * stride + anchor.right)
+                (anchor.top..anchor.bottom)
+                    .flat_map(|row| row * stride + anchor.left..row * stride + anchor.right)
                     .map(|index| owners[index])
                     .find(|&owner| owner != usize::MAX)
                     .unwrap_or(usize::MAX)
@@ -234,8 +234,8 @@ impl BruModeMap {
                 id
             };
             while let Some(strip) = pending.pop() {
-                for y in strip.top..=strip.bottom {
-                    for x in strip.left..=strip.right {
+                for y in strip.top..strip.bottom {
+                    for x in strip.left..strip.right {
                         let index = y * stride + x;
                         let owner = &mut owners[index];
                         if *owner == usize::MAX {
@@ -270,40 +270,41 @@ fn extend_region(
     other: Region,
     pending: &mut Vec<Region>,
 ) -> core::result::Result<(), TryReserveError> {
-    if bounds.covers(other) {
+    let old = *bounds;
+    let union = Region {
+        top: old.top.min(other.top),
+        bottom: old.bottom.max(other.bottom),
+        left: old.left.min(other.left),
+        right: old.right.max(other.right),
+    };
+    if old == union {
         return Ok(());
     }
     pending.try_reserve(4)?;
-    let old = *bounds;
-    bounds.top = old.top.min(other.top);
-    bounds.bottom = old.bottom.max(other.bottom);
-    bounds.left = old.left.min(other.left);
-    bounds.right = old.right.max(other.right);
-    if bounds.top < old.top {
-        pending.push(Region {
-            bottom: old.top - 1,
-            ..*bounds
-        });
-    }
-    if bounds.bottom > old.bottom {
-        pending.push(Region {
-            top: old.bottom + 1,
-            ..*bounds
-        });
-    }
-    if bounds.left < old.left {
-        pending.push(Region {
-            left: bounds.left,
-            right: old.left - 1,
+    *bounds = union;
+    for strip in [
+        Region {
+            bottom: old.top,
+            ..union
+        },
+        Region {
+            top: old.bottom,
+            ..union
+        },
+        Region {
+            left: union.left,
+            right: old.left,
             ..old
-        });
-    }
-    if bounds.right > old.right {
-        pending.push(Region {
-            left: old.right + 1,
-            right: bounds.right,
+        },
+        Region {
+            left: old.right,
+            right: union.right,
             ..old
-        });
+        },
+    ] {
+        if strip.top < strip.bottom && strip.left < strip.right {
+            pending.push(strip);
+        }
     }
     Ok(())
 }
