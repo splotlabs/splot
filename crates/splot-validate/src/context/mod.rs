@@ -114,6 +114,7 @@ use self::frame_header_copy::*;
 use self::frame_header_diagnostics::*;
 use self::hls::*;
 use self::lcr::*;
+use self::lcr_agreement::ActiveGlobalLcrReference;
 use self::metadata::*;
 use self::msdo::*;
 use self::ops::*;
