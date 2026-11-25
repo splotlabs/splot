@@ -11,7 +11,8 @@ pub(super) struct FrameAllocations {
     multistream: bool,
     saw_msdo: bool,
     // One finding per layer and limit suffices until a later CELU fixes the TU's mode (§ 7.4.1).
-    pending: BTreeMap<(ExtendedLayerId, &'static str), Diagnostic>,
+    limits_seen: [u8; 32],
+    pending: Vec<Diagnostic>,
 }
 
 impl FrameAllocations {
@@ -26,12 +27,11 @@ impl FrameAllocations {
         }
         self.saw_msdo = false;
         if self.multistream {
-            report
-                .diagnostics
-                .extend(std::mem::take(&mut self.pending).into_values());
+            report.diagnostics.append(&mut self.pending);
         } else {
             self.pending.clear();
         }
+        self.limits_seen.fill(0);
     }
 
     pub(super) fn check_frame(
@@ -52,77 +52,56 @@ impl FrameAllocations {
             .as_ref()
             .and_then(|msdo| msdo.frame_level_limits(level, layer))
             .unwrap_or(native);
-        let mut check = |metric: &str,
-                         value: u64,
-                         name: &'static str,
-                         max: u64,
-                         scaled: u64,
-                         rule: &'static str| {
-            let diagnostic = |limit, source| {
-                Diagnostic::error(
-                    rule,
-                    format!(
-                        "{metric} {value} exceeds {name} {limit} under the {source} for extended layer {} (seq_level_idx {level})",
-                        layer.get()
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(obu.offset)
-            };
-            if value > max {
-                report.push(diagnostic(max, "sequence level"));
+        let mut check = |kind: Limit, value: u64, max: u64, scaled: u64| {
+            let (output, bound, source) = if value > max {
+                (&mut report.diagnostics, max, "sequence level")
             } else if value > scaled {
-                self.pending
-                    .entry((layer, name))
-                    .or_insert_with(|| diagnostic(scaled, "MSDO allocation"));
-            }
+                let mask = 1 << kind as u8;
+                let seen = &mut self.limits_seen[usize::from(layer.get())];
+                if *seen & mask != 0 {
+                    return;
+                }
+                *seen |= mask;
+                (&mut self.pending, scaled, "MSDO allocation")
+            } else {
+                return;
+            };
+            output.push(kind.diagnostic(value, bound, source, level, obu));
         };
 
         if let Some(size) = size {
-            let rule = "annex-a/frame-size-exceeds-level";
             check(
-                "FrameWidth",
+                Limit::Width,
                 u64::from(size.width),
-                "MaxHSize",
                 u64::from(native.max_width),
                 u64::from(allocated.max_width),
-                rule,
             );
             check(
-                "FrameHeight",
+                Limit::Height,
                 u64::from(size.height),
-                "MaxVSize",
                 u64::from(native.max_height),
                 u64::from(allocated.max_height),
-                rule,
             );
             check(
-                "FrameWidth * FrameHeight",
+                Limit::Area,
                 u64::from(size.width) * u64::from(size.height),
-                "MaxPicSize",
                 native.max_pic_size,
                 allocated.max_pic_size,
-                rule,
             );
         }
         if let Some(tiles) = frame.and_then(|core| core.tile_info.as_ref()) {
             let cols = u64::from(tiles.tile_cols);
-            let rule = "annex-a/tile-count-exceeds-level";
             check(
-                "NumTiles",
+                Limit::Tiles,
                 cols * u64::from(tiles.tile_rows),
-                "MaxTiles",
                 u64::from(native.max_tiles),
                 u64::from(allocated.max_tiles),
-                rule,
             );
             check(
-                "TileCols",
+                Limit::TileCols,
                 cols,
-                "MaxTileCols",
                 u64::from(native.max_tile_cols),
                 u64::from(allocated.max_tile_cols),
-                rule,
             );
             // TODO(spec: AV2-A-LEVELS-TIERS): check the Annex A.4 per-tile width and area limits.
         }
@@ -130,12 +109,10 @@ impl FrameAllocations {
         let allocated_refs = allocated.excess_ref_frames(sequence, frame);
         if let Some((count, _)) = native_refs.or(allocated_refs) {
             check(
-                "NumRefFrames",
+                Limit::References,
                 u64::from(count),
-                "MaxLevelRefFrames",
                 u64::from(native_refs.map_or(count, |(_, max)| max)),
                 u64::from(allocated_refs.map_or(count, |(_, max)| max)),
-                "annex-a/reference-count-exceeds-level",
             );
         }
         if let Some(size) = size
@@ -146,5 +123,56 @@ impl FrameAllocations {
                 size.width, size.height
             )).with_spec_section("A.4").with_byte_offset(obu.offset));
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Limit {
+    Width,
+    Height,
+    Area,
+    Tiles,
+    TileCols,
+    References,
+}
+
+impl Limit {
+    #[cold]
+    fn diagnostic(
+        self,
+        value: u64,
+        bound: u64,
+        source: &str,
+        level: u8,
+        obu: &ObuEnvelope<'_>,
+    ) -> Diagnostic {
+        let (metric, name, rule) = match self {
+            Self::Width => ("FrameWidth", "MaxHSize", "annex-a/frame-size-exceeds-level"),
+            Self::Height => (
+                "FrameHeight",
+                "MaxVSize",
+                "annex-a/frame-size-exceeds-level",
+            ),
+            Self::Area => (
+                "FrameWidth * FrameHeight",
+                "MaxPicSize",
+                "annex-a/frame-size-exceeds-level",
+            ),
+            Self::Tiles => ("NumTiles", "MaxTiles", "annex-a/tile-count-exceeds-level"),
+            Self::TileCols => (
+                "TileCols",
+                "MaxTileCols",
+                "annex-a/tile-count-exceeds-level",
+            ),
+            Self::References => (
+                "NumRefFrames",
+                "MaxLevelRefFrames",
+                "annex-a/reference-count-exceeds-level",
+            ),
+        };
+        Diagnostic::error(rule, format!(
+            "{metric} {value} exceeds {name} {bound} under the {source} for extended layer {} (seq_level_idx {level})",
+            obu.header.extended_layer_id.get()
+        )).with_spec_section("A.4").with_byte_offset(obu.offset)
     }
 }
