@@ -327,6 +327,7 @@ const LOCAL_ATLAS_8: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/needs-external-hls/syn-atlas-local-8bit.annexb"
 );
 
+#[expect(clippy::panic, reason = "the fixture setup requires a parsed local LCR")]
 fn local_atlas_lcr_without_global_parent() -> (LcrId, Vec<u8>) {
     use splot_core::headers::layer_config_record::LayerConfigurationRecord;
 
@@ -473,6 +474,7 @@ fn pending_local_lcr_shadows_global_at_the_next_cmvs_boundary() {
     let units = temporal_units(MSDO_OPS_RA);
     for include_local in [true, false] {
         let mut stream = Vec::new();
+        let mut sequence_offset = None;
         for (tu, unit) in units.iter().enumerate().take(5).skip(2) {
             for obu in parse_annex_b_obus(unit).unwrap() {
                 let kind = obu.header.obu_type;
@@ -488,6 +490,7 @@ fn pending_local_lcr_shadows_global_at_the_next_cmvs_boundary() {
                             panic!("expected a sequence header");
                         };
                         seq.general.seq_lcr_id = id;
+                        sequence_offset = Some(stream.len() as u64 + 1);
                         write_parsed(&mut stream, obu.header, &ParsedObu::SequenceHeader(seq));
                     } else if x3 && kind == ObuType::ClosedLoopKey {
                         write_obu(&mut stream, obu.header, obu.payload);
@@ -530,6 +533,10 @@ fn pending_local_lcr_shadows_global_at_the_next_cmvs_boundary() {
                     panic!("{err:?}")
                 };
                 assert_eq!(issue.spec_section(), Some("7.3.2"));
+                assert_eq!(
+                    issue.offset().map(splot_core::span::ByteOffset::get),
+                    sequence_offset
+                );
             }
         }
     }
