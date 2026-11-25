@@ -1216,20 +1216,19 @@ impl XLayerTable {
                         .observe_local_lcr(envelope.offset, record)?;
                 }
             }
-            ObuType::SequenceHeader => {
+            ObuType::SequenceHeader
                 if self.layer_atlases(id).is_some()
-                    || self.global.global_lcrs.iter().any(Option::is_some)
+                    || self.global.global_lcrs.iter().any(Option::is_some) =>
+            {
+                let seq = parse_sequence(envelope)?.general;
+                if self.layer_atlases(id).is_some()
+                    || self.global.global_lcrs[usize::from(seq.seq_lcr_id.get())].is_some()
                 {
-                    let seq = parse_sequence(envelope)?.general;
-                    if self.layer_atlases(id).is_some()
-                        || self.global.global_lcrs[usize::from(seq.seq_lcr_id.get())].is_some()
-                    {
-                        scope_mut(&mut self.layer_atlases, id).bind(
-                            seq.seq_header_id,
-                            seq.seq_lcr_id.get(),
-                            &self.global.global_lcrs,
-                        );
-                    }
+                    scope_mut(&mut self.layer_atlases, id).bind(
+                        seq.seq_header_id,
+                        seq.seq_lcr_id.get(),
+                        &self.global.global_lcrs,
+                    );
                 }
             }
             _ => {}
