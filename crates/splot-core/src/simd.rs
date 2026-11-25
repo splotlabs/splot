@@ -252,7 +252,8 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
 
 /// Runs `$body` with concrete `fearless_simd` token `$simd` derived from
 /// `$backend`, avoiding runtime `vectorize` closures when static target
-/// features already guarantee the backend's instruction set.
+/// features already guarantee the backend's instruction set. The closure
+/// inlines into the target-feature entry so its operations use that ISA.
 #[macro_export]
 macro_rules! with_simd {
     ($backend:expr, $simd:ident => $body:expr) => {{
@@ -270,10 +271,14 @@ macro_rules! with_simd {
             if let Some($simd) = $crate::simd::SimdBackend::static_avx2_token(__backend) {
                 $body
             } else {
-                $crate::simd::SimdBackend::vectorize(__backend, || {
-                    let $simd = $crate::simd::SimdBackend::token(__backend);
-                    $body
-                })
+                $crate::simd::SimdBackend::vectorize(
+                    __backend,
+                    #[inline(always)]
+                    || {
+                        let $simd = $crate::simd::SimdBackend::token(__backend);
+                        $body
+                    },
+                )
             }
         }
         #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
@@ -281,10 +286,14 @@ macro_rules! with_simd {
             if let Some($simd) = $crate::simd::SimdBackend::static_neon_token(__backend) {
                 $body
             } else {
-                $crate::simd::SimdBackend::vectorize(__backend, || {
-                    let $simd = $crate::simd::SimdBackend::token(__backend);
-                    $body
-                })
+                $crate::simd::SimdBackend::vectorize(
+                    __backend,
+                    #[inline(always)]
+                    || {
+                        let $simd = $crate::simd::SimdBackend::token(__backend);
+                        $body
+                    },
+                )
             }
         }
         #[cfg(not(any(
@@ -300,10 +309,14 @@ macro_rules! with_simd {
             all(target_arch = "aarch64", target_feature = "neon")
         )))]
         {
-            $crate::simd::SimdBackend::vectorize(__backend, || {
-                let $simd = $crate::simd::SimdBackend::token(__backend);
-                $body
-            })
+            $crate::simd::SimdBackend::vectorize(
+                __backend,
+                #[inline(always)]
+                || {
+                    let $simd = $crate::simd::SimdBackend::token(__backend);
+                    $body
+                },
+            )
         }
     }};
 }

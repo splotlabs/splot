@@ -245,11 +245,15 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         round1: u32,
     ) -> [i32; 16] {
         let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            let simd = narrow.token();
-            let intermediate = ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
-            ext_unit::vertical(simd, &intermediate, phase_y, round1)
-        })
+        narrow.vectorize(
+            #[inline(always)]
+            || {
+                let simd = narrow.token();
+                let intermediate =
+                    ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
+                ext_unit::vertical(simd, &intermediate, phase_y, round1)
+            },
+        )
     }
 
     #[inline]
@@ -263,20 +267,23 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
     ) -> Result<()> {
         let narrow = self.0.narrow();
         let rows = output.as_chunks_mut::<WARPED_BLOCK_SIZE>().0;
-        narrow.vectorize(|| {
-            warp_predict_section(
-                TypedWarp(narrow),
-                narrow.token(),
-                reference,
-                params,
-                shear,
-                round1,
-                |row, rounded| {
-                    rounded.store_array(&mut rows[row]);
-                    Ok(())
-                },
-            )
-        })
+        narrow.vectorize(
+            #[inline(always)]
+            || {
+                warp_predict_section(
+                    TypedWarp(narrow),
+                    narrow.token(),
+                    reference,
+                    params,
+                    shear,
+                    round1,
+                    |row, rounded| {
+                        rounded.store_array(&mut rows[row]);
+                        Ok(())
+                    },
+                )
+            },
+        )
     }
 }
 
@@ -489,71 +496,79 @@ impl PreparedWarpPrediction {
         (output, stride): (&mut [T], usize),
         max_sample: i16,
     ) -> Result<()> {
-        simd.vectorize(|| {
-            if self.translation_two_tap_into(
-                simd,
-                reference,
-                [x, y, width, height],
-                output,
-                stride,
-                max_sample,
-            )? {
-                return Ok(());
-            }
-            for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
-                let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
-                let row = WarpPredictBlockParams {
-                    block_x: x as i32,
-                    block_y: (y + local_y) as i32,
-                    ..self.params
-                };
-                let written = match output.get_mut(local_y * stride..) {
-                    Some(target) if section_h == WARPED_BLOCK_SIZE => {
-                        let sections = width / WARPED_BLOCK_SIZE;
-                        eight_bit::put_row(
-                            runner,
-                            reference,
-                            &row,
-                            &self.shear,
-                            sections,
-                            target,
-                            stride,
-                        )
-                    }
-                    _ => 0,
-                };
-                for (section, local_x) in (0..width).step_by(WARPED_BLOCK_SIZE).enumerate() {
-                    if section < 64 && written >> section & 1 != 0 {
-                        continue;
-                    }
-                    let params = WarpPredictBlockParams {
-                        block_x: (x + local_x) as i32,
-                        ..row
-                    };
-                    let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
-                    let store = |row: usize, rounded: i32x8<S>| {
-                        if row >= section_h {
-                            return Ok(());
-                        }
-                        let start = (local_y + row) * stride + local_x;
-                        let (low, high) = rounded.split();
-                        let target = &mut output[start..start + section_w];
-                        store_clipped_row(simd, target, low.saturating_narrow(high), max_sample);
-                        Ok(())
-                    };
-                    warp_predict_section(
-                        runner,
-                        simd,
-                        reference,
-                        &params,
-                        &self.shear,
-                        INTER_ROUND1_NON_COMPOUND,
-                        store,
-                    )?;
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                if self.translation_two_tap_into(
+                    simd,
+                    reference,
+                    [x, y, width, height],
+                    output,
+                    stride,
+                    max_sample,
+                )? {
+                    return Ok(());
                 }
-            }
-            Ok(())
-        })
+                for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
+                    let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
+                    let row = WarpPredictBlockParams {
+                        block_x: x as i32,
+                        block_y: (y + local_y) as i32,
+                        ..self.params
+                    };
+                    let written = match output.get_mut(local_y * stride..) {
+                        Some(target) if section_h == WARPED_BLOCK_SIZE => {
+                            let sections = width / WARPED_BLOCK_SIZE;
+                            eight_bit::put_row(
+                                runner,
+                                reference,
+                                &row,
+                                &self.shear,
+                                sections,
+                                target,
+                                stride,
+                            )
+                        }
+                        _ => 0,
+                    };
+                    for (section, local_x) in (0..width).step_by(WARPED_BLOCK_SIZE).enumerate() {
+                        if section < 64 && written >> section & 1 != 0 {
+                            continue;
+                        }
+                        let params = WarpPredictBlockParams {
+                            block_x: (x + local_x) as i32,
+                            ..row
+                        };
+                        let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
+                        let store = |row: usize, rounded: i32x8<S>| {
+                            if row >= section_h {
+                                return Ok(());
+                            }
+                            let start = (local_y + row) * stride + local_x;
+                            let (low, high) = rounded.split();
+                            let target = &mut output[start..start + section_w];
+                            store_clipped_row(
+                                simd,
+                                target,
+                                low.saturating_narrow(high),
+                                max_sample,
+                            );
+                            Ok(())
+                        };
+                        warp_predict_section(
+                            runner,
+                            simd,
+                            reference,
+                            &params,
+                            &self.shear,
+                            INTER_ROUND1_NON_COMPOUND,
+                            store,
+                        )?;
+                    }
+                }
+                Ok(())
+            },
+        )
     }
 
     /// Predicts a whole translation-only block whose two phases both select a
@@ -1631,13 +1646,16 @@ fn build_interior_intermediate<S: Simd, T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut Intermediate,
 ) {
-    simd.vectorize(|| {
-        for (row, intermediate) in intermediate.iter_mut().enumerate() {
-            let sx = projected.sx4 + shear.beta * (row as i32 - 7);
-            let span = warp_span(simd, reference.row(first_row + row), first_col);
-            *intermediate = horizontal_row(simd, span, sx, shear.alpha).into();
-        }
-    });
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            for (row, intermediate) in intermediate.iter_mut().enumerate() {
+                let sx = projected.sx4 + shear.beta * (row as i32 - 7);
+                let span = warp_span(simd, reference.row(first_row + row), first_col);
+                *intermediate = horizontal_row(simd, span, sx, shear.alpha).into();
+            }
+        },
+    );
 }
 
 /// Runs the § 7.13.3.19 horizontal pass for one intermediate row from its tap

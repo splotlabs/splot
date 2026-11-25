@@ -760,10 +760,13 @@ pub(super) fn sym_rows<B: splot_core::simd::SimdBackend, O: GdfSample>(
 ) {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return avx2.vectorize(|| {
-            let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
-            inlane::InLane.rows(avx2, window, output, classes, (block, params));
-        });
+        return avx2.vectorize(
+            #[inline(always)]
+            || {
+                let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
+                inlane::InLane.rows(avx2, window, output, classes, (block, params));
+            },
+        );
     }
     sym_rows_portable(backend, window, output, classes, block, params);
 }
@@ -1147,17 +1150,20 @@ pub(super) fn filter_run<B: splot_core::simd::SimdBackend, O: GdfSample>(
 ) -> Option<()> {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return avx2.vectorize(|| {
-            filter_run_with(
-                backend,
-                avx2,
-                inlane::InLane,
-                source,
-                block,
-                output,
-                scratch,
-            )
-        });
+        return avx2.vectorize(
+            #[inline(always)]
+            || {
+                filter_run_with(
+                    backend,
+                    avx2,
+                    inlane::InLane,
+                    source,
+                    block,
+                    output,
+                    scratch,
+                )
+            },
+        );
     }
     splot_core::with_simd!(backend, simd => filter_run_with(backend, simd, Rough, source, block, output, scratch))
 }

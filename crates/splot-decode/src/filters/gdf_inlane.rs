@@ -550,75 +550,78 @@ fn row_index<W: WindowRows, const ROW: usize, const LINEAR: bool, const SWAP_TRA
     gradient: &[i32x8<Avx2>; 2],
     params: &GdfSymParams,
 ) -> [u16; 16] {
-    simd.vectorize(|| {
-        let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
-        let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
-        let center2 = centers.0 + centers.1;
-        let (transposed, mirrored) = *masks;
-        macro_rules! pair {
-            ($k:literal, $t:literal, $select:expr, $swap:expr) => {
-                if LINEAR {
-                    let k = linear_comb::<Avx2, W, $k, ROW>(simd, window, center2);
-                    let t = linear_comb::<Avx2, W, $t, ROW>(simd, window, center2);
-                    let (k, t) = if $swap { swap(k, t, $select) } else { (k, t) };
-                    [k.bitcast(), t.bitcast()]
-                } else {
-                    paired_combs::<Avx2, W, $k, $t, ROW, $swap>(
-                        simd, window, centers, $select, params,
-                    )
-                }
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
+            let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
+            let center2 = centers.0 + centers.1;
+            let (transposed, mirrored) = *masks;
+            macro_rules! pair {
+                ($k:literal, $t:literal, $select:expr, $swap:expr) => {
+                    if LINEAR {
+                        let k = linear_comb::<Avx2, W, $k, ROW>(simd, window, center2);
+                        let t = linear_comb::<Avx2, W, $t, ROW>(simd, window, center2);
+                        let (k, t) = if $swap { swap(k, t, $select) } else { (k, t) };
+                        [k.bitcast(), t.bitcast()]
+                    } else {
+                        paired_combs::<Avx2, W, $k, $t, ROW, $swap>(
+                            simd, window, centers, $select, params,
+                        )
+                    }
+                };
+            }
+            let bias = &params.slot.tap_bias;
+            let mut sums = [
+                [i32x8::splat(simd, bias[0]); 2],
+                [i32x8::splat(simd, bias[1]); 2],
+                *gradient,
+            ];
+            macro_rules! add {
+                ($slot:literal, $a:expr, $b:expr) => {
+                    accumulate(simd, &mut sums, ($slot, unpack_pairs(simd, $a, $b)), params)
+                };
+            }
+            let [tap4, tap6, tap7, tap11] = if LINEAR {
+                let comb = |tap: u16x16<Avx2>| tap.bitcast::<i16x16<Avx2>>();
+                let (a, b) = swap(
+                    linear_comb::<Avx2, W, 4, ROW>(simd, window, center2),
+                    linear_comb::<Avx2, W, 6, ROW>(simd, window, center2),
+                    mirrored,
+                );
+                let (c, d) = swap(
+                    linear_comb::<Avx2, W, 7, ROW>(simd, window, center2),
+                    linear_comb::<Avx2, W, 11, ROW>(simd, window, center2),
+                    mirrored,
+                );
+                let ((first, third), (second, fourth)) =
+                    (swap(a, c, transposed), swap(b, d, transposed));
+                [comb(first), comb(second), comb(third), comb(fourth)]
+            } else {
+                cycle_combs::<Avx2, W, 4, 6, 7, 11, ROW, SWAP_TRANSPOSE>(
+                    simd, window, centers, *masks, params,
+                )
             };
-        }
-        let bias = &params.slot.tap_bias;
-        let mut sums = [
-            [i32x8::splat(simd, bias[0]); 2],
-            [i32x8::splat(simd, bias[1]); 2],
-            *gradient,
-        ];
-        macro_rules! add {
-            ($slot:literal, $a:expr, $b:expr) => {
-                accumulate(simd, &mut sums, ($slot, unpack_pairs(simd, $a, $b)), params)
-            };
-        }
-        let [tap4, tap6, tap7, tap11] = if LINEAR {
-            let comb = |tap: u16x16<Avx2>| tap.bitcast::<i16x16<Avx2>>();
-            let (a, b) = swap(
-                linear_comb::<Avx2, W, 4, ROW>(simd, window, center2),
-                linear_comb::<Avx2, W, 6, ROW>(simd, window, center2),
-                mirrored,
-            );
-            let (c, d) = swap(
-                linear_comb::<Avx2, W, 7, ROW>(simd, window, center2),
-                linear_comb::<Avx2, W, 11, ROW>(simd, window, center2),
-                mirrored,
-            );
-            let ((first, third), (second, fourth)) =
-                (swap(a, c, transposed), swap(b, d, transposed));
-            [comb(first), comb(second), comb(third), comb(fourth)]
-        } else {
-            cycle_combs::<Avx2, W, 4, 6, 7, 11, ROW, SWAP_TRANSPOSE>(
-                simd, window, centers, *masks, params,
-            )
-        };
-        add!(5, tap4, tap6);
-        add!(6, tap7, tap11);
-        let [tap0, tap12] = pair!(0, 12, transposed, SWAP_TRANSPOSE);
-        let [tap1, tap13] = pair!(1, 13, transposed, SWAP_TRANSPOSE);
-        add!(0, tap0, tap1);
-        add!(1, tap12, tap13);
-        let [tap2, tap14] = pair!(2, 14, transposed, SWAP_TRANSPOSE);
-        let [tap3, tap15] = pair!(3, 15, transposed, SWAP_TRANSPOSE);
-        add!(2, tap2, tap3);
-        add!(3, tap14, tap15);
-        add!(4, tap3, tap15);
-        let [tap8, tap10] = pair!(8, 10, mirrored, true);
-        add!(7, tap8, tap10);
-        let [tap9, tap17] = pair!(9, 17, transposed, SWAP_TRANSPOSE);
-        add!(8, tap9, tap17);
-        let [tap5, tap16] = pair!(5, 16, transposed, SWAP_TRANSPOSE);
-        add!(9, tap5, tap16);
-        error_index(simd, sums, params)
-    })
+            add!(5, tap4, tap6);
+            add!(6, tap7, tap11);
+            let [tap0, tap12] = pair!(0, 12, transposed, SWAP_TRANSPOSE);
+            let [tap1, tap13] = pair!(1, 13, transposed, SWAP_TRANSPOSE);
+            add!(0, tap0, tap1);
+            add!(1, tap12, tap13);
+            let [tap2, tap14] = pair!(2, 14, transposed, SWAP_TRANSPOSE);
+            let [tap3, tap15] = pair!(3, 15, transposed, SWAP_TRANSPOSE);
+            add!(2, tap2, tap3);
+            add!(3, tap14, tap15);
+            add!(4, tap3, tap15);
+            let [tap8, tap10] = pair!(8, 10, mirrored, true);
+            add!(7, tap8, tap10);
+            let [tap9, tap17] = pair!(9, 17, transposed, SWAP_TRANSPOSE);
+            add!(8, tap9, tap17);
+            let [tap5, tap16] = pair!(5, 16, transposed, SWAP_TRANSPOSE);
+            add!(9, tap5, tap16);
+            error_index(simd, sums, params)
+        },
+    )
 }
 
 /// Filters in place a row pair of 16 samples whose class changes every two
