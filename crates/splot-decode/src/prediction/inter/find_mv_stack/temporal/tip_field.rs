@@ -122,15 +122,19 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
                         count += chunk;
                     }
                     valid_count += count.reduce_sum();
-                    let scale = |mv: TipRow<S, C>| -> TipRow<S, C> {
-                        core::array::from_fn(|chunk| {
-                            let scaled = mv[chunk] * divisor[chunk];
-                            let negative = (scaled * splat(numerator.signum())) >> 31;
-                            let low = (scaled & splat(0x3fff)) * splat(numerator);
-                            let product = (scaled >> 14) * splat(numerator)
-                                + ((low + splat(1 << 13) + negative) >> 14);
-                            product.max(-limit).min(limit) & -valid[chunk]
-                        })
+                    let scale = {
+                        #[inline(always)]
+                        |mut mv: TipRow<S, C>| {
+                            for (chunk, value) in mv.iter_mut().enumerate() {
+                                let scaled = *value * divisor[chunk];
+                                let negative = (scaled * splat(numerator.signum())) >> 31;
+                                let low = (scaled & splat(0x3fff)) * splat(numerator);
+                                let product = (scaled >> 14) * splat(numerator)
+                                    + ((low + splat(1 << 13) + negative) >> 14);
+                                *value = product.max(-limit).min(limit) & -valid[chunk];
+                            }
+                            mv
+                        }
                     };
                     let scaled = [valid, scale(mv_row), scale(mv_col)];
                     let at = (y + 1) * TIP_GRID + 1;
@@ -154,11 +158,20 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
                     }
                     let at = (y / STEP + 1) * TIP_GRID + 1;
                     let rows = if fill_holes {
-                        let cross = |plane: &[i32]| -> TipRow<S, C> {
-                            let [c, up, left, down, right] =
-                                [at, at - TIP_GRID, at - 1, at + TIP_GRID, at + 1]
-                                    .map(|from| load(plane, from));
-                            core::array::from_fn(|i| c[i] + up[i] + left[i] + down[i] + right[i])
+                        let cross = {
+                            #[inline(always)]
+                            |plane: &[i32]| -> TipRow<S, C> {
+                                let mut sum = load(plane, at);
+                                for (chunk, value) in sum.iter_mut().enumerate() {
+                                    let center = at + 8 * chunk;
+                                    *value = *value
+                                        + vector(plane, center - TIP_GRID)
+                                        + vector(plane, center - 1)
+                                        + vector(plane, center + TIP_GRID)
+                                        + vector(plane, center + 1);
+                                }
+                                sum
+                            }
                         };
                         let count = cross(&planes[0]);
                         let weight: TipRow<S, C> = core::array::from_fn(|chunk| {
@@ -170,9 +183,12 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
                             }
                             weight
                         });
-                        let average = |plane: &[i32]| -> TipRow<S, C> {
-                            let sum = cross(plane);
-                            core::array::from_fn(|i| round2_signed(sum[i] * weight[i], 16))
+                        let average = {
+                            #[inline(always)]
+                            |plane: &[i32]| -> TipRow<S, C> {
+                                let sum = cross(plane);
+                                core::array::from_fn(|i| round2_signed(sum[i] * weight[i], 16))
+                            }
                         };
                         [count, average(&planes[1]), average(&planes[2])]
                     } else {
