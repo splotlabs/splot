@@ -161,7 +161,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       # No cargo cache: third-party crates take about 12 s of a release build.
-      - run: cargo test -p splot-decode --release --lib --locked
+      - run: cargo test -p splot-decode --profile ci-release --lib --locked
 
   ewouth-av2-samples:
     runs-on: ubuntu-latest
@@ -182,12 +182,12 @@ jobs:
           git -C "$TEST_DATA_DIR" checkout --detach "$revision"
 
       - name: Build splot
-        run: cargo build --release -p splot-cli --locked
+        run: cargo build --profile ci-release -p splot-cli --locked
 
       - name: Verify complete sample output against AVM hashes
         env:
           TEST_DATA_DIR: ${{ runner.temp }}/ewouth-av2
-        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR" --parallel
+        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR" --splot target/ci-release/splot --parallel
 
   encoder-avm-oracle:
     runs-on: ubuntu-latest
@@ -229,7 +229,7 @@ jobs:
           cp "$AVM_BUILD/avmdec" "$HOME/avmdec"
 
       - name: Decode encoder output with AVM
-        run: SPLOT_AVM_DECODER="$HOME/avmdec" cargo test --release -p splot-encode --lib avm --locked -- --ignored
+        run: SPLOT_AVM_DECODER="$HOME/avmdec" cargo test --profile ci-release -p splot-encode --lib avm --locked -- --ignored
 
   # Advisories are informational because the database changes independently of PRs.
   supply-chain:
@@ -456,11 +456,8 @@ jobs:
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      # The gates below reuse this release build of splot.
-      - name: Build splot
-        run: cargo build --release -p splot-cli --locked
-
-      - name: Binary size budget
+      # The gates below reuse the release CLI built by the size check.
+      - name: Build release artifacts and check binary sizes
         run: cargo xtask check-binary-size
 
       - name: Verify upstream AVM corpus hashes (dav2d test data)
