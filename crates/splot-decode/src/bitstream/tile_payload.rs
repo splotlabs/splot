@@ -102,6 +102,8 @@ pub(crate) use intra_joint_modes::{
 pub(crate) use mi_size_state::{PartitionNeighbours, UvEdges};
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
+#[cfg(test)]
+pub(crate) use partition_allowed::PartitionTreeType;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
 pub(crate) use partition_traversal::BRU_ACTIVE;

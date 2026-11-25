@@ -1297,6 +1297,16 @@ description = "Eight 10-bit 128x64 frames matching syn-bru-inactive-refresh-8bit
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-inactive-block-use-8bit.ivf"
+description = "Eight 8-bit 128x64 frames with a moving square. Frame 5 copies frame 3 and refreshes slot 1. The top-left inter block of frame 6 uses that slot."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-inactive-block-use-10bit.ivf"
+description = "Eight 10-bit 128x64 frames with a moving square. Frame 5 copies frame 3 and refreshes slot 1. The top-left inter block of frame 6 uses that slot."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-bru-inactive-filmgrain-8bit.ivf"
 description = "Eight 8-bit 128x64 frames matching syn-bru-inactive-refresh-8bit with --film-grain-test=1 so frame 5 (bru_inactive == 1) synthesizes output film grain without mutating stored reference pixels; validates clean."
 expect = "clean"
@@ -2879,8 +2889,35 @@ description = "Five-frame 64x64 8-bit 4:2:0 Annex B stream built from a 4-tempor
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-tlayer2-reproducible-8bit.ivf"
+description = "Four 128x64 8-bit 4:2:0 frames alternate between temporal layers 0 and 1. Each frame has two tile groups. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer2-reproducible-10bit.ivf"
+description = "Four 64x64 10-bit 4:2:0 frames alternate between temporal layers 0 and 1. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer4-reproducible-sparse.obu"
+description = "Five 64x64 8-bit 4:2:0 frames signal a sparse dependency map. Layers 2 and 3 exclude layer 1 from their dependencies. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mlayer2-crossref-8bit.obu"
 description = "Six-frame 64x64 8-bit 4:2:0 Annex B stream encoded by AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) with two embedded layers (max_mlayer_id=1, IOP 1, local LCR, 3 temporal units across ML0 and ML1) and cross-layer prediction. Decodes identically to avmdec --all-layers across all 6 frames (36,864 bytes, SHA-256 8f798709cae451909159dde10c9581b07c373d6b6a71a6a43f450da11e018176); validates clean."
+expect = "clean"
+
+# Recipe: Start with OBUs 0–7 of syn-mlayer-tlayer-sparse-state.obu (zero-based).
+# In OBU 3, set monotonic_output_order_flag (byte 4 of the OBU with header, 0xca to 0xea).
+# In OBU 7, set temporal layer zero (header 0x1d to 0x1c) and clear immediate_output_frame (next byte 0xf8 to 0xf0).
+# Slot 1 holds the hidden ML0 TL0 frame.
+# Append Annex B bytes 03 30 c0 0c (explicit ML0 TL0 SEF, slot 0, hint 1).
+# Append Annex B bytes 03 b1 20 ce (derived ML1 TL1 SEF, slot 1).
+# SHA-256 of the vector is 0deddfdf288ede3b467bfabbc456a128a817520b2578a46f8e17d4f6de6a557e.
+[[vector]]
+path = "vectors/valid/syn-mlayer2-derived-sef-8bit.obu"
+description = "Two temporal units with a derived ML1 TL1 show-existing OBU that outputs a hidden ML0 TL0 frame. AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 outputs four frames with --all-layers --skip-film-grain --rawvideo (24,576 bytes, SHA-256 bca7d45ad940d920c77414eea6516e243bd0ea98d58441a6de270fa1fb231033)."
 expect = "clean"
 
 [[vector]]

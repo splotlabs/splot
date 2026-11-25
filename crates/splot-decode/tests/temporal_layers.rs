@@ -34,6 +34,74 @@ const TLAYER2_DEP_10BIT: &[u8] =
 const TLAYER4_SPARSE: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-tlayer4-sparse-dependencies.obu");
 
+const TLAYER2_REPRO_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-tlayer2-reproducible-8bit.ivf");
+const TLAYER2_REPRO_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-tlayer2-reproducible-10bit.ivf");
+const TLAYER4_REPRO_SPARSE: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-tlayer4-reproducible-sparse.obu");
+
+const TLAYER2_REPRO_8BIT_DIGESTS: &[(&str, u8)] = &[
+    (
+        "741e58d04df4e817f808f868a1209a0064c2c18f3f07ba8893220894ad7b7de8",
+        0,
+    ),
+    (
+        "96e141e927f8c322c08fe760da7e680dee240bebe785705b31ba8d5f970a4e1a",
+        1,
+    ),
+    (
+        "a46e354e7dbfa0e995357e51969df55217465ecfb41cc21010da7540a8f92b47",
+        0,
+    ),
+    (
+        "42ff904ece30a5b6f6921594a7c62412af87d0600527d842be735acbc5849158",
+        1,
+    ),
+];
+
+const TLAYER2_REPRO_10BIT_DIGESTS: &[(&str, u8)] = &[
+    (
+        "6e77a0f1ebdee145364ea6264a21a7d1ac6d822f97c0a5c362c826f5a228700e",
+        0,
+    ),
+    (
+        "8626238320544ac17b1b4c6974685bac1cdfc6783831badef251ab7b54ca262a",
+        1,
+    ),
+    (
+        "726b26febbe6c7df18ab8d6c9214897a6cd8f9568cf91b5e8060eea29ee12b14",
+        0,
+    ),
+    (
+        "2ee251c61392a155f8f65ebb5de9bf5925b3cb57aec8c24a07312087562e3e7c",
+        1,
+    ),
+];
+
+const TLAYER4_REPRO_SPARSE_DIGESTS: &[(&str, u8)] = &[
+    (
+        "535b93ba28e4d92a65d75326e0dc2fb0a6eb4955ceb392f3f876083aa99bb43d",
+        0,
+    ),
+    (
+        "1077c54b2139ff8a21fec211f9f4cc8faad617e29204bd9880cf5dcba758d2aa",
+        1,
+    ),
+    (
+        "0d2d4dfbdf487bfb1718192237e6f24613e0b96b2189b9153e2dc93436e109d0",
+        2,
+    ),
+    (
+        "0e331e9ac7b9e28bef285a74965c6d85dff2aeecbdb9210e147abf29fee2e042",
+        3,
+    ),
+    (
+        "24c25b58ab6195f1602e1afd7dc43ae1eb3b44bc6416ab91a469c2a51299c75a",
+        0,
+    ),
+];
+
 const BASE_ENH_DIGESTS: &[(&str, u8)] = &[
     (
         "ce03721c5041e45d02106592c6c55db2bcda0d651568729b92f4ef5d4a665774",
@@ -349,6 +417,8 @@ fn avm_digest_parity_and_picture_metadata_across_selection_modes() {
         (TLAYER2_BASE_AND_ENH, BASE_ENH_DIGESTS),
         (TLAYER2_DEP_8BIT, DEP_8BIT_DIGESTS),
         (TLAYER2_DEP_10BIT, DEP_10BIT_DIGESTS),
+        (TLAYER2_REPRO_8BIT, TLAYER2_REPRO_8BIT_DIGESTS),
+        (TLAYER2_REPRO_10BIT, TLAYER2_REPRO_10BIT_DIGESTS),
     ] {
         verify_selection_digests(fixture, expected, TemporalLayerSelection::All, 0b1111);
         verify_selection_digests(fixture, expected, TemporalLayerSelection::BASE_ONLY, 0b0001);
@@ -389,35 +459,47 @@ fn sparse_dependency_map_selection_modes_and_layer_skipping() {
         (TemporalLayerSelection::OutputMask(0b0101), 0b0101),
     ] {
         verify_selection_digests(TLAYER4_SPARSE, SPARSE_DIGESTS, selection, mask);
+        verify_selection_digests(
+            TLAYER4_REPRO_SPARSE,
+            TLAYER4_REPRO_SPARSE_DIGESTS,
+            selection,
+            mask,
+        );
     }
 
-    let mask8_plan = DecodeContext::plan_bytes(
-        TLAYER4_SPARSE,
-        DecodeOptions::default()
-            .with_temporal_layer_selection(TemporalLayerSelection::OutputMask(0b1000)),
-    )
-    .unwrap();
-    let active_frame_tlayers: Vec<u8> = mask8_plan
-        .obus()
-        .filter(|o| o.role().is_frame_candidate())
-        .map(|o| o.header().temporal_layer_id.get())
-        .collect();
-    assert_eq!(active_frame_tlayers, [0, 2, 3, 0]);
-    let skipped_tl1: Vec<_> = mask8_plan
-        .obus()
-        .filter(|o| o.header().temporal_layer_id.get() == 1)
-        .collect();
-    assert_eq!(skipped_tl1.len(), 1);
-    assert_eq!(skipped_tl1[0].role(), DecodePlannedObuRole::UnselectedLayer);
+    for fixture in [TLAYER4_SPARSE, TLAYER4_REPRO_SPARSE] {
+        let mask8_plan = DecodeContext::plan_bytes(
+            fixture,
+            DecodeOptions::default()
+                .with_temporal_layer_selection(TemporalLayerSelection::OutputMask(0b1000)),
+        )
+        .unwrap();
+        let active_frame_tlayers: Vec<u8> = mask8_plan
+            .obus()
+            .filter(|o| o.role().is_frame_candidate())
+            .map(|o| o.header().temporal_layer_id.get())
+            .collect();
+        assert_eq!(active_frame_tlayers, [0, 2, 3, 0]);
+        let skipped_tl1: Vec<_> = mask8_plan
+            .obus()
+            .filter(|o| o.header().temporal_layer_id.get() == 1)
+            .collect();
+        assert_eq!(skipped_tl1.len(), 1);
+        assert_eq!(skipped_tl1[0].role(), DecodePlannedObuRole::UnselectedLayer);
+    }
 }
 
 #[test]
 fn chunked_annex_b_streaming_and_thread_widths_match_batch() {
     let annex_b = ivf_to_annex_b(TLAYER2_DEP_8BIT);
+    let repro_annex_b = ivf_to_annex_b(TLAYER2_REPRO_8BIT);
     for (fixture, is_annex_b) in [
         (&annex_b[..], true),
         (TLAYER2_DEP_10BIT, false),
         (TLAYER4_SPARSE, true),
+        (&repro_annex_b[..], true),
+        (TLAYER2_REPRO_10BIT, false),
+        (TLAYER4_REPRO_SPARSE, true),
     ] {
         for selection in [
             TemporalLayerSelection::All,
