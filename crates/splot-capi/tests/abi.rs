@@ -100,6 +100,16 @@ fn pictures(stream: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPictur
         settings.n_threads = threads;
         settings.skip_film_grain = skip_film_grain;
         assert_eq!(splot_open(&raw mut decoder, &raw const settings), SPLOT_OK);
+        let pictures = collect_pictures(decoder, stream);
+        splot_flush(decoder);
+        splot_close(&raw mut decoder);
+        assert!(decoder.is_null());
+        pictures
+    }
+}
+
+fn collect_pictures(decoder: *mut SplotDecoder, stream: &[u8]) -> Vec<SplotPicture> {
+    unsafe {
         let mut pictures = Vec::new();
         let mut take = |decoder| loop {
             let mut picture = core::mem::zeroed::<SplotPicture>();
@@ -128,9 +138,6 @@ fn pictures(stream: &[u8], threads: u32, skip_film_grain: u8) -> Vec<SplotPictur
         take(decoder);
         let mut eof = core::mem::zeroed::<SplotPicture>();
         assert_eq!(splot_get_picture(decoder, &raw mut eof), SPLOT_EOF);
-        splot_flush(decoder);
-        splot_close(&raw mut decoder);
-        assert!(decoder.is_null());
         pictures
     }
 }
@@ -236,7 +243,8 @@ fn retained_atlas_metadata_survives_layout_replacement_flush_and_close() {
             );
             assert_eq!(info.atlas_offset, if n < 4 { 37 } else { 1899 });
             assert_eq!(info.mode, if n < 4 { 3 } else { 4 });
-            assert!(info.segment_id.present);
+            assert!(info.segment_id.present && info.segment_index.present);
+            assert_eq!(info.segment_index.value, u8::from(xlayer == 7));
             assert_eq!(info.segment_id.value, if xlayer == 3 { 41 } else { 77 });
             assert_eq!(
                 splot_atlas_segment(snapshot, 0, usize::from(xlayer == 7), Some(&mut segment)),
@@ -262,6 +270,116 @@ fn retained_atlas_metadata_survives_layout_replacement_flush_and_close() {
         SPLOT_EINVAL
     );
     assert_eq!(splot_atlas_info(None, 0, None), SPLOT_EINVAL);
+}
+
+#[test]
+fn external_atlas_input_is_copied_and_flush_restores_it() {
+    const SIDECAR: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/needs-external-hls/syn-atlas-local-8bit.annexb"
+    );
+    let mut bytes = SIDECAR.to_vec();
+    let mut settings = core::mem::MaybeUninit::<SplotSettings>::uninit();
+    let mut decoder = ptr::null_mut();
+    let local_start = 1931;
+    let local_end = local_start + bytes.len();
+    assert_eq!(&ATLAS[local_start..local_end], bytes);
+    let suffix = [&ATLAS[1862..local_start], &ATLAS[local_end..]].concat();
+    let mut retained = Vec::new();
+    unsafe {
+        splot_default_settings(settings.as_mut_ptr());
+        let mut settings = settings.assume_init();
+        settings.n_threads = 1;
+        let descriptor = |at| SplotAtlasInput {
+            data: bytes.as_ptr(),
+            size: bytes.len(),
+            source_offset: at,
+        };
+        let entries = [descriptor(90), descriptor(700)];
+        assert_eq!(
+            splot_open_with_atlases(
+                Some(&mut decoder),
+                Some(&settings),
+                entries.as_ptr(),
+                entries.len()
+            ),
+            SPLOT_OK
+        );
+        bytes.fill(0);
+        drop(bytes);
+        for stream in [ATLAS, suffix.as_slice()] {
+            retained.push(collect_pictures(decoder, stream));
+            splot_flush(decoder);
+        }
+        splot_close(&raw mut decoder);
+    }
+    assert_eq!(retained[0].len(), 8);
+    assert_eq!(retained[1].len(), 4);
+    for (pass, pictures) in retained.into_iter().enumerate() {
+        for (n, picture) in pictures.into_iter().enumerate() {
+            let has_local = picture.extended_layer_id == 3 && (pass == 1 || n >= 4);
+            assert_eq!(picture.atlas_count, 1 + usize::from(has_local));
+            inspect_and_release(picture, |snapshot| {
+                if has_local {
+                    let mut local = SplotAtlasInfo::default();
+                    assert_eq!(splot_atlas_info(snapshot, 1, Some(&mut local)), SPLOT_OK);
+                    assert_eq!(local.scope_xlayer_id, 3);
+                    assert_eq!(local.external, pass == 1);
+                    assert_eq!(local.atlas_offset, if pass == 0 { 1932 } else { 701 });
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn invalid_external_atlas_arguments_leave_the_handle_empty() {
+    let mut settings = core::mem::MaybeUninit::<SplotSettings>::uninit();
+    let mut decoder = ptr::null_mut();
+    let non_atlas = [1, 8];
+    unsafe {
+        splot_default_settings(settings.as_mut_ptr());
+        let settings = settings.assume_init();
+        assert_eq!(
+            splot_open_with_atlases(None, Some(&settings), ptr::null(), 0),
+            SPLOT_EINVAL
+        );
+        assert_eq!(
+            splot_open_with_atlases(Some(&mut decoder), None, ptr::null(), 0),
+            SPLOT_EINVAL
+        );
+        assert_eq!(
+            splot_open_with_atlases(Some(&mut decoder), Some(&settings), ptr::null(), 1),
+            SPLOT_EINVAL
+        );
+        for (data, size, count, expected) in [
+            (ptr::null(), 1, 1, SPLOT_EINVAL),
+            (non_atlas.as_ptr(), usize::MAX, 1, SPLOT_EINVAL),
+            (non_atlas.as_ptr(), 1, usize::MAX, SPLOT_EINVAL),
+            (ptr::null(), 0, 1, SPLOT_EDECODE),
+            (non_atlas.as_ptr(), non_atlas.len(), 1, SPLOT_EDECODE),
+        ] {
+            let entry = SplotAtlasInput {
+                data,
+                size,
+                source_offset: 0,
+            };
+            assert_eq!(
+                splot_open_with_atlases(
+                    Some(&mut decoder),
+                    Some(&settings),
+                    &raw const entry,
+                    count
+                ),
+                expected
+            );
+            assert!(decoder.is_null());
+        }
+        assert_eq!(
+            splot_open_with_atlases(Some(&mut decoder), Some(&settings), ptr::null(), 0),
+            SPLOT_OK
+        );
+        splot_close(&raw mut decoder);
+    }
 }
 
 /// `skip_film_grain` and `has_film_grain` each took the first reserved byte:

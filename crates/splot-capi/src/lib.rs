@@ -66,7 +66,7 @@ pub struct SplotDecoder {
     drained: bool,
 }
 
-/// How [`splot_open`] sets up a decoder. Fill it with
+/// Settings for [`splot_open`] and [`splot_open_with_atlases`]. Fill them with
 /// [`splot_default_settings`] first.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -363,7 +363,7 @@ fn open_decoder(
 /// [`SPLOT_EINVAL`], [`SPLOT_EDECODE`] or [`SPLOT_ESTATE`].
 ///
 /// # Safety
-/// `decoder` is null or came from [`splot_open`]; `data` points to `size`
+/// `decoder` is null or points to an open decoder. `data` points to `size`
 /// readable bytes (it may be null when `size` is 0); `props` is null or
 /// points to a [`SplotDataProps`].
 #[unsafe(no_mangle)]
@@ -376,10 +376,9 @@ pub unsafe extern "C" fn splot_send_data(
     let Some(SplotDecoder { decoder, .. }) = (unsafe { decoder.as_mut() }) else {
         return SPLOT_EINVAL;
     };
-    let data: &[u8] = match (data.is_null(), size) {
-        (_, 0) => &[],
-        (true, _) => return SPLOT_EINVAL,
-        (false, size) => unsafe { core::slice::from_raw_parts(data, size) },
+    // SAFETY: The caller keeps the input readable for this call.
+    let Some(data) = (unsafe { borrowed_slice(data, size) }) else {
+        return SPLOT_EINVAL;
     };
     let props = unsafe { props.as_ref() }.copied().unwrap_or_default();
     let props = DataProps::default()
@@ -393,11 +392,28 @@ pub unsafe extern "C" fn splot_send_data(
     }
 }
 
+/// # Safety
+/// For a nonempty slice, the caller supplies one live, readable array of
+/// `count` initialized elements. Its bytes must remain immutable during the borrow.
+unsafe fn borrowed_slice<'a, T>(data: *const T, count: usize) -> Option<&'a [T]> {
+    if count == 0 {
+        return Some(&[]);
+    }
+    if data.is_null()
+        || !data.is_aligned()
+        || count.checked_mul(size_of::<T>())? > isize::MAX as usize
+    {
+        return None;
+    }
+    // SAFETY: The checks cover alignment and size. The caller guarantees the array.
+    Some(unsafe { core::slice::from_raw_parts(data, count) })
+}
+
 /// Ends the input; [`splot_get_picture`] then returns the remaining pictures
 /// and [`SPLOT_EOF`].
 ///
 /// # Safety
-/// `decoder` is null or came from [`splot_open`].
+/// `decoder` is null or points to an open decoder.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn splot_drain(decoder: *mut SplotDecoder) {
     if let Some(SplotDecoder { decoder, drained }) = unsafe { decoder.as_mut() } {
@@ -413,7 +429,7 @@ pub unsafe extern "C" fn splot_drain(decoder: *mut SplotDecoder) {
 /// Pictures already taken stay valid until released.
 ///
 /// # Safety
-/// `decoder` is null or came from [`splot_open`].
+/// `decoder` is null or points to an open decoder.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn splot_flush(decoder: *mut SplotDecoder) {
     if let Some(SplotDecoder { decoder, drained }) = unsafe { decoder.as_mut() } {
@@ -430,7 +446,7 @@ pub unsafe extern "C" fn splot_flush(decoder: *mut SplotDecoder) {
 /// `*out` is zeroed.
 ///
 /// # Safety
-/// `decoder` is null or came from [`splot_open`]. `out` is null or points to a
+/// `decoder` is null or points to an open decoder. `out` is null or points to a
 /// zeroed or released picture: this call overwrites `*out`, so a picture in
 /// `*out` that was not released with [`splot_picture_unref`] leaks.
 #[unsafe(no_mangle)]
@@ -531,7 +547,7 @@ pub unsafe extern "C" fn splot_picture_unref(picture: *mut SplotPicture) {
 /// valid until released.
 ///
 /// # Safety
-/// `decoder` is null or points to null or to a decoder from [`splot_open`].
+/// `decoder` is null or points to a null handle or an open decoder handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn splot_close(decoder: *mut *mut SplotDecoder) {
     let Some(decoder) = (unsafe { decoder.as_mut() }) else {

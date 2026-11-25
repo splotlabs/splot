@@ -6,9 +6,71 @@
 use core::ffi::c_int;
 
 use splot_core::headers::atlas_segment::{AtlasModeInfo, AtlasSegment};
-use splot_decode::{AtlasAssociation, Picture};
+use splot_core::span::ByteOffset;
+use splot_decode::{AtlasAssociation, ExternalAtlases, Picture};
 
-use crate::{SPLOT_EINVAL, SPLOT_OK};
+use crate::{
+    SPLOT_EDECODE, SPLOT_EINVAL, SPLOT_OK, SplotDecoder, SplotSettings, borrowed_slice,
+    open_decoder,
+};
+
+/// One caller-supplied Annex B atlas OBU, including its length prefix.
+#[repr(C)]
+pub struct SplotAtlasInput {
+    /// Bytes of exactly one framed atlas OBU.
+    pub data: *const u8,
+    /// Length of `data` in bytes.
+    pub size: usize,
+    /// Offset of the length prefix in the caller's source.
+    pub source_offset: u64,
+}
+
+/// Open a decoder with external atlas metadata for random access. The
+/// decoder owns the parsed layouts. It retains no caller pointers.
+/// The final input for each scope and atlas ID takes precedence.
+/// A flush restores these layouts.
+///
+/// Returns `SPLOT_EINVAL` for invalid pointers, array lengths or settings.
+/// Returns `SPLOT_EDECODE` for invalid atlas data or a decoder initialization failure.
+/// On error, a valid `out` receives a null pointer.
+///
+/// # Safety
+/// Supply writable, aligned storage for a null decoder pointer in `out`. Supply initialized, readable
+/// settings. Each nonempty input array must occupy one live allocation.
+/// Supply `count` aligned, initialized descriptors and `size` readable bytes
+/// for each descriptor. Keep all input storage immutable during the call.
+/// Output storage must not overlap any input. A zero count accepts null `inputs`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn splot_open_with_atlases(
+    out: Option<&mut *mut SplotDecoder>,
+    settings: Option<&SplotSettings>,
+    inputs: *const SplotAtlasInput,
+    count: usize,
+) -> c_int {
+    let Some(out) = out else { return SPLOT_EINVAL };
+    *out = core::ptr::null_mut();
+    let Some(settings) = settings else {
+        return SPLOT_EINVAL;
+    };
+    // SAFETY: The caller supplies an immutable descriptor array for this call.
+    let Some(inputs) = (unsafe { borrowed_slice(inputs, count) }) else {
+        return SPLOT_EINVAL;
+    };
+    let mut atlases = ExternalAtlases::default();
+    for input in inputs {
+        // SAFETY: The caller keeps each descriptor's byte array readable for this call.
+        let Some(data) = (unsafe { borrowed_slice(input.data, input.size) }) else {
+            return SPLOT_EINVAL;
+        };
+        if atlases
+            .insert(data, ByteOffset::new(input.source_offset))
+            .is_err()
+        {
+            return SPLOT_EDECODE;
+        }
+    }
+    open_decoder(out, settings, atlases)
+}
 
 /// Atlas metadata owned by one picture. Pointers into it remain valid until
 /// the caller releases that picture with `splot_picture_unref`.

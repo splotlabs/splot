@@ -122,6 +122,7 @@ fn decode_reports_scoped_atlas_associations_at_each_picture() {
         );
         let global = &associations[0];
         assert_eq!(global["scope_xlayer_id"], 31);
+        assert_eq!(global["segment_index"], usize::from(xlayer == 7));
         assert_eq!(global["atlas_id"], 5);
         assert_eq!(global["segment_id"], if xlayer == 3 { 41 } else { 77 });
         assert_eq!(global["layout"]["segment_ids"], serde_json::json!([41, 77]));

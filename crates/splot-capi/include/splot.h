@@ -67,7 +67,7 @@ typedef struct SplotDecoder SplotDecoder;
 // the caller releases that picture with `splot_picture_unref`.
 typedef struct SplotPictureAtlas SplotPictureAtlas;
 
-// How [`splot_open`] sets up a decoder. Fill it with
+// Settings for [`splot_open`] and [`splot_open_with_atlases`]. Fill them with
 // [`splot_default_settings`] first.
 typedef struct SplotSettings {
   // Worker threads; 0 picks one per logical core.
@@ -172,6 +172,16 @@ typedef struct SplotPicture {
   // The decoder's handle on the samples; do not touch.
   void *internal;
 } SplotPicture;
+
+// One caller-supplied Annex B atlas OBU, including its length prefix.
+typedef struct SplotAtlasInput {
+  // Bytes of exactly one framed atlas OBU.
+  const uint8_t *data;
+  // Length of `data` in bytes.
+  size_t size;
+  // Offset of the length prefix in the caller's source.
+  uint64_t source_offset;
+} SplotAtlasInput;
 
 // An optional eight-bit atlas field. Read `value` only when `present` is true.
 typedef struct SplotAtlasByte {
@@ -292,7 +302,7 @@ int splot_open(struct SplotDecoder **out, const struct SplotSettings *settings);
 // [`SPLOT_EINVAL`], [`SPLOT_EDECODE`] or [`SPLOT_ESTATE`].
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`]; `data` points to `size`
+// `decoder` is null or points to an open decoder. `data` points to `size`
 // readable bytes (it may be null when `size` is 0); `props` is null or
 // points to a [`SplotDataProps`].
 int splot_send_data(struct SplotDecoder *decoder,
@@ -304,7 +314,7 @@ int splot_send_data(struct SplotDecoder *decoder,
 // and [`SPLOT_EOF`].
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`].
+// `decoder` is null or points to an open decoder.
 void splot_drain(struct SplotDecoder *decoder);
 
 // Drops every unit and picture the decoder holds and starts a new session
@@ -314,7 +324,7 @@ void splot_drain(struct SplotDecoder *decoder);
 // Pictures already taken stay valid until released.
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`].
+// `decoder` is null or points to an open decoder.
 void splot_flush(struct SplotDecoder *decoder);
 
 // Takes the next picture in display order into `*out`.
@@ -325,7 +335,7 @@ void splot_flush(struct SplotDecoder *decoder);
 // `*out` is zeroed.
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`]. `out` is null or points to a
+// `decoder` is null or points to an open decoder. `out` is null or points to a
 // zeroed or released picture: this call overwrites `*out`, so a picture in
 // `*out` that was not released with [`splot_picture_unref`] leaks.
 int splot_get_picture(struct SplotDecoder *decoder, struct SplotPicture *out);
@@ -364,8 +374,28 @@ void splot_picture_unref(struct SplotPicture *picture);
 // valid until released.
 //
 // # Safety
-// `decoder` is null or points to null or to a decoder from [`splot_open`].
+// `decoder` is null or points to a null handle or an open decoder handle.
 void splot_close(struct SplotDecoder **decoder);
+
+// Open a decoder with external atlas metadata for random access. The
+// decoder owns the parsed layouts. It retains no caller pointers.
+// The final input for each scope and atlas ID takes precedence.
+// A flush restores these layouts.
+//
+// Returns `SPLOT_EINVAL` for invalid pointers, array lengths or settings.
+// Returns `SPLOT_EDECODE` for invalid atlas data or a decoder initialization failure.
+// On error, a valid `out` receives a null pointer.
+//
+// # Safety
+// Supply writable, aligned storage for a null decoder pointer in `out`. Supply initialized, readable
+// settings. Each nonempty input array must occupy one live allocation.
+// Supply `count` aligned, initialized descriptors and `size` readable bytes
+// for each descriptor. Keep all input storage immutable during the call.
+// Output storage must not overlap any input. A zero count accepts null `inputs`.
+int splot_open_with_atlases(struct SplotDecoder **out,
+                            const struct SplotSettings *settings,
+                            const struct SplotAtlasInput *inputs,
+                            size_t count);
 
 // Read association `index` from a picture's atlas snapshot.
 // Supply zero-initialized output storage. Returns `SPLOT_EINVAL` for null
