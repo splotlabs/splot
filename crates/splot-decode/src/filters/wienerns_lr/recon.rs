@@ -467,7 +467,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let setup =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
         let frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
-        let (frame, _shell) = frontier.run_inline(backend)?.finish(writer);
+        let (frame, _shell) = frontier.run_inline(backend.common())?.finish(writer);
         frame
     }
 }

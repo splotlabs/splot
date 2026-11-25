@@ -19,6 +19,8 @@
 //!
 //! Feature tracking: `INFRA-DECODE-FRAME-PIPELINING`.
 
+use splot_core::simd::SimdBackend;
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -164,13 +166,14 @@ impl DecoderWork {
         worker: usize,
     ) {
         let narrow = backend.narrow();
+        let common = narrow.common();
         match self {
             Self::Split8(frame) => frame.run_with_backend(narrow, claim, worker),
             Self::Split16(frame) => frame.run_with_backend(narrow, claim, worker),
             Self::Tip8(frame) => frame.run_with_backend(narrow, claim, worker),
             Self::Tip16(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Finish8(frame) => frame.run_with_backend(narrow, claim, worker),
-            Self::Finish16(frame) => frame.run_with_backend(narrow, claim, worker),
+            Self::Finish8(frame) => frame.run_with_backend(common, claim, worker),
+            Self::Finish16(frame) => frame.run_with_backend(common, claim, worker),
         }
     }
 }
@@ -750,17 +753,20 @@ impl<T: SplitSample> SplitFrame<T> {
                 ATTACH => self.attach().map(|()| true),
                 RESOLVE => self.resolve(claim.row),
                 COMMIT => self.commit(backend, claim.row, worker).map(|()| true),
-                FRONTIER => self.frontier(backend, claim.row).map(|()| true),
+                FRONTIER => self.frontier(backend.common(), claim.row).map(|()| true),
                 PRECOMPUTE => self.precompute(backend, claim.row, worker).map(|()| true),
                 TILE => self.parse_tile(claim.row).map(|()| true),
                 PROJECT => self
                     .recon_state()
                     .and_then(|recon| recon.project(backend, claim.row))
                     .map(|()| true),
-                FILTER => {
-                    run_filter_stripe(backend, &self.filter_jobs, &self.filter_error, claim.row)
-                        .map(|()| true)
-                }
+                FILTER => run_filter_stripe(
+                    backend.common(),
+                    &self.filter_jobs,
+                    &self.filter_error,
+                    claim.row,
+                )
+                .map(|()| true),
                 _ => self.output().map(|()| true),
             };
             match claim.stage {
@@ -1547,7 +1553,8 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         struct Scope<'a, T: SplitSample>(&'a FinishFrame<T>, Claim, usize);
         impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
             fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                self.0.run_with_backend(backend.narrow(), self.1, self.2);
+                self.0
+                    .run_with_backend(backend.narrow().common(), self.1, self.2);
             }
         }
         if let Ok(backend) = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto) {
@@ -1763,7 +1770,7 @@ impl RowPools {
             );
             impl<T: SplitSample> splot_core::simd::SimdScope<()> for Scope<'_, T> {
                 fn run<B: splot_core::simd::SimdBackend>(self, backend: B) {
-                    let narrow = backend.narrow();
+                    let narrow = backend.narrow().common();
                     let frontier = self
                         .0
                         .into_frontier(self.1.progress_handle(), self.2.take());
