@@ -9,7 +9,6 @@ use crate::hls::MultistreamDecoderOperation;
 use crate::types::{ExtendedLayerId, ObuType};
 
 /// Frame and tile maxima for a table-mapped level (Annex A.4).
-#[expect(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLevelLimits {
     /// Maximum luma samples per picture, `MaxPicSize`.
