@@ -680,6 +680,85 @@ fn unaligned_rap_pre_skip_and_cmvs_transition() {
 }
 
 #[test]
+fn first_unit_order_uses_frames_outside_the_temporal_layer_selection() {
+    let units = temporal_units(MSDO_OPS_RA);
+    let rap = parse_annex_b_obus(&units[2]).unwrap();
+    let following = parse_annex_b_obus(&units[3]).unwrap();
+    let xlayer = ExtendedLayerId::from_bits(3);
+    let other_xlayer = ExtendedLayerId::from_bits(7);
+    let mut bytes = Vec::new();
+    for obu in &rap[..2] {
+        write_obu(&mut bytes, obu.header, obu.payload);
+    }
+    for obu in rap
+        .iter()
+        .filter(|obu| obu.header.extended_layer_id == other_xlayer)
+    {
+        let header = ObuHeader {
+            extended_layer_id: xlayer,
+            ..obu.header
+        };
+        write_obu(&mut bytes, header, obu.payload);
+    }
+    let ops = rap
+        .iter()
+        .find(|obu| {
+            obu.header.extended_layer_id == xlayer
+                && obu.header.obu_type == ObuType::OperatingPointSet
+        })
+        .unwrap();
+    let other_frame = following
+        .iter()
+        .find(|obu| {
+            obu.header.extended_layer_id == xlayer
+                && obu.header.temporal_layer_id == TemporalLayerId::from_bits(1)
+                && obu.header.obu_type == ObuType::RegularTileGroup
+        })
+        .unwrap();
+    for obu in [ops, other_frame] {
+        let header = ObuHeader {
+            extended_layer_id: other_xlayer,
+            ..obu.header
+        };
+        write_obu(&mut bytes, header, obu.payload);
+    }
+
+    let all = stream_decode(&bytes, &DecoderSettings::default()).unwrap();
+    assert_eq!(all.len(), 1);
+    let selected = stream_decode(
+        &bytes,
+        &DecoderSettings::default()
+            .with_temporal_layer_selection(TemporalLayerSelection::BASE_ONLY),
+    )
+    .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].extended_layer_id(), xlayer);
+    assert_eq!(
+        raw_all_and_by_xlayer(&selected).0,
+        raw_all_and_by_xlayer(&all).0
+    );
+}
+
+#[test]
+fn first_unit_order_rejects_misplaced_metadata_at_an_unaligned_rap() {
+    let units = temporal_units(MSDO_OPS_RA);
+    let mut bytes = units[2].clone();
+    let obus = parse_annex_b_obus(&bytes).unwrap();
+    let header = ObuHeader {
+        obu_type: ObuType::MetadataShort,
+        ..obus.last().unwrap().header
+    };
+    write_obu(&mut bytes, header, &[0x22, 9, 0, 0x80]);
+
+    let result = context(1, 1).decode_hash_report_bytes(&bytes, DecodeOptions::default());
+    assert!(matches!(
+        result,
+        Err(DecodeError::UnsupportedFeature { unsupported })
+            if unsupported.reason() == "unexpected_leading_obu_after_key"
+    ));
+}
+
+#[test]
 fn negative_msdo_ops_lifecycle_ordering_doh_and_aggregate_limits() {
     for opts in [
         DecodeOptions::default()
