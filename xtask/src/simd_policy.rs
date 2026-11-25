@@ -7,7 +7,7 @@
 //! decoder startup and propagate the chosen concrete `SimdBackend` statically.
 //! Runtime ISA probing (`Level::new`, `is_x86_feature_detected!`,
 //! `is_aarch64_feature_detected!`) is restricted to `crates/splot-core/src/simd.rs`
-//! in decoder crates. Shared reconstruction kernels cannot select a new `Level`.
+//! in decoder and shared reconstruction crates.
 //! Ambient or per-call dispatch in decoder crates
 //! (`Level::baseline`, `baseline_simd!`, `fearless_simd::dispatch!`) is banned
 //! outside tests. The symbol helper can use the compile-time baseline token.
@@ -88,7 +88,7 @@ pub(crate) fn evaluate_simd_policy(sources: &[SourceLine]) -> Vec<SimdViolation>
         let code = line.text.split("//").next().unwrap_or(line.text.as_str());
         if line.path != RUNTIME_PROBE_ALLOWLIST {
             for &needle in RUNTIME_PROBE_NEEDLES {
-                if (decoder_runtime || needle == "Level::new") && code.contains(needle) {
+                if code.contains(needle) {
                     violations.push(SimdViolation {
                         path: line.path.clone(),
                         line_no: line.line_no,
@@ -219,12 +219,19 @@ mod tests {
                 "fearless_simd::dispatch!(level, simd => read_symbol(simd));",
                 false,
             ),
+            src(
+                "crates/splot-recon/src/subpel_mc/eight_bit/neon/dot.rs",
+                6,
+                "let i8mm = std::arch::is_aarch64_feature_detected!(\"i8mm\");",
+                false,
+            ),
         ];
         let violations = evaluate_simd_policy(&lines);
-        assert_eq!(violations.len(), 3);
+        assert_eq!(violations.len(), 4);
         assert_eq!(violations[0].needle, "fearless_simd::dispatch!");
         assert_eq!(violations[1].needle, "use fearless_simd::dispatch");
         assert_eq!(violations[2].needle, "Level::new");
+        assert_eq!(violations[3].needle, "is_aarch64_feature_detected!");
     }
 
     #[test]

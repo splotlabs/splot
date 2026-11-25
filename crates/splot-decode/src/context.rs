@@ -189,6 +189,16 @@ impl<B: SimdBackend> TypedDecodeContext<'_, B> {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+struct EnterNarrow<S>(S);
+
+#[cfg(target_arch = "aarch64")]
+impl<R, S: NarrowSimdScope<R>> SimdScope<R> for EnterNarrow<S> {
+    fn run<B: SimdBackend>(self, backend: B) -> R {
+        backend.enter_narrow(self.0)
+    }
+}
+
 // Concrete entry points keep the decoder's generic kernels in this crate.
 macro_rules! decode_request {
     ($request:ident, $method:ident, $output:ty $(, $field:ident: $ty:ty)*) => {
@@ -207,6 +217,30 @@ macro_rules! decode_request {
 
             #[cfg(target_arch = "aarch64")]
             fn run_neon(self, backend: splot_core::simd::NeonBackend) -> Result<$output> {
+                splot_core::simd::ResolvedBackend::Neon(backend).enter(EnterNarrow(self))
+            }
+
+            #[cfg(all(target_arch = "aarch64", not(target_feature = "dotprod")))]
+            fn run_neon_mla(
+                self,
+                backend: splot_core::simd::NeonBackend<splot_core::simd::NeonMla>,
+            ) -> Result<$output> {
+                self.context.$method(backend, self.reader, self.options $(, self.$field)*)
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            fn run_neon_sdot(
+                self,
+                backend: splot_core::simd::NeonBackend<splot_core::simd::NeonSdot>,
+            ) -> Result<$output> {
+                self.context.$method(backend, self.reader, self.options $(, self.$field)*)
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            fn run_neon_usdot(
+                self,
+                backend: splot_core::simd::NeonBackend<splot_core::simd::NeonUsdot>,
+            ) -> Result<$output> {
                 self.context.$method(backend, self.reader, self.options $(, self.$field)*)
             }
 

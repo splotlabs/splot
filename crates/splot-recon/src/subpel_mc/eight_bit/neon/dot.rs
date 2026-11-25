@@ -12,6 +12,9 @@
 use super::{ByteOut, Compound, Programs, Strip, Strips, Windows};
 use core::arch::aarch64::{int8x16_t, int32x4_t, uint8x16_t};
 use fearless_simd::Neon;
+use splot_core::simd::NeonSubpelDot;
+
+use crate::subpel_mc::SubpelRunner;
 
 /// One call of the kernels, compiled with `usdot`, with `sdot` and with
 /// multiply-accumulate horizontal sums.
@@ -41,26 +44,20 @@ pub(super) trait Job {
     unsafe fn usdot(self, t: Neon) -> Self::Output;
 }
 
-/// Runs `job` in the `usdot` kernels when its kernel class wins with them
-/// ([`Job::usdot_wins`]) and the CPU has `FEAT_DotProd` and `FEAT_I8MM`,
-/// which the standard library detects once and caches, else in
-/// the `sdot` kernels when it has `FEAT_DotProd`, else in the
-/// multiply-accumulate kernels.
+/// Runs the selected family. The compatibility runner probes the CPU here;
+/// typed runners carry the family in the startup-selected backend type.
 #[allow(clippy::inline_always, reason = "one dispatch per kernel call")]
 #[inline(always)]
-pub(super) fn run<J: Job>(t: Neon, job: J) -> J::Output {
-    if !std::arch::is_aarch64_feature_detected!("dotprod") || families() == 0 {
+pub(super) fn run<R: SubpelRunner, J: Job>(t: Neon, job: J) -> J::Output {
+    let mode = R::NEON_SUBPEL_DOT.unwrap_or_else(|| NeonSubpelDot::detect(|| job.usdot_wins()));
+    if mode == NeonSubpelDot::Mla || families() == 0 {
         return job.mla(t);
     }
-    let i8mm = job.usdot_wins() && std::arch::is_aarch64_feature_detected!("i8mm");
-    // SAFETY: the CPU has `FEAT_DotProd`, and with `i8mm` `FEAT_I8MM`, detected above.
-    unsafe {
-        if i8mm && families() > 1 {
-            job.usdot(t)
-        } else {
-            job.sdot(t)
-        }
-    }
+    let usdot = mode == NeonSubpelDot::Usdot
+        && families() > 1
+        && (R::NEON_SUBPEL_DOT.is_none() || job.usdot_wins());
+    // SAFETY: the typed mode holds startup proofs, or the compatibility call checked the CPU.
+    unsafe { if usdot { job.usdot(t) } else { job.sdot(t) } }
 }
 
 /// `usdot` of the unsigned bytes `samples` by the signed bytes of word `L`

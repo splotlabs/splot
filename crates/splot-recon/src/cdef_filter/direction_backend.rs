@@ -50,7 +50,7 @@ mod sealed_backend {
     impl Sealed for splot_core::simd::Avx512Backend {}
 
     #[cfg(target_arch = "aarch64")]
-    impl Sealed for splot_core::simd::NeonBackend {}
+    impl<D: splot_core::simd::NeonSubpelMode> Sealed for splot_core::simd::NeonBackend<D> {}
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     impl Sealed for splot_core::simd::FallbackBackend {}
@@ -101,7 +101,9 @@ impl CdefDirectionBackend for splot_core::simd::Avx512Backend {
 }
 
 #[cfg(target_arch = "aarch64")]
-impl CdefDirectionBackend for splot_core::simd::NeonBackend {
+impl<D: splot_core::simd::NeonSubpelMode> CdefDirectionBackend
+    for splot_core::simd::NeonBackend<D>
+{
     #[inline]
     fn cdef_direction_padded_impl(
         self,

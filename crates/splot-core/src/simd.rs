@@ -167,6 +167,42 @@ pub trait NarrowSimdScope<R> {
     #[cfg(target_arch = "aarch64")]
     fn run_neon(self, backend: NeonBackend) -> R;
 
+    /// Runs with the startup-selected multiply-accumulate subpel family.
+    #[cfg(all(target_arch = "aarch64", not(target_feature = "dotprod")))]
+    fn run_neon_mla(self, backend: NeonBackend<NeonMla>) -> R
+    where
+        Self: Sized,
+    {
+        self.run_neon(NeonBackend {
+            token: backend.token,
+            dot: DetectedNeonSubpel(NeonSubpelDot::Mla),
+        })
+    }
+
+    /// Runs with the startup-selected signed dot-product subpel family.
+    #[cfg(target_arch = "aarch64")]
+    fn run_neon_sdot(self, backend: NeonBackend<NeonSdot>) -> R
+    where
+        Self: Sized,
+    {
+        self.run_neon(NeonBackend {
+            token: backend.token,
+            dot: DetectedNeonSubpel(NeonSubpelDot::Sdot),
+        })
+    }
+
+    /// Runs with the startup-selected mixed-sign dot-product subpel family.
+    #[cfg(target_arch = "aarch64")]
+    fn run_neon_usdot(self, backend: NeonBackend<NeonUsdot>) -> R
+    where
+        Self: Sized,
+    {
+        self.run_neon(NeonBackend {
+            token: backend.token,
+            dot: DetectedNeonSubpel(NeonSubpelDot::Usdot),
+        })
+    }
+
     /// Runs on the fallback backend.
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     fn run_fallback(self, backend: FallbackBackend) -> R;
@@ -185,6 +221,11 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
 
     /// Lowercase name matching [`SelectedBackend::as_str`].
     const NAME: &'static str;
+
+    /// Statically selected NEON subpel kernel family.
+    #[cfg(target_arch = "aarch64")]
+    #[doc(hidden)]
+    const NEON_SUBPEL_DOT: Option<NeonSubpelDot> = None;
 
     /// Returns the genuine `fearless_simd` capability token.
     fn token(self) -> Self::Token;
@@ -413,39 +454,129 @@ impl SimdBackend for Avx512Backend {
     }
 }
 
-/// Sealed AArch64 NEON backend carrying a genuine [`fearless_simd::Neon`] token.
+/// AArch64 dot-product support used by the eight-bit subpel kernels.
 #[cfg(target_arch = "aarch64")]
-#[derive(Clone, Copy)]
-pub struct NeonBackend {
-    token: fearless_simd::Neon,
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NeonSubpelDot {
+    /// Baseline NEON multiply-accumulate.
+    Mla,
+    /// Signed dot-product instructions.
+    Sdot,
+    /// Mixed unsigned and signed dot-product instructions.
+    Usdot,
 }
 
 #[cfg(target_arch = "aarch64")]
-impl fmt::Debug for NeonBackend {
+impl NeonSubpelDot {
+    /// Probes the CPU for startup selection or a legacy compatibility call.
+    #[inline]
+    pub fn detect(try_usdot: impl FnOnce() -> bool) -> Self {
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            Self::Mla
+        } else if try_usdot() && std::arch::is_aarch64_feature_detected!("i8mm") {
+            Self::Usdot
+        } else {
+            Self::Sdot
+        }
+    }
+}
+
+/// Sealed storage for the validated NEON subpel profile.
+#[cfg(target_arch = "aarch64")]
+#[doc(hidden)]
+pub trait NeonSubpelMode: sealed::Sealed + Copy + Send + Sync + 'static {
+    /// The family when encoded in the type.
+    const STATIC: Option<NeonSubpelDot>;
+
+    /// Enters the concrete code-generation boundary for this profile.
+    fn enter_narrow<R>(self, token: fearless_simd::Neon, scope: impl NarrowSimdScope<R>) -> R;
+}
+
+/// Startup-validated NEON subpel support before entering a concrete scope.
+#[cfg(target_arch = "aarch64")]
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct DetectedNeonSubpel(NeonSubpelDot);
+
+#[cfg(target_arch = "aarch64")]
+impl sealed::Sealed for DetectedNeonSubpel {}
+
+#[cfg(target_arch = "aarch64")]
+impl NeonSubpelMode for DetectedNeonSubpel {
+    const STATIC: Option<NeonSubpelDot> = None;
+
+    fn enter_narrow<R>(self, token: fearless_simd::Neon, scope: impl NarrowSimdScope<R>) -> R {
+        scope.run_neon(NeonBackend { token, dot: self })
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+macro_rules! neon_subpel_mode {
+    ($mode:ident, $variant:ident, $entry:ident) => {
+        /// Startup proof for one NEON subpel profile.
+        #[doc(hidden)]
+        #[derive(Clone, Copy)]
+        pub struct $mode(());
+
+        impl sealed::Sealed for $mode {}
+
+        impl NeonSubpelMode for $mode {
+            const STATIC: Option<NeonSubpelDot> = Some(NeonSubpelDot::$variant);
+
+            fn enter_narrow<R>(
+                self,
+                token: fearless_simd::Neon,
+                scope: impl NarrowSimdScope<R>,
+            ) -> R {
+                scope.$entry(NeonBackend { token, dot: self })
+            }
+        }
+    };
+}
+
+#[cfg(all(target_arch = "aarch64", not(target_feature = "dotprod")))]
+neon_subpel_mode!(NeonMla, Mla, run_neon_mla);
+#[cfg(target_arch = "aarch64")]
+neon_subpel_mode!(NeonSdot, Sdot, run_neon_sdot);
+#[cfg(target_arch = "aarch64")]
+neon_subpel_mode!(NeonUsdot, Usdot, run_neon_usdot);
+
+/// Sealed AArch64 NEON backend carrying a genuine [`fearless_simd::Neon`] token.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+pub struct NeonBackend<D: NeonSubpelMode = DetectedNeonSubpel> {
+    token: fearless_simd::Neon,
+    dot: D,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl<D: NeonSubpelMode> fmt::Debug for NeonBackend<D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NeonBackend").finish_non_exhaustive()
     }
 }
 
 #[cfg(target_arch = "aarch64")]
-impl PartialEq for NeonBackend {
+impl<D: NeonSubpelMode> PartialEq for NeonBackend<D> {
     fn eq(&self, _other: &Self) -> bool {
         true
     }
 }
 
 #[cfg(target_arch = "aarch64")]
-impl Eq for NeonBackend {}
+impl<D: NeonSubpelMode> Eq for NeonBackend<D> {}
 
 #[cfg(target_arch = "aarch64")]
-impl sealed::Sealed for NeonBackend {}
+impl<D: NeonSubpelMode> sealed::Sealed for NeonBackend<D> {}
 
 #[cfg(target_arch = "aarch64")]
-impl SimdBackend for NeonBackend {
+impl<D: NeonSubpelMode> SimdBackend for NeonBackend<D> {
     type Token = fearless_simd::Neon;
     type Narrow = Self;
     const KIND: SelectedBackend = SelectedBackend::Neon;
     const NAME: &'static str = "neon";
+    const NEON_SUBPEL_DOT: Option<NeonSubpelDot> = D::STATIC;
 
     #[inline]
     fn token(self) -> Self::Token {
@@ -464,7 +595,7 @@ impl SimdBackend for NeonBackend {
 
     #[inline]
     fn enter_narrow<R>(self, scope: impl NarrowSimdScope<R>) -> R {
-        scope.run_neon(self.narrow())
+        self.dot.enter_narrow(self.token, scope)
     }
 
     #[inline]
@@ -475,6 +606,32 @@ impl SimdBackend for NeonBackend {
     #[inline]
     fn static_neon_token(self) -> Option<fearless_simd::Neon> {
         Some(self.token)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl NeonBackend {
+    fn enter<R>(self, scope: impl SimdScope<R>) -> R {
+        let token = self.token;
+        #[cfg(not(target_feature = "dotprod"))]
+        if self.dot.0 == NeonSubpelDot::Mla {
+            return scope.run(NeonBackend {
+                token,
+                dot: NeonMla(()),
+            });
+        }
+
+        if self.dot.0 == NeonSubpelDot::Usdot {
+            scope.run(NeonBackend {
+                token,
+                dot: NeonUsdot(()),
+            })
+        } else {
+            scope.run(NeonBackend {
+                token,
+                dot: NeonSdot(()),
+            })
+        }
     }
 }
 
@@ -588,7 +745,7 @@ impl ResolvedBackend {
             #[cfg(target_arch = "x86_64")]
             Self::Avx512(backend) => scope.run(backend),
             #[cfg(target_arch = "aarch64")]
-            Self::Neon(backend) => scope.run(backend),
+            Self::Neon(backend) => backend.enter(scope),
             #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
             Self::Fallback(backend) => scope.run(backend),
         }
@@ -713,7 +870,12 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
     match selected {
         SelectedBackend::Neon => level
             .as_neon()
-            .map(|token| ResolvedBackend::Neon(NeonBackend { token }))
+            .map(|token| {
+                ResolvedBackend::Neon(NeonBackend {
+                    token,
+                    dot: DetectedNeonSubpel(NeonSubpelDot::detect(|| true)),
+                })
+            })
             .ok_or_else(err),
         SelectedBackend::Avx2 | SelectedBackend::Avx512 | SelectedBackend::Fallback => Err(err()),
     }
@@ -879,7 +1041,11 @@ mod tests {
                 #[cfg(target_arch = "x86_64")]
                 assert!(backend.avx2_token().is_some());
                 #[cfg(target_arch = "aarch64")]
-                assert!(backend.neon_token().is_some());
+                {
+                    assert!(backend.neon_token().is_some());
+                    assert_eq!(core::mem::size_of::<B>(), 0);
+                    assert_eq!(B::NEON_SUBPEL_DOT, Some(NeonSubpelDot::detect(|| true)));
+                }
                 narrow.vectorize(|| <B::Narrow as SimdBackend>::KIND)
             }
         }
