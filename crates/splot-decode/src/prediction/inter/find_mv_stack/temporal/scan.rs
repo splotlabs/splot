@@ -185,6 +185,8 @@ impl BandLanes {
     }
 
     /// The band cell of `(y8, x8)`, or -1 for a row above the band.
+    #[expect(clippy::inline_always, reason = "keep band indexing in the SIMD scope")]
+    #[inline(always)]
     fn index<S: Simd>(self, [y8, x8]: [Lanes<S>; 2]) -> Lanes<S> {
         let row = y8 - self.row_base;
         (row * self.width8 + x8) | (row >> 31)
@@ -575,8 +577,11 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
         let allow = allow | (REVERSE | END_WRITE);
         lanes.refs[group] = refs.into();
         let factor = tables.folded(tables.divisor, refs) * tables.source_to_current;
-        let motion = [saved_rows, saved_cols].map(|saved| decompress(widen_i8(simd, saved)));
-        let projection = motion.map(|mv| project(mv, factor));
+        let motion = [
+            decompress(widen_i8(simd, saved_rows)),
+            decompress(widen_i8(simd, saved_cols)),
+        ];
+        let projection = [project(motion[0], factor), project(motion[1], factor)];
         for (axis, mv) in motion.into_iter().enumerate() {
             lanes.ints[MV + axis][group] = mv.into();
             if TRACKED {
@@ -688,7 +693,11 @@ impl Default for Window {
 /// read from a chunk window whose cells start at the scanned list. A step-2
 /// group is four runs of four cells; a step-1 group's even cells and its odd
 /// cells, six bytes further, each form two such runs, whose bytes interleave.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep cell unpacking in the SIMD scope"
+)]
+#[inline(always)]
 fn deinterleave<S: Simd>(
     simd: S,
     window: &Window,
@@ -776,6 +785,11 @@ fn narrow_bytes<S: Simd>(simd: S, lanes: Lanes<S>) -> u8x16<S> {
 }
 
 /// AV2 § 7.9.2 decompression of a saved vector component, lane by lane.
+#[expect(
+    clippy::inline_always,
+    reason = "keep motion arithmetic in the SIMD scope"
+)]
+#[inline(always)]
 fn decompress<S: Simd>(value: Lanes<S>) -> Lanes<S> {
     let magnitude = value.abs();
     let step_log2 = ((magnitude >> 4) - 1).max(0);
@@ -787,6 +801,11 @@ fn decompress<S: Simd>(value: Lanes<S>) -> Lanes<S> {
 /// `Round2Signed(component * factor, 14)` of a decompressed component. A
 /// magnitude of at most 2048 keeps the product inside `i32` and the result
 /// under `MV_LIMIT` for every admitted factor, so the scalar clamp never binds.
+#[expect(
+    clippy::inline_always,
+    reason = "keep motion arithmetic in the SIMD scope"
+)]
+#[inline(always)]
 fn project<S: Simd>(component: Lanes<S>, factor: Lanes<S>) -> Lanes<S> {
     let scaled = component * factor;
     (scaled + (scaled >> 31) + (1 << 13)) >> 14
