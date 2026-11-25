@@ -436,6 +436,53 @@ fn msdo_frame_width_uses_the_allocated_layer_and_aggregate_level() {
 }
 
 #[test]
+fn msdo_reference_buffer_capacity_uses_the_sequence_maximum_before_frame_parse() {
+    use splot_core::headers::sequence::{FrameDimensionBits, FrameHeight, FrameWidth, LevelIdx};
+
+    let first_tu = edit_msdo(&temporal_units(MSDO_8BIT)[0], |msdo| {
+        msdo.multistream_level_idx = 4;
+        msdo.multistream_even_allocation_flag = false;
+        msdo.multistream_large_picture_idc = Some(1);
+        msdo.sub_streams[0].sub_stream_max_level = 4;
+    });
+    let mut data = Vec::new();
+    let mut count = 0;
+    for obu in parse_annex_b_obus(&first_tu).unwrap() {
+        if obu.header.extended_layer_id.get() == 3 && obu.header.obu_type == ObuType::SequenceHeader
+        {
+            let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut seq)) =
+                obu.payload_status().unwrap()
+            else {
+                unreachable!()
+            };
+            seq.general.seq_level_idx = LevelIdx::from_bits(4);
+            seq.general.max_frame_width = FrameWidth::from_minus_1(1279);
+            seq.general.max_frame_height = FrameHeight::from_minus_1(1023);
+            seq.general.frame_width_bits = FrameDimensionBits::from_minus_1(10);
+            seq.general.frame_height_bits = FrameDimensionBits::from_minus_1(9);
+            count = seq.inter.as_ref().unwrap().num_ref_frames;
+            write_parsed(&mut data, obu.header, &ParsedObu::SequenceHeader(seq));
+        } else {
+            write_obu(&mut data, obu.header, obu.payload);
+        }
+    }
+    assert!(count > 1);
+    let error = stream_decode(&data, &DecoderSettings::default()).unwrap_err();
+    let DecodeError::MalformedSource { issue } = error else {
+        panic!("{error:?}")
+    };
+    assert_eq!(
+        issue.kind(),
+        splot_decode::DecodeSourceIssueKind::SequenceHeaderConformanceError
+    );
+    assert_eq!(issue.spec_section(), Some("A.4"));
+    assert_eq!(
+        issue.message(),
+        format!("extended layer 3 sequence exceeds MaxLevelRefFrames: {count} > 1")
+    );
+}
+
+#[test]
 fn reserved_aggregate_level_fails_at_the_descriptor() {
     let data = edit_msdo(&temporal_units(MSDO_8BIT)[0], |msdo| {
         msdo.multistream_level_idx = 22

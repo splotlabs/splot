@@ -3,9 +3,10 @@
 
 //! Static frame and tile limits from AV2 v1.0.0 Annex A.4.
 
-use crate::headers::sequence::Tier;
+use crate::headers::frame::FrameHeaderCore;
+use crate::headers::sequence::SequenceHeader;
 use crate::hls::MultistreamDecoderOperation;
-use crate::types::ExtendedLayerId;
+use crate::types::{ExtendedLayerId, ObuType};
 
 /// Frame and tile maxima for a table-mapped level (Annex A.4).
 #[expect(clippy::struct_field_names)]
@@ -136,144 +137,130 @@ impl MultistreamDecoderOperation {
     }
 }
 
-/// An Annex A.4 rate in units per second. The fraction preserves the exact
-/// result for uneven allocation, including values between whole units.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LevelRate {
-    /// Units in the interval.
-    pub units: u64,
-    /// Duration of the interval in seconds.
-    pub seconds: u32,
-}
-
-/// Rate and compression limits for Annex E timing checks. A decoder needs
-/// bitstream timing observations to check the rates against actual pictures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LevelRateLimits {
-    /// Maximum display luma samples per second.
-    pub display: LevelRate,
-    /// Maximum decoded luma samples per second.
-    pub decode: LevelRate,
-    /// Maximum coded bits per second.
-    pub bitrate: LevelRate,
-    /// Minimum compression basis for the signaled tiers.
-    pub min_compression_basis: u8,
-}
-
-impl MultistreamDecoderOperation {
-    /// Computes the timing-dependent Annex A.4 level limits in decoder mode 1.
-    /// Returns `None` for an unmapped sequence level or an undefined tier.
+impl FrameLevelLimits {
+    /// Checks the Annex A.4 video reference-frame limit. Returns the signaled
+    /// count and the maximum on a proved violation. Without a frame, this
+    /// checks the sequence allocation before a decoder creates its buffers.
     #[must_use]
-    pub fn rate_limits(
+    pub fn excess_ref_frames(
         &self,
-        sequence_level: u8,
-        sequence_tier: Tier,
-        xlayer: ExtendedLayerId,
-    ) -> Option<LevelRateLimits> {
-        let (_, numerator, denominator) = self.allocation_scale(xlayer)?;
-        let (display, decode, bitrate, min_compression_basis) =
-            rate_table(sequence_level, sequence_tier)?;
-        let native = |units| LevelRate { units, seconds: 1 };
-        let mut limits = LevelRateLimits {
-            display: native(display),
-            decode: native(decode),
-            bitrate: native(bitrate),
-            min_compression_basis,
-        };
-        if self.multistream_level_idx == 31 {
-            return Some(limits);
+        sequence: &SequenceHeader,
+        frame: Option<&FrameHeaderCore>,
+    ) -> Option<(u8, u8)> {
+        if sequence.general.still_picture {
+            return None;
         }
-        let (aggregate_display, aggregate_decode, aggregate_bitrate, aggregate_cr) = rate_table(
-            self.multistream_level_idx,
-            Tier::from_bit(self.multistream_tier),
-        )?;
-        let rate = |native_units, aggregate: u64| {
-            let units = aggregate * u64::from(denominator);
-            if units < native_units * u64::from(numerator) {
-                LevelRate {
-                    units,
-                    seconds: numerator,
-                }
-            } else {
-                native(native_units)
-            }
-        };
-        limits.display = rate(display, aggregate_display);
-        limits.decode = rate(decode, aggregate_decode);
-        limits.bitrate = rate(bitrate, aggregate_bitrate);
-        limits.min_compression_basis = min_compression_basis.max(aggregate_cr);
-        Some(limits)
+        let count = sequence.inter.as_ref()?.num_ref_frames;
+        let area = u64::from(sequence.general.max_frame_width.get())
+            * u64::from(sequence.general.max_frame_height.get());
+        let reserve = frame.is_some_and(|frame| {
+            (sequence.general.max_mlayer_id.get() != 0 || frame.obu_type != ObuType::ClosedLoopKey)
+                && requires_second_decode(frame)
+        });
+        // The syntax bounds NumRefFrames by 8 << explicit_num_ref_frames.
+        // Only the smaller geometry-based branch can prove a violation.
+        let slots = self
+            .max_pic_size
+            .checked_mul(8)?
+            .checked_div(area)?
+            .saturating_sub(u64::from(reserve));
+        (u64::from(count) > slots).then(|| (count, slots as u8))
     }
 }
 
-fn rate_table(level: u8, tier: Tier) -> Option<(u64, u64, u64, u8)> {
-    // Annex A.4 Tables A.8 and A.9, mirror lines 330–432. Columns are
-    // display and decode samples/s, main and high bits/s, and MainCR.
-    // HighCR is 4 wherever the high tier exists.
-    const RATES: [(u64, u64, u64, u64, u8); 22] = [
-        (4_423_680, 5_529_600, 1_500_000, 0, 2),
-        (8_363_520, 10_454_400, 3_000_000, 0, 2),
-        (19_975_680, 24_969_600, 6_000_000, 0, 2),
-        (31_950_720, 39_938_400, 10_000_000, 0, 2),
-        (70_778_880, 77_856_768, 12_000_000, 30_000_000, 4),
-        (141_557_760, 155_713_536, 20_000_000, 50_000_000, 4),
-        (267_386_880, 273_715_200, 30_000_000, 100_000_000, 6),
-        (534_773_760, 547_430_400, 40_000_000, 160_000_000, 8),
-        (1_069_547_520, 1_094_860_800, 60_000_000, 240_000_000, 8),
-        (1_069_547_520, 1_176_502_272, 60_000_000, 240_000_000, 8),
-        (1_069_547_520, 1_176_502_272, 60_000_000, 240_000_000, 8),
-        (2_139_095_040, 2_189_721_600, 100_000_000, 480_000_000, 8),
-        (4_278_190_080, 4_379_443_200, 160_000_000, 800_000_000, 8),
-        (4_278_190_080, 4_706_009_088, 160_000_000, 800_000_000, 8),
-        (4_278_190_080, 4_706_009_088, 160_000_000, 800_000_000, 8),
-        (8_556_380_160, 8_758_886_400, 200_000_000, 960_000_000, 8),
-        (
-            17_112_760_320,
-            17_517_772_800,
-            320_000_000,
-            1_600_000_000,
-            8,
-        ),
-        (
-            17_112_760_320,
-            18_824_036_352,
-            320_000_000,
-            1_600_000_000,
-            8,
-        ),
-        (
-            17_112_760_320,
-            18_824_036_352,
-            320_000_000,
-            1_600_000_000,
-            8,
-        ),
-        (
-            34_225_520_640,
-            34_910_031_052,
-            400_000_000,
-            1_920_000_000,
-            8,
-        ),
-        (
-            68_451_041_280,
-            69_820_062_105,
-            640_000_000,
-            3_200_000_000,
-            8,
-        ),
-        (
-            68_451_041_280,
-            75_296_145_408,
-            640_000_000,
-            3_200_000_000,
-            8,
-        ),
-    ];
-    let &(display, decode, main_bps, high_bps, main_cr) = RATES.get(usize::from(level))?;
-    match tier {
-        Tier::Main => Some((display, decode, main_bps, main_cr)),
-        Tier::High if high_bps != 0 => Some((display, decode, high_bps, 4)),
-        Tier::High => None,
+// Annex A.4 InloopFilteringEnabled and DecodeCount (mirror lines 537–544).
+fn requires_second_decode(frame: &FrameHeaderCore) -> bool {
+    frame
+        .intrabc
+        .is_some_and(|p| p.allow_global_intrabc == Some(true))
+        && (frame
+            .deblocking_filter_params
+            .as_ref()
+            .is_some_and(|p| p.apply_deblocking_filter[0] || p.apply_deblocking_filter[1])
+            || frame
+                .cdef_params
+                .as_ref()
+                .is_some_and(|p| p.cdef_frame_enable)
+            || frame.ccso_params.as_ref().is_some_and(|p| {
+                p.ccso_frame_flag == Some(true) || p.planes.iter().any(|plane| plane.ccso_planes)
+            })
+            || frame.lr_params.as_ref().is_some_and(|p| p.uses_lr)
+            || frame
+                .gdf_params
+                .as_ref()
+                .is_some_and(|p| p.gdf_frame_enable))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::annexb::parse_annex_b_obus;
+    use crate::bitio::BitReader;
+    use crate::headers::frame::{
+        DeblockingFilterParams, FrameHeaderParseInput, FrameReferenceStateView, IntrabcParams,
+        parse_frame_header_core,
+    };
+    use crate::obu::{ParsedObu, PayloadStatus};
+    use crate::types::EmbeddedLayerId;
+
+    #[test]
+    fn second_decode_reserves_a_reference_slot_only_for_filtered_global_intrabc() {
+        let data = include_bytes!(
+            "../../../tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu"
+        );
+        let obus = parse_annex_b_obus(data).unwrap();
+        let sh = obus
+            .iter()
+            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader)
+            .unwrap();
+        let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut seq)) =
+            sh.payload_status().unwrap()
+        else {
+            unreachable!()
+        };
+        let key = obus
+            .iter()
+            .find(|obu| obu.header.obu_type == ObuType::ClosedLoopKey)
+            .unwrap();
+        let mut frame = parse_frame_header_core(
+            &mut BitReader::new(key.payload, key.payload_offset()),
+            &FrameHeaderParseInput {
+                obu_type: key.header.obu_type,
+                obu_mlayer_id: key.header.embedded_layer_id,
+                obu_tlayer_id: key.header.temporal_layer_id,
+                first_picture_in_tu: true,
+                active_sequence: Some(&seq),
+                mfh_record: None,
+                reference_state: FrameReferenceStateView::unknown(),
+            },
+        )
+        .unwrap();
+        seq.inter.as_mut().unwrap().num_ref_frames = 8;
+        let mut limits = level_limits(0).unwrap();
+        limits.max_pic_size = u64::from(seq.general.max_frame_width.get())
+            * u64::from(seq.general.max_frame_height.get());
+        assert_eq!(limits.excess_ref_frames(&seq, None), None);
+        frame.intrabc = Some(IntrabcParams {
+            allow_intrabc: true,
+            allow_global_intrabc: Some(true),
+            allow_local_intrabc: Some(true),
+            change_bvp_drl: None,
+            max_bvp_drl_bits_minus_1: None,
+        });
+        frame.deblocking_filter_params = Some(DeblockingFilterParams::new(
+            [true, false, false, false],
+            [false; 4],
+            [0; 4],
+        ));
+        assert_eq!(limits.excess_ref_frames(&seq, Some(&frame)), None);
+        frame.obu_type = ObuType::OpenLoopKey;
+        assert_eq!(limits.excess_ref_frames(&seq, Some(&frame)), Some((8, 7)));
+        frame.obu_type = ObuType::ClosedLoopKey;
+        seq.general.max_mlayer_id = EmbeddedLayerId::from_bits(1);
+        assert_eq!(limits.excess_ref_frames(&seq, Some(&frame)), Some((8, 7)));
+        frame.intrabc.as_mut().unwrap().allow_global_intrabc = Some(false);
+        assert_eq!(limits.excess_ref_frames(&seq, Some(&frame)), None);
+        seq.general.still_picture = true;
+        assert_eq!(limits.excess_ref_frames(&seq, None), None);
     }
 }

@@ -1517,7 +1517,7 @@ fn decode_frames_in_order(
                     }
                 }
                 let frame_index = frames.len();
-                let (inter_core, user_qm, inter_order_hint_bits, sequence_level) = {
+                let (inter_core, user_qm, inter_order_hint_bits) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1555,17 +1555,12 @@ fn decode_frames_in_order(
                             first_picture_in_tu,
                             ivf_frame_index,
                         )?;
-                        Result::Ok((
-                            inter_core,
-                            user_qm,
-                            order_hint_bits,
-                            layer.sequence.general.seq_level_idx.get(),
-                        ))
+                        Result::Ok((inter_core, user_qm, order_hint_bits))
                     })?
                 };
                 xlayers.check_msdo_frame_limits(
                     candidate_xlayer,
-                    sequence_level,
+                    None,
                     &inter_core,
                     inter_envelope.offset,
                 )?;
@@ -2131,7 +2126,7 @@ fn decode_frames_in_order(
                 };
                 xlayers.check_msdo_frame_limits(
                     candidate_xlayer,
-                    key_sequence.general.seq_level_idx.get(),
+                    Some(&key_sequence),
                     &key_core,
                     key_envelope.offset,
                 )?;

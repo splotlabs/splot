@@ -1173,7 +1173,7 @@ impl XLayerTable {
     pub(super) fn check_msdo_frame_limits(
         &self,
         xlayer: ExtendedLayerId,
-        sequence_level: u8,
+        new_sequence: Option<&SequenceHeader>,
         core: &FrameHeaderCore,
         offset: ByteOffset,
     ) -> Result<()> {
@@ -1183,7 +1183,14 @@ impl XLayerTable {
         let Some(active) = &self.global.active_msdo else {
             return Ok(());
         };
-        let Some(limits) = active.msdo.frame_level_limits(sequence_level, xlayer) else {
+        let Some(sequence) = new_sequence.or_else(|| self.get(xlayer).map(|layer| &layer.sequence))
+        else {
+            return Ok(());
+        };
+        let Some(limits) = active
+            .msdo
+            .frame_level_limits(sequence.general.seq_level_idx.get(), xlayer)
+        else {
             return Ok(());
         };
         let check = |name, value: u64, limit: u64| {
@@ -1203,6 +1210,9 @@ impl XLayerTable {
                 Ok(())
             }
         };
+        if let Some((count, slots)) = limits.excess_ref_frames(sequence, Some(core)) {
+            check("MaxLevelRefFrames", u64::from(count), u64::from(slots))?;
+        }
         if let Some(size) = core.frame_size {
             check(
                 "MaxHSize",
@@ -1434,6 +1444,21 @@ impl XLayerTable {
                     "6.6",
                     format!(
                         "extended layer {} sequence PTL exceeds OBU_MSDO ceiling",
+                        xlayer.get()
+                    ),
+                ));
+            }
+            if self.global.multistream_decoder_mode
+                && let Some(limits) = active
+                    .msdo
+                    .frame_level_limits(sequence.general.seq_level_idx.get(), xlayer)
+                && let Some((count, slots)) = limits.excess_ref_frames(sequence, None)
+            {
+                return Err(malformed(
+                    offset,
+                    "A.4",
+                    format!(
+                        "extended layer {} sequence exceeds MaxLevelRefFrames: {count} > {slots}",
                         xlayer.get()
                     ),
                 ));

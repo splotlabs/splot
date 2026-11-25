@@ -449,8 +449,6 @@ mod tests {
 
     #[test]
     fn msdo_allocation_combines_native_and_aggregate_levels_by_xlayer() {
-        use crate::headers::sequence::Tier;
-        use crate::level::LevelRate;
         use crate::types::ExtendedLayerId;
 
         let bytes = msdo_bits(0).into_bytes();
@@ -511,42 +509,6 @@ mod tests {
         );
         assert!(msdo.frame_level_limits(31, large).is_none());
 
-        msdo.multistream_tier = 1;
-        let rates = msdo.rate_limits(21, Tier::Main, large).unwrap();
-        assert_eq!(
-            rates.display,
-            LevelRate {
-                units: 141_557_760,
-                seconds: 3
-            }
-        );
-        assert_eq!(
-            rates.bitrate,
-            LevelRate {
-                units: 60_000_000,
-                seconds: 3
-            }
-        );
-        assert_eq!(rates.min_compression_basis, 8);
-        let rates = msdo.rate_limits(21, Tier::High, small).unwrap();
-        assert_eq!(
-            rates.decode,
-            LevelRate {
-                units: 77_856_768,
-                seconds: 9
-            }
-        );
-        assert_eq!(rates.min_compression_basis, 4);
-        let native_rates = msdo.rate_limits(0, Tier::Main, large).unwrap();
-        assert_eq!(
-            native_rates.bitrate,
-            LevelRate {
-                units: 1_500_000,
-                seconds: 1
-            }
-        );
-        msdo.multistream_level_idx = 0;
-        assert!(msdo.rate_limits(4, Tier::Main, large).is_none());
         msdo.multistream_level_idx = 31;
         assert_eq!(
             msdo.frame_level_limits(4, large),
