@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-name: Native AVX-512 luma LUT qualification
+name: Native AVX-512 release and playback evidence
 
 on:
   push:
-    branches: [experiment/simd-2007-qualification]
+    branches: [experiment/simd-2007-release-qualification]
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   qualification:
@@ -16,8 +17,7 @@ jobs:
     timeout-minutes: 65
     env:
       CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_RELEASE_STRIP: none
-      SPLOT_REQUIRE_AVX512: "1"
+      TIMING_RUN: "45694881097"
       CONTROL: d04f4d61bed29288ab5109c4eaa543c5c152f9f9
       CANDIDATE: 8f83d1927324d7f08d4ab6ee0e47875a61d9f190
     steps:
@@ -60,21 +60,17 @@ jobs:
             dir="$EVIDENCE/$variant"
             mkdir "$dir"
             printf '%s\n' "$revision" > "$dir/revision.sha"
-            cargo build --release --locked -j1 -p splot-cli -p splot-capi
-            cp target/release/splot "$dir/splot"
+            cargo xtask check-binary-size | tee "$dir/production-budget.log"
+            cp target/release/splot target/release/libsplot_capi.so "$dir/"
             objcopy -O binary --only-section=.text "$dir/splot" "$RUNNER_TEMP/splot.text"
             sha256sum "$RUNNER_TEMP/splot.text" > "$dir/splot-text.txt"
             rm "$RUNNER_TEMP/splot.text"
-            strip --strip-all -o "$dir/splot.stripped" "$dir/splot"
-            strip --strip-all -o "$dir/libsplot_capi.so" target/release/libsplot_capi.so
-            cp target/release/libsplot_capi.a "$dir/libsplot_capi.a"
-            strip --strip-debug "$dir/libsplot_capi.a"
-            stat -c '%s %n' "$dir/splot.stripped" "$dir/libsplot_capi.so" "$dir/libsplot_capi.a" |
+            stat -c '%s %n' "$dir/splot" "$dir/libsplot_capi.so" target/release/libsplot_capi.a |
               tee "$dir/sizes.txt"
             cc -std=c11 -Wall -Wextra -Werror -I crates/splot-capi/include \
               "$RUNNER_TEMP/decode.c" -L "$dir" -lsplot_capi "-Wl,-rpath,\$ORIGIN" -o "$dir/shared"
             cc -std=c11 -Wall -Wextra -Werror -I crates/splot-capi/include \
-              "$RUNNER_TEMP/decode.c" "$dir/libsplot_capi.a" -lpthread -ldl -lm -lutil -lrt -o "$dir/static"
+              "$RUNNER_TEMP/decode.c" target/release/libsplot_capi.a -lpthread -ldl -lm -lutil -lrt -o "$dir/static"
             ldd "$dir/shared" | tee "$dir/shared-link.txt"
             grep -F "$dir/libsplot_capi.so" "$dir/shared-link.txt"
             ldd "$dir/static" | tee "$dir/static-link.txt"
@@ -82,54 +78,35 @@ jobs:
               echo "The static consumer loads the shared Splot library." >&2
               exit 1
             fi
-            (cd "$dir" && sha256sum splot splot.stripped libsplot_capi.so libsplot_capi.a shared static > SHA256SUMS)
-            rm "$dir/libsplot_capi.a" "$dir/splot.stripped"
+            sha256sum "$dir/splot" "$dir/libsplot_capi.so" target/release/libsplot_capi.a "$dir/shared" "$dir/static" \
+              > "$dir/SHA256SUMS"
           done
 
-      - name: Check native luma rows and record the microbenchmark
-        shell: bash
-        run: |
-          core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          cargo test -p splot-recon --release --locked -j1 --lib \
-            film_grain::tests::wide_luma_lookup_matches_the_exact_table -- --exact |
-            tee "$EVIDENCE/row-test.log"
-          grep -F '1 passed' "$EVIDENCE/row-test.log"
-          taskset -c "$core" cargo test -p splot-recon --release --locked -j1 --lib \
-            film_grain::tests::measure_luma_grain_with_lookup -- --ignored --exact --nocapture |
-            tee "$EVIDENCE/row.log"
-          grep -F '1 passed' "$EVIDENCE/row.log"
-          objdump -dC "$EVIDENCE/candidate/splot" |
-            awk '/^[0-9a-f]+ </{show=($0 ~ /vectorize_avx512.*apply_film_grain/)} show' \
-            > "$EVIDENCE/wide-grain.asm"
-          grep -Eq 'vpermi2b|vpermt2b' "$EVIDENCE/wide-grain.asm"
-
-      - name: Compare complete hashes, release sizes and paired playback
+      - name: Check the production CLI and both C consumer outputs
         shell: bash
         run: |
           python3 "$RUNNER_TEMP/qualify-wide-luma.py" "$EVIDENCE" "$RUNNER_TEMP/ewouth" 2>&1 |
             tee "$EVIDENCE/report.log"
 
-      - name: Record one-worker retired instructions if the runner permits
-        if: ${{ always() }}
+      - name: Verify exact-head playback evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          if ! test -s "$EVIDENCE/paired.csv"; then
-            exit 0
-          fi
-          if ! command -v perf >/dev/null ||
-            ! perf stat --no-big-num -x , -e instructions:u true > "$EVIDENCE/perf-probe.log" 2>&1 ||
-            ! grep -Eq '^[0-9]+,,instructions:u,' "$EVIDENCE/perf-probe.log"; then
-            echo "This runner does not provide retired-instruction counters." | tee "$EVIDENCE/instructions.log"
-            exit 0
-          fi
-          core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
-          source="$RUNNER_TEMP/ewouth/Noise_Ocean_1920x1080_60fps_filmgrain_qp135_130f.ivf"
-          for variant in control candidate; do
-            taskset -c "$core" perf stat --no-big-num -x , -r 3 -e instructions:u \
-              -o "$EVIDENCE/$variant/instructions.csv" \
-              "$EVIDENCE/$variant/splot" decode "$source" --threads 1 --frame-delay 1 --output-format null
-            grep -Eq '^[0-9]+,,instructions:u,' "$EVIDENCE/$variant/instructions.csv"
-          done
+          gh run watch "$TIMING_RUN" -R "$GITHUB_REPOSITORY" --interval 15
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TIMING_RUN/artifacts" \
+            --jq '.artifacts[] | select(.name == "wide-luma-qualification") | {id, digest, workflow_run}' \
+            > "$EVIDENCE/source-artifact.txt"
+          grep -F '"sha256:' "$EVIDENCE/source-artifact.txt"
+          gh run download "$TIMING_RUN" -R "$GITHUB_REPOSITORY" -n wide-luma-qualification -D "$EVIDENCE/native"
+          SOURCE="$EVIDENCE/native"
+          test "$(cat "$SOURCE/control/revision.sha")" = "$CONTROL"
+          test "$(cat "$SOURCE/candidate/revision.sha")" = "$CANDIDATE"
+          grep -F '1 passed' "$SOURCE/row-test.log"
+          grep -Eq 'vpermi2b|vpermt2b' "$SOURCE/wide-grain.asm"
+          sha256sum "$SOURCE/paired.csv" "$SOURCE/report.log" | tee "$EVIDENCE/imported-SHA256SUMS.txt"
+          python3 "$RUNNER_TEMP/qualify-wide-luma.py" --verify-playback "$SOURCE/paired.csv" 2>&1 |
+            tee "$EVIDENCE/playback.log"
 
       - name: Publish the qualification summary
         if: ${{ always() }}
@@ -139,6 +116,10 @@ jobs:
             {
               echo '```text'
               cat "$EVIDENCE/report.log"
+              if test -f "$EVIDENCE/playback.log"; then
+                cat "$EVIDENCE/playback.log"
+                cat "$EVIDENCE/imported-SHA256SUMS.txt"
+              fi
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -146,7 +127,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
-          name: wide-luma-qualification
+          name: wide-luma-production-qualification
           path: |
             ${{ runner.temp }}/wide-luma/**/*.log
             ${{ runner.temp }}/wide-luma/**/*.tsv

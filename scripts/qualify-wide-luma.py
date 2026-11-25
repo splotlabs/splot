@@ -7,6 +7,7 @@ import csv
 import gzip
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -96,7 +97,7 @@ def check_sizes(out, binaries):
     with (out / "binary-size.toml").open("rb") as file:
         budgets = tomllib.load(file)
     limits = {
-        "splot.stripped": budgets["budget"]["x86_64-linux"],
+        "splot": budgets["budget"]["x86_64-linux"],
         "libsplot_capi.so": budgets["capi_budget"]["x86_64-linux"],
         "libsplot_capi.a": None,
     }
@@ -116,33 +117,46 @@ def check_sizes(out, binaries):
     return failures
 
 
-def measure_case(writer, stream, binaries, data, case, threads, attempt):
-    options = ("--limit", "130") if case == TEN_BIT else ()
-    commands = {
-        name: decode(binary, data / case, threads, "--output-format", "null", *options)
-        for name, binary in binaries.items()
-    }
-    for command in commands.values():
-        subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
-    times = {name: [] for name in binaries}
-    for round_ in range(ROUNDS):
-        order = ("control", "candidate") if (round_ + attempt) % 2 else ("candidate", "control")
-        elapsed = {}
-        for name in order:
-            start = time.perf_counter_ns()
-            subprocess.run(commands[name], check=True, stdout=subprocess.DEVNULL)
-            elapsed[name] = (time.perf_counter_ns() - start) * 1e-9
-            times[name].append(elapsed[name])
-        writer.writerow((case, threads, attempt, round_ + 1, "/".join(order),
-                         elapsed["control"], elapsed["candidate"]))
-        stream.flush()
-    point, low, high = interval([test / base for base, test in zip(times["control"], times["candidate"])])
-    control = statistics.median(times["control"])
-    candidate = statistics.median(times["candidate"])
-    name = "RitualDance first 130 frames" if case == TEN_BIT else "Noise Ocean full stream"
-    print(f"{name}, {threads} workers, run {attempt}, {ROUNDS} pairs: "
-          f"{control:.5f} s -> {candidate:.5f} s, {point:+.2f}% [{low:+.2f}%, {high:+.2f}%].", flush=True)
-    return point, low, high
+def verify_playback(path):
+    series = {}
+    with path.open(newline="") as file:
+        for row in csv.DictReader(file):
+            case = row["stream"]
+            threads, attempt, pair = (int(row[key]) for key in ("threads", "run", "pair"))
+            key = (case, threads, attempt)
+            values = series.setdefault(key, [])
+            control, candidate = (float(row[f"{variant}_seconds"]) for variant in ("control", "candidate"))
+            order = "control/candidate" if (len(values) + attempt) % 2 else "candidate/control"
+            if pair != len(values) + 1 or row["order"] != order:
+                raise SystemExit(f"{key}: Pair numbers or run order differ.")
+            if not all(math.isfinite(value) and value > 0 for value in (control, candidate)):
+                raise SystemExit(f"{key}: The recorded time is invalid.")
+            values.append((control, candidate))
+
+    def check(case, threads, attempt):
+        key = (case, threads, attempt)
+        values = series.pop(key, [])
+        if len(values) != ROUNDS:
+            raise SystemExit(f"{key}: The required {ROUNDS} pairs are missing.")
+        bases, tests = zip(*values)
+        point, low, high = interval([test / base for base, test in values])
+        name = "RitualDance first 130 frames" if case == TEN_BIT else "Noise Ocean full stream"
+        print(f"{name}, {threads} workers, run {attempt}, {ROUNDS} pairs: "
+              f"{statistics.median(bases):.5f} s -> {statistics.median(tests):.5f} s, "
+              f"{point:+.2f}% [{low:+.2f}%, {high:+.2f}%].", flush=True)
+        return point, low, high
+
+    for threads in (1, 7):
+        _, _, high = check(GRAIN, threads, 1)
+        if high >= 0:
+            raise SystemExit(f"Noise Ocean at {threads} workers has no established playback gain.")
+        point, low, _ = check(TEN_BIT, threads, 1)
+        if point > 0.5:
+            repeat, repeat_low, _ = check(TEN_BIT, threads, 2)
+            if repeat > 0.5 or low > 0.5 or repeat_low > 0.5:
+                raise SystemExit(f"RitualDance at {threads} workers exceeds the 0.5% regression limit.")
+    if series:
+        raise SystemExit("The playback evidence contains unexpected samples.")
 
 
 def main(out, data):
@@ -155,20 +169,6 @@ def main(out, data):
     binaries = {name: out / name / "splot" for name in ("control", "candidate")}
     failures = check_sizes(out, binaries)
     check_hashes(out, data, cases, binaries)
-    allowed = os.sched_getaffinity(0)
-    with (out / "paired.csv").open("w", newline="") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(("stream", "threads", "run", "pair", "order", "control_seconds", "candidate_seconds"))
-        for threads in (1, 7):
-            os.sched_setaffinity(0, {min(allowed)} if threads == 1 else allowed)
-            _, _, high = measure_case(writer, stream, binaries, data, GRAIN, threads, 1)
-            if high >= 0:
-                failures.append(f"Noise Ocean at {threads} workers has no established playback gain.")
-            point, low, _ = measure_case(writer, stream, binaries, data, TEN_BIT, threads, 1)
-            if point > 0.5:
-                repeat, repeat_low, _ = measure_case(writer, stream, binaries, data, TEN_BIT, threads, 2)
-                if repeat > 0.5 or low > 0.5 or repeat_low > 0.5:
-                    failures.append(f"RitualDance at {threads} workers exceeds the 0.5% regression limit.")
     for failure in failures:
         print(failure, flush=True)
     if failures:
@@ -176,4 +176,7 @@ def main(out, data):
 
 
 if __name__ == "__main__":
-    main(*(Path(arg).resolve() for arg in sys.argv[1:]))
+    if sys.argv[1] == "--verify-playback":
+        verify_playback(Path(sys.argv[2]))
+    else:
+        main(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())
