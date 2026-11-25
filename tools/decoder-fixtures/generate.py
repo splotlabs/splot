@@ -1516,6 +1516,16 @@ def check_embedded_fixture(splot, avmdec, path, depth, pictures, groups, raw_sha
     if observed != expected:
         sys.exit(f"Unexpected tile groups in {path.name}.")
 
+    if any(tlayer != 0 for _, tlayer, _, _ in pictures):
+        mfh_headers = [obu["header"] for obu in obus
+                       if obu["header"]["obu_type"] == "MultiFrameHeader"]
+        if [(h["embedded_layer_id"], h["temporal_layer_id"]) for h in mfh_headers] != [(0, 0)]:
+            sys.exit(f"Expected one ML0/TL0 multi-frame header in {path.name}.")
+        referenced_mfh = [obu.get("frame_header_prefix", {}).get("cur_mfh_id")
+                          for obu in tile_groups[::groups]]
+        if referenced_mfh != [1] * len(pictures):
+            sys.exit(f"Expected every picture in {path.name} to use multi-frame header 1.")
+
     raw = run_checked([avmdec, "--all-layers", "--skip-film-grain", "--rawvideo",
                       "--i420", f"--output-bit-depth={depth}", "-o", "-", path]).stdout
     if hashlib.sha256(raw).hexdigest() != raw_sha256:

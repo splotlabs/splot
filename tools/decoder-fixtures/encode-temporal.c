@@ -89,6 +89,8 @@ int main(int argc, char **argv) {
   cfg.rc_max_quantizer = 120;
 
   check(&codec, avm_codec_enc_init(&codec, encoder, &cfg, 0));
+  if (embedded_temporal)
+    check(&codec, avm_codec_set_option(&codec, "enable-mfh-obu-signaling", "1"));
   if (embedded)
     check(&codec, avm_codec_control(&codec, AVME_SET_NUMBER_MLAYERS, mlayers));
   check(&codec, avm_codec_control(&codec, AVME_SET_NUMBER_TLAYERS, tlayers));

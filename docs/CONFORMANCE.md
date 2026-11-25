@@ -76,7 +76,10 @@ submits the same source picture to ML0 and ML1. The recipe checks the source
 hash, repeats the encode, and compares the result to the committed stream.
 It clears the local LCR's three-bit parent ID for these single-stream
 fixtures. Whole-stream and selected-layer Splot outputs must match the
-corresponding native AVM pictures.
+corresponding native AVM pictures. The combined fixture signals one ML0/TL0
+multi-frame header. The recipe checks that the first tile group of each
+picture references this header. The Rust test checks native output and
+layer IDs when only ML1/TL1 pictures are selected.
 
 Use the AVM revision and build configuration in the temporal recipe. Run
 this command from the Splot repository.

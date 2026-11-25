@@ -2925,10 +2925,10 @@ description = "Reproducible 8-bit I420 cross-layer predictions, ML0 128x128 and 
 expect = "clean"
 
 # Source I420 SHA-256: aa536ca69716284731231b1de7558547a47c01437f495b8ec6d94decc5ac3a46
-# Annex B SHA-256: 43d937d893d7b703a1f7bafa06a163a259c9a4230848015499e25ef9522affb0
+# Annex B SHA-256: 4105853c1215760909ebff47b6bd4e5090a483ad789b71c45f8fe068a01d6142
 [[vector]]
 path = "vectors/valid/syn-mlayer2-reproducible-2d-8bit.obu"
-description = "Reproducible 8-bit I420 cross-layer predictions, ML0 128x64 and ML1 128x64. AVM outputs 8 pictures (98304 bytes, SHA-256 2735a0e58bf3ee19fb7ca625aad6bcadff45ce176b4e74e66f2356b795988600). Two tile groups per picture and a local OPS."
+description = "Reproducible 8-bit I420 cross-layer predictions, ML0 128x64 and ML1 128x64. AVM outputs 8 pictures (98304 bytes, SHA-256 2735a0e58bf3ee19fb7ca625aad6bcadff45ce176b4e74e66f2356b795988600). Two tile groups per picture and a local OPS. Both layers reference ML0/TL0 multi-frame header 1."
 expect = "clean"
 
 [[vector]]
