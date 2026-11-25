@@ -9,7 +9,9 @@ use std::sync::Arc;
 use splot_core::annexb::{AnnexBObuCursor, ObuEnvelope};
 use splot_core::bitio::BitReader;
 use splot_core::headers::atlas_segment::{AtlasModeInfo, AtlasSegment, parse_scoped_atlas_segment};
-use splot_core::headers::layer_config_record::{LcrLocalInfo, LcrXlayerAtlasRef, LcrXlayerInfo};
+use splot_core::headers::layer_config_record::{
+    LcrGlobalInfo, LcrLocalInfo, LcrXlayerAtlasRef, LcrXlayerInfo,
+};
 use splot_core::obu::finish_obu_payload;
 use splot_core::span::ByteOffset;
 use splot_core::types::{EmbeddedLayerId, ExtendedLayerId};
@@ -80,7 +82,7 @@ impl ExternalAtlases {
         let mut cursor = AnnexBObuCursor::new(obu, base_offset);
         let envelope = cursor
             .next_obu()
-            .map_err(parse_error)?
+            .map_err(|error| parse_error(&error))?
             .ok_or_else(|| invalid(base_offset, "B", "expected one external atlas OBU".into()))?;
         if envelope.header.obu_type != splot_core::types::ObuType::AtlasSegment
             || cursor.has_remaining()
@@ -89,15 +91,6 @@ impl ExternalAtlases {
                 envelope.offset,
                 "5.9",
                 "expected exactly one external atlas OBU".into(),
-            ));
-        }
-        if envelope.header.temporal_layer_id.get() != 0
-            || envelope.header.embedded_layer_id.get() != 0
-        {
-            return Err(invalid(
-                envelope.offset,
-                "6.2.2",
-                "external atlas must use temporal and embedded layer zero".into(),
             ));
         }
         let layout = AtlasLayout::parse(envelope, true)?;
@@ -149,15 +142,24 @@ impl ScopedAtlases {
 
 impl AtlasLayout {
     fn parse(envelope: ObuEnvelope<'_>, external: bool) -> Result<Self> {
+        if envelope.header.temporal_layer_id.get() != 0
+            || envelope.header.embedded_layer_id.get() != 0
+        {
+            return Err(invalid(
+                envelope.offset,
+                "6.2.2",
+                "atlas must use temporal and embedded layer zero".into(),
+            ));
+        }
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let atlas = parse_scoped_atlas_segment(&mut reader, envelope.header.extended_layer_id)
-            .map_err(parse_error)?;
+            .map_err(|error| parse_error(&error))?;
         finish_obu_payload(
             &mut reader,
             envelope.payload,
             envelope.header.obu_type.is_extensible_obu(),
         )
-        .map_err(parse_error)?;
+        .map_err(|error| parse_error(&error))?;
         Ok(Self {
             offset: envelope.offset,
             external,
@@ -188,12 +190,26 @@ impl AtlasLayout {
 #[derive(Default)]
 pub(super) struct LayerAtlases {
     pub(super) layouts: ScopedAtlases,
-    pub(super) records: BTreeMap<u8, (ByteOffset, LcrLocalInfo)>,
-    pub(super) active_global: Option<Box<AtlasReference>>,
-    pub(super) active_local: Option<Box<AtlasReference>>,
+    local_ids: u8,
+    records: BTreeMap<u8, (ByteOffset, Arc<LcrLocalInfo>)>,
+    active_global: Option<(ByteOffset, Arc<LcrGlobalInfo>)>,
+    active_local: Option<(ByteOffset, Arc<LcrLocalInfo>)>,
+}
+
+impl From<ScopedAtlases> for LayerAtlases {
+    fn from(layouts: ScopedAtlases) -> Self {
+        Self {
+            layouts,
+            ..Self::default()
+        }
+    }
 }
 
 impl LayerAtlases {
+    pub(super) fn has_local(&self, id: u8) -> bool {
+        (1..=7).contains(&id) && self.local_ids & (1 << id) != 0
+    }
+
     pub(super) fn observe_local_lcr(
         &mut self,
         offset: ByteOffset,
@@ -211,31 +227,90 @@ impl LayerAtlases {
                 ),
             ));
         }
-        self.records.insert(info.local_id, (offset, info));
+        if info.local_id != 0 {
+            self.local_ids |= 1 << info.local_id;
+        }
+        if info.local_atlas_id.is_some() || info.global_id != 0 {
+            self.records.insert(info.local_id, (offset, Arc::new(info)));
+        } else {
+            self.records.remove(&info.local_id);
+        }
+        Ok(())
+    }
+
+    pub(super) fn activate(
+        &mut self,
+        id: u8,
+        global: impl FnOnce(u8) -> Option<(ByteOffset, Arc<LcrGlobalInfo>)>,
+    ) {
+        self.active_local = self.records.get(&id).cloned();
+        let global_id = if self.has_local(id) {
+            self.active_local
+                .as_ref()
+                .map_or(0, |(_, record)| record.global_id)
+        } else {
+            id
+        };
+        self.active_global = if global_id == 0 {
+            None
+        } else {
+            global(global_id)
+        };
+    }
+
+    pub(super) fn snapshot(
+        &self,
+        globals: &ScopedAtlases,
+        msdo_stream: bool,
+        xlayer: ExtendedLayerId,
+        mlayer: EmbeddedLayerId,
+        output: &mut Vec<AtlasAssociation>,
+    ) -> Result<()> {
+        if let Some((offset, record)) = &self.active_global
+            && record.xlayer_map & (1u32 << xlayer.get()) != 0
+            && (record.global_atlas_id.is_some() || globals.layouts.contains_key(&0))
+        {
+            let info = record.payloads.iter().find(|p| p.xlayer_id == xlayer.get());
+            output.push(globals.association(
+                // § 6.8.2 infers a global atlas ID of zero.
+                record.global_atlas_id.unwrap_or(0),
+                *offset,
+                splot_core::types::GLOBAL_XLAYER_ID,
+                xlayer,
+                mlayer,
+                info.map(|p| &p.xlayer_info),
+            )?);
+        } else if msdo_stream {
+            globals.msdo_associations(xlayer, output);
+        }
+        if let Some((offset, record)) = &self.active_local
+            && let Some(id) = record.local_atlas_id
+        {
+            output.push(self.layouts.association(
+                id,
+                *offset,
+                xlayer,
+                xlayer,
+                mlayer,
+                Some(&record.xlayer_info),
+            )?);
+        }
         Ok(())
     }
 }
 
-pub(super) struct AtlasReference {
-    pub(super) id: u8,
-    pub(super) offset: ByteOffset,
-    pub(super) explicit: bool,
-    pub(super) xlayer_info: Option<LcrXlayerInfo>,
-}
-
-impl AtlasReference {
-    pub(super) fn association(
+impl ScopedAtlases {
+    fn association(
         &self,
-        layouts: &ScopedAtlases,
+        atlas_id: u8,
+        lcr_offset: ByteOffset,
         scope: ExtendedLayerId,
         xlayer: ExtendedLayerId,
         mlayer: EmbeddedLayerId,
-    ) -> Result<Option<AtlasAssociation>> {
-        let layout = layouts.layouts.get(&self.id);
-        if !self.explicit && layout.is_none() {
-            return Ok(None);
-        }
-        let reference = self.xlayer_info.as_ref().and_then(|info| {
+        xlayer_info: Option<&LcrXlayerInfo>,
+    ) -> Result<AtlasAssociation> {
+        let layout = self.layouts.get(&atlas_id);
+        let reference = xlayer_info.and_then(|info| {
             info.xlayer_atlas.or_else(|| {
                 let layer = info
                     .embedded_layer_info
@@ -263,12 +338,12 @@ impl AtlasReference {
                     .ok_or_else(|| {
                         invalid(
                             if layout.external {
-                                self.offset
+                                lcr_offset
                             } else {
-                                self.offset.max(layout.offset)
+                                lcr_offset.max(layout.offset)
                             },
                             "6.9.2",
-                            format!("atlas {} has no segment with ID {id}", self.id),
+                            format!("atlas {atlas_id} has no segment with ID {id}"),
                         )
                     })?;
                 (Some(id), Some(index))
@@ -278,25 +353,25 @@ impl AtlasReference {
                 .and_then(|layout| layout.stream_segment(xlayer))
                 .map_or((None, None), |(index, id)| (Some(id), Some(index))),
         };
-        Ok(Some(AtlasAssociation {
+        Ok(AtlasAssociation {
             scope,
-            atlas_id: self.id,
-            lcr_offset: Some(self.offset),
+            atlas_id,
+            lcr_offset: Some(lcr_offset),
             segment_id,
             segment_index,
             priority_order: reference.map(|r| r.priority_order),
             rendering_method: reference.map(|r| r.rendering_method),
             layout: layout.cloned(),
-        }))
+        })
     }
 }
 
-fn parse_error(error: splot_core::Error) -> DecodeError {
+fn parse_error(error: &splot_core::Error) -> DecodeError {
     DecodeError::MalformedSource {
         issue: crate::stream_plan::issue_from_core_error(
             crate::DecodeSourceIssueKind::ObuPayloadParseError,
             None,
-            &error,
+            error,
         ),
     }
 }

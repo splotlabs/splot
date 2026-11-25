@@ -237,7 +237,7 @@ impl OutputEffectState {
     }
 
     pub(crate) fn has_local_lcr_id(&self, id: u8) -> bool {
-        id != 0 && self.atlas.records.contains_key(&id)
+        self.atlas.has_local(id)
     }
 
     pub(crate) fn apply_global_lcr(&mut self, id: u8, xlayer_map: u32) {

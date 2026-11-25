@@ -1063,6 +1063,7 @@ fn decode_frames_in_order(
                 if !xlayers.contains(candidate_xlayer) {
                     let (tu_has_rap, _) = unit_rap_flags(&unit)?;
                     if xlayers.should_skip_pre_rap_frame(candidate_xlayer, tu_has_rap) {
+                        xlayers.observe_pre_rap_atlases(sef_prefix_obus, candidate_xlayer)?;
                         *obu_storage = recycle(obu_buffer);
                         continue;
                     }
@@ -1158,7 +1159,6 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let output_effects = xlayers.finish_frame(sef_envelope, false)?;
                 let (sef_frame, ordering, output_mlayer) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
@@ -1167,7 +1167,6 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
-                    let output_rate = output_effects.frame_rate(frame_rate);
                     let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
                         unsupported_at(
                             "sef_missing_frame_to_show_map_idx",
@@ -1196,6 +1195,9 @@ fn decode_frames_in_order(
                         sef_envelope.header.embedded_layer_id,
                         source.embedded_layer_id,
                     );
+                    let output_effects =
+                        xlayers.finish_frame(sef_envelope, false, output_mlayer)?;
+                    let output_rate = output_effects.frame_rate(frame_rate);
                     let sef_frame = PipelineFrame {
                         display_grain,
                         output_effects,
@@ -1320,6 +1322,7 @@ fn decode_frames_in_order(
                     if next_candidate.obu_type() != ObuType::RasFrame {
                         let (tu_has_rap, _) = unit_rap_flags(&unit)?;
                         if xlayers.should_skip_pre_rap_frame(candidate_xlayer, tu_has_rap) {
+                            xlayers.observe_pre_rap_atlases(inter_prefix_obus, candidate_xlayer)?;
                             *obu_storage = recycle(obu_buffer);
                             continue;
                         }
@@ -1713,8 +1716,11 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let inter_output_effects =
-                    xlayers.finish_frame(inter_envelope, initializing_layer)?;
+                let inter_output_effects = xlayers.finish_frame(
+                    inter_envelope,
+                    initializing_layer,
+                    inter_envelope.header.embedded_layer_id,
+                )?;
                 let inter_frame_rate = inter_output_effects.frame_rate(frame_rate);
                 let inter_update = frame_ref_update_from_core(
                     &inter_core,
@@ -2133,7 +2139,11 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let key_output_effects = xlayers.finish_frame(key_envelope, true)?;
+                let key_output_effects = xlayers.finish_frame(
+                    key_envelope,
+                    true,
+                    key_envelope.header.embedded_layer_id,
+                )?;
                 admit_within_reference_store(
                     |xlayers, retained| {
                         let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
