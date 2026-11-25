@@ -52,11 +52,10 @@ fn apply_block<S: Simd>(
     params: NoiseParams,
 ) {
     let samples = u8x64::load_array_ref(simd, row);
-    // Keep both permutations in range. The high bit selects their half.
-    let index = samples & u8x64::splat(simd, 127);
+    let index_in_half = samples & u8x64::splat(simd, 127);
     let scale = samples.simd_ge(u8x64::splat(simd, 128)).select(
-        simd.concat_swizzle_dyn_u8x64(c, d, index),
-        simd.concat_swizzle_dyn_u8x64(a, b, index),
+        simd.concat_swizzle_dyn_u8x64(c, d, index_in_half),
+        simd.concat_swizzle_dyn_u8x64(a, b, index_in_half),
     );
     let (lo, hi) = samples.widen();
     let (scale_lo, scale_hi) = scale.widen();
