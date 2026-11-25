@@ -44,6 +44,21 @@ def measure(binary, source, threads):
     return elapsed, instructions[1] if instructions else "", before, os.getloadavg()[0]
 
 
+def text_section_digest(binary):
+    load_commands = subprocess.check_output(["otool", "-l", binary], text=True)
+    section_header = re.search(r"^\s*sectname __text\n\s*segname __TEXT\n", load_commands, re.M)
+    assert section_header is not None, binary
+    section = load_commands[section_header.end():].splitlines()
+    fields = dict(line.split(maxsplit=1) for line in section[:4])
+    size = int(fields["size"], 16)
+    offset = int(fields["offset"])
+    with binary.open("rb") as file:
+        file.seek(offset)
+        data = file.read(size)
+    assert size > 0 and len(data) == size, binary
+    return size, hashlib.sha256(data).hexdigest()
+
+
 def main():
     out, corpus = (Path(value).resolve() for value in sys.argv[1:])
     variants = ("base", "candidate")
@@ -52,6 +67,11 @@ def main():
         variant: (out / variant / "revision.txt").read_text().strip()
         for variant in variants
     }
+    sections = {variant: text_section_digest(binary) for variant, binary in binaries.items()}
+    for variant, (size, digest) in sections.items():
+        print("MACH-O __TEXT,__text", variant, size, digest, sep="\t")
+    print("MACH-O __TEXT,__text equal:", sections["base"] == sections["candidate"])
+
     cases = [line.split("\t") for line in (corpus / "simd-cases.tsv").read_text().splitlines()]
     assert len(cases) == 7
     for name, expected, frames, size in cases:

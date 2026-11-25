@@ -5,7 +5,7 @@ name: Shared SIMD runners native ARM qualification
 
 on:
   push:
-    branches: [test/shared-simd-runners-native-stage1, test/shared-simd-runners-native-final]
+    branches: [test/shared-simd-runners-native-inline]
 
 permissions:
   contents: read
@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 120
     env:
       BASE: d04f4d61bed29288ab5109c4eaa543c5c152f9f9
-      CANDIDATE: 7f27dc8b5c93f19289bac7fe3fee262777a20efc
+      CANDIDATE: 503f8cb3959be615d0f962d8a79e1e349e7b3f21
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: never
     steps:
