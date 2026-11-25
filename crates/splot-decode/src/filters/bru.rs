@@ -5,6 +5,7 @@
 //! parse and read by the § 7.17 / § 7.19 / § 7.20 superblock gates.
 
 use core::sync::atomic::{AtomicU8, Ordering};
+use std::collections::TryReserveError;
 
 use crate::bitstream::tile_payload::{BRU_ACTIVE, BRU_INACTIVE};
 use crate::error::Result;
@@ -48,14 +49,6 @@ fn region_root(regions: &mut [RegionEntry], mut id: usize) -> usize {
         id = parent;
     }
     id
-}
-
-fn region_allocation_error() -> crate::error::DecodeError {
-    splot_recon::ReconError::WorkspaceAllocationFailed {
-        plane: splot_recon::PlaneId::Y,
-        context: "BRU region validation",
-    }
-    .into()
 }
 
 impl BruModeMap {
@@ -179,22 +172,27 @@ impl BruModeMap {
         }) {
             return Ok(());
         }
-        self.validate_merged_regions(rows, invalid_at)
+        match self.inactive_in_merged_regions(rows) {
+            Ok(None) => Ok(()),
+            Ok(Some(index)) => Err(invalid_at(index)),
+            Err(_) => Err(splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: splot_recon::PlaneId::Y,
+                context: "BRU region validation",
+            }
+            .into()),
+        }
     }
 
     /// Checks exact region boundaries when inactive cells separate active areas.
     #[cold]
-    fn validate_merged_regions(
+    fn inactive_in_merged_regions(
         &self,
         rows: usize,
-        invalid_at: impl Fn(usize) -> crate::error::DecodeError,
-    ) -> Result<()> {
+    ) -> core::result::Result<Option<usize>, TryReserveError> {
         let stride = self.sb_cols;
         let len = self.modes.len();
         let mut owners = Vec::new();
-        owners
-            .try_reserve_exact(len)
-            .map_err(|_| region_allocation_error())?;
+        owners.try_reserve_exact(len)?;
         owners.resize(len, usize::MAX);
         let mut regions: Vec<RegionEntry> = Vec::new();
         let mut pending = Vec::new();
@@ -222,16 +220,12 @@ impl BruModeMap {
             };
             let id = if owner == usize::MAX {
                 let id = regions.len();
-                regions
-                    .try_reserve(1)
-                    .map_err(|_| region_allocation_error())?;
+                regions.try_reserve(1)?;
                 regions.push(RegionEntry {
                     bounds: anchor,
                     parent: id,
                 });
-                pending
-                    .try_reserve(1)
-                    .map_err(|_| region_allocation_error())?;
+                pending.try_reserve(1)?;
                 pending.push(anchor);
                 id
             } else {
@@ -246,7 +240,7 @@ impl BruModeMap {
                         let owner = &mut owners[index];
                         if *owner == usize::MAX {
                             if self.modes[index].load(Ordering::Acquire) == BRU_INACTIVE {
-                                return Err(invalid_at(index));
+                                return Ok(Some(index));
                             }
                         } else {
                             let other = region_root(&mut regions, *owner);
@@ -262,7 +256,7 @@ impl BruModeMap {
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 
     /// Luma samples per superblock side.
@@ -271,13 +265,15 @@ impl BruModeMap {
     }
 }
 
-fn extend_region(bounds: &mut Region, other: Region, pending: &mut Vec<Region>) -> Result<()> {
+fn extend_region(
+    bounds: &mut Region,
+    other: Region,
+    pending: &mut Vec<Region>,
+) -> core::result::Result<(), TryReserveError> {
     if bounds.covers(other) {
         return Ok(());
     }
-    pending
-        .try_reserve(4)
-        .map_err(|_| region_allocation_error())?;
+    pending.try_reserve(4)?;
     let old = *bounds;
     bounds.top = old.top.min(other.top);
     bounds.bottom = old.bottom.max(other.bottom);
