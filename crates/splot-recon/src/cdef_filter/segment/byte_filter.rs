@@ -84,7 +84,6 @@ pub(super) fn cdef_filter_rows_u8_quad<
             let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
             let base = u16x16::splat(simd, base);
             for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
-                // Keep both row pairs in the SIMD scope through packing and rounding.
                 let pairs = {
                     #[inline(always)]
                     |view: &[u16; SPAN]| -> Option<[u16x16<S>; 2]> {
