@@ -25,6 +25,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       SPLOT_REQUIRE_AVX512: "1"
+      SPLOT_TEST_PROFILE: ${{ inputs.timing && 'release' || 'ci-release' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,7 +38,7 @@ jobs:
           lscpu
 
       - name: Require and exercise the forced AVX-512 backend
-        run: cargo test -p splot-decode --release --locked --test simd_backend_parity
+        run: cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test simd_backend_parity
 
       - name: Fetch and verify the frozen EwoutH streams
         run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
@@ -46,7 +47,7 @@ jobs:
         if: ${{ !inputs.timing }}
         run: |
           export SPLOT_EWOUTH_CASES="$RUNNER_TEMP/ewouth/simd-cases.tsv"
-          cargo test -p splot-decode --release --locked --test simd_backend_parity \
+          cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test simd_backend_parity \
             frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
 
       - name: Time alternating forced streaming decodes with discarded output
@@ -55,5 +56,5 @@ jobs:
           SPLOT_TIMING_PAIRS: ${{ inputs.pairs }}
         run: |
           export SPLOT_EWOUTH_CASES="$RUNNER_TEMP/ewouth/simd-cases.tsv"
-          cargo test -p splot-decode --release --locked --test simd_backend_parity \
+          cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test simd_backend_parity \
             frozen_ewouth_streaming_parity -- --ignored --exact --nocapture

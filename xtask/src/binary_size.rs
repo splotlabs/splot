@@ -3,9 +3,9 @@
 
 //! Release size budgets (`cargo xtask check-binary-size`).
 //!
-//! Builds the production `splot` CLI binary and `libsplot_capi` shared library
-//! (`cargo build --release -p splot-cli -p splot-capi --locked`) and fails when
-//! either artifact exceeds the host target budget in `tests/perf/binary-size.toml`.
+//! Builds the production `splot` CLI binary and `libsplot_capi` shared library and
+//! fails when either artifact exceeds the host target budget in
+//! `tests/perf/binary-size.toml`.
 //! When `readelf` is available, also prints `.text` and `.rodata` section sizes
 //! for quick size-growth attribution.
 
@@ -31,21 +31,14 @@ struct Budgets {
 
 /// Builds the release CLI and C ABI artifacts and checks their sizes against the host budgets.
 pub(crate) fn check_binary_size(root: &Path) -> Result<()> {
+    let cli_path = crate::conformance::build_splot_binary(root, true)?;
     let status = Command::new(env!("CARGO"))
         .current_dir(root)
-        .args([
-            "build",
-            "--release",
-            "-p",
-            "splot-cli",
-            "-p",
-            "splot-capi",
-            "--locked",
-        ])
+        .args(["build", "--release", "-p", "splot-capi", "--locked"])
         .status()
         .context("failed to run cargo build")?;
     if !status.success() {
-        bail!("cargo build --release -p splot-cli -p splot-capi failed");
+        bail!("cargo build --release -p splot-capi failed");
     }
     let release_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| root.join("target"), PathBuf::from)
@@ -56,9 +49,6 @@ pub(crate) fn check_binary_size(root: &Path) -> Result<()> {
         toml::from_str(&text).with_context(|| format!("failed to parse {BUDGET_REL}"))?;
     let target = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
 
-    let cli_path = release_dir
-        .join("splot")
-        .with_extension(std::env::consts::EXE_EXTENSION);
     let capi_filename = format!(
         "{}splot_capi{}",
         std::env::consts::DLL_PREFIX,

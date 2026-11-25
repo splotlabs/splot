@@ -98,6 +98,12 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# CI correctness builds keep release runtime settings and parallelize code generation.
+[profile.ci-release]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+
 [profile.dev]
 overflow-checks = true
 
