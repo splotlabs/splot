@@ -7869,7 +7869,7 @@ module = "scripts/check-external-vectors.py"
 change_id = "fetch-public-vectors"
 owner = "conformance"
 risk = "medium"
-notes = "CI fetches 88 EwoutH/AV2 IVF samples (16 pinned repo samples and 72 hd-streams-2026-10 release streams), from 270x480 to 2048x1080, 8-bit and 10-bit. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revisions. The local AVM oracle reproduces every MD5 in the upstream manifests. The shared external runner checks complete output at 1 and 8 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external."
+notes = "CI fetches 88 EwoutH/AV2 IVF samples (16 pinned repo samples and 72 hd-streams-2026-10 release streams), from 270x480 to 2048x1080, 8-bit and 10-bit. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revisions. The local AVM oracle reproduces every MD5 in the upstream manifests. The shared external runner checks complete output at 1 and 7 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external."
 
 [feature.status]
 mapped = "done"
