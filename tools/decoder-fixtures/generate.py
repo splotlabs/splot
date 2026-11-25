@@ -52,12 +52,12 @@ def sha(path):
     return h.hexdigest()
 
 
-def run(cmd, env=None):
-    return subprocess.run(cmd, capture_output=True, timeout=180, env=env)
+def run(cmd, env=None, *, timeout=180):
+    return subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
 
 
-def run_checked(cmd, env=None):
-    r = run(cmd, env=env)
+def run_checked(cmd, env=None, *, timeout=180):
+    r = run(cmd, env=env, timeout=timeout)
     if r.returncode != 0:
         raise SystemExit(f"error: {cmd[0]} failed ({r.returncode}): "
                          f"{r.stderr.decode(errors='replace')[:200]}")
@@ -1327,8 +1327,8 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args, *, num_frames=6):
             *fixed_flags, f"--bit-depth={bd}", f"--input-bit-depth={bd}", "--i420",
             "--threads=1", "--end-usage=q", "--quiet", "--disable-warning-prompt", *flags,
         ]
-        run_checked([*encode, "-o", ivf, y4m])
-        run_checked([*encode, "-o", repeat_ivf, y4m])
+        run_checked([*encode, "-o", ivf, y4m], timeout=None)
+        run_checked([*encode, "-o", repeat_ivf, y4m], timeout=None)
         ivf_sha = sha(ivf)
         if sha(repeat_ivf) != ivf_sha:
             sys.exit(f"error: {fid} is not deterministic across two encodes")
