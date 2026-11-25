@@ -199,7 +199,7 @@ fn diff_u8_simd<S: Simd>(
     chroma_mask: ChromaMask<'_>,
 ) {
     let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
-    diff_block(output, preds, size, chroma_mask, |p0, p1, out| {
+    diff_block(simd, output, preds, size, chroma_mask, |p0, p1, out| {
         narrow_weighted(simd, (p0, p1), out, flip)
     });
 }
@@ -228,7 +228,7 @@ fn diff_wide_simd<S: Simd, O: WideSample>(
     chroma_mask: ChromaMask<'_>,
 ) {
     let flip = i16x8::splat(simd, if inverse { 64 } else { 0 });
-    diff_block(output, preds, size, chroma_mask, |p0, p1, out| {
+    diff_block(simd, output, preds, size, chroma_mask, |p0, p1, out| {
         let m = wide_weight(simd, (p0, p1), flip, weights);
         O::put(wide_blend(simd, (p0, p1), m, max), out);
         m
@@ -489,7 +489,11 @@ fn rest<V>(buffer: &[V], start: usize) -> &[V] {
 }
 
 /// `Clip1(Round2(64 * p1 + m * (p0 - p1), 10))` of eight lanes, `diff = p0 - p1`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep the compound pixel loop inside the selected SIMD target"
+)]
+#[inline(always)]
 fn blend<S: Simd>(p1: i16x8<S>, diff: i16x8<S>, mask: i16x8<S>) -> [u8; LANES] {
     let (low, high) = mask.widening_mul(diff);
     let (base_low, base_high) = p1.widen();
@@ -703,6 +707,7 @@ fn small_tail<P: Copy + Default, O: Copy + Default, const W: usize>(
 /// 8 == 0`) and stores the weights it returns as the chroma mask.
 #[inline]
 fn diff_block<S: Simd, P: Copy, O: Copy>(
+    simd: S,
     (output, stride): (&mut [O], usize),
     preds: [&[P]; 2],
     (w, h): (usize, usize),
@@ -717,16 +722,23 @@ fn diff_block<S: Simd, P: Copy, O: Copy>(
         return;
     }
     let (output, preds) = ((output, stride), [p0, p1]);
-    match w {
-        8 => diff_rows::<S, P, O, 1>(output, preds, w, chroma, weighted),
-        16 => diff_rows::<S, P, O, 2>(output, preds, w, chroma, weighted),
-        32 => diff_rows::<S, P, O, 4>(output, preds, w, chroma, weighted),
-        _ => diff_rows::<S, P, O, 0>(output, preds, w, chroma, weighted),
-    }
+    simd.vectorize(
+        #[inline(always)]
+        || match w {
+            8 => diff_rows::<S, P, O, 1>(output, preds, w, chroma, weighted),
+            16 => diff_rows::<S, P, O, 2>(output, preds, w, chroma, weighted),
+            32 => diff_rows::<S, P, O, 4>(output, preds, w, chroma, weighted),
+            _ => diff_rows::<S, P, O, 0>(output, preds, w, chroma, weighted),
+        },
+    );
 }
 
 /// [`diff_block`] of a block `8 * N` wide, or `w` wide when `N == 0`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep the compound pixel loop inside the selected SIMD target"
+)]
+#[inline(always)]
 fn diff_rows<S: Simd, P: Copy, O: Copy, const N: usize>(
     (output, stride): (&mut [O], usize),
     [p0, p1]: [&[P]; 2],
@@ -815,7 +827,11 @@ fn row<'a, P, O>(
 
 /// The § 7.13.3.28 weight of eight `i16` lanes, `|flip - m|` (`flip` is 64
 /// for `mask_type`, else 0), after blending them into `out`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "keep the compound pixel loop inside the selected SIMD target"
+)]
+#[inline(always)]
 fn narrow_weighted<S: Simd>(
     simd: S,
     (p0, p1): (&[i16; LANES], &[i16; LANES]),
