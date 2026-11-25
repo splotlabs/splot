@@ -36,6 +36,8 @@ const NATIVE_10: [(u8, &str); 2] = [
     ),
 ];
 
+const ALPHA_8_SHA256: &str = "20a8e51779232b000421884c4b7e4b8f8fa74780d7c1fa93f9f1259dfe159d2d";
+
 struct ShortReads<'a>(&'a [u8]);
 
 impl Read for ShortReads<'_> {
@@ -45,9 +47,8 @@ impl Read for ShortReads<'_> {
     }
 }
 
-fn decode_timed(bytes: &[u8], pts: &[i64], threads: ThreadCount) -> Vec<Picture> {
-    let mut decoder =
-        Decoder::new(DecoderSettings::default().with_threads(threads)).expect("decoder");
+fn decode_timed(bytes: &[u8], pts: &[i64], settings: DecoderSettings) -> Vec<Picture> {
+    let mut decoder = Decoder::new(settings).expect("decoder");
     let mut units = TemporalUnitReader::new(ShortReads(bytes));
     let mut pictures = Vec::new();
     for &time in pts {
@@ -92,11 +93,7 @@ fn native_and_composite_output_match_independent_goldens() {
             BitDepth::Eight,
             "85b9b854163552e0c00ee6d0acc5b5ce36356da01f4e3b4d0357a303626cc249",
         ),
-        (
-            "alpha-paired",
-            BitDepth::Eight,
-            "20a8e51779232b000421884c4b7e4b8f8fa74780d7c1fa93f9f1259dfe159d2d",
-        ),
+        ("alpha-paired", BitDepth::Eight, ALPHA_8_SHA256),
         (
             "multistream-side-by-side",
             BitDepth::Ten,
@@ -122,7 +119,11 @@ fn native_and_composite_output_match_independent_goldens() {
             let threads = ThreadCount::from(width);
             let context =
                 DecodeContext::new(DecodeRuntimeConfig::new(threads)).expect("decode context");
-            let pictures = decode_timed(&bytes, pts, threads);
+            let pictures = decode_timed(
+                &bytes,
+                pts,
+                DecoderSettings::default().with_threads(threads),
+            );
             let mut at_time = BTreeMap::<i64, Vec<&Picture>>::new();
             for picture in &pictures {
                 at_time
@@ -172,11 +173,47 @@ fn native_and_composite_output_match_independent_goldens() {
 }
 
 #[test]
+fn separate_target_decoders_compose_matching_atlas_snapshots() {
+    let bytes = include_bytes!(
+        "../../../../tests/conformance/vectors/valid/syn-atlas-alpha-paired-8bit.obu"
+    );
+    let times = [0, 1, 2, 3];
+    let [alpha, texture] = [3, 7].map(|id| {
+        let settings = DecoderSettings::default()
+            .with_threads(ThreadCount::from(1usize))
+            .with_extended_layer_selection(ExtendedLayerSelection::Target(
+                ExtendedLayerId::from_bits(id),
+            ));
+        let pictures = decode_timed(bytes, &times, settings);
+        assert_eq!(pictures.len(), times.len());
+        assert!(pictures.iter().all(|p| p.extended_layer_id().get() == id));
+        pictures
+    });
+    let mut compositor = AtlasCompositor::new(DecodeLimits::default());
+    let mut output = Vec::new();
+    for ((alpha, texture), time) in alpha.iter().zip(&texture).zip(times) {
+        let layout = global_layout(alpha);
+        assert!(!Arc::ptr_eq(layout, global_layout(texture)));
+        compositor
+            .compose(layout, time, &[alpha, texture])
+            .expect("compose independently decoded layers")
+            .write_raw(&mut output)
+            .expect("write composite");
+    }
+    assert_eq!(sha256_hex(&output), ALPHA_8_SHA256);
+    assert!(matches!(
+        compositor.compose(global_layout(&alpha[0]), 2, &[&alpha[2], &texture[2]]),
+        Err(AtlasCompositionError::StaleLayout(3))
+    ));
+}
+
+#[test]
 fn missing_duplicate_stale_and_oversized_groups_return_typed_errors() {
     let bytes = include_bytes!(
         "../../../../tests/conformance/vectors/valid/syn-atlas-alpha-paired-8bit.obu"
     );
-    let pics = decode_timed(bytes, &[0, 1, 2, 3], ThreadCount::from(1usize));
+    let settings = DecoderSettings::default().with_threads(ThreadCount::from(1usize));
+    let pics = decode_timed(bytes, &[0, 1, 2, 3], settings);
     let first = global_layout(&pics[0]);
     let mut compositor = AtlasCompositor::new(DecodeLimits::default());
     assert!(matches!(
