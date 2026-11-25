@@ -205,7 +205,7 @@ impl From<&AtlasAssociation> for SplotAtlasInfo {
             scope_xlayer_id: association.scope.get(),
             atlas_id: association.atlas_id,
             has_lcr_offset: association.lcr_offset.is_some(),
-            lcr_offset: association.lcr_offset.map_or(0, |offset| offset.get()),
+            lcr_offset: association.lcr_offset.map_or(0, ByteOffset::get),
             segment_id: association.segment_id.into(),
             segment_index: association.segment_index().map(|index| index as u8).into(),
             priority_order: association.priority_order.into(),
@@ -292,7 +292,6 @@ fn segment_geometry(atlas: &AtlasSegment, index: usize) -> Option<SplotAtlasSegm
     atlas.label.segment_ids.get(index)?;
     let mut out = SplotAtlasSegment::default();
     match &atlas.mode_info {
-        AtlasModeInfo::Single(_) => {}
         AtlasModeInfo::Basic(basic) => {
             let segment = basic.segments.get(index)?;
             out.input_stream_id = segment.input_stream_id.into();
@@ -317,7 +316,7 @@ fn segment_geometry(atlas: &AtlasSegment, index: usize) -> Option<SplotAtlasSegm
             out.bottom_right_region_column_off = region.bottom_right_region_column_off;
             out.bottom_right_region_row_off = region.bottom_right_region_row_off;
         }
-        AtlasModeInfo::Enhanced(_) => {}
+        AtlasModeInfo::Single(_) | AtlasModeInfo::Enhanced(_) => {}
         _ => return None,
     }
     Some(out)

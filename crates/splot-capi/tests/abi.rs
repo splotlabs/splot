@@ -224,6 +224,58 @@ fn skipped_film_grain_is_left_out_and_applied_on_request() {
 }
 
 #[test]
+fn c_atlas_views_preserve_the_five_layouts_after_decoder_close() {
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/vectors/valid");
+    for mode in 0..=4 {
+        let stream = std::fs::read(folder.join(format!("syn-atlas-mode-{mode}.obu"))).unwrap();
+        let pics = pictures(&stream, 1, 0);
+        assert_eq!(pics.len(), 2);
+        for picture in pics {
+            assert_eq!(picture.atlas_count, 1);
+            inspect_and_release(picture, |snapshot| {
+                let mut info = SplotAtlasInfo::default();
+                assert_eq!(splot_atlas_info(snapshot, 0, Some(&mut info)), SPLOT_OK);
+                assert_eq!(info.mode, mode);
+                assert!(info.has_layout && info.has_lcr_offset && info.explicit_segment_ids);
+                // SAFETY: The picture owns each borrowed array for the duration of this call.
+                unsafe {
+                    let ids = core::slice::from_raw_parts(info.segment_ids, info.segment_count);
+                    assert_eq!(ids, if mode == 2 { &[41][..] } else { &[41, 77] });
+                    if mode == 0 {
+                        assert!(info.uniform_spacing && info.single_region_per_segment);
+                        assert_eq!((info.region_columns, info.region_rows), (2, 1));
+                        assert_eq!(
+                            (*info.column_widths_minus_1, *info.row_heights_minus_1),
+                            (63, 63)
+                        );
+                    }
+                }
+                if mode == 2 {
+                    assert_eq!((info.width, info.height), (64, 64));
+                }
+                if matches!(mode, 1 | 3 | 4) {
+                    assert_eq!((info.width, info.height), (144, 64));
+                    assert_eq!(info.alpha_segments_present, mode == 4);
+                    for (i, expected_stream) in [3, 7].into_iter().enumerate() {
+                        let mut segment = SplotAtlasSegment::default();
+                        assert_eq!(
+                            splot_atlas_segment(snapshot, 0, i, Some(&mut segment)),
+                            SPLOT_OK
+                        );
+                        assert!(segment.input_stream_id.present);
+                        assert_eq!(segment.input_stream_id.value, expected_stream);
+                        assert_eq!(segment.width, if i == 0 { 64 } else { 80 });
+                        assert_eq!(segment.x, if i == 1 && mode != 4 { 64 } else { 0 });
+                        assert_eq!(segment.alpha, mode == 4 && i == 0);
+                    }
+                }
+            });
+        }
+    }
+}
+
+#[test]
 fn retained_atlas_metadata_survives_layout_replacement_flush_and_close() {
     let pictures = pictures(ATLAS, 3, 0);
     assert_eq!(pictures.len(), 8);

@@ -2968,8 +2968,8 @@ expect = { diagnostics = ["hls/unavailable-at-random-access-point"] }
 [[vector]]
 path = "vectors/valid/syn-atlas-mode-0.obu"
 description = """
-Mode 0 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
-Stream SHA-256 1bdca6bc9ac3e5652bd925ab6e6ab4cfddd12c50c6013af75c83a9310ce12fab.
+Mode 0 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 bb9f795c8e61232d26271efff8d2083902bb3a48bf7af4bcc923fd5f9101c66a.
 AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
 """
 expect = "clean"
@@ -2977,8 +2977,8 @@ expect = "clean"
 [[vector]]
 path = "vectors/valid/syn-atlas-mode-1.obu"
 description = """
-Mode 1 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
-Stream SHA-256 5c9ecfba2b51ac57632f527ef5130b84abe96c7d5b19c9e63399750ed738edb3.
+Mode 1 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 db6bcf8b8f59636cab8cc44088d0a7030283722478c302bbb47e84759dab4e8a.
 AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
 """
 expect = "clean"
@@ -2986,8 +2986,8 @@ expect = "clean"
 [[vector]]
 path = "vectors/valid/syn-atlas-mode-2.obu"
 description = """
-Mode 2 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
-Stream SHA-256 103034ee5c31ca9c5a9231875f2c687124371b7f7d774cab1c9e40dee65b40f0.
+Mode 2 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 63b12fd430b4877e866f8edb80aa0f8ef3f3e120f2fd1954408722f7d6ddb2e4.
 AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
 """
 expect = "clean"
@@ -2995,8 +2995,8 @@ expect = "clean"
 [[vector]]
 path = "vectors/valid/syn-atlas-mode-3.obu"
 description = """
-Mode 3 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
-Stream SHA-256 d0109bc99d6bb4401c33cf41647711027b04bb435aa32f8e16569455c1e8abeb.
+Mode 3 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 979728030ceaeb8ac8203b544a90a02b9aa36c21345f7076a3d7771f50cf277c.
 AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
 """
 expect = "clean"
@@ -3004,8 +3004,8 @@ expect = "clean"
 [[vector]]
 path = "vectors/valid/syn-atlas-mode-4.obu"
 description = """
-Mode 4 parser vector. Its two 8-bit native pictures total 13824 bytes. The sequence headers specify no LCR. The atlas remains inactive.
-Stream SHA-256 b283c4bc1268a485c1e637e7d609b347a72757f24ea9ed3a5caffe5fe80859c1.
+Mode 4 uses global LCR 1 to associate atlas ID 5 with the two decoded pictures. AVM produced 13824 bytes of 8-bit I420.
+Stream SHA-256 9d7f8df16e2d55d020e4df86146e4074b81df2fda7c4b45ea169d2b6983dfedd.
 AVM native SHA-256 8f7635131f5cacc5d57809dca485c24db11b84b679c238e491e17dcec0a8e4bf.
 """
 expect = "clean"

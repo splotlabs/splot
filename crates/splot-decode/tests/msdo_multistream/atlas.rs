@@ -19,12 +19,27 @@ fn atlas_snapshots_follow_the_key_activation_and_keep_the_native_samples() {
     let timeline10 = include_str!(
         "../../../../tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-10bit.tsv"
     );
-    for (source, timeline, hash) in [
-        (COLLISION_8, timeline8, SHA_MSDO_8BIT_ALL),
+    for (source, timeline, hash, per_stream) in [
+        (
+            COLLISION_8,
+            timeline8,
+            SHA_MSDO_8BIT_ALL,
+            [(3, SHA_MSDO_8BIT_X3), (7, SHA_MSDO_8BIT_X7)],
+        ),
         (
             COLLISION_10,
             timeline10,
             "e694723a6dac2ca92ee9177905f00afa3d4656a5b6bd550f459696e42eb4d441",
+            [
+                (
+                    2,
+                    "a19c49839344102ea1dc266b86c2943e47ae2746145326bfa01f14f0819f507b",
+                ),
+                (
+                    9,
+                    "366d1de38bc4faa23e6b65e81e9cd07ecfefd5f0c3ed163d459c4c561a2baac5",
+                ),
+            ],
         ),
     ] {
         for threads in [1usize, 3, 12] {
@@ -36,7 +51,10 @@ fn atlas_snapshots_follow_the_key_activation_and_keep_the_native_samples() {
             let report = context(threads, 3)
                 .decode_hash_report_reader(ChunkedReader::new(source, 7), DecodeOptions::DEFAULT)
                 .unwrap();
-            let (native, _) = raw_all_and_by_xlayer(&pics);
+            let (native, layers) = raw_all_and_by_xlayer(&pics);
+            for (xlayer, expected) in per_stream {
+                assert_eq!(sha256_hex(&layers[&xlayer]), expected);
+            }
             assert_eq!(sha256_hex(&native), hash);
             assert_eq!(pics.len(), report.frames.len());
             let mut actual = String::from(
@@ -110,7 +128,10 @@ fn optional_global_and_required_local_have_distinct_outcomes() {
     let DecodeError::MalformedSource { issue } = error else {
         panic!("{error:?}");
     };
-    assert_eq!(issue.offset().map(|o| o.get()), first_local_lcr);
+    assert_eq!(
+        issue.offset().map(splot_core::span::ByteOffset::get),
+        first_local_lcr
+    );
     assert_eq!(issue.spec_section(), Some("7.3.8.4"));
 }
 
@@ -219,4 +240,86 @@ fn external_atlas_supports_random_access_and_flush() {
             raw_all_and_by_xlayer(&subsequent)
         );
     }
+}
+
+#[test]
+fn atlas_label_lookup_uses_the_inverse_map_and_reports_missing_labels() {
+    let mut changed = Vec::new();
+    for obu in parse_annex_b_obus(COLLISION_8).unwrap() {
+        if obu.offset.get() == 37 {
+            let PayloadStatus::Parsed(ParsedObu::AtlasSegment(mut layout)) =
+                obu.payload_status().unwrap()
+            else {
+                panic!("expected the first global atlas");
+            };
+            layout.label.segment_ids[1] = 41;
+            write_parsed(&mut changed, obu.header, &ParsedObu::AtlasSegment(layout));
+        } else {
+            write_obu(&mut changed, obu.header, obu.payload);
+        }
+    }
+    let ctx = context(1, 1);
+    let first = ctx
+        .decode_hash_report_bytes(
+            &changed,
+            DecodeOptions::DEFAULT
+                .with_extended_layer_selection(ExtendedLayerSelection::OutputMask(1 << 3)),
+        )
+        .unwrap();
+    assert_eq!(
+        first.frames[0].atlas_associations[0].segment_index(),
+        Some(1)
+    );
+    let error = ctx
+        .decode_hash_report_bytes(&changed, DecodeOptions::DEFAULT)
+        .unwrap_err();
+    let DecodeError::MalformedSource { issue } = error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.9.2"));
+    assert_eq!(
+        issue.offset().map(splot_core::span::ByteOffset::get),
+        Some(37)
+    );
+    assert!(issue.message().contains("77"));
+}
+
+#[test]
+fn reading_atlas_geometry_respects_native_frame_limits_without_allocating_a_canvas() {
+    use splot_core::headers::atlas_segment::AtlasModeInfo;
+    let mode3 = include_bytes!("../../../../tests/conformance/vectors/valid/syn-atlas-mode-3.obu");
+    let mut bytes = Vec::new();
+    let virtual_size = 1 << 28;
+    for obu in parse_annex_b_obus(mode3).unwrap() {
+        if obu.header.obu_type == ObuType::AtlasSegment {
+            let PayloadStatus::Parsed(ParsedObu::AtlasSegment(mut layout)) =
+                obu.payload_status().unwrap()
+            else {
+                panic!("expected atlas payload");
+            };
+            let AtlasModeInfo::Multistream(info) = &mut layout.mode_info else {
+                panic!("expected mode 3");
+            };
+            info.width = virtual_size;
+            info.height = virtual_size;
+            write_parsed(&mut bytes, obu.header, &ParsedObu::AtlasSegment(layout));
+        } else {
+            write_obu(&mut bytes, obu.header, obu.payload);
+        }
+    }
+    let limits = DecodeLimits::DEFAULT
+        .with_max_frame_width(DecodeLimitThreshold::Max(80))
+        .with_max_frame_height(DecodeLimitThreshold::Max(64));
+    let report = context(1, 1)
+        .decode_hash_report_bytes(&bytes, DecodeOptions::new(limits))
+        .unwrap();
+    assert_eq!(report.frames.len(), 2);
+    let layout = report.frames[0].atlas_associations[0]
+        .layout
+        .as_ref()
+        .unwrap();
+    let AtlasModeInfo::Multistream(info) = &layout.atlas.mode_info else {
+        panic!("expected mode 3");
+    };
+    assert_eq!((info.width, info.height), (virtual_size, virtual_size));
 }
