@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
-name: Compare release throughput on native AVX-512 hardware
+name: Qualify typed AVX-512 grain with 48 native timing pairs
 on:
   push:
-    branches: [experiment/simd-1934-scoped-screen]
+    branches: [experiment/simd-1882-grain-focus]
 permissions:
   contents: read
-  actions: read
 jobs:
   native:
     runs-on: ${{ vars.SPLOT_AVX512_RUNNER || 'ubuntu-24.04' }}
@@ -14,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: 83566cc2a716603280a8b0773fc026f1fe86676e
           persist-credentials: false
       - name: Require a native wide host
         run: |
@@ -32,19 +32,15 @@ jobs:
           RS
           rustc "$RUNNER_TEMP/host.rs" -o "$RUNNER_TEMP/host"
           "$RUNNER_TEMP/host"
-      - name: Fetch fixed release binaries and inputs
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Prepare the affected frozen stream
         run: |
-          gh run download 45673211431 -n playback-frozen-v3 -D "$RUNNER_TEMP/frozen"
-          gh run download 45674741726 -n playback-release-parent -D "$RUNNER_TEMP/parent"
-          gh run download 45674741726 -n playback-release-final -D "$RUNNER_TEMP/candidate"
           python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
-      - name: Compare full hashes and warmed native decode
-        run: python3 scripts/compare-release-v3.py
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        if: always()
-        with:
-          name: native-release-timings
-          path: ${{ runner.temp }}/xeon-release.csv
-          retention-days: 5
+          grep -F '_filmgrain_' "$RUNNER_TEMP/ewouth/simd-cases.tsv" > "$RUNNER_TEMP/ewouth/grain-cases.tsv"
+      - name: Warm and compare 48 pairs at each thread count
+        env:
+          SPLOT_REQUIRE_AVX512: "1"
+          SPLOT_TIMING_PAIRS: "48"
+        run: |
+          export SPLOT_EWOUTH_CASES="$RUNNER_TEMP/ewouth/grain-cases.tsv"
+          cargo test -p splot-decode --release --locked --test simd_backend_parity \
+            frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
