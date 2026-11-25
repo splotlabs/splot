@@ -38,7 +38,7 @@ macro_rules! baseline_simd {
     };
 }
 
-// Keep the portable kernel call shared while emitting each backend's scope.
+/// Emits a runner trait’s method declarations or implements them in the supplied SIMD scope.
 macro_rules! simd_runner_methods {
     (declare; $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
         $($($signature)*;)*

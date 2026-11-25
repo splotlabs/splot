@@ -17,7 +17,7 @@ use fearless_simd::{Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, i16x16, 
 #[cfg(target_arch = "aarch64")]
 use fearless_simd::{SimdCombine as _, i16x8, i32x4};
 
-use splot_core::simd::SimdBackend;
+use splot_core::{simd::SimdBackend, with_simd};
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
 use crate::coefficient_scan::TransformClass;
@@ -353,118 +353,63 @@ fn secondary_inverse_transform_quant_rows8_with_runner<R: IstRunner>(
     Ok(transform_into_with_runner(runner, &coefs, &narrow, rows, 0))
 }
 
+macro_rules! ist_runner_methods {
+    ($runner:ident, $($mode:tt)+) => {
+        simd_runner_methods! {
+            $($mode)+;
+
+            #[inline]
+            (fn dequant_pow2(
+                $runner,
+                coefs: &mut [i32; IST_8X8_HEIGHT],
+                n: usize,
+                quantizers: (u32, u32, u32),
+                bound: i32,
+            )) simd =>
+                dequant_ist_pow2(simd, coefs, n, quantizers, bound);
+
+            #[inline]
+            (fn ist_8x8(
+                $runner,
+                kernel: Option<&IstKernel>,
+                coefs: &[i32],
+                wide: bool,
+                bound: i32,
+                geom: (usize, usize),
+                dequant: &mut [i32],
+            )) simd =>
+                ist_8x8_simd(simd, kernel, coefs, wide, bound, geom, dequant);
+
+            #[inline]
+            (fn ist_4x4(
+                $runner,
+                kernel: usize,
+                stx: usize,
+                coefs: &[i32],
+                wide: bool,
+                bound: i32,
+            ) -> [i32; IST_4X4_WIDTH]) simd =>
+                ist_4x4_simd(simd, kernel, stx, coefs, wide, bound);
+        }
+    };
+}
+
 trait IstRunner: Copy {
-    fn dequant_pow2(
-        self,
-        coefs: &mut [i32; IST_8X8_HEIGHT],
-        n: usize,
-        quantizers: (u32, u32, u32),
-        bound: i32,
-    );
-    fn ist_8x8(
-        self,
-        kernel: Option<&IstKernel>,
-        coefs: &[i32],
-        wide: bool,
-        bound: i32,
-        geom: (usize, usize),
-        dequant: &mut [i32],
-    );
-    fn ist_4x4(
-        self,
-        kernel: usize,
-        stx: usize,
-        coefs: &[i32],
-        wide: bool,
-        bound: i32,
-    ) -> [i32; IST_4X4_WIDTH];
+    ist_runner_methods!(self, declare);
 }
 
 #[derive(Clone, Copy)]
 struct BaselineIst;
 
 impl IstRunner for BaselineIst {
-    #[inline]
-    fn dequant_pow2(
-        self,
-        coefs: &mut [i32; IST_8X8_HEIGHT],
-        n: usize,
-        quantizers: (u32, u32, u32),
-        bound: i32,
-    ) {
-        baseline_simd!(simd => dequant_ist_pow2(simd, coefs, n, quantizers, bound));
-    }
-
-    #[inline]
-    fn ist_8x8(
-        self,
-        kernel: Option<&IstKernel>,
-        coefs: &[i32],
-        wide: bool,
-        bound: i32,
-        geom: (usize, usize),
-        dequant: &mut [i32],
-    ) {
-        baseline_simd!(simd => ist_8x8_simd(simd, kernel, coefs, wide, bound, geom, dequant));
-    }
-
-    #[inline]
-    fn ist_4x4(
-        self,
-        kernel: usize,
-        stx: usize,
-        coefs: &[i32],
-        wide: bool,
-        bound: i32,
-    ) -> [i32; IST_4X4_WIDTH] {
-        baseline_simd!(simd => ist_4x4_simd(simd, kernel, stx, coefs, wide, bound))
-    }
+    ist_runner_methods!(self, baseline);
 }
 
 #[derive(Clone, Copy)]
 struct TypedIst<B: SimdBackend>(B);
 
 impl<B: SimdBackend> IstRunner for TypedIst<B> {
-    #[inline]
-    fn dequant_pow2(
-        self,
-        coefs: &mut [i32; IST_8X8_HEIGHT],
-        n: usize,
-        quantizers: (u32, u32, u32),
-        bound: i32,
-    ) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => dequant_ist_pow2(simd, coefs, n, quantizers, bound));
-    }
-
-    #[inline]
-    fn ist_8x8(
-        self,
-        kernel: Option<&IstKernel>,
-        coefs: &[i32],
-        wide: bool,
-        bound: i32,
-        geom: (usize, usize),
-        dequant: &mut [i32],
-    ) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => {
-            ist_8x8_simd(simd, kernel, coefs, wide, bound, geom, dequant);
-        });
-    }
-
-    #[inline]
-    fn ist_4x4(
-        self,
-        kernel: usize,
-        stx: usize,
-        coefs: &[i32],
-        wide: bool,
-        bound: i32,
-    ) -> [i32; IST_4X4_WIDTH] {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => ist_4x4_simd(simd, kernel, stx, coefs, wide, bound))
-    }
+    ist_runner_methods!(self, typed(with_simd, self.0.narrow()));
 }
 
 #[inline]

@@ -22,7 +22,7 @@
 //! `Tx_Width` / `Tx_Height` of `txSz`), so no conversion tables are needed.
 
 use fearless_simd::{Simd, SimdBase as _, i32x4};
-use splot_core::simd::SimdBackend;
+use splot_core::{simd::SimdBackend, with_simd};
 
 #[cfg(test)]
 use crate::inverse_transform_2d::inverse_transform_2d;
@@ -428,8 +428,33 @@ fn inverse_transform_2d_outer_adjusted_with_runner<R: OuterRunner>(
     )
 }
 
+macro_rules! outer_runner_methods {
+    ($runner:ident, $($mode:tt)+) => {
+        simd_runner_methods! {
+            $($mode)+;
+
+            #[inline]
+            (fn idtx_shift($runner, dequant: &[i32], coded: &mut [i32], down: u32)) simd =>
+                idtx_shift_lanes(simd, dequant, coded, down);
+
+            #[inline]
+            (fn apply_dpcm(
+                $runner,
+                res: &mut [i32],
+                w: usize,
+                h: usize,
+                direction: DpcmDirection,
+            )) simd =>
+                apply_dpcm_lanes(simd, res, w, h, direction);
+
+            #[inline]
+            (fn duplicate_columns($runner, src: &[i32], dst: &mut [i32])) simd =>
+                duplicate_columns_lanes(simd, src, dst);
+        }
+    };
+}
+
 trait OuterRunner: Copy {
-    fn idtx_shift(self, dequant: &[i32], coded: &mut [i32], down: u32);
     fn inner_transform(
         self,
         inner: &InverseTransform2d,
@@ -437,19 +462,14 @@ trait OuterRunner: Copy {
         residual: &mut [i32],
         transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
     ) -> Result<()>;
-    fn apply_dpcm(self, res: &mut [i32], w: usize, h: usize, direction: DpcmDirection);
-    fn duplicate_columns(self, src: &[i32], dst: &mut [i32]);
+
+    outer_runner_methods!(self, declare);
 }
 
 #[derive(Clone, Copy)]
 struct BaselineOuter;
 
 impl OuterRunner for BaselineOuter {
-    #[inline]
-    fn idtx_shift(self, dequant: &[i32], coded: &mut [i32], down: u32) {
-        baseline_simd!(simd => idtx_shift_lanes(simd, dequant, coded, down));
-    }
-
     #[inline]
     fn inner_transform(
         self,
@@ -461,26 +481,13 @@ impl OuterRunner for BaselineOuter {
         inverse_transform_2d_with_scratch(inner, dequant, residual, transform_scratch)
     }
 
-    #[inline]
-    fn apply_dpcm(self, res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
-        baseline_simd!(simd => apply_dpcm_lanes(simd, res, w, h, direction));
-    }
-
-    #[inline]
-    fn duplicate_columns(self, src: &[i32], dst: &mut [i32]) {
-        baseline_simd!(simd => duplicate_columns_lanes(simd, src, dst));
-    }
+    outer_runner_methods!(self, baseline);
 }
 
 #[derive(Clone, Copy)]
 struct TypedOuter<B: SimdBackend>(B);
 
 impl<B: SimdBackend> OuterRunner for TypedOuter<B> {
-    #[inline]
-    fn idtx_shift(self, dequant: &[i32], coded: &mut [i32], down: u32) {
-        splot_core::with_simd!(self.0, simd => idtx_shift_lanes(simd, dequant, coded, down));
-    }
-
     #[inline]
     fn inner_transform(
         self,
@@ -498,15 +505,7 @@ impl<B: SimdBackend> OuterRunner for TypedOuter<B> {
         )
     }
 
-    #[inline]
-    fn apply_dpcm(self, res: &mut [i32], w: usize, h: usize, direction: DpcmDirection) {
-        splot_core::with_simd!(self.0, simd => apply_dpcm_lanes(simd, res, w, h, direction));
-    }
-
-    #[inline]
-    fn duplicate_columns(self, src: &[i32], dst: &mut [i32]) {
-        splot_core::with_simd!(self.0, simd => duplicate_columns_lanes(simd, src, dst));
-    }
+    outer_runner_methods!(self, typed(with_simd, self.0));
 }
 
 fn inverse_transform_2d_outer_adjusted_inner<R: OuterRunner>(
