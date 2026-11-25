@@ -5,15 +5,23 @@
 
 use super::*;
 
+#[derive(Debug, Default)]
+pub(super) struct LayerFrameTools {
+    pub(super) qm: QuantizerMatrixState,
+    pub(super) film_grain: FilmGrainState,
+}
+
 impl ValidatorContext {
     /// Resets the §6.12/§6.13 coded-frame windows for quantizer-matrix and film-grain
     /// state at any coded frame, including a SEF (the § 7.3.3 grammar makes a SEF its
     /// own coded frame unit and calls it a frame, so it is a coded-frame boundary for
     /// both the QM between-coded-frames window and the film-grain coded-frame-unit
     /// window — see [`is_frame_bearing`]).
-    pub(super) fn reset_coded_frame_window(&mut self) {
-        self.qm.reset_coded_frame_window();
-        self.film_grain.reset_coded_frame_window();
+    pub(super) fn reset_coded_frame_window(&mut self, xlayer: ExtendedLayerId) {
+        if let Some(state) = self.frame_tools.get_mut(&xlayer) {
+            state.qm.reset_coded_frame_window();
+            state.film_grain.reset_coded_frame_window();
+        }
     }
 
     /// Observes a frame-bearing OBU — a tile-group OBU (tile group, switch, RAS
@@ -64,7 +72,10 @@ impl ValidatorContext {
                 .insert(xlayer, self.cvs.cvs_epoch(xlayer));
             self.frame_confirmed_activation_tu
                 .insert(xlayer, self.cvs.tu_index);
-            if let Some(activated) = self.sequence_headers.get(&seq_id) {
+            if let Some(activated) = self
+                .hls
+                .sequence_header(obu.header.extended_layer_id, seq_id)
+            {
                 self.frame_confirmed_activated_limits.insert(
                     xlayer,
                     (
@@ -107,22 +118,26 @@ impl ValidatorContext {
                     first_picture_in_tu,
                 );
             }
-            let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
+            let mfh_record = self.hls.frame_mfh_record(xlayer, prefix.cur_mfh_id, seq_id);
             let mut rap_refs = FrameRapReferences::default();
-            if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
+            if let Some(active_sequence) = self
+                .hls
+                .sequence_header(obu.header.extended_layer_id, seq_id)
+            {
                 let mut reference_scratch = ReferenceStateScratch::default();
                 let reference_buffer = self
                     .reference_state
                     .view_into(obu.header.extended_layer_id, &mut reference_scratch)
                     .unwrap_or_else(FrameReferenceStateView::unknown);
+                let state = self.frame_tools.entry(xlayer).or_default();
                 rap_refs = frame_header_core_checks(
                     obu,
                     first_picture_in_tu,
                     active_sequence,
                     mfh_record,
                     &FrameReferenceAvailability {
-                        qm: &self.qm,
-                        film_grain: &self.film_grain,
+                        qm: &state.qm,
+                        film_grain: &state.film_grain,
                         reference_buffer,
                     },
                     options,
@@ -131,10 +146,10 @@ impl ValidatorContext {
             }
             let xlayer = obu.header.extended_layer_id;
             if let Some(slot) = rap_refs.film_grain_slot {
-                self.note_rap_reference(RapHlsKey::FilmGrain { slot }, xlayer, obu.offset);
+                self.note_rap_reference(RapHlsKey::FilmGrain { xlayer, slot }, xlayer, obu.offset);
             }
             for level in rap_refs.qm_levels {
-                self.note_rap_reference(RapHlsKey::QmLevel { level }, xlayer, obu.offset);
+                self.note_rap_reference(RapHlsKey::QmLevel { xlayer, level }, xlayer, obu.offset);
             }
         }
     }
@@ -250,7 +265,10 @@ impl ValidatorContext {
                 ));
                 return None;
             }
-            let Some(record) = self.hls.multi_frame_header(cur) else {
+            let Some(record) = self
+                .hls
+                .multi_frame_header(obu.header.extended_layer_id, cur)
+            else {
                 // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): let options declare external MFHs.
                 if matches!(options.external_hls, ExternalHlsMode::Disabled) {
                     report.push(frame_header_unavailable_mfh(cur, obu));
@@ -263,7 +281,9 @@ impl ValidatorContext {
             let resolved = self.resolve_referenced_sequence_header(seq_raw, obu, options, report);
 
             if let Some(seq_id) = resolved
-                && let Some(header) = self.sequence_headers.get(&seq_id)
+                && let Some(header) = self
+                    .hls
+                    .sequence_header(obu.header.extended_layer_id, seq_id)
             {
                 let general = header.general;
                 let frame_mlayer = obu.header.embedded_layer_id;
@@ -329,7 +349,10 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) -> Option<SequenceHeaderId> {
-        match self.hls.resolve_sequence_header(seq_header_id, options) {
+        match self
+            .hls
+            .resolve_sequence_header(obu.header.extended_layer_id, seq_header_id, options)
+        {
             HlsResolution::InBand => SequenceHeaderId::try_new(seq_header_id),
             HlsResolution::External => None,
             HlsResolution::Unavailable => {

@@ -40,7 +40,8 @@ impl ExternalHlsSet {
     }
 
     /// Declares that a sequence header with `seq_header_id` is available externally
-    /// (AV2 § 7.3.8.6).
+    /// (AV2 § 7.3.8.6). This ID-only declaration applies to every extended layer.
+    /// In-band headers remain local to the extended layer that contains them.
     ///
     /// An out-of-range id (`>= MAX_SEQ_NUM`) cannot be a valid `seq_header_id`
     /// (AV2 § 6.4.1), so it is ignored — declaring one must not make the set act as

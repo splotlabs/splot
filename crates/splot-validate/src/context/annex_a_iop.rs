@@ -304,9 +304,9 @@ impl ValidatorContext {
             return;
         };
         let offset = self
-            .sequence_header_offsets
-            .get(&seq_header_id)
-            .copied()
+            .hls
+            .sequence(xlayer, seq_header_id)
+            .map(|stored| stored.offset)
             .unwrap_or(ByteOffset::new(0));
         let activated_global_count = self
             .lcr_associations

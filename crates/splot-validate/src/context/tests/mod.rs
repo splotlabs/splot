@@ -278,3 +278,42 @@ fn tlayer_closure_violation_accepts_closed_masks_and_out_of_range_layers() {
     assert_eq!(tlayer_closure_violation(0, 0b01, &t_map), None);
     assert_eq!(tlayer_closure_violation(5, 0b10, &t_map), None);
 }
+
+#[test]
+fn repeated_headers_replace_the_same_id_only_in_their_layer()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::{ValidationOptions, ValidatorContext};
+    use splot_core::annexb::parse_annex_b_obus;
+    use splot_core::headers::sequence::SequenceHeaderId;
+    use splot_core::types::{ExtendedLayerId, ObuType};
+
+    let bytes = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-xlayer-independent-reset-8bit.obu"
+    );
+    let obus = parse_annex_b_obus(bytes)?;
+    let mut ctx = ValidatorContext::default();
+    let mut report = ValidationReport::default();
+    let opts = ValidationOptions::default();
+    for _ in 0..4 {
+        for obu in &obus {
+            ctx.observe_obu(obu, &opts, &mut report);
+        }
+    }
+    assert_eq!(ctx.hls.sequences.len(), 2);
+    assert_eq!(ctx.frame_tools.len(), 2);
+    for layer in [3, 7] {
+        let xlayer = ExtendedLayerId::from_bits(layer);
+        let headers = &ctx.hls.sequences[&xlayer];
+        assert_eq!(headers.len(), 1);
+        let stored = &headers[&SequenceHeaderId::try_new(0).ok_or("invalid test sequence ID")?];
+        let last = obus
+            .iter()
+            .rfind(|obu| {
+                obu.header.extended_layer_id == xlayer
+                    && obu.header.obu_type == ObuType::SequenceHeader
+            })
+            .ok_or("missing sequence header in fixture")?;
+        assert_eq!(stored.offset, last.offset);
+    }
+    Ok(())
+}

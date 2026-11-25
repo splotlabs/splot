@@ -106,9 +106,14 @@ impl ValidatorContext {
         first_picture_in_tu: bool,
         seq_id: SequenceHeaderId,
     ) -> Option<FrameHeaderCore> {
-        let active_sequence = self.sequence_headers.get(&seq_id)?;
+        let active_sequence = self
+            .hls
+            .sequence_header(obu.header.extended_layer_id, seq_id)?;
 
-        let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
+        let mfh_record = parse_frame_prefix(obu, first_picture_in_tu).and_then(|prefix| {
+            self.hls
+                .frame_mfh_record(obu.header.extended_layer_id, prefix.cur_mfh_id, seq_id)
+        });
 
         let mut reference_scratch = ReferenceStateScratch::default();
         let reference_state = self
@@ -175,7 +180,9 @@ impl ValidatorContext {
         let seq_id = self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
-        let seq = self.sequence_headers.get(seq_id)?;
+        let seq = self
+            .hls
+            .sequence_header(obu.header.extended_layer_id, *seq_id)?;
         Some(seq.general.single_picture_header_flag)
     }
 
@@ -187,22 +194,6 @@ impl ValidatorContext {
         }
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         reader.read_bit().ok().map(|bit| bit != 0)
-    }
-
-    /// Resolves the frame prefix’s multi-frame-header reference against available in-band
-    /// HLS. Missing or incomplete prefixes and unavailable records return `None`.
-    pub(super) fn resolve_frame_mfh_record(
-        &self,
-        obu: &ObuEnvelope<'_>,
-        first_picture_in_tu: bool,
-        seq_id: SequenceHeaderId,
-    ) -> Option<&MultiFrameHeaderRecord> {
-        let prefix = parse_frame_prefix(obu, first_picture_in_tu)?;
-        if prefix.cur_mfh_id.is_zero() || !prefix.cur_mfh_id.in_range() {
-            return None;
-        }
-        let record = self.hls.multi_frame_header(prefix.cur_mfh_id)?;
-        (record.mfh_seq_header_id == seq_id).then_some(record)
     }
 
     pub(super) fn frame_core_against_referenced_header(
@@ -300,7 +291,10 @@ impl ValidatorContext {
                 let bits = self
                     .active_sequence_by_xlayer
                     .get(&obu.header.extended_layer_id)
-                    .and_then(|seq_id| self.sequence_headers.get(seq_id))
+                    .and_then(|seq_id| {
+                        self.hls
+                            .sequence_header(obu.header.extended_layer_id, *seq_id)
+                    })
                     .and_then(|seq| seq.inter.as_ref())
                     .map(|inter| u32::from(inter.order_hint_bits));
                 (flag_output, core.order_hint_lsb, bits)

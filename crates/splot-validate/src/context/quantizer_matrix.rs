@@ -347,20 +347,28 @@ impl ValidatorContext {
         first_picture_in_tu: bool,
         resolved: Option<SequenceHeaderId>,
     ) {
+        let xlayer = obu.header.extended_layer_id;
         match obu.header.obu_type {
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey if first_picture_in_tu => {
-                self.qm.reset_qm_availability_for_key();
+                if let Some(state) = self.frame_tools.get_mut(&xlayer) {
+                    state.qm.reset_qm_availability_for_key();
+                }
             }
             ObuType::RasFrame | ObuType::Switch => {
                 let presence = resolved
-                    .and_then(|seq_id| self.sequence_headers.get(&seq_id))
+                    .and_then(|seq_id| {
+                        self.hls
+                            .sequence_header(obu.header.extended_layer_id, seq_id)
+                    })
                     .map(|header| header.general.mlayer_dependency_map.presence_map());
                 let obu_mlayer_id = obu.header.embedded_layer_id;
-                match resolved.and_then(|seq_id| {
+                let core = resolved.and_then(|seq_id| {
                     self.frame_core_against_resolved_header(obu, first_picture_in_tu, seq_id)
-                }) {
+                });
+                let state = self.frame_tools.entry(xlayer).or_default();
+                match core {
                     Some(core) if core.reached_qm_reset => {
-                        self.qm.reset_qm_availability_for_switch_or_ras(
+                        state.qm.reset_qm_availability_for_switch_or_ras(
                             obu_mlayer_id,
                             presence.as_ref(),
                         );
@@ -368,7 +376,7 @@ impl ValidatorContext {
                     Some(core)
                         if obu.header.obu_type == ObuType::Switch
                             && core.restricted_prediction_switch == Some(false) => {}
-                    _ => self.qm.poison_qm_availability_for_unconfirmed_reset(),
+                    _ => state.qm.poison_qm_availability_for_unconfirmed_reset(),
                 }
             }
             _ => {}
@@ -409,8 +417,11 @@ impl ValidatorContext {
         qm: &QuantizerMatrixObu,
         report: &mut ValidationReport,
     ) {
+        let Some(state) = self.frame_tools.get(&obu.header.extended_layer_id) else {
+            return;
+        };
         if qm.qm_bit_map == 0 {
-            if self.qm.qm_obu_seen_since_coded_frame {
+            if state.qm.qm_obu_seen_since_coded_frame {
                 report.push(
                     Diagnostic::error(
                         "qm/duplicate-reset-between-frames",
@@ -424,12 +435,12 @@ impl ValidatorContext {
             return;
         }
 
-        let overlap = self.qm.seen_levels_since_coded_frame & qm.qm_bit_map;
+        let overlap = state.qm.seen_levels_since_coded_frame & qm.qm_bit_map;
         for level in 0..NUM_CUSTOM_QMS {
             if overlap & (1 << level) == 0 {
                 continue;
             }
-            let prior = match self.qm.available[level] {
+            let prior = match state.qm.available[level] {
                 Some(record) => format!(
                     " (previously specified by a quantizer matrix OBU at embedded layer {}, \
                      temporal layer {}, data_present={}, num_planes={})",
@@ -464,9 +475,11 @@ impl ValidatorContext {
         obu: &ObuEnvelope<'_>,
         qm: &QuantizerMatrixObu,
     ) {
-        self.qm.qm_obu_seen_since_coded_frame = true;
+        let xlayer = obu.header.extended_layer_id;
+        let state = self.frame_tools.entry(xlayer).or_default();
+        state.qm.qm_obu_seen_since_coded_frame = true;
         if qm.qm_bit_map == 0 {
-            for record in &mut self.qm.available {
+            for record in &mut state.qm.available {
                 *record = Some(QmLevelRecord {
                     mlayer_id: None,
                     tlayer_id: None,
@@ -474,30 +487,36 @@ impl ValidatorContext {
                     num_planes: qm.num_planes,
                 });
             }
-            self.qm.availability_poisoned = 0;
-            self.qm.qm_protected = (1u16 << NUM_CUSTOM_QMS) - 1;
+            state.qm.availability_poisoned = 0;
+            state.qm.qm_protected = (1u16 << NUM_CUSTOM_QMS) - 1;
             for level in 0..NUM_CUSTOM_QMS {
                 self.rap_replay.note_resend(
-                    RapHlsKey::QmLevel { level: level as u8 },
+                    RapHlsKey::QmLevel {
+                        xlayer,
+                        level: level as u8,
+                    },
                     obu.header.extended_layer_id,
                 );
             }
             return;
         }
-        self.qm.seen_levels_since_coded_frame |= qm.qm_bit_map;
+        state.qm.seen_levels_since_coded_frame |= qm.qm_bit_map;
         for level in &qm.levels {
             let index = level.level as usize;
             if index < NUM_CUSTOM_QMS {
-                self.qm.available[index] = Some(QmLevelRecord {
+                state.qm.available[index] = Some(QmLevelRecord {
                     mlayer_id: Some(obu.header.embedded_layer_id.get()),
                     tlayer_id: Some(obu.header.temporal_layer_id.get()),
                     data_present: !level.is_default,
                     num_planes: qm.num_planes,
                 });
-                self.qm.availability_poisoned &= !(1u16 << index);
-                self.qm.qm_protected |= 1u16 << index;
+                state.qm.availability_poisoned &= !(1u16 << index);
+                state.qm.qm_protected |= 1u16 << index;
                 self.rap_replay.note_resend(
-                    RapHlsKey::QmLevel { level: level.level },
+                    RapHlsKey::QmLevel {
+                        xlayer,
+                        level: level.level,
+                    },
                     obu.header.extended_layer_id,
                 );
             }
