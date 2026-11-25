@@ -135,14 +135,19 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
     Ok(collected)
 }
 
-/// Decodes `bytes` serially on the driver thread while capturing per-frame BRU
-/// mode maps and pre/post BRU loop-restoration source-block spans.
+#[cfg(test)]
+pub(crate) struct BruLrAuditFrame {
+    pub(crate) header: Arc<FrameHeaderCore>,
+    pub(crate) motion_field: Option<Arc<crate::prediction::inter::TemporalMotionField>>,
+}
+
+/// Captures per-frame BRU state and the restoration spans before and after the BRU gate.
 #[cfg(test)]
 pub(crate) fn collect_bru_lr_audit(
     bytes: &[u8],
     options: &DecodeOptions,
 ) -> Result<(
-    Vec<Arc<FrameHeaderCore>>,
+    Vec<BruLrAuditFrame>,
     Vec<crate::filters::wienerns_lr::recon::BruLrFrameAudit>,
 )> {
     let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)?;
@@ -151,28 +156,31 @@ pub(crate) fn collect_bru_lr_audit(
         row_scheduler(NonZeroUsize::MIN, backend)?,
         backend,
     );
-    let (headers, audits) = splot_parallel::run_on_thread("splot-driver", || {
+    let (frames, audits) = splot_parallel::run_on_thread("splot-driver", || {
         crate::filters::wienerns_lr::recon::with_bru_lr_audit(|| {
             let mut source =
                 crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
-            let mut headers = Vec::new();
+            let mut frames = Vec::new();
             emit_frames(
                 &mut source,
                 options,
                 &session,
                 |_| Ok(()),
                 |frame| {
-                    if let Some(core) = frame.ccso_header.as_ref() {
-                        headers.push(Arc::clone(core));
+                    if let Some(header) = frame.ccso_header.as_ref() {
+                        frames.push(BruLrAuditFrame {
+                            header: Arc::clone(header),
+                            motion_field: frame.motion_field.field().cloned(),
+                        });
                     }
                     let _ = frame.ready_frame()?;
                     Ok(())
                 },
             )?;
-            Result::Ok(headers)
+            Result::Ok(frames)
         })
     })?;
-    Ok((headers?, audits))
+    Ok((frames?, audits))
 }
 
 /// Decodes every temporal unit of `source` and passes each displayed frame
@@ -1073,11 +1081,6 @@ fn decode_frames_in_order(
                 let obus = stream.obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) =
                     stream.inter_envelope(obus, next_candidate)?;
-                let sef_emit_allowed = stream.layer_filter().is_layer_output_for(
-                    sef_envelope.header.extended_layer_id,
-                    sef_envelope.header.embedded_layer_id,
-                    sef_envelope.header.temporal_layer_id,
-                );
                 let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 observe_global_and_cmvs(
                     &mut xlayers,
@@ -1143,6 +1146,37 @@ fn decode_frames_in_order(
                         )?
                     })
                 };
+                let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
+                    unsupported_at(
+                        "sef_missing_frame_to_show_map_idx",
+                        sef_envelope.offset,
+                        "show-existing-frame output requires frame_to_show_map_idx",
+                    )
+                })?;
+                let source_index = layer.reference.frame_index_for_slot(slot)?;
+                let source = frames.get(source_index).ok_or_else(|| {
+                    unsupported_at(
+                        "sef_reference_frame_unavailable",
+                        sef_envelope.offset,
+                        "show-existing-frame output requires its retained decoded frame",
+                    )
+                })?;
+                let derive_order_hint = sef_core.derive_sef_order_hint == Some(true);
+                let output_mlayer = show_existing_output_layer(
+                    derive_order_hint,
+                    sef_envelope.header.embedded_layer_id,
+                    source.embedded_layer_id,
+                );
+                let output_tlayer = if derive_order_hint {
+                    source.temporal_layer_id
+                } else {
+                    sef_envelope.header.temporal_layer_id
+                };
+                let sef_emit_allowed = stream.layer_filter().is_layer_output_for(
+                    candidate_xlayer,
+                    output_mlayer,
+                    output_tlayer,
+                );
                 xlayers.check_tu_doh(
                     candidate_xlayer,
                     sef_order_hint_bits,
@@ -1194,7 +1228,7 @@ fn decode_frames_in_order(
                     suffix_after_candidate(obus, next_candidate)?,
                     candidate_xlayer,
                 )?;
-                let (sef_frame, ordering, output_mlayer) = {
+                let (sef_frame, ordering) = {
                     let layer = xlayers.get_mut(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1202,15 +1236,6 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
-                    let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
-                        unsupported_at(
-                            "sef_missing_frame_to_show_map_idx",
-                            sef_envelope.offset,
-                            "show-existing-frame output requires frame_to_show_map_idx",
-                        )
-                    })?;
-                    let source_index = layer.reference.frame_index_for_slot(slot)?;
-                    let derive_order_hint = sef_core.derive_sef_order_hint == Some(true);
                     if derive_order_hint {
                         layer.reference.mark_sef_derive_output(
                             slot,
@@ -1218,18 +1243,6 @@ fn decode_frames_in_order(
                         )?;
                     }
                     layer.reference.note_show_existing();
-                    let source = frames.get(source_index).ok_or_else(|| {
-                        unsupported_at(
-                            "sef_reference_frame_unavailable",
-                            sef_envelope.offset,
-                            "show-existing-frame output requires its retained decoded frame",
-                        )
-                    })?;
-                    let output_mlayer = show_existing_output_layer(
-                        derive_order_hint,
-                        sef_envelope.header.embedded_layer_id,
-                        source.embedded_layer_id,
-                    );
                     let output_effects =
                         xlayers.finish_frame(sef_envelope, false, output_mlayer)?;
                     let output_rate = output_effects.frame_rate(frame_rate);
@@ -1243,8 +1256,8 @@ fn decode_frames_in_order(
                         segment_ids: source.segment_ids.clone(),
                         frame_rate: output_rate,
                         extended_layer_id: sef_envelope.header.extended_layer_id,
-                        embedded_layer_id: sef_envelope.header.embedded_layer_id,
-                        temporal_layer_id: sef_envelope.header.temporal_layer_id,
+                        embedded_layer_id: output_mlayer,
+                        temporal_layer_id: output_tlayer,
                         props: stream.props(),
                         frame: inflight::PipelineFrameSlot::completed_recycled(
                             source.wait_ready_frame()?,
@@ -1258,7 +1271,7 @@ fn decode_frames_in_order(
                             "show-existing-frame output requires a derived display order hint",
                         )
                     })?;
-                    (sef_frame, ordering, output_mlayer)
+                    (sef_frame, ordering)
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),

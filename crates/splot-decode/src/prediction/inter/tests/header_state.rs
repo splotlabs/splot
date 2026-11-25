@@ -2200,15 +2200,14 @@ fn bru_lr_vectors_exercise_partial_bru_shifted_stripes_and_reference_consumers()
     ];
 
     for (name, bytes, expected_unit_type, expected_isolated_tiles) in fixtures {
-        let (headers, audits) =
+        let (frames, audits) =
             crate::pipeline::collect_bru_lr_audit(bytes, &DecodeOptions::default())
                 .expect("audit decode");
-        assert_eq!(headers.len(), 6, "{name}: expected 6 frames");
+        assert_eq!(frames.len(), 6, "{name}: expected 6 frames");
         assert_eq!(audits.len(), 6, "{name}: expected 6 filter audits");
 
         let mut bru_lr_indices = Vec::new();
-        let mut saw_shifted_crossing = false;
-        let mut saw_trimmed_span = false;
+        let mut shifted_gates = 0;
         for (idx, audit) in audits.iter().enumerate() {
             if let Some(isolated) = expected_isolated_tiles {
                 assert_eq!(
@@ -2269,27 +2268,42 @@ fn bru_lr_vectors_exercise_partial_bru_shifted_stripes_and_reference_consumers()
                 continue;
             }
             bru_lr_indices.push(idx);
-            if audit.post_bru_blocks.iter().any(|b| {
-                b.restoration_type == expected_unit_type
-                    && ((b.y << usize::from(b.plane != 0))
-                        ..((b.y + b.height) << usize::from(b.plane != 0)))
-                        .contains(&56)
-            }) {
-                saw_shifted_crossing = true;
-            }
-            if audit.post_bru_blocks.len() < audit.pre_bru_blocks.len()
-                || audit
-                    .post_bru_blocks
+            for &(row, col, mode) in &audit.superblock_modes {
+                let Some(next_mode) = mode.filter(|_| row >= 16) else {
+                    continue;
+                };
+                let previous_mode = audit
+                    .superblock_modes
                     .iter()
-                    .map(|b| b.width * b.height)
-                    .sum::<usize>()
-                    < audit
-                        .pre_bru_blocks
-                        .iter()
-                        .map(|b| b.width * b.height)
-                        .sum::<usize>()
-            {
-                saw_trimmed_span = true;
+                    .find(|&&(prev_row, prev_col, _)| prev_row == row - 16 && prev_col == col)
+                    .and_then(|&(_, _, mode)| mode)
+                    .expect("previous superblock mode");
+                if (previous_mode == BRU_ACTIVE) == (next_mode == BRU_ACTIVE) {
+                    continue;
+                }
+                for plane in 0..3 {
+                    let shift = usize::from(plane != 0);
+                    let x = (col * 4) >> shift;
+                    let y = (row * 4 - 8) >> shift;
+                    let covers_stripe =
+                        |block: &crate::bitstream::tile_payload::WienerNsLrSourceBlock| {
+                            block.plane == plane
+                                && block.restoration_type == expected_unit_type
+                                && block.tile_mi_row_end > row
+                                && (block.x..block.x + block.width).contains(&x)
+                                && (block.y..block.y + block.height).contains(&y)
+                        };
+                    if !audit.pre_bru_blocks.iter().any(covers_stripe) {
+                        continue;
+                    }
+                    let restored = audit.post_bru_blocks.iter().any(covers_stripe);
+                    assert_eq!(
+                        restored,
+                        next_mode == BRU_ACTIVE,
+                        "{name} f{idx}: plane {plane} at ({x}, {y}) must use shifted BRU mode"
+                    );
+                    shifted_gates += 1;
+                }
             }
         }
         assert!(
@@ -2297,30 +2311,48 @@ fn bru_lr_vectors_exercise_partial_bru_shifted_stripes_and_reference_consumers()
             "{name}: missing frame combining use_bru == 1 and active {expected_unit_type:?}"
         );
         assert!(
-            saw_shifted_crossing || saw_trimmed_span,
-            "{name}: expected shifted-stripe crossing or trimmed inactive LR span"
+            shifted_gates > 0,
+            "{name}: no restoration span tests a shifted BRU decision"
         );
-        let first_idx = bru_lr_indices[0];
         assert!(
-            first_idx + 1 < headers.len(),
-            "{name}: missing post-BRU consumer frame"
+            bru_lr_indices.contains(&3),
+            "{name} f3: expected BRU and active restoration"
         );
-        let refreshed_mask = headers[first_idx].refresh_frame_flags.unwrap_or(0);
-        assert_ne!(
-            refreshed_mask, 0,
-            "{name} f{first_idx}: expected reference refresh"
+        let refreshed_mask = frames[3].header.refresh_frame_flags.expect("refresh flags");
+        assert_eq!(refreshed_mask, 0x02, "{name} f3: expected slot 1 refresh");
+        let consumer_col = match name {
+            "syn-bru-lr-stripe-wienerns-8bit" => 8,
+            "syn-bru-lr-multitile-cross-8bit" | "syn-bru-lr-multitile-isolated-8bit" => 16,
+            _ => 0,
+        };
+        let consumer_mode = audits[4]
+            .superblock_modes
+            .iter()
+            .find(|&&(row, col, _)| row == 0 && col == consumer_col / 16 * 16)
+            .and_then(|&(_, _, mode)| mode);
+        assert_eq!(
+            consumer_mode,
+            Some(BRU_ACTIVE),
+            "{name} f4: consumer must be active"
         );
-        let consumer_refs = &headers[first_idx + 1]
+        let consumer = &frames[4];
+        let consumer_refs = &consumer
+            .header
             .inter
             .as_ref()
             .expect("consumer inter control")
             .ref_frame_idx;
+        let cell = consumer
+            .motion_field
+            .as_ref()
+            .expect("consumer motion field")
+            .stored_cell(0, consumer_col / 2)
+            .expect("consumer motion cell");
         assert!(
-            consumer_refs
+            [cell[0], cell[3]]
                 .iter()
-                .any(|&slot| (refreshed_mask & (1u32 << slot)) != 0),
-            "{name} f{}: expected ref consumer to retain refreshed slot from f{first_idx}",
-            first_idx + 1
+                .any(|&index| consumer_refs.get(usize::from(index)) == Some(&1)),
+            "{name} f4: active block must use slot 1 from f3"
         );
     }
 
