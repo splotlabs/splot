@@ -200,7 +200,7 @@ macro_rules! decode_request {
         }
 
         impl StaticSimdScope<Result<$output>> for $request<'_> {
-            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            #[cfg(target_arch = "x86_64")]
             fn run_sse2(self, backend: splot_core::simd::Sse2Backend) -> Result<$output> {
                 self.context.$method(backend, self.reader, self.options $(, self.$field)*)
             }

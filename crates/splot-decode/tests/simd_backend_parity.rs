@@ -119,7 +119,7 @@ fn forced_policies() -> [(SimdPolicy, SelectedBackend, bool); 4] {
     let (sse2, avx2, avx512) = {
         let level = fearless_simd::Level::new();
         (
-            !cfg!(target_feature = "avx2") && level.as_sse2().is_some(),
+            fearless_simd::Level::baseline().as_avx2().is_none() && level.as_sse2().is_some(),
             level.as_avx2().is_some(),
             level.as_avx512().is_some(),
         )

@@ -18,6 +18,36 @@ mod sealed {
     pub trait Sealed {}
 }
 
+#[cfg(target_arch = "x86_64")]
+const STATIC_AVX2: bool = matches!(Level::baseline(), Level::Avx2(_) | Level::Avx512(_));
+
+#[cfg(all(test, not(target_arch = "x86_64")))]
+const STATIC_AVX2: bool = false;
+
+#[cfg(target_arch = "x86_64")]
+mod sse2_floor {
+    use core::convert::Infallible;
+
+    pub(super) struct X86Floor<const HAS_AVX2: bool>;
+
+    pub(super) trait Sse2Support {
+        type Proof: Copy;
+        const AVAILABLE: Option<Self::Proof>;
+    }
+
+    impl Sse2Support for X86Floor<false> {
+        type Proof = ();
+        const AVAILABLE: Option<Self::Proof> = Some(());
+    }
+
+    impl Sse2Support for X86Floor<true> {
+        type Proof = Infallible;
+        const AVAILABLE: Option<Self::Proof> = None;
+    }
+
+    pub(super) type BuildFloor = X86Floor<{ super::STATIC_AVX2 }>;
+}
+
 /// Requested SIMD execution policy resolved at initialization time.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
@@ -25,9 +55,9 @@ pub enum SimdPolicy {
     /// Selects the crate's verified default execution backend for this host.
     #[default]
     Auto,
-    /// Requires the SSE2 backend provided by baseline x86-64 builds.
+    /// Requires the SSE2 backend provided by x86-64 builds below the full v3 floor.
     Sse2,
-    /// Requires 256-bit AVX2 support on x86-64.
+    /// Requires the full x86-64-v3 SIMD feature and OS-state bundle.
     Avx2,
     /// Requires the full Ice Lake AVX-512 feature and OS-state bundle on x86-64.
     Avx512,
@@ -107,7 +137,7 @@ impl CpuCapabilities {
         self.sse2
     }
 
-    /// Whether the host CPU and OS support x86-64 AVX2.
+    /// Whether the host CPU and OS pass `fearless_simd`'s x86-64-v3 check.
     #[must_use]
     pub const fn has_avx2(self) -> bool {
         self.avx2
@@ -134,7 +164,7 @@ impl CpuCapabilities {
     #[cfg(test)]
     const fn from_flags(sse2: bool, avx2: bool, avx512: bool, neon: bool) -> Self {
         Self {
-            sse2: sse2 && !cfg!(target_feature = "avx2"),
+            sse2: sse2 && !STATIC_AVX2,
             avx2,
             avx512,
             neon,
@@ -178,7 +208,7 @@ impl UnsupportedBackendError {
 #[doc(hidden)]
 pub trait StaticSimdScope<R> {
     /// Runs on the x86-64 baseline backend.
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+    #[cfg(target_arch = "x86_64")]
     fn run_sse2(self, backend: Sse2Backend) -> R;
 
     /// Runs on the x86-64 AVX2 backend selected for narrow kernels.
@@ -261,15 +291,7 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
 macro_rules! with_simd {
     ($backend:expr, $simd:ident => $body:expr) => {{
         let __backend = $backend;
-        #[cfg(all(
-            target_arch = "x86_64",
-            target_feature = "avx2",
-            target_feature = "fma",
-            target_feature = "bmi1",
-            target_feature = "bmi2",
-            target_feature = "f16c",
-            target_feature = "lzcnt"
-        ))]
+        #[cfg(target_arch = "x86_64")]
         {
             if let Some($simd) = $crate::simd::SimdBackend::static_avx2_token(__backend) {
                 $body
@@ -292,15 +314,7 @@ macro_rules! with_simd {
             }
         }
         #[cfg(not(any(
-            all(
-                target_arch = "x86_64",
-                target_feature = "avx2",
-                target_feature = "fma",
-                target_feature = "bmi1",
-                target_feature = "bmi2",
-                target_feature = "f16c",
-                target_feature = "lzcnt"
-            ),
+            target_arch = "x86_64",
             all(target_arch = "aarch64", target_feature = "neon")
         )))]
         {
@@ -373,7 +387,7 @@ impl SimdBackend for Avx2Backend {
 
     #[inline]
     fn static_avx2_token(self) -> Option<fearless_simd::Avx2> {
-        Some(self.token)
+        STATIC_AVX2.then_some(self.token)
     }
 }
 
@@ -505,33 +519,35 @@ impl SimdBackend for NeonBackend {
 }
 
 /// Sealed SSE2 backend carrying a genuine [`fearless_simd::Sse2`] token.
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy)]
 pub struct Sse2Backend {
     token: fearless_simd::Sse2,
+    // An uninhabited proof removes SSE2 dispatch at the full v3 floor.
+    _proof: <sse2_floor::BuildFloor as sse2_floor::Sse2Support>::Proof,
 }
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+#[cfg(target_arch = "x86_64")]
 impl fmt::Debug for Sse2Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Sse2Backend").finish_non_exhaustive()
     }
 }
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+#[cfg(target_arch = "x86_64")]
 impl PartialEq for Sse2Backend {
     fn eq(&self, _other: &Self) -> bool {
         true
     }
 }
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+#[cfg(target_arch = "x86_64")]
 impl Eq for Sse2Backend {}
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+#[cfg(target_arch = "x86_64")]
 impl sealed::Sealed for Sse2Backend {}
 
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+#[cfg(target_arch = "x86_64")]
 impl SimdBackend for Sse2Backend {
     type Token = fearless_simd::Sse2;
     type Narrow = Self;
@@ -618,15 +634,15 @@ impl SimdBackend for FallbackBackend {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ResolvedBackend {
-    /// x86-64 SSE2 backend token.
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
-    Sse2(Sse2Backend),
     /// x86-64 AVX2 backend token.
     #[cfg(target_arch = "x86_64")]
     Avx2(Avx2Backend),
     /// x86-64 AVX-512 backend token.
     #[cfg(target_arch = "x86_64")]
     Avx512(Avx512Backend),
+    /// x86-64 SSE2 backend token, available below the full v3 build floor.
+    #[cfg(target_arch = "x86_64")]
+    Sse2(Sse2Backend),
     /// AArch64 NEON backend token.
     #[cfg(target_arch = "aarch64")]
     Neon(NeonBackend),
@@ -648,7 +664,7 @@ impl ResolvedBackend {
         match self {
             #[cfg(target_arch = "x86_64")]
             Self::Avx2(_) => SelectedBackend::Avx2,
-            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            #[cfg(target_arch = "x86_64")]
             Self::Sse2(_) => SelectedBackend::Sse2,
             #[cfg(target_arch = "x86_64")]
             Self::Avx512(_) => SelectedBackend::Avx512,
@@ -671,7 +687,7 @@ impl ResolvedBackend {
         match self {
             #[cfg(target_arch = "x86_64")]
             Self::Avx2(backend) => scope.run(backend),
-            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            #[cfg(target_arch = "x86_64")]
             Self::Sse2(backend) => scope.run(backend),
             #[cfg(target_arch = "x86_64")]
             Self::Avx512(backend) => scope.run(backend),
@@ -693,7 +709,7 @@ fn capabilities_from_level(level: Level) -> CpuCapabilities {
     #[cfg(target_arch = "x86_64")]
     {
         CpuCapabilities {
-            sse2: !cfg!(target_feature = "avx2") && level.as_sse2().is_some(),
+            sse2: !STATIC_AVX2 && level.as_sse2().is_some(),
             avx2: level.as_avx2().is_some(),
             avx512: level.as_avx512().is_some(),
             neon: false,
@@ -806,13 +822,14 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
             .zip(level.as_avx2())
             .map(|(token, avx2)| ResolvedBackend::Avx512(Avx512Backend { token, avx2 }))
             .ok_or_else(err),
-        #[cfg(not(target_feature = "avx2"))]
-        SelectedBackend::Sse2 => level
-            .as_sse2()
-            .map(|token| ResolvedBackend::Sse2(Sse2Backend { token }))
-            .ok_or_else(err),
-        #[cfg(target_feature = "avx2")]
-        SelectedBackend::Sse2 => Err(err()),
+        SelectedBackend::Sse2 => {
+            use sse2_floor::Sse2Support as _;
+            level
+                .as_sse2()
+                .zip(sse2_floor::BuildFloor::AVAILABLE)
+                .map(|(token, _proof)| ResolvedBackend::Sse2(Sse2Backend { token, _proof }))
+                .ok_or_else(err)
+        }
         SelectedBackend::Neon | SelectedBackend::Fallback => Err(err()),
     }
     #[cfg(target_arch = "aarch64")]
@@ -943,6 +960,7 @@ mod tests {
         let auto = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
         #[cfg(target_arch = "x86_64")]
         {
+            assert_eq!(caps.has_sse2(), Level::baseline().as_avx2().is_none());
             assert_eq!(
                 resolve_backend(SimdPolicy::Sse2)
                     .map(ResolvedBackend::kind)
