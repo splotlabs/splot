@@ -406,10 +406,6 @@ pub(crate) fn filter_run<
 /// [`filter_run`] on the [`filter16`] group kernel, groups outer and rows
 /// inner: the window and output rows are cut to the run once, so a group
 /// checks one length per plane, and cell weights are built once per group.
-#[expect(
-    clippy::inline_always,
-    reason = "keeps the group loop and nested row kernel inside the target-feature scope"
-)]
 #[inline(always)]
 fn filter_run_groups<
     L: LrBackend,
