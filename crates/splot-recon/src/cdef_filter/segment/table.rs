@@ -3,11 +3,11 @@
 
 //! Experimental direct and pointer calls to the same AVX2 block worker.
 
-use super::block::{BlockWork, filter_block, visit_blocks};
+use super::block::{BlockContext, filter_block, visit_blocks};
 use super::*;
 use std::sync::OnceLock;
 
-type BlockKernel<T> = for<'a, 'o> fn(Avx2, BlockWork<'a, 'o, T>) -> bool;
+type BlockKernel<T> = fn(Avx2, &mut BlockContext<'_, '_, T>, usize) -> bool;
 
 #[derive(Clone, Copy)]
 pub(super) struct Avx2Table {
@@ -39,10 +39,14 @@ pub(super) fn selected() -> Option<BlockCall> {
 }
 
 #[inline(never)]
-fn avx2_block<T: ReconSample>(avx2: Avx2, job: BlockWork<'_, '_, T>) -> bool {
+fn avx2_block<T: ReconSample>(
+    avx2: Avx2,
+    context: &mut BlockContext<'_, '_, T>,
+    block: usize,
+) -> bool {
     avx2.vectorize(
         #[inline(always)]
-        || filter_block(avx2, InLane, job),
+        move || filter_block(avx2, InLane, context, block),
     )
 }
 
@@ -58,12 +62,51 @@ fn cast_output<'a, T, O>(
     Some(((cast(luma)?, stride), chroma))
 }
 
-#[expect(
-    clippy::inline_always,
-    reason = "branches on the startup selection outside the block loop"
-)]
+// The concrete segment entry points keep the named call and kernel in the
+// same codegen unit. Both modes pay the same once-per-segment entry cost.
+macro_rules! avx2_segments {
+    ($(($name:ident, $sample:ty, $member:ident)),+ $(,)?) => {$(
+        #[inline(never)]
+        fn $name(
+            call: BlockCall,
+            avx2: Avx2,
+            segment: &CdefLumaSegment,
+            unit: &CdefUnitFilters,
+            blocks: [CdefSegmentBlock; CDEF_SEGMENT_BLOCKS],
+            fill_flat: [bool; 3],
+            output: CdefSegmentOutput<'_, $sample>,
+        ) -> bool {
+            match call {
+                BlockCall::Direct => visit_blocks(
+                    segment,
+                    unit,
+                    blocks,
+                    fill_flat,
+                    output,
+                    #[inline(always)]
+                    |context, block| avx2_block(avx2, context, block),
+                ),
+                BlockCall::Pointer(table) => {
+                    let kernel = table.$member;
+                    visit_blocks(
+                        segment,
+                        unit,
+                        blocks,
+                        fill_flat,
+                        output,
+                        #[inline(always)]
+                        |context, block| kernel(avx2, context, block),
+                    )
+                }
+            }
+        }
+    )+};
+}
+
+avx2_segments!((filter_bytes, u8, bytes), (filter_words, u16, words));
+
+#[inline]
 #[expect(clippy::too_many_arguments)]
-#[inline(always)]
 pub(super) fn filter_segment<T: ReconSample>(
     call: BlockCall,
     avx2: Avx2,
@@ -73,36 +116,13 @@ pub(super) fn filter_segment<T: ReconSample>(
     fill_flat: [bool; 3],
     output: CdefSegmentOutput<'_, T>,
 ) -> bool {
-    macro_rules! run {
-        ($cast:expr, $member:ident) => {
-            cast_output(output, $cast).is_some_and(|output| match call {
-                BlockCall::Direct => visit_blocks(
-                    segment,
-                    unit,
-                    blocks,
-                    fill_flat,
-                    output,
-                    #[inline(always)]
-                    |job| avx2_block(avx2, job),
-                ),
-                BlockCall::Pointer(table) => {
-                    let block = table.$member;
-                    visit_blocks(
-                        segment,
-                        unit,
-                        blocks,
-                        fill_flat,
-                        output,
-                        #[inline(always)]
-                        |job| block(avx2, job),
-                    )
-                }
-            })
-        };
-    }
     if T::MAX_VALUE == u16::from(u8::MAX) {
-        run!(T::u8_slice_mut, bytes)
+        cast_output(output, T::u8_slice_mut).is_some_and(|output| {
+            filter_bytes(call, avx2, segment, unit, blocks, fill_flat, output)
+        })
     } else {
-        run!(T::u16_slice_mut, words)
+        cast_output(output, T::u16_slice_mut).is_some_and(|output| {
+            filter_words(call, avx2, segment, unit, blocks, fill_flat, output)
+        })
     }
 }
