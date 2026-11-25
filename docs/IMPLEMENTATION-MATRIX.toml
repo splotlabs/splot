@@ -2232,8 +2232,11 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::atlas_local_atlas_unavailable_is_flagged"]
-commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas"]
-fixtures = []
+commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas", "cargo test -p splot-decode --test msdo_multistream atlas"]
+fixtures = [
+    "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-8bit.obu",
+    "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-10bit.obu",
+]
 diagnostics = ["atlas/segment-mode-out-of-range", "atlas/region-dimension-out-of-range", "atlas/segment-count-out-of-range", "atlas/multistream-requires-global-xlayer", "atlas/duplicate-input-stream-id", "atlas/local-atlas-unavailable"]
 
 [[feature]]
@@ -14620,7 +14623,7 @@ module = "crates/splot-decode/src/bitstream/stream_plan.rs"
 change_id = "decode-stream-state-planner"
 owner = "decoder"
 risk = "medium"
-notes = "The parsed-stream planner preserves source order/offsets and applies resource limits and base-layer selection. Temporal enhancement OBUs remain counted but unselected; global delimiters retain their scope. Operating-point, embedded/extended-layer, and multistream selection remain separate limitations. Planning is serial within the context-owned pool boundary."
+notes = "The planner retains source offsets and resolves operating points and layer dependencies. The decoder stores each extended layer separately. Each picture retains the atlas layout and segment associations that applied at decode time."
 
 [feature.status]
 mapped = "done"
@@ -14637,8 +14640,9 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/bitstream/stream_plan.rs::tests",
+    "crates/splot-decode/tests/msdo_multistream/atlas.rs",
     "crates/splot-decode/src/output/raw_tests.rs::higher_declared_temporal_layer_decodes_selected_base_layer_to_reference_output",
-    "crates/splot-decode/src/output/raw_tests.rs::non_base_temporal_layer_is_retained_without_runtime_output",
+    "crates/splot-decode/src/output/raw_tests.rs::non_base_temporal_layer_is_selected_by_default_and_filtered_under_base_only",
     "crates/splot-decode/src/output/raw_tests.rs::higher_declared_temporal_layer_fixture_eof_fails_closed",
 ]
 commands = [
@@ -14650,6 +14654,8 @@ commands = [
     "cargo xtask check-decoder-support",
 ]
 fixtures = [
+    "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-8bit.obu",
+    "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-10bit.obu",
     "crates/splot-decode/Cargo.toml",
     "crates/splot-decode/src/context.rs",
     "crates/splot-decode/src/error.rs",
