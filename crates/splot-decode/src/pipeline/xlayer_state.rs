@@ -1588,7 +1588,10 @@ impl XLayerTable {
                 && !has_global_record
                 && local_parent.is_none()
                 && sequence.general.max_mlayer_id.get() > 0;
-            if global_id != 0 && !in_global && !deferred_annex_a {
+            // Standalone decode can use a local LCR without its optional in-band parent.
+            // Strict validation checks whether the referenced parent is available.
+            let needs_global = local_parent.is_none() || will_have_multiple || has_msdo;
+            if needs_global && global_id != 0 && !in_global && !deferred_annex_a {
                 return Err(malformed(
                     offset,
                     "6.4.1",
