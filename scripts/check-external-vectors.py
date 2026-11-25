@@ -110,8 +110,8 @@ def check(corpus, root, splot, thread_override=None, fetch=None):
             manifest = tomllib.load(file)
         if manifest["schema_version"] != 1:
             raise SystemExit("The sample manifest schema is unsupported.")
-        if manifest["threads"] != [1, 8]:
-            raise SystemExit("The sample manifest must specify thread counts 1 and 8.")
+        if manifest["threads"] != [1, 7]:
+            raise SystemExit("The sample manifest must specify thread counts 1 and 7.")
         if (root / ".git").exists():
             revision = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
             if revision != manifest["revision"]:
