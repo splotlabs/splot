@@ -708,7 +708,7 @@ pub(super) struct XLayerTable {
     rest: Vec<XLayerState>,
     global: GlobalHlsState,
     pending_cmvs_flushed: Vec<usize>,
-    pending_atlases: BTreeMap<ExtendedLayerId, super::atlas::LayerAtlases>,
+    pending_atlases: Vec<Option<super::atlas::LayerAtlases>>,
     prior_emitted_count: usize,
     retired: Vec<RetiredLayerHls>,
 }
@@ -717,13 +717,14 @@ impl XLayerTable {
     pub(super) fn new(mut external_atlases: crate::ExternalAtlases) -> Self {
         let atlases = external_atlases
             .scopes
-            .remove(&GLOBAL_XLAYER_ID)
+            .get_mut(usize::from(GLOBAL_XLAYER_ID.get()))
+            .and_then(Option::take)
             .unwrap_or_default();
         Self {
             pending_atlases: external_atlases
                 .scopes
                 .into_iter()
-                .map(|(id, layouts)| (id, super::atlas::LayerAtlases::from(layouts)))
+                .map(|scope| scope.map(super::atlas::LayerAtlases::from))
                 .collect(),
             first: None,
             rest: Vec::new(),
@@ -858,7 +859,11 @@ impl XLayerTable {
             return (layer.output_effect_state, layer.film_grain_slots);
         }
         let mut effects = OutputEffectState::new_for_xlayer(xlayer);
-        if let Some(atlas) = self.pending_atlases.remove(&xlayer) {
+        if let Some(atlas) = self
+            .pending_atlases
+            .get_mut(usize::from(xlayer.get()))
+            .and_then(Option::take)
+        {
             effects.atlas = atlas;
         }
         self.global.sync_effects(&mut effects);
@@ -903,7 +908,11 @@ impl XLayerTable {
             *ids = self
                 .available_hls(xlayer)
                 .map(|(_, effects)| &effects.atlas)
-                .or_else(|| self.pending_atlases.get(&xlayer))
+                .or_else(|| {
+                    self.pending_atlases
+                        .get(usize::from(xlayer.get()))
+                        .and_then(Option::as_ref)
+                })
                 .map_or(0, |atlas| atlas.local_ids);
         }
         let mut global_associations = BTreeMap::new();
@@ -1223,17 +1232,12 @@ impl XLayerTable {
     fn observe_pending_atlas(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
         let id = envelope.header.extended_layer_id;
         match envelope.header.obu_type {
-            ObuType::AtlasSegment => self
-                .pending_atlases
-                .entry(id)
-                .or_default()
+            ObuType::AtlasSegment => super::atlas::scope_mut(&mut self.pending_atlases, id)
                 .layouts
                 .observe(envelope)?,
             ObuType::LayerConfigurationRecord => {
                 if let LayerConfigurationRecord::Local(record) = parse_validated_lcr(envelope)? {
-                    self.pending_atlases
-                        .entry(id)
-                        .or_default()
+                    super::atlas::scope_mut(&mut self.pending_atlases, id)
                         .observe_local_lcr(envelope.offset, record)?;
                 }
             }
