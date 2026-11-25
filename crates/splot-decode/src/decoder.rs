@@ -343,15 +343,15 @@ impl Picture {
         self.extended_layer_id
     }
 
-    /// Embedded layer id (`obu_mlayer_id`, AV2 § 6.2.2) of the coded or
-    /// show-existing frame that produced this picture.
+    /// Embedded layer ID (`obu_mlayer_id`, AV2 § 6.2.2) of this output picture.
+    /// A show-existing frame with a derived order hint uses the reference layer ID.
     #[must_use]
     pub const fn embedded_layer_id(&self) -> EmbeddedLayerId {
         self.embedded_layer_id
     }
 
-    /// Temporal layer id (`obu_tlayer_id`, AV2 § 6.2.2) of the coded or
-    /// show-existing frame that produced this picture.
+    /// Temporal layer ID (`obu_tlayer_id`, AV2 § 6.2.2) of this output picture.
+    /// A show-existing frame with a derived order hint uses the reference layer ID.
     #[must_use]
     pub const fn temporal_layer_id(&self) -> TemporalLayerId {
         self.temporal_layer_id
