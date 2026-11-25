@@ -30,46 +30,40 @@ pub struct FrameLevelLimits {
 /// (22–30) and maximum parameters (31) have no row in Tables A.8 and A.9.
 #[must_use]
 pub fn level_limits(level_idx: u8) -> Option<FrameLevelLimits> {
-    // Tables A.8 and A.9 (mirror lines 330–432), indexed by Table A.7 LevelIdx.
-    // Columns are MaxPicSize, MaxHSize/MaxVSize, MaxTiles, and MaxTileCols.
-    const LEVELS: [(u64, u32, u32, u32); 22] = [
-        (147_456, 640, 8, 4),
-        (278_784, 880, 8, 4),
-        (665_856, 1360, 16, 6),
-        (1_065_024, 1720, 16, 6),
-        (2_359_296, 2560, 32, 8),
-        (2_359_296, 2560, 32, 8),
-        (8_912_896, 4975, 64, 8),
-        (8_912_896, 4975, 64, 8),
-        (8_912_896, 4975, 64, 8),
-        (8_912_896, 4975, 64, 8),
-        (35_651_584, 9951, 128, 16),
-        (35_651_584, 9951, 128, 16),
-        (35_651_584, 9951, 128, 16),
-        (35_651_584, 9951, 128, 16),
-        (142_606_336, 19902, 256, 32),
-        (142_606_336, 19902, 256, 32),
-        (142_606_336, 19902, 256, 32),
-        (142_606_336, 19902, 256, 32),
-        (530_841_600, 38400, 512, 64),
-        (530_841_600, 38400, 512, 64),
-        (530_841_600, 38400, 512, 64),
-        (530_841_600, 38400, 512, 64),
+    Some(group_limits(level_group(level_idx)?))
+}
+
+fn group_limits(group: usize) -> FrameLevelLimits {
+    // Tables A.8 and A.9 repeat the static limits within each level group.
+    // Columns are MaxPicSize, MaxHSize/MaxVSize, MaxTiles, MaxTileCols and MaxHeaderRate.
+    const LEVELS: [(u32, u16, u16, u8, u16); 9] = [
+        (147_456, 640, 8, 4, 150),
+        (278_784, 880, 8, 4, 150),
+        (665_856, 1360, 16, 6, 150),
+        (1_065_024, 1720, 16, 6, 150),
+        (2_359_296, 2560, 32, 8, 300),
+        (8_912_896, 4975, 64, 8, 300),
+        (35_651_584, 9951, 128, 16, 300),
+        (142_606_336, 19902, 256, 32, 960),
+        (530_841_600, 38400, 512, 64, 960),
     ];
-    let &(max_pic_size, dimension, max_tiles, max_tile_cols) =
-        LEVELS.get(usize::from(level_idx))?;
-    Some(FrameLevelLimits {
-        max_pic_size,
-        max_width: dimension,
-        max_height: dimension,
-        max_tiles,
-        max_tile_cols,
-        max_header_rate: match level_idx {
-            0..=3 => 150,
-            4..=13 => 300,
-            _ => 960,
-        },
-    })
+    let (pic_size, dimension, tiles, cols, headers) = LEVELS[group];
+    FrameLevelLimits {
+        max_pic_size: u64::from(pic_size),
+        max_width: u32::from(dimension),
+        max_height: u32::from(dimension),
+        max_tiles: u32::from(tiles),
+        max_tile_cols: u32::from(cols),
+        max_header_rate: u32::from(headers),
+    }
+}
+
+fn level_group(level_idx: u8) -> Option<usize> {
+    // Table A.7, level indices 0–21.
+    const GROUP: [u8; 22] = [
+        0, 1, 2, 3, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8,
+    ];
+    GROUP.get(usize::from(level_idx)).copied().map(usize::from)
 }
 
 impl MultistreamDecoderOperation {
@@ -105,7 +99,8 @@ impl MultistreamDecoderOperation {
         if self.multistream_level_idx == 31 {
             return Some(limits);
         }
-        let aggregate = level_limits(self.multistream_level_idx)?;
+        let group = level_group(self.multistream_level_idx)?;
+        let aggregate = group_limits(group);
         limits.max_tiles = limits
             .max_tiles
             .min(aggregate.max_tiles * denominator / numerator);
@@ -116,19 +111,19 @@ impl MultistreamDecoderOperation {
         // AVM 457cd58681a747465661baccb1f32095bc5b7774, level.c,
         // level_to_sub_stream_level_index(): use the level-4.0 table cells.
         // MaxTilesX above still uses the signaled aggregate level.
-        let row = match self.multistream_level_idx {
-            0..=5 => [(1600, 896, 7), (960, 576, 4), (640, 384, 3)],
-            6..=9 => [(2560, 1472, 7), (1920, 1088, 4), (1280, 768, 3)],
-            10..=13 => [(5120, 2280, 13), (3840, 2176, 8), (2560, 1472, 5)],
-            14..=17 => [(10240, 5760, 26), (7680, 4320, 16), (5120, 2880, 11)],
-            _ => [(20480, 11520, 52), (15360, 8640, 32), (10240, 5760, 21)],
-        };
-        let (height, width, cols) = row[column];
+        const SUBSTREAM: [[(u16, u16, u8); 3]; 5] = [
+            [(1600, 896, 7), (960, 576, 4), (640, 384, 3)],
+            [(2560, 1472, 7), (1920, 1088, 4), (1280, 768, 3)],
+            [(5120, 2280, 13), (3840, 2176, 8), (2560, 1472, 5)],
+            [(10240, 5760, 26), (7680, 4320, 16), (5120, 2880, 11)],
+            [(20480, 11520, 52), (15360, 8640, 32), (10240, 5760, 21)],
+        ];
+        let (height, width, cols) = SUBSTREAM[group.saturating_sub(4)][column];
         // MaxHeaderRateX is 132 for every row.
         limits.max_header_rate = limits.max_header_rate.min(132);
-        limits.max_width = limits.max_width.min(width);
-        limits.max_height = limits.max_height.min(height);
-        limits.max_tile_cols = limits.max_tile_cols.min(cols);
+        limits.max_width = limits.max_width.min(u32::from(width));
+        limits.max_height = limits.max_height.min(u32::from(height));
+        limits.max_tile_cols = limits.max_tile_cols.min(u32::from(cols));
         limits.max_pic_size = limits
             .max_pic_size
             .min(u64::from(width) * u64::from(height));

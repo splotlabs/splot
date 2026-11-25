@@ -414,6 +414,27 @@ impl GlobalHlsState {
     }
 }
 
+#[cold]
+fn frame_allocation_error(
+    xlayer: ExtendedLayerId,
+    offset: ByteOffset,
+    name: &str,
+    value: u64,
+    limit: u64,
+) -> DecodeError {
+    DecodeError::MalformedSource {
+        issue: DecodeSourceIssue::frame_header_conformance(
+            offset,
+            None,
+            "A.4",
+            format!(
+                "extended layer {} frame exceeds {name}: {value} > {limit}",
+                xlayer.get()
+            ),
+        ),
+    }
+}
+
 fn malformed(offset: ByteOffset, spec_section: &'static str, message: String) -> DecodeError {
     DecodeError::MalformedSource {
         issue: DecodeSourceIssue::sequence_header_conformance(offset, spec_section, message),
@@ -1195,17 +1216,7 @@ impl XLayerTable {
         };
         let check = |name, value: u64, limit: u64| {
             if value > limit {
-                Err(DecodeError::MalformedSource {
-                    issue: DecodeSourceIssue::frame_header_conformance(
-                        offset,
-                        None,
-                        "A.4",
-                        format!(
-                            "extended layer {} frame exceeds {name}: {value} > {limit}",
-                            xlayer.get()
-                        ),
-                    ),
-                })
+                Err(frame_allocation_error(xlayer, offset, name, value, limit))
             } else {
                 Ok(())
             }
