@@ -350,7 +350,7 @@ impl ValidatorContext {
         let xlayer = obu.header.extended_layer_id;
         match obu.header.obu_type {
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey if first_picture_in_tu => {
-                if let Some(state) = self.frame_tools.get_mut(&xlayer) {
+                if let Some(state) = self.hls.layers[usize::from(xlayer.get())].as_deref_mut() {
                     state.qm.reset_qm_availability_for_key();
                 }
             }
@@ -365,7 +365,7 @@ impl ValidatorContext {
                 let core = resolved.and_then(|seq_id| {
                     self.frame_core_against_resolved_header(obu, first_picture_in_tu, seq_id)
                 });
-                let state = self.frame_tools.entry(xlayer).or_default();
+                let state = self.hls.layer_mut(xlayer);
                 match core {
                     Some(core) if core.reached_qm_reset => {
                         state.qm.reset_qm_availability_for_switch_or_ras(
@@ -417,7 +417,7 @@ impl ValidatorContext {
         qm: &QuantizerMatrixObu,
         report: &mut ValidationReport,
     ) {
-        let Some(state) = self.frame_tools.get(&obu.header.extended_layer_id) else {
+        let Some(state) = self.hls.layer(obu.header.extended_layer_id) else {
             return;
         };
         if qm.qm_bit_map == 0 {
@@ -476,7 +476,7 @@ impl ValidatorContext {
         qm: &QuantizerMatrixObu,
     ) {
         let xlayer = obu.header.extended_layer_id;
-        let state = self.frame_tools.entry(xlayer).or_default();
+        let state = self.hls.layer_mut(xlayer);
         state.qm.qm_obu_seen_since_coded_frame = true;
         if qm.qm_bit_map == 0 {
             for record in &mut state.qm.available {

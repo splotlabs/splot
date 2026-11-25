@@ -284,7 +284,7 @@ impl ValidatorContext {
             );
         }
 
-        let Some(state) = self.frame_tools.get(&obu.header.extended_layer_id) else {
+        let Some(state) = self.hls.layer(obu.header.extended_layer_id) else {
             return;
         };
         let overlap = state.film_grain.updated_slots_since_coded_frame & fg.update_flags;
@@ -322,7 +322,7 @@ impl ValidatorContext {
     /// model sent before a random access point and not resent in or after it).
     pub(super) fn record_film_grain(&mut self, obu: &ObuEnvelope<'_>, fg: &FilmGrainObu) {
         let xlayer = obu.header.extended_layer_id;
-        let state = self.frame_tools.entry(xlayer).or_default();
+        let state = self.hls.layer_mut(xlayer);
         state.film_grain.updated_slots_since_coded_frame |= fg.update_flags;
         for update in &fg.models {
             let index = update.slot as usize;

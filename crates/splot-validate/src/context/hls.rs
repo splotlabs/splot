@@ -11,13 +11,20 @@ pub(super) struct StoredSequenceHeader {
     pub(super) offset: ByteOffset,
 }
 
+/// Extended-layer substream state. Allocate header records only when their OBUs arrive.
+#[derive(Debug, Default)]
+pub(super) struct LayerHls {
+    pub(super) sequences: [Option<Box<StoredSequenceHeader>>; MAX_SEQ_NUM as usize],
+    multi_frame_headers: [Option<Box<MultiFrameHeaderRecord>>; MAX_MFH_NUM as usize],
+    pub(super) qm: QuantizerMatrixState,
+    pub(super) film_grain: FilmGrainState,
+}
+
 /// In-band HLS availability for § 7.3.8 reference checks. RAP resend requirements
 /// are tracked separately by `RapReplayTracker`; redefinitions replace stored details.
 #[derive(Debug, Default)]
 pub(super) struct HlsAvailabilityStore {
-    pub(super) sequences:
-        BTreeMap<ExtendedLayerId, BTreeMap<SequenceHeaderId, StoredSequenceHeader>>,
-    multi_frame_headers: BTreeMap<(ExtendedLayerId, MfhId), MultiFrameHeaderRecord>,
+    pub(super) layers: [Option<Box<LayerHls>>; GLOBAL_XLAYER_ID.get() as usize + 1],
     /// `lcr_xlayer_map` of each global LCR, keyed by `lcr_global_config_record_id`,
     /// seen in-band so far (§ 7.3.8.3).
     pub(super) global_lcr_xlayer_maps: BTreeMap<u8, u32>,
@@ -74,12 +81,20 @@ pub(super) enum HlsResolution {
 }
 
 impl HlsAvailabilityStore {
+    pub(super) fn layer(&self, xlayer: ExtendedLayerId) -> Option<&LayerHls> {
+        self.layers[usize::from(xlayer.get())].as_deref()
+    }
+
+    pub(super) fn layer_mut(&mut self, xlayer: ExtendedLayerId) -> &mut LayerHls {
+        self.layers[usize::from(xlayer.get())].get_or_insert_default()
+    }
+
     pub(super) fn sequence(
         &self,
         xlayer: ExtendedLayerId,
         id: SequenceHeaderId,
     ) -> Option<&StoredSequenceHeader> {
-        self.sequences.get(&xlayer)?.get(&id)
+        self.layer(xlayer)?.sequences[usize::from(id.get())].as_deref()
     }
 
     pub(super) fn sequence_header(
@@ -121,8 +136,8 @@ impl HlsAvailabilityStore {
         xlayer: ExtendedLayerId,
         record: MultiFrameHeaderRecord,
     ) {
-        self.multi_frame_headers
-            .insert((xlayer, record.mfh_id), record);
+        self.layer_mut(xlayer).multi_frame_headers[record.mfh_id.get() as usize] =
+            Some(Box::new(record));
     }
 
     /// Returns the in-band multi-frame-header record for `mfhId`, if available.
@@ -133,7 +148,10 @@ impl HlsAvailabilityStore {
         xlayer: ExtendedLayerId,
         id: MfhId,
     ) -> Option<&MultiFrameHeaderRecord> {
-        self.multi_frame_headers.get(&(xlayer, id))
+        self.layer(xlayer)?
+            .multi_frame_headers
+            .get(id.get() as usize)?
+            .as_deref()
     }
 
     /// A frame can use only an MFH associated with its resolved sequence in this layer.

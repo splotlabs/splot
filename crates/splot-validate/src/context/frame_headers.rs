@@ -5,12 +5,6 @@
 
 use super::*;
 
-#[derive(Debug, Default)]
-pub(super) struct LayerFrameTools {
-    pub(super) qm: QuantizerMatrixState,
-    pub(super) film_grain: FilmGrainState,
-}
-
 impl ValidatorContext {
     /// Resets the §6.12/§6.13 coded-frame windows for quantizer-matrix and film-grain
     /// state at any coded frame, including a SEF (the § 7.3.3 grammar makes a SEF its
@@ -18,7 +12,7 @@ impl ValidatorContext {
     /// both the QM between-coded-frames window and the film-grain coded-frame-unit
     /// window — see [`is_frame_bearing`]).
     pub(super) fn reset_coded_frame_window(&mut self, xlayer: ExtendedLayerId) {
-        if let Some(state) = self.frame_tools.get_mut(&xlayer) {
+        if let Some(state) = self.hls.layers[usize::from(xlayer.get())].as_deref_mut() {
             state.qm.reset_coded_frame_window();
             state.film_grain.reset_coded_frame_window();
         }
@@ -120,20 +114,18 @@ impl ValidatorContext {
             }
             let mfh_record = self.hls.frame_mfh_record(xlayer, prefix.cur_mfh_id, seq_id);
             let mut rap_refs = FrameRapReferences::default();
-            if let Some(active_sequence) = self
-                .hls
-                .sequence_header(obu.header.extended_layer_id, seq_id)
+            if let Some(state) = self.hls.layer(xlayer)
+                && let Some(stored) = &state.sequences[usize::from(seq_id.get())]
             {
                 let mut reference_scratch = ReferenceStateScratch::default();
                 let reference_buffer = self
                     .reference_state
                     .view_into(obu.header.extended_layer_id, &mut reference_scratch)
                     .unwrap_or_else(FrameReferenceStateView::unknown);
-                let state = self.frame_tools.entry(xlayer).or_default();
                 rap_refs = frame_header_core_checks(
                     obu,
                     first_picture_in_tu,
-                    active_sequence,
+                    &stored.header,
                     mfh_record,
                     &FrameReferenceAvailability {
                         qm: &state.qm,

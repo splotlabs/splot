@@ -112,7 +112,6 @@ use self::frame_facts::*;
 use self::frame_header_checks::*;
 use self::frame_header_copy::*;
 use self::frame_header_diagnostics::*;
-use self::frame_headers::LayerFrameTools;
 use self::hls::*;
 use self::lcr::*;
 use self::metadata::*;
@@ -150,8 +149,6 @@ pub(crate) struct ValidatorContext {
     /// (AV2 § 6.10.1, § 7.3.8.5). Kept separate from [`HlsAvailabilityStore`] because
     /// OPS state, unlike the other HLS records, is explicitly resettable.
     ops: OpsAvailabilityStore,
-    /// Quantizer-matrix levels and film-grain slots in each independently decoded layer.
-    frame_tools: BTreeMap<ExtendedLayerId, LayerFrameTools>,
     /// HDR CLL / MDCV content baselines per coded-video-sequence scope, for the
     /// § 6.16.5 / § 6.16.6 "shall have the same content" checks: each record
     /// carries its unit's bitstream-derived embedded-layer association (see
@@ -485,7 +482,7 @@ impl ValidatorContext {
         self.temporal_unit.observe_obu(obu, report);
 
         if obu.header.obu_type == ObuType::TemporalDelimiter {
-            for state in self.frame_tools.values_mut() {
+            for state in self.hls.layers.iter_mut().flatten() {
                 state.qm.clear_qm_protected_at_temporal_delimiter();
             }
         }

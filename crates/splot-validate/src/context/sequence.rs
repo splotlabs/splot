@@ -156,9 +156,8 @@ impl ValidatorContext {
         if self.frame_confirmed_xlayers.contains(&xlayer)
             || self
                 .hls
-                .sequences
-                .get(&xlayer)
-                .is_some_and(|headers| headers.len() == 1)
+                .layer(xlayer)
+                .is_some_and(|layer| layer.sequences.iter().flatten().count() == 1)
         {
             Some(resolved)
         } else {
@@ -288,13 +287,12 @@ impl ValidatorContext {
         }
 
         let new_general = sequence_header.general;
-        let previous_header = self.hls.sequences.entry(xlayer).or_default().insert(
-            seq_header_id,
-            StoredSequenceHeader {
-                header: sequence_header,
-                offset: obu.offset,
-            },
-        );
+        let previous_header = self.hls.layer_mut(xlayer).sequences
+            [usize::from(seq_header_id.get())]
+        .replace(Box::new(StoredSequenceHeader {
+            header: sequence_header,
+            offset: obu.offset,
+        }));
         self.active_sequence_by_xlayer
             .entry(xlayer)
             .or_insert(seq_header_id);

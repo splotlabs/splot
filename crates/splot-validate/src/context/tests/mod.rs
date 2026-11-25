@@ -299,13 +299,18 @@ fn repeated_headers_replace_the_same_id_only_in_their_layer()
             ctx.observe_obu(obu, &opts, &mut report);
         }
     }
-    assert_eq!(ctx.hls.sequences.len(), 2);
-    assert_eq!(ctx.frame_tools.len(), 2);
+    assert_eq!(ctx.hls.layers.iter().flatten().count(), 2);
     for layer in [3, 7] {
         let xlayer = ExtendedLayerId::from_bits(layer);
-        let headers = &ctx.hls.sequences[&xlayer];
-        assert_eq!(headers.len(), 1);
-        let stored = &headers[&SequenceHeaderId::try_new(0).ok_or("invalid test sequence ID")?];
+        let headers = &ctx.hls.layer(xlayer).ok_or("missing layer")?.sequences;
+        assert_eq!(headers.iter().flatten().count(), 1);
+        let stored = ctx
+            .hls
+            .sequence(
+                xlayer,
+                SequenceHeaderId::try_new(0).ok_or("invalid test sequence ID")?,
+            )
+            .ok_or("missing sequence header")?;
         let last = obus
             .iter()
             .rfind(|obu| {
