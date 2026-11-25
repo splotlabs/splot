@@ -1327,8 +1327,8 @@ def _run_bru_fixture_batch(fixtures, fixed_flags, label, args, *, num_frames=6):
             *fixed_flags, f"--bit-depth={bd}", f"--input-bit-depth={bd}", "--i420",
             "--threads=1", "--end-usage=q", "--quiet", "--disable-warning-prompt", *flags,
         ]
-        run_checked([*encode, "-o", ivf, y4m])
-        run_checked([*encode, "-o", repeat_ivf, y4m])
+        run_checked([*encode, "-o", ivf, y4m], timeout=None)
+        run_checked([*encode, "-o", repeat_ivf, y4m], timeout=None)
         ivf_sha = sha(ivf)
         if sha(repeat_ivf) != ivf_sha:
             sys.exit(f"error: {fid} is not deterministic across two encodes")
