@@ -14500,7 +14500,7 @@ module = "crates/splot-decode/src/decoder/composition.rs"
 change_id = "multistream-atlas-composition"
 owner = "decoder"
 risk = "medium"
-notes = "The optional compositor uses a shared global layout and a common presentation timestamp. It renders modes 3 and 4 in segment order with clipping and Annex D.5 alpha rounding. The Splot rendering policy uses limited-range BT.709 and nearest-neighbor scaling. The native picture and its references keep their original samples."
+notes = "The optional compositor uses a shared global layout and a common presentation timestamp. It renders modes 3 and 4 in segment order with clipping and Annex D.5 alpha rounding. The Splot rendering policy uses limited-range BT.709 and nearest-neighbor scaling. The native picture and its references keep their original samples. PR #1982 records active composition cost, retained memory, native decode comparisons and linked sizes."
 
 [feature.status]
 mapped = "done"
@@ -14512,11 +14512,11 @@ encode = "not-applicable"
 decode_check = "done"
 tests = "done"
 avm_diff = "not-applicable"
-perf = "pending"
+perf = "done"
 
 [feature.proof]
 tests = ["crates/splot-decode/src/decoder/composition/tests.rs", "crates/splot-cli/tests/decoder_oracle/atlas.rs"]
-commands = ["cargo test -p splot-decode --lib decoder::composition", "cargo test -p splot-cli --test decoder_oracle atlas::"]
+commands = ["cargo test -p splot-decode --lib decoder::composition", "cargo test -p splot-cli --test decoder_oracle atlas::", "cargo xtask check-binary-size"]
 fixtures = ["tests/conformance/vectors/valid/syn-atlas-multistream-side-by-side-8bit.obu", "tests/conformance/vectors/valid/syn-atlas-multistream-side-by-side-10bit.obu", "tests/conformance/vectors/valid/syn-atlas-alpha-paired-8bit.obu", "tests/conformance/vectors/valid/syn-atlas-alpha-paired-10bit.obu"]
 diagnostics = []
 
