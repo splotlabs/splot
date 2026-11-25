@@ -16,7 +16,13 @@ pub(in crate::validator::tests) fn msdo_obu_configured(
     doh_constraint_flag: bool,
     entries: &[SubStreamEntry],
 ) -> Vec<u8> {
-    msdo_with_allocation(multistream_profile_idc, doh_constraint_flag, entries, None)
+    msdo_with_allocation(
+        multistream_profile_idc,
+        doh_constraint_flag,
+        entries,
+        None,
+        0,
+    )
 }
 
 pub(in crate::validator::tests) fn msdo_with_allocation(
@@ -24,13 +30,14 @@ pub(in crate::validator::tests) fn msdo_with_allocation(
     doh_constraint_flag: bool,
     entries: &[SubStreamEntry],
     large_index: Option<u32>,
+    level: u32,
 ) -> Vec<u8> {
     assert!(entries.len() >= 2, "an MSDO has at least 2 sub-streams");
     let num_streams_minus_2 = (entries.len() - 2) as u32;
     let mut bits = Bits::default();
     bits.f(num_streams_minus_2, 3); // num_streams_minus_2
     bits.f(multistream_profile_idc, 5); // multistream_profile_idc
-    bits.f(0, 5); // multistream_level_idx
+    bits.f(level, 5); // multistream_level_idx
     bits.bit(0); // multistream_tier
     bits.bit(u8::from(large_index.is_none()));
     if let Some(index) = large_index {
@@ -530,4 +537,18 @@ fn non_rap_changed_msdo_at_end_of_stream_is_flagged() {
             .any(|d| d.rule_id == "msdo/non-rap-not-identical"),
         "the end-of-stream flush must resolve the final TU's MSDO; report was: {report}"
     );
+}
+
+#[test]
+fn msdo_reports_reserved_aggregate_levels_at_the_descriptor() {
+    for level in [21, 22, 30, 31] {
+        let data = msdo_with_allocation(0, true, &[(0, 0, 4, 0), (1, 0, 4, 0)], None, level);
+        let report = Validator::new(false).validate_bytes(&data);
+        let offset = report
+            .errors()
+            .find(|d| d.rule_id == "annex-a/level-reserved")
+            .and_then(|d| d.byte_offset)
+            .map(splot_core::span::ByteOffset::get);
+        assert_eq!(offset, (22..=30).contains(&level).then_some(1), "{report}");
+    }
 }

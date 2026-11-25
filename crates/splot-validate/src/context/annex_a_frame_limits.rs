@@ -36,11 +36,12 @@ impl FrameAllocations {
 
     pub(super) fn check_frame(
         &mut self,
-        frame: &FrameHeaderCore,
+        frame: Option<&FrameHeaderCore>,
         sequence: &SequenceHeader,
         obu: &ObuEnvelope<'_>,
         report: &mut ValidationReport,
     ) {
+        let size = frame.and_then(|frame| frame.frame_size);
         let level = sequence.general.seq_level_idx.get();
         let Some(native) = level_limits(level) else {
             return;
@@ -77,7 +78,7 @@ impl FrameAllocations {
             }
         };
 
-        if let Some(size) = frame.frame_size {
+        if let Some(size) = size {
             let rule = "annex-a/frame-size-exceeds-level";
             check(
                 "FrameWidth",
@@ -104,7 +105,7 @@ impl FrameAllocations {
                 rule,
             );
         }
-        if let Some(tiles) = &frame.tile_info {
+        if let Some(tiles) = frame.and_then(|core| core.tile_info.as_ref()) {
             let cols = u64::from(tiles.tile_cols);
             let rule = "annex-a/tile-count-exceeds-level";
             check(
@@ -125,8 +126,8 @@ impl FrameAllocations {
             );
             // TODO(spec: AV2-A-LEVELS-TIERS): check the Annex A.4 per-tile width and area limits.
         }
-        let native_refs = native.excess_ref_frames(sequence, Some(frame));
-        let allocated_refs = allocated.excess_ref_frames(sequence, Some(frame));
+        let native_refs = native.excess_ref_frames(sequence, frame);
+        let allocated_refs = allocated.excess_ref_frames(sequence, frame);
         if let Some((count, _)) = native_refs.or(allocated_refs) {
             check(
                 "NumRefFrames",
@@ -137,7 +138,7 @@ impl FrameAllocations {
                 "annex-a/reference-count-exceeds-level",
             );
         }
-        if let Some(size) = frame.frame_size
+        if let Some(size) = size
             && (size.width < MIN_FRAME_DIMENSION || size.height < MIN_FRAME_DIMENSION)
         {
             report.push(Diagnostic::error("annex-a/frame-size-below-minimum", format!(

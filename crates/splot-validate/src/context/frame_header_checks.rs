@@ -138,13 +138,20 @@ pub(super) fn frame_header_core_checks(
         None
     };
 
-    let core = match parse_frame_core(
+    let parsed = parse_frame_core(
         obu,
         first_picture_in_tu,
         active_sequence,
         mfh_record,
         &reference_buffer,
-    ) {
+    );
+    allocations.check_frame(
+        parsed.as_ref().ok().and_then(Option::as_ref),
+        active_sequence,
+        obu,
+        report,
+    );
+    let core = match parsed {
         Ok(Some(core)) => core,
         Err(Error::InvalidTileParams { kind, .. }) => {
             let rule_id = match kind {
@@ -357,8 +364,6 @@ pub(super) fn frame_header_core_checks(
         mfh_record,
         report,
     );
-
-    allocations.check_frame(&core, active_sequence, obu, report);
 
     let qm_rap_levels = if let Some(setup_qm) = core.setup_qm_params.as_ref() {
         frame_qm_reference_checks(setup_qm, active_sequence, qm_state, options, obu, report)

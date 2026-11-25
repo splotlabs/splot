@@ -322,7 +322,7 @@ fn frame_allocations_follow_the_whole_temporal_unit_and_descriptor_order() {
         .iter()
         .find(|(h, _)| h.obu_type == ObuType::ClosedLoopKey && h.extended_layer_id.get() == 7)
         .unwrap();
-    let descriptor = msdo_with_allocation(0, true, &[(3, 0, 0, 0), (7, 0, 0, 0)], Some(1));
+    let descriptor = msdo_with_allocation(0, true, &[(3, 0, 0, 0), (7, 0, 0, 0)], Some(1), 0);
     for (initial, before, after, late_rap, expected) in [
         (false, true, false, true, true),
         (false, true, false, false, false),
