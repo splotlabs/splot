@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+name: Native AVX-512 luma LUT experiment
+
+on:
+  push:
+    branches: [experiment/simd-1891-grain-lut]
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    runs-on: ${{ vars.SPLOT_AVX512_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: "0"
+      SPLOT_REQUIRE_AVX512: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify the native machine and pin test input data
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc -vV
+          lscpu
+          grep -qw avx512vbmi /proc/cpuinfo
+          python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
+          cp scripts/measure-wide-luma.py "$RUNNER_TEMP/measure-wide-luma.py"
+          mkdir -p "$RUNNER_TEMP/wide-luma"
+
+      - name: Compare complete row operations on one pinned core
+        run: |
+          core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          cargo test -p splot-recon --release --locked -j1 --lib \
+            film_grain::tests::wide_luma_lookup_matches_the_exact_table -- --exact
+          taskset -c "$core" cargo test -p splot-recon --release --locked -j1 --lib \
+            film_grain::tests::measure_luma_grain_with_lookup -- --ignored --exact --nocapture \
+            | tee "$RUNNER_TEMP/wide-luma/row.log"
+
+      - name: Build the exact matched release CLIs
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
+        run: |
+          cargo build --release --locked -j1 -p splot-cli
+          cp target/release/splot "$RUNNER_TEMP/wide-luma/candidate"
+          git rev-parse HEAD > "$RUNNER_TEMP/wide-luma/candidate.sha"
+          git checkout --detach 83566cc2a716603280a8b0773fc026f1fe86676e
+          cargo build --release --locked -j1 -p splot-cli
+          cp target/release/splot "$RUNNER_TEMP/wide-luma/control"
+          git rev-parse HEAD > "$RUNNER_TEMP/wide-luma/control.sha"
+          cd "$RUNNER_TEMP/wide-luma"
+          sha256sum candidate control > SHA256SUMS
+          strip --strip-all -o candidate.stripped candidate
+          strip --strip-all -o control.stripped control
+          stat -c '%s %n' candidate.stripped control.stripped | tee sizes.txt
+          objdump -dC candidate | awk '/^[0-9a-f]+ </{show=($0 ~ /vectorize_avx512.*apply_film_grain/)} show' \
+            > wide-grain.asm
+          grep -Eq 'vpermi2b|vpermt2b' wide-grain.asm
+
+      - name: Verify AVM and time counterbalanced whole decodes
+        run: |
+          python3 "$RUNNER_TEMP/measure-wide-luma.py" "$RUNNER_TEMP/wide-luma" "$RUNNER_TEMP/ewouth" \
+            | tee "$RUNNER_TEMP/wide-luma/playback.log"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: wide-luma-results
+          path: |
+            ${{ runner.temp }}/wide-luma/*.log
+            ${{ runner.temp }}/wide-luma/*.csv
+            ${{ runner.temp }}/wide-luma/*.txt
+            ${{ runner.temp }}/wide-luma/*.sha
+            ${{ runner.temp }}/wide-luma/*.asm
+            ${{ runner.temp }}/wide-luma/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 14

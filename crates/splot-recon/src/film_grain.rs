@@ -25,6 +25,9 @@ use crate::{
     PlaneRect, PlaneSize, ReconError, ReconSample, Result,
 };
 
+mod wide_luma;
+use wide_luma::add_luma_noise;
+
 const LUMA_GRAIN_WIDTH: usize = 82;
 const LUMA_GRAIN_HEIGHT: usize = 73;
 const LUMA_GRAIN_BASE: usize = 3;
@@ -34,6 +37,8 @@ struct ActiveFilmGrain<'a> {
     model: &'a FilmGrainModel,
     grain_seed: u16,
 }
+
+type PackedLumaNoise = fn(&mut [u8], &[u8; 256], &[i16], NoiseParams);
 
 /// Applies AV2 § 7.21.7 display film grain to a decoded frame.
 ///
@@ -69,6 +74,7 @@ pub fn apply_film_grain_into<T: ReconSample>(
         grain_seed,
         spare,
         |row, scale, noise, params| add_noise_row::<_, _, false>(simd, row, scale, noise, params),
+        None::<PackedLumaNoise>,
     ))
 }
 
@@ -97,7 +103,15 @@ pub fn apply_film_grain_into_with<B: splot_core::simd::SimdBackend, T: ReconSamp
             }
             add_noise_row::<_, _, false>(simd, row, scale, noise, params)
         };
-        apply_film_grain_simd(simd, frame, model, grain_seed, spare, add_noise)
+        let wide_luma = (wide && frame.bit_depth().bits() == 8).then_some(
+            |row: &mut [u8], table: &[u8; 256], noise: &[i16], params| {
+                backend.vectorize(
+                    #[inline(always)]
+                    || add_luma_noise(backend.token(), row, table, noise, params),
+                );
+            },
+        );
+        apply_film_grain_simd(simd, frame, model, grain_seed, spare, add_noise, wide_luma)
     })
 }
 
@@ -108,6 +122,7 @@ fn apply_film_grain_simd<S: Simd, T: ReconSample>(
     grain_seed: u16,
     mut spare: FramePlaneSamples<T>,
     add_noise: impl Fn(&mut [T], &[i16], &[i16], NoiseParams) -> Result<()>,
+    wide_luma: Option<impl Fn(&mut [u8], &[u8; 256], &[i16], NoiseParams)>,
 ) -> Result<DecodedFrame<T>> {
     let grain = ActiveFilmGrain { model, grain_seed };
     let visible = frame.visible_luma_rect();
@@ -146,8 +161,10 @@ fn apply_film_grain_simd<S: Simd, T: ReconSample>(
             });
         }
     }
-    let mut outputs =
-        synthesize(simd, &sources, &geometry, &grain, &mut spare, add_noise)?.into_iter();
+    let mut outputs = synthesize(
+        simd, &sources, &geometry, &grain, &mut spare, add_noise, wide_luma,
+    )?
+    .into_iter();
 
     let info = DecodedFrameInfo::new(
         OutputIndex::new(frame.output_index().get()),
@@ -260,6 +277,7 @@ fn synthesize<S: Simd, T: ReconSample>(
     grain: &ActiveFilmGrain<'_>,
     spare: &mut FramePlaneSamples<T>,
     add_noise: impl Fn(&mut [T], &[i16], &[i16], NoiseParams) -> Result<()>,
+    wide_luma: Option<impl Fn(&mut [u8], &[u8; 256], &[i16], NoiseParams)>,
 ) -> Result<Vec<GrainDestination<T>>> {
     let model = grain.model;
     let bit_depth = geometry.bit_depth;
@@ -304,6 +322,10 @@ fn synthesize<S: Simd, T: ReconSample>(
     );
     let luma_size = if model.film_grain_block_size { 32 } else { 16 };
     let width = geometry.widths[0];
+    let packed_luma = wide_luma.filter(|_| width >= 64).and_then(|apply| {
+        let table = noise.first()?.as_ref()?.lut.exact.as_deref()?;
+        Some((apply, core::array::from_fn(|index| table[index] as u8)))
+    });
     let widths = &geometry.widths[..num_planes];
     let mut stripes = [
         Stripe::new(widths, luma_size, geometry.sub_x, geometry.sub_y),
@@ -374,6 +396,13 @@ fn synthesize<S: Simd, T: ReconSample>(
                         fresh
                     };
                 let output = outputs[plane].push_row(sources[plane][row]);
+                if plane == 0
+                    && let Some((apply, table)) = &packed_luma
+                    && let Some(output) = T::u8_slice_mut(output)
+                {
+                    apply(output, table, noise_row, params);
+                    continue;
+                }
                 let luma = sources[0][row << if plane > 0 { geometry.sub_y } else { 0 }];
                 let lut = &plane_noise.lut;
                 let Some(table) = lut.exact.as_deref() else {
