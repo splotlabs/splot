@@ -1297,6 +1297,16 @@ description = "Eight 10-bit 128x64 frames matching syn-bru-inactive-refresh-8bit
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-bru-inactive-block-use-8bit.ivf"
+description = "Eight 8-bit 128x64 frames with a moving square. Frame 5 copies frame 3 and refreshes slot 1. The top-left inter block of frame 6 uses that slot."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bru-inactive-block-use-10bit.ivf"
+description = "Eight 10-bit 128x64 frames with a moving square. Frame 5 copies frame 3 and refreshes slot 1. The top-left inter block of frame 6 uses that slot."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-bru-inactive-filmgrain-8bit.ivf"
 description = "Eight 8-bit 128x64 frames matching syn-bru-inactive-refresh-8bit with --film-grain-test=1 so frame 5 (bru_inactive == 1) synthesizes output film grain without mutating stored reference pixels; validates clean."
 expect = "clean"
