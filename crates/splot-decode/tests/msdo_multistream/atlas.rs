@@ -327,7 +327,10 @@ const LOCAL_ATLAS_8: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/needs-external-hls/syn-atlas-local-8bit.annexb"
 );
 
-#[expect(clippy::panic, reason = "the fixture setup requires a parsed local LCR")]
+#[expect(
+    clippy::panic,
+    reason = "the fixture setup requires a parsed local LCR"
+)]
 fn local_atlas_lcr_without_global_parent() -> (LcrId, Vec<u8>) {
     use splot_core::headers::layer_config_record::LayerConfigurationRecord;
 
