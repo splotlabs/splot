@@ -12667,3 +12667,188 @@ output_scope = "Complete 64,512-byte 9-frame output for local OP (xlayer=3, ops_
 kind = "digest-equality"
 left = "avm-msdo-local-3-2-0-raw-sha256"
 right = "splot-msdo-local-3-2-0-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-mlayer2-reproducible"
+feature_id = "DECODE-STREAM-STATE-PLANNER"
+decoder_support_rows = ["decode-stream-state"]
+kind = "reference-output-agreement"
+summary = "Four reproducible Annex B fixtures exercise ML1 prediction from ML0. Splot matches native AVM output for equal resolution, mixed resolution, and combined temporal and embedded selection."
+recorded_at = "2026-11-25"
+command = "Run the embedded-fixtures command in docs/CONFORMANCE.md with the pinned AVM encoder build and Splot."
+
+[[evidence.fixture]]
+id = "input-8bit"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-mlayer2-reproducible-8bit.obu"
+sha256 = "df375b67903452bdfddf348002586384f8390bc6910d1880cc25d20d5b67b600"
+size_bytes = 984
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "The embedded-fixtures recipe in docs/CONFORMANCE.md generates the source I420 samples, encodes them with pinned AVM, clears the local LCR parent ID, and checks the Annex B bytes."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.fixture]]
+id = "input-10bit"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-mlayer2-reproducible-10bit.obu"
+sha256 = "310aa226228f592dd3801d884025bb5ebde3e39c8e25a2bd4b1570be56225f31"
+size_bytes = 937
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "The embedded-fixtures recipe in docs/CONFORMANCE.md generates the source I420 samples, encodes them with pinned AVM, clears the local LCR parent ID, and checks the Annex B bytes."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.fixture]]
+id = "input-mixedres-8bit"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-mlayer2-reproducible-mixedres-8bit.obu"
+sha256 = "e812ebde0d9f6c283640feb02daf8c764bb8f7e200e6d97905ef712dfcc22fa9"
+size_bytes = 25610
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "The embedded-fixtures recipe in docs/CONFORMANCE.md generates the source I420 samples, encodes them with pinned AVM, clears the local LCR parent ID, and checks the Annex B bytes."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.fixture]]
+id = "input-2d-8bit"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-mlayer2-reproducible-2d-8bit.obu"
+sha256 = "43d937d893d7b703a1f7bafa06a163a259c9a4230848015499e25ef9522affb0"
+size_bytes = 2059
+format = "annex-b"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "The embedded-fixtures recipe in docs/CONFORMANCE.md generates the source I420 samples, encodes them with pinned AVM, clears the local LCR parent ID, and checks the Annex B bytes."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-8bit"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --skip-film-grain --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input-8bit}."
+output_digest_id = "avm-syn-mlayer2-reproducible-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6b1c68c461792ee00843253575b70204a00059381fd76b8037387036e1cffcbc"
+output_scope = "All 6 native I420 pictures in output order at 8 bits per sample (36864 bytes)."
+
+[[evidence.reference_run]]
+id = "splot-8bit"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Splot native layer output."
+command_summary = "splot decode --output-format raw decoded {fixture:input-8bit}."
+output_digest_id = "splot-syn-mlayer2-reproducible-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "6b1c68c461792ee00843253575b70204a00059381fd76b8037387036e1cffcbc"
+output_scope = "All 6 native I420 pictures in output order at 8 bits per sample (36864 bytes)."
+
+[[evidence.reference_run]]
+id = "avm-10bit"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --skip-film-grain --rawvideo --i420 --output-bit-depth=10 decoded {fixture:input-10bit}."
+output_digest_id = "avm-syn-mlayer2-reproducible-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "c9d7de9c050d472aff6ccd3a9aea208e43b190d982b74391be371becf4ca8c74"
+output_scope = "All 6 native I420 pictures in output order at 10 bits per sample (73728 bytes)."
+
+[[evidence.reference_run]]
+id = "splot-10bit"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Splot native layer output."
+command_summary = "splot decode --output-format raw decoded {fixture:input-10bit}."
+output_digest_id = "splot-syn-mlayer2-reproducible-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "c9d7de9c050d472aff6ccd3a9aea208e43b190d982b74391be371becf4ca8c74"
+output_scope = "All 6 native I420 pictures in output order at 10 bits per sample (73728 bytes)."
+
+[[evidence.reference_run]]
+id = "avm-mixedres-8bit"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --skip-film-grain --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input-mixedres-8bit}."
+output_digest_id = "avm-syn-mlayer2-reproducible-mixedres-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "b6975e368cbde9728aa1d76218e9c610c6260a6d218384d1302d6f10e962f3e5"
+output_scope = "All 6 native I420 pictures in output order at 8 bits per sample (368640 bytes)."
+
+[[evidence.reference_run]]
+id = "splot-mixedres-8bit"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Splot native layer output."
+command_summary = "splot decode --output-format raw decoded {fixture:input-mixedres-8bit}."
+output_digest_id = "splot-syn-mlayer2-reproducible-mixedres-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "b6975e368cbde9728aa1d76218e9c610c6260a6d218384d1302d6f10e962f3e5"
+output_scope = "All 6 native I420 pictures in output order at 8 bits per sample (368640 bytes)."
+
+[[evidence.reference_run]]
+id = "avm-2d-8bit"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-638-ga1ec4594d9."
+command_summary = "avmdec --all-layers --skip-film-grain --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input-2d-8bit}."
+output_digest_id = "avm-syn-mlayer2-reproducible-2d-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "2735a0e58bf3ee19fb7ca625aad6bcadff45ce176b4e74e66f2356b795988600"
+output_scope = "All 8 native I420 pictures in output order at 8 bits per sample (98304 bytes)."
+
+[[evidence.reference_run]]
+id = "splot-2d-8bit"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Splot native layer output."
+command_summary = "splot decode --output-format raw decoded {fixture:input-2d-8bit}."
+output_digest_id = "splot-syn-mlayer2-reproducible-2d-8bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "2735a0e58bf3ee19fb7ca625aad6bcadff45ce176b4e74e66f2356b795988600"
+output_scope = "All 8 native I420 pictures in output order at 8 bits per sample (98304 bytes)."
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-syn-mlayer2-reproducible-8bit-raw-sha256"
+right = "splot-syn-mlayer2-reproducible-8bit-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-syn-mlayer2-reproducible-10bit-raw-sha256"
+right = "splot-syn-mlayer2-reproducible-10bit-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-syn-mlayer2-reproducible-mixedres-8bit-raw-sha256"
+right = "splot-syn-mlayer2-reproducible-mixedres-8bit-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-syn-mlayer2-reproducible-2d-8bit-raw-sha256"
+right = "splot-syn-mlayer2-reproducible-2d-8bit-raw-sha256"

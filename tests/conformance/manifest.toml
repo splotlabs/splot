@@ -2903,6 +2903,34 @@ path = "vectors/valid/syn-tlayer4-reproducible-sparse.obu"
 description = "Five 64x64 8-bit 4:2:0 frames signal a sparse dependency map. Layers 2 and 3 exclude layer 1 from their dependencies. See the temporal-fixtures recipe in docs/CONFORMANCE.md."
 expect = "clean"
 
+# Source I420 SHA-256: 33e129a615d52d1efb767fe543d1e4e9138961045a2b3a3f64da413155b4998d
+# Annex B SHA-256: df375b67903452bdfddf348002586384f8390bc6910d1880cc25d20d5b67b600
+[[vector]]
+path = "vectors/valid/syn-mlayer2-reproducible-8bit.obu"
+description = "Reproducible 8-bit I420 cross-layer predictions, ML0 64x64 and ML1 64x64. AVM outputs 6 pictures (36864 bytes, SHA-256 6b1c68c461792ee00843253575b70204a00059381fd76b8037387036e1cffcbc)."
+expect = "clean"
+
+# Source I420 SHA-256: 45a4add1eb104ef19c2a6c58fd7fdf8f6f2667e0e9f08f652b0f5167610539b5
+# Annex B SHA-256: 310aa226228f592dd3801d884025bb5ebde3e39c8e25a2bd4b1570be56225f31
+[[vector]]
+path = "vectors/valid/syn-mlayer2-reproducible-10bit.obu"
+description = "Reproducible 10-bit I420 cross-layer predictions, ML0 64x64 and ML1 64x64. AVM outputs 6 pictures (73728 bytes, SHA-256 c9d7de9c050d472aff6ccd3a9aea208e43b190d982b74391be371becf4ca8c74)."
+expect = "clean"
+
+# Source I420 SHA-256: be30dbcb82cf5413fee7644436835eea22116b33aad36cf416b6dd31b1697d66
+# Annex B SHA-256: e812ebde0d9f6c283640feb02daf8c764bb8f7e200e6d97905ef712dfcc22fa9
+[[vector]]
+path = "vectors/valid/syn-mlayer2-reproducible-mixedres-8bit.obu"
+description = "Reproducible 8-bit I420 cross-layer predictions, ML0 128x128 and ML1 256x256. AVM outputs 6 pictures (368640 bytes, SHA-256 b6975e368cbde9728aa1d76218e9c610c6260a6d218384d1302d6f10e962f3e5)."
+expect = "clean"
+
+# Source I420 SHA-256: aa536ca69716284731231b1de7558547a47c01437f495b8ec6d94decc5ac3a46
+# Annex B SHA-256: 43d937d893d7b703a1f7bafa06a163a259c9a4230848015499e25ef9522affb0
+[[vector]]
+path = "vectors/valid/syn-mlayer2-reproducible-2d-8bit.obu"
+description = "Reproducible 8-bit I420 cross-layer predictions, ML0 128x64 and ML1 128x64. AVM outputs 8 pictures (98304 bytes, SHA-256 2735a0e58bf3ee19fb7ca625aad6bcadff45ce176b4e74e66f2356b795988600). Two tile groups per picture and a local OPS."
+expect = "clean"
+
 [[vector]]
 path = "vectors/valid/syn-mlayer2-crossref-8bit.obu"
 description = "Six-frame 64x64 8-bit 4:2:0 Annex B stream encoded by AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) with two embedded layers (max_mlayer_id=1, IOP 1, local LCR, 3 temporal units across ML0 and ML1) and cross-layer prediction. Decodes identically to avmdec --all-layers across all 6 frames (36,864 bytes, SHA-256 8f798709cae451909159dde10c9581b07c373d6b6a71a6a43f450da11e018176); validates clean."
