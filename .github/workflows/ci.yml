@@ -179,7 +179,7 @@ jobs:
       - name: Verify complete sample output against AVM hashes
         env:
           TEST_DATA_DIR: ${{ runner.temp }}/ewouth-av2
-        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR"
+        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR" --parallel
 
   encoder-avm-oracle:
     runs-on: ubuntu-latest
