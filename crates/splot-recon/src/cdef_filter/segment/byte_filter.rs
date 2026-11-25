@@ -67,76 +67,96 @@ pub(super) fn cdef_filter_rows_u8_quad<
     (pad, plan, base): (&[u16; AREA], &CdefFilterPlan, u16),
     (out, out_stride): (&mut [T], usize),
 ) -> Option<()> {
-    let filter = &plan.filter;
-    let (center_view, pri_views, sec_views) = cdef_tap_views::<_, STRIDE, 2, SPAN, AREA, PRI, SEC>(
-        pad,
-        filter.dir,
-        &CDEF_SEGMENT_TAP_STARTS,
-    )?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
-    let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
-    let base = u16x16::splat(simd, base);
-    for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
-        let pairs = |view: &[u16; SPAN]| -> Option<[u16x16<S>; 2]> {
-            Some([
-                cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first)?,
-                cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first + 2)?,
-            ])
-        };
-        let quad = |view: &[u16; SPAN]| -> Option<u8x32<S>> {
-            Some(quads.pack(simd, pairs(view)?.map(|pair| pair - base)))
-        };
-        let centers = pairs(center_view)?;
-        let center = quads.pack(simd, centers.map(|pair| pair - base));
-        let (mut min, mut max) = (center, center);
-        macro_rules! tap {
-            ($view:expr, $constrain:expr) => {{
-                let tap = quad($view)?;
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let filter = &plan.filter;
+            let (center_view, pri_views, sec_views) =
+                cdef_tap_views::<_, STRIDE, 2, SPAN, AREA, PRI, SEC>(
+                    pad,
+                    filter.dir,
+                    &CDEF_SEGMENT_TAP_STARTS,
+                )?;
+            let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+            let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
+            let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
+            let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
+            let base = u16x16::splat(simd, base);
+            for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
+                let pairs = |view: &[u16; SPAN]| -> Option<[u16x16<S>; 2]> {
+                    Some([
+                        cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first)?,
+                        cdef_row_pair::<S, STRIDE, SPAN>(simd, view, first + 2)?,
+                    ])
+                };
+                let quad = |view: &[u16; SPAN]| -> Option<u8x32<S>> {
+                    Some(quads.pack(simd, pairs(view)?.map(|pair| pair - base)))
+                };
+                let centers = pairs(center_view)?;
+                let center = quads.pack(simd, centers.map(|pair| pair - base));
+                let (mut min, mut max) = (center, center);
+                macro_rules! tap {
+                    ($view:expr, $constrain:expr) => {{
+                        let tap = quad($view)?;
+                        if PRI && SEC {
+                            min = min.min(tap);
+                            max = max.max(tap);
+                        }
+                        if SIGNED {
+                            $constrain.apply_diff(simd, quads, (tap - center).bitcast())
+                        } else {
+                            $constrain.apply(tap, center)
+                        }
+                    }};
+                }
+                let mut sum = [i16x16::splat(simd, 0); 2];
+                if PRI {
+                    let pair0 =
+                        quads.widen(simd, tap!(pri_views[0], pri) + tap!(pri_views[1], pri));
+                    let pair1 =
+                        quads.widen(simd, tap!(pri_views[2], pri) + tap!(pri_views[3], pri));
+                    sum = [0, 1].map(|half| pair0[half] * pri_taps[0] + pair1[half] * pri_taps[1]);
+                }
+                if SEC {
+                    let view = |k: usize| sec_views[k];
+                    let family0 = tap!(view(0), sec)
+                        + tap!(view(1), sec)
+                        + tap!(view(2), sec)
+                        + tap!(view(3), sec);
+                    let family1 = tap!(view(4), sec)
+                        + tap!(view(5), sec)
+                        + tap!(view(6), sec)
+                        + tap!(view(7), sec);
+                    let (family0, family1) =
+                        (quads.widen(simd, family0), quads.widen(simd, family1));
+                    sum = [0, 1]
+                        .map(|half| sum[half] + family0[half] + family0[half] + family1[half]);
+                }
+                let mut offset = sum.map(cdef_round);
                 if PRI && SEC {
-                    min = min.min(tap);
-                    max = max.max(tap);
+                    let below = (center - min)
+                        .min(u8x32::splat(simd, 127))
+                        .bitcast::<i8x32<S>>();
+                    let above = (max - center)
+                        .min(u8x32::splat(simd, 127))
+                        .bitcast::<i8x32<S>>();
+                    offset = quads.widen(simd, quads.narrow(simd, offset).max(-below).min(above));
                 }
-                if SIGNED {
-                    $constrain.apply_diff(simd, quads, (tap - center).bitcast())
-                } else {
-                    $constrain.apply(tap, center)
+                for half in 0..2 {
+                    let filtered = (centers[half].bitcast::<i16x16<S>>() + offset[half]).bitcast();
+                    cdef_store_row_pair::<S, 8, _>(
+                        filtered,
+                        out,
+                        out_stride,
+                        first + 2 * half,
+                        ROWS,
+                    )?;
                 }
-            }};
-        }
-        let mut sum = [i16x16::splat(simd, 0); 2];
-        if PRI {
-            let pair0 = quads.widen(simd, tap!(pri_views[0], pri) + tap!(pri_views[1], pri));
-            let pair1 = quads.widen(simd, tap!(pri_views[2], pri) + tap!(pri_views[3], pri));
-            sum = [0, 1].map(|half| pair0[half] * pri_taps[0] + pair1[half] * pri_taps[1]);
-        }
-        if SEC {
-            let view = |k: usize| sec_views[k];
-            let family0 =
-                tap!(view(0), sec) + tap!(view(1), sec) + tap!(view(2), sec) + tap!(view(3), sec);
-            let family1 =
-                tap!(view(4), sec) + tap!(view(5), sec) + tap!(view(6), sec) + tap!(view(7), sec);
-            let (family0, family1) = (quads.widen(simd, family0), quads.widen(simd, family1));
-            sum = [0, 1].map(|half| sum[half] + family0[half] + family0[half] + family1[half]);
-        }
-        let mut offset = sum.map(cdef_round);
-        if PRI && SEC {
-            let below = (center - min)
-                .min(u8x32::splat(simd, 127))
-                .bitcast::<i8x32<S>>();
-            let above = (max - center)
-                .min(u8x32::splat(simd, 127))
-                .bitcast::<i8x32<S>>();
-            offset = quads.widen(simd, quads.narrow(simd, offset).max(-below).min(above));
-        }
-        for half in 0..2 {
-            let filtered = (centers[half].bitcast::<i16x16<S>>() + offset[half]).bitcast();
-            cdef_store_row_pair::<S, 8, _>(filtered, out, out_stride, first + 2 * half, ROWS)?;
-        }
-        Some(())
-    });
-    Some(())
+                Some(())
+            });
+            Some(())
+        },
+    )
 }
 
 /// Filters the byte scratch of a segment's
@@ -169,112 +189,124 @@ pub(super) fn cdef_filter_rows_wide8<
     (bytes, plan, starts): (&[u8; AREA8], &CdefFilterPlan, &CdefTapStarts),
     (out, out_stride): (&mut [T], usize),
 ) -> Option<()> {
-    let filter = &plan.filter;
-    let (center_bytes, pri_bytes, sec_bytes) =
-        cdef_tap_views::<_, STRIDE, CENTER, SPAN8, AREA8, PRI, SEC>(bytes, filter.dir, starts)?;
-    let packed_pair = STRIDE == LUMA_BYTE_STRIDE && ROWS == 4;
-    let len = if packed_pair {
-        CDEF_PAIR_OUTPUT
-    } else {
-        out_stride.checked_mul(ROWS - 1)?.checked_add(8)?
-    };
-    let out = out.get_mut(..len)?;
-    let heavy_first = (filter.pri_str >> filter.coeff_shift) & 1 == 0;
-    let pri_double = i8x32::splat(simd, if heavy_first { -1 } else { 0 });
-    let pri_weight: i16 = if heavy_first { 2 } else { 3 };
-    let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
-    let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
-    for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
-        let byte_quad = |view: &[u8; SPAN8]| -> Option<i8x32<S>> {
-            if STRIDE == LUMA_BYTE_STRIDE {
-                let pair = |row: usize| {
-                    let at = row * STRIDE;
-                    Some(u8x32::from_slice(simd, view.get(at..at + 32)?).bitcast())
-                };
-                return Some(quads.padded_rows(simd, pair(first)?, pair(first + 2)?));
-            }
-            let row = |index: usize| -> Option<u64x2<S>> {
-                let at = (first + Q::ROWS[index]) * STRIDE;
-                Some(u8x16::from_slice(simd, view.get(at..at + 16)?).bitcast())
-            };
-            let low = simd.zip_low_u64x2(row(0)?, row(1)?);
-            let high = simd.zip_low_u64x2(row(2)?, row(3)?);
-            Some(simd.combine_u64x2(low, high).bitcast())
-        };
-        let center_signed = byte_quad(center_bytes)?;
-        let center = quads.widen(simd, center_signed).map(|center| center + 128);
-        let (mut min, mut max) = (i8x32::splat(simd, 0), i8x32::splat(simd, 0));
-        macro_rules! tap {
-            ($view:expr, $constrain:expr) => {{
-                let diff = byte_quad($view)?.saturating_sub(center_signed);
-                if PRI && SEC {
-                    min = min.min(diff);
-                    max = max.max(diff);
-                }
-                match MODE {
-                    CDEF_LINEAR => diff,
-                    CDEF_CLAMPED => {
-                        let strength = $constrain.threshold.bitcast::<i8x32<S>>();
-                        diff.min(strength).max(-strength)
-                    }
-                    _ => $constrain.apply_diff(simd, quads, diff),
-                }
-            }};
-        }
-        let primary = if PRI {
-            let pair0 = tap!(pri_bytes[0], pri) + tap!(pri_bytes[1], pri);
-            let pair1 = tap!(pri_bytes[2], pri) + tap!(pri_bytes[3], pri);
-            pair0 + pair1 + (pair0 & pri_double)
-        } else {
-            i8x32::splat(simd, 0)
-        };
-        let secondary = if SEC {
-            let view = |k: usize| sec_bytes[k];
-            let family0 =
-                tap!(view(0), sec) + tap!(view(1), sec) + tap!(view(2), sec) + tap!(view(3), sec);
-            let family1 =
-                tap!(view(4), sec) + tap!(view(5), sec) + tap!(view(6), sec) + tap!(view(7), sec);
-            family0 + family0 + family1
-        } else {
-            i8x32::splat(simd, 0)
-        };
-        let offset = if PRI && SEC {
-            let p = quads.widen(simd, primary);
-            let s = quads.widen(simd, secondary);
-            let offset = core::array::from_fn(|half| cdef_round(p[half] * pri_weight + s[half]));
-            quads.narrow(simd, offset).max(min).min(max)
-        } else if PRI {
-            quads.round_single(simd, primary, pri_weight)
-        } else {
-            quads.round_single(simd, secondary, 1)
-        };
-        if let Some(out) = T::u8_slice_mut(&mut *out) {
-            let bias = u8x32::splat(simd, 0x80);
-            let bytes = (center_signed + offset).bitcast::<u8x32<S>>() ^ bias;
-            if packed_pair {
-                bytes.store_slice(out);
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let filter = &plan.filter;
+            let (center_bytes, pri_bytes, sec_bytes) =
+                cdef_tap_views::<_, STRIDE, CENTER, SPAN8, AREA8, PRI, SEC>(
+                    bytes, filter.dir, starts,
+                )?;
+            let packed_pair = STRIDE == LUMA_BYTE_STRIDE && ROWS == 4;
+            let len = if packed_pair {
+                CDEF_PAIR_OUTPUT
             } else {
-                for (lanes, &row) in bytes.to_array().chunks_exact(8).zip(&Q::ROWS) {
-                    let at = (first + row) * out_stride;
-                    out.get_mut(at..at + 8)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered byte rows into output
+                out_stride.checked_mul(ROWS - 1)?.checked_add(8)?
+            };
+            let out = out.get_mut(..len)?;
+            let heavy_first = (filter.pri_str >> filter.coeff_shift) & 1 == 0;
+            let pri_double = i8x32::splat(simd, if heavy_first { -1 } else { 0 });
+            let pri_weight: i16 = if heavy_first { 2 } else { 3 };
+            let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
+            let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
+            for_each_row_pair!([0, 4], ROWS, ROWS, |first| {
+                let byte_quad = |view: &[u8; SPAN8]| -> Option<i8x32<S>> {
+                    if STRIDE == LUMA_BYTE_STRIDE {
+                        let pair = |row: usize| {
+                            let at = row * STRIDE;
+                            Some(u8x32::from_slice(simd, view.get(at..at + 32)?).bitcast())
+                        };
+                        return Some(quads.padded_rows(simd, pair(first)?, pair(first + 2)?));
+                    }
+                    let row = |index: usize| -> Option<u64x2<S>> {
+                        let at = (first + Q::ROWS[index]) * STRIDE;
+                        Some(u8x16::from_slice(simd, view.get(at..at + 16)?).bitcast())
+                    };
+                    let low = simd.zip_low_u64x2(row(0)?, row(1)?);
+                    let high = simd.zip_low_u64x2(row(2)?, row(3)?);
+                    Some(simd.combine_u64x2(low, high).bitcast())
+                };
+                let center_signed = byte_quad(center_bytes)?;
+                let center = quads.widen(simd, center_signed).map(|center| center + 128);
+                let (mut min, mut max) = (i8x32::splat(simd, 0), i8x32::splat(simd, 0));
+                macro_rules! tap {
+                    ($view:expr, $constrain:expr) => {{
+                        let diff = byte_quad($view)?.saturating_sub(center_signed);
+                        if PRI && SEC {
+                            min = min.min(diff);
+                            max = max.max(diff);
+                        }
+                        match MODE {
+                            CDEF_LINEAR => diff,
+                            CDEF_CLAMPED => {
+                                let strength = $constrain.threshold.bitcast::<i8x32<S>>();
+                                diff.min(strength).max(-strength)
+                            }
+                            _ => $constrain.apply_diff(simd, quads, diff),
+                        }
+                    }};
                 }
-            }
-        } else {
-            let offset = quads.widen(simd, offset);
-            let out = T::u16_slice_mut(&mut *out)?;
-            for half in 0..2 {
-                let filtered = (center[half] + offset[half])
-                    .bitcast::<u16x16<S>>()
-                    .to_array();
-                for (lanes, row) in filtered.chunks_exact(8).zip(first + 2 * half..) {
-                    let at = row * out_stride;
-                    out.get_mut(at..at + 8)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered rows into output
+                let primary = if PRI {
+                    let pair0 = tap!(pri_bytes[0], pri) + tap!(pri_bytes[1], pri);
+                    let pair1 = tap!(pri_bytes[2], pri) + tap!(pri_bytes[3], pri);
+                    pair0 + pair1 + (pair0 & pri_double)
+                } else {
+                    i8x32::splat(simd, 0)
+                };
+                let secondary = if SEC {
+                    let view = |k: usize| sec_bytes[k];
+                    let family0 = tap!(view(0), sec)
+                        + tap!(view(1), sec)
+                        + tap!(view(2), sec)
+                        + tap!(view(3), sec);
+                    let family1 = tap!(view(4), sec)
+                        + tap!(view(5), sec)
+                        + tap!(view(6), sec)
+                        + tap!(view(7), sec);
+                    family0 + family0 + family1
+                } else {
+                    i8x32::splat(simd, 0)
+                };
+                let offset = if PRI && SEC {
+                    let p = quads.widen(simd, primary);
+                    let s = quads.widen(simd, secondary);
+                    let offset =
+                        core::array::from_fn(|half| cdef_round(p[half] * pri_weight + s[half]));
+                    quads.narrow(simd, offset).max(min).min(max)
+                } else if PRI {
+                    quads.round_single(simd, primary, pri_weight)
+                } else {
+                    quads.round_single(simd, secondary, 1)
+                };
+                if let Some(out) = T::u8_slice_mut(&mut *out) {
+                    let bias = u8x32::splat(simd, 0x80);
+                    let bytes = (center_signed + offset).bitcast::<u8x32<S>>() ^ bias;
+                    if packed_pair {
+                        bytes.store_slice(out);
+                    } else {
+                        for (lanes, &row) in bytes.to_array().chunks_exact(8).zip(&Q::ROWS) {
+                            let at = (first + row) * out_stride;
+                            out.get_mut(at..at + 8)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered byte rows into output
+                        }
+                    }
+                } else {
+                    let offset = quads.widen(simd, offset);
+                    let out = T::u16_slice_mut(&mut *out)?;
+                    for half in 0..2 {
+                        let filtered = (center[half] + offset[half])
+                            .bitcast::<u16x16<S>>()
+                            .to_array();
+                        for (lanes, row) in filtered.chunks_exact(8).zip(first + 2 * half..) {
+                            let at = row * out_stride;
+                            out.get_mut(at..at + 8)?.copy_from_slice(lanes); // splot-copy-ok: publish the filtered rows into output
+                        }
+                    }
                 }
-            }
-        }
-        Some(())
-    });
-    Some(())
+                Some(())
+            });
+            Some(())
+        },
+    )
 }
 
 #[cfg(target_arch = "x86_64")]

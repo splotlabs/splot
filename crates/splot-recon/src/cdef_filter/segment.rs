@@ -1378,7 +1378,10 @@ pub fn cdef_filter_segment_with<B: SimdBackend, T: crate::ReconSample>(
 ) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
+        return avx2.vectorize(
+            #[inline(always)]
+            || segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output),
+        );
     }
     let narrow = backend.narrow();
     splot_core::with_simd!(narrow, simd => segment_with(

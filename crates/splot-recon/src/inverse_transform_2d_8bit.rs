@@ -1124,6 +1124,14 @@ impl<B: SimdBackend> TransformRunner for TypedTransformRunner<B> {
         out: &mut [i32],
         scratch: &mut [i32; 32 * 32],
     ) {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(simd) = self.0.avx2_token() {
+            return simd.vectorize(
+                #[expect(clippy::inline_always, reason = "measured transform AVX2 hot path")]
+                #[inline(always)]
+                || transform::<_, RESIDUAL>(simd, passes, rows, pass, out, scratch),
+            );
+        }
         splot_core::with_simd!(self.0, simd => {
             transform::<_, RESIDUAL>(simd, passes, rows, pass, out, scratch);
         });

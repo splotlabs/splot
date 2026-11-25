@@ -760,8 +760,10 @@ pub(super) fn sym_rows<B: splot_core::simd::SimdBackend, O: GdfSample>(
 ) {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
-        return inlane::InLane.rows(avx2, window, output, classes, (block, params));
+        return avx2.vectorize(|| {
+            let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
+            inlane::InLane.rows(avx2, window, output, classes, (block, params));
+        });
     }
     sym_rows_portable(backend, window, output, classes, block, params);
 }
@@ -1015,7 +1017,30 @@ fn pair_sum<S: Simd>(simd: S, current: &GradChunk, previous: &GradChunk) -> [i16
     })
 }
 
-#[inline(never)]
+#[expect(clippy::inline_always)]
+#[inline(always)]
+fn scan_gradient_chunk<S: Simd>(
+    simd: S,
+    rows: &[[u16; TILE_STRIDE]; 4],
+    chunk: usize,
+    out: &mut GradChunk,
+    previous: &GradChunk,
+) -> [i16x16<S>; 4] {
+    let start = TAP_REACH - 2 + 16 * chunk;
+    let rows = rows.each_ref().map(|row| {
+        row.get(start..)
+            .and_then(<[u16]>::first_chunk::<18>)
+            .unwrap_or(&[0; 18])
+    });
+    let grad = pair_gradients(simd, rows);
+    store_gradients(grad, out);
+    core::array::from_fn(|d| {
+        grad[d] + u16x16::from_slice(simd, &previous[d]).bitcast::<i16x16<S>>()
+    })
+}
+
+#[expect(clippy::inline_always)]
+#[inline(always)]
 fn classify_tiled_gradient_row<S: Simd>(
     simd: S,
     rows: &[[u16; TILE_STRIDE]; 4],
@@ -1024,26 +1049,13 @@ fn classify_tiled_gradient_row<S: Simd>(
     classes: &mut [[i32; 8]],
     tables: &[[i16; 16]; 4],
 ) -> Option<()> {
-    let scan = |chunk: usize, out: &mut GradChunk, previous: &GradChunk| {
-        let start = TAP_REACH - 2 + 16 * chunk;
-        let rows = rows.each_ref().map(|row| {
-            row.get(start..)
-                .and_then(<[u16]>::first_chunk::<18>)
-                .unwrap_or(&[0; 18])
-        });
-        let grad = pair_gradients(simd, rows);
-        store_gradients(grad, out);
-        core::array::from_fn(|d| {
-            grad[d] + u16x16::from_slice(simd, &previous[d]).bitcast::<i16x16<S>>()
-        })
-    };
     let (first, current) = current.split_first_mut()?;
     let (prior, previous) = previous.split_first()?;
-    let mut sum = scan(0, first, prior);
+    let mut sum = scan_gradient_chunk(simd, rows, 0, first, prior);
     for (i, ((classes, current), previous)) in
         classes.iter_mut().zip(current).zip(previous).enumerate()
     {
-        let next = scan(i + 1, current, previous);
+        let next = scan_gradient_chunk(simd, rows, i + 1, current, previous);
         *classes = classify_chunk(simd, sum, next, tables).to_array();
         sum = next;
     }
@@ -1135,15 +1147,17 @@ pub(super) fn filter_run<B: splot_core::simd::SimdBackend, O: GdfSample>(
 ) -> Option<()> {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return filter_run_with(
-            backend,
-            avx2,
-            inlane::InLane,
-            source,
-            block,
-            output,
-            scratch,
-        );
+        return avx2.vectorize(|| {
+            filter_run_with(
+                backend,
+                avx2,
+                inlane::InLane,
+                source,
+                block,
+                output,
+                scratch,
+            )
+        });
     }
     splot_core::with_simd!(backend, simd => filter_run_with(backend, simd, Rough, source, block, output, scratch))
 }
