@@ -61,7 +61,6 @@ pub(crate) fn run(args: &ComposeArgs) -> Result<ExitCode> {
     super::decode::publish_composite(&args.output, |writer| {
         while let Some(unit) = units.next_temporal_unit()? {
             let index = u64::try_from(unit.index)?;
-            // Extended layers in one temporal unit share an output time (AV2 § 7.3.1).
             let pts = i64::try_from(unit.pts.unwrap_or(index))
                 .context("The presentation timestamp exceeds the signed 64-bit range.")?;
             let props = DataProps::default().with_pts(pts).with_user_data(index);
