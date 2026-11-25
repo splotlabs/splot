@@ -626,14 +626,20 @@ fn smooth_lanes<S: Simd, P: IntraLaneSample>(
         let right_near = columns(h_near) * right + round_h;
         let mut rest = &mut *output;
         for row in (0..height).step_by(rows_per_group) {
-            let vertical = || {
-                let bottom_near = rows(v_near, row) * bottom + round_v;
-                let pred = (top * rows(v_far, row) + bottom_near) >> log2_height;
-                blend(pred, top, rows(v_blend, row))
+            let vertical = {
+                #[inline(always)]
+                || {
+                    let bottom_near = rows(v_near, row) * bottom + round_v;
+                    let pred = (top * rows(v_far, row) + bottom_near) >> log2_height;
+                    blend(pred, top, rows(v_blend, row))
+                }
             };
-            let horizontal = || {
-                let left = rows(left, row);
-                blend((left * far + right_near) >> log2_width, left, s_left)
+            let horizontal = {
+                #[inline(always)]
+                || {
+                    let left = rows(left, row);
+                    blend((left * far + right_near) >> log2_width, left, s_left)
+                }
             };
             let value = match mode {
                 IntraSmoothMode::SmoothVertical => vertical(),
