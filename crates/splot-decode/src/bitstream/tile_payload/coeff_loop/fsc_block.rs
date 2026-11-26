@@ -78,12 +78,11 @@ pub(crate) fn decode_fsc_transform_block(
         width_log2: u32::from(tx.width_log2),
         size_ctx: usize::from(tx.size_ctx).min(2),
     };
-    let grids = (&mut *levels, &mut *nonzero);
-    let (owned, nonzero_len, result) = block.decode(cdfs, symbols, grids, quant);
+    let mut nonzero_len = 0;
+    let result = block.decode_levels(cdfs, symbols, (levels, nonzero, &mut nonzero_len), quant);
     for &entry in nonzero.get(..nonzero_len).unwrap_or_default() {
         levels[entry_grid(entry) + LEVEL_STRIDE + 1] = 0;
     }
-    *symbols = owned;
     let (quant_end, summary) = result?;
     state.commit_block(lines, summary.cul_level(), summary.dc_category());
     Ok(quant_end)
@@ -98,38 +97,7 @@ struct Block<'s> {
     size_ctx: usize,
 }
 
-/// The decoder after a block, its nonzero count and the block's result.
-type Decoded<'a> = (
-    SymbolDecoder<'a>,
-    usize,
-    Result<(usize, super::quant_state::NonZeroCoeffQuantState), CoeffFscBranchError>,
-);
-
 impl Block<'_> {
-    /// Works on a copy of the decoder and a local nonzero count, so the
-    /// loops keep them in registers.
-    #[inline(never)]
-    fn decode<'a>(
-        &self,
-        cdfs: &mut TileCdfSubset,
-        symbols: &SymbolDecoder<'a>,
-        (levels, nonzero): (
-            &mut super::super::coeff_state::CoeffLevelWords,
-            &mut super::super::coeff_state::CoeffNonzeroList,
-        ),
-        quant: &mut [i32],
-    ) -> Decoded<'a> {
-        let mut symbols = symbols.clone();
-        let mut nonzero_len = 0;
-        let result = self.decode_levels(
-            cdfs,
-            &mut symbols,
-            (levels, nonzero, &mut nonzero_len),
-            quant,
-        );
-        (symbols, nonzero_len, result)
-    }
-
     fn decode_levels(
         &self,
         cdfs: &mut TileCdfSubset,
