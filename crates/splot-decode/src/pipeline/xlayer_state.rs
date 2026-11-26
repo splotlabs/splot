@@ -639,6 +639,7 @@ fn check_msdo_global_lcr_agreement(
 pub(super) struct XLayerState {
     pub(super) xlayer_id: ExtendedLayerId,
     pub(super) sequence: SequenceHeader,
+    pub(super) sequence_location: crate::ObuLocation,
     pub(super) shared_sequence: Option<Arc<SequenceHeader>>,
     pub(super) reference: RuntimeReferenceBuffer,
     pub(super) scheduler: OutputScheduler,
@@ -655,6 +656,7 @@ impl XLayerState {
     pub(super) fn new(
         xlayer_id: ExtendedLayerId,
         sequence: SequenceHeader,
+        sequence_location: crate::ObuLocation,
         reference: RuntimeReferenceBuffer,
         scheduler: OutputScheduler,
         output_effect_state: OutputEffectState,
@@ -665,6 +667,7 @@ impl XLayerState {
         Self {
             xlayer_id,
             sequence,
+            sequence_location,
             shared_sequence: None,
             reference,
             scheduler,
@@ -707,6 +710,7 @@ impl XLayerState {
 struct RetiredLayerHls {
     xlayer_id: ExtendedLayerId,
     sequence: SequenceHeader,
+    sequence_location: crate::ObuLocation,
     output_effect_state: OutputEffectState,
     film_grain_slots: FilmGrainSlots,
 }
@@ -716,6 +720,7 @@ impl From<XLayerState> for RetiredLayerHls {
         Self {
             xlayer_id: layer.xlayer_id,
             sequence: layer.sequence,
+            sequence_location: layer.sequence_location,
             output_effect_state: layer.output_effect_state,
             film_grain_slots: layer.film_grain_slots,
         }
@@ -831,8 +836,12 @@ impl XLayerTable {
         (newly, total)
     }
 
-    pub(super) fn available_sequence(&self, xlayer: ExtendedLayerId) -> Option<&SequenceHeader> {
-        self.available_hls(xlayer).map(|(sequence, _)| sequence)
+    pub(super) fn available_sequence(
+        &self,
+        xlayer: ExtendedLayerId,
+    ) -> Option<(&SequenceHeader, crate::ObuLocation)> {
+        self.available_hls(xlayer)
+            .map(|(sequence, location, _)| (sequence, location))
     }
 
     pub(super) fn available_mfh_sequence(
@@ -840,8 +849,8 @@ impl XLayerTable {
         xlayer: ExtendedLayerId,
         mfh_id: MfhId,
     ) -> Option<SequenceHeaderId> {
-        self.available_hls(xlayer)?
-            .1
+        let (_, _, effects) = self.available_hls(xlayer)?;
+        effects
             .mfh_record(mfh_id)
             .map(|record| record.mfh_seq_header_id)
     }
@@ -849,14 +858,26 @@ impl XLayerTable {
     fn available_hls(
         &self,
         xlayer: ExtendedLayerId,
-    ) -> Option<(&SequenceHeader, &OutputEffectState)> {
+    ) -> Option<(&SequenceHeader, crate::ObuLocation, &OutputEffectState)> {
         self.get(xlayer)
-            .map(|layer| (&layer.sequence, &layer.output_effect_state))
+            .map(|layer| {
+                (
+                    &layer.sequence,
+                    layer.sequence_location,
+                    &layer.output_effect_state,
+                )
+            })
             .or_else(|| {
                 self.retired
                     .iter()
                     .find(|layer| layer.xlayer_id == xlayer)
-                    .map(|layer| (&layer.sequence, &layer.output_effect_state))
+                    .map(|layer| {
+                        (
+                            &layer.sequence,
+                            layer.sequence_location,
+                            &layer.output_effect_state,
+                        )
+                    })
             })
     }
 

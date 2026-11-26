@@ -6,7 +6,9 @@
 
 #![expect(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::stream_reader::{StreamUnit, TemporalUnitReader, is_random_access_point};
+use splot_core::annexb::parse_annex_b_obus;
+use splot_core::stream_reader::{TemporalUnitReader, is_random_access_point};
+use splot_core::types::ObuType;
 use splot_decode::{
     DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig, Decoder,
     DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureSamples, PlaneId,
@@ -113,15 +115,12 @@ const FIXTURES: &[&[u8]] = &[
     BRU_GDF_MULTITILE_8BIT,
 ];
 
-/// The payload of each non-empty IVF frame record: one temporal unit each.
-fn units(ivf: &[u8]) -> Vec<Vec<u8>> {
-    let mut reader = TemporalUnitReader::new(ivf);
+fn units(stream: &[u8]) -> Vec<Vec<u8>> {
+    let mut reader = TemporalUnitReader::new(stream);
     let mut units = Vec::new();
-    while let Some(unit) = reader.next_unit().unwrap() {
-        if let StreamUnit::IvfFrame { payload, .. } = unit
-            && !payload.is_empty()
-        {
-            units.push(payload.to_vec());
+    while let Some(unit) = reader.next_temporal_unit().unwrap() {
+        if !unit.bytes.is_empty() {
+            units.push(unit.bytes.to_vec());
         }
     }
     units
@@ -210,6 +209,72 @@ fn with_film_grain(pictures: &[Picture]) -> Vec<Picture> {
 }
 
 #[test]
+fn picture_provenance_follows_coded_and_show_existing_obus() {
+    let fixture =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-derived-sef-8bit.obu");
+    let units = units(fixture);
+    for (threads, delay) in [(1, 1), (4, 4)] {
+        let mut decoder = decoder(threads, delay);
+        for token in [17, u64::MAX - 1] {
+            let pictures = decode(&mut decoder, &units, |index| {
+                DataProps::default().with_user_data(token + index as u64)
+            });
+            let expected = [
+                ((token, 44), (token, 44)),
+                ((token, 769), (token, 769)),
+                ((token, 44), (token + 1, 541)),
+                ((token + 1, 4), (token + 1, 545)),
+            ];
+            assert_eq!(pictures.len(), expected.len());
+            decoder.flush();
+            for (picture, (coded, display)) in pictures.iter().zip(expected) {
+                let provenance = picture.provenance();
+                assert_eq!(
+                    (provenance.coded.user_data, provenance.coded.offset.get()),
+                    coded
+                );
+                assert_eq!(
+                    (
+                        provenance.display.user_data,
+                        provenance.display.offset.get()
+                    ),
+                    display
+                );
+                assert_eq!(picture.props().user_data, display.0);
+                assert_eq!(provenance.sequence_header.user_data, token);
+                assert_eq!(provenance.sequence_header.offset.get(), 18);
+            }
+        }
+    }
+}
+
+#[test]
+fn picture_provenance_follows_each_extended_layer_sequence() {
+    let fixture = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-msdo-four-streams-obu-order.obu"
+    );
+    let units = units(fixture);
+    let sequences = parse_annex_b_obus(&units[0]).unwrap();
+    let pictures = decode(&mut decoder(4, 4), &units, |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    assert_eq!(pictures.len(), 12);
+    for picture in pictures {
+        let provenance = picture.provenance();
+        assert_eq!(provenance.coded, provenance.display);
+        let sequence = sequences
+            .iter()
+            .find(|obu| {
+                obu.header.obu_type == ObuType::SequenceHeader
+                    && obu.header.extended_layer_id == picture.extended_layer_id()
+            })
+            .unwrap();
+        assert_eq!(provenance.sequence_header.user_data, 0);
+        assert_eq!(provenance.sequence_header.offset, sequence.offset);
+    }
+}
+
+#[test]
 fn pictures_match_the_batch_raw_output_at_every_width_and_depth() {
     for fixture in FIXTURES {
         let expected = batch_raw(fixture);
@@ -249,6 +314,9 @@ fn skipped_film_grain_is_left_out_and_applied_on_request() {
         assert!(raw_of(&pictures) == clean);
         let (pictures, applied) = std::thread::spawn(move || {
             let applied = with_film_grain(&pictures);
+            for (original, applied) in pictures.iter().zip(&applied) {
+                assert_eq!(original.provenance(), applied.provenance());
+            }
             (pictures, applied)
         })
         .join()
@@ -297,15 +365,31 @@ fn each_picture_carries_the_data_of_the_unit_that_coded_or_showed_it() {
 
 #[test]
 fn held_pictures_neither_stall_the_decoder_nor_change_its_output() {
-    let units: Vec<Vec<u8>> = (0..8).flat_map(|_| units(EIGHT_FRAME)).collect();
+    let sequence = units(EIGHT_FRAME);
+    let units: Vec<_> = sequence
+        .iter()
+        .cycle()
+        .take(8 * sequence.len())
+        .cloned()
+        .collect();
     let expected = raw_of(&decode(&mut decoder(1, 1), &units, |_| {
         DataProps::default()
     }));
     for (threads, frame_delay) in [(1, 1), (4, 4)] {
-        let held = decode(&mut decoder(threads, frame_delay), &units, |_| {
-            DataProps::default()
+        let held = decode(&mut decoder(threads, frame_delay), &units, |index| {
+            DataProps::default().with_user_data(index as u64)
         });
         assert!(held.len() > 2 * 16 + frame_delay + 1);
+        for picture in &held {
+            let provenance = picture.provenance();
+            let unit = provenance.coded.user_data;
+            let sequence_len = sequence.len() as u64;
+            assert_eq!(
+                provenance.sequence_header.user_data,
+                unit - unit % sequence_len
+            );
+            assert_eq!(provenance.sequence_header.offset.get(), 3);
+        }
         assert!(
             raw_of(&held) == expected,
             "held pictures changed the output"

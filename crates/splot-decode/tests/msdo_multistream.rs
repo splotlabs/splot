@@ -247,7 +247,9 @@ fn stream_decode(bytes: &[u8], settings: &DecoderSettings) -> Result<Vec<Picture
 fn stream_pictures(decoder: &mut Decoder, bytes: &[u8]) -> Result<Vec<Picture>, DecodeError> {
     let mut pictures = Vec::new();
     for (idx, unit) in temporal_units(bytes).iter().enumerate() {
-        let props = DataProps::default().with_pts(i64::try_from(idx).unwrap());
+        let props = DataProps::default()
+            .with_pts(i64::try_from(idx).unwrap())
+            .with_user_data(idx as u64);
         loop {
             match decoder.send_data(unit, props)? {
                 SendStatus::Accepted => break,
@@ -973,16 +975,24 @@ fn multistream_sequence_ends_before_single_stream_cvs() {
 #[test]
 fn standalone_cvs_reuses_available_sequence_after_cmvs_end() {
     let units = temporal_units(MSDO_8BIT);
+    let first_obus = parse_annex_b_obus(&units[0]).unwrap();
+    let xlayer = ExtendedLayerId::from_bits(3);
+    let sequence = first_obus
+        .iter()
+        .find(|obu| {
+            obu.header.obu_type == ObuType::SequenceHeader && obu.header.extended_layer_id == xlayer
+        })
+        .unwrap();
     for stage_unused_sequence in [false, true] {
         let mut combined = MSDO_8BIT.to_vec();
-        for envelope in parse_annex_b_obus(&units[0]).unwrap() {
+        for envelope in &first_obus {
             if envelope.header.obu_type == ObuType::TemporalDelimiter
                 || (envelope.header.obu_type == ObuType::ClosedLoopKey
-                    && envelope.header.extended_layer_id.get() == 3)
+                    && envelope.header.extended_layer_id == xlayer)
             {
                 write_obu(&mut combined, envelope.header, envelope.payload);
             } else if stage_unused_sequence
-                && envelope.header.extended_layer_id.get() == 3
+                && envelope.header.extended_layer_id == xlayer
                 && let PayloadStatus::Parsed(ParsedObu::SequenceHeader(mut header)) =
                     envelope.payload_status().unwrap()
             {
@@ -1001,7 +1011,11 @@ fn standalone_cvs_reuses_available_sequence_after_cmvs_end() {
             sha256_hex(&raw),
             "64fdd83bafcdf7ceaf9b87d848b460f1f4ec7aa52d51dd10eaf0a2e6d4bfc6b4"
         );
-        assert_eq!(pictures.last().unwrap().extended_layer_id().get(), 3);
+        let last = pictures.last().unwrap();
+        assert_eq!(last.extended_layer_id(), xlayer);
+        assert_eq!(last.provenance().sequence_header.user_data, 0);
+        assert_eq!(last.provenance().sequence_header.offset, sequence.offset);
+        assert_eq!(last.provenance().coded.user_data, units.len() as u64);
         let report = context(3, 2)
             .decode_hash_report_bytes(&combined, DecodeOptions::default())
             .unwrap();

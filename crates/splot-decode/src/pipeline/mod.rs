@@ -28,7 +28,7 @@ use crate::error::{DecodeError, Result};
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
 use crate::support::pipeline_limits::checked_add;
-use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu};
+use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, ObuLocation, PictureProvenance};
 
 mod frame_lifecycle;
 pub(crate) mod frame_store;
@@ -464,6 +464,7 @@ pub(crate) fn decode_key_frame(
         None,
         FrameOutputEffects::empty(),
         crate::DataProps::default(),
+        PictureProvenance::TEST,
     ));
     ring.harvest_all(&mut pools);
     match ring.take_failure() {
@@ -508,6 +509,7 @@ fn decode_key_frame_with_effects(
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
     props: crate::DataProps,
+    provenance: PictureProvenance,
 ) -> Result<PipelineFrame> {
     ring.reserve(pools);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
@@ -549,6 +551,7 @@ fn decode_key_frame_with_effects(
             embedded_layer_id: frame_envelope.header.embedded_layer_id,
             temporal_layer_id: frame_envelope.header.temporal_layer_id,
             props,
+            provenance,
         });
     }
     let mut product_writers = frames.reserve_products()?;
@@ -605,6 +608,7 @@ fn decode_key_frame_with_effects(
         embedded_layer_id: frame_envelope.header.embedded_layer_id,
         temporal_layer_id: frame_envelope.header.temporal_layer_id,
         props,
+        provenance,
     })
 }
 
@@ -1005,6 +1009,13 @@ fn decode_frames_in_order(
             }
             continue;
         }
+        let props = stream.props();
+        let unit_base = unit.view().base();
+        let location = |offset: ByteOffset| ObuLocation {
+            user_data: props.user_data,
+            offset: ByteOffset::new(offset.get() - unit_base),
+        };
+        let display = location(next_candidate.offset());
         match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
@@ -1188,7 +1199,11 @@ fn decode_frames_in_order(
                         extended_layer_id: sef_envelope.header.extended_layer_id,
                         embedded_layer_id: output_mlayer,
                         temporal_layer_id: output_tlayer,
-                        props: stream.props(),
+                        props,
+                        provenance: PictureProvenance {
+                            display,
+                            ..source.provenance
+                        },
                         frame: inflight::PipelineFrameSlot::completed_recycled(
                             source.wait_ready_frame()?,
                             frames,
@@ -1362,6 +1377,7 @@ fn decode_frames_in_order(
                     xlayers.insert(XLayerState::new(
                         candidate_xlayer,
                         sequence,
+                        location(sequence_envelope.offset),
                         reference,
                         scheduler,
                         output_effect_state,
@@ -1672,7 +1688,7 @@ fn decode_frames_in_order(
                     }
                 });
                 let (inter_slot, inter_core, products, motion_field) = decoded;
-                let inter_display_grain = {
+                let (inter_display_grain, sequence_location) = {
                     let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1680,12 +1696,13 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
-                    layer.film_grain_slots.active_for_core(
+                    let grain = layer.film_grain_slots.active_for_core(
                         inter_envelope,
                         &inter_core,
                         &layer.sequence,
                         inter_envelope.offset,
-                    )?
+                    )?;
+                    (grain, layer.sequence_location)
                 };
                 xlayers.observe_suffix_for_xlayer(
                     suffix_after_candidate(obus, next_candidate)?,
@@ -1716,7 +1733,8 @@ fn decode_frames_in_order(
                     extended_layer_id: inter_envelope.header.extended_layer_id,
                     embedded_layer_id: inter_envelope.header.embedded_layer_id,
                     temporal_layer_id: inter_envelope.header.temporal_layer_id,
-                    props: stream.props(),
+                    props,
+                    provenance: PictureProvenance::direct(display, sequence_location),
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -1840,14 +1858,16 @@ fn decode_frames_in_order(
                         .copied();
                     (sequence_envelope, prefix, frame)
                 };
-                let (key_sequence, key_sequence_offset) = if let Some(envelope) =
+                let (key_sequence, key_sequence_offset, sequence_location) = if let Some(envelope) =
                     key_sequence_envelope
                 {
                     let parsed = parse_sequence(envelope)?;
                     validate_sequence(&parsed, envelope.offset)?;
-                    (parsed, envelope.offset)
-                } else if let Some(sequence) = xlayers.available_sequence(candidate_xlayer) {
-                    (sequence.clone(), key_envelope.offset)
+                    (parsed, envelope.offset, location(envelope.offset))
+                } else if let Some((sequence, location)) =
+                    xlayers.available_sequence(candidate_xlayer)
+                {
+                    (sequence.clone(), key_envelope.offset, location)
                 } else {
                     return Err(unsupported_at(
                         "missing_sequence_header",
@@ -1919,6 +1939,7 @@ fn decode_frames_in_order(
                     xlayers.insert(XLayerState::new(
                         candidate_xlayer,
                         key_sequence.clone(),
+                        sequence_location,
                         reference,
                         scheduler,
                         output_effect_state,
@@ -2107,6 +2128,7 @@ fn decode_frames_in_order(
                 }
                 if !initializing_layer && let Some(layer) = xlayers.get_mut(candidate_xlayer) {
                     layer.sequence = key_sequence;
+                    layer.sequence_location = sequence_location;
                     layer.shared_sequence = None;
                 }
                 xlayers.observe_suffix_for_xlayer(
@@ -2172,7 +2194,8 @@ fn decode_frames_in_order(
                         key_display_grain,
                         key_user_qm,
                         key_output_effects,
-                        stream.props(),
+                        props,
+                        PictureProvenance::direct(display, sequence_location),
                     )?
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(

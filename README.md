@@ -171,12 +171,18 @@ fn show(decoder: &mut Decoder) -> splot_decode::Result<()> {
 }
 ```
 
+`Picture::provenance()` identifies the OBU that coded the samples, the OBU
+that caused display, and the sequence header in effect when the frame was
+coded. Each location contains the `DataProps::user_data` token and the byte
+offset of the OBU header within its submitted temporal unit.
+
 **C.** The decoder has a stable C ABI with zero-copy pictures:
 `splot_open`, `splot_send_data`, `splot_get_picture`, `splot_wait_picture`,
 `splot_flush`, `splot_drain`, `splot_close`. The header is
 [`crates/splot-capi/include/splot.h`](./crates/splot-capi/include/splot.h), and
 [`examples/decode.c`](./crates/splot-capi/examples/decode.c) is a complete IVF
-decoder in about 100 lines.
+decoder in about 100 lines. `SplotPicture.provenance` gives the same input
+locations as the Rust picture API.
 
 ```bash
 cargo build --release -p splot-capi
