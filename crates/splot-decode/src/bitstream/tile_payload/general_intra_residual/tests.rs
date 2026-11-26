@@ -105,6 +105,7 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -148,6 +149,7 @@ fn reconstruct_into_reuses_rectangular_u16_output_storage() {
         quant[0] = 1;
         let block = LumaCoeffBlock {
             eob: 1,
+            scan_order: false,
             quant_start: 0,
             quant_len: quant.len() as u16,
             zero_tail: 0,
@@ -190,6 +192,7 @@ fn reconstruct_into_supports_maximum_u8_transform_geometry() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -229,6 +232,7 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     quant[0] = 1;
     let invalid_quant = LumaCoeffBlock {
         eob: 1,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -1044,6 +1048,7 @@ fn invalid_ist_shape_is_reconstruction_state() {
     let quant = vec![0; 16];
     let block = LumaCoeffBlock {
         eob: 2,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -1788,10 +1793,54 @@ fn dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct() {
 }
 
 #[test]
+fn buffered_secondary_reconstruction_matches_raster_for_a_scan_prefix() {
+    let packed = [14, -7, 0, 11, 4, -3];
+    let scan = splot_recon::coefficient_scan_slice(32, 32, splot_recon::tx_class(DCT_DCT)).unwrap();
+    let mut raster = [0; 1024];
+    for (&position, &value) in scan.iter().zip(&packed) {
+        raster[usize::from(position)] = value;
+    }
+    let prediction = [128u8; 1024];
+    let reconstruct = |values: &[i32], scan_order| {
+        let block = LumaCoeffBlock {
+            eob: packed.len() as u16,
+            intra_ist: Some(IntraIstSyntax {
+                sec_tx_type: 1,
+                most_probable_stx_set: Some(0),
+            }),
+            scan_order,
+            ..LumaCoeffBlock::empty(DCT_DCT, false)
+        }
+        .with_span(0..values.len(), 1024)
+        .unwrap();
+        let mut out = Vec::new();
+        reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+            block.view(values),
+            &prediction,
+            &mut out,
+            180,
+            PlaneId::Y,
+            5,
+            5,
+            false,
+            Some(dc_luma_context()),
+            None,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        out
+    };
+    let expected = reconstruct(&raster, false);
+    assert_ne!(expected.as_slice(), prediction.as_slice());
+    assert_eq!(reconstruct(&packed, true), expected);
+}
+
+#[test]
 fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
     let quant = vec![0, 0, 0, 3, 0, 0, 2, 9, 0, 0, 0, 6, 0, 0, 0, 6];
     let block = LumaCoeffBlock {
         eob: 16,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -1901,6 +1950,7 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     let quant = vec![-2, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
     let u_block = LumaCoeffBlock {
         eob: 7,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -1912,6 +1962,7 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     };
     let v_block = LumaCoeffBlock {
         eob: 0,
+        scan_order: false,
         quant_start: 0,
         quant_len: 0,
         zero_tail: 0,
@@ -1965,6 +2016,7 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[5] = 9;
         let block = LumaCoeffBlock {
             eob: 6,
+            scan_order: false,
             quant_start: 0,
             quant_len: quant.len() as u16,
             zero_tail: 0,
@@ -1998,6 +2050,7 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[9] = 61;
         let block = LumaCoeffBlock {
             eob: 10,
+            scan_order: false,
             quant_start: 0,
             quant_len: quant.len() as u16,
             zero_tail: 0,

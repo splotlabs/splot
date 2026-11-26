@@ -255,13 +255,23 @@ fn secondary_inverse_transform_prefix_with_runner<R: IstRunner>(
     ))
 }
 
+/// Quantized inputs of a § 7.15.3 secondary inverse transform.
+/// Coefficients beyond the supplied prefix are implicitly zero.
+#[derive(Clone, Copy, Debug)]
+pub enum SecondaryQuant<'a> {
+    /// Row-major coefficients through the last stored raster position.
+    Raster(&'a [i32]),
+    /// Up to `n` coefficients in the primary scan order of the transform.
+    Scan(&'a [i32]),
+}
+
 /// [`secondary_inverse_transform_prefix`] of the § 7.14.4 flat dequantization
 /// of the raster `quant` prefix by `(dc_quant, ac_quant, dq_denom)`: only the
 /// first `n` scan positions feed the transform and every other `Dequant`
 /// entry ends zero, so only those positions are dequantized. Writes the
 /// returned whole-row prefix of `dequant`.
 pub(crate) fn secondary_inverse_transform_quant(
-    quant: &[i32],
+    quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
     dequant: &mut [i32],
@@ -272,7 +282,7 @@ pub(crate) fn secondary_inverse_transform_quant(
 /// Typed [`secondary_inverse_transform_quant`] using caller-selected `backend`.
 pub(crate) fn secondary_inverse_transform_quant_with<B: SimdBackend>(
     backend: B,
-    quant: &[i32],
+    quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
     dequant: &mut [i32],
@@ -288,7 +298,7 @@ pub(crate) fn secondary_inverse_transform_quant_with<B: SimdBackend>(
 
 fn secondary_inverse_transform_quant_with_runner<R: IstRunner>(
     runner: R,
-    quant: &[i32],
+    quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
     dequant: &mut [i32],
@@ -303,7 +313,7 @@ fn secondary_inverse_transform_quant_with_runner<R: IstRunner>(
 /// first 8 columns of its rows, row `r` at `rows[8 * r..]`: the output rows
 /// as the 8-wide transform writes them. Returns the written length.
 pub(crate) fn secondary_inverse_transform_quant_rows8(
-    quant: &[i32],
+    quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
     rows: &mut [i32; 64],
@@ -320,7 +330,7 @@ pub(crate) fn secondary_inverse_transform_quant_rows8(
 /// Typed [`secondary_inverse_transform_quant_rows8`] using caller-selected `backend`.
 pub(crate) fn secondary_inverse_transform_quant_rows8_with<B: SimdBackend>(
     backend: B,
-    quant: &[i32],
+    quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
     rows: &mut [i32; 64],
@@ -336,7 +346,7 @@ pub(crate) fn secondary_inverse_transform_quant_rows8_with<B: SimdBackend>(
 
 fn secondary_inverse_transform_quant_rows8_with_runner<R: IstRunner>(
     runner: R,
-    quant: &[i32],
+    quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
     rows: &mut [i32; 64],
@@ -504,15 +514,29 @@ fn ist_4x4_simd<S: Simd>(
 /// `len`-sample `Dequant`.
 fn dequantized_inputs_with_runner<R: IstRunner>(
     runner: R,
-    quant: &[i32],
+    quant: SecondaryQuant<'_>,
     (dc_quant, ac_quant, dq_denom): (u32, u32, u32),
     params: &SecondaryInverseTransform,
     len: usize,
 ) -> Result<[i32; IST_8X8_HEIGHT]> {
-    let (scan, bound) = validated(params, len, quant.len())?;
+    let (SecondaryQuant::Raster(values) | SecondaryQuant::Scan(values)) = quant;
+    let (scan, bound) = validated(params, len, values.len())?;
     let mut coefs = [0i32; IST_8X8_HEIGHT];
-    for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
-        *slot = quant.get(usize::from(pos)).copied().unwrap_or(0);
+    match quant {
+        SecondaryQuant::Raster(values) => {
+            for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
+                *slot = values.get(usize::from(pos)).copied().unwrap_or(0);
+            }
+        }
+        SecondaryQuant::Scan(values) => {
+            let dst = coefs[..params.n].get_mut(..values.len()).ok_or(
+                ReconError::SecondaryTransformBufferMismatch {
+                    expected: params.n,
+                    actual: values.len(),
+                },
+            )?;
+            dst.copy_from_slice(values); // splot-copy-ok: scan-ordered inputs go directly into the dequantization lanes.
+        }
     }
     if dq_denom.is_power_of_two() && scan.first() == Some(&0) {
         let shift = dq_denom.trailing_zeros();
@@ -1118,7 +1142,7 @@ mod tests {
                 let mut q_out = vec![0i32; self.dequant_init.len()];
                 let q_len = secondary_inverse_transform_quant_with(
                     backend,
-                    self.quant,
+                    SecondaryQuant::Raster(self.quant),
                     self.quantizers,
                     self.params,
                     &mut q_out,
@@ -1129,7 +1153,7 @@ mod tests {
                 let r_len = if self.params.w >= 16 {
                     secondary_inverse_transform_quant_rows8_with(
                         backend,
-                        self.quant,
+                        SecondaryQuant::Raster(self.quant),
                         self.quantizers,
                         self.params,
                         &mut rows,
@@ -1161,12 +1185,22 @@ mod tests {
             let mut c_pref = dequant_init.clone();
             let c_pref_len = secondary_inverse_transform_prefix(&mut c_pref, coded, &p).unwrap();
             let mut c_q = vec![0i32; w * h];
-            let c_q_len =
-                secondary_inverse_transform_quant(&quant, quantizers, &p, &mut c_q).unwrap();
+            let c_q_len = secondary_inverse_transform_quant(
+                SecondaryQuant::Raster(&quant),
+                quantizers,
+                &p,
+                &mut c_q,
+            )
+            .unwrap();
             let mut c_rows = [0i32; 64];
             let c_r_len = if w >= 16 {
-                secondary_inverse_transform_quant_rows8(&quant, quantizers, &p, &mut c_rows)
-                    .unwrap()
+                secondary_inverse_transform_quant_rows8(
+                    SecondaryQuant::Raster(&quant),
+                    quantizers,
+                    &p,
+                    &mut c_rows,
+                )
+                .unwrap()
             } else {
                 0
             };

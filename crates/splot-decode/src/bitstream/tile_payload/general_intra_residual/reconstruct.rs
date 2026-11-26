@@ -8,9 +8,10 @@ use splot_recon::math::round2_i32;
 use splot_recon::{
     BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DequantBlockParams, DpcmDirection,
     FlatDequant, IntraRectBlockSize, InverseTransform2dOuter, InverseTransformAdd, PlaneId,
-    ReconSample, SecondaryInverseTransform, dequant_coefficient, dequantize_block_with,
-    dequantize_with_secondary_and_backend, inverse_transform_2d_outer_adjusted_with,
-    inverse_transform_2d_outer_with_scratch_and_backend, tx_class,
+    ReconSample, SecondaryInverseTransform, coefficient_scan_slice, dequant_coefficient,
+    dequantize_block_with, dequantize_with_secondary_and_backend,
+    inverse_transform_2d_outer_adjusted_with, inverse_transform_2d_outer_with_scratch_and_backend,
+    tx_class,
 };
 
 use super::{
@@ -417,11 +418,16 @@ fn add_secondary_fused<B: SimdBackend, T: ReconSample>(
     {
         return Ok(false);
     }
+    let quant = if block.scan_order {
+        splot_recon::SecondaryQuant::Scan(block.quant)
+    } else {
+        splot_recon::SecondaryQuant::Raster(block.quant)
+    };
     fused
-        .add_secondary_with(
+        .add_secondary_quant_with(
             backend,
             ((dc_quant, ac_quant, dq_denom), &secondary),
-            block.quant,
+            quant,
             &mut scratch.dequant[..samples],
             (dst, stride),
             &mut scratch.transform,
@@ -585,6 +591,42 @@ fn intra_residual_setup(
     Ok((setup, secondary))
 }
 
+/// Borrows raster coefficients or scatters a packed IST prefix into the
+/// caller's reusable scratch for the general reconstruction path.
+pub(super) fn raster_quant<'a>(
+    block: CoeffBlock<'a>,
+    params: &DequantBlockParams,
+    scratch: &'a mut [i32],
+) -> splot_recon::Result<&'a [i32]> {
+    if !block.scan_order {
+        return Ok(block.quant);
+    }
+    let scan = coefficient_scan_slice(
+        params.tx_width,
+        params.tx_height,
+        tx_class(block.plane_tx_type()),
+    )?;
+    let scan = scan.get(..block.quant.len()).ok_or(
+        splot_recon::ReconError::SecondaryTransformBufferMismatch {
+            expected: scan.len(),
+            actual: block.quant.len(),
+        },
+    )?;
+    let extent = scan.iter().max().map_or(0, |&pos| usize::from(pos) + 1);
+    let actual = scratch.len();
+    let raster = scratch.get_mut(..extent).ok_or(
+        splot_recon::ReconError::SecondaryTransformBufferMismatch {
+            expected: extent,
+            actual,
+        },
+    )?;
+    raster.fill(0);
+    for (&pos, &value) in scan.iter().zip(block.quant) {
+        raster[usize::from(pos)] = value;
+    }
+    Ok(raster)
+}
+
 /// Dequantizes and inverse-transforms one intra block into `scratch`.
 fn intra_residual<'s, B: SimdBackend>(
     backend: B,
@@ -594,13 +636,9 @@ fn intra_residual<'s, B: SimdBackend>(
     scratch: &'s mut super::ResidualScratch,
 ) -> splot_recon::Result<&'s [i32]> {
     let dequant = &mut scratch.dequant[..setup.adjusted];
-    let coded = dequantize_with_secondary_and_backend(
-        backend,
-        &setup.params,
-        block.quant,
-        secondary,
-        dequant,
-    )?;
+    let quant = raster_quant(block, &setup.params, &mut scratch.dequant_pair)?;
+    let coded =
+        dequantize_with_secondary_and_backend(backend, &setup.params, quant, secondary, dequant)?;
     let residual = &mut scratch.residual[..setup.samples];
     inverse_transform_2d_outer_with_scratch_and_backend(
         backend,
@@ -712,10 +750,11 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
         return Ok(());
     }
     let dequant = &mut scratch.dequant[..setup.adjusted];
+    let quant = raster_quant(block, &setup.params, &mut scratch.dequant_pair)?;
     let coded = dequantize_with_secondary_and_backend(
         backend,
         &setup.params,
-        block.quant,
+        quant,
         secondary.as_ref(),
         dequant,
     )?;

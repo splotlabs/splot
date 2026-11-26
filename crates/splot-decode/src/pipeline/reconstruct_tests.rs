@@ -30,6 +30,7 @@ impl IntraEdgeAvailability {
 fn all_zero_luma_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
+        scan_order: false,
         quant_start: 0,
         quant_len: 0,
         zero_tail: 0,
@@ -50,6 +51,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -108,6 +110,7 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -167,6 +170,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -264,6 +268,7 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -2165,6 +2170,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     quant[9] = 12;
     let block = LumaCoeffBlock {
         eob: 10,
+        scan_order: false,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,

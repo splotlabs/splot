@@ -531,6 +531,7 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) plane_tx_type: u8,
     pub(crate) cctx_type: Option<u8>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
+    pub(crate) scan_order: bool,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
 }
@@ -546,6 +547,7 @@ impl LumaCoeffBlock {
             plane_tx_type: plane_tx_type as u8,
             cctx_type: None,
             intra_ist: None,
+            scan_order: false,
             use_tcq: false,
             lossless,
         }
@@ -1149,6 +1151,8 @@ fn decode_nonzero_plane_coeffs(
     )?;
     let start_idx = arena.len();
     let coeff_count = start.coeff_count();
+    let scan_order =
+        !use_fsc && plane == 0 && metadata.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
     if use_fsc {
         arena.resize(start_idx + coeff_count, 0);
         let quant_end = decode_fsc_transform_block(
@@ -1163,7 +1167,11 @@ fn decode_nonzero_plane_coeffs(
         quant_end.map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
     } else {
         let tx_class = splot_recon::tx_class(plane_tx_type);
-        let extent = scan_extent(tx_class, tx, eob);
+        let extent = if scan_order {
+            eob
+        } else {
+            scan_extent(tx_class, tx, eob)
+        };
         arena.resize(start_idx + extent, 0);
         let quant_end = decode_ordinary_transform_block(
             context,
@@ -1174,6 +1182,7 @@ fn decode_nonzero_plane_coeffs(
                 start,
                 lines,
                 tx_class,
+                scan_order,
                 parity_hiding: base_config.parity_hiding,
                 use_tcq: base_config.use_tcq,
                 lossless,
@@ -1186,6 +1195,7 @@ fn decode_nonzero_plane_coeffs(
     LumaCoeffBlock {
         eob: eob as u16,
         intra_ist: metadata.intra_ist,
+        scan_order,
         cctx_type: metadata.cctx_type.map(|cctx| cctx as u8),
         use_tcq: base_config.use_tcq,
         ..LumaCoeffBlock::empty(plane_tx_type, lossless)
@@ -1877,12 +1887,13 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<
     }
     out.resize(setup.samples, T::default());
     with_residual_scratch(|scratch| {
+        let quant = reconstruct::raster_quant(block, &setup.params, &mut scratch.dequant_pair)?;
         let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
         let residual_scratch = &mut scratch.residual[..setup.samples];
         splot_recon::reconstruct_transform_block_residual_with_secondary_and_backend(
             backend,
             prediction,
-            block.quant,
+            quant,
             &setup.params,
             &setup.transform()?,
             secondary,

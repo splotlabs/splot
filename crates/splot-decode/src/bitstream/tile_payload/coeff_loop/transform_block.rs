@@ -293,16 +293,15 @@ pub(crate) struct CoeffTransformBlockInput<'l> {
     pub(crate) start: NonZeroCoeffBlockStart,
     pub(crate) plane: usize,
     pub(crate) tx_class: TransformClass,
+    pub(crate) scan_order: bool,
     pub(crate) parity_hiding: bool,
     pub(crate) use_tcq: bool,
     pub(crate) lines: &'l CoeffBlockLines,
     pub(crate) lossless: bool,
 }
 
-/// Decodes the block's coefficients into `quant` (zero on entry, one entry
-/// per adjusted position up to at least the [`scan_extent`] of the EOB),
-/// commits its above and left contexts, and returns one past its last
-/// nonzero entry.
+/// Writes decoded coefficients into the zeroed output slice in raster or
+/// scan order and returns one past its last written nonzero coefficient.
 pub(crate) fn decode_ordinary_transform_block(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -384,6 +383,7 @@ struct Block<'a> {
     width_log2: u32,
     dc: CoeffSignSourceDeriveConfig<'a>,
     lossless: bool,
+    scan_order: bool,
 }
 
 struct BlockSummary {
@@ -415,6 +415,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
     let block = Block {
         scan,
         width_log2,
+        scan_order: input.scan_order,
         dc: CoeffSignSourceDeriveConfig {
             plane: input.plane,
             plane_type: usize::from(!LUMA),
@@ -873,6 +874,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     let mut run = symbols.bypass_run();
     let mut level_sum = 0u32;
     let lf_end = facts.lf_end.min(eob);
+    let scan_order = LUMA && block.scan_order;
     for &scan_entry in nonzero {
         let scan_index = (scan_entry >> 22) as usize;
         let max_level = if scan_index < lf_end { max_lf } else { max_hf };
@@ -924,15 +926,17 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
                 .ac_magnitude(index, read.quant, tcq_q0)
                 .map_err(CoeffQuantPassError::from)?
         } as i32;
-        if let Some(slot) = quant.get_mut(pos) {
+        let output = if scan_order { scan_index } else { pos };
+        if let Some(slot) = quant.get_mut(output) {
             *slot = if sign { -magnitude } else { magnitude };
-            end = end.max(pos + 1);
+            end = end.max(output + 1);
         }
     }
     symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);
 
     let pos = entry_pos(scan[0]);
+    let dc_output = if scan_order { 0 } else { pos };
     let level = facts.dc_level;
     if !facts.is_hidden && level != 0 {
         let sign = if LUMA {
@@ -962,9 +966,9 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         let magnitude = quant_state
             .ac_magnitude(index, dc_quant, facts.dc_q0)
             .map_err(CoeffQuantPassError::from)? as i32;
-        if let Some(slot) = quant.get_mut(pos) {
+        if let Some(slot) = quant.get_mut(dc_output) {
             *slot = if sign { -magnitude } else { magnitude };
-            end = end.max(pos + 1);
+            end = end.max(dc_output + 1);
         }
     } else if facts.is_hidden {
         let index = eob - 1;
@@ -997,10 +1001,10 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         let write = quant_state
             .apply_entry(index, entry, sign.sign(), read)
             .map_err(CoeffQuantPassError::from)?;
-        if let Some(slot) = quant.get_mut(pos) {
+        if let Some(slot) = quant.get_mut(dc_output) {
             *slot = write.quant();
             if write.quant() != 0 {
-                end = end.max(pos + 1);
+                end = end.max(dc_output + 1);
             }
         }
     }
