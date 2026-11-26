@@ -596,8 +596,9 @@ fn transform_into_with_runner<R: IstRunner>(
     let len = coded
         .max((output_rows * w).min(expected))
         .min(dequant.len());
-    if !(large && len == 64 && w == 8) {
-        dequant[..len].fill(0);
+    let clear_from = if w == output_rows { w * output_rows } else { 0 };
+    if clear_from < len {
+        dequant[clear_from..len].fill(0);
     }
     let wide = bound > 1 << 15
         && coefs
@@ -615,17 +616,14 @@ fn transform_into_with_runner<R: IstRunner>(
         return len;
     }
     let clipped = runner.ist_4x4(kernel, stx, coefs, wide, bound);
-    let mut tile = [0i32; 64];
-    for (&value, &pos) in clipped.iter().zip(&OUTPUTS_4X4[usize::from(transpose)]) {
-        tile[usize::from(pos) & 63] = value;
-    }
-    for (row, tile) in dequant[..len]
-        .chunks_mut(w)
-        .zip(tile.as_chunks::<8>().0)
-        .take(4)
-    {
-        if let (Some(row), Some(tile)) = (row.first_chunk_mut::<4>(), tile.first_chunk::<4>()) {
-            *row = *tile;
+    let rows = clipped.as_chunks::<4>().0;
+    for (y, (dst, &src)) in dequant[..len].chunks_mut(w).zip(rows).enumerate() {
+        if let Some(dst) = dst.first_chunk_mut::<4>() {
+            *dst = if transpose {
+                [rows[0][y], rows[1][y], rows[2][y], rows[3][y]]
+            } else {
+                src
+            };
         }
     }
     len
@@ -743,24 +741,10 @@ fn raster_rows<S: Simd>(
     }
 }
 
-/// The raster positions of `Ist_4x4_Kernel`, from `Stx_Scan_Order_4x4[i]`
-/// (`y * 4 + x`).
-static OUTPUTS_4X4: [[u8; IST_4X4_WIDTH]; 2] = {
-    let mut out = [[0u8; IST_4X4_WIDTH]; 2];
-    let mut i = 0;
-    while i < IST_4X4_WIDTH {
-        let (y, x) = (STX_SCAN_ORDER_4X4[i] / 4, STX_SCAN_ORDER_4X4[i] % 4);
-        out[0][i] = (y * 8 + x) as u8;
-        out[1][i] = (x * 8 + y) as u8;
-        i += 1;
-    }
-    out
-};
-
-/// The § 9.7 `Ist_4x4_Kernel` as interleaved `i16` pairs: entry
-/// `[q][2 * i + r]` is the weight of output `i` in kernel row `2 * q + r`.
+/// The § 9.7 4x4 kernel in raster output order, with adjacent input weights
+/// paired for the SIMD multiply-add. The row pass can store four pixels at once.
 static IST_4X4_PAIRS: [[[[i16; 2 * IST_4X4_WIDTH]; IST_4X4_HEIGHT / 2]; STX_TYPES - 1];
-    IST_SET_SIZE_4X4] = pair_kernels(&IST_4X4_KERNEL);
+    IST_SET_SIZE_4X4] = pair_kernels(&IST_4X4_KERNEL, &STX_SCAN_ORDER_4X4);
 
 const fn pair_kernels<
     const W: usize,
@@ -771,6 +755,7 @@ const fn pair_kernels<
     const H2: usize,
 >(
     kernels: &[[[[i8; W]; H]; T]; S],
+    raster_positions: &[usize; W],
 ) -> [[[[i16; W2]; H2]; T]; S] {
     assert!(W2 == 2 * W && 2 * H2 == H);
     let mut out = [[[[0i16; W2]; H2]; T]; S];
@@ -780,7 +765,7 @@ const fn pair_kernels<
         let (kind, rest) = (rest / (H * W), rest % (H * W));
         let (row, col) = (rest / W, rest % W);
         let weight = kernels[set][kind][row][col];
-        out[set][kind][row / 2][2 * col + row % 2] = weight as i16;
+        out[set][kind][row / 2][2 * raster_positions[col] + row % 2] = weight as i16;
         index += 1;
     }
     out
