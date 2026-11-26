@@ -965,7 +965,7 @@ pub(super) mod generic {
         let span = const {
             let last_load_end = if STRIDE == 16 { 16 } else { 20 };
             let span = (SAD_H - 2) * STRIDE + last_load_end;
-            // The furthest candidate starts four rows and four columns in.
+
             assert!(4 * STRIDE + 4 + span <= AREA);
             span
         };
@@ -987,7 +987,7 @@ pub(super) mod generic {
                     tail += x.max(y) - x.min(y);
                 }
             }
-            // Clear padding and overlapping columns before widening the sums.
+
             let (lo, mut hi) = head.split();
             if STRIDE == 16 {
                 hi &= !high;
