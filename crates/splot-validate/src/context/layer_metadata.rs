@@ -12,10 +12,13 @@ use splot_core::obu::{ParsedObu, PayloadStatus};
 pub enum EffectiveContentInterpretation<'a> {
     /// The observed stream does not establish the layer's state.
     Unavailable,
-    /// The random access point established the AV2 unspecified defaults.
+    /// The layer uses the AV2 unspecified defaults.
     Unspecified {
         /// Header offset of the CLK or OLK that initialized this state.
         reset: ByteOffset,
+        /// The source layers in order from the nearest source to the layer
+        /// whose defaults were initialized. Empty for local initialization.
+        inherited_from: &'a [EmbeddedLayerId],
     },
     /// A CI OBU established the layer's parameters directly or by inheritance.
     Signaled {
@@ -51,7 +54,7 @@ struct CiEpoch {
 #[derive(Debug)]
 enum CiLayer {
     Unavailable,
-    Unspecified,
+    Unspecified(Vec<EmbeddedLayerId>),
     Signaled(CiValue),
 }
 
@@ -244,8 +247,11 @@ impl LayerMetadataTracker {
                 sequence_header: epoch.sequence_header,
                 content: &value.content,
             },
-            Some(CiLayer::Unspecified) => {
-                EffectiveContentInterpretation::Unspecified { reset: epoch.reset }
+            Some(CiLayer::Unspecified(inherited_from)) => {
+                EffectiveContentInterpretation::Unspecified {
+                    reset: epoch.reset,
+                    inherited_from,
+                }
             }
             Some(CiLayer::Unavailable) | None => EffectiveContentInterpretation::Unavailable,
         }
@@ -276,10 +282,14 @@ impl LayerMetadataTracker {
                         CiLayer::Signaled(value)
                     }
                     CiLayer::Unavailable => CiLayer::Unavailable,
-                    CiLayer::Unspecified => CiLayer::Unspecified,
+                    CiLayer::Unspecified(inherited_from) => {
+                        let mut inherited_from = inherited_from.clone();
+                        inherited_from.insert(0, source);
+                        CiLayer::Unspecified(inherited_from)
+                    }
                 }
             } else {
-                CiLayer::Unspecified
+                CiLayer::Unspecified(Vec::new())
             };
             layers.push(value);
         }
@@ -344,7 +354,8 @@ mod tests {
         assert_eq!(
             tracker.content_interpretation(ExtendedLayerId::from_bits(0), EmbeddedLayerId::BASE),
             EffectiveContentInterpretation::Unspecified {
-                reset: ByteOffset::new(60)
+                reset: ByteOffset::new(60),
+                inherited_from: &[],
             }
         );
     }
@@ -383,7 +394,7 @@ mod tests {
         assert_eq!(tracker.observe(&parsed.frames[1].obus[3]), Some(2));
         assert!(matches!(
             tracker.content_interpretation(x, m),
-            EffectiveContentInterpretation::Unspecified { reset } if reset.get() == 141
+            EffectiveContentInterpretation::Unspecified { reset, .. } if reset.get() == 141
         ));
     }
 
@@ -403,12 +414,22 @@ mod tests {
             EffectiveContentInterpretation::Signaled { origin, content, .. }
                 if origin == ByteOffset::new(35) && content.derived_color().code_points.color_primaries == 1
         ));
-        for mlayer in [1, 2] {
-            assert!(matches!(
-                tracker.content_interpretation(xlayer, EmbeddedLayerId::from_bits(mlayer)),
-                EffectiveContentInterpretation::Unspecified { .. }
-            ));
-        }
+        let lower = EmbeddedLayerId::from_bits(1);
+        let upper = EmbeddedLayerId::from_bits(2);
+        assert_eq!(
+            tracker.content_interpretation(xlayer, lower),
+            EffectiveContentInterpretation::Unspecified {
+                reset: ByteOffset::new(504),
+                inherited_from: &[],
+            }
+        );
+        assert_eq!(
+            tracker.content_interpretation(xlayer, upper),
+            EffectiveContentInterpretation::Unspecified {
+                reset: ByteOffset::new(504),
+                inherited_from: &[lower],
+            }
+        );
     }
 
     #[test]
@@ -444,7 +465,7 @@ mod tests {
             assert!(tracker.finish().is_some());
             assert!(matches!(
                 tracker.content_interpretation(x, enhancement),
-                EffectiveContentInterpretation::Unspecified { reset } if reset.get() == 572
+                EffectiveContentInterpretation::Unspecified { reset, .. } if reset.get() == 572
             ));
         }
     }
