@@ -14,6 +14,7 @@ use crate::bitstream::tile_payload::{
     LumaTransformTypeContext, MrlSelection, SupportedChromaMode, TileCoeffStateError,
     TransformToolResidualPolicy, classify_coeff_parse_error, read_lossless_luma_tx_size,
 };
+#[cfg(feature = "block-evidence")]
 use crate::block_evidence::{
     BlockChromaPrediction, BlockIntraEvidence, BlockIntraPrediction, BlockLumaPrediction,
 };
@@ -66,10 +67,12 @@ pub(crate) fn swap_general_intra_scratch<T: ReconSample>(
 }
 
 impl GeneralIntraReconCommand {
+    #[cfg(feature = "block-evidence")]
     pub(crate) const fn segment_id(&self) -> u8 {
         self.segment_id
     }
 
+    #[cfg(feature = "block-evidence")]
     pub(crate) const fn qindex(&self) -> u32 {
         self.qindex
     }
@@ -103,6 +106,7 @@ impl GeneralIntraReconCommand {
             .map_err(|error| general_intra_residual_error(error, tile_offset))
     }
 
+    #[cfg(feature = "block-evidence")]
     pub(crate) fn record_transforms(
         &self,
         arena: &crate::residual::pipeline::ResidualPlaneArena,
@@ -212,7 +216,7 @@ pub(crate) fn decode_one_general_intra_block(
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     tools: &GeneralIntraFrameTools,
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
-    evidence: Option<&BlockIntraEvidence<'_>>,
+    #[cfg(feature = "block-evidence")] evidence: Option<&BlockIntraEvidence<'_>>,
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let edges = neighbours.edges;
     let _qm_segment_scope =
@@ -284,6 +288,7 @@ pub(crate) fn decode_one_general_intra_block(
                 luma_tx_partition_context: None,
             },
         )?;
+        #[cfg(feature = "block-evidence")]
         if let Some(evidence) = evidence {
             evidence.record(
                 BlockIntraPrediction {
@@ -355,6 +360,7 @@ pub(crate) fn decode_one_general_intra_block(
             ),
         },
     )?;
+    #[cfg(feature = "block-evidence")]
     if let Some(evidence) = evidence {
         evidence.record(
             BlockIntraPrediction {

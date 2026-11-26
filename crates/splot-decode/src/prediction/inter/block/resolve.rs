@@ -30,6 +30,7 @@ use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
 };
 use super::*;
+#[cfg(feature = "block-evidence")]
 use crate::block_evidence::{
     BlockCopyMotion, BlockEvidenceTile, BlockEvidenceTree, BlockMotion, BlockMotionPrecision,
 };
@@ -313,6 +314,7 @@ fn resolve_pending_intrabc(
         state.ibc_local.as_deref(),
         state.tile_offset,
     )?;
+    #[cfg(feature = "block-evidence")]
     if let Some(evidence) = &state.evidence {
         let tree = if frontier.is_luma_part() {
             BlockEvidenceTree::Luma
@@ -502,6 +504,7 @@ pub(super) struct ResolvedInterBlock {
 /// Mutable state the § 7.12 resolution chain owns, plus the frame-level facts
 /// its derivations read.
 pub(super) struct MvResolutionState<'a> {
+    #[cfg(feature = "block-evidence")]
     pub(super) evidence: Option<BlockEvidenceTile<'a>>,
     pub(super) grid: &'a mut NeighbourMvGrid,
     pub(super) ref_mv_bank: &'a mut Option<RefMvBank>,

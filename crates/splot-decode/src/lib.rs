@@ -12,6 +12,7 @@
 //! raw bytes or already parsed `splot-core` stream facts; the runtime decodes
 //! planned streams to hash, raw, or Y4M byte output, or discards decoded output.
 //! [`encoder_syntax`] lends the tile parser's contexts and CDF rows to `splot-encode`.
+//! Enable the `block-evidence` Cargo feature to capture bounded block records.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,
@@ -61,6 +62,7 @@ macro_rules! baseline_simd {
 pub(crate) use baseline_simd;
 
 mod bitstream;
+#[cfg(feature = "block-evidence")]
 pub mod block_evidence;
 pub mod context;
 mod decoder;

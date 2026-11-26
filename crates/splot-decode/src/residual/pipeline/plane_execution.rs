@@ -18,6 +18,7 @@ use crate::bitstream::tile_payload::{
     luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
     luma_transform_records_for_partition, read_intra_luma_tx_partition,
 };
+#[cfg(feature = "block-evidence")]
 use crate::block_evidence::DecodedTransformUnit;
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
@@ -508,6 +509,7 @@ impl ResidualPlanePlan {
 }
 
 impl ParsedGeneralIntraResidual {
+    #[cfg(feature = "block-evidence")]
     pub(crate) fn visit_transform_units(
         &self,
         arena: &ResidualPlaneArena,

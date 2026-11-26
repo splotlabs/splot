@@ -14559,7 +14559,7 @@ tests = [
 ]
 commands = [
     "cargo test -p splot-decode --test decoder_api --locked",
-    "cargo test -p splot-decode --test block_evidence --test block_transform_evidence --test block_chroma_prediction_evidence --locked",
+    "cargo test -p splot-decode --features block-evidence --test block_evidence --test block_transform_evidence --test block_chroma_prediction_evidence --locked",
     "cargo test -p splot-cli --test decoder_oracle --locked",
 ]
 fixtures = ["tests/conformance/decoder-oracle.toml"]

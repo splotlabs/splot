@@ -745,13 +745,16 @@ pub(super) fn run_ordinary_tile<B: splot_core::simd::SimdBackend, T: ReconSample
         while !reached_last && parsed < unit_count && pending.len() < PARSE_AHEAD_ROWS {
             let step = parser.next_unit(tile, &parse, row_buffers.pop(), true);
             let step = resolve_parser_step(step, |row| {
+                #[cfg(feature = "block-evidence")]
+                let tile_index = tile.tile_num() as usize;
                 resolve.resolve_unit(
                     &mut parser.mv_grid,
                     context,
                     temporal,
                     row,
                     tile_offset,
-                    tile.tile_num() as usize,
+                    #[cfg(feature = "block-evidence")]
+                    tile_index,
                 )?;
                 #[cfg(test)]
                 crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_resolved_unit(
@@ -983,6 +986,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             };
             row.replay_flags(grid, frame_mv_precision(context.core)?)?;
             row.return_terminal_error()?;
+            #[cfg(feature = "block-evidence")]
             let tile_index = row.tile;
             state.resolve_unit(
                 grid,
@@ -990,6 +994,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 &self.recon.temporal,
                 &mut row,
                 tile.tile_offset,
+                #[cfg(feature = "block-evidence")]
                 tile_index,
             )?;
             row.return_terminal_error()?;

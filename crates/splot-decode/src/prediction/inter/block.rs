@@ -412,6 +412,7 @@ pub(crate) fn derive_inter_block_setup(
     let frame_is_switch = core.frame_type == Some(FrameType::Switch);
 
     let params = tile::TileWalkParams {
+        #[cfg(feature = "block-evidence")]
         block_evidence: products.block_evidence.as_ref().map(|evidence| {
             evidence.start_walk(
                 geometry.info().visible_luma_rect(),
@@ -1253,6 +1254,7 @@ pub(super) struct BlockDecodeContext<'a> {
     pub(super) delta_q_state: &'a mut DeltaQState,
     pub(super) segment_id_state: &'a mut TileSegmentIdState,
     entries: &'a mut Vec<tile::ReconRowEntry>,
+    #[cfg(feature = "block-evidence")]
     evidence_parent: Option<crate::bitstream::tile_payload::TilePartitionCall>,
     sb_mask: usize,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
@@ -1293,6 +1295,7 @@ fn decode_block(
         ref mut delta_q_state,
         ref mut segment_id_state,
         ref mut entries,
+        #[cfg(feature = "block-evidence")]
         evidence_parent,
         sb_mask,
         ref mut arena,
@@ -1575,6 +1578,7 @@ fn decode_block(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
+        #[cfg(feature = "block-evidence")]
         let evidence = params.block_evidence.as_ref().and_then(|evidence| {
             let tile = evidence.tile(work_unit.tile_num() as usize)?;
             tile.wants_blocks()
@@ -1604,6 +1608,7 @@ fn decode_block(
             frontier,
             &params.intra_tools,
             neighbours,
+            #[cfg(feature = "block-evidence")]
             evidence.as_ref(),
         )?;
         let luma_tree = !frontier.is_chroma_part();

@@ -12,6 +12,7 @@ use splot_recon::{CurrentFrameSurface, PlaneId, ReconError};
 use super::*;
 
 mod admission;
+#[cfg(feature = "block-evidence")]
 mod evidence;
 pub(super) use admission::project_temporal_band;
 
@@ -108,6 +109,7 @@ pub(super) struct TileFilterRecords {
 /// that runs after the driver moved on can rebuild its tile context.
 #[derive(Clone)]
 pub(crate) struct TileWalkParams {
+    #[cfg(feature = "block-evidence")]
     pub(super) block_evidence: Option<crate::block_evidence::BlockEvidenceRecorder>,
     pub(super) filter_record_needs: crate::filters::wienerns_lr::FilterRecordNeeds,
     pub(super) limits: crate::DecodeLimits,
@@ -257,12 +259,14 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
         } else {
             super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
         }?;
+        #[cfg(feature = "block-evidence")]
         if let Some(evidence) = self.evidence(work_unit.tile_num() as usize) {
             evidence::observe_leaf(evidence, self, frontier);
         }
         Ok((leaf, ()))
     }
 
+    #[cfg(feature = "block-evidence")]
     fn evidence(&self, tile: usize) -> Option<crate::block_evidence::BlockEvidenceTile<'_>> {
         self.sink
             .params
@@ -271,6 +275,7 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
             .and_then(|evidence| evidence.tile(tile))
     }
 
+    #[cfg(feature = "block-evidence")]
     fn set_evidence_parent(
         &mut self,
         parent: Option<crate::bitstream::tile_payload::TilePartitionCall>,
@@ -633,6 +638,7 @@ impl<'payload> TileParser<'payload> {
             delta_q_state: &mut self.delta_q_state,
             segment_id_state: &mut self.output.segment_id_state,
             entries: &mut row.entries,
+            #[cfg(feature = "block-evidence")]
             evidence_parent: None,
             sb_mask,
             arena: &mut row.residual_planes,
@@ -803,7 +809,7 @@ impl TileResolveState {
         temporal_context: &TemporalMvContext,
         row: &mut ReconRow,
         tile_offset: ByteOffset,
-        tile: usize,
+        #[cfg(feature = "block-evidence")] tile: usize,
     ) -> Result<()> {
         let ibc_local = if row.local_ibc_sb_end() > 0 {
             self.ibc_local.ensure_active()?
@@ -813,6 +819,7 @@ impl TileResolveState {
         resolve_parsed_leaves(
             row,
             &mut MvResolutionState {
+                #[cfg(feature = "block-evidence")]
                 evidence: context
                     .params
                     .block_evidence

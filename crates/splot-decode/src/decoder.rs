@@ -27,6 +27,7 @@ use splot_recon::{
 };
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, fill_buffer};
+#[cfg(feature = "block-evidence")]
 use crate::block_evidence::{BlockEvidenceCapture, BlockEvidenceRequest, BlockEvidenceState};
 use crate::error::{DecodeError, DecoderStateError, Result};
 use crate::pipeline::frame_store::{CodedFrameObserver, DecodeObserver};
@@ -740,6 +741,7 @@ impl Drop for DriverGuard {
 
 struct DriverLaunch {
     observer: Option<Box<dyn DecodeObserver>>,
+    #[cfg(feature = "block-evidence")]
     block_evidence: Option<Arc<BlockEvidenceState>>,
     atlases: crate::ExternalAtlases,
     shared: Arc<Shared>,
@@ -775,7 +777,10 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
         DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
     session.external_atlases = launch.atlases;
     session.observer = launch.observer;
-    session.block_evidence = launch.block_evidence;
+    #[cfg(feature = "block-evidence")]
+    {
+        session.block_evidence = launch.block_evidence;
+    }
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
@@ -795,6 +800,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
                 Ok(())
             },
         );
+        #[cfg(feature = "block-evidence")]
         if let Some(evidence) = &session.block_evidence {
             evidence.finish(result.is_ok());
         }
@@ -832,7 +838,13 @@ impl Decoder {
         settings: DecoderSettings,
         atlases: crate::ExternalAtlases,
     ) -> Result<Self> {
-        Self::open(&settings, atlases, None, None)
+        Self::open(
+            &settings,
+            atlases,
+            None,
+            #[cfg(feature = "block-evidence")]
+            None,
+        )
     }
 
     /// Opens a decoder with an observer for frames admitted on its decode path.
@@ -856,6 +868,7 @@ impl Decoder {
             &settings,
             crate::ExternalAtlases::default(),
             Some(Box::new(CodedFrameObserver(observer))),
+            #[cfg(feature = "block-evidence")]
             None,
         )
     }
@@ -884,6 +897,7 @@ impl Decoder {
             Some(Box::new(
                 crate::reference::observation::CaptureReferences::new(observer),
             )),
+            #[cfg(feature = "block-evidence")]
             None,
         )
     }
@@ -893,9 +907,11 @@ impl Decoder {
     /// The driver waits for a selected frame to settle before it admits another frame.
     /// Assign distinct [`DataProps::user_data`] values to distinguish input units.
     /// A flush ends the capture and resets the decoder.
+    /// Enable the `block-evidence` Cargo feature to use this method.
     ///
     /// # Errors
     /// Returns the errors from [`Self::new`].
+    #[cfg(feature = "block-evidence")]
     pub fn new_with_block_evidence(
         settings: DecoderSettings,
         request: BlockEvidenceRequest,
@@ -914,7 +930,7 @@ impl Decoder {
         settings: &DecoderSettings,
         atlases: crate::ExternalAtlases,
         observer: Option<Box<dyn DecodeObserver>>,
-        block_evidence: Option<Arc<BlockEvidenceState>>,
+        #[cfg(feature = "block-evidence")] block_evidence: Option<Arc<BlockEvidenceState>>,
     ) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
         settings.embedded_layer_selection.validate()?;
@@ -951,6 +967,7 @@ impl Decoder {
         let rows = crate::pipeline::row_scheduler(threads, resolved)?;
         let driver = resolved.enter(DriverLaunch {
             observer,
+            #[cfg(feature = "block-evidence")]
             block_evidence,
             atlases,
             shared: driver,

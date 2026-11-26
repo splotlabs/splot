@@ -1290,6 +1290,7 @@ impl InterResidual {
         arena.get(self.block_range.start as usize..self.block_range.end as usize)
     }
 
+    #[cfg(feature = "block-evidence")]
     pub(crate) fn record_transforms(
         &self,
         arena: &[InterResidualBlock],

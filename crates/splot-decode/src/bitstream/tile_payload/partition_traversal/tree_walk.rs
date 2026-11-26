@@ -168,10 +168,12 @@ pub(crate) trait LeafDecoder<'payload> {
     /// buffer updates.
     fn on_out_of_frame_partition(&mut self, _publication: DecodedLeafPublication) {}
 
+    #[cfg(feature = "block-evidence")]
     fn evidence(&self, _tile: usize) -> Option<crate::block_evidence::BlockEvidenceTile<'_>> {
         None
     }
 
+    #[cfg(feature = "block-evidence")]
     fn set_evidence_parent(&mut self, _parent: Option<TilePartitionCall>) {}
 }
 
@@ -221,6 +223,7 @@ struct LeafHooks<'h, L, P> {
     mi_size_state: &'h mut TileMiSizeState,
     on_leaf: &'h mut L,
     on_published: &'h mut P,
+    #[cfg(feature = "block-evidence")]
     evidence_parent: Option<TilePartitionCall>,
 }
 
@@ -352,6 +355,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             mi_size_state,
             on_leaf,
             on_published,
+            #[cfg(feature = "block-evidence")]
             evidence_parent: None,
         };
         if hooks.work_unit.bru_tile_active().is_some() {
@@ -483,7 +487,9 @@ where
                 hooks.work_unit.cdf_mut().tile_cdfs_mut(),
                 &mut walker.symbols,
             )?;
+            #[cfg(feature = "block-evidence")]
             let previous_parent = hooks.evidence_parent;
+            #[cfg(feature = "block-evidence")]
             let tracing = if let Some(evidence) =
                 hooks.on_leaf.evidence(hooks.work_unit.tile_num() as usize)
             {
@@ -516,6 +522,7 @@ where
                 ),
                 None => Ok(()),
             };
+            #[cfg(feature = "block-evidence")]
             if tracing {
                 hooks.evidence_parent = previous_parent;
             }
@@ -529,6 +536,7 @@ where
     let frontier = decode_block_frontier(call, chroma_ref, frame, sub_size, chroma_offset, part)
         .with_bru_active(ACTIVE);
     let decoded_leaf = DecodedLeafPublication::new(call, sub_size, walker.sb_mask);
+    #[cfg(feature = "block-evidence")]
     if let Some(evidence) = hooks.on_leaf.evidence(hooks.work_unit.tile_num() as usize) {
         evidence.record_terminal_partition(call, hooks.evidence_parent);
         hooks.on_leaf.set_evidence_parent(hooks.evidence_parent);

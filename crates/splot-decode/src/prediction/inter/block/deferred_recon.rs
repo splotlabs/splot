@@ -15,18 +15,24 @@ use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc;
 use super::super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
-    InterResidualBlock, PlacedInterBlock, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
-    SINGLE_MODE_NEWMV, block_reference_slot,
+    InterResidualBlock, PlacedInterBlock,
+};
+#[cfg(feature = "block-evidence")]
+use super::super::{
+    SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, block_reference_slot,
 };
 use super::compound_path::{FrameRefFacts, append_compound_temporal_motion};
+#[cfg(feature = "block-evidence")]
+use super::resolve::WarpModelSource;
 use super::resolve::{
-    InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax, WarpModelSource,
+    InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax,
     predict_by_translation_under_integer_mv, resolve_inter_block,
 };
 use super::temporal::temporal_motion_block;
 use super::tip::{self, TipReconstructScratch};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
+#[cfg(feature = "block-evidence")]
 use crate::block_evidence::{
     BlockCompoundBlend, BlockEvidenceTree, BlockInterMode, BlockInterMotion, BlockInterPrediction,
     BlockMotion, BlockMotionPrecision, BlockMotionRefinement, BlockPrediction, BlockReference,
@@ -125,6 +131,7 @@ impl PendingInterCommand {
         self.syntax.flag_syntax(self.placed.block.ref_frame0)
     }
 
+    #[cfg(feature = "block-evidence")]
     #[cold]
     pub(super) fn prediction(
         &self,
@@ -244,6 +251,7 @@ impl PendingInterCommand {
         };
         let mut resolved = resolve_inter_block(&block, &self.syntax, self.leaf, state)?;
         predict_by_translation_under_integer_mv(&self.syntax, state.core, &mut resolved);
+        #[cfg(feature = "block-evidence")]
         if let Some(evidence) = &state.evidence {
             evidence.record_motion(
                 BlockEvidenceTree::Shared,
@@ -277,6 +285,7 @@ impl PendingInterCommand {
     }
 }
 
+#[cfg(feature = "block-evidence")]
 #[cold]
 fn inter_motion_evidence(
     kind: &InterReconKind,
