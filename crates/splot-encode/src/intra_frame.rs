@@ -284,10 +284,8 @@ impl IntraFrameCoder {
         Ok(coder)
     }
 
-    /// A coder of `config` with the search limits of `preset`; only the
-    /// preset's own row switches to its screen-content row.
-    fn with_preset(config: &Config, preset: &PresetParams) -> Result<Self> {
-        let params = EncoderStreamParams {
+    fn stream_params(config: &Config, preset: &PresetParams) -> Result<EncoderStreamParams> {
+        Ok(EncoderStreamParams {
             width: config.width,
             height: config.height,
             bit_depth: match config.bit_depth {
@@ -379,22 +377,19 @@ impl IntraFrameCoder {
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
             },
-        };
+        })
+    }
+
+    /// A coder of `config` with the search limits of `preset`; only the
+    /// preset's own row switches to its screen-content row.
+    fn with_preset(config: &Config, preset: &PresetParams) -> Result<Self> {
+        let params = Self::stream_params(config, preset)?;
         let (sequence, view, references) = sequence_state(&params)?;
         let tiles = frame_tiles(config, preset, (&params, &view))?;
-        let mfh_obu = if config.multi_frame_header {
-            encode_multi_frame_header_obu().map_err(coding("multi-frame header"))?
-        } else {
-            Vec::new()
-        };
         Ok(Self {
             params,
             references,
-            content_obus: [
-                config.content.obus(config.frame_rate, &mfh_obu)?,
-                config.key_frame_metadata.obus()?,
-            ]
-            .concat(),
+            content_obus: content_obus(config)?,
             multi_frame_header: config.multi_frame_header,
             sequence,
             view,
@@ -528,14 +523,39 @@ impl FrameCoder for IntraFrameCoder {
     }
 }
 
-/// The sequence header of `params`, its view and empty references.
-fn sequence_state(
-    params: &EncoderStreamParams,
-) -> Result<(SequenceHeader, CoreSeqView, EncoderReferences)> {
+fn content_obus(config: &Config) -> Result<Vec<u8>> {
+    let mfh_obu = if config.multi_frame_header {
+        encode_multi_frame_header_obu().map_err(coding("multi-frame header"))?
+    } else {
+        Vec::new()
+    };
+    let mut obus = config.content.obus(config.frame_rate, &mfh_obu)?;
+    obus.extend(config.key_frame_metadata.obus()?);
+    Ok(obus)
+}
+
+/// Checks the frame setup without starting a worker pool.
+pub(crate) fn check_frame_setup(config: &Config, preset: &PresetParams) -> Result<()> {
+    let params = IntraFrameCoder::stream_params(config, preset)?;
+    let (_, view) = sequence_view(&params)?;
+    frame_tiles(config, preset, (&params, &view))?;
+    content_obus(config)?;
+    Ok(())
+}
+
+fn sequence_view(params: &EncoderStreamParams) -> Result<(SequenceHeader, CoreSeqView)> {
     let sequence = build_encoder_sequence_header(params).map_err(coding("sequence header"))?;
     let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
         what: "an incomplete sequence header",
     })?;
+    Ok((sequence, view))
+}
+
+/// The sequence header of the stream, its view and empty references.
+fn sequence_state(
+    params: &EncoderStreamParams,
+) -> Result<(SequenceHeader, CoreSeqView, EncoderReferences)> {
+    let (sequence, view) = sequence_view(params)?;
     let references = EncoderReferences::new(&sequence).map_err(coding("reference buffer"))?;
     Ok((sequence, view, references))
 }
