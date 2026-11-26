@@ -669,7 +669,9 @@ impl<T: ReconSample> TileRecon<T> {
                 commit.block_decoded_tile = Some(ready.row.tile);
             }
             if let Some(surface) = ready.surface.take() {
-                surface.publish_into(&mut commit.workspace)?;
+                if ready.surface_written {
+                    surface.publish_into(&mut commit.workspace)?;
+                }
                 surfaces.give(surface, worker);
             }
             let spent = commit.replay(backend, ready, &self.motion, &self.temporal, &context)?;
@@ -771,6 +773,7 @@ pub(super) fn run_ordinary_tile<B: splot_core::simd::SimdBackend, T: ReconSample
                 row,
                 tile_offset,
                 surface: None,
+                surface_written: false,
                 bounds: super::row_gate::RowReferenceBounds::default(),
             };
             let buffers = commit.replay(backend, ready, motion, temporal, context)?;
@@ -988,6 +991,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     row,
                     tile_offset: tile.tile_offset,
                     surface,
+                    surface_written: false,
                     bounds,
                 },
             )?;

@@ -29,8 +29,7 @@ use crate::dequant_process::{dequant_coefficient, dequant_lanes};
 use crate::inverse_transform::{InverseTransform1dType, Kernel1d, select_kernel};
 use crate::inverse_transform_2d::InverseTransform2dDim;
 use crate::secondary_transform::{
-    SecondaryInverseTransform, secondary_inverse_transform_quant,
-    secondary_inverse_transform_quant_rows8, secondary_inverse_transform_quant_rows8_with,
+    SecondaryInverseTransform, SecondaryOutput, SecondaryQuant, secondary_inverse_transform_quant,
     secondary_inverse_transform_quant_with,
 };
 use crate::{BitDepth, ReconSample};
@@ -733,6 +732,30 @@ impl InverseTransformAdd {
         (dst, stride): (&mut [T], usize),
         scratch: &mut InverseTransformAddScratch,
     ) -> crate::Result<bool> {
+        self.add_secondary_quant_with(
+            backend,
+            (quantizers, secondary),
+            SecondaryQuant::Raster(quant),
+            dequant,
+            (dst, stride),
+            scratch,
+        )
+    }
+
+    /// Adds the secondary and primary inverse transforms using either
+    /// row-major coefficients or the active primary-scan prefix.
+    ///
+    /// # Errors
+    /// As [`Self::add_secondary`], or if a scan prefix exceeds `secondary.n`.
+    pub fn add_secondary_quant_with<B: SimdBackend, T: ReconSample>(
+        self,
+        backend: B,
+        (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
+        quant: SecondaryQuant<'_>,
+        dequant: &mut [i32],
+        (dst, stride): (&mut [T], usize),
+        scratch: &mut InverseTransformAddScratch,
+    ) -> crate::Result<bool> {
         self.add_secondary_with_runner(
             TypedTransformRunner(backend.narrow()),
             (quantizers, secondary),
@@ -767,7 +790,7 @@ impl InverseTransformAdd {
         self.add_secondary_with_runner(
             BaselineTransformRunner,
             (quantizers, secondary),
-            quant,
+            SecondaryQuant::Raster(quant),
             dequant,
             (dst, stride),
             scratch,
@@ -778,7 +801,7 @@ impl InverseTransformAdd {
         self,
         runner: R,
         (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
-        quant: &[i32],
+        quant: SecondaryQuant<'_>,
         dequant: &mut [i32],
         (dst, stride): (&mut [T], usize),
         scratch: &mut InverseTransformAddScratch,
@@ -788,7 +811,12 @@ impl InverseTransformAdd {
             && self.fits(dst.len(), stride)
             && let Some(rows) = dequant.first_chunk_mut::<64>()
         {
-            let len = runner.secondary_quant_rows8(quant, quantizers, secondary, rows)?;
+            let len = runner.secondary_quant(
+                quant,
+                quantizers,
+                secondary,
+                SecondaryOutput::Rows8(rows),
+            )?;
             #[cfg(target_arch = "x86_64")]
             if let (Some(token), Some(dst), BitDepth::Eight) =
                 (runner.avx2_token(), T::u8_slice_mut(&mut *dst), bit_depth)
@@ -819,7 +847,8 @@ impl InverseTransformAdd {
             let t = self.transform8(None, bit_depth);
             return Ok(self.run_add(runner, t, (&rows[..len], 8), dst, stride, scratch));
         }
-        let coded = runner.secondary_quant(quant, quantizers, secondary, dequant)?;
+        let coded =
+            runner.secondary_quant(quant, quantizers, secondary, SecondaryOutput::Full(dequant))?;
         Ok(self.add_with_runner(
             runner,
             &dequant[..coded],
@@ -986,20 +1015,12 @@ trait TransformRunner: Copy {
 
     fn u16_samples_exceed(self, samples: &[u16], max: u16) -> bool;
 
-    fn secondary_quant_rows8(
-        self,
-        quant: &[i32],
-        quantizers: (u32, u32, u32),
-        secondary: &SecondaryInverseTransform,
-        rows: &mut [i32; 64],
-    ) -> crate::Result<usize>;
-
     fn secondary_quant(
         self,
-        quant: &[i32],
+        quant: SecondaryQuant<'_>,
         quantizers: (u32, u32, u32),
         secondary: &SecondaryInverseTransform,
-        dequant: &mut [i32],
+        dequant: SecondaryOutput<'_>,
     ) -> crate::Result<usize>;
 
     transform_runner_methods!(self, declare);
@@ -1027,23 +1048,12 @@ impl TransformRunner for BaselineTransformRunner {
     }
 
     #[inline]
-    fn secondary_quant_rows8(
-        self,
-        quant: &[i32],
-        quantizers: (u32, u32, u32),
-        secondary: &SecondaryInverseTransform,
-        rows: &mut [i32; 64],
-    ) -> crate::Result<usize> {
-        secondary_inverse_transform_quant_rows8(quant, quantizers, secondary, rows)
-    }
-
-    #[inline]
     fn secondary_quant(
         self,
-        quant: &[i32],
+        quant: SecondaryQuant<'_>,
         quantizers: (u32, u32, u32),
         secondary: &SecondaryInverseTransform,
-        dequant: &mut [i32],
+        dequant: SecondaryOutput<'_>,
     ) -> crate::Result<usize> {
         secondary_inverse_transform_quant(quant, quantizers, secondary, dequant)
     }
@@ -1073,23 +1083,12 @@ impl<B: SimdBackend> TransformRunner for TypedTransformRunner<B> {
     }
 
     #[inline]
-    fn secondary_quant_rows8(
-        self,
-        quant: &[i32],
-        quantizers: (u32, u32, u32),
-        secondary: &SecondaryInverseTransform,
-        rows: &mut [i32; 64],
-    ) -> crate::Result<usize> {
-        secondary_inverse_transform_quant_rows8_with(self.0, quant, quantizers, secondary, rows)
-    }
-
-    #[inline]
     fn secondary_quant(
         self,
-        quant: &[i32],
+        quant: SecondaryQuant<'_>,
         quantizers: (u32, u32, u32),
         secondary: &SecondaryInverseTransform,
-        dequant: &mut [i32],
+        dequant: SecondaryOutput<'_>,
     ) -> crate::Result<usize> {
         secondary_inverse_transform_quant_with(self.0, quant, quantizers, secondary, dequant)
     }
@@ -1916,6 +1915,40 @@ mod tests {
                         transpose: false,
                         bit_depth: BitDepth::Eight,
                     };
+                    let scan = crate::coefficient_scan_slice(w, h, sec.primary_scan_class).unwrap();
+                    for (prefix, denom) in [(0, 1), (1, 2), (7, 3), (sec.n, 8)] {
+                        let compact: Vec<_> = (0..prefix).map(|i| i as i32 * 7 - 31).collect();
+                        let mut raster = vec![0; w * h];
+                        for (&value, &pos) in compact.iter().zip(scan) {
+                            raster[usize::from(pos)] = value;
+                        }
+                        let (mut expected, mut actual) = (compat_u8.clone(), compat_u8.clone());
+                        let mut expected_dq = vec![99; w * h];
+                        let mut actual_dq = expected_dq.clone();
+                        let params = ((13, 29, denom), &sec);
+                        assert_eq!(
+                            add.add_secondary_with(
+                                backend,
+                                params,
+                                &raster,
+                                &mut expected_dq,
+                                (&mut expected, stride),
+                                &mut scratch_a
+                            )
+                            .unwrap(),
+                            add.add_secondary_quant_with(
+                                backend,
+                                params,
+                                SecondaryQuant::Scan(&compact),
+                                &mut actual_dq,
+                                (&mut actual, stride),
+                                &mut scratch_b
+                            )
+                            .unwrap(),
+                        );
+                        assert_eq!(actual_dq, expected_dq);
+                        assert_eq!(actual, expected);
+                    }
                     let quant = vec![24i32; 16];
                     let mut deq_a = vec![0i32; w * h];
                     let mut deq_b = vec![0i32; w * h];

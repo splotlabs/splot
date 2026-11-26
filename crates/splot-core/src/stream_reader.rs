@@ -294,6 +294,31 @@ impl<R: Read> TemporalUnitReader<R> {
     /// [`ReaderError::UnitTooLarge`] when the OBUs of one Annex B unit exceed
     /// the per-unit cap together.
     pub fn next_temporal_unit(&mut self) -> Result<Option<TemporalUnit<'_>>, ReaderError> {
+        self.read_temporal_unit(|storage| storage.as_slice())
+    }
+
+    /// Reads a temporal unit and exchanges its storage with `destination`.
+    /// The returned unit borrows `destination`, so reading the next unit
+    /// does not invalidate its bytes. On end of stream or error, the
+    /// destination stays unchanged.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::next_temporal_unit`].
+    pub fn next_temporal_unit_into<'a>(
+        &mut self,
+        destination: &'a mut Vec<u8>,
+    ) -> Result<Option<TemporalUnit<'a>>, ReaderError> {
+        self.read_temporal_unit(move |storage| {
+            let output = destination;
+            core::mem::swap(storage, output);
+            output.as_slice()
+        })
+    }
+
+    fn read_temporal_unit<'reader, 'bytes>(
+        &'reader mut self,
+        view: impl FnOnce(&'reader mut Vec<u8>) -> &'bytes [u8],
+    ) -> Result<Option<TemporalUnit<'bytes>>, ReaderError> {
         if self.detect_format()? == BitstreamFormat::Ivf {
             let (index, pts, payload_offset) = match self.next_unit()? {
                 Some(StreamUnit::IvfFrame {
@@ -312,7 +337,7 @@ impl<R: Read> TemporalUnitReader<R> {
                 index,
                 pts: Some(pts),
                 offset: payload_offset,
-                bytes: &self.buf,
+                bytes: view(&mut self.buf),
             }));
         }
         self.unit.clear();
@@ -355,7 +380,7 @@ impl<R: Read> TemporalUnitReader<R> {
             index: self.frame_index - 1,
             pts: None,
             offset,
-            bytes: &self.unit,
+            bytes: view(&mut self.unit),
         }))
     }
 
@@ -683,6 +708,20 @@ mod tests {
             pos: 0,
         });
         assert_eq!(collect_temporal_units(&mut trickled), expected);
+    }
+
+    #[test]
+    fn temporal_unit_into_keeps_the_next_annex_b_delimiter() {
+        let mut reader = TemporalUnitReader::new(&TWO_ANNEX_B_UNITS[..]);
+        let mut owned = Vec::new();
+        let first = reader.next_temporal_unit_into(&mut owned).unwrap().unwrap();
+        let second = reader.next_temporal_unit().unwrap().unwrap();
+
+        assert_eq!(first.bytes, &TWO_ANNEX_B_UNITS[..5]);
+        assert_eq!(
+            (second.index, second.offset.get(), second.bytes),
+            (1, 5, &TWO_ANNEX_B_UNITS[5..])
+        );
     }
 
     #[test]

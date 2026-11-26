@@ -77,8 +77,8 @@ pub(super) fn cdef_filter_rows_u8_quad<
                     filter.dir,
                     &CDEF_SEGMENT_TAP_STARTS,
                 )?;
-            let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-            let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
+            let pri_taps =
+                cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
             let pri = CdefConstrainWide::new(simd, filter.pri_str, plan.adj[0]);
             let sec = CdefConstrainWide::new(simd, filter.sec_str, plan.adj[1]);
             let base = u16x16::splat(simd, base);

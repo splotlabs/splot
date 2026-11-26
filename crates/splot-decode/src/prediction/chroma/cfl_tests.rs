@@ -58,6 +58,7 @@ fn seeded_cfl_scratch() -> crate::pipeline::general_intra::GeneralIntraReconScra
 fn zero_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
+        scan_order: false,
         quant_start: 0,
         quant_len: 0,
         zero_tail: 0,

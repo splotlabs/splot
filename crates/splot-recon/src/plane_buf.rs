@@ -9,6 +9,7 @@
     reason = "views the aligned byte blocks as the sample slice they hold"
 )]
 
+use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use std::collections::TryReserveError;
 use std::marker::PhantomData;
@@ -29,7 +30,7 @@ pub(crate) const fn plane_stride<T>(width: usize) -> Option<usize> {
 
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]
-struct Block([u8; PLANE_ALIGNMENT]);
+struct Block([MaybeUninit<u8>; PLANE_ALIGNMENT]);
 
 /// Owned plane sample storage aligned to [`PLANE_ALIGNMENT`] bytes. It
 /// derefs to the sample slice and grows like a `Vec`.
@@ -108,32 +109,28 @@ impl<T: ReconSample> PlaneBuf<T> {
 
     /// Resizes to `len` samples, filling new ones with `value`.
     pub fn resize(&mut self, len: usize, value: T) {
-        let old = self.len;
-        let initialized = self.blocks.len() * Self::SAMPLES_PER_BLOCK;
-        self.grow_to(len);
-        let end = if value.to_u16() == 0 {
-            len.min(initialized)
-        } else {
-            len
-        };
-        if end > old {
-            self[old..end].fill(value);
+        if len > self.len {
+            self.new_samples(len).fill(MaybeUninit::new(value));
         }
+        self.len = len;
     }
 
     /// Appends a copy of `samples`.
     pub fn append_samples(&mut self, samples: &[T]) {
-        let old = self.len;
-        self.grow_to(old + samples.len());
-        self[old..].copy_from_slice(samples); // splot-copy-ok: callers outside the decoder hand in plain Vec storage
+        let len = self.len + samples.len();
+        self.new_samples(len).write_copy_of_slice(samples);
+        self.len = len;
     }
 
-    fn grow_to(&mut self, len: usize) {
+    fn new_samples(&mut self, len: usize) -> &mut [MaybeUninit<T>] {
         let blocks = Self::blocks_for(len);
         if blocks > self.blocks.len() {
-            self.blocks.resize(blocks, Block([0; PLANE_ALIGNMENT]));
+            self.blocks
+                .resize(blocks, Block([MaybeUninit::uninit(); PLANE_ALIGNMENT]));
         }
-        self.len = len;
+        let samples = self.blocks.as_mut_ptr().cast::<MaybeUninit<T>>();
+        // SAFETY: the aligned blocks cover `len` samples. The caller initializes the tail before publishing its length.
+        unsafe { core::slice::from_raw_parts_mut(samples.add(self.len), len - self.len) }
     }
 }
 
@@ -147,8 +144,7 @@ impl<T: ReconSample> core::ops::Deref for PlaneBuf<T> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
-        // `len` samples fit in the initialized 64-byte-aligned blocks (`grow_to`), and
-        // SAFETY: any bytes there, zero fill included, are a valid `ReconSample` (`u8` or `u16`).
+        // SAFETY: resize and append initialize each new sample before increasing the length of the aligned slice.
         unsafe { core::slice::from_raw_parts(self.blocks.as_ptr().cast::<T>(), self.len) }
     }
 }

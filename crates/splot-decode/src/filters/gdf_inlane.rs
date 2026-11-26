@@ -47,6 +47,12 @@ impl SlotParams {
         let table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
         let bias = GDF_BIAS[block.ref_dst_idx][block.qp_idx];
         let radix = 2 * scale;
+        let mut weight_sums = [0i32; 3];
+        let pair_weights = SYM_PAIRS.map(|(a, b, sum)| {
+            let pair = [table[sum][a][0], table[sum][b][0]];
+            weight_sums[sum] += i32::from(pair[0]) + i32::from(pair[1]);
+            core::array::from_fn(|lane| pair[lane & 1])
+        });
         Self {
             index_radix: radix,
             index_radix_sq: radix * radix,
@@ -63,17 +69,8 @@ impl SlotParams {
             linear_bound: alpha[..GDF_COORDS.len()]
                 .iter()
                 .fold(LINEAR_RANGE, |bound, alpha| bound.min(alpha[0])),
-            pair_weights: SYM_PAIRS.map(|(a, b, sum)| {
-                core::array::from_fn(|lane| table[sum][if lane & 1 == 0 { a } else { b }][0])
-            }),
-            tap_bias: core::array::from_fn(|sum| {
-                let weights: i32 = SYM_PAIRS
-                    .iter()
-                    .filter(|pair| pair.2 == sum)
-                    .map(|&(a, b, _)| i32::from(table[sum][a][0]) + i32::from(table[sum][b][0]))
-                    .sum();
-                bias[sum] - COMB_BIAS * weights
-            }),
+            pair_weights,
+            tap_bias: core::array::from_fn(|sum| bias[sum] - COMB_BIAS * weight_sums[sum]),
         }
     }
 }
@@ -643,10 +640,11 @@ fn slot_rows_with<W: WindowRows, R: RowSink>(
         return;
     }
     let gradient = unpack_blocks(simd, (classes >> 2) + params.slot.tap_bias[2]);
-    let class = classes & 3;
-    let class = (class | (class << 16)).bitcast::<u16x16<Avx2>>();
     let zero = u16x16::splat(simd, 0);
-    let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
+    let masks = (
+        ((classes << 31) >> 31).bitcast::<u16x16<Avx2>>(),
+        ((classes << 30) >> 31).bitcast::<u16x16<Avx2>>(),
+    );
     macro_rules! rows {
         ($linear:literal, $swap_transpose:literal) => {{
             let pos = row_index::<W, 0, $linear, $swap_transpose>(

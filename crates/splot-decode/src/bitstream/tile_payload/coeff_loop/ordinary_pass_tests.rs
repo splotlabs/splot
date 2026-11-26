@@ -72,6 +72,7 @@ fn staged_input(
         parity_hiding: base_config.parity_hiding,
         use_tcq: base_config.use_tcq,
         lossless,
+        scan_order: false,
     }
 }
 

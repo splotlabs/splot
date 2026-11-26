@@ -464,11 +464,7 @@ fn failed_direct_copies_leave_the_lease_reusable() {
     let mut lease = progress.direct_stripe(0).expect("stripe lease");
     let mut target = lease.take_target().expect("stripe target");
     target.shorten_for_test(PlaneId::Y);
-    assert!(
-        source
-            .copy_rows_into(0, height, target.take(PlaneId::Y), CopyAll)
-            .is_err()
-    );
+    assert!(source.copy_into(target.take(PlaneId::Y), CopyAll).is_err());
     drop((target, lease));
     assert_eq!(progress.published_luma_rows(), 0);
     assert!(progress.direct_stripe(0).is_some(), "the lease is reusable");

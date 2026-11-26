@@ -705,7 +705,7 @@ fn shared_chroma_size_disables_compound_prediction() -> TestResult {
 
 #[test]
 fn regular_interintra_syntax_precedes_drl() -> TestResult {
-    let bsize_group = super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8];
+    let bsize_group = usize::from(super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8]);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
         SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
@@ -760,7 +760,7 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
 
 #[test]
 fn regular_interintra_wedge_syntax_couples_index_to_wedge() -> TestResult {
-    let bsize_group = super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8];
+    let bsize_group = usize::from(super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8]);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
         SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),

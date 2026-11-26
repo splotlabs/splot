@@ -1122,10 +1122,9 @@ fn warp_predict_section<R: WarpRunner, S: Simd, T: ReconSample>(
     let projected = project_section_center(params)?;
     let mut intermediate = [[0i16; WARPED_BLOCK_SIZE]; WARP_INTERMEDIATE_ROWS];
     let origin = interior_warp_source_origin(reference, params, &projected);
-    if let Some(source_origin) = origin
-        && !(shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some())
+    if !(shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some())
         && let Some(rows) =
-            eight_bit::section(runner, reference, shear, &projected, source_origin, round1)
+            eight_bit::section(runner, reference, shear, &projected, origin, params, round1)
     {
         let mut store = store;
         for (row, values) in rows.into_iter().enumerate() {

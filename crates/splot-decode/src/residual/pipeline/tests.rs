@@ -1337,6 +1337,7 @@ fn ctx_with_chroma(block: BlockRect, bit_depth: BitDepth, chroma: ChromaSampling
 fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
     crate::bitstream::tile_payload::LumaCoeffBlock {
         eob: 0,
+        scan_order: false,
         quant_start: 0,
         quant_len: 0,
         zero_tail: 0,

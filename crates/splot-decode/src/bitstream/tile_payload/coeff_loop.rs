@@ -16,9 +16,6 @@ use super::coeff_state::TileCoeffStateError;
 
 const EOB_MULTISIZE_OFFSET: usize = 4;
 const MAX_NONZERO_EOB_PT: usize = 11;
-const EOB_GROUP_START: [usize; MAX_NONZERO_EOB_PT + 1] =
-    [0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 257, 513];
-const EOB_OFFSET_BITS: [usize; MAX_NONZERO_EOB_PT + 1] = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 const TX_SIZES: usize = 25;
 
 /// The coefficient geometry of one `TxSize`: its 4x4 extent, the
@@ -210,9 +207,12 @@ pub(crate) fn read_nonzero_coeff_eob(
         return Ok(eob_pt);
     }
     let eob_extra = read_row(symbols, cdfs.block_rows_mut().eob_extra()) != 0;
-    let width = eob_extra_bits_width(eob_pt)?;
+    if eob_pt > MAX_NONZERO_EOB_PT {
+        return Err(CoeffLoopContextError::InvalidEobPoint { eob_pt });
+    }
+    let width = eob_pt - 3;
     let eob_extra_bits = read_eob_literal(symbols, width as u32, "eob_extra_bit")? as usize;
-    Ok(EOB_GROUP_START[eob_pt] + (usize::from(eob_extra) << width) + eob_extra_bits)
+    Ok(1 + ((2 + usize::from(eob_extra)) << width) + eob_extra_bits)
 }
 
 const fn eob_pt_size(eob_multisize: usize) -> EobPtSize {
@@ -261,13 +261,6 @@ fn checked_resolved_eob_pt(
         eob_pt_extra_width,
         eob_pt_extra,
     ))
-}
-
-fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
-    let Some(width) = EOB_OFFSET_BITS.get(eob_pt) else {
-        return Err(CoeffLoopContextError::InvalidEobPoint { eob_pt });
-    };
-    Ok(width.saturating_sub(1))
 }
 
 #[expect(

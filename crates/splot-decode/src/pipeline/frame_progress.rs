@@ -255,12 +255,15 @@ impl<T: ReconSample> DirectStripeTarget<T> {
 pub(crate) struct DirectStripeLease<T: ReconSample> {
     progress: Arc<FrameProgress<T>>,
     stripe: usize,
+    submitted: bool,
     target: Option<DirectStripeTarget<T>>,
 }
 
 impl<T: ReconSample> Drop for DirectStripeLease<T> {
     fn drop(&mut self) {
-        self.progress.release_direct_hold(self.stripe);
+        if !self.submitted {
+            self.progress.release_direct_hold(self.stripe);
+        }
     }
 }
 
@@ -271,11 +274,8 @@ impl<T: ReconSample> DirectStripeLease<T> {
 
     pub(crate) fn submit(mut self) -> bool {
         drop(self.target.take());
-        if self.progress.direct_holds(self.stripe) != 1 {
-            return false;
-        }
-        self.progress.publish_direct(self.stripe);
-        true
+        self.submitted = self.progress.publish_direct(self.stripe);
+        self.submitted
     }
 }
 
@@ -491,6 +491,7 @@ impl<T: ReconSample> FrameProgress<T> {
         Some(DirectStripeLease {
             progress: Arc::clone(self),
             stripe,
+            submitted: false,
             target: Some(DirectStripeTarget {
                 planes: [Some(y), u, v],
             }),
@@ -576,17 +577,6 @@ impl<T: ReconSample> FrameProgress<T> {
         }
     }
 
-    /// Holders left on a stripe's direct lease.
-    fn direct_holds(&self, stripe: usize) -> u32 {
-        self.layout.get().map_or(0, |layout| {
-            layout
-                .lock()
-                .stripes
-                .get(stripe)
-                .map_or(0, |stripe| stripe.holds)
-        })
-    }
-
     /// Records that one stripe's samples have landed in the workspace and
     /// advances the watermark over the contiguous published prefix.
     #[cfg(test)]
@@ -600,22 +590,23 @@ impl<T: ReconSample> FrameProgress<T> {
         self.published_luma_rows.publish(rows);
     }
 
-    fn publish_direct(&self, stripe: usize) {
+    fn publish_direct(&self, stripe: usize) -> bool {
         let Some(layout) = self.layout.get() else {
-            return;
+            return false;
         };
         let mut layout = layout.lock();
-        let Some(leased) = layout
-            .stripes
-            .get_mut(stripe)
-            .map(|stripe| &mut stripe.leased)
-        else {
-            return;
+        let Some(entry) = layout.stripes.get_mut(stripe) else {
+            return false;
         };
-        *leased = false;
+        if entry.holds != 1 {
+            return false;
+        }
+        entry.holds = 0;
+        entry.leased = false;
         let rows = complete_stripe(&mut layout, stripe);
         drop(layout);
         self.published_luma_rows.publish(rows);
+        true
     }
 
     /// The number of luma rows from the frame top whose samples are final.

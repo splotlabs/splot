@@ -590,17 +590,17 @@ fn apply_residuals<S: Simd, O: GdfSample>(
     output: &mut [O; 16],
     block: &GdfBlock,
 ) {
-    let base = O::load(simd, output);
+    let base = O::load(simd, output).bitcast::<i16x16<S>>();
     let filtered = (base + residual)
         .max(i16x16::splat(simd, 0))
         .min(i16x16::splat(simd, block.max_sample as i16));
     O::store(simd, filtered, output);
 }
 
-/// A sample type of the luma rows GDF filters in place.
+/// A sample type of the luma rows GDF reads and filters.
 pub(super) trait GdfSample: Copy + Default {
-    /// The 16 samples of `samples` as `i16` lanes.
-    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S>;
+    /// The 16 samples of `samples` as `u16` lanes.
+    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
     /// Stores 16 lanes, each within the sample range, into `samples`.
     fn store<S: Simd>(simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]);
     /// Adds to each sample of `output` its § 7.20.5 residual in `residuals`.
@@ -610,8 +610,8 @@ pub(super) trait GdfSample: Copy + Default {
 impl GdfSample for u16 {
     #[expect(clippy::inline_always)]
     #[inline(always)]
-    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S> {
-        u16x16::from_slice(simd, samples).bitcast()
+    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
+        u16x16::from_slice(simd, samples)
     }
 
     #[expect(clippy::inline_always)]
@@ -633,9 +633,9 @@ impl GdfSample for u16 {
 impl GdfSample for u8 {
     #[expect(clippy::inline_always)]
     #[inline(always)]
-    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S> {
+    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
         let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
-        simd.combine_u16x8(low, high).bitcast()
+        simd.combine_u16x8(low, high)
     }
 
     #[expect(clippy::inline_always)]
@@ -826,31 +826,9 @@ pub(super) fn sym_rows_narrow<B: splot_core::simd::SimdBackend, O: GdfSample>(
     Some(())
 }
 
-/// A source row sample type that [`copy_shifted`] widens to `u16` lanes.
-pub(super) trait SourceLanes: Copy + Default {
-    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S>;
-}
-
-impl SourceLanes for u8 {
-    #[expect(clippy::inline_always)]
-    #[inline(always)]
-    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
-        let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, samples));
-        simd.combine_u16x8(low, high)
-    }
-}
-
-impl SourceLanes for u16 {
-    #[expect(clippy::inline_always)]
-    #[inline(always)]
-    fn lanes<S: Simd>(simd: S, samples: &[Self; 16]) -> u16x16<S> {
-        u16x16::from_slice(simd, samples)
-    }
-}
-
 /// Writes `src << shift` into `dst`, as long as `src`, and returns the
 /// largest sample of `src`.
-pub(super) fn copy_shifted<B: splot_core::simd::SimdBackend, T: SourceLanes>(
+pub(super) fn copy_shifted<B: splot_core::simd::SimdBackend, T: GdfSample>(
     backend: B,
     src: &[T],
     dst: &mut [u16],
@@ -861,7 +839,7 @@ pub(super) fn copy_shifted<B: splot_core::simd::SimdBackend, T: SourceLanes>(
 
 #[expect(clippy::inline_always)]
 #[inline(always)]
-fn copy_shifted_with<S: Simd, T: SourceLanes>(
+fn copy_shifted_with<S: Simd, T: GdfSample>(
     simd: S,
     src: &[T],
     dst: &mut [u16],
@@ -870,7 +848,7 @@ fn copy_shifted_with<S: Simd, T: SourceLanes>(
     let len = src.len().min(dst.len());
     let mut max = u16x16::splat(simd, 0);
     let mut chunk = |samples: &[T; 16], out: &mut [u16; 16]| {
-        let samples = T::lanes(simd, samples);
+        let samples = T::load(simd, samples);
         max = max.max(samples);
         (samples << shift).store_array(out);
     };
@@ -1122,6 +1100,21 @@ fn class_tables(block: &GdfBlock) -> [[i16; 16]; 4] {
     })
 }
 
+/// Kernel and classification tables shared by all column tiles of a run.
+pub(super) struct RunParams {
+    sym: GdfSymParams,
+    classes: [[i16; 16]; 4],
+}
+
+impl RunParams {
+    pub(super) fn new(block: &GdfBlock) -> Self {
+        Self {
+            sym: GdfSymParams::new(block),
+            classes: class_tables(block),
+        }
+    }
+}
+
 /// Filters a staged column tile in place in `output`. The source rows have
 /// `TAP_REACH` samples of halo on each side and `TILE_STRIDE` samples of
 /// storage per row.
@@ -1129,23 +1122,15 @@ fn class_tables(block: &GdfBlock) -> [[i16; 16]; 4] {
 pub(super) fn filter_run<B: splot_core::simd::SimdBackend, O: GdfSample>(
     backend: B,
     source: &[u16],
-    block: &GdfBlock,
+    run: (&GdfBlock, &RunParams),
     output: &mut [O],
     scratch: &mut ClassScratch,
 ) -> Option<()> {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return filter_run_with(
-            backend,
-            avx2,
-            inlane::InLane,
-            source,
-            block,
-            output,
-            scratch,
-        );
+        return filter_run_with(backend, avx2, inlane::InLane, source, run, output, scratch);
     }
-    splot_core::with_simd!(backend, simd => filter_run_with(backend, simd, Rough, source, block, output, scratch))
+    splot_core::with_simd!(backend, simd => filter_run_with(backend, simd, Rough, source, run, output, scratch))
 }
 
 #[expect(clippy::inline_always)]
@@ -1155,7 +1140,7 @@ fn filter_run_with<B: splot_core::simd::SimdBackend, S: Simd, P: RowPairs<S>, O:
     simd: S,
     pairs: P,
     source: &[u16],
-    block: &GdfBlock,
+    (block, params): (&GdfBlock, &RunParams),
     output: &mut [O],
     scratch: &mut ClassScratch,
 ) -> Option<()> {
@@ -1173,8 +1158,6 @@ fn filter_run_with<B: splot_core::simd::SimdBackend, S: Simd, P: RowPairs<S>, O:
         .errors
         .get_mut(..2 * error_row)?
         .split_at_mut(error_row);
-    let tables = class_tables(block);
-    let params = GdfSymParams::new(block);
     let key = (
         block.ref_dst_idx,
         block.qp_idx,
@@ -1215,7 +1198,7 @@ fn filter_run_with<B: splot_core::simd::SimdBackend, S: Simd, P: RowPairs<S>, O:
             current,
             previous,
             chunk_classes,
-            &tables,
+            &params.classes,
         )?;
         let windows = rows.as_flattened().array_windows::<TILE_SPAN>().step_by(16);
         let errors = top_errors[..full]
@@ -1230,7 +1213,7 @@ fn filter_run_with<B: splot_core::simd::SimdBackend, S: Simd, P: RowPairs<S>, O:
                 &window,
                 ErrorRows([top, bottom], table),
                 classes,
-                (block, &params),
+                (block, &params.sym),
             );
         }
         let start = (2 * row_pair * block.base_stride).checked_add(block.x)?;
@@ -1253,7 +1236,7 @@ fn filter_run_with<B: splot_core::simd::SimdBackend, S: Simd, P: RowPairs<S>, O:
                 [top_tail, bottom_tail],
                 &classes,
                 block,
-                &params,
+                &params.sym,
             )?;
         }
     }
@@ -1316,7 +1299,7 @@ fn band_classes_with<S: Simd>(
 #[cfg(test)]
 #[test]
 fn copy_shifted_matches_scalar_shift_and_max() {
-    fn check<T: SourceLanes + Into<u16>>(src: &[T], shift: u32) {
+    fn check<T: GdfSample + Into<u16>>(src: &[T], shift: u32) {
         let mut dst = vec![u16::MAX; src.len() + 3];
         let max = crate::test_support::with_auto_backend!(backend => {
             copy_shifted(backend, src, &mut dst[..src.len()], shift)

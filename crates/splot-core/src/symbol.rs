@@ -322,12 +322,12 @@ fn arity_rates<const N: usize>() -> &'static [u8; RATE_STATES] {
     }
 }
 
-/// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
+/// `CDF_PROB_SCALE` in the probability lanes and zero in the remaining lanes.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const fn past_row_lanes<const N: usize>() -> [u16; 8] {
+const fn row_scale_lanes<const N: usize>() -> [u16; 8] {
     let mut lanes = [0u16; 8];
-    let mut i = N - 1;
-    while i < 8 {
+    let mut i = 0;
+    while i < N - 1 {
         lanes[i] = CDF_PROB_SCALE as u16;
         i += 1;
     }
@@ -385,14 +385,13 @@ fn early_exit_search<T: CdfStorage, const N: usize>(
 fn search_lanes<const N: usize>(
     token: LaneToken,
     row: u16x8<LaneToken>,
-    past: [u16; 8],
     increments: [u16; 8],
     range7: u16,
     threshold: i16,
     range: u16,
 ) -> (u32, u16, u16, mask16x8<LaneToken>) {
-    let probabilities = row | u16x8::load_array(token, past);
-    let f = u16x8::splat(token, CDF_PROB_SCALE as u16).saturating_sub(probabilities);
+    let scale = u16x8::load_array(token, const { row_scale_lanes::<N>() });
+    let f = scale.saturating_sub(row);
     let pp4 = ((f >> EC_PROB_SHIFT) << 6) + u16x8::load_array(token, increments);
     let scaled = mul_high(token, range7, pp4.bitcast());
     let boundaries: u16x8<LaneToken> = (scaled << 3).bitcast();
@@ -451,7 +450,6 @@ fn row_search_lanes<const N: usize>(
     let (above, cur, prev, below) = search_lanes::<N>(
         token,
         value,
-        const { past_row_lanes::<N>() },
         const { prob_inc_lanes::<N>() },
         ((range >> 1) & 0x7f80) as u16,
         (symbol_value >> 3) as i16,
