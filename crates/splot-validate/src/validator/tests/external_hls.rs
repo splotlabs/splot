@@ -152,19 +152,22 @@ fn external_snapshot_checks_complete_objects_and_exact_unique_keys() {
 }
 
 #[test]
-fn external_sequence_header_replacement_in_the_same_sequence_uses_identity_check() {
+fn external_sequence_header_replacement_checks_identity_within_the_coded_video_sequence() {
     let options = external_options(&sequence_header_obu_for_xlayer(0, 0, 0));
-    let mut stream = temporal_delimiter_obu();
-    stream.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
-    stream.extend(td_and_seq_header(0, 2, 0));
-    stream.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 0, 0));
-    let report = Validator::new(false).validate_bytes_with_options(&stream, &options);
-    assert!(
-        report
-            .errors()
-            .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
-        "{report}"
-    );
+    for (frame_type, expected_finding) in [(4, false), (7, true)] {
+        let mut stream = temporal_delimiter_obu();
+        stream.extend(frame_obu_direct_seq_ref_layer(4, 0, 0, 0, 0));
+        stream.extend(td_and_seq_header(0, 2, 0));
+        stream.extend(frame_obu_direct_seq_ref_layer(frame_type, 0, 0, 0, 0));
+        let report = Validator::new(false).validate_bytes_with_options(&stream, &options);
+        assert_eq!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "hls/repeated-sequence-header-not-identical"),
+            expected_finding,
+            "{report}"
+        );
+    }
 }
 
 #[test]
@@ -184,4 +187,58 @@ fn external_snapshot_does_not_suppress_unrelated_random_access_findings() {
             "{report}"
         );
     }
+}
+
+#[test]
+fn external_sequence_header_supplies_state_for_avm_fixture() {
+    use splot_core::annexb::parse_annex_b_obus;
+    use splot_core::ivf::parse_ivf_partial;
+    use splot_core::types::ObuType;
+
+    let fixture = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
+    );
+    let input = parse_ivf_partial(fixture);
+    assert!(input.error.is_none());
+    let mut stream: Vec<_> = input
+        .frames
+        .into_iter()
+        .flat_map(|frame| frame.payload.iter().copied())
+        .collect();
+    let mut start = 0;
+    let sequence_range = parse_annex_b_obus(&stream)
+        .unwrap()
+        .into_iter()
+        .find_map(|obu| {
+            let end = usize::try_from(obu.offset.get() + u64::from(obu.size)).unwrap();
+            let range = core::mem::replace(&mut start, end)..end;
+            (obu.header.obu_type == ObuType::SequenceHeader).then_some(range)
+        })
+        .unwrap();
+    let options = external_options(&stream[sequence_range.clone()]);
+    stream.drain(sequence_range);
+
+    let validator = Validator::new(false);
+    let without_context = validator.validate_bytes(&stream);
+    assert!(
+        without_context
+            .errors()
+            .any(|d| d.rule_id == "hls/unavailable-sequence-header"),
+        "{without_context}"
+    );
+    let execution = validator.validate_reader_with_evidence(
+        stream.as_slice(),
+        &options,
+        ValidationLimits {
+            max_unit_bytes: 8192,
+            max_obus: 64,
+            max_diagnostics: 64,
+        },
+        || false,
+    );
+    assert!(matches!(
+        execution.completion,
+        ValidationCompletion::EndOfInput
+    ));
+    assert_eq!(execution.counts.errors, 0, "{}", execution.report);
 }
