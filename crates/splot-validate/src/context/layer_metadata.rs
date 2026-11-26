@@ -160,7 +160,8 @@ impl LayerMetadataTracker {
                     }));
                 }
                 Entry::Occupied(mut entry) => {
-                    if matches!(entry.get(), CiLayer::Signaled(value) if value.content != content) {
+                    if matches!(entry.get(), CiLayer::Signaled(value) if value.content.information_differs(&content))
+                    {
                         entry.insert(CiLayer::Unavailable);
                     }
                 }
@@ -251,34 +252,34 @@ impl LayerMetadataTracker {
     }
 
     fn resolve_ci(&mut self, xlayer: ExtendedLayerId, rap: &Rap) -> CiEpoch {
+        let declared = std::array::from_fn(|index| {
+            let mlayer = EmbeddedLayerId::from_bits(index as u8);
+            self.pending_ci.contains_key(&(xlayer, mlayer))
+        });
+        let sources = rap.presence.content_interpretation_sources(declared);
         let mut layers = Vec::new();
-        for index in 0..=rap.max_mlayer_id.get() {
-            let mlayer = EmbeddedLayerId::from_bits(index);
+        for (index, source) in sources
+            .into_iter()
+            .enumerate()
+            .take(usize::from(rap.max_mlayer_id.get()) + 1)
+        {
+            let mlayer = EmbeddedLayerId::from_bits(index as u8);
             let value = if let Some(declaration) = self.pending_ci.remove(&(xlayer, mlayer)) {
                 declaration
-            } else if !matches!(self.options.external_hls, ExternalHlsMode::Provided(_)) {
-                layers
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(source_index, source)| {
-                        let source_id = EmbeddedLayerId::from_bits(source_index as u8);
-                        if !rap.presence.is_present(mlayer, source_id) {
-                            return None;
-                        }
-                        match source {
-                            CiLayer::Signaled(value) => {
-                                let mut value = value.clone();
-                                value.inherited_from.insert(0, source_id);
-                                Some(CiLayer::Signaled(value))
-                            }
-                            CiLayer::Unavailable => Some(CiLayer::Unavailable),
-                            CiLayer::Unspecified => None,
-                        }
-                    })
-                    .unwrap_or(CiLayer::Unspecified)
-            } else {
+            } else if matches!(self.options.external_hls, ExternalHlsMode::Provided(_)) {
                 CiLayer::Unavailable
+            } else if let Some(source) = source {
+                match &layers[usize::from(source.get())] {
+                    CiLayer::Signaled(value) => {
+                        let mut value = value.clone();
+                        value.inherited_from.insert(0, source);
+                        CiLayer::Signaled(value)
+                    }
+                    CiLayer::Unavailable => CiLayer::Unavailable,
+                    CiLayer::Unspecified => CiLayer::Unspecified,
+                }
+            } else {
+                CiLayer::Unspecified
             };
             layers.push(value);
         }
