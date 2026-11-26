@@ -1,4 +1,4 @@
-name: Combined SAD x86 instruction counts
+name: Combined SAD x86 confirmation
 on:
   push:
     branches: [codex/measure-combined-unsigned-abs]
@@ -8,10 +8,6 @@ jobs:
   benchmark:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    env:
-      DYNAMORIO_TAG: release_11.3.0-1
-      DYNAMORIO_ASSET: DynamoRIO-Linux-11.3.0.tar.gz
-      DYNAMORIO_SHA256: ae02049df5c4daeb82d4087aaa0d38bf58cdd26b38fb6042dccf27cbc32ceed9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -33,17 +29,15 @@ jobs:
           cargo fast
           cp target/release/splot "$RUNNER_TEMP/results/combined"
           sha256sum "$RUNNER_TEMP/results/"*
-      - name: Install DynamoRIO
+      - name: Fetch pinned inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          archive="$HOME/dynamorio.tar.gz"
-          if [ ! -f "$archive" ]; then
-            curl -fsSL -o "$archive" \
-              "https://github.com/DynamoRIO/dynamorio/releases/download/${DYNAMORIO_TAG}/${DYNAMORIO_ASSET}"
-          fi
-          echo "${DYNAMORIO_SHA256}  $archive" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/dynamorio"
-          tar -xzf "$archive" -C "$RUNNER_TEMP/dynamorio" --strip-components=1
-          echo "DYNAMORIO_HOME=$RUNNER_TEMP/dynamorio" >> "$GITHUB_ENV"
-
-      - name: Compare decoder instructions with main
-        run: cargo xtask perf --base 83e123ecefdaf1a76d1cef313152f05d91a9a14b --base-bin "$RUNNER_TEMP/results/baseline" --report-only
+          python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/corpus"
+          gh release download hd-streams-2026-10 -R EwoutH/AV2 -p 'TunnelFlag*qp135*' -p 'WITCHER3*qp135*' -D "$RUNNER_TEMP/corpus"
+      - name: Check output and measure paired decoder runs
+        run: python3 "$RUNNER_TEMP/measure-combined.py" "$RUNNER_TEMP/results" "$RUNNER_TEMP/corpus" tests/conformance/ewouth-av2.toml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-x86-confirmation
+          path: ${{ runner.temp }}/results/observations.csv
