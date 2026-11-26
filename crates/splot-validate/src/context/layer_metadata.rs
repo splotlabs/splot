@@ -189,12 +189,9 @@ impl LayerMetadataTracker {
 
     fn resolve_rap(&self, obu: &ObuEnvelope<'_>, prefix: &FrameHeaderPrefix) -> Option<Rap> {
         let mut report = ValidationReport::new();
-        let id = self.context.resolve_frame_header_reference(
-            &prefix,
-            obu,
-            &self.options,
-            &mut report,
-        )?;
+        let id =
+            self.context
+                .resolve_frame_header_reference(prefix, obu, &self.options, &mut report)?;
         if !report.is_conformant() {
             return None;
         }
