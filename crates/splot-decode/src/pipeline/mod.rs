@@ -1688,7 +1688,7 @@ fn decode_frames_in_order(
                     }
                 });
                 let (inter_slot, inter_core, products, motion_field) = decoded;
-                let (inter_display_grain, sequence_location) = {
+                let (inter_display_grain, sequence_location, tip_quantizer_derived) = {
                     let layer = xlayers.get(candidate_xlayer).ok_or_else(|| {
                         unsupported_at(
                             "missing_random_access_frame",
@@ -1702,7 +1702,13 @@ fn decode_frames_in_order(
                         &layer.sequence,
                         inter_envelope.offset,
                     )?;
-                    (grain, layer.sequence_location)
+                    let tip_quantizer_derived = inter_core.obu_type.is_tip_frame()
+                        && !layer
+                            .sequence
+                            .inter
+                            .as_ref()
+                            .is_some_and(|inter| inter.enable_tip_explicit_qp);
+                    (grain, layer.sequence_location, tip_quantizer_derived)
                 };
                 xlayers.observe_suffix_for_xlayer(
                     suffix_after_candidate(obus, next_candidate)?,
@@ -1743,7 +1749,13 @@ fn decode_frames_in_order(
                 )?;
                 let provenance = inter_frame.provenance;
                 frames.push(inter_frame)?;
-                session.observe_coded_frame(provenance, next_candidate, unit.view());
+                session.observe_coded_frame(
+                    provenance,
+                    next_candidate,
+                    unit.view(),
+                    &inter_core,
+                    tip_quantizer_derived,
+                );
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = inter_update.order_hint;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
@@ -2230,7 +2242,13 @@ fn decode_frames_in_order(
                 )?;
                 let provenance = key_frame.provenance;
                 frames.push(key_frame)?;
-                session.observe_coded_frame(provenance, next_candidate, unit.view());
+                session.observe_coded_frame(
+                    provenance,
+                    next_candidate,
+                    unit.view(),
+                    &key_core,
+                    false,
+                );
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);

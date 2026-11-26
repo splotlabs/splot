@@ -189,11 +189,33 @@ pub struct ObuLocation {
     pub offset: ByteOffset,
 }
 
+/// Where a coded frame obtains its base quantizer index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum BaseQuantizerOrigin {
+    /// Read from `quantization_params()` (AV2 § 5.18.6.1).
+    Signaled,
+    /// Computed from TIP reference quantizers (AV2 § 5.18.2).
+    Derived,
+    /// Copied from the bridge or inactive BRU reference (AV2 § 5.18.2).
+    Inherited,
+}
+
+/// The coded frame's base quantizer index and its source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct BaseQuantizer {
+    /// The value of `base_q_idx` before segment or block deltas.
+    pub index: u32,
+    /// How the decoder obtained the value.
+    pub origin: BaseQuantizerOrigin,
+}
+
 /// A coded frame or one of its continuation OBUs admitted by the decoder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CodedFrameEvent {
-    /// A frame that supplies coded samples, whether or not it produces a picture.
+    /// An admitted frame, including a frame that produces no picture.
     #[non_exhaustive]
     Frame {
         /// The first coded OBU, also used by [`PictureProvenance::coded`].
@@ -206,6 +228,8 @@ pub enum CodedFrameEvent {
         embedded_layer_id: EmbeddedLayerId,
         /// The coded temporal layer.
         temporal_layer_id: TemporalLayerId,
+        /// The known base quantizer, if available.
+        base_quantizer: Option<BaseQuantizer>,
     },
     /// A tile group that continues a frame reported by [`Self::Frame`].
     #[non_exhaustive]

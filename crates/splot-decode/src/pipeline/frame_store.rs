@@ -16,7 +16,10 @@ use crate::decoder::CodedFrameObserver;
 use crate::prediction::inter::{
     FrameProductWriters, FrameProducts, MotionFieldHandle, MotionFieldLayout,
 };
-use crate::{CodedFrameEvent, DecodePlannedObu, ObuLocation, PictureProvenance, Result};
+use crate::{
+    BaseQuantizer, BaseQuantizerOrigin, CodedFrameEvent, DecodePlannedObu, ObuLocation,
+    PictureProvenance, Result,
+};
 use core::num::NonZeroUsize;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::MAX_REF_FRAMES;
@@ -96,6 +99,8 @@ impl DecodeSession {
         provenance: PictureProvenance,
         candidate: &DecodePlannedObu,
         bytes: SourceBytes<'_>,
+        core: &FrameHeaderCore,
+        tip_quantizer_derived: bool,
     ) {
         let Some(observe) = &self.coded_frames else {
             return;
@@ -107,6 +112,21 @@ impl DecodeSession {
             extended_layer_id: header.extended_layer_id,
             embedded_layer_id: header.embedded_layer_id,
             temporal_layer_id: header.temporal_layer_id,
+            base_quantizer: core.quantization_params.map(|quantizer| BaseQuantizer {
+                index: quantizer.base_q_idx,
+                origin: if tip_quantizer_derived {
+                    BaseQuantizerOrigin::Derived
+                } else if core.is_bridge
+                    || core
+                        .inter
+                        .as_ref()
+                        .is_some_and(|inter| inter.bru_inactive == Some(true))
+                {
+                    BaseQuantizerOrigin::Inherited
+                } else {
+                    BaseQuantizerOrigin::Signaled
+                },
+            }),
         });
         if header.obu_type.is_tile_group() {
             for group in tile_group_continuations(bytes, candidate) {
