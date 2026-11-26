@@ -694,9 +694,11 @@ impl LevelPass<'_, '_> {
     #[inline(always)]
     fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32) {
         let nonzero = level != 0;
-        let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
-        self.levels[entry_grid(entry)] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
-        self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
+        if nonzero || !cfg!(target_arch = "x86_64") {
+            let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
+            self.levels[entry_grid(entry)] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
+            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
+        }
         self.nonzero_len += usize::from(nonzero);
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;

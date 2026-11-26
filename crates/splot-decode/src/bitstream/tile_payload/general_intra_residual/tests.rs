@@ -1794,16 +1794,12 @@ fn dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct() {
 
 #[test]
 fn buffered_secondary_reconstruction_matches_raster_for_a_scan_prefix() {
-    let packed = [14, -7, 0, 11, 4, -3];
+    let packed = std::array::from_fn::<_, 35, _>(|i| (i as i32 * 11 + 28) % 29 - 14);
     let scan = splot_recon::coefficient_scan_slice(32, 32, splot_recon::tx_class(DCT_DCT)).unwrap();
-    let mut raster = [0; 1024];
-    for (&position, &value) in scan.iter().zip(&packed) {
-        raster[usize::from(position)] = value;
-    }
     let prediction = [128u8; 1024];
-    let reconstruct = |values: &[i32], scan_order| {
+    let reconstruct = |values: &[i32], scan_order, eob| {
         let block = LumaCoeffBlock {
-            eob: packed.len() as u16,
+            eob,
             intra_ist: Some(IntraIstSyntax {
                 sec_tx_type: 1,
                 most_probable_stx_set: Some(0),
@@ -1830,9 +1826,25 @@ fn buffered_secondary_reconstruction_matches_raster_for_a_scan_prefix() {
         .unwrap();
         out
     };
-    let expected = reconstruct(&raster, false);
-    assert_ne!(expected.as_slice(), prediction.as_slice());
-    assert_eq!(reconstruct(&packed, true), expected);
+    for qm in [
+        None,
+        Some(QmFrameLevels {
+            levels_gt8: [8; 3],
+            levels_le8: [[8; 3]; 16],
+        }),
+    ] {
+        let _qm = FrameQmScope::install(qm);
+        for packed in [&packed[..6], &packed] {
+            let mut raster = [0; 1024];
+            for (&position, &value) in scan.iter().zip(packed) {
+                raster[usize::from(position)] = value;
+            }
+            let eob = packed.len() as u16;
+            let expected = reconstruct(&raster, false, eob);
+            assert_ne!(expected.as_slice(), prediction.as_slice());
+            assert_eq!(reconstruct(packed, true, eob), expected);
+        }
+    }
 }
 
 #[test]

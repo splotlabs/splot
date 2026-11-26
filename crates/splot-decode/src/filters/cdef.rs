@@ -874,19 +874,27 @@ fn flat_segment<B: SimdBackend, S: ReconSample>(
     u_plane: Option<FramePlane<'_, S>>,
     v_plane: Option<FramePlane<'_, S>>,
 ) -> Option<[Option<u16>; 3]> {
+    let luma = params.y_pri != 0 || params.y_sec != 0;
+    let chroma = u_plane
+        .zip(v_plane)
+        .filter(|_| params.uv_pri != 0 || params.uv_sec != 0);
+    if !luma && chroma.is_none() {
+        return Some([None; 3]);
+    }
+    if cfg!(target_arch = "x86_64") && S::u8_slice(&[]).is_some() {
+        return None;
+    }
     let (col_start, col_end) = tile_span(lookup.tile_col_starts, c, lookup.mi_cols);
     let start = (col_start * MI_SIZE, row_start * MI_SIZE);
     let end = (col_end * MI_SIZE, row_end * MI_SIZE);
     let origin = (c * MI_SIZE, r * MI_SIZE);
     let mut values = [None; 3];
-    if params.y_pri != 0 || params.y_sec != 0 {
+    if luma {
         values[0] = Some(flat_window::<B, S, 64, 8>(
             backend, y_plane, origin, start, end,
         )?);
     }
-    if (params.uv_pri != 0 || params.uv_sec != 0)
-        && let (Some(u_plane), Some(v_plane)) = (u_plane, v_plane)
-    {
+    if let Some((u_plane, v_plane)) = chroma {
         if (lookup.sub_x, lookup.sub_y) != (1, 1) {
             return None;
         }

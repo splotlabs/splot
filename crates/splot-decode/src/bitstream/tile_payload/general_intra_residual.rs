@@ -1885,20 +1885,8 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<
     }
     out.resize(setup.samples, T::default());
     with_residual_scratch(|scratch| {
-        let quant = reconstruct::raster_quant(block, &setup.params, &mut scratch.dequant_pair)?;
-        let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
-        let residual_scratch = &mut scratch.residual[..setup.samples];
-        splot_recon::reconstruct_transform_block_residual_with_secondary_and_backend(
-            backend,
-            prediction,
-            quant,
-            &setup.params,
-            &setup.transform()?,
-            secondary,
-            dequant_scratch,
-            residual_scratch,
-            out.as_mut_slice(),
-        )
+        let residual = reconstruct::intra_residual(backend, block, &setup, secondary, scratch)?;
+        splot_recon::reconstruct_add_residual_with(backend, prediction, residual, bit_depth, out)
     })
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
     Ok(())

@@ -257,7 +257,8 @@ pub use reference::{
 };
 pub use secondary_transform::{
     SecondaryInverseTransform, SecondaryQuant, SecondaryTransformLayout,
-    secondary_inverse_transform, secondary_inverse_transform_with, secondary_transform_layout,
+    secondary_inverse_transform, secondary_inverse_transform_scan_with,
+    secondary_inverse_transform_with, secondary_transform_layout,
 };
 /// Re-export of the § 9.4 `Qm_Offset[txSz]` table so decode crates can resolve a
 /// transform block's built-in quantizer-matrix region without depending on

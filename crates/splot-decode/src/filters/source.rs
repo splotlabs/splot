@@ -482,7 +482,9 @@ impl<T: ReconSample> DeblockedWindow<T> {
                     .append_rows(plane, bottom_start, end, samples)
                     .ok_or_else(state)?;
             }
-            if let Some(carry) = carry.as_deref_mut() {
+            if luma.1 < frame.info().storage_luma_size().height()
+                && let Some(carry) = carry.as_deref_mut()
+            {
                 let skipped = bottom_start - top_end;
                 let kept = samples
                     .get((tail - start - skipped) * width..)

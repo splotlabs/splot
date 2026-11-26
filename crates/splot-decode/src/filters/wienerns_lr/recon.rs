@@ -1045,6 +1045,14 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// whether none changes its luma and the chroma filters read no luma past
     /// the stripe, so the luma target serves as the deblocked luma.
     fn stripe_in_place(&self, (start, end): (usize, usize), active_lr: [bool; 3]) -> [bool; 3] {
+        let ccso = self.ccso_grid.as_ref().and(self.ccso_config.as_ref());
+        let unfiltered = |plane: PlaneId| {
+            !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
+        };
+
+        if !unfiltered(PlaneId::U) || !unfiltered(PlaneId::V) {
+            return [false; 3];
+        }
         let [luma, chroma] = crate::filters::cdef::cdef_stripe_identity(
             self.cdef_strengths.as_deref(),
             self.cdef_grid.as_ref(),
@@ -1052,22 +1060,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             (self.mi_rows, self.mi_cols),
             (start, end),
         );
-        let ccso = self.ccso_grid.as_ref().and(self.ccso_config.as_ref());
-        let unfiltered = |plane: PlaneId| {
-            !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
-        };
-        let chroma = chroma && unfiltered(PlaneId::U) && unfiltered(PlaneId::V);
         let luma = luma && !self.gdf_active && unfiltered(PlaneId::Y);
-        let chroma_reads_luma = active_lr[PlaneId::U.index()]
-            || active_lr[PlaneId::V.index()]
-            || ccso.is_some_and(|config| {
-                config.filters_plane(PlaneId::U) || config.filters_plane(PlaneId::V)
-            });
-        [
-            chroma && luma,
-            chroma,
-            luma && !chroma && !chroma_reads_luma,
-        ]
+        [chroma && luma, chroma, luma && !chroma]
     }
 
     fn run_planes<B: splot_core::simd::SimdBackend>(

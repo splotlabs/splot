@@ -303,6 +303,28 @@ pub(crate) fn secondary_inverse_transform_quant_with<B: SimdBackend>(
     )
 }
 
+/// Applies flat dequantization and the secondary inverse transform to a
+/// primary-scan prefix. Returns the length of the written row prefix in `out`.
+///
+/// # Errors
+/// Returns the [`secondary_inverse_transform`] errors, or a buffer mismatch
+/// if `quant` contains more than `params.n` coefficients.
+pub fn secondary_inverse_transform_scan_with<B: SimdBackend>(
+    backend: B,
+    quant: &[i32],
+    quantizers: (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    out: &mut [i32],
+) -> Result<usize> {
+    secondary_inverse_transform_quant_with(
+        backend,
+        SecondaryQuant::Scan(quant),
+        quantizers,
+        params,
+        SecondaryOutput::Full(out),
+    )
+}
+
 fn secondary_inverse_transform_quant_with_runner<R: IstRunner>(
     runner: R,
     quant: SecondaryQuant<'_>,

@@ -11,7 +11,7 @@ use splot_recon::{
     ReconSample, SecondaryInverseTransform, coefficient_scan_slice, dequant_coefficient,
     dequantize_block_with, dequantize_with_secondary_and_backend,
     inverse_transform_2d_outer_adjusted_with, inverse_transform_2d_outer_with_scratch_and_backend,
-    tx_class,
+    secondary_inverse_transform_scan_with, tx_class,
 };
 
 use super::{
@@ -593,7 +593,7 @@ fn intra_residual_setup(
 
 /// Borrows raster coefficients or scatters a packed IST prefix into the
 /// caller's reusable scratch for the general reconstruction path.
-pub(super) fn raster_quant<'a>(
+fn raster_quant<'a>(
     block: CoeffBlock<'a>,
     params: &DequantBlockParams,
     scratch: &'a mut [i32],
@@ -627,8 +627,33 @@ pub(super) fn raster_quant<'a>(
     Ok(raster)
 }
 
+fn dequantize_residual<B: SimdBackend>(
+    backend: B,
+    block: CoeffBlock<'_>,
+    params: &DequantBlockParams,
+    secondary: Option<&SecondaryInverseTransform>,
+    raster: &mut [i32],
+    out: &mut [i32],
+) -> splot_recon::Result<usize> {
+    if block.scan_order
+        && params.qm.is_none()
+        && let Some(secondary) = secondary
+        && (params.tx_width, params.tx_height) == (secondary.w, secondary.h)
+    {
+        return secondary_inverse_transform_scan_with(
+            backend,
+            &block.quant[..block.quant.len().min(secondary.n)],
+            (params.dc_quant, params.ac_quant, params.dq_denom),
+            secondary,
+            out,
+        );
+    }
+    let quant = raster_quant(block, params, raster)?;
+    dequantize_with_secondary_and_backend(backend, params, quant, secondary, out)
+}
+
 /// Dequantizes and inverse-transforms one intra block into `scratch`.
-fn intra_residual<'s, B: SimdBackend>(
+pub(super) fn intra_residual<'s, B: SimdBackend>(
     backend: B,
     block: CoeffBlock<'_>,
     setup: &ReconstructBlockSetup,
@@ -636,9 +661,14 @@ fn intra_residual<'s, B: SimdBackend>(
     scratch: &'s mut super::ResidualScratch,
 ) -> splot_recon::Result<&'s [i32]> {
     let dequant = &mut scratch.dequant[..setup.adjusted];
-    let quant = raster_quant(block, &setup.params, &mut scratch.dequant_pair)?;
-    let coded =
-        dequantize_with_secondary_and_backend(backend, &setup.params, quant, secondary, dequant)?;
+    let coded = dequantize_residual(
+        backend,
+        block,
+        &setup.params,
+        secondary,
+        &mut scratch.dequant_pair,
+        dequant,
+    )?;
     let residual = &mut scratch.residual[..setup.samples];
     inverse_transform_2d_outer_with_scratch_and_backend(
         backend,
@@ -750,12 +780,12 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
         return Ok(());
     }
     let dequant = &mut scratch.dequant[..setup.adjusted];
-    let quant = raster_quant(block, &setup.params, &mut scratch.dequant_pair)?;
-    let coded = dequantize_with_secondary_and_backend(
+    let coded = dequantize_residual(
         backend,
+        block,
         &setup.params,
-        quant,
         secondary.as_ref(),
+        &mut scratch.dequant_pair,
         dequant,
     )?;
     let residual = &mut scratch.residual[..setup.adjusted];
