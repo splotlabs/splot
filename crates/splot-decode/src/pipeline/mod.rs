@@ -1808,7 +1808,7 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
-                    if let Some(observe) = &session.reference_observer {
+                    if let Some(observe) = &session.observer {
                         observe.capture_input(&layer.reference, frames);
                     }
                     layer
@@ -1819,7 +1819,7 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         &inter_update,
                     );
-                    if let Some(observe) = &session.reference_observer {
+                    if let Some(observe) = &session.observer {
                         observe.publish_update(
                             frames,
                             frame_index,
@@ -2115,7 +2115,7 @@ fn decode_frames_in_order(
                     frame_is_output(&key_core),
                     key_envelope.offset,
                 )?;
-                if let Some(observe) = &session.reference_observer
+                if let Some(observe) = &session.observer
                     && let Some(layer) = xlayers.get(candidate_xlayer)
                 {
                     observe.capture_input(&layer.reference, frames);
@@ -2313,7 +2313,7 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         &key_update,
                     );
-                    if let Some(observe) = &session.reference_observer {
+                    if let Some(observe) = &session.observer {
                         observe.publish_update(
                             frames,
                             frame_index,

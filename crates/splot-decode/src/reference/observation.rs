@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 use splot_core::headers::frame::{FrameHeaderCore, FrameSize, RefIdxBuf};
 use splot_core::types::ObuType;
 
-use crate::pipeline::frame_store::FrameStore;
+use crate::pipeline::frame_store::{DecodeObserver, FrameStore};
 use crate::prediction::inter::{mv_scaling::reference_is_scaled, named_pixel_reference_slots};
 use crate::reference::buffer::{FrameRefUpdate, RuntimeReferenceBuffer};
 use crate::{EmbeddedLayerId, ExtendedLayerId, PictureProvenance, TemporalLayerId};
@@ -132,19 +132,6 @@ pub struct ReferenceFrameEvent {
     pub required_long_term_ids: Vec<u32>,
 }
 
-pub(crate) trait ReferenceObserver: Send + Sync {
-    fn capture_input(&self, reference: &RuntimeReferenceBuffer, frames: &FrameStore);
-
-    fn publish_update(
-        &self,
-        frames: &FrameStore,
-        frame_index: usize,
-        reference: &RuntimeReferenceBuffer,
-        core: &FrameHeaderCore,
-        update: &FrameRefUpdate<'_>,
-    );
-}
-
 pub(crate) struct CaptureReferences {
     publish: Box<dyn Fn(ReferenceFrameEvent) + Send + Sync>,
     before: Mutex<Option<ReferenceSnapshot>>,
@@ -159,7 +146,7 @@ impl CaptureReferences {
     }
 }
 
-impl ReferenceObserver for CaptureReferences {
+impl DecodeObserver for CaptureReferences {
     fn capture_input(&self, reference: &RuntimeReferenceBuffer, frames: &FrameStore) {
         *self.before.lock() = Some(reference.snapshot(frames));
     }

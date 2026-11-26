@@ -12,7 +12,6 @@
 use super::PipelineFrame;
 use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::stream_plan::tile_group_continuations;
-use crate::decoder::CodedFrameObserver;
 use crate::prediction::inter::{
     FrameProductWriters, FrameProducts, MotionFieldHandle, MotionFieldLayout,
 };
@@ -30,15 +29,87 @@ use parking_lot::Mutex;
 
 use super::frame_tasks::{DecoderRowScheduler, RowPools};
 use super::inflight::InflightRing;
+use crate::reference::buffer::{FrameRefUpdate, RuntimeReferenceBuffer};
 use crate::support::decode_buffers::DecodeBuffers;
+
+/// Dispatches to the installed observer so release linking can discard unused event code.
+pub(crate) trait DecodeObserver: Send + Sync {
+    fn observe_coded_frame(
+        &self,
+        _provenance: PictureProvenance,
+        _candidate: &DecodePlannedObu,
+        _bytes: SourceBytes<'_>,
+        _core: &FrameHeaderCore,
+        _tip_quantizer_derived: bool,
+    ) {
+    }
+
+    fn capture_input(&self, _reference: &RuntimeReferenceBuffer, _frames: &FrameStore) {}
+
+    fn publish_update(
+        &self,
+        _frames: &FrameStore,
+        _frame_index: usize,
+        _reference: &RuntimeReferenceBuffer,
+        _core: &FrameHeaderCore,
+        _update: &FrameRefUpdate<'_>,
+    ) {
+    }
+}
+
+pub(crate) struct CodedFrameObserver<F>(pub(crate) F);
+
+impl<F: Fn(CodedFrameEvent) + Send + Sync> DecodeObserver for CodedFrameObserver<F> {
+    fn observe_coded_frame(
+        &self,
+        provenance: PictureProvenance,
+        candidate: &DecodePlannedObu,
+        bytes: SourceBytes<'_>,
+        core: &FrameHeaderCore,
+        tip_quantizer_derived: bool,
+    ) {
+        let header = candidate.header();
+        (self.0)(CodedFrameEvent::Frame {
+            coded: provenance.coded,
+            sequence_header: provenance.sequence_header,
+            extended_layer_id: header.extended_layer_id,
+            embedded_layer_id: header.embedded_layer_id,
+            temporal_layer_id: header.temporal_layer_id,
+            base_quantizer: core.quantization_params.map(|quantizer| BaseQuantizer {
+                index: quantizer.base_q_idx,
+                origin: if tip_quantizer_derived {
+                    BaseQuantizerOrigin::Derived
+                } else if core.is_bridge
+                    || core
+                        .inter
+                        .as_ref()
+                        .is_some_and(|inter| inter.bru_inactive == Some(true))
+                {
+                    BaseQuantizerOrigin::Inherited
+                } else {
+                    BaseQuantizerOrigin::Signaled
+                },
+            }),
+        });
+        if header.obu_type.is_tile_group() {
+            for group in tile_group_continuations(bytes, candidate) {
+                (self.0)(CodedFrameEvent::Continuation {
+                    coded: provenance.coded,
+                    obu: ObuLocation {
+                        user_data: provenance.coded.user_data,
+                        offset: ByteOffset::new(group.offset().get() - bytes.base()),
+                    },
+                });
+            }
+        }
+    }
+}
 
 /// The frame-pipelining depth of one context and the decoder state it keeps
 /// between decode calls, as dav2d keeps its frame contexts.
 pub(crate) struct DecodeSession {
-    pub(crate) coded_frames: Option<CodedFrameObserver>,
+    pub(crate) observer: Option<Box<dyn DecodeObserver>>,
     pub(crate) external_atlases: crate::ExternalAtlases,
-    pub(crate) reference_observer:
-        Option<Box<dyn crate::reference::observation::ReferenceObserver>>,
     frame_delay: NonZeroUsize,
     /// Immutable concrete SIMD backend validated when the session opened.
     backend: splot_core::simd::ResolvedBackend,
@@ -71,8 +142,7 @@ impl DecodeSession {
         Self {
             frame_delay,
             external_atlases: crate::ExternalAtlases::default(),
-            coded_frames: None,
-            reference_observer: None,
+            observer: None,
             backend,
             rows,
             retained: Mutex::new(None),
@@ -102,42 +172,8 @@ impl DecodeSession {
         core: &FrameHeaderCore,
         tip_quantizer_derived: bool,
     ) {
-        let Some(observe) = &self.coded_frames else {
-            return;
-        };
-        let header = candidate.header();
-        observe(CodedFrameEvent::Frame {
-            coded: provenance.coded,
-            sequence_header: provenance.sequence_header,
-            extended_layer_id: header.extended_layer_id,
-            embedded_layer_id: header.embedded_layer_id,
-            temporal_layer_id: header.temporal_layer_id,
-            base_quantizer: core.quantization_params.map(|quantizer| BaseQuantizer {
-                index: quantizer.base_q_idx,
-                origin: if tip_quantizer_derived {
-                    BaseQuantizerOrigin::Derived
-                } else if core.is_bridge
-                    || core
-                        .inter
-                        .as_ref()
-                        .is_some_and(|inter| inter.bru_inactive == Some(true))
-                {
-                    BaseQuantizerOrigin::Inherited
-                } else {
-                    BaseQuantizerOrigin::Signaled
-                },
-            }),
-        });
-        if header.obu_type.is_tile_group() {
-            for group in tile_group_continuations(bytes, candidate) {
-                observe(CodedFrameEvent::Continuation {
-                    coded: provenance.coded,
-                    obu: ObuLocation {
-                        user_data: provenance.coded.user_data,
-                        offset: ByteOffset::new(group.offset().get() - bytes.base()),
-                    },
-                });
-            }
+        if let Some(observer) = &self.observer {
+            observer.observe_coded_frame(provenance, candidate, bytes, core, tip_quantizer_derived);
         }
     }
 

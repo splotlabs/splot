@@ -28,6 +28,7 @@ use splot_recon::{
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, fill_buffer};
 use crate::error::{DecodeError, DecoderStateError, Result};
+use crate::pipeline::frame_store::{CodedFrameObserver, DecodeObserver};
 use crate::pipeline::{ActiveFilmGrain, DecodeSession, PipelineDecodedFrame, PipelineFrame};
 use crate::{
     DecodeLimitName, DecodeLimits, DecodeOptions, EmbeddedLayerId, EmbeddedLayerSelection,
@@ -240,8 +241,6 @@ pub enum CodedFrameEvent {
         obu: ObuLocation,
     },
 }
-
-pub(crate) type CodedFrameObserver = Box<dyn Fn(CodedFrameEvent) + Send + Sync>;
 
 /// The AV2 input locations for a decoded picture.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -739,8 +738,7 @@ impl Drop for DriverGuard {
 }
 
 struct DriverLaunch {
-    coded_frames: Option<CodedFrameObserver>,
-    reference_observer: Option<Box<dyn crate::reference::observation::ReferenceObserver>>,
+    observer: Option<Box<dyn DecodeObserver>>,
     atlases: crate::ExternalAtlases,
     shared: Arc<Shared>,
     limits: DecodeLimits,
@@ -774,8 +772,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
     let mut session =
         DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
     session.external_atlases = launch.atlases;
-    session.coded_frames = launch.coded_frames;
-    session.reference_observer = launch.reference_observer;
+    session.observer = launch.observer;
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
@@ -829,7 +826,7 @@ impl Decoder {
         settings: DecoderSettings,
         atlases: crate::ExternalAtlases,
     ) -> Result<Self> {
-        Self::open(&settings, atlases, None, None)
+        Self::open(&settings, atlases, None)
     }
 
     /// Opens a decoder with an observer for frames admitted on its decode path.
@@ -852,8 +849,7 @@ impl Decoder {
         Self::open(
             &settings,
             crate::ExternalAtlases::default(),
-            Some(Box::new(observer)),
-            None,
+            Some(Box::new(CodedFrameObserver(observer))),
         )
     }
 
@@ -878,7 +874,6 @@ impl Decoder {
         Self::open(
             &settings,
             crate::ExternalAtlases::default(),
-            None,
             Some(Box::new(
                 crate::reference::observation::CaptureReferences::new(observer),
             )),
@@ -888,8 +883,7 @@ impl Decoder {
     fn open(
         settings: &DecoderSettings,
         atlases: crate::ExternalAtlases,
-        coded_frames: Option<CodedFrameObserver>,
-        reference_observer: Option<Box<dyn crate::reference::observation::ReferenceObserver>>,
+        observer: Option<Box<dyn DecodeObserver>>,
     ) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
         settings.embedded_layer_selection.validate()?;
@@ -925,8 +919,7 @@ impl Decoder {
         let driver = Arc::clone(&shared);
         let rows = crate::pipeline::row_scheduler(threads, resolved)?;
         let driver = resolved.enter(DriverLaunch {
-            coded_frames,
-            reference_observer,
+            observer,
             atlases,
             shared: driver,
             limits: settings.limits,
