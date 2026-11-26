@@ -133,23 +133,6 @@ const fn min(a: usize, b: usize) -> usize {
     if a < b { a } else { b }
 }
 
-/// `HALF_CAPPED[cap][mag]` is `min((mag + 1) >> 1, cap)`, the capped
-/// context of a neighbour sum, as a load instead of a data-dependent branch.
-static HALF_CAPPED: [[u8; 32]; 16] = {
-    let mut table = [[0; 32]; 16];
-    let mut cap = 0;
-    while cap < 16 {
-        let mut mag = 0;
-        while mag < 32 {
-            let half = (mag + 1) >> 1;
-            table[cap][mag] = if half < cap { half } else { cap } as u8;
-            mag += 1;
-        }
-        cap += 1;
-    }
-    table
-};
-
 const SCAN_DIMS: usize = 4;
 const GRID_SCAN_LEN: usize = 3600;
 
@@ -268,7 +251,7 @@ pub(super) fn grid_scan(
 }
 
 fn half_capped(mag: u32, cap: usize) -> usize {
-    usize::from(HALF_CAPPED[cap & 15][mag as usize & 31])
+    (mag as usize).div_ceil(2).min(cap)
 }
 
 /// One past the last low-frequency scan index of `get_lf_limits`
