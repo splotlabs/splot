@@ -529,7 +529,7 @@ mod tests {
         tracker.observe(&obus[4]).unwrap();
         assert_eq!(membership(&tracker), Some(true));
         let cancel = ObuEnvelope {
-            payload: &[0x10, 0x80],
+            payload: &[0x10, 0x40],
             ..obus[4]
         };
         tracker.observe(&cancel).unwrap();
