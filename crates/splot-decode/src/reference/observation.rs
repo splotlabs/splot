@@ -6,9 +6,9 @@
 use splot_core::headers::frame::{FrameHeaderCore, FrameSize, RefIdxBuf};
 use splot_core::types::ObuType;
 
-use crate::pipeline::PipelineFrame;
-use crate::prediction::inter::mv_scaling::reference_is_scaled;
-use crate::reference::buffer::FrameRefUpdate;
+use crate::pipeline::frame_store::FrameStore;
+use crate::prediction::inter::{mv_scaling::reference_is_scaled, named_pixel_reference_slots};
+use crate::reference::buffer::{FrameRefUpdate, RuntimeReferenceBuffer};
 use crate::{EmbeddedLayerId, ExtendedLayerId, PictureProvenance, TemporalLayerId};
 
 /// A reference picture available in a decoder buffer slot.
@@ -49,8 +49,6 @@ pub enum ReferenceSlotState {
 pub struct ReferenceSnapshot {
     /// Slots in buffer order. Their indices are local to the extended layer.
     pub slots: Vec<ReferenceSlotState>,
-    /// The slot mask from the open-loop key state, when that state limits references.
-    pub allowed_slots: Option<u32>,
 }
 
 /// Where the frame's reference list gets its slot indices.
@@ -65,7 +63,8 @@ pub enum ReferenceMappingOrigin {
     Bridge,
 }
 
-/// A frame-level reference list. Block-level use can select a subset of this list.
+/// The frame-level list of candidate prediction references.
+/// Block prediction and TIP can select a subset of these entries.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct ReferenceMapping {
@@ -78,6 +77,9 @@ pub struct ReferenceMapping {
 impl ReferenceMapping {
     pub(crate) fn from_core(core: &FrameHeaderCore) -> Option<Self> {
         let inter = core.inter.as_ref()?;
+        if inter.ref_frame_idx.is_empty() {
+            return None;
+        }
         let origin = if core.is_bridge {
             ReferenceMappingOrigin::Bridge
         } else if inter.explicit_ref_frame_map? {
@@ -117,55 +119,62 @@ pub struct ReferenceFrameEvent {
     pub refresh_frame_flags: u32,
     /// A closed-loop key frame starts a new coded video sequence in this extended layer.
     pub resets_sequence: bool,
-    /// The frame-level prediction map, when the frame header defines one.
+    /// The open-loop key slot mask for this frame, when that state limits references.
+    pub allowed_input_slots: Option<u32>,
+    /// The frame-level prediction map, when the frame header defines a non-empty list.
     pub mapping: Option<ReferenceMapping>,
-    /// Mapped input slots whose frame-dimension scale is non-unit.
+    /// The signaled bridge source slot, including cases with no prediction list.
+    pub bridge_slot: Option<u32>,
+    /// Named input slots whose frame-dimension scale is non-unit.
     pub scaled_slots: u32,
     /// Long-term reference identifiers required by the parsed frame header.
     pub required_long_term_ids: Vec<u32>,
 }
 
-impl ReferenceFrameEvent {
-    pub(crate) fn new(
-        frame: &PipelineFrame,
-        core: &FrameHeaderCore,
-        update: &FrameRefUpdate<'_>,
-        before: ReferenceSnapshot,
-        after: ReferenceSnapshot,
-        resets_sequence: bool,
-    ) -> Self {
-        let mapping = ReferenceMapping::from_core(core);
-        let mut scaled_slots = 0;
-        if let Some(mapping) = &mapping {
-            for &slot in mapping.slots.as_slice() {
-                if let Some(ReferenceSlotState::Retained(picture)) = before.slots.get(slot as usize)
-                    && reference_is_scaled(
-                        picture.frame_size.width as i32,
-                        picture.frame_size.height as i32,
-                        update.width as i32,
-                        update.height as i32,
-                    )
-                {
-                    scaled_slots |= 1 << slot;
-                }
-            }
-        }
-        Self {
-            frame: frame.provenance,
-            obu_type: core.obu_type,
-            extended_layer_id: frame.extended_layer_id,
-            embedded_layer_id: frame.embedded_layer_id,
-            temporal_layer_id: frame.temporal_layer_id,
-            frame_size: FrameSize::new(update.width, update.height),
-            before,
-            after,
-            refresh_frame_flags: update.refresh_frame_flags,
-            resets_sequence,
-            mapping,
-            scaled_slots,
-            required_long_term_ids: core.ref_long_term_ids.clone(),
+pub(crate) type ReferenceObserver = Box<dyn Fn(ReferenceFrameEvent) + Send + Sync>;
+
+#[cold]
+#[inline(never)]
+pub(crate) fn observe_reference_update(
+    observe: &ReferenceObserver,
+    frames: &FrameStore,
+    frame_index: usize,
+    reference: &RuntimeReferenceBuffer,
+    core: &FrameHeaderCore,
+    update: &FrameRefUpdate<'_>,
+    before: ReferenceSnapshot,
+) {
+    let Some(frame) = frames.get(frame_index) else {
+        return;
+    };
+    let mut scaled_slots = 0;
+    for slot in named_pixel_reference_slots(core) {
+        if let Some(ReferenceSlotState::Retained(picture)) = before.slots.get(slot as usize)
+            && reference_is_scaled(
+                picture.frame_size.width as i32,
+                picture.frame_size.height as i32,
+                update.width as i32,
+                update.height as i32,
+            )
+        {
+            scaled_slots |= 1 << slot;
         }
     }
+    observe(ReferenceFrameEvent {
+        frame: frame.provenance,
+        obu_type: core.obu_type,
+        extended_layer_id: frame.extended_layer_id,
+        embedded_layer_id: frame.embedded_layer_id,
+        temporal_layer_id: frame.temporal_layer_id,
+        frame_size: FrameSize::new(update.width, update.height),
+        before,
+        after: reference.snapshot(frames),
+        refresh_frame_flags: update.refresh_frame_flags,
+        resets_sequence: core.obu_type == ObuType::ClosedLoopKey,
+        allowed_input_slots: reference.allowed_input_slots(),
+        mapping: ReferenceMapping::from_core(core),
+        bridge_slot: core.bridge_frame_ref_idx,
+        scaled_slots,
+        required_long_term_ids: core.ref_long_term_ids.clone(),
+    });
 }
-
-pub(crate) type ReferenceObserver = Box<dyn Fn(ReferenceFrameEvent) + Send + Sync>;

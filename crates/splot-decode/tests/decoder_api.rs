@@ -1281,3 +1281,27 @@ fn reference_observer_uses_switch_signaling_and_omits_display_events() {
             .all(|event| event.frame.coded != show_existing.display)
     );
 }
+
+#[test]
+fn reference_observer_preserves_the_single_picture_bridge_source() {
+    let bridge = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-bridge-single-picture-32x32.ivf"
+    );
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut decoder = reference_decoder(1, &events);
+    let pictures = decode(&mut decoder, &units(bridge), |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    let events = events.lock().unwrap();
+    let [key, bridge] = events.as_slice() else {
+        panic!("expected the key and single-picture bridge");
+    };
+    assert_eq!(pictures.len(), 2);
+    assert_eq!(bridge.obu_type, ObuType::BridgeFrame);
+    assert_eq!(bridge.bridge_slot, Some(0));
+    assert!(bridge.mapping.is_none());
+    let ReferenceSlotState::Retained(source) = bridge.before.slots[0] else {
+        panic!("expected an available bridge source");
+    };
+    assert_eq!(source.provenance, key.frame);
+}

@@ -179,6 +179,8 @@ impl RuntimeReferenceBuffer {
         })
     }
 
+    #[cold]
+    #[inline(never)]
     pub(crate) fn snapshot(&self, frames: &FrameStore) -> ReferenceSnapshot {
         let slots = self
             .slots
@@ -199,10 +201,11 @@ impl RuntimeReferenceBuffer {
                 },
             })
             .collect();
-        ReferenceSnapshot {
-            slots,
-            allowed_slots: self.allowed_frames,
-        }
+        ReferenceSnapshot { slots }
+    }
+
+    pub(crate) fn allowed_input_slots(&self) -> Option<u32> {
+        self.allowed_frames
     }
 
     pub(crate) fn len(&self) -> usize {

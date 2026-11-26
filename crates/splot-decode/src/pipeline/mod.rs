@@ -27,6 +27,7 @@ use crate::bitstream::tile_payload::{GeneralIntraBlockModeError, GeneralIntraRes
 use crate::error::{DecodeError, Result};
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
+use crate::reference::observation::observe_reference_update;
 use crate::support::pipeline_limits::checked_add;
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, ObuLocation, PictureProvenance};
 
@@ -1808,16 +1809,16 @@ fn decode_frames_in_order(
                     );
                     if let Some(observe) = &session.reference_observer
                         && let Some(before) = before
-                        && let Some(frame) = frames.get(frame_index)
                     {
-                        observe(crate::ReferenceFrameEvent::new(
-                            frame,
+                        observe_reference_update(
+                            observe,
+                            frames,
+                            frame_index,
+                            &layer.reference,
                             &inter_core,
                             &inter_update,
                             before,
-                            layer.reference.snapshot(frames),
-                            false,
-                        ));
+                        );
                     }
                     layer.scheduler.note_frame(
                         next_candidate.obu_type(),
@@ -2298,16 +2299,16 @@ fn decode_frames_in_order(
                     );
                     if let Some(observe) = &session.reference_observer
                         && let Some(before) = before
-                        && let Some(frame) = frames.get(frame_index)
                     {
-                        observe(crate::ReferenceFrameEvent::new(
-                            frame,
+                        observe_reference_update(
+                            observe,
+                            frames,
+                            frame_index,
+                            &layer.reference,
                             &key_core,
                             &key_update,
                             before,
-                            layer.reference.snapshot(frames),
-                            starts_new_sequence,
-                        ));
+                        );
                     }
                     layer
                         .in_band_long_term_prelude
