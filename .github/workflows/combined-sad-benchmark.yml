@@ -1,4 +1,4 @@
-name: Combined SAD x86 confirmation
+name: Combined SAD x86 full streams
 on:
   push:
     branches: [codex/measure-combined-unsigned-abs]
@@ -39,5 +39,5 @@ jobs:
         run: python3 "$RUNNER_TEMP/measure-combined.py" "$RUNNER_TEMP/results" "$RUNNER_TEMP/corpus" tests/conformance/ewouth-av2.toml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: native-x86-confirmation
-          path: ${{ runner.temp }}/results/observations.csv
+          name: native-x86-full-streams
+          path: ${{ runner.temp }}/results/complete-streams.csv

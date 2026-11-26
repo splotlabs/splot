@@ -39,14 +39,13 @@ def measure(args):
     else:
         ins = ""
     return ins, ns
-with (root/"observations.csv").open("w") as f:
+with (root/"complete-streams.csv").open("w") as f:
     out=csv.writer(f)
     out.writerow(["batch","stream","pair","order","revision","instructions","nanoseconds"])
-    for batch,limit in enumerate([120,24],1):
-        for s in (cases if batch==1 else cases[::-1]):
-            for pair in range(5):
-                for order,rev in enumerate(("baseline","combined") if (batch+pair)%2 else ("combined","baseline"),1):
-                    obs=measure(command(("baseline" if batch==2 else rev),s,1,"null")+["--frame-delay","1","--limit",str(limit)])
-                    out.writerow([batch,s["path"],pair,order,rev,*obs])
-                    f.flush()
-            print("Measured",batch,s["path"],flush=True)
+    for pair in range(4):
+        for n,s in enumerate(cases if pair%2 else cases[::-1]):
+            for order,rev in enumerate(("baseline","combined") if (pair+cases.index(s))%2 else ("combined","baseline"),1):
+                obs=measure(command(rev,s,1,"null")+["--frame-delay","1"])
+                out.writerow([1,s["path"],pair,order,rev,*obs])
+                f.flush()
+        print("Complete full-stream pair",pair,flush=True)
