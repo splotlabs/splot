@@ -89,6 +89,7 @@ pub(crate) struct PipelineFrame {
     pub(crate) temporal_layer_id: TemporalLayerId,
     /// The caller data of the temporal unit that coded or showed this frame.
     pub(crate) props: crate::DataProps,
+    pub(crate) provenance: crate::PictureProvenance,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

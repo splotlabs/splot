@@ -38,8 +38,9 @@ use splot_core::headers::content_interpretation::DerivedColorInfo;
 use splot_core::types::ExtendedLayerId;
 use splot_decode::{
     BitDepth, DataProps, Decoder, DecoderSettings, EmbeddedLayerSelection, ExtendedLayerSelection,
-    ExternalAtlases, FrameDelay, FrameType, OperatingPointSelection, Picture, PictureSamples,
-    PixelFormat, PlaneId, PlaneRef, SendStatus, TemporalLayerSelection, ThreadCount,
+    ExternalAtlases, FrameDelay, FrameType, ObuLocation, OperatingPointSelection, Picture,
+    PictureProvenance, PictureSamples, PixelFormat, PlaneId, PlaneRef, SendStatus,
+    TemporalLayerSelection, ThreadCount,
 };
 
 /// The call succeeded.
@@ -160,6 +161,47 @@ pub struct SplotColor {
     pub full_range: u8,
 }
 
+/// An OBU location in one temporal unit.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SplotObuLocation {
+    /// The `SplotDataProps.user_data` value of the unit.
+    pub user_data: u64,
+    /// The byte offset from the start of the unit to the OBU header after its length prefix.
+    pub offset: u64,
+}
+
+impl From<ObuLocation> for SplotObuLocation {
+    fn from(value: ObuLocation) -> Self {
+        Self {
+            user_data: value.user_data,
+            offset: value.offset.get(),
+        }
+    }
+}
+
+/// The AV2 input locations for a decoded picture.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SplotPictureProvenance {
+    /// The frame OBU that coded the samples. This is the first tile group for a tiled frame.
+    pub coded: SplotObuLocation,
+    /// The frame OBU that caused display. This is `coded` unless a show-existing OBU caused display.
+    pub display: SplotObuLocation,
+    /// The sequence header in effect when the decoder decoded the coded frame.
+    pub sequence_header: SplotObuLocation,
+}
+
+impl From<PictureProvenance> for SplotPictureProvenance {
+    fn from(value: PictureProvenance) -> Self {
+        Self {
+            coded: value.coded.into(),
+            display: value.display.into(),
+            sequence_header: value.sequence_header.into(),
+        }
+    }
+}
+
 /// A decoded picture. Valid from [`splot_get_picture`] or
 /// [`splot_apply_grain`] until [`splot_picture_unref`].
 #[repr(C)]
@@ -206,8 +248,8 @@ pub struct SplotPicture {
     pub atlas: *const SplotPictureAtlas,
     /// Number of associations accessible through `splot_atlas_info`.
     pub atlas_count: usize,
-    /// Reserved.
-    pub reserved: usize,
+    /// Immutable input locations. The picture owns this data until `splot_picture_unref`.
+    pub provenance: *const SplotPictureProvenance,
     /// The decoder's handle on the samples; do not touch.
     pub internal: *mut c_void,
 }
@@ -596,7 +638,7 @@ const fn empty_picture() -> SplotPicture {
         extended_layer_id: 0,
         atlas: ptr::null(),
         atlas_count: 0,
-        reserved: 0,
+        provenance: ptr::null(),
         internal: ptr::null_mut(),
     }
 }
@@ -658,7 +700,13 @@ fn c_picture(picture: Picture) -> SplotPicture {
     out.embedded_layer_id = picture.embedded_layer_id().get();
     out.extended_layer_id = picture.extended_layer_id().get();
     out.atlas_count = picture.atlas_associations().len();
-    let handle = Box::into_raw(Box::new(SplotPictureAtlas { picture }));
+    let handle = Box::into_raw(Box::new(SplotPictureAtlas {
+        provenance: picture.provenance().into(),
+        picture,
+    }));
+    out.provenance = handle
+        .wrapping_byte_add(core::mem::offset_of!(SplotPictureAtlas, provenance))
+        .cast();
     if out.atlas_count != 0 {
         out.atlas = handle;
     }

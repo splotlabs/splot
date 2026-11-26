@@ -18,6 +18,7 @@ use splot_core::headers::frame::FrameType;
 use splot_core::headers::metadata::MetadataUnit;
 use splot_core::ivf::IvfHeader;
 use splot_core::simd::{ResolvedBackend, SelectedBackend, SimdBackend, SimdPolicy, SimdScope};
+use splot_core::span::ByteOffset;
 use splot_core::types::TemporalLayerId;
 use splot_parallel::{FrameDelay, ThreadCount};
 use splot_recon::{
@@ -178,6 +179,50 @@ impl DataProps {
     }
 }
 
+/// The location of an OBU in a temporal unit submitted with [`Decoder::send_data`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ObuLocation {
+    /// The [`DataProps::user_data`] value of the unit.
+    pub user_data: u64,
+    /// The offset from the start of the unit to the OBU header after its length prefix.
+    pub offset: ByteOffset,
+}
+
+/// The AV2 input locations for a decoded picture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct PictureProvenance {
+    /// The frame OBU that coded the samples. This is the first tile group for a tiled frame.
+    pub coded: ObuLocation,
+    /// The frame OBU that caused display. This is `coded` unless a show-existing OBU caused display.
+    pub display: ObuLocation,
+    /// The sequence header in effect when the decoder decoded the coded frame.
+    pub sequence_header: ObuLocation,
+}
+
+impl PictureProvenance {
+    pub(crate) const fn direct(coded: ObuLocation, sequence_header: ObuLocation) -> Self {
+        Self {
+            coded,
+            display: coded,
+            sequence_header,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const TEST: Self = Self::direct(
+        ObuLocation {
+            user_data: 0,
+            offset: ByteOffset::new(0),
+        },
+        ObuLocation {
+            user_data: 0,
+            offset: ByteOffset::new(0),
+        },
+    );
+}
+
 /// What [`Decoder::send_data`] did with a temporal unit.
 #[must_use]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -205,6 +250,7 @@ pub struct Picture {
     samples: Option<Samples>,
     info: DecodedFrameInfo,
     props: DataProps,
+    provenance: PictureProvenance,
     content_interpretation: Option<ContentInterpretation>,
     metadata: Option<Arc<[MetadataUnit]>>,
     atlas: Vec<crate::AtlasAssociation>,
@@ -273,6 +319,7 @@ impl Picture {
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
+            provenance: frame.provenance,
             content_interpretation: frame.output_effects.content_interpretation,
             atlas: frame.output_effects.atlas.clone(),
             metadata: (!metadata.is_empty()).then(|| Arc::from(metadata.as_slice())),
@@ -328,6 +375,7 @@ impl Picture {
             info: samples.as_ref().map_or(self.info, Samples::info),
             samples,
             props: self.props,
+            provenance: self.provenance,
             content_interpretation: self.content_interpretation,
             metadata: self.metadata.clone(),
             atlas: self.atlas.clone(),
@@ -409,6 +457,14 @@ impl Picture {
     #[must_use]
     pub const fn props(&self) -> DataProps {
         self.props
+    }
+
+    /// The coded, display, and sequence header locations for this picture.
+    /// Submit a distinct [`DataProps::user_data`] value for each temporal unit
+    /// to distinguish locations in different units.
+    #[must_use]
+    pub const fn provenance(&self) -> PictureProvenance {
+        self.provenance
     }
 
     /// The content interpretation (color description, timing) in effect for
