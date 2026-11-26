@@ -567,6 +567,7 @@ fn filter_run_tiles<B: splot_core::simd::SimdBackend, T: ReconSample>(
     grow_scratch(&mut scratch.class_scratch.errors, errors)?;
     let layout = |index: usize| (simd::TILE_STRIDE, simd::TILE_COLS, index);
     let buffer = |index: usize| index % buffers * area..(index % buffers + 1) * area;
+    let params = simd::RunParams::new(run);
     for index in 0..tiles {
         let first = if index == 0 { 0 } else { index + ahead };
         for staged in first..=(index + ahead).min(tiles - 1) {
@@ -580,9 +581,9 @@ fn filter_run_tiles<B: splot_core::simd::SimdBackend, T: ReconSample>(
         let scratch = &mut scratch.class_scratch;
         let output = post_lr_luma.samples_mut();
         if let Some(output) = T::u8_slice_mut(output) {
-            simd::filter_run(backend, samples, &tile, output, scratch)
+            simd::filter_run(backend, samples, (&tile, &params), output, scratch)
         } else if let Some(output) = T::u16_slice_mut(output) {
-            simd::filter_run(backend, samples, &tile, output, scratch)
+            simd::filter_run(backend, samples, (&tile, &params), output, scratch)
         } else {
             None
         }
@@ -903,26 +904,23 @@ fn source_bounds(
     LoopRestorationPlaneBounds::new(PlaneId::Y, &bounds).map_err(|_| gdf_state_error())
 }
 
-/// [`resize_overwrite_scratch`] that never shrinks `buffer`, so that a
-/// later longer use refills nothing.
+/// Grows `buffer` without shrinking it, so a later longer use refills nothing.
 fn grow_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
-    if len > buffer.len() {
-        resize_overwrite_scratch(buffer, len)?;
+    if len <= buffer.len() {
+        return Ok(());
     }
+    if buffer.try_reserve_exact(len - buffer.len()).is_err() {
+        buffer.clear();
+        return Err(gdf_allocation_error());
+    }
+    buffer.resize(len, T::default());
     Ok(())
 }
 
+#[cfg(test)]
 fn resize_overwrite_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
-    if len > buffer.len() {
-        let additional = len - buffer.len();
-        if buffer.try_reserve_exact(additional).is_err() {
-            buffer.clear();
-            return Err(gdf_allocation_error());
-        }
-        buffer.resize(len, T::default());
-    } else {
-        buffer.truncate(len);
-    }
+    grow_scratch(buffer, len)?;
+    buffer.truncate(len);
     Ok(())
 }
 
