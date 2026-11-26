@@ -265,6 +265,25 @@ fn mlayer_presence_map_closes_transitive_dependency() {
 }
 
 #[test]
+fn content_interpretation_prefers_a_nearer_inherited_source() {
+    let mut dependencies = MLayerDependencyMap::default_for(mlayer(3));
+    dependencies.set(2, 1, false);
+    dependencies.set(3, 0, false);
+    let sources = dependencies
+        .presence_map()
+        .content_interpretation_sources([true, true, false, false, false, false, false, false]);
+    assert_eq!(
+        &sources[..4],
+        &[
+            Some(mlayer(0)),
+            Some(mlayer(1)),
+            Some(mlayer(0)),
+            Some(mlayer(2))
+        ]
+    );
+}
+
+#[test]
 fn tlayer_dependency_row0_replication() {
     let mut bits = Bits::default();
     push_general_header_until_dependency_maps(&mut bits, 1, 1);

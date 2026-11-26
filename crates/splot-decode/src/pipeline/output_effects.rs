@@ -420,7 +420,7 @@ impl OutputEffectState {
             } else {
                 self.effective_content_interpretation(mlayer)
             };
-            if active.is_some_and(|active| active != content) {
+            if active.is_some_and(|active| active.information_differs(&content)) {
                 return Err(unsupported_feature_at(
                     "content_interpretation_changed_in_cvs",
                     envelope.offset,
@@ -488,24 +488,21 @@ impl OutputEffectState {
         mlayer: EmbeddedLayerId,
     ) -> Option<ContentInterpretation> {
         let index = usize::from(mlayer.get());
-        self.content_interpretation
-            .get(index)
-            .copied()
-            .flatten()
-            .or_else(|| {
-                let (presence, _) = self.ci_inheritance.as_ref()?;
-                self.content_interpretation
-                    .get(..index)?
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(source, content)| {
-                        presence
-                            .is_present(mlayer, EmbeddedLayerId::from_bits(source as u8))
-                            .then_some(*content)
-                            .flatten()
-                    })
-            })
+        if let Some(content) = self.content_interpretation.get(index).copied().flatten() {
+            return Some(content);
+        }
+        let (presence, _) = self.ci_inheritance.as_ref()?;
+        let sources = presence.content_interpretation_sources(
+            self.content_interpretation.each_ref().map(Option::is_some),
+        );
+        let mut layer = mlayer;
+        loop {
+            let source = sources.get(usize::from(layer.get())).copied().flatten()?;
+            if source == layer {
+                return self.content_interpretation[usize::from(layer.get())];
+            }
+            layer = source;
+        }
     }
 
     pub(crate) fn finish_frame(&mut self, mlayer: EmbeddedLayerId) -> FrameOutputEffects {
@@ -728,7 +725,7 @@ impl OutputEffectState {
         finish(&mut reader, envelope, "content_interpretation_tail", "5.15")?;
         let idx = usize::from(envelope.header.embedded_layer_id.get());
         if let Some(existing) = self.ci_in_current_tu.get(idx).copied().flatten()
-            && existing != content
+            && existing.information_differs(&content)
         {
             return Err(unsupported_feature_at(
                 "content_interpretation_changed_in_temporal_unit",
