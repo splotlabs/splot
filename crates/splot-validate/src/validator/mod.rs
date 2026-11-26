@@ -5,6 +5,8 @@
 
 use std::io::Read;
 
+use splot_core::span::ByteOffset;
+
 use crate::diagnostic::ValidationReport;
 use crate::options::ValidationOptions;
 
@@ -16,6 +18,73 @@ pub use streaming::StreamValidateError;
 
 #[cfg(test)]
 mod tests;
+
+/// Limits for a streaming validation run with execution evidence.
+#[derive(Debug, Clone, Copy)]
+pub struct ValidationLimits {
+    /// Maximum declared Annex B OBU or IVF frame size, in bytes.
+    pub max_unit_bytes: usize,
+    /// Maximum number of findings retained in the returned report.
+    pub max_diagnostics: usize,
+}
+
+/// Counts of all findings emitted during the run, including omitted findings.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DiagnosticCounts {
+    /// Number of errors.
+    pub errors: usize,
+    /// Number of warnings.
+    pub warnings: usize,
+    /// Number of informational findings.
+    pub info: usize,
+}
+
+/// Why streaming validation stopped.
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub enum ValidationCompletion {
+    /// The reader reached its end. Individual IVF records may have parse failures.
+    #[default]
+    EndOfInput,
+    /// Invalid Annex B or IVF framing prevented further reads.
+    MalformedInput,
+    /// The cancellation callback requested a stop.
+    Cancelled,
+    /// An I/O failure or declared size over the configured limit prevented further reads.
+    InputError(StreamValidateError),
+}
+
+/// Observed execution of the existing OBU checks and stream finalization.
+///
+/// This coverage does not identify which conditional rules ran on each OBU.
+/// Some AV2 requirements are outside the validator's implemented check set.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ValidationCoverage {
+    /// Number of parsed envelopes passed through the validator's OBU checks.
+    pub checked_obus: u64,
+    /// End of the last checked OBU in absolute file bytes. Earlier IVF records may contain gaps.
+    pub last_checked_obu_end: Option<ByteOffset>,
+    /// Number of framing failures, including malformed Annex B in IVF records.
+    pub malformed_units: u64,
+    /// Whether the validator performed stream-finalization checks.
+    pub finalized: bool,
+}
+
+/// Streaming findings and execution evidence. A report can represent partial input.
+///
+/// Apply severity policy to [`Self::counts`], which includes findings omitted from
+/// [`Self::report`]. Use [`Self::completion`] and [`Self::coverage`] to describe scope.
+#[derive(Debug, Default)]
+pub struct ValidationExecution {
+    /// The first findings in the validator's emission order, within the requested cap.
+    pub report: ValidationReport,
+    /// Counts of every finding emitted before the run stopped.
+    pub counts: DiagnosticCounts,
+    /// Why the run stopped.
+    pub completion: ValidationCompletion,
+    /// OBU processing and stream-finalization evidence.
+    pub coverage: ValidationCoverage,
+}
 
 /// Validates AV2 length-delimited bitstreams and produces a [`ValidationReport`].
 #[derive(Debug, Clone, Copy)]
@@ -102,5 +171,24 @@ impl Validator {
         options: &ValidationOptions,
     ) -> Result<ValidationReport, StreamValidateError> {
         streaming::validate_reader_with_options(reader, options)
+    }
+
+    /// Runs the existing OBU checks on Annex B or IVF and reports their execution.
+    ///
+    /// The callback runs before each unit read and before each OBU check. A read
+    /// or check in progress runs until it returns. On cancellation, terminal
+    /// malformation, or input failure, this retains emitted findings without
+    /// running end-of-stream checks on the incomplete input.
+    ///
+    /// The diagnostic cap limits the retained report. Temporary memory during
+    /// individual checks and validator state follow the existing check logic.
+    pub fn validate_reader_with_evidence<R: Read>(
+        &self,
+        reader: R,
+        options: &ValidationOptions,
+        limits: ValidationLimits,
+        should_cancel: impl FnMut() -> bool,
+    ) -> ValidationExecution {
+        streaming::validate_reader_with_evidence(reader, options, limits, should_cancel)
     }
 }
