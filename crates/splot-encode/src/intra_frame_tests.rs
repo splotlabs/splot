@@ -91,6 +91,112 @@ fn config(width: u32, height: u32, bit_depth: BitDepth, preset: u8, qp: u16) -> 
     config
 }
 
+#[test]
+fn effective_rows_match_the_frame_coder() -> Result<()> {
+    use crate::{PresetOrigin, ThreadCount, Tune};
+
+    for (depth, speed, tune) in [
+        (BitDepth::Eight, 6, Tune::Vq),
+        (BitDepth::Ten, 9, Tune::Ssim),
+    ] {
+        let mut config = config(1_280, 720, depth, speed, 80);
+        config.threads = ThreadCount::from(1_usize);
+        config.resize_denominator = Some(16);
+        config.tune = tune;
+        config.fast_decode = true;
+        config.preset_overrides = vec![
+            ("ssim_aq".into(), "30".into()),
+            ("none_breakout".into(), "1,2,3,4".into()),
+        ];
+
+        let resolved = config.resolve()?;
+        let coder = IntraFrameCoder::new(&config.coded())?;
+        assert_eq!(resolved.normal.params, coder.preset);
+        assert_eq!(resolved.screen.as_ref().map(|row| row.params), coder.screen);
+        assert_eq!((resolved.coded_width, resolved.coded_height), (640, 360));
+        assert_eq!(resolved.resolution, ResolutionClass::Sd);
+
+        let origin = |row: &crate::ResolvedPreset, key, context| {
+            let field = PresetParams::FIELD_DESCRIPTORS
+                .iter()
+                .find(|field| field.name == key)
+                .expect("public preset field");
+            row.origin(field, context)
+        };
+        let context = PresetContext {
+            frame: FrameKind::Leaf,
+            ..PresetContext::default()
+        };
+        let screen = resolved.screen.unwrap();
+        assert_eq!(
+            origin(&resolved.normal, "ssim_aq", context),
+            PresetOrigin::Explicit
+        );
+        assert_eq!(
+            origin(&screen, "none_breakout", context),
+            PresetOrigin::Explicit
+        );
+        assert_eq!(screen.params.none_breakout.at(context), 4);
+        assert_eq!(
+            origin(&screen, "palette", context),
+            PresetOrigin::ScreenContent
+        );
+        assert_eq!(
+            origin(&screen, "max_block_log2", context),
+            PresetOrigin::FastDecode
+        );
+        assert_eq!(
+            origin(&screen, "num_ref_frames", context),
+            PresetOrigin::Preset
+        );
+
+        if tune == Tune::Vq {
+            assert_eq!(origin(&screen, "psy_rd", context), PresetOrigin::Tune);
+        }
+
+        config.resize_denominator = None;
+        config.rate_control = RateControlMode::ConstantQp { qp: 0 };
+        config.preset_overrides.push(("tcq".into(), "0".into()));
+        config
+            .preset_overrides
+            .push(("screen_detect".into(), "0".into()));
+        let lossless = config.resolve()?;
+        assert_eq!(
+            lossless.normal.params,
+            IntraFrameCoder::new(&config)?.preset
+        );
+        assert!(lossless.screen.is_none());
+        assert_eq!(
+            origin(&lossless.normal, "tcq", context),
+            PresetOrigin::Lossless
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn resolve_checks_the_coded_tile_layout() {
+    let mut config = Config::new(128, 128);
+    config.tiles = TileLayout::Explicit {
+        widths: vec![3],
+        heights: vec![1],
+    };
+    assert!(matches!(
+        config.resolve(),
+        Err(Error::InvalidTiles {
+            reason: "tiles beyond the frame edge",
+            ..
+        })
+    ));
+    assert!(matches!(
+        Encoder::new(config),
+        Err(Error::InvalidTiles {
+            reason: "tiles beyond the frame edge",
+            ..
+        })
+    ));
+}
+
 /// Fast search base with 128x128 superblocks (`max_block_log2 = 7`) and
 /// mini-GOPs (`preset 9` search speed with `preset 6` superblock size).
 fn fast_p6() -> PresetParams {
@@ -2210,4 +2316,12 @@ fn order_hints_map_references_to_display_pairs() {
     );
     assert_eq!(plan(7).order_hint, 2, "frame 5 is a key frame");
     assert_eq!(pairs(7, &[1, 3]), [Some((7, 6)), Some((7, 8))]);
+}
+
+#[test]
+fn resolve_rejects_unencodable_sample_aspect_ratio() {
+    let mut config = Config::new(64, 64);
+    config.content.sample_aspect_ratio = Some((u32::MAX, 1));
+    assert!(config.resolve().is_err());
+    assert!(crate::Encoder::new(config).is_err());
 }

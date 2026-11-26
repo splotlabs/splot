@@ -5,6 +5,13 @@
 //! preset's fields instead of comparing preset numbers. A [`Levels`] field
 //! holds one value per [`PresetContext`] and is read with [`Levels::at`].
 
+mod metadata;
+
+pub use metadata::{
+    PresetField, PresetFieldShape, PresetFieldValue, PresetGroup, PresetIntegerRange,
+    PresetValueKind,
+};
+
 use crate::error::{Error, Result};
 use crate::rate_control::FrameType;
 
@@ -835,6 +842,39 @@ pub struct PresetContext {
     pub coeff: CoeffLevel,
 }
 
+impl PresetContext {
+    /// All stored contexts in frame, resolution and coefficient order.
+    pub const ALL: [Self; 36] = {
+        let frames = [
+            FrameKind::Key,
+            FrameKind::Base,
+            FrameKind::Mid,
+            FrameKind::Leaf,
+        ];
+        let resolutions = [
+            ResolutionClass::Sd,
+            ResolutionClass::Hd,
+            ResolutionClass::Uhd,
+        ];
+        let levels = [CoeffLevel::Low, CoeffLevel::Normal, CoeffLevel::High];
+        let mut contexts = [Self {
+            frame: FrameKind::Key,
+            resolution: ResolutionClass::Sd,
+            coeff: CoeffLevel::Low,
+        }; 36];
+        let mut i = 0;
+        while i < contexts.len() {
+            contexts[i] = Self {
+                frame: frames[i / 9],
+                resolution: resolutions[(i / 3) % 3],
+                coeff: levels[i % 3],
+            };
+            i += 1;
+        }
+        contexts
+    };
+}
+
 /// One value of a preset field per [`PresetContext`]: 4 frame kinds by 3
 /// resolution classes by 3 coefficient levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -950,34 +990,49 @@ impl PresetParams {
     /// changes the coded samples (RDOQ, the temporal filter, TIP output), and
     /// the tools whose lossless forms are a later search (FSC, IDTX, IST,
     /// CCTX, DDT, transform types and partitions, palette, IntraBC).
+    #[cfg(test)]
     pub(crate) fn set_lossless(&mut self) {
-        self.rdoq = false;
-        self.rdoq_every_type = false;
-        self.parity_hiding = false;
-        self.tcq = Levels::all(false);
-        self.tcq_search_trellis = false;
-        self.tcq_type_trellis = false;
-        self.tx_type_depth = 0;
-        self.tx_partition_search = Levels::all(false);
-        self.inter_tx_split = 0;
-        self.tpl_delta_q = 0;
-        self.ssim_aq = 0;
-        self.segmentation = 0;
-        self.quant_matrices = 0;
-        self.tf_frames = Levels::all(0);
-        self.tf_strength = Levels::all(0);
-        self.tip_output = 0;
-        self.ist_sets = 0;
-        self.intra_ist_rd = false;
-        self.inter_ist = false;
-        self.inter_ist_rd = false;
-        self.inter_ddt = false;
-        self.cctx = false;
-        self.fsc = false;
-        self.idtx_intra = false;
-        self.palette = false;
-        self.intrabc = false;
-        (self.y_dc_delta_q, self.u_delta_q, self.v_delta_q) = (0, 0, 0);
+        self.set_lossless_with(|_| {});
+    }
+
+    /// Reports each field the lossless policy sets, including fields that already match.
+    pub(crate) fn set_lossless_with(&mut self, mut forced: impl FnMut(&'static str)) {
+        macro_rules! force {
+            ($($field:ident = $value:expr;)*) => {
+                $(self.$field = $value; forced(stringify!($field));)*
+            };
+        }
+        force! {
+            rdoq = false;
+            rdoq_every_type = false;
+            parity_hiding = false;
+            tcq = Levels::all(false);
+            tcq_search_trellis = false;
+            tcq_type_trellis = false;
+            tx_type_depth = 0;
+            tx_partition_search = Levels::all(false);
+            inter_tx_split = 0;
+            tpl_delta_q = 0;
+            ssim_aq = 0;
+            segmentation = 0;
+            quant_matrices = 0;
+            tf_frames = Levels::all(0);
+            tf_strength = Levels::all(0);
+            tip_output = 0;
+            ist_sets = 0;
+            intra_ist_rd = false;
+            inter_ist = false;
+            inter_ist_rd = false;
+            inter_ddt = false;
+            cctx = false;
+            fsc = false;
+            idtx_intra = false;
+            palette = false;
+            intrabc = false;
+            y_dc_delta_q = 0;
+            u_delta_q = 0;
+            v_delta_q = 0;
+        }
     }
 
     /// `[y_dc_delta_q, u_delta_q, v_delta_q]`, the plane quantizer deltas of every frame.
@@ -991,8 +1046,9 @@ impl PresetParams {
     /// # Errors
     /// Returns [`PresetError::OutOfRange`] for the first field outside its range.
     pub fn validate(&self) -> core::result::Result<(), PresetError> {
-        let check = |field, value: u8, min: u8, max: u8, bound: &str| {
-            if (min..=max).contains(&value) {
+        let check = |field, value: u8, range: PresetIntegerRange, bound: &str| {
+            let PresetIntegerRange { min, max } = range;
+            if (min..=max).contains(&i32::from(value)) {
                 Ok(())
             } else {
                 Err(PresetError::OutOfRange {
@@ -1002,7 +1058,12 @@ impl PresetParams {
                 })
             }
         };
-        check("max_block_log2", self.max_block_log2, 2, 8, "")?;
+        macro_rules! check {
+            ($field:ident) => {
+                check(stringify!($field), self.$field, ranges::$field, "")
+            };
+        }
+        check!(max_block_log2)?;
         if self.intrabc_morph && !self.bawp {
             return Err(PresetError::OutOfRange {
                 field: "intrabc_morph",
@@ -1010,87 +1071,90 @@ impl PresetParams {
                 allowed: "0 without bawp (morph_pred needs enable_bawp)".to_owned(),
             });
         }
-        if self.sb256_min_height < 64 {
+        if i32::from(self.sb256_min_height) < ranges::sb256_min_height.min {
             return Err(PresetError::OutOfRange {
                 field: "sb256_min_height",
                 value: self.sb256_min_height,
-                allowed: "64..=65535".to_owned(),
+                allowed: format!(
+                    "{}..={}",
+                    ranges::sb256_min_height.min,
+                    ranges::sb256_min_height.max
+                ),
             });
         }
         for &min in self.min_block_log2.values() {
             check(
                 "min_block_log2",
                 min,
-                2,
-                self.max_block_log2,
+                PresetIntegerRange::new(ranges::min_block_log2.min, self.max_block_log2.into()),
                 " (max_block_log2)",
             )?;
         }
         for &modes in self.intra_modes.values() {
-            check("intra_modes", modes, 1, u8::MAX, "")?;
+            check("intra_modes", modes, ranges::intra_modes, "")?;
         }
         for &budget in self.mds0_budgets.values().as_flattened() {
-            check("mds0_budgets", budget, 1, u8::MAX, " per class")?;
+            check("mds0_budgets", budget, ranges::mds0_budgets, " per class")?;
         }
-        check("subpel_depth", self.subpel_depth, 0, 3, "")?;
-        check("loop_filter_search", self.loop_filter_search, 0, 3, "")?;
-        check("mini_gop_size", self.mini_gop_size, 1, 32, "")?;
+        check!(subpel_depth)?;
+        check!(loop_filter_search)?;
+        check!(mini_gop_size)?;
         check(
             "bitrate_mini_gop_size",
             self.bitrate_mini_gop_size,
-            1,
-            self.mini_gop_size,
+            PresetIntegerRange::new(ranges::bitrate_mini_gop_size.min, self.mini_gop_size.into()),
             " (..mini_gop_size)",
         )?;
         check(
             "lookahead_frames",
             self.lookahead_frames,
-            self.mini_gop_size,
-            u8::MAX,
+            PresetIntegerRange::new(self.mini_gop_size.into(), ranges::lookahead_frames.max),
             " (mini_gop_size..)",
         )?;
-        check("drl_bits", self.drl_bits, 1, 5, "")?;
-        check("intrabc_drl", self.intrabc_drl, 0, 2, "")?;
-        check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
-        check("ssim_aq", self.ssim_aq, 0, 200, "")?;
-        check("segmentation", self.segmentation, 0, 1, "")?;
-        check("psy_rd", self.psy_rd, 0, 200, "")?;
+        check!(drl_bits)?;
+        check!(intrabc_drl)?;
+        check!(tpl_delta_q)?;
+        check!(ssim_aq)?;
+        check!(segmentation)?;
+        check!(psy_rd)?;
         for &frames in self.tf_frames.values() {
-            check("tf_frames", frames, 0, 8, "")?;
+            check("tf_frames", frames, ranges::tf_frames, "")?;
         }
-        check("delta_q_res", self.delta_q_res, 0, 3, "")?;
-        check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
-        check("ext_partitions", self.ext_partitions, 0, 2, "")?;
-        check("sdp_chroma_search", self.sdp_chroma_search, 0, 1, "")?;
-        check("extended_sdp", self.extended_sdp, 0, 2, "")?;
-        check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
-        check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
-        check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
-        check("ccso_candidates", self.ccso_candidates, 0, 112, "")?;
-        check("ccso_bo_band_log2", self.ccso_bo_band_log2, 3, 6, "")?;
-        check("ccso_reuse", self.ccso_reuse, 0, 2, "")?;
-        check("lr_unit_sizes", self.lr_unit_sizes, 1, 4, "")?;
-        check("lr_chroma_unit_sizes", self.lr_chroma_unit_sizes, 1, 4, "")?;
-        check("deblock_offset_bits", self.deblock_offset_bits, 3, 5, "")?;
-        check("cdef_pairs", self.cdef_pairs, 0, 64, "")?;
-        check("compound_refs", self.compound_refs, 1, 7, "")?;
-        check("jmvd_scales", self.jmvd_scales, 1, 5, "")?;
-        check("interintra_search", self.interintra_search, 0, 1, "")?;
-        check("warp_interintra", self.warp_interintra, 0, 2, "")?;
-        check("bawp_search", self.bawp_search, 0, 2, "")?;
-        check("tip", self.tip, 0, 2, "")?;
-        check("cdf_update_tile", self.cdf_update_tile, 0, 1, "")?;
-        check("long_term_id_bits", self.long_term_id_bits, 0, 7, "")?;
-        check("num_ref_frames", self.num_ref_frames, 0, 16, "")?;
+        check!(delta_q_res)?;
+        check!(interp_filter_search)?;
+        check!(ext_partitions)?;
+        check!(sdp_chroma_search)?;
+        check!(extended_sdp)?;
+        check!(wiener_ns_classes)?;
+        check!(gdf_candidates)?;
+        check!(cdef_strengths)?;
+        check!(ccso_candidates)?;
+        check!(ccso_bo_band_log2)?;
+        check!(ccso_reuse)?;
+        check!(lr_unit_sizes)?;
+        check!(lr_chroma_unit_sizes)?;
+        check!(deblock_offset_bits)?;
+        check!(cdef_pairs)?;
+        check!(compound_refs)?;
+        check!(jmvd_scales)?;
+        check!(interintra_search)?;
+        check!(warp_interintra)?;
+        check!(bawp_search)?;
+        check!(tip)?;
+        check!(cdf_update_tile)?;
+        check!(long_term_id_bits)?;
+        check!(num_ref_frames)?;
         check(
             "open_loop_key",
             self.open_loop_key,
-            0,
-            if self.long_term_id_bits == 0 {
-                u8::MAX
-            } else {
-                0
-            },
+            PresetIntegerRange::new(
+                0,
+                if self.long_term_id_bits == 0 {
+                    i32::from(u8::MAX)
+                } else {
+                    0
+                },
+            ),
             " (above 0 needs long_term_id_bits = 0: closed-loop long-term slots stay \
              valid after an open-loop key frame in sequential decoding only)",
         )?;
@@ -1110,27 +1174,20 @@ impl PresetParams {
                 });
             }
         }
-        check("explicit_refs", self.explicit_refs, 0, 8, "")?;
-        check("seq_tile_info", self.seq_tile_info, 0, 3, "")?;
-        check("tip_output", self.tip_output, 0, 200, "")?;
-        check("tip_output_search", self.tip_output_search, 0, 2, "")?;
-        check("quant_matrices", self.quant_matrices, 0, 3, "")?;
+        check!(explicit_refs)?;
+        check!(seq_tile_info)?;
+        check!(tip_output)?;
+        check!(tip_output_search)?;
+        check!(quant_matrices)?;
         check(
             "tip_refinemv",
             u8::from(self.tip_refinemv),
-            0,
-            u8::from(self.opfl || self.refinemv),
+            PresetIntegerRange::new(0, i32::from(self.opfl || self.refinemv)),
             " (1 needs opfl or refinemv)",
         )?;
-        check("warp", self.warp, 0, 2, "")?;
-        check(
-            "compound_types",
-            self.compound_types,
-            0,
-            MAX_COMPOUND_TYPES,
-            "",
-        )?;
-        check("global_motion", self.global_motion, 0, 2, "")
+        check!(warp)?;
+        check!(compound_types)?;
+        check!(global_motion)
     }
 }
 
@@ -1145,24 +1202,53 @@ const MAX_COMPOUND_TYPES: u8 = crate::mode_decision::FORCED_COMPOUND_TYPES;
 trait FieldValue: Sized {
     /// The accepted values, for [`PresetError::InvalidValue`].
     const EXPECTED: &'static str;
+    const SHAPE: PresetFieldShape = PresetFieldShape::Scalar(Self::KIND);
+    const KIND: PresetValueKind;
+    const INTEGER_RANGE: Option<PresetIntegerRange>;
+    fn value_at(&self, context: PresetContext) -> PresetFieldValue;
     fn parse(value: &str) -> Option<Self>;
 }
 
 impl FieldValue for u8 {
+    const KIND: PresetValueKind = PresetValueKind::U8;
+    const INTEGER_RANGE: Option<PresetIntegerRange> =
+        Some(PresetIntegerRange::new(0, u8::MAX as i32));
+    fn value_at(&self, _: PresetContext) -> PresetFieldValue {
+        PresetFieldValue::U8(*self)
+    }
+
     const EXPECTED: &'static str = "an integer in 0..=255";
     fn parse(value: &str) -> Option<Self> {
         value.parse().ok()
     }
 }
 
+const PLANE_DELTA_RANGE: PresetIntegerRange = PresetIntegerRange::new(-64, 63);
+
 impl FieldValue for i8 {
+    const KIND: PresetValueKind = PresetValueKind::I8;
+    const INTEGER_RANGE: Option<PresetIntegerRange> = Some(PLANE_DELTA_RANGE);
+    fn value_at(&self, _: PresetContext) -> PresetFieldValue {
+        PresetFieldValue::I8(*self)
+    }
+
     const EXPECTED: &'static str = "an integer in -64..=63 (su(7), § 5.18.6.3)";
     fn parse(value: &str) -> Option<Self> {
-        value.parse().ok().filter(|v| (-64..=63).contains(v))
+        value
+            .parse()
+            .ok()
+            .filter(|&v| (PLANE_DELTA_RANGE.min..=PLANE_DELTA_RANGE.max).contains(&i32::from(v)))
     }
 }
 
 impl FieldValue for u16 {
+    const KIND: PresetValueKind = PresetValueKind::U16;
+    const INTEGER_RANGE: Option<PresetIntegerRange> =
+        Some(PresetIntegerRange::new(0, u16::MAX as i32));
+    fn value_at(&self, _: PresetContext) -> PresetFieldValue {
+        PresetFieldValue::U16(*self)
+    }
+
     const EXPECTED: &'static str = "an integer in 0..=65535";
     fn parse(value: &str) -> Option<Self> {
         value.parse().ok()
@@ -1170,6 +1256,12 @@ impl FieldValue for u16 {
 }
 
 impl FieldValue for bool {
+    const KIND: PresetValueKind = PresetValueKind::Bool;
+    const INTEGER_RANGE: Option<PresetIntegerRange> = None;
+    fn value_at(&self, _: PresetContext) -> PresetFieldValue {
+        PresetFieldValue::Bool(*self)
+    }
+
     const EXPECTED: &'static str = "0, 1, false or true";
     fn parse(value: &str) -> Option<Self> {
         match value {
@@ -1181,6 +1273,12 @@ impl FieldValue for bool {
 }
 
 impl FieldValue for [u8; 3] {
+    const KIND: PresetValueKind = PresetValueKind::U8Triple;
+    const INTEGER_RANGE: Option<PresetIntegerRange> = u8::INTEGER_RANGE;
+    fn value_at(&self, _: PresetContext) -> PresetFieldValue {
+        PresetFieldValue::U8Triple(*self)
+    }
+
     const EXPECTED: &'static str = "three comma-separated integers in 0..=255, such as 6,2,4";
     fn parse(value: &str) -> Option<Self> {
         let mut values = value.split(',').map(u8::parse);
@@ -1190,6 +1288,13 @@ impl FieldValue for [u8; 3] {
 }
 
 impl<T: FieldValue + Copy> FieldValue for Levels<T> {
+    const SHAPE: PresetFieldShape = PresetFieldShape::Contextual(Self::KIND);
+    const KIND: PresetValueKind = T::KIND;
+    const INTEGER_RANGE: Option<PresetIntegerRange> = T::INTEGER_RANGE;
+    fn value_at(&self, context: PresetContext) -> PresetFieldValue {
+        self.at(context).value_at(context)
+    }
+
     const EXPECTED: &'static str = "one value for every frame, or four values for key, base, mid and leaf frames, separated by commas (by slashes for mds0_budgets)";
     fn parse(value: &str) -> Option<Self> {
         if let Some(all) = T::parse(value) {
@@ -1208,6 +1313,12 @@ impl<T: FieldValue + Copy> FieldValue for Levels<T> {
 }
 
 impl FieldValue for [bool; 3] {
+    const KIND: PresetValueKind = PresetValueKind::BoolTriple;
+    const INTEGER_RANGE: Option<PresetIntegerRange> = None;
+    fn value_at(&self, _: PresetContext) -> PresetFieldValue {
+        PresetFieldValue::BoolTriple(*self)
+    }
+
     const EXPECTED: &'static str = "three comma-separated flags, such as 1,0,1";
     fn parse(value: &str) -> Option<Self> {
         let mut flags = value.split(',').map(bool::parse);
@@ -1227,14 +1338,12 @@ fn parse_field<T: FieldValue>(
     })
 }
 
-/// Builds [`PRESETS`], [`PresetParams::FIELDS`] and [`PresetParams::set`]
-/// from a `preset: [p0, ..., p10]` header and groups of `field: [one value
-/// per preset]` lines, one line per [`PresetParams`] field; a missing,
-/// repeated or short line does not compile.
+/// Builds the preset rows, field descriptors and setter from one table.
+/// Each field takes help text, optional validation bounds and 11 preset values.
 macro_rules! preset_table {
     (
         preset: [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10],
-        $($group:ident { $($field:ident: $values:expr,)* })*
+        $($group:ident { $($help:literal $([$min:expr, $max:expr])? $field:ident: $values:expr,)* })*
     ) => {
         /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
         pub const PRESETS: [PresetParams; 11] = {
@@ -1247,7 +1356,36 @@ macro_rules! preset_table {
             ]
         };
 
+        mod ranges {
+            use super::PresetIntegerRange;
+
+            $($($(
+                #[expect(non_upper_case_globals, reason = "the name matches the preset field")]
+                pub(super) const $field: PresetIntegerRange = PresetIntegerRange::new($min, $max);
+            )?)*)*
+        }
+
         impl PresetParams {
+            /// Describes each accepted override field, in table order.
+            pub const FIELD_DESCRIPTORS: &'static [PresetField] = &[
+                $($(
+                    PresetField::new(
+                        stringify!($field),
+                        PresetGroup::$group,
+                        $help,
+                        preset_table!(@range $field $(, $min)?),
+                        |p| &p.$field,
+                        |p, context| p.$field.value_at(context),
+                    ),
+                )*)*
+            ];
+
+            /// Finds the descriptor for one exact override key.
+            #[must_use]
+            pub fn field(name: &str) -> Option<&'static PresetField> {
+                Self::FIELD_DESCRIPTORS.iter().find(|field| field.name == name)
+            }
+
             /// The field names [`Self::set`] accepts, in table order.
             pub const FIELDS: &'static [&'static str] = &[$($(stringify!($field),)*)*];
 
@@ -1271,34 +1409,43 @@ macro_rules! preset_table {
             }
         }
     };
+    (@range $field:ident, $min:expr) => { Some(ranges::$field) };
+    (@range $field:ident) => { None };
 }
 
 #[rustfmt::skip]
 preset_table! {
     preset:                    [   p0,    p1,    p2,    p3,    p4,    p5,    p6,    p7,    p8,    p9,   p10],
-    partition {
+    Partition {
+        "Smallest square block size to search, as a base-2 logarithm. The maximum block size limits this value." [2, 8]
         min_block_log2:        frames([
                                [    2,     2,     2,     2,     2,     2,     2,     3,     3,     3,     3],
                                [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
                                [    2,     2,     2,     2,     2,     2,     3,     3,     3,     4,     4],
                                [    2,     2,     2,     2,     2,     2,     3,     3,     3,     4,     4]]),
+        "Largest square block size to search, as a base-2 logarithm." [2, 8]
         max_block_log2:        [    8,     8,     8,     7,     7,     7,     7,     6,     6,     6,     6],
+        "Minimum frame height in samples for 256x256 superblocks. Requires max_block_log2 of 8." [64, u16::MAX as i32]
         sb256_min_height:      [  720,   720,   720,   720,   720,   720,   720,   720,   720,   720,   720],
+        "Stop the partition search when the unsplit cost is at most the best split cost."
         partition_early_exit:  frames([
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true]]),
+        "Threshold for ending the partition search after testing an unsplit block. Zero disables this check."
         none_breakout:         frames([
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4],
                                [    1,     1,     1,     1,     1,     1,     1,     4,     4,     4,     4]]),
+        "Largest unsplit block with no coefficients that can end the search, as a base-2 logarithm of luma area."
         breakout_area:         frames([
                                [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,   255],
                                [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,   255],
                                [   10,    10,    10,    10,    10,    10,    10,    10,    10,   255,   255],
                                [   10,    10,    10,    10,    10,    10,    10,    10,    10,   255,   255]]),
+        "Reuse decisions when different partition paths reach the same block. Use 0 for none, 1 for inter, or 2 for all."
         leaf_reuse:            frames_sd([
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
@@ -1308,9 +1455,13 @@ preset_table! {
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
                                [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     2],
                                [    1,     1,     1,     1,     1,     1,     2,     2,     2,     2,     2]]),
+        "Depth of the search for extended partition shapes. Zero disables this search." [0, 2]
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Cost margin in units of 1/256 for testing three-way partitions. Use 255 to always test these partitions."
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Cost margin in units of 1/256 for testing four-way partitions. Use 255 to always test these partitions."
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Maximum difference in binary partition levels from the first-pass decision. Use 255 to search every partition."
         pd_window:             frames_sd([
                                [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     1],
                                [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     1],
@@ -1320,14 +1471,21 @@ preset_table! {
                                [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     1],
                                [  255,   255,   255,   255,   255,   255,     1,     1,     1,     1,     1],
                                [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     1]]),
+        "Extra bits to charge each square block in the first partition pass."
         pd0_leaf_bits:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
+        "Margin in 8x8 cells for skipping intra search based on the primary reference. Use 255 to disable this check."
         ref_intra_margin:      [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        "Maximum distance from an intra refresh for the reference-based intra search check."
         ref_intra_refresh:     [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
+        "Allow separate luma and chroma partition trees."
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Search more chroma partitions when separate partition trees are active." [0, 1]
         sdp_chroma_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Search for isolated chroma regions in separate partition trees." [0, 2]
         extended_sdp:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
-    intra {
+    Intra {
+        "Number of luma and chroma intra modes to test per block." [1, u8::MAX as i32]
         intra_modes:           frames_sd([
                                [   13,    12,    12,    10,     9,     8,     6,     5,     4,     3,     2],
                                [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     1],
@@ -1337,38 +1495,63 @@ preset_table! {
                                [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     1],
                                [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     1],
                                [   13,    12,    12,    10,     9,     8,     2,     2,     2,     2,     1]]),
+        "Number of multiple reference line candidates to test."
         mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
+        "Select the chroma-from-luma downsampling filter from the first frame."
         cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Allow zero alpha in one plane of the explicit chroma-from-luma candidate."
         cfl_zero_alpha:        [false, false, false, false, false, false, false, false, false, false, false],
+        "Test multi-hypothesis cross-component prediction on chroma-from-luma leaves."
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
+        "Test the best derived intra prediction when its SATD is lower than the best angular prediction."
         dip:                   [false, false, false, false, false, false, false, false, false, false, false],
+        "Number of derived intra prediction candidates to test."
         dip_trials:            [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
-    transform {
+    Transform {
+        "Number of ranked candidates that receive full quantization and transform search. Use 255 for all candidates or 0 for only the final leaf trial."
         full_trials:           [    6,     6,     6,     4,     0,     0,     0,     0,     0,     0,     0],
+        "Use rate-distortion optimized quantization."
         rdoq:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Use rate-distortion optimized quantization for identity and one-dimensional transforms outside mode trials."
         rdoq_every_type:       [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        "Allow luma blocks to hide the parity of the first nonzero coefficient."
         parity_hiding:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Use trellis-coded quantization. This mode excludes parity hiding."
         tcq:                   frames([[true; 11], [true; 11], [false; 11], [false; 11]]),
+        "Run the quantization trellis in each leaf's final trial during partition search."
         tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
+        "Run the quantization trellis during luma transform search and before the chroma search."
         tcq_type_trellis:      [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        "Depth of the luma transform-type search. Zero uses DCT_DCT for each intra luma block."
         tx_type_depth:         [    8,     3,     3,     2,     2,     2,     3,     1,     1,     0,     0],
+        "Number of ranked luma transform types to test exactly. Zero tests all offered types."
         tx_type_model_keep:    [    0,     0,     0,     0,     0,     0,     2,     0,     0,     0,     0],
+        "Search luma transform partitions. If disabled, each block uses its largest transform."
         tx_partition_search:   frames([
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false]]),
+        "Residual threshold for testing inter transform splits. Zero disables this test."
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
+        "Number of intra secondary transform sets to test."
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Use rate-distortion trials to select intra secondary transforms."
         intra_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
+        "Test cross-chroma transform rotation in the final leaf trial."
         cctx:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true, false, false],
+        "Number of cross-chroma transform candidates to test."
         cctx_candidates:       [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        "Allow secondary transforms on inter luma blocks."
         inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
+        "Test each allowed inter secondary transform with a rate-distortion trial. Requires inter_ist."
         inter_ist_rd:          [false, false, false, false, false, false, false, false, false, false, false],
+        "Allow data-driven transforms on inter blocks."
         inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
     }
-    inter {
+    Inter {
+        "Full-pel motion search radius in luma samples. Values of 128 or more have the same effect."
         motion_range:          frames_sd([
                                [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
                                [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
@@ -1378,124 +1561,225 @@ preset_table! {
                                [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
                                [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,     8],
                                [  256,   192,   128,    96,    64,    64,    24,    24,    24,    16,     8]]),
+        "Lookahead motion search radius in quarter-resolution samples. Distant references double the radius."
         hme_range:             [   16,    16,    16,    12,    12,     8,     8,     8,     8,     8,     8],
+        "Lookahead refinement radius in full-resolution luma samples."
         me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     6,     4,     4],
+        "Open-loop SAD threshold for reducing the full-pel search near a lookahead vector. Zero disables the extra seeds."
         me_seeds:              [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
+        "Skip compound search below this mean open-loop SAD per sample, in sixteenths. Zero disables this check."
         compound_skip_sad:     [   16,    16,    16,    16,    16,    24,    24,    24,    24,    24,    24],
+        "Extra reference candidates within this cost margin, in sixteenths, receive a NEWMV trial. Use 255 to search all references."
         newmv_ref_margin:      frames([
                                [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
                                [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
                                [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0],
                                [  255,   255,   255,   255,   255,   255,   255,   255,     0,     0,     0]]),
+        "Motion precision to test. Use 0 for full, 1 for half, 2 for quarter, or 3 for eighth samples." [0, 3]
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     1],
+        "Largest qindex that allows eighth-pel vectors. Requires subpel_depth of 3. Zero disables eighth-pel vectors."
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Number of compound candidates to test with full rate-distortion trials. Zero also disables skip-mode blocks."
         compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     1,     1],
+        "Number of closest references to use in compound pairs." [1, 7]
         compound_refs:         [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
+        "Number of joint motion-vector difference scales to test." [1, 5]
         jmvd_scales:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        "Test more compound modes that use the same reference twice."
         same_ref_modes:        [false, false, false, false, false, false, false, false, false, false, false],
+        "Test adaptive motion-vector differences for compound motion. Requires the first mvd_tools flag."
         compound_amvd:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Test adaptive motion-vector differences for TIP NEWMV. Requires the first mvd_tools flag and tip_newmv."
         tip_amvd:              [false, false, false, false, false, false, false, false, false, false, false],
+        "Test warp with smooth inter-intra masks, or also wedge masks at level 2. Requires warp." [0, 2]
         warp_interintra:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Test local warp for compound NEW_NEWMV. Requires warp."
         compound_local_warp:   [false, false, false, false, false, false, false, false, false, false, false],
+        "Allow inter searches on large leaves."
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Predict motion vectors from projected reference motion fields."
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Number of motion-vector stack entries to test, minus one." [1, 5]
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
+        "Allow dynamic reference list reordering without its usual constraint. Requires mv_prediction."
         drl_reorder_always:    [false, false, false, false, false, false, false, false, false, false, false],
+        "Allow motion trajectory projection. Requires mv_prediction."
         mv_traj:               [false, false, false, false, false, false, false, false, false, false, false],
+        "Flags for adaptive motion-vector differences, derived motion-vector sign, and flexible motion-vector precision, in that order."
         mvd_tools:             [[false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3]],
+        "Interpolation filter search depth. Zero uses the EIGHTTAP filter." [0, 2]
         interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Carry symbol probabilities from a reference frame into an inter frame."
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Average symbol probabilities across tiles. Requires cdf_carry."
         cdf_avg_across_tiles:  [false, false, false, false, false, false, false, false, false, false, false],
+        "Keep the primary reference and start from default symbol probabilities. Requires cdf_carry."
         primary_default_cdfs:  [false, false, false, false, false, false, false, false, false, false, false],
+        "Keep symbol probabilities fixed during each frame."
         disable_cdf_update:    [false, false, false, false, false, false, false, false, false, false, false],
+        "Save symbol probabilities from the first tile at 0 or the middle tile at 1." [0, 1]
         cdf_update_tile:       [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Omit the primary reference index when the decoder can derive the same reference."
         primary_ref_choose:    [false, false, false, false, false, false, false, false, false, false, false],
+        "Number of bits for long-term key-frame identifiers. Requires open_loop_key to be zero." [0, 7]
         long_term_id_bits:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Show a hidden reference frame without a show-existing frame."
         implicit_output:       [false, false, false, false, false, false, false, false, false, false, false],
+        "Show the previous frame again when the input matches it on all planes."
         sef_repeat:            [false, false, false, false, false, false, false, false, false, false, false],
+        "Number of reference slots. Zero selects the default. The mini-GOP sizes constrain this value." [0, 16]
         num_ref_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Select frames to code as intra-only frames."
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Code every nth periodic key frame as open-loop. Zero disables open-loop key frames. Requires long_term_id_bits to be zero."
         open_loop_key:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Select the explicit frame reference signaling mode." [0, 8]
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Select which tile information the sequence header signals." [0, 3]
         seq_tile_info:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Allow shorter signaling of refreshed reference slots."
         short_refresh:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Quantization matrix search level. Lossless mode requires zero." [0, 3]
         quant_matrices:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Temporal interpolated prediction level. Zero disables TIP." [0, 2]
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        "Threshold for outputting a TIP prediction, as a percentage. Zero disables TIP output." [0, 200]
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        "Extra search for TIP output parameters." [0, 2]
         tip_output_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Allow explicit TIP quantizers. Requires tip_output and df_sub_pu."
         tip_explicit_qp:       [false, false, false, false, false, false, false, false, false, false, false],
+        "Allow TIP to fill gaps in projected motion. Requires tip."
         tip_hole_fill:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Enable optical flow refinement of compound predictions."
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Refine all eligible compound predictions. Requires opfl."
         opfl_refine_all:       [false, false, false, false, false, false, false, false, false, false, false],
+        "Allow decoder-side motion vector refinement."
         refinemv:              [ true, false, false, false, false, false, false, false, false, false, false],
+        "Refine TIP motion vectors. Requires opfl or refinemv."
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Warped motion search level. Zero disables warp." [0, 2]
         warp:                  [    2,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Global motion search level. Zero disables global motion search." [0, 2]
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Predict global motion parameters from reference frames. Requires global_motion."
         global_motion_predict: [false, false, false, false, false, false, false, false, false, false, false],
+        "Number of compound prediction types to search beyond the basic type." [0, super::MAX_COMPOUND_TYPES as i32]
         compound_types:        [    2,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
+        "Allow implicit masks in compound prediction."
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Test a blend of inter and intra predictions."
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
+        "Test wedge masks as well as smooth inter-intra masks. Requires interintra." [0, 1]
         interintra_search:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Allow block adaptive weighted prediction."
         bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        "Search extra block adaptive weights. Requires bawp." [0, 2]
         bawp_search:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Test NEWMV for temporal interpolated prediction."
         tip_newmv:             [false, false, false, false, false, false, false, false, false, false, false],
     }
-    filters {
+    Filters {
+        "Search depth for deblocking and CDEF parameters." [0, 3]
         loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
+        "Number of cross-component sample offset candidates to test." [0, 112]
         ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
+        "Maximum log2 band count for CCSO band-only offsets." [3, 6]
         ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
+        "Control which earlier CCSO parameters to test again." [0, 2]
         ccso_reuse:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Search depth for the nonseparable luma Wiener filter."
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+        "Number of luma loop restoration unit sizes to test." [1, 4]
         lr_unit_sizes:         [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        "Number of chroma loop restoration unit sizes to test." [1, 4]
         lr_chroma_unit_sizes:  [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        "Search depth for the nonseparable chroma Wiener filter."
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+        "Maximum number of classes to test in a luma Wiener filter bank." [1, u8::MAX as i32]
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
+        "Number of guided detail filter candidates to test." [0, 16]
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,     4],
+        "Maximum number of CDEF strength sets to signal in a frame." [1, 8]
         cdef_strengths:        [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
+        "Number of CDEF primary and secondary strength pairs to test. Zero uses loop_filter_search." [0, 64]
         cdef_pairs:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Search all allowed CDEF damping values."
         cdef_damping_search:   [false, false, false, false, false, false, false, false, false, false, false],
+        "Test applying CDEF to skipped transform blocks."
         cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
+        "Search separate vertical and horizontal luma deblocking offsets. Requires loop_filter_search."
         deblock_luma_split:    [false, false, false, false, false, false, false, false, false, false, false],
+        "Number of bits available for deblocking offsets." [3, 5]
         deblock_offset_bits:   [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
+        "Deblock edges inside prediction units."
         df_sub_pu:             [false, false, false, false, false, false, false, false, false, false, false],
     }
-    screen_content {
+    ScreenContent {
+        "Test forward skip coding on the best intra luma mode."
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
+        "Test an identity transform on the best intra luma mode when fsc is disabled."
         idtx_intra:            [false, false, false, false, false, false, false, false, false, false, false],
+        "Select screen content tools when the first frame has screen content."
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        "Test palette prediction on intra leaves."
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
+        "Test intra block copy."
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
+        "Allow local intra block copy in key frames. Requires intrabc."
         intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Number of bits minus one for the intra block copy reference index." [0, 2]
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Allow intra block copy on small or chroma-offset blocks. Requires intrabc."
         intrabc_small:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Refine the best intra block copy to subpixel precision. Requires intrabc."
         intrabc_subpel:        [false, false, false, false, false, false, false, false, false, false, false],
+        "Test morph prediction for intra block copy. Requires intrabc and bawp."
         intrabc_morph:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Restrict inter motion vectors to whole samples."
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
-    lossless {
+    Lossless {
+        "Test differential pulse-code modulation on lossless intra leaves."
         lossless_dpcm:         [false, false, false, false, false, false, false, false, false, false, false],
     }
-    gop {
+    Gop {
+        "Number of frames per mini-GOP. One shows every frame directly." [1, 32]
         mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
+        "Number of frames per mini-GOP in bitrate modes. The mini_gop_size field limits this value." [1, 32]
         bitrate_mini_gop_size: [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
+        "Number of frames to analyze before encoding. Use at least mini_gop_size." [1, u8::MAX as i32]
         lookahead_frames:      [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
+        "Block-level temporal model strength, in percent." [0, 200]
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        "Strength of variance-based adaptive quantization, in percent." [0, 200]
         ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Enable segmentation for quantizer adjustments. Lossless mode requires zero." [0, 1]
         segmentation:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Number of neighboring frames per side for temporal filtering. Zero disables it." [0, 8]
         tf_frames:             frames([
                                [4; 11],
                                [0; 11], [0; 11], [0; 11]]),
+        "Temporal filter strength, in percent. Zero disables it."
         tf_strength:           frames([[100; 11], [25; 11], [25; 11], [25; 11]]),
+        "Amount to reduce the key-frame qindex in CRF and bitrate modes."
         key_qindex_boost:      frames_sd([[0; 11]; 4], [
                                [4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0],
                                [0; 11], [0; 11], [0; 11]]),
+        "Log2 step size for superblock quantizer offsets." [0, 3]
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        "Luma DC quantizer offset, in qindex units. Lossless mode requires zero."
         y_dc_delta_q:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "U plane quantizer offset, in qindex units. Lossless mode requires zero."
         u_delta_q:             [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "V plane quantizer offset, in qindex units. Lossless mode requires zero."
         v_delta_q:             [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
-    mode_decision {
+    ModeDecision {
+        "Weight of lost luma texture in rate-distortion decisions, in percent." [0, 200]
         psy_rd:                [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Three candidate budgets for the first mode decision pass. Use slashes to separate frame kinds." [1, u8::MAX as i32]
         mds0_budgets:          frames_sd([
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [1, 1, 1]],
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [1, 1, 1]],
@@ -1505,13 +1789,15 @@ preset_table! {
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]],
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]],
                                [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [2, 1, 1], [2, 1, 1], [2, 1, 1], [2, 1, 1], [1, 1, 1]]]),
+        "Control how much work the encoder omits for inexpensive inter leaves."
         light_leaf:            frames([
                                [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,     2],
                                [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,     2],
                                [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,     2],
                                [  255,   255,   255,   255,   255,   255,   255,   255,   255,   255,     2]]),
     }
-    threading {
+    Threading {
+        "Allow parallel searches across rows and frames in a mini-GOP."
         wavefront:             [false, false, false, false, false, false,  true,  true,  true,  true,  true],
     }
 }

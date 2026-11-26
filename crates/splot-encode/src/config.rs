@@ -3,6 +3,8 @@
 
 //! Encoder configuration and its validation.
 
+pub mod options;
+
 use core::num::NonZeroU32;
 
 use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow};
@@ -13,6 +15,9 @@ use crate::content::{ContentDescription, KeyFrameMetadata};
 use crate::error::{Error, Result};
 use crate::preset::{Preset, PresetParams};
 use crate::rate_control::{Crf, check_bitrate, check_cbr, max_qindex};
+
+mod resolution;
+pub use resolution::{PresetOrigin, ResolvedConfig, ResolvedPreset};
 
 /// Largest frame dimension AV2 can signal: `max_frame_width_minus_1` has at most
 /// 16 bits (§ 5.4.1, `docs/spec/av2/1.0.0/05-syntax-structures.md`).
@@ -277,6 +282,13 @@ impl Config {
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
     /// [`Error::PaddingWithoutCbr`] or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
+        self.validated_presets(|_, _| {}).map(|_| ())
+    }
+
+    fn validated_presets(
+        &self,
+        record: impl FnMut(&str, PresetOrigin),
+    ) -> Result<[PresetParams; 2]> {
         let lossless_refused = [
             (self.film_grain, "film grain"),
             (self.resize_denominator.is_some(), "resize"),
@@ -290,7 +302,7 @@ impl Config {
             });
         }
         let rows = [
-            self.override_preset(self.preset.params())?,
+            self.apply_preset(self.preset.params(), record)?,
             self.override_preset(self.preset.screen_params())?,
         ];
         let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
@@ -376,7 +388,8 @@ impl Config {
                 ..
             } => check_cbr(bitrate_kbps, (buffer_ms, initial_ms), self.frame_rate),
             _ => Ok(()),
-        }
+        }?;
+        Ok(rows)
     }
 
     /// The configuration of the coded frames: the frame size after
@@ -439,24 +452,34 @@ impl Config {
     /// [`Self::preset_overrides`] applied, checked by
     /// [`PresetParams::validate`].
     pub(crate) fn override_preset(&self, row: &PresetParams) -> Result<PresetParams> {
+        self.apply_preset(row, |_, _| {})
+    }
+
+    fn apply_preset(
+        &self,
+        row: &PresetParams,
+        mut record: impl FnMut(&str, PresetOrigin),
+    ) -> Result<PresetParams> {
         let mut row = *row;
-        let fast_decode = self.fast_decode.then_some(&Self::FAST_DECODE[..]);
-        for (name, value) in self
-            .tune
-            .overrides()
-            .iter()
-            .chain(fast_decode.into_iter().flatten())
-        {
+        for (name, value) in self.tune.overrides() {
             row.set(name, value)?;
+            record(name, PresetOrigin::Tune);
+        }
+        if self.fast_decode {
+            for (name, value) in Self::FAST_DECODE {
+                row.set(name, value)?;
+                record(name, PresetOrigin::FastDecode);
+            }
         }
         for (name, value) in &self.preset_overrides {
             if self.is_lossless() && PresetParams::lossless_refuses(name, value) {
                 return Err(Error::LosslessWith { what: name.clone() });
             }
             row.set(name, value)?;
+            record(name, PresetOrigin::Explicit);
         }
         if self.is_lossless() {
-            row.set_lossless();
+            row.set_lossless_with(|name| record(name, PresetOrigin::Lossless));
         }
         row.validate()?;
         Ok(row)
