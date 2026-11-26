@@ -22,8 +22,8 @@ use splot_core::span::ByteOffset;
 use splot_core::types::TemporalLayerId;
 use splot_parallel::{FrameDelay, ThreadCount};
 use splot_recon::{
-    BitDepth, DecodedFrameInfo, FramePlaneSamples, PixelFormat, PlaneId, PlanePool, PlaneRef,
-    ReconSample, SharedFrame,
+    BitDepth, DecodedFrame, DecodedFrameInfo, FramePlaneSamples, PixelFormat, PlaneId, PlanePool,
+    PlaneRef, ReconSample, SharedFrame,
 };
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, fill_buffer};
@@ -280,6 +280,15 @@ impl Samples {
     }
 }
 
+/// A decoded frame borrowed from a [`Picture`].
+#[derive(Clone, Copy, Debug)]
+pub enum PictureFrame<'a> {
+    /// Eight-bit decoded samples and their geometry.
+    Eight(&'a DecodedFrame<u8>),
+    /// Ten-bit decoded samples and their geometry.
+    Ten(&'a DecodedFrame<u16>),
+}
+
 /// The samples of one picture plane, cropped to the visible area.
 #[derive(Clone, Copy, Debug)]
 pub enum PictureSamples<'a> {
@@ -441,6 +450,19 @@ impl Picture {
     #[must_use]
     pub const fn pixel_format(&self) -> PixelFormat {
         self.info.pixel_format()
+    }
+
+    /// Borrows the decoded frame without a copy. The frame gives the coded
+    /// and storage sizes and the visible rectangle. It contains the same
+    /// samples as [`Self::plane`], with or without film grain.
+    ///
+    /// Use the order from [`Decoder::get_picture`] for display order.
+    #[must_use]
+    pub fn decoded_frame(&self) -> Option<PictureFrame<'_>> {
+        Some(match self.samples.as_ref()? {
+            Samples::Eight(frame) => PictureFrame::Eight(frame.get()),
+            Samples::Ten(frame) => PictureFrame::Ten(frame.get()),
+        })
     }
 
     /// The visible samples of `plane`, or `None` for a chroma plane of a
