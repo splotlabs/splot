@@ -24,6 +24,8 @@ mod tests;
 pub struct ValidationLimits {
     /// Maximum declared Annex B OBU or IVF frame size, in bytes.
     pub max_unit_bytes: usize,
+    /// Maximum number of OBU envelopes to check, including across IVF records.
+    pub max_obus: u64,
     /// Maximum number of findings retained in the returned report.
     pub max_diagnostics: usize,
 }
@@ -50,6 +52,11 @@ pub enum ValidationCompletion {
     MalformedInput,
     /// The cancellation callback requested a stop.
     Cancelled,
+    /// The configured OBU count was reached and input remained.
+    ObuLimit {
+        /// Maximum number of OBU envelopes to check.
+        max_obus: u64,
+    },
     /// An I/O failure or declared size over the configured limit prevented further reads.
     InputError(StreamValidateError),
 }
@@ -175,13 +182,14 @@ impl Validator {
 
     /// Runs the existing OBU checks on Annex B or IVF and reports their execution.
     ///
-    /// The callback runs before each unit read and before each OBU check. A read
+    /// The callback runs before each unit read, OBU parse and stream finalization. A read
     /// or check in progress runs until it returns. On cancellation, terminal
     /// malformation, or input failure, this retains emitted findings without
     /// running end-of-stream checks on the incomplete input.
     ///
     /// The diagnostic cap limits the retained report. Temporary memory during
     /// individual checks and validator state follow the existing check logic.
+    /// The OBU cap bounds how much input can contribute to deferred state.
     pub fn validate_reader_with_evidence<R: Read>(
         &self,
         reader: R,

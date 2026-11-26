@@ -12,7 +12,7 @@
 use std::fmt;
 use std::io::Read;
 
-use splot_core::annexb::parse_annex_b_obus_partial_at;
+use splot_core::annexb::AnnexBObuCursor;
 use splot_core::span::ByteOffset;
 use splot_core::stream_reader::{ReaderError, StreamUnit, TemporalUnitReader};
 
@@ -96,7 +96,7 @@ pub(super) fn validate_reader_with_evidence<R: Read>(
     run_stream(
         TemporalUnitReader::with_max_unit_bytes(reader, limits.max_unit_bytes),
         options,
-        Some(limits.max_diagnostics),
+        Some(limits),
         should_cancel,
     )
 }
@@ -122,7 +122,7 @@ fn retain_findings(
 fn run_stream<R: Read>(
     mut reader: TemporalUnitReader<R>,
     options: &ValidationOptions,
-    max_diagnostics: Option<usize>,
+    limits: Option<ValidationLimits>,
     mut should_cancel: impl FnMut() -> bool,
 ) -> ValidationExecution {
     let mut execution = ValidationExecution::default();
@@ -171,35 +171,51 @@ fn run_stream<R: Read>(
             }
         };
 
-        let parsed = parse_annex_b_obus_partial_at(bytes, offset);
-        for obu in &parsed.obus {
+        let mut cursor = AnnexBObuCursor::new(bytes, offset);
+        while cursor.has_remaining() {
             if should_cancel() {
                 break 'stream ValidationCompletion::Cancelled;
             }
-            process_obu(&mut context, obu, options, &mut report);
-            execution.coverage.checked_obus += 1;
-            execution.coverage.last_checked_obu_end =
-                Some(obu.offset.saturating_add(u64::from(obu.size)));
-            if let Some(limit) = max_diagnostics {
-                retain_findings(&mut execution, &mut report, limit);
+            if let Some(limits) = limits
+                && execution.coverage.checked_obus == limits.max_obus
+            {
+                break 'stream ValidationCompletion::ObuLimit {
+                    max_obus: limits.max_obus,
+                };
             }
-        }
-        if let Some(error) = parsed.error {
-            execution.coverage.malformed_units += 1;
-            let diagnostic = parse_error_diagnostic(&error);
-            if !in_ivf {
-                terminal_diagnostic = Some(diagnostic);
-                break ValidationCompletion::MalformedInput;
-            }
-            report.push(diagnostic);
-            if let Some(limit) = max_diagnostics {
-                retain_findings(&mut execution, &mut report, limit);
+            match cursor.next_obu() {
+                Ok(Some(obu)) => {
+                    process_obu(&mut context, &obu, options, &mut report);
+                    execution.coverage.checked_obus += 1;
+                    execution.coverage.last_checked_obu_end =
+                        Some(obu.offset.saturating_add(u64::from(obu.size)));
+                    if let Some(limits) = limits {
+                        retain_findings(&mut execution, &mut report, limits.max_diagnostics);
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    execution.coverage.malformed_units += 1;
+                    let diagnostic = parse_error_diagnostic(&error);
+                    if !in_ivf {
+                        terminal_diagnostic = Some(diagnostic);
+                        break 'stream ValidationCompletion::MalformedInput;
+                    }
+                    report.push(diagnostic);
+                    if let Some(limits) = limits {
+                        retain_findings(&mut execution, &mut report, limits.max_diagnostics);
+                    }
+                    break;
+                }
             }
         }
     };
 
-    let legacy_finalizes_malformed = max_diagnostics.is_none()
-        && matches!(execution.completion, ValidationCompletion::MalformedInput);
+    if matches!(execution.completion, ValidationCompletion::EndOfInput) && should_cancel() {
+        execution.completion = ValidationCompletion::Cancelled;
+    }
+    let legacy_finalizes_malformed =
+        limits.is_none() && matches!(execution.completion, ValidationCompletion::MalformedInput);
     if legacy_finalizes_malformed
         || matches!(execution.completion, ValidationCompletion::EndOfInput)
     {
@@ -211,8 +227,8 @@ fn run_stream<R: Read>(
         report.push(diagnostic);
     }
 
-    if let Some(limit) = max_diagnostics {
-        retain_findings(&mut execution, &mut report, limit);
+    if let Some(limits) = limits {
+        retain_findings(&mut execution, &mut report, limits.max_diagnostics);
     } else {
         execution.report = report;
     }
@@ -354,6 +370,7 @@ mod tests {
             &ValidationOptions::default(),
             ValidationLimits {
                 max_unit_bytes: 16,
+                max_obus: 128,
                 max_diagnostics,
             },
             || false,
@@ -473,6 +490,7 @@ mod tests {
             &ValidationOptions::default(),
             ValidationLimits {
                 max_unit_bytes: 16,
+                max_obus: 128,
                 max_diagnostics: 16,
             },
             || {
@@ -487,6 +505,87 @@ mod tests {
         assert_eq!(execution.coverage.checked_obus, 1);
         assert!(!execution.coverage.finalized);
         assert!(execution.counts.errors > 0);
+    }
+
+    #[test]
+    fn cancellation_stops_before_parsing_the_next_obu_in_an_ivf_record() {
+        let data = ivf(&[&[0x02, 0x88, 0x05, 0x05, 0x08]]);
+        let mut polls = 0;
+        let execution = Validator::new(false).validate_reader_with_evidence(
+            data.as_slice(),
+            &ValidationOptions::default(),
+            ValidationLimits {
+                max_unit_bytes: 16,
+                max_obus: 128,
+                max_diagnostics: 16,
+            },
+            || {
+                polls += 1;
+                polls == 3
+            },
+        );
+        assert!(matches!(
+            execution.completion,
+            ValidationCompletion::Cancelled
+        ));
+        assert_eq!(execution.coverage.checked_obus, 1);
+        assert_eq!(execution.coverage.malformed_units, 0);
+        assert!(execution.counts.errors > 0);
+    }
+
+    #[test]
+    fn cancellation_at_end_of_input_skips_finalization() {
+        let mut polls = 0;
+        let execution = Validator::new(false).validate_reader_with_evidence(
+            &[][..],
+            &ValidationOptions::default(),
+            ValidationLimits {
+                max_unit_bytes: 16,
+                max_obus: 1,
+                max_diagnostics: 0,
+            },
+            || {
+                polls += 1;
+                polls == 2
+            },
+        );
+        assert!(matches!(
+            execution.completion,
+            ValidationCompletion::Cancelled
+        ));
+        assert!(!execution.coverage.finalized);
+    }
+
+    #[test]
+    fn obu_limit_keeps_checked_prefix_and_skips_finalization() {
+        let data = ivf(&[&[0x02, 0x88, 0x05, 0x01, 0x08]]);
+        let validator = Validator::new(false);
+        let limits = ValidationLimits {
+            max_unit_bytes: 16,
+            max_obus: 1,
+            max_diagnostics: 0,
+        };
+        let options = ValidationOptions::default();
+        let execution =
+            validator.validate_reader_with_evidence(data.as_slice(), &options, limits, || false);
+        assert!(matches!(
+            execution.completion,
+            ValidationCompletion::ObuLimit { max_obus: 1 }
+        ));
+        assert_eq!(execution.coverage.checked_obus, 1);
+        assert!(!execution.coverage.finalized);
+        assert!(execution.report.diagnostics.is_empty());
+        assert!(execution.counts.errors > 0);
+
+        let data = ivf(&[&[0x02, 0x88, 0x05]]);
+        let execution =
+            validator.validate_reader_with_evidence(data.as_slice(), &options, limits, || false);
+        assert!(matches!(
+            execution.completion,
+            ValidationCompletion::EndOfInput
+        ));
+        assert_eq!(execution.coverage.checked_obus, 1);
+        assert!(execution.coverage.finalized);
     }
 
     proptest! {
