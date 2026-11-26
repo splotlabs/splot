@@ -58,38 +58,14 @@ const SIG_GRID: [[usize; 5]; 3] = {
         while k < 5 {
             let [row, col] = SIG_OFFSETS[class][k];
             out[class][k] = grid_offset([row as usize, col as usize]);
+            if k < MAG_REF_OFFSET_WITH_TX_CLASS[class].len() {
+                assert!(out[class][k] == grid_offset(MAG_REF_OFFSET_WITH_TX_CLASS[class][k]));
+            }
             k += 1;
         }
         class += 1;
     }
     out
-};
-
-/// `Mag_Ref_Offset_With_Tx_Class` per class as level-grid offsets.
-const MAG_GRID: [[usize; 3]; 3] = {
-    let mut out = [[0; 3]; 3];
-    let mut class = 0;
-    while class < 3 {
-        let mut k = 0;
-        while k < 3 {
-            out[class][k] = grid_offset(MAG_REF_OFFSET_WITH_TX_CLASS[class][k]);
-            k += 1;
-        }
-        class += 1;
-    }
-    out
-};
-
-const _: () = {
-    let mut class = 0;
-    while class < MAG_GRID.len() {
-        let mut i = 0;
-        while i < MAG_GRID[class].len() {
-            assert!(MAG_GRID[class][i] == SIG_GRID[class][i]);
-            i += 1;
-        }
-        class += 1;
-    }
 };
 
 /// The grid word of a level: `min(level, 3)`, `min(level, 5)` and the level
@@ -291,8 +267,6 @@ pub(super) fn grid_scan(
     Ok(scans.get(start..start + eob).unwrap_or_default())
 }
 
-#[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
-#[inline(always)]
 fn half_capped(mag: u32, cap: usize) -> usize {
     usize::from(HALF_CAPPED[cap & 15][mag as usize & 31])
 }
@@ -336,10 +310,43 @@ pub(crate) fn decode_ordinary_transform_block(
     mut input: CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryBranchError> {
+    use TransformClass::{Horizontal, TwoD, Vertical};
+
     input.parity_hiding &= !input.lossless;
     input.use_tcq &= !input.lossless;
     preflight(&input, quant.len())?;
-    Ok(dispatch(&input)(state, cdfs, symbols, &input, quant)?)
+    let result = match (
+        input.tx_class,
+        input.plane == 0,
+        input.use_tcq,
+        input.parity_hiding,
+    ) {
+        (TwoD, true, true, _) => run::<0, true, true, false>(state, cdfs, symbols, &input, quant),
+        (TwoD, true, false, true) => {
+            run::<0, true, false, true>(state, cdfs, symbols, &input, quant)
+        }
+        (TwoD, true, false, false) => {
+            run::<0, true, false, false>(state, cdfs, symbols, &input, quant)
+        }
+        (Horizontal, true, _, true) => {
+            run::<1, true, false, true>(state, cdfs, symbols, &input, quant)
+        }
+        (Horizontal, true, _, false) => {
+            run::<1, true, false, false>(state, cdfs, symbols, &input, quant)
+        }
+        (Vertical, true, _, true) => {
+            run::<2, true, false, true>(state, cdfs, symbols, &input, quant)
+        }
+        (Vertical, true, _, false) => {
+            run::<2, true, false, false>(state, cdfs, symbols, &input, quant)
+        }
+        (TwoD, false, ..) => run::<0, false, false, false>(state, cdfs, symbols, &input, quant),
+        (Horizontal, false, ..) => {
+            run::<1, false, false, false>(state, cdfs, symbols, &input, quant)
+        }
+        (Vertical, false, ..) => run::<2, false, false, false>(state, cdfs, symbols, &input, quant),
+    };
+    Ok(result?)
 }
 
 fn preflight(
@@ -383,36 +390,6 @@ struct BlockSummary {
     state: NonZeroCoeffQuantState,
     quant_end: usize,
 }
-
-#[inline(always)]
-fn dispatch(input: &CoeffTransformBlockInput<'_>) -> RunFn {
-    use TransformClass::{Horizontal, TwoD, Vertical};
-    match (
-        input.tx_class,
-        input.plane == 0,
-        input.use_tcq,
-        input.parity_hiding,
-    ) {
-        (TwoD, true, true, _) => run::<0, true, true, false>,
-        (TwoD, true, false, true) => run::<0, true, false, true>,
-        (TwoD, true, false, false) => run::<0, true, false, false>,
-        (Horizontal, true, _, true) => run::<1, true, false, true>,
-        (Horizontal, true, _, false) => run::<1, true, false, false>,
-        (Vertical, true, _, true) => run::<2, true, false, true>,
-        (Vertical, true, _, false) => run::<2, true, false, false>,
-        (TwoD, false, ..) => run::<0, false, false, false>,
-        (Horizontal, false, ..) => run::<1, false, false, false>,
-        (Vertical, false, ..) => run::<2, false, false, false>,
-    }
-}
-
-type RunFn = fn(
-    &mut TileCoeffContextState,
-    &mut TileCdfSubset,
-    &mut SymbolDecoder<'_>,
-    &CoeffTransformBlockInput<'_>,
-    &mut [i32],
-) -> Result<usize, CoeffOrdinaryPassError>;
 
 /// One specialised block body per class, plane type and tool set, kept out
 /// of line so its loops own the registers.
@@ -527,8 +504,6 @@ pub(super) const fn entry_pos(entry: u32) -> usize {
     (((entry >> 11) & 0x3fc) | (entry & 3)) as usize
 }
 
-#[expect(clippy::inline_always, reason = "measured: per-coefficient index")]
-#[inline(always)]
 const fn ctx_class_of(entry: u32) -> usize {
     (entry >> CTX_CLASS_SHIFT) as usize & 3
 }
@@ -559,8 +534,6 @@ const NONZERO_LIST: usize = 1024;
 
 impl LevelPass<'_, '_> {
     /// The sum of the grid words at `offsets` from `grid`.
-    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
-    #[inline(always)]
     fn sum(&self, grid: usize, offsets: &[usize]) -> u32 {
         offsets
             .iter()
@@ -571,8 +544,6 @@ impl LevelPass<'_, '_> {
     /// The clamped `coeff_base` neighbour sum (§ 8.3.2): `NEAR5` and `FAR5`
     /// cap the first two and the remaining `Sig_Ref_Diff_Offset` entries at
     /// 5 instead of 3.
-    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
-    #[inline(always)]
     fn base_mag<const CLASS: usize, const LUMA: bool, const NEAR5: bool, const FAR5: bool>(
         &self,
         grid: usize,
@@ -595,18 +566,11 @@ impl LevelPass<'_, '_> {
 
     /// The `coeff_br` context (§ 8.3.2); `lf_bump` is whether the context
     /// takes the low-frequency offset of 7.
-    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
-    #[inline(always)]
     fn br_ctx<const CLASS: usize, const LUMA: bool>(&self, grid: usize, lf_bump: bool) -> usize {
         let count = if LUMA || CLASS == 0 { 3 } else { 2 };
-        Self::br_ctx_from_word_sum::<LUMA>(self.sum(grid, &MAG_GRID[CLASS][..count]), lf_bump)
+        Self::br_ctx_from_word_sum::<LUMA>(self.sum(grid, &SIG_GRID[CLASS][..count]), lf_bump)
     }
 
-    #[expect(
-        clippy::inline_always,
-        reason = "shares the packed sum in the coefficient loop"
-    )]
-    #[inline(always)]
     fn br_ctx_from_word_sum<const LUMA: bool>(sum: u32, lf_bump: bool) -> usize {
         let mag = (sum >> 8) & 0xff;
         if !LUMA {
@@ -617,11 +581,6 @@ impl LevelPass<'_, '_> {
     }
 
     /// Adds `coeff_br` when the base symbol saturates.
-    #[expect(
-        clippy::inline_always,
-        reason = "measured: per-coefficient symbol read"
-    )]
-    #[inline(always)]
     fn add_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
@@ -641,11 +600,6 @@ impl LevelPass<'_, '_> {
         level + self.read_range::<LUMA, LF>(rows, ctx)
     }
 
-    #[expect(
-        clippy::inline_always,
-        reason = "keeps the symbol state in the coefficient loop"
-    )]
-    #[inline(always)]
     fn read_range<const LUMA: bool, const LF: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
@@ -663,8 +617,6 @@ impl LevelPass<'_, '_> {
         }
     }
 
-    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
-    #[inline(always)]
     fn uv_ctx<const CLASS: usize>(&self, mag: u32) -> usize {
         half_capped(mag, 3)
             + if CLASS != 0 {
