@@ -977,8 +977,10 @@ fn standalone_cvs_reuses_available_sequence_after_cmvs_end() {
     let units = temporal_units(MSDO_8BIT);
     let first_obus = parse_annex_b_obus(&units[0]).unwrap();
     let xlayer = ExtendedLayerId::from_bits(3);
-    let sequence = first_obus
-        .iter()
+    let sequence_unit = 2;
+    let sequence = parse_annex_b_obus(&units[sequence_unit])
+        .unwrap()
+        .into_iter()
         .find(|obu| {
             obu.header.obu_type == ObuType::SequenceHeader && obu.header.extended_layer_id == xlayer
         })
@@ -1013,7 +1015,10 @@ fn standalone_cvs_reuses_available_sequence_after_cmvs_end() {
         );
         let last = pictures.last().unwrap();
         assert_eq!(last.extended_layer_id(), xlayer);
-        assert_eq!(last.provenance().sequence_header.user_data, 0);
+        assert_eq!(
+            last.provenance().sequence_header.user_data,
+            sequence_unit as u64
+        );
         assert_eq!(last.provenance().sequence_header.offset, sequence.offset);
         assert_eq!(last.provenance().coded.user_data, units.len() as u64);
         let report = context(3, 2)
