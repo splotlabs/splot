@@ -69,7 +69,7 @@ pub struct ResolvedConfig {
     /// The preset row the frame coder can select when it detects screen content.
     ///
     /// This field is empty when screen detection is off. The first frame determines
-    /// whether the encoder selects this row.
+    /// whether the frame coder selects this row. Sequence setup, lookahead and GOP planning use the normal row.
     pub screen: Option<ResolvedPreset>,
 }
 

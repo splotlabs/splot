@@ -386,19 +386,10 @@ impl IntraFrameCoder {
         let params = Self::stream_params(config, preset)?;
         let (sequence, view, references) = sequence_state(&params)?;
         let tiles = frame_tiles(config, preset, (&params, &view))?;
-        let mfh_obu = if config.multi_frame_header {
-            encode_multi_frame_header_obu().map_err(coding("multi-frame header"))?
-        } else {
-            Vec::new()
-        };
         Ok(Self {
             params,
             references,
-            content_obus: [
-                config.content.obus(config.frame_rate, &mfh_obu)?,
-                config.key_frame_metadata.obus()?,
-            ]
-            .concat(),
+            content_obus: content_obus(config)?,
             multi_frame_header: config.multi_frame_header,
             sequence,
             view,
@@ -532,11 +523,23 @@ impl FrameCoder for IntraFrameCoder {
     }
 }
 
+fn content_obus(config: &Config) -> Result<Vec<u8>> {
+    let mfh_obu = if config.multi_frame_header {
+        encode_multi_frame_header_obu().map_err(coding("multi-frame header"))?
+    } else {
+        Vec::new()
+    };
+    let mut obus = config.content.obus(config.frame_rate, &mfh_obu)?;
+    obus.extend(config.key_frame_metadata.obus()?);
+    Ok(obus)
+}
+
 /// Checks the frame setup without starting a worker pool.
 pub(crate) fn check_frame_setup(config: &Config, preset: &PresetParams) -> Result<()> {
     let params = IntraFrameCoder::stream_params(config, preset)?;
     let (_, view) = sequence_view(&params)?;
     frame_tiles(config, preset, (&params, &view))?;
+    content_obus(config)?;
     Ok(())
 }
 

@@ -2317,3 +2317,11 @@ fn order_hints_map_references_to_display_pairs() {
     assert_eq!(plan(7).order_hint, 2, "frame 5 is a key frame");
     assert_eq!(pairs(7, &[1, 3]), [Some((7, 6)), Some((7, 8))]);
 }
+
+#[test]
+fn resolve_rejects_unencodable_sample_aspect_ratio() {
+    let mut config = Config::new(64, 64);
+    config.content.sample_aspect_ratio = Some((u32::MAX, 1));
+    assert!(config.resolve().is_err());
+    assert!(crate::Encoder::new(config).is_err());
+}
