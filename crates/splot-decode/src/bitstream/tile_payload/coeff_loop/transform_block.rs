@@ -519,29 +519,6 @@ impl LevelPass<'_, '_> {
             .sum()
     }
 
-    /// The clamped `coeff_base` neighbour sum (§ 8.3.2): `NEAR5` and `FAR5`
-    /// cap the first two and the remaining `Sig_Ref_Diff_Offset` entries at
-    /// 5 instead of 3.
-    fn base_mag<const CLASS: usize, const LUMA: bool, const NEAR5: bool, const FAR5: bool>(
-        &self,
-        grid: usize,
-    ) -> u32 {
-        let count = if LUMA {
-            5
-        } else if CLASS == 0 {
-            3
-        } else {
-            2
-        };
-        let offsets = &SIG_GRID[CLASS][..count];
-        if NEAR5 == FAR5 {
-            let shift = if NEAR5 { 8 } else { 0 };
-            (self.sum(grid, offsets) >> shift) & 0xff
-        } else {
-            ((self.sum(grid, &offsets[..2]) >> 8) & 0xff) + (self.sum(grid, &offsets[2..]) & 0xff)
-        }
-    }
-
     fn br_ctx_from_word_sum<const LUMA: bool>(sum: u32, lf_bump: bool) -> usize {
         let mag = (sum >> 8) & 0xff;
         if !LUMA {
@@ -551,12 +528,10 @@ impl LevelPass<'_, '_> {
         }
     }
 
-    /// Adds `coeff_br` when the base symbol saturates. At EOB the block
-    /// has written no levels yet, so its neighbour sum is zero.
-    fn add_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
+    /// Adds `coeff_br` at EOB, where the neighbour sum is zero.
+    fn add_eob_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
-        neighbor_grid: Option<usize>,
         is_dc: bool,
         level: u32,
     ) -> u32 {
@@ -568,11 +543,7 @@ impl LevelPass<'_, '_> {
         if level <= base_levels || (LF && !LUMA) {
             return level;
         }
-        let sum = neighbor_grid.map_or(0, |grid| {
-            let count = if LUMA || CLASS == 0 { 3 } else { 2 };
-            self.sum(grid, &SIG_GRID[CLASS][..count])
-        });
-        let ctx = Self::br_ctx_from_word_sum::<LUMA>(sum, LF && (!is_dc || CLASS != 0));
+        let ctx = if LF && (!is_dc || CLASS != 0) { 7 } else { 0 };
         let row = Self::range_row::<LUMA, LF>(rows, ctx);
         level + self.symbols.read_trusted(row)
     }
@@ -599,29 +570,38 @@ impl LevelPass<'_, '_> {
             }
     }
 
-    /// Reads a low-frequency base symbol; `DC` is whether the position is
+    /// Reads a low-frequency level, retaining the near-neighbour sum for
+    /// a saturated luma base symbol. `DC` is whether the position is
     /// scan index 0.
     #[expect(
         clippy::inline_always,
         reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_lf_base<const CLASS: usize, const LUMA: bool, const DC: bool>(
+    fn read_lf_level<const CLASS: usize, const LUMA: bool, const DC: bool, const TCQ: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
         entry: u32,
     ) -> u32 {
         let (grid, pos) = (entry_grid(entry), entry_pos(entry));
-        let mag = if CLASS == 0 {
-            self.base_mag::<CLASS, LUMA, true, true>(grid)
-        } else {
-            self.base_mag::<CLASS, LUMA, true, false>(grid)
-        };
+        let offsets = &SIG_GRID[CLASS];
         if !LUMA {
+            let count = if CLASS == 0 { 3 } else { 2 };
+            let mag = (self.sum(grid, &offsets[..count]) >> 8) & 0xff;
             let ctx = self.uv_ctx::<CLASS>(mag);
             let row = row_at(rows.cdf.coeff_base_lf_uv(), ctx);
             return self.symbols.read_trusted(row);
         }
+        let (mag, range_sum) = if CLASS == 0 {
+            let near = self.sum(grid, &offsets[..3]);
+            let far = self.sum(grid, &offsets[3..]);
+            (((near + far) >> 8) & 0xff, near)
+        } else {
+            let near = self.sum(grid, &offsets[..2]);
+            let third = self.sum(grid, &offsets[2..3]);
+            let far = self.sum(grid, &offsets[3..]);
+            (((near >> 8) & 0xff) + ((third + far) & 0xff), near + third)
+        };
         let ctx = if CLASS == 0 {
             if DC {
                 let (cap, offset) = LF_2D_CONTEXT_CAP_AND_OFFSET[0];
@@ -641,9 +621,15 @@ impl LevelPass<'_, '_> {
                 LF_SIG_COEF_CONTEXTS_2D + 7 + half_capped(mag, 4)
             }
         };
-        let q0 = self.tcq_q0 & 1;
+        let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
         let row = &mut row_at(rows.base_lf(), ctx)[q0];
-        self.symbols.read_trusted(row)
+        let level = self.symbols.read_trusted(row);
+        if level <= LF_NUM_BASE_LEVELS {
+            return level;
+        }
+        let ctx = Self::br_ctx_from_word_sum::<LUMA>(range_sum, !DC || CLASS != 0);
+        let row = Self::range_row::<LUMA, true>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
     /// Reads a high-frequency level, sharing the packed neighbour sum of
@@ -653,7 +639,7 @@ impl LevelPass<'_, '_> {
         reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_hf_level<const CLASS: usize, const LUMA: bool>(
+    fn read_hf_level<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
         entry: u32,
@@ -672,7 +658,7 @@ impl LevelPass<'_, '_> {
             let row = row_at(rows.cdf.coeff_base_uv(), self.uv_ctx::<CLASS>(mag));
             self.symbols.read_trusted(row)
         } else {
-            let q0 = self.tcq_q0 & 1;
+            let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
             let row = if CLASS == 0 {
                 let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
                 &mut rows.base().as_flattened_mut()[(first | q0) & 31]
@@ -694,11 +680,9 @@ impl LevelPass<'_, '_> {
     #[inline(always)]
     fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32) {
         let nonzero = level != 0;
-        if nonzero || !cfg!(target_arch = "x86_64") {
-            let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
-            self.levels[entry_grid(entry)] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
-            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
-        }
+        let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
+        self.levels[entry_grid(entry)] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
+        self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
         self.nonzero_len += usize::from(nonzero);
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
@@ -719,7 +703,7 @@ impl LevelPass<'_, '_> {
         hf: &[u32],
     ) {
         for &entry in hf.iter().rev() {
-            let level = self.read_hf_level::<CLASS, LUMA>(&mut rows, entry);
+            let level = self.read_hf_level::<CLASS, LUMA, TCQ>(&mut rows, entry);
             self.finish::<TCQ, PH>(entry, level);
         }
     }
@@ -733,9 +717,7 @@ impl LevelPass<'_, '_> {
         lf: &[u32],
     ) {
         for &entry in lf.iter().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
-            let level = self.add_range::<CLASS, LUMA, true>(&mut rows, Some(grid), false, level);
+            let level = self.read_lf_level::<CLASS, LUMA, false, TCQ>(&mut rows, entry);
             self.finish::<TCQ, PH>(entry, level);
         }
     }
@@ -757,9 +739,9 @@ impl LevelPass<'_, '_> {
     ) -> u32 {
         let eob_index = scan.len() - 1;
         let eob_level = if eob_index < lf_end {
-            self.add_range::<CLASS, LUMA, true>(rows, None, eob_index == 0, eob_level)
+            self.add_eob_range::<CLASS, LUMA, true>(rows, eob_index == 0, eob_level)
         } else {
-            self.add_range::<CLASS, LUMA, false>(rows, None, false, eob_level)
+            self.add_eob_range::<CLASS, LUMA, false>(rows, false, eob_level)
         };
         if eob_index == 0 {
             return eob_level;
@@ -772,14 +754,19 @@ impl LevelPass<'_, '_> {
         if end > 1 {
             self.lf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), &scan[1..end]);
         }
-        let dc_grid = entry_grid(scan[0]);
         if PH && (self.ph >> 1) >= PHTHRESH {
-            let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
+            let count = if LUMA {
+                5
+            } else if CLASS == 0 {
+                3
+            } else {
+                2
+            };
+            let mag = self.sum(entry_grid(scan[0]), &SIG_GRID[CLASS][..count]) & 0xff;
             let row = row_at(rows.cdf.coeff_base_ph(), half_capped(mag, 4));
             self.symbols.read_trusted(row)
         } else {
-            let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
-            self.add_range::<CLASS, LUMA, true>(rows, Some(dc_grid), true, level)
+            self.read_lf_level::<CLASS, LUMA, true, TCQ>(rows, scan[0])
         }
     }
 }
