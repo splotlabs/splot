@@ -3,6 +3,8 @@
 
 //! Encoder configuration and its validation.
 
+pub mod options;
+
 use core::num::NonZeroU32;
 
 use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow};
