@@ -881,9 +881,6 @@ fn flat_segment<B: SimdBackend, S: ReconSample>(
     if !luma && chroma.is_none() {
         return Some([None; 3]);
     }
-    if cfg!(target_arch = "x86_64") && S::u8_slice(&[]).is_some() {
-        return None;
-    }
     let (col_start, col_end) = tile_span(lookup.tile_col_starts, c, lookup.mi_cols);
     let start = (col_start * MI_SIZE, row_start * MI_SIZE);
     let end = (col_end * MI_SIZE, row_end * MI_SIZE);
