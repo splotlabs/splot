@@ -23,7 +23,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
@@ -132,7 +132,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
@@ -246,7 +246,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
@@ -408,9 +408,8 @@ impl ValidatorContext {
     /// against the activated LCR per layer, which this phase does not thread.
     ///
     /// Suppression / activation gating mirrors [`Self::check_lcr_rep_info_agreement`]: it
-    /// fires only under [`ExternalHlsMode::Disabled`] (an unmodeled external local LCR could
-    /// shadow the in-band association under a Provided mode) and only on a strict
-    /// frame-confirmed activation. Anchored at the defining LCR OBU. A
+    /// fires with external HLS disabled or a complete snapshot. It requires
+    /// frame-confirmed activation. The finding uses the defining LCR OBU offset. A
     /// `same_sh_max_resolution_flag == 1` layer (omitted width/height) inherits the sequence
     /// maxima and is trivially in bound, so it carries `None` and is skipped.
     pub(super) fn check_lcr_expected_dims_bounds(
@@ -419,7 +418,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {

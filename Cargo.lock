@@ -801,6 +801,7 @@ dependencies = [
  "proptest",
  "serde",
  "splot-core",
+ "thiserror",
 ]
 
 [[package]]

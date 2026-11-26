@@ -154,7 +154,7 @@ impl QuantizerMatrixState {
 /// [`ExternalHlsMode::Provided`] the levels MAY be supplied externally without being listed
 /// — exactly the inexpressible-kind case the blanket "any Provided suppresses" policy covers
 /// (matching the film-grain availability check). The availability diagnostic therefore fires
-/// only under [`ExternalHlsMode::Disabled`]. The `available[]` state honors the § 5.5 /
+/// with external HLS disabled or a complete snapshot. The `available[]` state honors the § 5.5 /
 /// § 5.13 / § 5.18.2 QmProtected `reset_qm()` discipline (a CLK / OLK at FirstPictureInTU, or
 /// a RAS / restricted SWITCH, clears unprotected levels), so a level reset out of a previous
 /// temporal unit and not re-sent in the current one is correctly judged unavailable.
@@ -211,7 +211,7 @@ pub(super) fn frame_qm_reference_checks(
             }
         }
     }
-    let availability_decidable = matches!(options.external_hls, ExternalHlsMode::Disabled);
+    let availability_decidable = !matches!(options.external_hls, ExternalHlsMode::Provided(_));
     let mut replay_levels = Vec::new();
     for (level, _) in referenced
         .iter()

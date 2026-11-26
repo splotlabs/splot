@@ -80,7 +80,7 @@ pub(super) fn frame_film_grain_reference_checks(
     if !film_grain.apply_grain {
         return None;
     }
-    if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+    if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
         return None;
     }
     let fgm_id = film_grain.fgm_id?;

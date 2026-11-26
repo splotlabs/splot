@@ -113,8 +113,7 @@ pub(super) fn check_ops_level_tier_value_space(
 impl ValidatorContext {
     /// Checks Annex A.2/A.4 value space once per frame-confirmed header and CVS epoch,
     /// anchored at the defining OBU. Redefinitions with changed checked fields re-run it.
-    /// These in-band facts remain decidable under external HLS. Configurable profiles
-    /// have no fixed chroma restriction. The parser infers Main tier below level 4.0.
+    /// Snapshot construction checks external definitions. The parser infers Main tier below level 4.0.
     pub(super) fn check_annex_a_value_space(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -126,11 +125,13 @@ impl ValidatorContext {
         let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
             return;
         };
-        let offset = self
+        let Some(offset) = self
             .hls
             .sequence(xlayer, seq_header_id)
-            .map(|stored| stored.offset)
-            .unwrap_or(ByteOffset::new(0));
+            .and_then(|stored| stored.offset)
+        else {
+            return;
+        };
         let epoch = self.cvs.cvs_generation_epoch(xlayer);
         let fingerprint = annex_a_value_space_fingerprint(&general);
         if !self
@@ -140,51 +141,60 @@ impl ValidatorContext {
             return;
         }
 
-        let profile_idc = general.seq_profile_idc.get();
-        let level_idx = general.seq_level_idx.get();
+        check_sequence_value_space(&general, offset, report);
+    }
+}
 
-        if general.seq_profile_idc.is_reserved() {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/profile-reserved",
-                    format!(
-                        "seq_profile_idc {profile_idc} is reserved (5..=30); it conforms to no \
-                         AV2 profile defined in this version of the specification"
-                    ),
-                )
-                .with_spec_section("A.2")
-                .with_byte_offset(offset),
-            );
-        } else if !general
-            .seq_profile_idc
-            .allows_chroma(general.chroma_format_idc)
-        {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/profile-chroma-format-mismatch",
-                    format!(
-                        "chroma_format_idc {} is not in the allowed set of seq_profile_idc {}",
-                        general.chroma_format_idc.get(),
-                        profile_idc
-                    ),
-                )
-                .with_spec_section("A.2")
-                .with_byte_offset(offset),
-            );
-        }
+/// Checks sequence header facts that do not depend on stream activation.
+pub(super) fn check_sequence_value_space(
+    general: &SequenceHeaderGeneral,
+    offset: ByteOffset,
+    report: &mut ValidationReport,
+) {
+    let profile_idc = general.seq_profile_idc.get();
+    let level_idx = general.seq_level_idx.get();
 
-        if is_reserved_level(level_idx) {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/level-reserved",
-                    format!(
-                        "seq_level_idx {level_idx} is reserved (22..=30); it maps to no AV2 level \
-                         defined in this version of the specification"
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(offset),
-            );
-        }
+    if general.seq_profile_idc.is_reserved() {
+        report.push(
+            Diagnostic::error(
+                "annex-a/profile-reserved",
+                format!(
+                    "seq_profile_idc {profile_idc} is reserved (5..=30); it conforms to no \
+                     AV2 profile defined in this version of the specification"
+                ),
+            )
+            .with_spec_section("A.2")
+            .with_byte_offset(offset),
+        );
+    } else if !general
+        .seq_profile_idc
+        .allows_chroma(general.chroma_format_idc)
+    {
+        report.push(
+            Diagnostic::error(
+                "annex-a/profile-chroma-format-mismatch",
+                format!(
+                    "chroma_format_idc {} is not in the allowed set of seq_profile_idc {}",
+                    general.chroma_format_idc.get(),
+                    profile_idc
+                ),
+            )
+            .with_spec_section("A.2")
+            .with_byte_offset(offset),
+        );
+    }
+
+    if is_reserved_level(level_idx) {
+        report.push(
+            Diagnostic::error(
+                "annex-a/level-reserved",
+                format!(
+                    "seq_level_idx {level_idx} is reserved (22..=30); it maps to no AV2 level \
+                     defined in this version of the specification"
+                ),
+            )
+            .with_spec_section("A.4")
+            .with_byte_offset(offset),
+        );
     }
 }
