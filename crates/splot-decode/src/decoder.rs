@@ -716,7 +716,7 @@ impl Drop for DriverGuard {
 
 struct DriverLaunch {
     coded_frames: Option<CodedFrameObserver>,
-    reference_observer: Option<crate::reference::observation::ReferenceObserver>,
+    reference_observer: Option<Box<dyn crate::reference::observation::ReferenceObserver>>,
     atlases: crate::ExternalAtlases,
     shared: Arc<Shared>,
     limits: DecodeLimits,
@@ -855,7 +855,9 @@ impl Decoder {
             &settings,
             crate::ExternalAtlases::default(),
             None,
-            Some(Box::new(observer)),
+            Some(Box::new(
+                crate::reference::observation::CaptureReferences::new(observer),
+            )),
         )
     }
 
@@ -863,7 +865,7 @@ impl Decoder {
         settings: &DecoderSettings,
         atlases: crate::ExternalAtlases,
         coded_frames: Option<CodedFrameObserver>,
-        reference_observer: Option<crate::reference::observation::ReferenceObserver>,
+        reference_observer: Option<Box<dyn crate::reference::observation::ReferenceObserver>>,
     ) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
         settings.embedded_layer_selection.validate()?;

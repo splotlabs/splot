@@ -34,7 +34,8 @@ use crate::support::decode_buffers::DecodeBuffers;
 pub(crate) struct DecodeSession {
     pub(crate) coded_frames: Option<CodedFrameObserver>,
     pub(crate) external_atlases: crate::ExternalAtlases,
-    pub(crate) reference_observer: Option<crate::reference::observation::ReferenceObserver>,
+    pub(crate) reference_observer:
+        Option<Box<dyn crate::reference::observation::ReferenceObserver>>,
     frame_delay: NonZeroUsize,
     /// Immutable concrete SIMD backend validated when the session opened.
     backend: splot_core::simd::ResolvedBackend,

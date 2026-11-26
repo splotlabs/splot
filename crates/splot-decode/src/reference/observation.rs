@@ -3,6 +3,7 @@
 
 //! Streaming observations of the decoder's reference buffer.
 
+use parking_lot::Mutex;
 use splot_core::headers::frame::{FrameHeaderCore, FrameSize, RefIdxBuf};
 use splot_core::types::ObuType;
 
@@ -131,50 +132,79 @@ pub struct ReferenceFrameEvent {
     pub required_long_term_ids: Vec<u32>,
 }
 
-pub(crate) type ReferenceObserver = Box<dyn Fn(ReferenceFrameEvent) + Send + Sync>;
+pub(crate) trait ReferenceObserver: Send + Sync {
+    fn capture_input(&self, reference: &RuntimeReferenceBuffer, frames: &FrameStore);
 
-#[cold]
-#[inline(never)]
-pub(crate) fn observe_reference_update(
-    observe: &ReferenceObserver,
-    frames: &FrameStore,
-    frame_index: usize,
-    reference: &RuntimeReferenceBuffer,
-    core: &FrameHeaderCore,
-    update: &FrameRefUpdate<'_>,
-    before: ReferenceSnapshot,
-) {
-    let Some(frame) = frames.get(frame_index) else {
-        return;
-    };
-    let mut scaled_slots = 0;
-    for slot in named_pixel_reference_slots(core) {
-        if let Some(ReferenceSlotState::Retained(picture)) = before.slots.get(slot as usize)
-            && reference_is_scaled(
-                picture.frame_size.width as i32,
-                picture.frame_size.height as i32,
-                update.width as i32,
-                update.height as i32,
-            )
-        {
-            scaled_slots |= 1 << slot;
+    fn publish_update(
+        &self,
+        frames: &FrameStore,
+        frame_index: usize,
+        reference: &RuntimeReferenceBuffer,
+        core: &FrameHeaderCore,
+        update: &FrameRefUpdate<'_>,
+    );
+}
+
+pub(crate) struct CaptureReferences {
+    publish: Box<dyn Fn(ReferenceFrameEvent) + Send + Sync>,
+    before: Mutex<Option<ReferenceSnapshot>>,
+}
+
+impl CaptureReferences {
+    pub(crate) fn new(publish: impl Fn(ReferenceFrameEvent) + Send + Sync + 'static) -> Self {
+        Self {
+            publish: Box::new(publish),
+            before: Mutex::new(None),
         }
     }
-    observe(ReferenceFrameEvent {
-        frame: frame.provenance,
-        obu_type: core.obu_type,
-        extended_layer_id: frame.extended_layer_id,
-        embedded_layer_id: frame.embedded_layer_id,
-        temporal_layer_id: frame.temporal_layer_id,
-        frame_size: FrameSize::new(update.width, update.height),
-        before,
-        after: reference.snapshot(frames),
-        refresh_frame_flags: update.refresh_frame_flags,
-        resets_sequence: core.obu_type == ObuType::ClosedLoopKey,
-        allowed_input_slots: reference.allowed_input_slots(),
-        mapping: ReferenceMapping::from_core(core),
-        bridge_slot: core.bridge_frame_ref_idx,
-        scaled_slots,
-        required_long_term_ids: core.ref_long_term_ids.clone(),
-    });
+}
+
+impl ReferenceObserver for CaptureReferences {
+    fn capture_input(&self, reference: &RuntimeReferenceBuffer, frames: &FrameStore) {
+        *self.before.lock() = Some(reference.snapshot(frames));
+    }
+
+    fn publish_update(
+        &self,
+        frames: &FrameStore,
+        frame_index: usize,
+        reference: &RuntimeReferenceBuffer,
+        core: &FrameHeaderCore,
+        update: &FrameRefUpdate<'_>,
+    ) {
+        let before = self.before.lock().take();
+        let (Some(frame), Some(before)) = (frames.get(frame_index), before) else {
+            return;
+        };
+        let mut scaled_slots = 0;
+        for slot in named_pixel_reference_slots(core) {
+            if let Some(ReferenceSlotState::Retained(picture)) = before.slots.get(slot as usize)
+                && reference_is_scaled(
+                    picture.frame_size.width as i32,
+                    picture.frame_size.height as i32,
+                    update.width as i32,
+                    update.height as i32,
+                )
+            {
+                scaled_slots |= 1 << slot;
+            }
+        }
+        (self.publish)(ReferenceFrameEvent {
+            frame: frame.provenance,
+            obu_type: core.obu_type,
+            extended_layer_id: frame.extended_layer_id,
+            embedded_layer_id: frame.embedded_layer_id,
+            temporal_layer_id: frame.temporal_layer_id,
+            frame_size: FrameSize::new(update.width, update.height),
+            before,
+            after: reference.snapshot(frames),
+            refresh_frame_flags: update.refresh_frame_flags,
+            resets_sequence: core.obu_type == ObuType::ClosedLoopKey,
+            allowed_input_slots: reference.allowed_input_slots(),
+            mapping: ReferenceMapping::from_core(core),
+            bridge_slot: core.bridge_frame_ref_idx,
+            scaled_slots,
+            required_long_term_ids: core.ref_long_term_ids.clone(),
+        });
+    }
 }

@@ -27,7 +27,6 @@ use crate::bitstream::tile_payload::{GeneralIntraBlockModeError, GeneralIntraRes
 use crate::error::{DecodeError, Result};
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
-use crate::reference::observation::observe_reference_update;
 use crate::support::pipeline_limits::checked_add;
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, ObuLocation, PictureProvenance};
 
@@ -1797,10 +1796,9 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
-                    let before = session
-                        .reference_observer
-                        .as_ref()
-                        .map(|_| layer.reference.snapshot(frames));
+                    if let Some(observe) = &session.reference_observer {
+                        observe.capture_input(&layer.reference, frames);
+                    }
                     layer
                         .reference
                         .update(frame_index, &inter_update, inter_key_or_switch);
@@ -1809,17 +1807,13 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         &inter_update,
                     );
-                    if let Some(observe) = &session.reference_observer
-                        && let Some(before) = before
-                    {
-                        observe_reference_update(
-                            observe,
+                    if let Some(observe) = &session.reference_observer {
+                        observe.publish_update(
                             frames,
                             frame_index,
                             &layer.reference,
                             &inter_core,
                             &inter_update,
-                            before,
                         );
                     }
                     layer.scheduler.note_frame(
@@ -2109,11 +2103,11 @@ fn decode_frames_in_order(
                     frame_is_output(&key_core),
                     key_envelope.offset,
                 )?;
-                let before = session.reference_observer.as_ref().and_then(|_| {
-                    xlayers
-                        .get(candidate_xlayer)
-                        .map(|layer| layer.reference.snapshot(frames))
-                });
+                if let Some(observe) = &session.reference_observer
+                    && let Some(layer) = xlayers.get(candidate_xlayer)
+                {
+                    observe.capture_input(&layer.reference, frames);
+                }
                 if starts_new_sequence && !initializing_layer {
                     let (key_reference, flushed) = {
                         let key_reference =
@@ -2301,17 +2295,13 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         &key_update,
                     );
-                    if let Some(observe) = &session.reference_observer
-                        && let Some(before) = before
-                    {
-                        observe_reference_update(
-                            observe,
+                    if let Some(observe) = &session.reference_observer {
+                        observe.publish_update(
                             frames,
                             frame_index,
                             &layer.reference,
                             &key_core,
                             &key_update,
-                            before,
                         );
                     }
                     layer

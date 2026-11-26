@@ -179,8 +179,6 @@ impl RuntimeReferenceBuffer {
         })
     }
 
-    #[cold]
-    #[inline(never)]
     pub(crate) fn snapshot(&self, frames: &FrameStore) -> ReferenceSnapshot {
         let slots = self
             .slots
