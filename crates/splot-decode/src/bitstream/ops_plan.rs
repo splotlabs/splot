@@ -528,7 +528,6 @@ mod tests {
         assert_eq!(membership(&tracker), None);
         tracker.observe(&obus[4]).unwrap();
         assert_eq!(membership(&tracker), Some(true));
-        // ops_reset_flag = 0, ops_id = 2, ops_cnt = 0, and trailing bits.
         let cancel = ObuEnvelope {
             payload: &[0x10, 0x80],
             ..obus[4]

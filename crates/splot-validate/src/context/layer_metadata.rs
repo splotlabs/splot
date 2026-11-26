@@ -361,11 +361,9 @@ mod tests {
         let ci_fixture = include_bytes!(
             "../../../../tests/conformance/vectors/valid/syn-output-ci-2frame-64x64.ivf"
         );
-        // Insert the independent CI OBU before the first multilayer CLK.
         let mut bytes = multilayer[..33].to_vec();
         bytes.extend_from_slice(&ci_fixture[70..82]);
         bytes.extend_from_slice(&multilayer[33..525]);
-        // The next CVS resends the same frame and sequence data with no CI.
         bytes.extend_from_slice(&multilayer[..525]);
         let obus = parse_annex_b_obus(&bytes).unwrap();
         let mut tracker = LayerMetadataTracker::new(ValidationOptions::default());
