@@ -602,23 +602,20 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = self.br_ctx::<CLASS, LUMA>(grid, LF && (!is_dc || CLASS != 0));
-        level + self.read_range::<LUMA, LF>(rows, ctx)
+        let row = Self::range_row::<LUMA, LF>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
-    fn read_range<const LUMA: bool, const LF: bool>(
-        &mut self,
-        rows: &mut CoeffLevelRows<'_>,
+    fn range_row<'a, const LUMA: bool, const LF: bool>(
+        rows: &'a mut CoeffLevelRows<'_>,
         ctx: usize,
-    ) -> u32 {
+    ) -> &'a mut [u16; 5] {
         if !LUMA {
-            let row = row_at(rows.cdf.coeff_br_uv(), ctx);
-            self.symbols.read_trusted(row)
+            row_at(rows.cdf.coeff_br_uv(), ctx)
         } else if LF {
-            let row = row_at(rows.cdf.coeff_br_lf(), ctx);
-            self.symbols.read_trusted(row)
+            row_at(rows.cdf.coeff_br_lf(), ctx)
         } else {
-            let row = row_at(rows.cdf.coeff_br(), ctx);
-            self.symbols.read_trusted(row)
+            row_at(rows.cdf.coeff_br(), ctx)
         }
     }
 
@@ -717,7 +714,8 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = Self::br_ctx_from_word_sum::<LUMA>(near, false);
-        level + self.read_range::<LUMA, false>(rows, ctx)
+        let row = Self::range_row::<LUMA, false>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
     /// Records a decoded AC level and advances the TCQ and parity state.
