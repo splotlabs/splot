@@ -10,9 +10,9 @@ use splot_core::annexb::parse_annex_b_obus;
 use splot_core::stream_reader::{TemporalUnitReader, is_random_access_point};
 use splot_core::types::ObuType;
 use splot_decode::{
-    DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig, Decoder,
-    DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureFrame,
-    PictureSamples, PlaneId, SendStatus, ThreadCount, Y4mFrameRate,
+    CodedFrameEvent, DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig,
+    Decoder, DecoderSettings, DecoderStateError, EmbeddedLayerSelection, FrameDelay, FrameType,
+    Picture, PictureFrame, PictureSamples, PlaneId, SendStatus, ThreadCount, Y4mFrameRate,
 };
 use splot_recon::{
     DecodedFrame, DecodedFrameHashInput, PlaneSize, ReconSample, Y4mError, Y4mFrameFormat,
@@ -313,6 +313,126 @@ fn with_film_grain(pictures: &[Picture]) -> Vec<Picture> {
         .iter()
         .map(|picture| picture.apply_film_grain().unwrap())
         .collect()
+}
+
+#[test]
+fn coded_frame_observer_reports_hidden_frames_and_tile_group_continuations() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let mut decoder = Decoder::new_with_coded_frame_observer(
+        DecoderSettings::default()
+            .with_threads(ThreadCount::from(4))
+            .with_frame_delay(FrameDelay::from(4)),
+        move |event| observed.lock().unwrap().push(event),
+    )
+    .unwrap();
+
+    let pictures = decode(&mut decoder, &units(BRIDGE), |_| {
+        DataProps::default().with_user_data(17)
+    });
+    let coded_locations = |pictures: &[Picture]| {
+        pictures
+            .iter()
+            .map(|picture| picture.provenance().coded.offset.get())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(pictures.len(), 2);
+    assert!(raw_of(&pictures) == batch_raw(BRIDGE));
+    let actual = core::mem::take(&mut *events.lock().unwrap());
+    let frames = actual
+        .iter()
+        .map(|event| match event {
+            CodedFrameEvent::Frame {
+                coded,
+                sequence_header,
+                ..
+            } => {
+                assert_eq!(coded.user_data, 17);
+                assert_eq!(sequence_header.user_data, 17);
+                assert_eq!(sequence_header.offset.get(), 3);
+                coded.offset.get()
+            }
+            _ => panic!("Expected a coded frame."),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(frames, [27, 41, 46]);
+    assert!(
+        coded_locations(&pictures)
+            .iter()
+            .all(|location| frames.contains(location))
+    );
+
+    decoder.flush();
+    let fixture = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-multi-tile-group-intra-256x128.ivf"
+    );
+    let groups = units(fixture);
+    let pictures = decode(&mut decoder, &groups, |index| {
+        DataProps::default().with_user_data(23 + index as u64)
+    });
+    let actual = core::mem::take(&mut *events.lock().unwrap());
+    assert_eq!(pictures.len(), 3);
+    assert!(raw_of(&pictures) == batch_raw(fixture));
+    assert_eq!(actual.len(), 6);
+    for (index, (pair, picture)) in actual.chunks_exact(2).zip(pictures.iter()).enumerate() {
+        let provenance = picture.provenance();
+        assert!(matches!(
+            pair,
+            [
+                CodedFrameEvent::Frame { coded, sequence_header, .. },
+                CodedFrameEvent::Continuation { coded: owner, obu, .. },
+            ] if *coded == provenance.coded
+                && *sequence_header == provenance.sequence_header
+                && owner == coded
+                && coded.user_data == 23 + index as u64
+                && coded.offset.get() == 25
+                && obu.user_data == coded.user_data
+                && obu.offset.get() == [189, 200, 190][index]
+        ));
+    }
+}
+
+#[test]
+fn coded_frame_observer_omits_show_existing_and_unselected_layers() {
+    let fixture =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-derived-sef-8bit.obu");
+    let units = units(fixture);
+    for selection in [
+        EmbeddedLayerSelection::All,
+        EmbeddedLayerSelection::BASE_ONLY,
+    ] {
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = frames.clone();
+        let mut decoder = Decoder::new_with_coded_frame_observer(
+            DecoderSettings::default().with_embedded_layer_selection(selection),
+            move |event| {
+                if let CodedFrameEvent::Frame {
+                    coded,
+                    embedded_layer_id,
+                    ..
+                } = event
+                {
+                    observed.lock().unwrap().push((coded, embedded_layer_id));
+                }
+            },
+        )
+        .unwrap();
+        let pictures = decode(&mut decoder, &units, |index| {
+            DataProps::default().with_user_data(index as u64)
+        });
+        let frames = frames.lock().unwrap();
+        assert!(!frames.is_empty());
+        if selection == EmbeddedLayerSelection::All {
+            let locations: Vec<_> = frames
+                .iter()
+                .map(|(coded, _)| (coded.user_data, coded.offset.get()))
+                .collect();
+            assert_eq!(locations, [(0, 44), (0, 769), (1, 4)]);
+            assert_eq!(pictures.len(), 4);
+        } else {
+            assert!(frames.iter().all(|(_, layer)| layer.get() == 0));
+        }
+    }
 }
 
 #[test]
