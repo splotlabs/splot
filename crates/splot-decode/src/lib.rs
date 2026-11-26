@@ -89,7 +89,7 @@ pub use context::{DecodeContext, DecodeScope, TypedDecodeContext};
 use core::fmt;
 pub use decoder::{
     AtlasComposite, AtlasCompositionError, AtlasCompositor, DataProps, Decoder, DecoderSettings,
-    Picture, PictureSamples, SendStatus,
+    Picture, PictureFrame, PictureSamples, SendStatus,
 };
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,

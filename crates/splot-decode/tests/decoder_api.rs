@@ -9,8 +9,12 @@
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader, is_random_access_point};
 use splot_decode::{
     DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig, Decoder,
-    DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureSamples, PlaneId,
-    SendStatus, ThreadCount,
+    DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureFrame,
+    PictureSamples, PlaneId, SendStatus, ThreadCount, Y4mFrameRate,
+};
+use splot_recon::{
+    DecodedFrame, DecodedFrameHashInput, PlaneSize, ReconSample, Y4mError, Y4mFrameFormat,
+    Y4mStreamHeader, Y4mWriter,
 };
 
 const MULTIREF: &[u8] =
@@ -191,6 +195,109 @@ fn batch_raw_with(bytes: &[u8], options: &DecodeOptions) -> Vec<u8> {
     let mut out = Vec::new();
     context.decode_raw_bytes(bytes, *options, &mut out).unwrap();
     out
+}
+
+#[test]
+fn borrowed_frames_match_batch_raw_y4m_and_hash_output() {
+    fn write_frame<T: ReconSample>(
+        frame: &DecodedFrame<T>,
+        raw: &mut Vec<u8>,
+        y4m: &mut Y4mWriter<Vec<u8>>,
+    ) -> String {
+        let samples = DecodedFrameHashInput::new(frame);
+        samples.write_to(raw).unwrap();
+        y4m.write_frame(frame).unwrap();
+        samples.compute_hash().to_hex()
+    }
+
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+    let rate = Y4mFrameRate::new(24_000, 1001).unwrap();
+    for (fixture, skip_grain) in [
+        (CROP, true),
+        (TEN_BIT_INTER, true),
+        (SEF_FAMILIES, true),
+        (FILM_GRAIN, true),
+        (FILM_GRAIN, false),
+    ] {
+        let options = DecodeOptions::default()
+            .with_skip_film_grain(skip_grain)
+            .with_y4m_frame_rate_override(Some(rate));
+        let mut decoder =
+            Decoder::new(DecoderSettings::default().with_skip_film_grain(skip_grain)).unwrap();
+        let pictures = decode(&mut decoder, &units(fixture), |_| DataProps::default());
+        let first = &pictures[0];
+        let format = Y4mFrameFormat::new(
+            PlaneSize::new(first.width(), first.height()).unwrap(),
+            first.bit_depth(),
+            first.pixel_format(),
+        );
+        let mut y4m = Y4mWriter::new(Vec::new(), Y4mStreamHeader::new(format, rate)).unwrap();
+        let mut raw = Vec::new();
+        let hashes: Vec<_> = pictures
+            .iter()
+            .map(|picture| match picture.decoded_frame().unwrap() {
+                PictureFrame::Eight(frame) => write_frame(frame, &mut raw, &mut y4m),
+                PictureFrame::Ten(frame) => write_frame(frame, &mut raw, &mut y4m),
+            })
+            .collect();
+        assert_eq!(raw, batch_raw_with(fixture, &options));
+        let mut expected_y4m = Vec::new();
+        context
+            .decode_y4m_bytes(fixture, options, &mut expected_y4m)
+            .unwrap();
+        assert_eq!(y4m.into_inner(), expected_y4m);
+        if skip_grain {
+            let report = context.decode_hash_report_bytes(fixture, options).unwrap();
+            let expected: Vec<_> = report
+                .frames
+                .iter()
+                .map(|entry| entry.hashes[0].digest_hex.as_str())
+                .collect();
+            assert_eq!(hashes, expected);
+        }
+    }
+}
+
+#[test]
+fn borrowed_frame_keeps_geometry_and_writer_errors() {
+    const PADDED: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-mrl-padded-422-68x68-10bit-q120.ivf"
+    );
+    let pictures = decode(&mut decoder(1, 1), &units(CROP), |_| DataProps::default());
+    let PictureFrame::Eight(frame) = pictures[0].decoded_frame().unwrap() else {
+        panic!("an eight-bit frame")
+    };
+    let visible = frame.visible_luma_rect();
+    assert_eq!((visible.x(), visible.y()), (2, 2));
+    assert_eq!(visible.size(), PlaneSize::new(60, 60).unwrap());
+    assert_eq!(frame.coded_luma_size(), PlaneSize::new(64, 64).unwrap());
+    assert_eq!(
+        frame.y().samples().as_ptr() as usize,
+        luma_storage(&pictures[0])
+    );
+
+    let pictures = decode(&mut decoder(1, 1), &units(PADDED), |_| DataProps::default());
+    let PictureFrame::Ten(frame) = pictures[0].decoded_frame().unwrap() else {
+        panic!("a ten-bit frame")
+    };
+    assert_eq!(frame.coded_luma_size(), PlaneSize::new(68, 68).unwrap());
+    assert_eq!(
+        frame.info().storage_luma_size(),
+        PlaneSize::new(72, 72).unwrap()
+    );
+    assert_eq!(
+        frame.y().samples().as_ptr() as usize,
+        luma_storage(&pictures[0])
+    );
+
+    let mut bytes = [0; 64];
+    let rate = Y4mFrameRate::new(30, 1).unwrap();
+    let mut y4m = Y4mWriter::from_frame(bytes.as_mut_slice(), frame, rate).unwrap();
+    assert!(matches!(
+        y4m.write_frame(frame),
+        Err(Y4mError::Io { source }) if source.kind() == std::io::ErrorKind::WriteZero
+    ));
+    assert_eq!(y4m.frames_written(), 0);
 }
 
 /// The address of the picture's first stored luma sample.

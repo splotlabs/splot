@@ -171,12 +171,17 @@ fn show(decoder: &mut Decoder) -> splot_decode::Result<()> {
 }
 ```
 
+`Picture::decoded_frame()` borrows the current samples and their geometry.
+Use the existing `splot_recon` raw, Y4M, and hash routines on this frame.
+For the codec hash contract, open the decoder with `skip_film_grain`.
+
 **C.** The decoder has a stable C ABI with zero-copy pictures:
 `splot_open`, `splot_send_data`, `splot_get_picture`, `splot_wait_picture`,
 `splot_flush`, `splot_drain`, `splot_close`. The header is
 [`crates/splot-capi/include/splot.h`](./crates/splot-capi/include/splot.h), and
 [`examples/decode.c`](./crates/splot-capi/examples/decode.c) is a complete IVF
-decoder in about 100 lines.
+decoder in about 100 lines. The C interface gives hosts the planes, strides,
+and visible geometry. The borrowed Rust frame serves Rust writers and inspection.
 
 ```bash
 cargo build --release -p splot-capi
