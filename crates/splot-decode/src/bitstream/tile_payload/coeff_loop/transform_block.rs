@@ -569,13 +569,6 @@ impl LevelPass<'_, '_> {
         }
     }
 
-    /// The `coeff_br` context (§ 8.3.2); `lf_bump` is whether the context
-    /// takes the low-frequency offset of 7.
-    fn br_ctx<const CLASS: usize, const LUMA: bool>(&self, grid: usize, lf_bump: bool) -> usize {
-        let count = if LUMA || CLASS == 0 { 3 } else { 2 };
-        Self::br_ctx_from_word_sum::<LUMA>(self.sum(grid, &SIG_GRID[CLASS][..count]), lf_bump)
-    }
-
     fn br_ctx_from_word_sum<const LUMA: bool>(sum: u32, lf_bump: bool) -> usize {
         let mag = (sum >> 8) & 0xff;
         if !LUMA {
@@ -585,11 +578,12 @@ impl LevelPass<'_, '_> {
         }
     }
 
-    /// Adds `coeff_br` when the base symbol saturates.
+    /// Adds `coeff_br` when the base symbol saturates. At EOB the block
+    /// has written no levels yet, so its neighbour sum is zero.
     fn add_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
-        grid: usize,
+        neighbor_grid: Option<usize>,
         is_dc: bool,
         level: u32,
     ) -> u32 {
@@ -601,7 +595,11 @@ impl LevelPass<'_, '_> {
         if level <= base_levels || (LF && !LUMA) {
             return level;
         }
-        let ctx = self.br_ctx::<CLASS, LUMA>(grid, LF && (!is_dc || CLASS != 0));
+        let sum = neighbor_grid.map_or(0, |grid| {
+            let count = if LUMA || CLASS == 0 { 3 } else { 2 };
+            self.sum(grid, &SIG_GRID[CLASS][..count])
+        });
+        let ctx = Self::br_ctx_from_word_sum::<LUMA>(sum, LF && (!is_dc || CLASS != 0));
         let row = Self::range_row::<LUMA, LF>(rows, ctx);
         level + self.symbols.read_trusted(row)
     }
@@ -762,7 +760,7 @@ impl LevelPass<'_, '_> {
         for &entry in lf.iter().rev() {
             let grid = entry_grid(entry);
             let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
-            let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
+            let level = self.add_range::<CLASS, LUMA, true>(&mut rows, Some(grid), false, level);
             self.finish::<TCQ, PH>(entry, level);
         }
     }
@@ -783,11 +781,10 @@ impl LevelPass<'_, '_> {
         lf_end: usize,
     ) -> u32 {
         let eob_index = scan.len() - 1;
-        let eob_grid = entry_grid(eob_entry);
         let eob_level = if eob_index < lf_end {
-            self.add_range::<CLASS, LUMA, true>(rows, eob_grid, eob_index == 0, eob_level)
+            self.add_range::<CLASS, LUMA, true>(rows, None, eob_index == 0, eob_level)
         } else {
-            self.add_range::<CLASS, LUMA, false>(rows, eob_grid, false, eob_level)
+            self.add_range::<CLASS, LUMA, false>(rows, None, false, eob_level)
         };
         if eob_index == 0 {
             return eob_level;
@@ -807,7 +804,7 @@ impl LevelPass<'_, '_> {
             self.symbols.read_trusted(row)
         } else {
             let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
-            self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)
+            self.add_range::<CLASS, LUMA, true>(rows, Some(dc_grid), true, level)
         }
     }
 }
