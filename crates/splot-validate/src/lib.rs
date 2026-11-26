@@ -26,6 +26,7 @@ mod error_location;
 mod frame_unit;
 mod reference_state;
 
+pub use context::layer_metadata::{EffectiveContentInterpretation, LayerMetadataTracker};
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};
 pub use explain::DiagnosticInfo;
 pub use options::{

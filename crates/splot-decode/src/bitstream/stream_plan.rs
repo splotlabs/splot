@@ -21,8 +21,7 @@ use splot_core::types::{
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
-pub use crate::bitstream::ops_plan::OperatingPointSelection;
-use crate::bitstream::ops_plan::OpsPlanTracker;
+pub use crate::bitstream::ops_plan::{OperatingPointSelection, OperatingPointTracker};
 use crate::error::{DecodeError, Result};
 use crate::{DecodeLimitName, DecodeOptions, UNSUPPORTED_FEATURE_RULE_ID};
 
@@ -348,7 +347,7 @@ pub(crate) struct ActiveLayerFilter {
     default_filter: LayerDependencyFilter,
     first: Option<(ExtendedLayerId, LayerDependencyFilter)>,
     rest: Vec<(ExtendedLayerId, LayerDependencyFilter)>,
-    ops: Option<Box<OpsPlanTracker>>,
+    ops: Option<Box<OperatingPointTracker>>,
 }
 
 impl ActiveLayerFilter {
@@ -377,7 +376,7 @@ impl ActiveLayerFilter {
             first: None,
             rest: Vec::new(),
             ops: (!operating_point.is_none())
-                .then(|| Box::new(OpsPlanTracker::new(operating_point))),
+                .then(|| Box::new(OperatingPointTracker::from_valid_selection(operating_point))),
         }
     }
 
@@ -441,11 +440,7 @@ impl ActiveLayerFilter {
     }
 
     pub(crate) fn observe_envelope(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
-        if envelope.header.obu_type == ObuType::OperatingPointSet
-            && envelope.header.temporal_layer_id == TemporalLayerId::BASE
-            && envelope.header.embedded_layer_id == EmbeddedLayerId::BASE
-            && self.ops.is_some()
-        {
+        if OperatingPointTracker::accepts(&envelope) && self.ops.is_some() {
             if let Some(ops) = &mut self.ops {
                 ops.apply_obu(envelope)?;
             }

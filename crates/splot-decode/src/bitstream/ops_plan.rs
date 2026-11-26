@@ -13,7 +13,9 @@ use splot_core::headers::operating_point_set::{
 };
 use splot_core::obu::finish_obu_payload;
 use splot_core::span::ByteOffset;
-use splot_core::types::{ExtendedLayerId, GLOBAL_XLAYER_ID};
+use splot_core::types::{
+    EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId,
+};
 
 use super::stream_plan::{
     DecodeSourceIssue, EmbeddedLayerSelection, ExtendedLayerSelection, LayerDependencyFilter,
@@ -133,8 +135,10 @@ pub(crate) struct ResolvedOpsTarget {
     pub(crate) per_xlayer: Vec<(ExtendedLayerId, [u8; 8])>,
 }
 
+/// Resolves operating point membership as OPS OBUs activate, change, or reset
+/// (AV2 § 6.10.2 and § 6.10.7). Use one tracker per input stream.
 #[derive(Clone, Debug)]
-pub(crate) struct OpsPlanTracker {
+pub struct OperatingPointTracker {
     selection: OperatingPointSelection,
     sets: BTreeMap<(u8, u8), OperatingPointSet>,
     resolved: Option<ResolvedOpsTarget>,
@@ -142,8 +146,82 @@ pub(crate) struct OpsPlanTracker {
     unavailable_reason: Option<&'static str>,
 }
 
-impl OpsPlanTracker {
-    pub(crate) fn new(selection: OperatingPointSelection) -> Self {
+impl OperatingPointTracker {
+    /// Creates a tracker for a requested operating point.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OPS ID, local extended layer ID, or operating
+    /// point index is invalid.
+    pub fn new(selection: OperatingPointSelection) -> Result<Self> {
+        selection.validate()?;
+        Ok(Self::from_valid_selection(selection))
+    }
+
+    /// Observes an OBU in stream order. Only a base-layer OPS OBU can update
+    /// the tracker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OPS cannot activate in the decoder. After an
+    /// error, previous membership is unavailable until a reset or update.
+    pub fn observe(&mut self, obu: &ObuEnvelope<'_>) -> Result<()> {
+        if self.selection.is_none() || !Self::accepts(obu) {
+            return Ok(());
+        }
+        if let Err(error) = self.apply_obu(*obu) {
+            self.sets.clear();
+            self.resolved = None;
+            self.unavailable_reason = Some("the operating point set failed decoder checks");
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Returns the reason why the requested operating point is unavailable.
+    /// A selection of [`OperatingPointSelection::None`] has no reason.
+    #[must_use]
+    pub const fn unavailable_reason(&self) -> Option<&'static str> {
+        if self.selection.is_none() {
+            return None;
+        }
+        self.unavailable_reason
+    }
+
+    /// Returns a concrete layer triple's membership at the last observed OBU.
+    /// Returns `None` if there is no resolved operating point.
+    ///
+    /// Membership describes the decoder's OPS filter. A local selection
+    /// filters embedded and temporal layers only within its own extended
+    /// layer. Frame-level decode, dependency
+    /// availability, and conformance checks can still reject the stream.
+    #[must_use]
+    pub fn contains(
+        &self,
+        xlayer: ExtendedLayerId,
+        mlayer: EmbeddedLayerId,
+        tlayer: TemporalLayerId,
+    ) -> Option<bool> {
+        let resolved = self.resolved.as_ref()?;
+        if xlayer.get() >= 31 || resolved.xlayer_mask & (1 << xlayer.get()) == 0 {
+            return Some(false);
+        }
+        if mlayer.get() >= 8 || tlayer.get() >= 4 {
+            return Some(false);
+        }
+        let Some((_, masks)) = resolved.per_xlayer.iter().find(|(id, _)| *id == xlayer) else {
+            return Some(true);
+        };
+        Some(masks[usize::from(mlayer.get())] & (1 << tlayer.get()) != 0)
+    }
+
+    pub(crate) fn accepts(obu: &ObuEnvelope<'_>) -> bool {
+        obu.header.obu_type == ObuType::OperatingPointSet
+            && obu.header.temporal_layer_id == TemporalLayerId::BASE
+            && obu.header.embedded_layer_id == EmbeddedLayerId::BASE
+    }
+
+    pub(crate) fn from_valid_selection(selection: OperatingPointSelection) -> Self {
         Self {
             selection,
             sets: BTreeMap::new(),
@@ -425,4 +503,38 @@ fn masks_from_ops_mlayer(info: &OpsMlayerInfo) -> [u8; 8] {
         }
     }
     masks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracker_resolves_inherited_global_membership_from_stream() {
+        let stream = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-msdo-ops-random-access.obu"
+        );
+        let obus = splot_core::annexb::parse_annex_b_obus(stream).unwrap();
+        let selection = OperatingPointSelection::Global {
+            ops_id: 1,
+            op_index: 0,
+        };
+        let mut tracker = OperatingPointTracker::new(selection).unwrap();
+        let x3 = ExtendedLayerId::from_bits(3);
+        let x7 = ExtendedLayerId::from_bits(7);
+        let m0 = EmbeddedLayerId::BASE;
+        let t0 = TemporalLayerId::BASE;
+        assert_eq!(tracker.contains(x3, m0, t0), None);
+        tracker.observe(&obus[3]).unwrap();
+        assert_eq!(tracker.contains(x3, m0, t0), None);
+        tracker.observe(&obus[2]).unwrap();
+        assert_eq!(tracker.contains(x3, m0, t0), Some(true));
+        assert_eq!(tracker.contains(x7, m0, t0), Some(true));
+        assert_eq!(tracker.contains(GLOBAL_XLAYER_ID, m0, t0), Some(false));
+        assert_eq!(
+            tracker.contains(x3, EmbeddedLayerId::from_bits(1), t0),
+            Some(false)
+        );
+        assert_eq!(tracker.unavailable_reason(), None);
+    }
 }

@@ -119,7 +119,7 @@ pub use stream_plan::{
     DecodeIvfFrameContext, DecodeLayerSelection, DecodeObuSourceKind, DecodePlannedObu,
     DecodePlannedObuRole, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamInput,
     DecodeStreamPlan, DecodeUnsupportedReason, DecodeUnsupportedStructure, EmbeddedLayerSelection,
-    ExtendedLayerSelection, OperatingPointSelection, TemporalLayerSelection,
+    ExtendedLayerSelection, OperatingPointSelection, OperatingPointTracker, TemporalLayerSelection,
 };
 
 mod limits;

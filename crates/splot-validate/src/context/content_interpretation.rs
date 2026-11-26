@@ -210,8 +210,14 @@ impl ValidatorContext {
     /// with post-epoch pictures (or vice versa), so exactly those three rules are
     /// dropped; every other pending diagnostic (§ 6.14 repeated-CI identity,
     /// § 6.4.12 timing, group consistency) is CVS-scoped and survives an OLK.
-    pub(super) fn observe_ci_rap(&mut self, xlayer: ExtendedLayerId) {
-        self.ci_rap_started_in_tu.insert(xlayer, self.cvs.tu_index);
+    pub(super) fn observe_ci_rap(&mut self, xlayer: ExtendedLayerId, offset: ByteOffset) {
+        let epoch = self
+            .ci_rap_started_in_tu
+            .entry(xlayer)
+            .or_insert((self.cvs.tu_index, offset));
+        if epoch.0 != self.cvs.tu_index {
+            *epoch = (self.cvs.tu_index, offset);
+        }
         self.cvs.drop_pending_for_rules(
             xlayer,
             &[
@@ -226,7 +232,9 @@ impl ValidatorContext {
     /// content-interpretation-parameter epoch started (its most recent CLK / OLK
     /// random access point), or 0 when none has been observed.
     pub(super) fn ci_rap_epoch(&self, xlayer: ExtendedLayerId) -> u64 {
-        self.ci_rap_started_in_tu.get(&xlayer).copied().unwrap_or(0)
+        self.ci_rap_started_in_tu
+            .get(&xlayer)
+            .map_or(0, |&(tu, _)| tu)
     }
 
     /// Rechecks identical CI resends whose CI-time checks were suppressed before the RAP

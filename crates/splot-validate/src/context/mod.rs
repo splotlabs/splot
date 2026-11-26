@@ -86,6 +86,7 @@ mod frame_header_copy;
 mod frame_header_diagnostics;
 mod frame_headers;
 mod hls;
+pub(crate) mod layer_metadata;
 mod lcr;
 mod lcr_agreement;
 mod lcr_sequence_agreement;
@@ -173,7 +174,7 @@ pub(crate) struct ValidatorContext {
     /// § 6.4.12 timing, § 7.3.6 stores) deliberately ignores it — an OLK does
     /// not start a new coded video sequence during sequential decoding
     /// (§ 7.4.4).
-    ci_rap_started_in_tu: BTreeMap<ExtendedLayerId, u64>,
+    ci_rap_started_in_tu: BTreeMap<ExtendedLayerId, (u64, ByteOffset)>,
     /// The temporal unit in which [`ValidatorContext::repair_post_rap_ci_pairings`]
     /// last ran for each extended layer, so the § 7.3.8.11 RAP re-pair is idempotent
     /// within one temporal unit: a malformed temporal unit carrying two CLK/OLK random
