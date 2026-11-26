@@ -256,7 +256,8 @@ pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameStore, ReferenceSlot,
 };
 pub use secondary_transform::{
-    SecondaryInverseTransform, SecondaryTransformLayout, secondary_inverse_transform,
+    SecondaryInverseTransform, SecondaryQuant, SecondaryTransformLayout,
+    secondary_inverse_transform, secondary_inverse_transform_scan_with,
     secondary_inverse_transform_with, secondary_transform_layout,
 };
 /// Re-export of the § 9.4 `Qm_Offset[txSz]` table so decode crates can resolve a

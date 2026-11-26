@@ -617,11 +617,11 @@ pub(crate) fn block_neighbour_ctx(
         )
     };
     let (buf, num_buf) = first_two(present);
-    let (npos_cells, npos_count) = first_two(if block.is_sb_border() {
-        present & 0b0101
+    let (npos_cells, npos_count) = if block.is_sb_border() {
+        first_two(present & 0b0101)
     } else {
-        present
-    });
+        (buf, num_buf)
+    };
     BlockNeighbourContext {
         cells: buf,
         cell_count: num_buf,
@@ -1400,7 +1400,9 @@ pub(crate) fn find_mv_stack_upto(
     if !use_temporal_first {
         scan_temporal_mv_stack(grid, block, temporal, &mut entries, &mut prune_count);
     }
-    if let Some((probe, leaf)) = probes[6].and_then(probed) {
+    if (entries.len() <= need || warp.is_some() || drl_reorder == DrlReorder::Constraint)
+        && let Some((probe, leaf)) = probes[6].and_then(probed)
+    {
         scan_mv_stack_probe(
             grid,
             block,
@@ -1442,12 +1444,16 @@ pub(crate) fn find_mv_stack_upto(
         }
     }
     if entries.len() <= need {
-        let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
+        let max_ref_mv_count = bank
+            .map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count)
+            .min(need.saturating_add(1));
         if let Some((bank, _)) = bank {
             bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
         }
         derived.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
-        extra_search(block, global_mv, &mut entries, &mut prune_count);
+        if entries.len() <= need {
+            extra_search(block, global_mv, &mut entries, &mut prune_count);
+        }
     }
     if let Some(warp) = warp.as_mut() {
         warp_bank.fill(block.ref_frame0, warp);
@@ -1503,7 +1509,9 @@ pub(crate) fn find_compound_mv_stack_upto(
         scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
     }
     scan_compound_temporal_mv_stack(grid, block, temporal, &mut state);
-    if let Some(probe) = probes[6] {
+    if (state.entries.len() <= need || drl_reorder == DrlReorder::Constraint)
+        && let Some(probe) = probes[6]
+    {
         scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
     }
 
@@ -1529,7 +1537,9 @@ pub(crate) fn find_compound_mv_stack_upto(
         }
     }
     if state.entries.len() <= need {
-        let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
+        let max_ref_mv_count = bank
+            .map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count)
+            .min(need.saturating_add(1));
         state.derived.fill(
             block,
             state.global_mvs,
@@ -1546,12 +1556,14 @@ pub(crate) fn find_compound_mv_stack_upto(
                 &mut state.prune_count,
             );
         }
-        compound_extra_search(
-            block,
-            global_mvs,
-            &mut state.entries,
-            &mut state.prune_count,
-        );
+        if state.entries.len() <= need {
+            compound_extra_search(
+                block,
+                global_mvs,
+                &mut state.entries,
+                &mut state.prune_count,
+            );
+        }
     }
     let entries = state.entries.iter().take(need.saturating_add(1));
     let stack = FixedStack::from_entries(entries.map(|entry| CompoundMvCandidate {

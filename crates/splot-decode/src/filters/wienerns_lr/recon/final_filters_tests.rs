@@ -767,7 +767,6 @@ fn owned_filter_task_values_are_send_and_shared_setup_is_sync() {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
 
-    assert_send::<super::super::OwnedFilteredStripe<u16>>();
     assert_send::<super::super::OwnedFilterJob<u16>>();
     assert_send::<super::super::OwnedFilterFinish<u16>>();
     assert_sync::<super::super::OwnedFilterSetup<u16>>();

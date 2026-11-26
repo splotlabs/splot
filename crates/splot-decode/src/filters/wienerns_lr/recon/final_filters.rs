@@ -101,7 +101,8 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
                 }
                 return Err(StripeCopyError::Geometry);
             };
-            plane.preflight_copy_rows_into(
+            StripePlane::preflight_copy_from_into(
+                plane.view()?,
                 plane.origin_y(),
                 plane.end_y().ok_or(StripeCopyError::Geometry)?,
                 Some(direct_target),
@@ -110,52 +111,22 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         }
         let post_lr_y_holds_cdef = target.get(PlaneId::Y).is_none()
             || initializations[PlaneId::Y.index()] == StripeInitialization::CopyAll;
-        let mut copy = |plane_id: PlaneId, plane: &mut StripePlane<T>| {
-            let end_y = plane.end_y().ok_or(StripeCopyError::Geometry)?;
-            let Some(target) = target.take(plane_id) else {
-                let cdef = plane.copy_rows_into(
-                    plane.origin_y(),
-                    end_y,
-                    None,
-                    StripeInitialization::CopyAll,
-                )?;
-                return Ok(core::mem::replace(plane, cdef));
+        let mut prepare = |plane_id: PlaneId, plane: Option<&mut StripePlane<T>>| {
+            if !active_planes[plane_id.index()] {
+                return Ok(None);
+            }
+            let plane = plane.ok_or(StripeCopyError::Geometry)?;
+            let result = match target.take(plane_id) {
+                Some(target) => plane.copy_into(Some(target), initializations[plane_id.index()]),
+                None => plane
+                    .copy_into(None, StripeInitialization::CopyAll)
+                    .map(|cdef| core::mem::replace(plane, cdef)),
             };
-            plane.copy_rows_into(
-                plane.origin_y(),
-                end_y,
-                Some(target),
-                initializations[plane_id.index()],
-            )
+            result.map(Some).map_err(|error| error.for_plane(plane_id))
         };
-        let post_lr_y = if active_planes[PlaneId::Y.index()] {
-            Some(
-                copy(PlaneId::Y, &mut frame.filtered_y)
-                    .map_err(|error| error.for_plane(PlaneId::Y))?,
-            )
-        } else {
-            None
-        };
-        let post_lr_u = if active_planes[PlaneId::U.index()] {
-            match frame.filtered_u.as_mut() {
-                Some(plane) => {
-                    Some(copy(PlaneId::U, plane).map_err(|error| error.for_plane(PlaneId::U))?)
-                }
-                None => None,
-            }
-        } else {
-            None
-        };
-        let post_lr_v = if active_planes[PlaneId::V.index()] {
-            match frame.filtered_v.as_mut() {
-                Some(plane) => {
-                    Some(copy(PlaneId::V, plane).map_err(|error| error.for_plane(PlaneId::V))?)
-                }
-                None => None,
-            }
-        } else {
-            None
-        };
+        let post_lr_y = prepare(PlaneId::Y, Some(&mut frame.filtered_y))?;
+        let post_lr_u = prepare(PlaneId::U, frame.filtered_u.as_mut())?;
+        let post_lr_v = prepare(PlaneId::V, frame.filtered_v.as_mut())?;
         Ok(Self {
             deblocked_y: frame.deblocked_y,
             deblocked_u: frame.deblocked_u,
@@ -472,22 +443,17 @@ fn lr_restoration_writes_complete_rectangle(
     }
 }
 
-fn lr_blocks_near_rows(
+pub(super) fn lr_blocks_near_rows(
     blocks: &[WienerNsLrSourceBlock],
     start_y: usize,
     end_y: usize,
-) -> &[WienerNsLrSourceBlock] {
+) -> core::ops::Range<usize> {
     let relevant_end = blocks.partition_point(|block| block.y < end_y);
     let relevant_start = blocks[..relevant_end]
         .iter()
-        .position(|block| {
-            block
-                .y
-                .checked_add(block.height)
-                .is_some_and(|block_end| block_end > start_y)
-        })
+        .position(|block| lr_block_in_rows(block, start_y, end_y).is_some())
         .unwrap_or(relevant_end);
-    &blocks[relevant_start..relevant_end]
+    relevant_start..relevant_end
 }
 
 /// Calls `gap(rows, columns)` for each rectangle of the plane rows
@@ -506,7 +472,7 @@ fn for_each_lr_gap(
     if width == 0 || start_y >= end_y || end_y > frame_height {
         return None;
     }
-    let blocks = lr_blocks_near_rows(blocks, start_y, end_y);
+    let blocks = &blocks[lr_blocks_near_rows(blocks, start_y, end_y)];
     let span = |block: &WienerNsLrSourceBlock| {
         let end_x = block.x.checked_add(block.width)?.min(width);
         let end_y = block.y.checked_add(block.height)?.min(frame_height);
@@ -1027,31 +993,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 }
 
 impl StripeChain<'_> {
-    /// Each plane's blocks near the luma rows `luma_start..luma_end`, and
-    /// whether one of them reaches into those rows.
-    pub(crate) fn lr_stripe_blocks<'b>(
-        &self,
-        (luma_start, luma_end): (usize, usize),
-        plane_blocks: [&'b [WienerNsLrSourceBlock]; 3],
-    ) -> ([&'b [WienerNsLrSourceBlock]; 3], [bool; 3]) {
-        let sub_y = usize::from(self.pixel_format.subsampling_y());
-        let rows = |plane: usize| {
-            let shift = usize::from(plane != PlaneId::Y.index()) * sub_y;
-            (luma_start >> shift, luma_end.div_ceil(1 << shift))
-        };
-        let blocks: [_; 3] = core::array::from_fn(|plane| {
-            let (start, end) = rows(plane);
-            lr_blocks_near_rows(plane_blocks[plane], start, end)
-        });
-        let active = core::array::from_fn(|plane| {
-            let (start, end) = rows(plane);
-            blocks[plane]
-                .iter()
-                .any(|block| lr_block_in_rows(block, start, end).is_some())
-        });
-        (blocks, active)
-    }
-
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn apply_lr_stripe<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,

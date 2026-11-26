@@ -139,19 +139,34 @@ const fn pair_taps(weights: &[[i32; 3]; 3], clamped: bool) -> [(i16, i16); 3] {
     taps
 }
 
-/// `LANE_TAPS[filter][variant][pair][row]`: the 16 `pmaddubsw` lanes of the
+#[cfg(target_arch = "x86_64")]
+type LaneTaps = [[[i16; 16]; 3]; 2];
+
+#[cfg(target_arch = "x86_64")]
+const fn lane_tap_index(filter: usize, variant: usize) -> usize {
+    if filter == 0 {
+        0
+    } else {
+        1 + (filter - 1) * 3 + variant
+    }
+}
+
+/// `LANE_TAPS[lane_tap_index(filter, variant)][pair][row]`: 16 `pmaddubsw` lanes of the
 /// [`pair_taps`] (centre, right) (`pair` 0) and (left, centre) (`pair` 1)
 /// weights of each tap row: unclamped (`variant` 0), or with the left tap of
-/// lane 0 (`variant` 1) or lane 8 (`variant` 2) clamped.
+/// lane 0 (`variant` 1) or lane 8 (`variant` 2) clamped. Filter 0 has no
+/// left taps, so all three variants share a single entry.
 #[cfg(target_arch = "x86_64")]
-static LANE_TAPS: [[[[[i16; 16]; 3]; 2]; 3]; 3] = {
-    let mut table = [[[[[0i16; 16]; 3]; 2]; 3]; 3];
+static LANE_TAPS: [LaneTaps; 7] = {
+    let mut table = [[[[0i16; 16]; 3]; 2]; 7];
     let mut filter = 0;
     while filter < 3 {
         let plain = pair_taps(&CFL_FILTERS_420[filter], false);
         let clamped = pair_taps(&CFL_FILTERS_420[filter], true);
         let mut variant = 0;
-        while variant < 3 {
+        let variants = if filter == 0 { 1 } else { 3 };
+        while variant < variants {
+            let index = lane_tap_index(filter, variant);
             let mut row = 0;
             while row < 3 {
                 let mut lane = 0;
@@ -161,8 +176,8 @@ static LANE_TAPS: [[[[[i16; 16]; 3]; 2]; 3]; 3] = {
                     } else {
                         plain[row]
                     };
-                    table[filter][variant][0][row][lane] = taps.0;
-                    table[filter][variant][1][row][lane] = taps.1;
+                    table[index][0][row][lane] = taps.0;
+                    table[index][1][row][lane] = taps.1;
                     lane += 1;
                 }
                 row += 1;
@@ -297,8 +312,8 @@ fearless_simd::kernel!(
         use core::arch::x86_64::{__m128i, _mm_add_epi16, _mm_maddubs_epi16, _mm_set1_epi16};
         use fearless_simd::{SimdBase as _, i16x8, u8x16};
         let [mid_centre, mid_left] = [
-            &LANE_TAPS[2][usize::from(clamp_first)][0][1],
-            &LANE_TAPS[2][usize::from(clamp_first)][1][1],
+            &LANE_TAPS[lane_tap_index(2, usize::from(clamp_first))][0][1],
+            &LANE_TAPS[lane_tap_index(2, usize::from(clamp_first))][1][1],
         ]
         .map(|weights| -> __m128i { i16x8::from_slice(token, &weights[..8]).into() });
         let vertical = |row: __m128i| _mm_maddubs_epi16(row, _mm_set1_epi16(1));
@@ -392,7 +407,6 @@ macro_rules! luma_420_rows {
                 out: &mut [i16],
             ) {
                 let mut left = left;
-                let taps = &LANE_TAPS[$filter];
                 use core::arch::x86_64::{
                     __m128i, __m256i, _mm_add_epi16, _mm_maddubs_epi16, _mm256_add_epi16,
                     _mm256_castsi256_si128, _mm256_extract_epi16, _mm256_extracti128_si256,
@@ -401,9 +415,10 @@ macro_rules! luma_420_rows {
                 use fearless_simd::{SimdBase as _, SimdFrom as _, i16x16, u8x16, u8x32};
                 let width = block.width;
                 let lanes = |clamped: usize, pair: usize, row: usize| -> __m256i {
-                    i16x16::from_slice(token, &taps[clamped][pair][row]).into()
+                    let taps = &LANE_TAPS[lane_tap_index($filter, clamped)];
+                    i16x16::from_slice(token, &taps[pair][row]).into()
                 };
-                let [[plain_centre, plain_left], ..] = taps;
+                let [plain_centre, plain_left] = &LANE_TAPS[lane_tap_index($filter, 0)];
                 let used = |pair: &[[i16; 16]; 3], row: usize| pair[row][1] != 0;
                 let first = usize::from(clamp_groups & 1);
                 let skip = usize::from(block.above.is_some());
@@ -539,7 +554,7 @@ macro_rules! luma_420_pairs {
                 if stride < 64 {
                     return;
                 }
-                let taps = &LANE_TAPS[$filter][2 * usize::from(clamp_groups & 1)];
+                let taps = &LANE_TAPS[lane_tap_index($filter, 2 * usize::from(clamp_groups & 1))];
                 let lanes = |pair: usize, row: usize| -> __m256i {
                     i16x16::from_slice(token, &taps[pair][row]).into()
                 };

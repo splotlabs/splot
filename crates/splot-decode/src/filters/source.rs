@@ -482,7 +482,9 @@ impl<T: ReconSample> DeblockedWindow<T> {
                     .append_rows(plane, bottom_start, end, samples)
                     .ok_or_else(state)?;
             }
-            if let Some(carry) = carry.as_deref_mut() {
+            if luma.1 < frame.info().storage_luma_size().height()
+                && let Some(carry) = carry.as_deref_mut()
+            {
                 let skipped = bottom_start - top_end;
                 let kept = samples
                     .get((tail - start - skipped) * width..)
@@ -720,28 +722,18 @@ impl<T: ReconSample> StripePlane<T> {
         Ok(output)
     }
 
-    pub(crate) fn preflight_copy_rows_into(
+    pub(crate) fn copy_into(
         &self,
-        origin_y: usize,
-        end_y: usize,
-        target: Option<&DirectPlaneTarget<T>>,
-        initialization: StripeInitialization,
-    ) -> Result<(), StripeCopyError> {
-        if origin_y < self.origin_y || origin_y > end_y || Some(end_y) > self.end_y() {
-            return Err(StripeCopyError::Geometry);
-        }
-        Self::preflight_copy_from_into(self.view()?, origin_y, end_y, target, initialization)
-    }
-
-    pub(crate) fn copy_rows_into(
-        &self,
-        origin_y: usize,
-        end_y: usize,
         target: Option<DirectPlaneTarget<T>>,
         initialization: StripeInitialization,
     ) -> Result<Self, StripeCopyError> {
-        self.preflight_copy_rows_into(origin_y, end_y, target.as_ref(), initialization)?;
-        Self::copy_from_into(self.view()?, origin_y, end_y, target, initialization)
+        Self::copy_from_into(
+            self.view()?,
+            self.origin_y,
+            self.end_y().ok_or(StripeCopyError::Geometry)?,
+            target,
+            initialization,
+        )
     }
 
     /// These rows as a frame-plane view.

@@ -418,10 +418,17 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
             tiled[..halo_cols].copy_from_slice(&row[inset..inset + halo_cols]);
         }
         scratch.errors = vec![0; 2 * simd::ClassScratch::error_row(width)];
+        let params = simd::RunParams::new(&block);
         let mut tiled_actual = base;
         assert!(crate::test_support::with_auto_backend!(backend => {
-            simd::filter_run(backend, &tiled_samples, &block, &mut tiled_actual, &mut scratch)
-                .is_some()
+            simd::filter_run(
+                backend,
+                &tiled_samples,
+                (&block, &params),
+                &mut tiled_actual,
+                &mut scratch,
+            )
+            .is_some()
         }));
         assert_eq!(
             tiled_actual, expected,
@@ -429,7 +436,7 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
         );
         if bit_depth == BitDepth::Eight {
             assert!(crate::test_support::with_auto_backend!(backend => {
-                simd::filter_run(backend, &tiled_samples, &block, &mut bytes, &mut scratch)
+                simd::filter_run(backend, &tiled_samples, (&block, &params), &mut bytes, &mut scratch)
                     .is_some()
             }));
             let label = "tiled u8 rows";

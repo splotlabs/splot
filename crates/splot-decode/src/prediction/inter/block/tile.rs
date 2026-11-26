@@ -1217,6 +1217,7 @@ struct ReadyReconRow<T: ReconSample> {
     row: ReconRow,
     tile_offset: ByteOffset,
     surface: Option<splot_recon::OwnedFrameRect<T>>,
+    surface_written: bool,
     bounds: row_gate::RowReferenceBounds,
 }
 
@@ -1357,9 +1358,9 @@ fn precompute_recon_row<B: splot_core::simd::SimdBackend, T: ReconSample>(
         return ready;
     };
     let mut surface = CurrentFrameSurface::OwnedRect(surface);
-    ready.row = precompute_recon_row_on_surface(
+    ready.surface_written = precompute_recon_row_on_surface(
         backend,
-        ready.row,
+        &mut ready.row,
         ready.tile_offset,
         &mut surface,
         scratch,
@@ -1391,7 +1392,7 @@ fn precompute_recon_row<B: splot_core::simd::SimdBackend, T: ReconSample>(
 #[expect(clippy::too_many_arguments)]
 fn precompute_recon_row_on_surface<B: splot_core::simd::SimdBackend, T: ReconSample>(
     backend: B,
-    mut row: ReconRow,
+    row: &mut ReconRow,
     tile_offset: ByteOffset,
     surface: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
@@ -1408,10 +1409,11 @@ fn precompute_recon_row_on_surface<B: splot_core::simd::SimdBackend, T: ReconSam
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-) -> ReconRow {
+) -> bool {
     if row.has_terminal_error() {
-        return row;
+        return false;
     }
+    let mut surface_written = false;
     let info = surface.info();
     let shared = deferred_recon::ReconShared {
         tile_offset,
@@ -1506,6 +1508,7 @@ fn precompute_recon_row_on_surface<B: splot_core::simd::SimdBackend, T: ReconSam
                 continue;
             };
             let start = row.temporal.len();
+            surface_written = true;
             let result = {
                 scratch.reconstruct(
                     backend,
@@ -1527,7 +1530,7 @@ fn precompute_recon_row_on_surface<B: splot_core::simd::SimdBackend, T: ReconSam
         }
     }
     row.motion_folded = matches!(row.failure, ReconRowFailure::None);
-    row
+    surface_written
 }
 
 /// One tile's units after the entropy pass, owned so the § 7.12 resolve pass

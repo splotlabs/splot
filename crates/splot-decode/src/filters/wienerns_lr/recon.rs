@@ -78,6 +78,7 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     max_sample_fits: bool,
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     lr_plane_ends: [usize; 2],
+    lr_max_block_height: usize,
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     ranges: Vec<(usize, usize)>,
     filter_records: super::FrameFilterRecords,
@@ -100,24 +101,17 @@ type WindowPlanes<'a, T> = (
     [Option<crate::filters::source::FramePlane<'a, T>>; 3],
 );
 
-/// A filled stripe window, with the planes loop restoration filters in the
-/// stripe and its `stripe_in_place` result.
+type LrBlockRanges = [core::ops::Range<usize>; 3];
+
 type FilledWindow<T> = (
     crate::filters::source::DeblockedWindow<T>,
-    [bool; 3],
+    LrBlockRanges,
     [bool; 3],
 );
 
 /// The terminal freeze's result: the frame of a private sink, or `None` once a
 /// slot writer settled it, plus the records handed back to the scratch.
 pub(crate) type FrozenFrame<T> = Result<(Option<DecodedFrame<T>>, super::FrameFilterRecords)>;
-
-/// One completed stripe whose index and samples move together into publication.
-pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
-    stripe: usize,
-    frame: final_filters::FilteredStripe<T>,
-    direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
-}
 
 /// One scheduled stripe with its private deblocked input window.
 pub(crate) struct OwnedFilterJob<T: ReconSample> {
@@ -352,6 +346,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
         let (lr_source_blocks, lr_plane_ends) =
             final_filters::lr_source_blocks_by_plane(lr_source_blocks);
+        let lr_max_block_height = lr_source_blocks
+            .iter()
+            .map(|block| block.height)
+            .max()
+            .unwrap_or(0);
         if super::lr_uses_tx_skip(&core) && lr_plane_ends[0] > 0 {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
@@ -439,6 +438,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             max_sample_fits: T::try_from_u16(bit_depth.max_sample()).is_ok(),
             lr_source_blocks,
             lr_plane_ends,
+            lr_max_block_height,
             lr_unit_filters,
             ranges,
             filter_records,
@@ -690,18 +690,25 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         [luma, lr[1], lr[2]]
     }
 
-    fn lr_stripe_blocks(
-        &self,
-        range: (usize, usize),
-    ) -> (
-        [&[crate::bitstream::tile_payload::WienerNsLrSourceBlock]; 3],
-        [bool; 3],
-    ) {
-        let [y_end, u_end] = self.lr_plane_ends;
-        let (y_runs, rest) = self.lr_source_blocks.split_at(y_end);
-        let (u_runs, v_runs) = rest.split_at(u_end - y_end);
-        self.chain()
-            .lr_stripe_blocks(range, [y_runs, u_runs, v_runs])
+    fn lr_block_ranges(&self, (start, end): (usize, usize)) -> LrBlockRanges {
+        let [u, v] = self.lr_plane_ends;
+        let planes = [0..u, u..v, v..self.lr_source_blocks.len()];
+        core::array::from_fn(|plane| {
+            let shift = if plane == 0 { 0 } else { self.subsampling.1 };
+            let start_y = start >> shift;
+            let range = &planes[plane];
+            let blocks = &self.lr_source_blocks[range.clone()];
+            let earliest_overlapping_y =
+                start_y.saturating_sub(self.lr_max_block_height.saturating_sub(1));
+            let first = blocks.partition_point(|block| block.y < earliest_overlapping_y);
+            let near = final_filters::lr_blocks_near_rows(
+                &blocks[first..],
+                start_y,
+                end.div_ceil(1 << shift),
+            );
+            let base = range.start + first;
+            base + near.start..base + near.end
+        })
     }
 
     fn ready_stripe(&self, stripe: usize, final_rows: usize) -> Result<Option<(usize, usize)>> {
@@ -747,7 +754,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         let range = self
             .ready_stripe(stripe, frame.final_luma_rows())?
             .ok_or_else(lr_pipeline_state_error)?;
-        let (_, active_lr) = self.lr_stripe_blocks(range);
+        let blocks = self.lr_block_ranges(range);
+        let active_lr = blocks.each_ref().map(|rows| !rows.is_empty());
         let in_place = self.stripe_in_place(range, active_lr);
         let [all, chroma, luma] = in_place;
         let skip = [all || luma, chroma, chroma];
@@ -761,7 +769,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             self.give_window(window);
             return Err(error);
         }
-        Ok((window, active_lr, in_place))
+        Ok((window, blocks, in_place))
     }
 
     /// The planes whose window holds only the rows the first and the last
@@ -795,9 +803,9 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         &self,
         backend: B,
         stripe: usize,
-        (window, active_lr, in_place): FilledWindow<T>,
+        (window, blocks, in_place): FilledWindow<T>,
     ) -> Result<()> {
-        let result = self.run_filled(backend, stripe, &window, [active_lr, in_place]);
+        let result = self.run_filled(backend, stripe, &window, blocks, in_place);
         self.give_window(window);
         result
     }
@@ -808,15 +816,19 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         backend: B,
         stripe: usize,
         window: &crate::filters::source::DeblockedWindow<T>,
-        plan: [[bool; 3]; 2],
+        blocks: LrBlockRanges,
+        in_place: [bool; 3],
     ) -> Result<()> {
-        self.claim(stripe)
-            .and_then(|range| {
-                let planes = window.planes().ok_or_else(lr_pipeline_state_error)?;
-                let lower = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| window.lower(plane));
-                self.run_claimed_planes(backend, stripe, range, &(planes, lower), plan)
-            })
-            .and_then(|filtered| self.publish(filtered))
+        let range = self.claim(stripe)?;
+        let planes = window.planes().ok_or_else(lr_pipeline_state_error)?;
+        let lower = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| window.lower(plane));
+        let mut direct = self
+            .progress
+            .direct_stripe(stripe)
+            .ok_or_else(lr_pipeline_state_error)?;
+        let target = direct.take_target().ok_or_else(lr_pipeline_state_error)?;
+        let frame = self.run_planes(backend, range, &(planes, lower), target, blocks, in_place)?;
+        self.publish(stripe, frame, direct)
     }
 
     fn stripe_bounds(&self, stripe: usize) -> Result<(usize, usize)> {
@@ -859,39 +871,23 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         Ok(())
     }
 
-    fn run_claimed_planes<B: splot_core::simd::SimdBackend>(
+    fn publish(
         &self,
-        backend: B,
         stripe: usize,
-        range: &(usize, usize),
-        deblocked: &WindowPlanes<'_, T>,
-        plan: [[bool; 3]; 2],
-    ) -> Result<OwnedFilteredStripe<T>> {
-        let mut direct = self
-            .progress
-            .direct_stripe(stripe)
-            .ok_or_else(lr_pipeline_state_error)?;
-        let target = direct.take_target().ok_or_else(lr_pipeline_state_error)?;
-        Ok(OwnedFilteredStripe {
-            stripe,
-            frame: self.run_planes(backend, range, deblocked, target, plan)?,
-            direct,
-        })
-    }
-
-    /// Moves one completed stripe into the frame output exactly once.
-    pub(crate) fn publish(&self, stripe: OwnedFilteredStripe<T>) -> Result<()> {
+        frame: final_filters::FilteredStripe<T>,
+        direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
+    ) -> Result<()> {
         let chain = self.chain();
-        chain.validate_filter_stripe(PlaneId::Y, &stripe.frame.y)?;
-        if let Some(plane) = stripe.frame.u.as_ref() {
+        chain.validate_filter_stripe(PlaneId::Y, &frame.y)?;
+        if let Some(plane) = frame.u.as_ref() {
             chain.validate_filter_stripe(PlaneId::U, plane)?;
         }
-        if let Some(plane) = stripe.frame.v.as_ref() {
+        if let Some(plane) = frame.v.as_ref() {
             chain.validate_filter_stripe(PlaneId::V, plane)?;
         }
         {
             let mut state = self.stripe_state.lock();
-            let Some(lifecycle) = state.get_mut(stripe.stripe) else {
+            let Some(lifecycle) = state.get_mut(stripe) else {
                 return Err(lr_pipeline_state_error());
             };
             if *lifecycle != StripeLifecycle::Claimed {
@@ -899,7 +895,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             }
             *lifecycle = StripeLifecycle::Submitted;
         }
-        let OwnedFilteredStripe { frame, direct, .. } = stripe;
         if !frame.y.is_direct()
             || frame.u.as_ref().is_some_and(|plane| !plane.is_direct())
             || frame.v.as_ref().is_some_and(|plane| !plane.is_direct())
@@ -1050,6 +1045,14 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// whether none changes its luma and the chroma filters read no luma past
     /// the stripe, so the luma target serves as the deblocked luma.
     fn stripe_in_place(&self, (start, end): (usize, usize), active_lr: [bool; 3]) -> [bool; 3] {
+        let ccso = self.ccso_grid.as_ref().and(self.ccso_config.as_ref());
+        let unfiltered = |plane: PlaneId| {
+            !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
+        };
+
+        if !unfiltered(PlaneId::U) || !unfiltered(PlaneId::V) {
+            return [false; 3];
+        }
         let [luma, chroma] = crate::filters::cdef::cdef_stripe_identity(
             self.cdef_strengths.as_deref(),
             self.cdef_grid.as_ref(),
@@ -1057,22 +1060,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             (self.mi_rows, self.mi_cols),
             (start, end),
         );
-        let ccso = self.ccso_grid.as_ref().and(self.ccso_config.as_ref());
-        let unfiltered = |plane: PlaneId| {
-            !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
-        };
-        let chroma = chroma && unfiltered(PlaneId::U) && unfiltered(PlaneId::V);
         let luma = luma && !self.gdf_active && unfiltered(PlaneId::Y);
-        let chroma_reads_luma = active_lr[PlaneId::U.index()]
-            || active_lr[PlaneId::V.index()]
-            || ccso.is_some_and(|config| {
-                config.filters_plane(PlaneId::U) || config.filters_plane(PlaneId::V)
-            });
-        [
-            chroma && luma,
-            chroma,
-            luma && !chroma && !chroma_reads_luma,
-        ]
+        [chroma && luma, chroma, luma && !chroma]
     }
 
     fn run_planes<B: splot_core::simd::SimdBackend>(
@@ -1081,10 +1070,10 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         &(start, end): &(usize, usize),
         &(deblocked, lower): &WindowPlanes<'_, T>,
         mut target: crate::pipeline::frame_progress::DirectStripeTarget<T>,
-        [active_lr, [all_in_place, chroma_in_place, luma_in_place]]: [[bool; 3]; 2],
+        blocks: LrBlockRanges,
+        [all_in_place, chroma_in_place, luma_in_place]: [bool; 3],
     ) -> Result<final_filters::FilteredStripe<T>> {
         let chain = self.chain();
-        let (plane_blocks, _) = self.lr_stripe_blocks((start, end));
         let mut in_place = |plane: PlaneId| {
             target
                 .take(plane)
@@ -1131,6 +1120,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         } else {
             deblocked
         };
+        let plane_blocks = blocks.map(|range| &self.lr_source_blocks[range]);
+        let active_lr = plane_blocks.map(|runs| !runs.is_empty());
         let edges = lower.map(|plane| plane.is_some());
         let lr_copies: [bool; 3] = core::array::from_fn(|index| {
             edges[index]
@@ -1187,7 +1178,11 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             filtered_u: cdef.filtered_u,
             filtered_v: cdef.filtered_v,
         };
-        let cdef_overlap = self.cdef_overlap_planes(backend, deblocked, &chain, start, end)?;
+        let cdef_overlap = if self.gdf_active || active_lr.contains(&true) {
+            self.cdef_overlap_planes(backend, deblocked, &chain, start, end)?
+        } else {
+            final_filters::CdefOverlap::default()
+        };
         let mut frame = chain.apply_lr_stripe(
             backend,
             &self.core,

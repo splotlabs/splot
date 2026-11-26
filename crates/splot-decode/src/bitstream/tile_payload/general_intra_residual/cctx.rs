@@ -306,6 +306,7 @@ mod tests {
             for (u_len, v_len) in [(0, 0), (0, 9), (9, 0), (9, 4), (4, 9), (9, 9)] {
                 let [u_block, v_block] = [u_len, v_len].map(|len| LumaCoeffBlock {
                     eob: u16::from(len != 0),
+                    scan_order: false,
                     quant_start: 0,
                     quant_len: len as u16,
                     zero_tail: (64 - len) as u16,

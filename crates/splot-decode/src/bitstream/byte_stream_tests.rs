@@ -32,6 +32,26 @@ fn ivf_records_are_read_one_at_a_time_and_share_reused_buffers() {
 }
 
 #[test]
+fn ivf_payload_storage_moves_through_the_pool_without_touching_a_live_unit() {
+    let mut input = Vec::new();
+    write_ivf_header(&mut input, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 2)).unwrap();
+    write_ivf_frame(&mut input, 7, &[0x01, 0x08]).unwrap();
+    write_ivf_frame(&mut input, 8, &[0x01, 0x04]).unwrap();
+    let mut source = ReaderUnits::new(input.as_slice(), DecodeLimits::unlimited());
+    let spare = Vec::with_capacity(64);
+    let spare_ptr = spare.as_ptr();
+    let mut buffers = vec![Arc::new(spare)];
+
+    let first = source.next_unit(&mut buffers).unwrap().unwrap();
+    let second = source.next_unit(&mut buffers).unwrap().unwrap();
+
+    assert_eq!(first.bytes.view().bytes(), &[0x01, 0x08]);
+    assert_eq!(second.bytes.view().bytes(), &[0x01, 0x04]);
+    assert_eq!(second.bytes.view().bytes().as_ptr(), spare_ptr);
+    assert_eq!(buffers.len(), 2);
+}
+
+#[test]
 fn annex_b_input_splits_into_units_at_temporal_delimiters() {
     let delimiter = [0x01, 0x08];
     let padding = [0x01, 0x04];
