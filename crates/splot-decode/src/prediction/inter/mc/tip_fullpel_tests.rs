@@ -11,6 +11,61 @@ use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
 const WIDTH: usize = 64;
 const HEIGHT: usize = 48;
 
+#[test]
+fn tip_sad_matches_scalar_random_extreme_and_masked_inputs() {
+    fn sample_index(x: i32, y: i32) -> usize {
+        (y * 16 + x) as usize
+    }
+
+    fn scalar_sad(a: &[u16; 256], b: &[u16; 256], dx: i32, dy: i32) -> u32 {
+        let mut sad = 0;
+        for y in (2..14).step_by(2) {
+            for x in 2..14 {
+                sad += u32::from(
+                    a[sample_index(x + dx, y + dy)].abs_diff(b[sample_index(x - dx, y - dy)]),
+                );
+            }
+        }
+        sad
+    }
+
+    crate::test_support::with_auto_backend!(backend => {
+        let mut seed = 0xd1b5_4a32u32;
+        for max in [255u16, 1023] {
+            let mut sample = || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 16) as u16 & max
+            };
+            let check = |a: &[u16; 256], b: &[u16; 256], dx, dy| {
+                let actual = splot_core::with_simd!(backend, simd => tip_refinemv_sad(simd, a, b, dx, dy));
+                assert_eq!(actual, scalar_sad(a, b, dx, dy), "max={max}, dx={dx}, dy={dy}");
+            };
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    check(&[0; 256], &[max; 256], dx, dy);
+                    check(&[max; 256], &[0; 256], dx, dy);
+
+                    let mut a = [0; 256];
+                    let mut b = [max; 256];
+                    for y in (2..14).step_by(2) {
+                        for x in 2..14 {
+                            let value = sample();
+                            a[sample_index(x + dx, y + dy)] = value;
+                            b[sample_index(x - dx, y - dy)] = value;
+                        }
+                    }
+                    check(&a, &b, dx, dy);
+                    for _ in 0..16 {
+                        let a = core::array::from_fn(|_| sample());
+                        let b = core::array::from_fn(|_| sample());
+                        check(&a, &b, dx, dy);
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn mv(row: i32, col: i32) -> MotionVector {
     MotionVector { row, col }
 }
