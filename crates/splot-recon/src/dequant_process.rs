@@ -27,7 +27,9 @@
 
 use std::sync::Arc;
 
-use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase as _, i32x8, u8x16, u32x8, u64x2};
+use fearless_simd::{
+    Bytes as _, Select as _, Simd, SimdBase as _, SimdInt as _, i32x8, u8x16, u32x8, u64x2,
+};
 use splot_core::simd::SimdBackend;
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
@@ -348,7 +350,7 @@ pub(crate) fn dequant_lanes<S: Simd>(
     bound: i32,
 ) -> i32x8<S> {
     let sign = coeff >> (i32::BITS - 1);
-    let magnitude: u32x8<S> = ((coeff ^ sign) - sign).bitcast();
+    let magnitude = coeff.unsigned_abs();
     let product = (magnitude * q2) & 0x00FF_FFFF;
     let shift = QUANT_TABLE_BITS;
     let scaled: i32x8<S> = ((product + (1 << (shift - 1))) >> (shift + denom_shift)).bitcast();
