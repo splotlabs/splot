@@ -20,6 +20,18 @@ pub struct BlockTransformId {
     pub coded: PlaneRect,
 }
 
+impl BlockTransformId {
+    /// Identifies a transform by its coding block, plane and native rectangle.
+    #[must_use]
+    pub const fn new(block: BlockEvidenceId, plane: PlaneId, coded: PlaneRect) -> Self {
+        Self {
+            block,
+            plane,
+            coded,
+        }
+    }
+}
+
 /// Geometry observed in the residual parser.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -69,11 +81,7 @@ impl DecodedTransformUnit<'_> {
             PlaneRect::new(self.x << sx, self.y << sy, width << sx, height << sy).ok()?
         };
         Some(BlockTransformEvidence {
-            id: BlockTransformId {
-                block,
-                plane: self.plane,
-                coded,
-            },
+            id: BlockTransformId::new(block, self.plane, coded),
             luma_coded,
             details: None,
         })

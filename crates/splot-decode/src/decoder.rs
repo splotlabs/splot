@@ -888,8 +888,9 @@ impl Decoder {
         )
     }
 
-    /// Opens a decoder with a one-shot capture for partitions and coding blocks.
+    /// Opens a decoder with a bounded capture for partitions and coding blocks.
     /// The capture does not skip prerequisite decoding.
+    /// The driver waits for a selected frame to settle before it admits another frame.
     /// Assign distinct [`DataProps::user_data`] values to distinguish input units.
     /// A flush ends the capture and resets the decoder.
     ///

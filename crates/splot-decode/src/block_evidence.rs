@@ -11,6 +11,8 @@ pub use prediction::*;
 pub(crate) use transform::DecodedTransformUnit;
 pub use transform::{BlockTransformDetails, BlockTransformEvidence, BlockTransformId};
 
+use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -56,18 +58,20 @@ impl BlockEvidenceKind {
     }
 }
 
-/// Selects the first matching coded frame for one decoder.
+/// Selects coded frames for one decode session.
 pub struct BlockEvidenceRequest {
     matches_coded: Box<dyn Fn(ObuLocation) -> bool + Send + Sync>,
     region: Option<PlaneRect>,
-    record_limit: usize,
+    max_events: usize,
+    max_bytes: usize,
+    frame_limit: NonZeroUsize,
     kind: BlockEvidenceKind,
     transform_details: Option<BlockTransformId>,
     cancelled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl BlockEvidenceRequest {
-    /// Selects a coded OBU and an optional region in coded luma coordinates.
+    /// Selects the first matching coded OBU and a region in coded luma coordinates.
     /// Each budget limits the same fixed-size records. The byte budget counts
     /// record storage, including spare capacity. Zero stops before the first record.
     ///
@@ -82,11 +86,22 @@ impl BlockEvidenceRequest {
         Self {
             matches_coded: Box::new(matches_coded),
             region,
-            record_limit: max_events.min(max_bytes / size_of::<BlockEvidenceRecord>()),
+            max_events,
+            max_bytes,
+            frame_limit: NonZeroUsize::MIN,
             kind: BlockEvidenceKind::PartitionsAndBlocks,
             transform_details: None,
             cancelled: None,
         }
+    }
+
+    /// Selects at most this number of matching coded frames, in decode order.
+    /// The record and byte budgets apply to the full range. A range stops when
+    /// a selected frame exceeds a budget. The frame limit also bounds report metadata.
+    #[must_use]
+    pub const fn with_frame_limit(mut self, frames: NonZeroUsize) -> Self {
+        self.frame_limit = frames;
+        self
     }
 
     /// Selects which records consume the budget.
@@ -175,6 +190,7 @@ impl From<PartitionTreeType> for BlockEvidenceTree {
 }
 
 /// Identifies a node within one captured coded frame.
+/// Keep its report's frame and input source identity to compare it across captures.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub struct BlockEvidenceId {
@@ -184,6 +200,14 @@ pub struct BlockEvidenceId {
     pub tree: BlockEvidenceTree,
     /// The partition rectangle in coded luma samples, including edge padding.
     pub coded: PlaneRect,
+}
+
+impl BlockEvidenceId {
+    /// Identifies a node by tile, tree and coded luma rectangle.
+    #[must_use]
+    pub const fn new(tile: usize, tree: BlockEvidenceTree, coded: PlaneRect) -> Self {
+        Self { tile, tree, coded }
+    }
 }
 
 /// Geometry and facts for one event from the block walk.
@@ -241,32 +265,40 @@ pub struct BlockEvidenceReport {
     pub records: Vec<BlockEvidenceRecord>,
 }
 
-/// The receive end of a one-shot evidence capture.
+/// The receive end of an evidence capture.
 pub struct BlockEvidenceCapture(pub(crate) Arc<BlockEvidenceState>);
 
 impl BlockEvidenceCapture {
-    /// Reports if the matching frame is ready or the first decode session ended.
+    /// Reports if capture ended. Unread reports remain available through [`Self::take`].
     #[must_use]
     pub fn is_finished(&self) -> bool {
         self.0.state.lock().finished
     }
 
-    /// Takes an available report. Returns `None` until the report is ready
-    /// and after the caller takes it. Drain the decoder if the target did not decode.
+    /// Takes the next available report in coded order. Returns `None` when
+    /// no report is ready. Drain the decoder to finish a range that remains open.
     #[must_use]
     pub fn take(&self) -> Option<BlockEvidenceReport> {
-        self.0.state.lock().report.take()
+        let mut state = self.0.state.lock();
+        state
+            .reports
+            .pop_front()
+            .or_else(|| state.last_report.take())
     }
 }
 
 #[derive(Default)]
 struct CaptureState {
     frame: Option<BlockEvidenceFrame>,
+    frames_selected: usize,
+    remaining_events: usize,
+    remaining_bytes: usize,
     walking: bool,
     stopped: Option<BlockEvidenceStatus>,
     finished: bool,
     records: Vec<BlockEvidenceRecord>,
-    report: Option<BlockEvidenceReport>,
+    reports: VecDeque<BlockEvidenceReport>,
+    last_report: Option<BlockEvidenceReport>,
 }
 
 pub(crate) struct BlockEvidenceState {
@@ -277,9 +309,14 @@ pub(crate) struct BlockEvidenceState {
 
 impl BlockEvidenceState {
     pub(crate) fn new(request: BlockEvidenceRequest) -> Self {
+        let state = CaptureState {
+            remaining_events: request.max_events,
+            remaining_bytes: request.max_bytes,
+            ..CaptureState::default()
+        };
         Self {
             request,
-            state: Mutex::default(),
+            state: Mutex::new(state),
             stopped: AtomicBool::new(false),
         }
     }
@@ -296,16 +333,23 @@ impl BlockEvidenceState {
         provenance: PictureProvenance,
         header: ObuHeader,
     ) -> Option<Arc<Self>> {
-        {
+        let between_frames = {
             let state = self.state.lock();
             if state.finished || state.frame.is_some() {
                 return None;
             }
+            state.frames_selected > 0
+        };
+        if between_frames && self.cancelled() {
+            self.complete(true, true, true);
+            return None;
         }
         if !(self.request.matches_coded)(provenance.coded) {
             return None;
         }
         let state = &mut *self.state.lock();
+        state.frames_selected += 1;
+        self.stopped.store(false, Ordering::Relaxed);
         state.frame = Some(BlockEvidenceFrame {
             provenance,
             extended_layer_id: header.extended_layer_id,
@@ -320,9 +364,11 @@ impl BlockEvidenceState {
         visible: PlaneRect,
         subsampling: (bool, bool),
     ) -> BlockEvidenceRecorder {
-        self.state.lock().walking = true;
+        let mut state = self.state.lock();
+        state.walking = true;
         BlockEvidenceRecorder {
             state: Arc::clone(self),
+            frame_number: state.frames_selected,
             visible,
             subsampling,
         }
@@ -332,31 +378,58 @@ impl BlockEvidenceState {
         if self.state.lock().finished {
             return;
         }
-        let cancelled = self.cancelled();
+        self.complete(decoded, true, self.cancelled());
+    }
+
+    fn complete(&self, decoded: bool, session_ended: bool, cancelled: bool) {
         let state = &mut *self.state.lock();
         if state.finished {
             return;
         }
-        state.finished = true;
         self.stopped.store(true, Ordering::Relaxed);
+        let frame = state.frame.take();
+        if session_ended && frame.is_none() && state.frames_selected > 0 && decoded && !cancelled {
+            state.finished = true;
+            return;
+        }
+        let stopped = state.stopped.take();
+        let walking = core::mem::take(&mut state.walking);
         let status = if !decoded {
             BlockEvidenceStatus::DecodeFailed
-        } else if let Some(stopped) = state.stopped {
+        } else if let Some(stopped) = stopped {
             stopped
         } else if cancelled {
             BlockEvidenceStatus::Cancelled
-        } else if state.walking {
+        } else if walking {
             BlockEvidenceStatus::Complete
-        } else if state.frame.is_some() {
+        } else if frame.is_some() {
             BlockEvidenceStatus::Unavailable
         } else {
             BlockEvidenceStatus::FrameNotFound
         };
-        state.report = Some(BlockEvidenceReport {
+        let records = core::mem::take(&mut state.records);
+        state.remaining_events -= records.len();
+        state.remaining_bytes -= records.capacity() * size_of::<BlockEvidenceRecord>();
+        let mut report = BlockEvidenceReport {
             status,
-            frame: state.frame,
-            records: core::mem::take(&mut state.records),
-        });
+            frame,
+            records,
+        };
+        state.finished = session_ended
+            || state.frames_selected == self.request.frame_limit.get()
+            || !matches!(
+                status,
+                BlockEvidenceStatus::Complete | BlockEvidenceStatus::Unavailable
+            );
+        if !state.finished {
+            if state.reports.try_reserve(1).is_ok() {
+                state.reports.push_back(report);
+                return;
+            }
+            state.finished = true;
+            report.status = BlockEvidenceStatus::AllocationFailed;
+        }
+        state.last_report = Some(report);
     }
 
     pub(crate) fn finish_frame(&self, frame: &crate::pipeline::PipelineFrame) {
@@ -368,28 +441,35 @@ impl BlockEvidenceState {
                     .is_some_and(|selected| selected.provenance == frame.provenance)
         };
         if matches {
-            self.finish(frame.wait_settled().is_ok());
+            self.complete(frame.wait_settled().is_ok(), false, self.cancelled());
         }
     }
 
-    fn push(&self, record: BlockEvidenceRecord) {
+    fn push(&self, frame_number: usize, record: &BlockEvidenceRecord) {
         let cancelled = self.cancelled();
         let state = &mut *self.state.lock();
-        if state.finished || state.stopped.is_some() {
+        if state.finished || state.stopped.is_some() || state.frames_selected != frame_number {
             return;
         }
-        let limit = self.request.record_limit;
+        let limit = state
+            .remaining_events
+            .min(state.remaining_bytes / size_of::<BlockEvidenceRecord>());
         let stop = if cancelled {
             BlockEvidenceStatus::Cancelled
         } else if state.records.len() == limit {
             BlockEvidenceStatus::Truncated
         } else {
             let current = state.records.capacity();
-            let capacity = current.saturating_mul(2).max(32).min(limit);
+            let first_capacity = if self.request.frame_limit == NonZeroUsize::MIN {
+                32
+            } else {
+                1
+            };
+            let capacity = current.saturating_mul(2).max(first_capacity).min(limit);
             if state.records.len() != current
                 || state.records.try_reserve_exact(capacity - current).is_ok()
             {
-                state.records.push(record);
+                state.records.push(*record);
                 return;
             }
             BlockEvidenceStatus::AllocationFailed
@@ -402,6 +482,7 @@ impl BlockEvidenceState {
 #[derive(Clone)]
 pub(crate) struct BlockEvidenceRecorder {
     state: Arc<BlockEvidenceState>,
+    frame_number: usize,
     visible: PlaneRect,
     subsampling: (bool, bool),
 }
@@ -525,7 +606,7 @@ impl BlockEvidenceTile<'_> {
     pub(crate) fn record_transform(
         self,
         frontier: &DecodeBlockFrontier,
-        unit: DecodedTransformUnit<'_>,
+        unit: &DecodedTransformUnit<'_>,
     ) {
         if let Some(id) = self.block_id(frontier)
             && let Some(mut transform) = unit.to_evidence(id, self.recorder.subsampling)
@@ -554,11 +635,7 @@ impl BlockEvidenceTile<'_> {
         height: usize,
     ) -> Option<BlockEvidenceId> {
         let coded = PlaneRect::new(x, y, width, height).ok()?;
-        Some(BlockEvidenceId {
-            tile: self.tile,
-            tree,
-            coded,
-        })
+        Some(BlockEvidenceId::new(self.tile, tree, coded))
     }
 
     fn record(
@@ -577,12 +654,15 @@ impl BlockEvidenceTile<'_> {
         {
             return;
         }
-        self.recorder.state.push(BlockEvidenceRecord {
-            id,
-            parent: parent.and_then(|parent| self.node_id(parent)),
-            visible: intersection(geometry, self.recorder.visible),
-            data,
-        });
+        self.recorder.state.push(
+            self.recorder.frame_number,
+            &BlockEvidenceRecord {
+                id,
+                parent: parent.and_then(|parent| self.node_id(parent)),
+                visible: intersection(geometry, self.recorder.visible),
+                data,
+            },
+        );
     }
 }
 
@@ -644,11 +724,11 @@ mod tests {
             data: BlockEvidenceData::Partition(BlockPartition::None),
         };
         for _ in 0..limit {
-            state.push(record);
+            state.push(recorder.frame_number, &record);
             assert!(state.state.lock().records.capacity() <= limit);
         }
         assert!(recorder.tile(0).is_some());
-        state.push(record);
+        state.push(recorder.frame_number, &record);
         assert!(recorder.tile(0).is_none());
         state.finish(true);
         let report = BlockEvidenceCapture(state).take().unwrap();

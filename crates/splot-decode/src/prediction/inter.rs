@@ -1299,7 +1299,7 @@ impl InterResidual {
         for unit in &arena[self.block_range.start as usize..self.block_range.end as usize] {
             evidence.record_transform(
                 frontier,
-                crate::block_evidence::DecodedTransformUnit {
+                &crate::block_evidence::DecodedTransformUnit {
                     plane: unit.plane,
                     x: usize::from(unit.x),
                     y: usize::from(unit.y),

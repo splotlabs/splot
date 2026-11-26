@@ -39,8 +39,9 @@ use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 pub(crate) use block_decoded_state::{TileBlockDecodedState, TileBlockDecodedStateError};
 #[cfg(test)]
 pub(crate) use cdf::block_context::IntraJointMode;
+pub use cdf::block_context::SupportedChromaMode;
 pub(crate) use cdf::block_context::{
-    IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
+    IntraYMode, IntraYModeClass, MrlSelection, SupportedDirectionalLumaMode,
 };
 pub(crate) use cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 pub(crate) use cdf::{

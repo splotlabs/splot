@@ -110,7 +110,7 @@ impl GeneralIntraReconCommand {
         frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     ) {
         self.residual
-            .visit_transform_units(arena, |unit| evidence.record_transform(frontier, unit));
+            .visit_transform_units(arena, |unit| evidence.record_transform(frontier, &unit));
     }
 }
 
@@ -288,7 +288,10 @@ pub(crate) fn decode_one_general_intra_block(
             evidence.record(
                 BlockIntraPrediction {
                     luma: None,
-                    chroma: Some(BlockChromaPrediction::from_plan(chroma_plan)),
+                    chroma: Some(BlockChromaPrediction::from_plan(
+                        chroma_plan,
+                        chroma_uses_luma_angle_delta(chroma.coeff_uv_mode(), y_mode),
+                    )),
                 },
                 command.segment_id(),
                 command.qindex(),
@@ -356,7 +359,12 @@ pub(crate) fn decode_one_general_intra_block(
         evidence.record(
             BlockIntraPrediction {
                 luma: Some(BlockLumaPrediction::from_plan(luma_plan, &modes)),
-                chroma: chroma_plan.map(BlockChromaPrediction::from_plan),
+                chroma: chroma_plan.map(|plan| {
+                    BlockChromaPrediction::from_plan(
+                        plan,
+                        chroma_uses_luma_angle_delta(modes.coeff_uv_mode(), modes.y_mode),
+                    )
+                }),
             },
             command.segment_id(),
             command.qindex(),
@@ -635,12 +643,16 @@ fn rect_chroma_plan_for_mode(
     }
 }
 
+const fn chroma_uses_luma_angle_delta(uv_mode: usize, y_mode: IntraYMode) -> bool {
+    uv_mode == y_mode.value()
+}
+
 pub(crate) const fn inherited_chroma_angle_delta(
     uv_mode: usize,
     y_mode: IntraYMode,
     angle_delta_y: i8,
 ) -> i8 {
-    if uv_mode == y_mode.value() {
+    if chroma_uses_luma_angle_delta(uv_mode, y_mode) {
         angle_delta_y
     } else {
         0

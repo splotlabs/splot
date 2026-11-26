@@ -5,10 +5,9 @@ use splot_recon::{
     DpcmDirection, InterIntraMode, InterpolationFilter, IntraCardinalDirection, PlaneRect,
 };
 
+pub use crate::bitstream::tile_payload::SupportedChromaMode as ChromaIntraMode;
 pub use crate::bitstream::tile_payload::encoder_syntax::{InterMode, IntraMode};
-use crate::bitstream::tile_payload::{
-    CflMultiDirection, CflParams, GeneralIntraBlockModes, SupportedChromaMode,
-};
+use crate::bitstream::tile_payload::{CflMultiDirection, CflParams, GeneralIntraBlockModes};
 pub use crate::prediction::inter::{CompoundMode, MotionVector};
 use crate::residual::pipeline::{RectChromaPlan, RectLumaPlan};
 
@@ -67,7 +66,8 @@ pub enum BlockLumaPrediction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct BlockLumaDirection {
-    /// The decoded angle delta in steps of three degrees.
+    /// The angle delta from the decoded joint luma mode, in steps of three degrees.
+    /// DPCM uses a zero delta.
     pub angle_delta: i8,
     /// The mapped angle in degrees for the block prediction plan.
     /// Prediction units can use a different angle because of their own dimensions.
@@ -88,14 +88,24 @@ pub enum BlockChromaPrediction {
     /// A conventional intra mode.
     Mode {
         /// The decoded chroma mode.
-        mode: IntraMode,
-        /// The directional chroma angle delta in steps of three degrees.
-        angle_delta: Option<i8>,
+        mode: ChromaIntraMode,
+        /// The directional chroma angle delta and its source.
+        angle_delta: Option<BlockChromaAngleDelta>,
         /// Lossless differential pulse-code modulation direction, if used.
         dpcm: Option<DpcmDirection>,
     },
     /// Chroma-from-luma prediction.
     Cfl(BlockChromaFromLuma),
+}
+
+/// How the decoder obtains the chroma angle delta.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum BlockChromaAngleDelta {
+    /// The decoder uses the luma angle delta, in steps of three degrees.
+    FromLuma(i8),
+    /// The decoder derives the chroma delta, in steps of three degrees.
+    Derived(i8),
 }
 
 /// The decoder's chroma-from-luma parameter selection.
@@ -404,14 +414,21 @@ const fn cardinal_angle(direction: IntraCardinalDirection) -> u16 {
 
 impl BlockChromaPrediction {
     #[cold]
-    pub(crate) fn from_plan(plan: RectChromaPlan) -> Self {
+    pub(crate) fn from_plan(plan: RectChromaPlan, uses_luma_delta: bool) -> Self {
         let (mode, angle_delta, dpcm) = match plan {
             RectChromaPlan::Mode(mode, dpcm) => (mode, None, dpcm),
             RectChromaPlan::Directional {
                 mode,
                 angle_delta_uv,
                 dpcm,
-            } => (mode, Some(angle_delta_uv), dpcm),
+            } => {
+                let delta = if uses_luma_delta {
+                    BlockChromaAngleDelta::FromLuma(angle_delta_uv)
+                } else {
+                    BlockChromaAngleDelta::Derived(angle_delta_uv)
+                };
+                (mode, Some(delta), dpcm)
+            }
             RectChromaPlan::Cfl { params, .. } => {
                 return Self::Cfl(match params {
                     CflParams::Explicit { alpha_u, alpha_v } => {
@@ -425,25 +442,6 @@ impl BlockChromaPrediction {
                     },
                 });
             }
-        };
-        let mode = match mode {
-            SupportedChromaMode::Dc => IntraMode::Dc,
-            SupportedChromaMode::Smooth => IntraMode::Smooth,
-            SupportedChromaMode::SmoothVertical => IntraMode::SmoothVertical,
-            SupportedChromaMode::SmoothHorizontal => IntraMode::SmoothHorizontal,
-            SupportedChromaMode::Paeth => IntraMode::Paeth,
-            SupportedChromaMode::Vertical | SupportedChromaMode::VerticalFollow => {
-                IntraMode::Vertical
-            }
-            SupportedChromaMode::Horizontal | SupportedChromaMode::HorizontalFollow => {
-                IntraMode::Horizontal
-            }
-            SupportedChromaMode::D45 | SupportedChromaMode::D45Follow => IntraMode::D45,
-            SupportedChromaMode::D67 | SupportedChromaMode::D67Follow => IntraMode::D67,
-            SupportedChromaMode::D113 | SupportedChromaMode::D113Follow => IntraMode::D113,
-            SupportedChromaMode::D135 | SupportedChromaMode::D135Follow => IntraMode::D135,
-            SupportedChromaMode::D157 | SupportedChromaMode::D157Follow => IntraMode::D157,
-            SupportedChromaMode::D203 | SupportedChromaMode::D203Follow => IntraMode::D203,
         };
         Self::Mode {
             mode,
