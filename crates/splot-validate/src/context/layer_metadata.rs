@@ -138,8 +138,7 @@ impl LayerMetadataTracker {
             _ if is_frame_bearing(obu_type) => {
                 let first_picture = self.seen_frames.insert(xlayer);
                 if matches!(obu_type, ObuType::ClosedLoopKey | ObuType::OpenLoopKey) {
-                    let rap = self.resolve_rap(obu, first_picture);
-                    self.pending_rap.insert(xlayer, rap);
+                    self.observe_rap(obu, first_picture);
                 }
             }
             _ => {}
@@ -171,8 +170,24 @@ impl LayerMetadataTracker {
         }
     }
 
-    fn resolve_rap(&self, obu: &ObuEnvelope<'_>, first_picture: bool) -> Option<Rap> {
-        let prefix = parse_frame_prefix(obu, first_picture)?;
+    fn observe_rap(&mut self, obu: &ObuEnvelope<'_>, first_picture: bool) {
+        let mut reader = BitReader::new(obu.payload, obu.payload_offset());
+        let xlayer = obu.header.extended_layer_id;
+        let prefix = parse_tile_group_prefix(&mut reader, obu.header.obu_type, Some(first_picture));
+        if prefix
+            .as_ref()
+            .is_ok_and(|group| !group.is_first_tile_group)
+        {
+            return;
+        }
+        let rap = prefix
+            .ok()
+            .and_then(|group| group.frame_header)
+            .and_then(|prefix| self.resolve_rap(obu, &prefix));
+        self.pending_rap.insert(xlayer, rap);
+    }
+
+    fn resolve_rap(&self, obu: &ObuEnvelope<'_>, prefix: &FrameHeaderPrefix) -> Option<Rap> {
         let mut report = ValidationReport::new();
         let id = self.context.resolve_frame_header_reference(
             &prefix,
@@ -244,7 +259,7 @@ impl LayerMetadataTracker {
             let mlayer = EmbeddedLayerId::from_bits(index);
             let value = if let Some(declaration) = self.pending_ci.remove(&(xlayer, mlayer)) {
                 declaration
-            } else if matches!(self.options.external_hls, ExternalHlsMode::Disabled) {
+            } else if !matches!(self.options.external_hls, ExternalHlsMode::Provided(_)) {
                 layers
                     .iter()
                     .enumerate()
@@ -316,6 +331,27 @@ mod tests {
     }
 
     #[test]
+    fn content_interpretation_preserves_the_first_group_of_a_split_clk() {
+        let bytes = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-2tile-2group-intra-128x64-q80.ivf"
+        );
+        let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
+            panic!("Expected an IVF stream.");
+        };
+        let mut tracker = LayerMetadataTracker::new(ValidationOptions::default());
+        for obu in &parsed.frames[0].obus {
+            tracker.observe(obu);
+        }
+        assert_eq!(tracker.finish(), Some(1));
+        assert_eq!(
+            tracker.content_interpretation(ExtendedLayerId::from_bits(0), EmbeddedLayerId::BASE),
+            EffectiveContentInterpretation::Unspecified {
+                reset: ByteOffset::new(60)
+            }
+        );
+    }
+
+    #[test]
     fn content_interpretation_resets_at_olk_during_sequential_inspection() {
         let bytes = include_bytes!(
             "../../../../tests/conformance/vectors/valid/syn-frame-olk-leading-64x64.ivf"
@@ -366,22 +402,28 @@ mod tests {
         bytes.extend_from_slice(&multilayer[33..525]);
         bytes.extend_from_slice(&multilayer[..525]);
         let obus = parse_annex_b_obus(&bytes).unwrap();
-        let mut tracker = LayerMetadataTracker::new(ValidationOptions::default());
-        let x = ExtendedLayerId::from_bits(0);
-        let enhancement = EmbeddedLayerId::from_bits(1);
-        for obu in obus {
-            if tracker.observe(&obu).is_some() {
-                assert!(matches!(
-                    tracker.content_interpretation(x, enhancement),
-                    EffectiveContentInterpretation::Signaled { origin, inherited_from, .. }
-                        if origin.get() == 34 && inherited_from == [EmbeddedLayerId::BASE]
-                ));
+        let snapshot = crate::ExternalHlsObjects::from_annex_b(&ci_fixture[46..70]).unwrap();
+        for external_hls in [
+            ExternalHlsMode::Disabled,
+            ExternalHlsMode::Objects(snapshot),
+        ] {
+            let mut tracker = LayerMetadataTracker::new(ValidationOptions { external_hls });
+            let x = ExtendedLayerId::from_bits(0);
+            let enhancement = EmbeddedLayerId::from_bits(1);
+            for obu in &obus {
+                if tracker.observe(obu).is_some() {
+                    assert!(matches!(
+                        tracker.content_interpretation(x, enhancement),
+                        EffectiveContentInterpretation::Signaled { origin, inherited_from, .. }
+                            if origin.get() == 34 && inherited_from == [EmbeddedLayerId::BASE]
+                    ));
+                }
             }
+            assert!(tracker.finish().is_some());
+            assert!(matches!(
+                tracker.content_interpretation(x, enhancement),
+                EffectiveContentInterpretation::Unspecified { reset } if reset.get() == 572
+            ));
         }
-        assert!(tracker.finish().is_some());
-        assert!(matches!(
-            tracker.content_interpretation(x, enhancement),
-            EffectiveContentInterpretation::Unspecified { reset } if reset.get() == 572
-        ));
     }
 }
