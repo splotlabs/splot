@@ -272,7 +272,6 @@ fn padded_444_block_preserves_visible_geometry_and_reference_line() {
 #[test]
 fn capture_selects_the_coded_obu_and_reports_resolved_subpel_motion() {
     for threads in [1, 4] {
-        // IVF byte 101 is three bytes into the second packet.
         let (report, pictures) = capture(
             SUBPEL,
             threads,
@@ -419,13 +418,13 @@ fn intrabc_motion_reports_the_source_for_a_padded_block() {
         })
         .unwrap();
     assert_eq!(record.visible, Some(rect(0, 160, 32, 20)));
-    // MiRows covers 184 samples (AV2 § 5.18.4.4, docs/spec/av2/1.0.0/05-syntax-structures.md).
+    let coded_luma_height = 184;
     assert!(
         matches!(
             record.data,
             BlockEvidenceData::Motion(BlockMotion::IntraBlockCopy(copy))
                 if copy.vector == (MotionVector { row: -512, col: 0 })
-                    && copy.source == Some(rect(0, 96, 32, 24))
+                    && copy.source == Some(rect(0, 96, 32, coded_luma_height - 160))
         ),
         "{:?}",
         record.data
@@ -594,9 +593,10 @@ fn failed_decode_finishes_a_pending_capture() {
 fn tile_decode_failure_preserves_the_selected_identity() {
     let mut reader = TemporalUnitReader::new(TILES);
     let unit = reader.next_temporal_unit().unwrap().unwrap();
-    let mut damaged = unit.bytes[..28].to_vec();
-    // Keep the frame header and first tile intact. Limit the OBU to 12 bytes.
-    damaged[15] = 12;
+    let obu_header_offset = 16;
+    let first_tile_end = 28;
+    let mut damaged = unit.bytes[..first_tile_end].to_vec();
+    damaged[obu_header_offset - 1] = u8::try_from(first_tile_end - obu_header_offset).unwrap();
     let (mut decoder, capture) = Decoder::new_with_block_evidence(
         settings(1),
         BlockEvidenceRequest::new(|coded| coded.offset.get() == 16, None, 8, usize::MAX),

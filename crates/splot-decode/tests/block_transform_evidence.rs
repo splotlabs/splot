@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Transform observations from independently encoded AV2 fixtures.
+//! The expected geometry and transform types come from the AVM residual parser.
+//! AVM revision a1ec4594d97028ebc34083ec8346616d697c2fc9 supplies these values.
 
 #![expect(clippy::unwrap_used, clippy::panic)]
 
@@ -104,7 +106,6 @@ fn transforms(
 
 #[test]
 fn two_tiles_8bit_report_rectangular_native_units_and_exact_details() {
-    // AVM a1ec4594d97028ebc34083ec8346616d697c2fc9, residual parser.
     let (samples, report) = decode(TWO_TILES, 2, Some(request(0, None, 128)));
     assert_eq!(samples, decode(TWO_TILES, 2, None).0);
     let report = report.unwrap();
@@ -146,7 +147,6 @@ fn two_tiles_8bit_report_rectangular_native_units_and_exact_details() {
 
 #[test]
 fn inter_10bit_region_preserves_coded_edges_and_bounds_records() {
-    // AVM a1ec4594d97028ebc34083ec8346616d697c2fc9, inter frame with order hint 1.
     let roi = rect(133, 0, 1, 1);
     let (samples, report) = decode(INTER_EDGE_422, 2, Some(request(1, Some(roi), 3)));
     assert_eq!(samples, decode(INTER_EDGE_422, 2, None).0);
@@ -185,7 +185,6 @@ fn inter_10bit_region_preserves_coded_edges_and_bounds_records() {
 
 #[test]
 fn separate_chroma_tree_and_luma_tree_keep_distinct_lossless_units() {
-    // AVM a1ec4594d97028ebc34083ec8346616d697c2fc9, separate-tree residual parser.
     let roi = rect(0, 0, 1, 8);
     let (_, report) = decode(SEPARATE_TREES_422, 2, Some(request(0, Some(roi), 6)));
     let report = report.unwrap();

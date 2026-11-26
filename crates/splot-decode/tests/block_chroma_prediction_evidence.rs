@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Chroma prediction evidence from independently encoded fixtures.
+//! AVM a1ec4594 reports a 64x64 D67 leaf with zero angle delta in each separate tree.
 
 #![expect(clippy::unwrap_used)]
 
@@ -42,7 +43,6 @@ fn capture_blocks(input: &[u8]) -> Vec<BlockEvidenceRecord> {
 
 #[test]
 fn chroma_tree_preserves_d67_follow_and_delta_source() {
-    // AVM a1ec4594 reports a 64x64 D67 leaf in each tree and zero angle deltas.
     let rect = PlaneRect::new(0, 0, 64, 64).unwrap();
     let mut saw_luma = false;
     let mut saw_chroma = false;
