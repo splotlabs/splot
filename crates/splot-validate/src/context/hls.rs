@@ -8,7 +8,8 @@ use super::*;
 #[derive(Debug)]
 pub(super) struct StoredSequenceHeader {
     pub(super) header: SequenceHeader,
-    pub(super) offset: ByteOffset,
+    pub(super) offset: Option<ByteOffset>,
+    pub(super) fingerprint: u64,
 }
 
 /// Extended-layer substream state. Allocate header records only when their OBUs arrive.
@@ -20,7 +21,7 @@ pub(super) struct LayerHls {
     pub(super) film_grain: FilmGrainState,
 }
 
-/// In-band HLS availability for § 7.3.8 reference checks. RAP resend requirements
+/// Parsed HLS availability for § 7.3.8 reference checks. RAP resend requirements
 /// are tracked separately by `RapReplayTracker`; redefinitions replace stored details.
 #[derive(Debug, Default)]
 pub(super) struct HlsAvailabilityStore {
@@ -72,10 +73,10 @@ pub(super) struct HlsAvailabilityStore {
 
 /// How a referenced HLS object resolves against available objects (AV2 § 7.3.8).
 pub(super) enum HlsResolution {
-    /// Available in the bitstream.
-    InBand,
-    /// Available only through caller-provided external HLS.
-    External,
+    /// Parsed from a stream OBU or the external snapshot.
+    Parsed,
+    /// Available through a key declaration without parsed contents.
+    ExternalDeclaration,
     /// Not available by any modeled means.
     Unavailable,
 }
@@ -105,8 +106,8 @@ impl HlsAvailabilityStore {
         self.sequence(xlayer, id).map(|stored| &stored.header)
     }
 
-    /// Resolves a `seq_header_id` reference against in-band then caller-provided
-    /// external availability (AV2 § 7.3.8.6).
+    /// Resolves a `seq_header_id` reference against parsed objects, then caller-declared
+    /// availability (AV2 § 7.3.8.6).
     pub(super) fn resolve_sequence_header(
         &self,
         xlayer: ExtendedLayerId,
@@ -117,12 +118,12 @@ impl HlsAvailabilityStore {
             .and_then(|id| self.sequence(xlayer, id))
             .is_some()
         {
-            return HlsResolution::InBand;
+            return HlsResolution::Parsed;
         }
         if let ExternalHlsMode::Provided(set) = &options.external_hls
             && set.has_sequence_header(id)
         {
-            return HlsResolution::External;
+            return HlsResolution::ExternalDeclaration;
         }
         HlsResolution::Unavailable
     }
@@ -293,7 +294,7 @@ impl ValidatorContext {
             .hls
             .resolve_sequence_header(obu.header.extended_layer_id, id, options)
         {
-            HlsResolution::InBand | HlsResolution::External => {}
+            HlsResolution::Parsed | HlsResolution::ExternalDeclaration => {}
             HlsResolution::Unavailable => {
                 let external_note = if matches!(options.external_hls, ExternalHlsMode::Disabled) {
                     " (external HLS is disabled)"
@@ -355,7 +356,7 @@ impl ValidatorContext {
             if matches!(
                 self.hls
                     .resolve_sequence_header(obu.header.extended_layer_id, id, options),
-                HlsResolution::InBand
+                HlsResolution::Parsed
             ) {
                 self.note_rap_reference(
                     RapHlsKey::SequenceHeader(obu.header.extended_layer_id, id),

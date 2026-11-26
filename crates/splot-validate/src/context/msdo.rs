@@ -377,7 +377,7 @@ impl ValidatorContext {
         let anchor = self
             .hls
             .sequence(xlayer, seq_header_id)
-            .map(|stored| stored.offset)
+            .and_then(|stored| stored.offset)
             .unwrap_or(msdo_offset);
         let epoch = self.cvs.cvs_generation_epoch(xlayer);
         let value_space = annex_a_value_space_fingerprint(&general);

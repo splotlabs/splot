@@ -28,6 +28,8 @@ mod reference_state;
 
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};
 pub use explain::DiagnosticInfo;
-pub use options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
+pub use options::{
+    ExternalHlsError, ExternalHlsMode, ExternalHlsObjects, ExternalHlsSet, ValidationOptions,
+};
 pub use render::{RenderOptions, RenderedReport, ReportSummary, Truncation};
 pub use validator::Validator;

@@ -211,7 +211,7 @@ pub(super) fn frame_qm_reference_checks(
             }
         }
     }
-    let availability_decidable = matches!(options.external_hls, ExternalHlsMode::Disabled);
+    let availability_decidable = !matches!(options.external_hls, ExternalHlsMode::Provided(_));
     let mut replay_levels = Vec::new();
     for (level, _) in referenced
         .iter()

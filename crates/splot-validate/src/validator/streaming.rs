@@ -81,7 +81,7 @@ fn run_stream<R: Read>(
     options: &ValidationOptions,
 ) -> Result<ValidationReport, StreamValidateError> {
     let mut report = ValidationReport::new();
-    let mut context = ValidatorContext::default();
+    let mut context = ValidatorContext::with_options(options);
 
     let mut annexb_terminal_error = None;
     let mut ivf_warnings = Vec::new();

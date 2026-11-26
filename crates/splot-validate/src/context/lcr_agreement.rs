@@ -143,7 +143,7 @@ impl ValidatorContext {
         let Some(facts) = self.cmvs.last_completed else {
             return;
         };
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
 
@@ -501,7 +501,7 @@ impl ValidatorContext {
             let anchor = self
                 .hls
                 .sequence(xlayer, seq_header_id)
-                .map(|stored| stored.offset)
+                .and_then(|stored| stored.offset)
                 .unwrap_or(global.offset);
             self.push_lcr_agreement(
                 "lcr/doh-constraint-required",
