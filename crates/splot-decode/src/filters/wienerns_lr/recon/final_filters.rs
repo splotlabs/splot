@@ -443,22 +443,17 @@ fn lr_restoration_writes_complete_rectangle(
     }
 }
 
-fn lr_blocks_near_rows(
+pub(super) fn lr_blocks_near_rows(
     blocks: &[WienerNsLrSourceBlock],
     start_y: usize,
     end_y: usize,
-) -> &[WienerNsLrSourceBlock] {
+) -> core::ops::Range<usize> {
     let relevant_end = blocks.partition_point(|block| block.y < end_y);
     let relevant_start = blocks[..relevant_end]
         .iter()
-        .position(|block| {
-            block
-                .y
-                .checked_add(block.height)
-                .is_some_and(|block_end| block_end > start_y)
-        })
+        .position(|block| lr_block_in_rows(block, start_y, end_y).is_some())
         .unwrap_or(relevant_end);
-    &blocks[relevant_start..relevant_end]
+    relevant_start..relevant_end
 }
 
 /// Calls `gap(rows, columns)` for each rectangle of the plane rows
@@ -477,7 +472,7 @@ fn for_each_lr_gap(
     if width == 0 || start_y >= end_y || end_y > frame_height {
         return None;
     }
-    let blocks = lr_blocks_near_rows(blocks, start_y, end_y);
+    let blocks = &blocks[lr_blocks_near_rows(blocks, start_y, end_y)];
     let span = |block: &WienerNsLrSourceBlock| {
         let end_x = block.x.checked_add(block.width)?.min(width);
         let end_y = block.y.checked_add(block.height)?.min(frame_height);
@@ -998,31 +993,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 }
 
 impl StripeChain<'_> {
-    /// Each plane's blocks near the luma rows `luma_start..luma_end`, and
-    /// whether one of them reaches into those rows.
-    pub(crate) fn lr_stripe_blocks<'b>(
-        &self,
-        (luma_start, luma_end): (usize, usize),
-        plane_blocks: [&'b [WienerNsLrSourceBlock]; 3],
-    ) -> ([&'b [WienerNsLrSourceBlock]; 3], [bool; 3]) {
-        let sub_y = usize::from(self.pixel_format.subsampling_y());
-        let rows = |plane: usize| {
-            let shift = usize::from(plane != PlaneId::Y.index()) * sub_y;
-            (luma_start >> shift, luma_end.div_ceil(1 << shift))
-        };
-        let blocks: [_; 3] = core::array::from_fn(|plane| {
-            let (start, end) = rows(plane);
-            lr_blocks_near_rows(plane_blocks[plane], start, end)
-        });
-        let active = core::array::from_fn(|plane| {
-            let (start, end) = rows(plane);
-            blocks[plane]
-                .iter()
-                .any(|block| lr_block_in_rows(block, start, end).is_some())
-        });
-        (blocks, active)
-    }
-
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn apply_lr_stripe<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
