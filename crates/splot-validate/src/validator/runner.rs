@@ -19,7 +19,7 @@ pub(super) fn validate_bytes_with_options(
 ) -> ValidationReport {
     let mut report = ValidationReport::new();
     let parsed = parse_bitstream_partial(data);
-    let mut context = ValidatorContext::default();
+    let mut context = ValidatorContext::with_options(options);
 
     match parsed {
         ParsedBitstream::AnnexB(parsed) => {

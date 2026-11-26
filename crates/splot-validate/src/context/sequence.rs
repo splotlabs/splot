@@ -110,7 +110,7 @@ impl DistinctMlayerTracker {
 }
 
 impl ValidatorContext {
-    /// Returns the activated in-band sequence header's general fields for `xlayer`,
+    /// Returns the activated sequence header's general fields for `xlayer`,
     /// if any. The fields are copied out so callers can keep mutating `self`.
     pub(super) fn active_general_for(
         &self,
@@ -187,6 +187,7 @@ impl ValidatorContext {
     pub(super) fn on_sequence_activation(
         &mut self,
         xlayer: ExtendedLayerId,
+        activation_offset: ByteOffset,
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
@@ -208,7 +209,11 @@ impl ValidatorContext {
                     .cloned()
                     .collect();
                 if !relevant.is_empty() {
-                    pending.push((record.offset, record.ops_id, relevant));
+                    pending.push((
+                        record.offset.unwrap_or(activation_offset),
+                        record.ops_id,
+                        relevant,
+                    ));
                 }
             }
         }
@@ -216,7 +221,7 @@ impl ValidatorContext {
             self.check_ops_entries_against_active(offset, ops_id, &entries, options, report);
         }
         self.check_substream_max_ceilings(xlayer, options, report);
-        self.note_annex_a_iop_activation(xlayer, options);
+        self.note_annex_a_iop_activation(xlayer, activation_offset, options);
     }
 
     pub(super) fn observe_sequence_header(
@@ -291,7 +296,8 @@ impl ValidatorContext {
             [usize::from(seq_header_id.get())]
         .replace(Box::new(StoredSequenceHeader {
             header: sequence_header,
-            offset: obu.offset,
+            offset: Some(obu.offset),
+            fingerprint,
         }));
         self.active_sequence_by_xlayer
             .entry(xlayer)
@@ -311,7 +317,7 @@ impl ValidatorContext {
         }
         let external_hls_suppresses = external_declares_sequence_header(options);
         if self.active_sequence_by_xlayer.get(&xlayer) == Some(&seq_header_id) {
-            self.on_sequence_activation(xlayer, options, report);
+            self.on_sequence_activation(xlayer, obu.offset, options, report);
             self.check_monotonic_output_order_agreement(xlayer, obu.offset, options, report);
             if !external_hls_suppresses {
                 let byte_offset = obu.offset.saturating_add(1);

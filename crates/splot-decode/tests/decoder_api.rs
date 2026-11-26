@@ -6,11 +6,17 @@
 
 #![expect(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::stream_reader::{StreamUnit, TemporalUnitReader, is_random_access_point};
+use splot_core::annexb::parse_annex_b_obus;
+use splot_core::stream_reader::{TemporalUnitReader, is_random_access_point};
+use splot_core::types::ObuType;
 use splot_decode::{
     DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig, Decoder,
-    DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureSamples, PlaneId,
-    SendStatus, ThreadCount,
+    DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureFrame,
+    PictureSamples, PlaneId, SendStatus, ThreadCount, Y4mFrameRate,
+};
+use splot_recon::{
+    DecodedFrame, DecodedFrameHashInput, PlaneSize, ReconSample, Y4mError, Y4mFrameFormat,
+    Y4mStreamHeader, Y4mWriter,
 };
 
 const MULTIREF: &[u8] =
@@ -113,15 +119,12 @@ const FIXTURES: &[&[u8]] = &[
     BRU_GDF_MULTITILE_8BIT,
 ];
 
-/// The payload of each non-empty IVF frame record: one temporal unit each.
-fn units(ivf: &[u8]) -> Vec<Vec<u8>> {
-    let mut reader = TemporalUnitReader::new(ivf);
+fn units(stream: &[u8]) -> Vec<Vec<u8>> {
+    let mut reader = TemporalUnitReader::new(stream);
     let mut units = Vec::new();
-    while let Some(unit) = reader.next_unit().unwrap() {
-        if let StreamUnit::IvfFrame { payload, .. } = unit
-            && !payload.is_empty()
-        {
-            units.push(payload.to_vec());
+    while let Some(unit) = reader.next_temporal_unit().unwrap() {
+        if !unit.bytes.is_empty() {
+            units.push(unit.bytes.to_vec());
         }
     }
     units
@@ -193,6 +196,109 @@ fn batch_raw_with(bytes: &[u8], options: &DecodeOptions) -> Vec<u8> {
     out
 }
 
+#[test]
+fn borrowed_frames_match_batch_raw_y4m_and_hash_output() {
+    fn write_frame<T: ReconSample>(
+        frame: &DecodedFrame<T>,
+        raw: &mut Vec<u8>,
+        y4m: &mut Y4mWriter<Vec<u8>>,
+    ) -> String {
+        let samples = DecodedFrameHashInput::new(frame);
+        samples.write_to(raw).unwrap();
+        y4m.write_frame(frame).unwrap();
+        samples.compute_hash().to_hex()
+    }
+
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+    let rate = Y4mFrameRate::new(24_000, 1001).unwrap();
+    for (fixture, skip_grain) in [
+        (CROP, true),
+        (TEN_BIT_INTER, true),
+        (SEF_FAMILIES, true),
+        (FILM_GRAIN, true),
+        (FILM_GRAIN, false),
+    ] {
+        let options = DecodeOptions::default()
+            .with_skip_film_grain(skip_grain)
+            .with_y4m_frame_rate_override(Some(rate));
+        let mut decoder =
+            Decoder::new(DecoderSettings::default().with_skip_film_grain(skip_grain)).unwrap();
+        let pictures = decode(&mut decoder, &units(fixture), |_| DataProps::default());
+        let first = &pictures[0];
+        let format = Y4mFrameFormat::new(
+            PlaneSize::new(first.width(), first.height()).unwrap(),
+            first.bit_depth(),
+            first.pixel_format(),
+        );
+        let mut y4m = Y4mWriter::new(Vec::new(), Y4mStreamHeader::new(format, rate)).unwrap();
+        let mut raw = Vec::new();
+        let hashes: Vec<_> = pictures
+            .iter()
+            .map(|picture| match picture.decoded_frame().unwrap() {
+                PictureFrame::Eight(frame) => write_frame(frame, &mut raw, &mut y4m),
+                PictureFrame::Ten(frame) => write_frame(frame, &mut raw, &mut y4m),
+            })
+            .collect();
+        assert_eq!(raw, batch_raw_with(fixture, &options));
+        let mut expected_y4m = Vec::new();
+        context
+            .decode_y4m_bytes(fixture, options, &mut expected_y4m)
+            .unwrap();
+        assert_eq!(y4m.into_inner(), expected_y4m);
+        if skip_grain {
+            let report = context.decode_hash_report_bytes(fixture, options).unwrap();
+            let expected: Vec<_> = report
+                .frames
+                .iter()
+                .map(|entry| entry.hashes[0].digest_hex.as_str())
+                .collect();
+            assert_eq!(hashes, expected);
+        }
+    }
+}
+
+#[test]
+fn borrowed_frame_keeps_geometry_and_writer_errors() {
+    const PADDED: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-mrl-padded-422-68x68-10bit-q120.ivf"
+    );
+    let pictures = decode(&mut decoder(1, 1), &units(CROP), |_| DataProps::default());
+    let PictureFrame::Eight(frame) = pictures[0].decoded_frame().unwrap() else {
+        panic!("an eight-bit frame")
+    };
+    let visible = frame.visible_luma_rect();
+    assert_eq!((visible.x(), visible.y()), (2, 2));
+    assert_eq!(visible.size(), PlaneSize::new(60, 60).unwrap());
+    assert_eq!(frame.coded_luma_size(), PlaneSize::new(64, 64).unwrap());
+    assert_eq!(
+        frame.y().samples().as_ptr() as usize,
+        luma_storage(&pictures[0])
+    );
+
+    let pictures = decode(&mut decoder(1, 1), &units(PADDED), |_| DataProps::default());
+    let PictureFrame::Ten(frame) = pictures[0].decoded_frame().unwrap() else {
+        panic!("a ten-bit frame")
+    };
+    assert_eq!(frame.coded_luma_size(), PlaneSize::new(68, 68).unwrap());
+    assert_eq!(
+        frame.info().storage_luma_size(),
+        PlaneSize::new(72, 72).unwrap()
+    );
+    assert_eq!(
+        frame.y().samples().as_ptr() as usize,
+        luma_storage(&pictures[0])
+    );
+
+    let mut bytes = [0; 64];
+    let rate = Y4mFrameRate::new(30, 1).unwrap();
+    let mut y4m = Y4mWriter::from_frame(bytes.as_mut_slice(), frame, rate).unwrap();
+    assert!(matches!(
+        y4m.write_frame(frame),
+        Err(Y4mError::Io { source }) if source.kind() == std::io::ErrorKind::WriteZero
+    ));
+    assert_eq!(y4m.frames_written(), 0);
+}
+
 /// The address of the picture's first stored luma sample.
 fn luma_storage(picture: &Picture) -> usize {
     match picture.plane(PlaneId::Y) {
@@ -207,6 +313,72 @@ fn with_film_grain(pictures: &[Picture]) -> Vec<Picture> {
         .iter()
         .map(|picture| picture.apply_film_grain().unwrap())
         .collect()
+}
+
+#[test]
+fn picture_provenance_follows_coded_and_show_existing_obus() {
+    let fixture =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-derived-sef-8bit.obu");
+    let units = units(fixture);
+    for (threads, delay) in [(1, 1), (4, 4)] {
+        let mut decoder = decoder(threads, delay);
+        for token in [17, u64::MAX - 1] {
+            let pictures = decode(&mut decoder, &units, |index| {
+                DataProps::default().with_user_data(token + index as u64)
+            });
+            let expected = [
+                ((token, 44), (token, 44)),
+                ((token, 769), (token, 769)),
+                ((token, 44), (token + 1, 541)),
+                ((token + 1, 4), (token + 1, 545)),
+            ];
+            assert_eq!(pictures.len(), expected.len());
+            decoder.flush();
+            for (picture, (coded, display)) in pictures.iter().zip(expected) {
+                let provenance = picture.provenance();
+                assert_eq!(
+                    (provenance.coded.user_data, provenance.coded.offset.get()),
+                    coded
+                );
+                assert_eq!(
+                    (
+                        provenance.display.user_data,
+                        provenance.display.offset.get()
+                    ),
+                    display
+                );
+                assert_eq!(picture.props().user_data, display.0);
+                assert_eq!(provenance.sequence_header.user_data, token);
+                assert_eq!(provenance.sequence_header.offset.get(), 18);
+            }
+        }
+    }
+}
+
+#[test]
+fn picture_provenance_follows_each_extended_layer_sequence() {
+    let fixture = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-msdo-four-streams-obu-order.obu"
+    );
+    let units = units(fixture);
+    let sequences = parse_annex_b_obus(&units[0]).unwrap();
+    let pictures = decode(&mut decoder(4, 4), &units, |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    assert_eq!(pictures.len(), 12);
+    for picture in pictures {
+        let provenance = picture.provenance();
+        assert_eq!(provenance.coded, provenance.display);
+        let sequence = sequences
+            .iter()
+            .find(|obu| {
+                obu.header.obu_type == ObuType::SequenceHeader
+                    && obu.header.extended_layer_id == picture.extended_layer_id()
+            })
+            .unwrap();
+        assert_eq!(provenance.sequence_header.user_data, 0);
+        assert_eq!(provenance.sequence_header.offset, sequence.offset);
+    }
 }
 
 #[test]
@@ -249,6 +421,9 @@ fn skipped_film_grain_is_left_out_and_applied_on_request() {
         assert!(raw_of(&pictures) == clean);
         let (pictures, applied) = std::thread::spawn(move || {
             let applied = with_film_grain(&pictures);
+            for (original, applied) in pictures.iter().zip(&applied) {
+                assert_eq!(original.provenance(), applied.provenance());
+            }
             (pictures, applied)
         })
         .join()
@@ -297,15 +472,31 @@ fn each_picture_carries_the_data_of_the_unit_that_coded_or_showed_it() {
 
 #[test]
 fn held_pictures_neither_stall_the_decoder_nor_change_its_output() {
-    let units: Vec<Vec<u8>> = (0..8).flat_map(|_| units(EIGHT_FRAME)).collect();
+    let sequence = units(EIGHT_FRAME);
+    let units: Vec<_> = sequence
+        .iter()
+        .cycle()
+        .take(8 * sequence.len())
+        .cloned()
+        .collect();
     let expected = raw_of(&decode(&mut decoder(1, 1), &units, |_| {
         DataProps::default()
     }));
     for (threads, frame_delay) in [(1, 1), (4, 4)] {
-        let held = decode(&mut decoder(threads, frame_delay), &units, |_| {
-            DataProps::default()
+        let held = decode(&mut decoder(threads, frame_delay), &units, |index| {
+            DataProps::default().with_user_data(index as u64)
         });
         assert!(held.len() > 2 * 16 + frame_delay + 1);
+        for picture in &held {
+            let provenance = picture.provenance();
+            let unit = provenance.coded.user_data;
+            let sequence_len = sequence.len() as u64;
+            assert_eq!(
+                provenance.sequence_header.user_data,
+                unit - unit % sequence_len
+            );
+            assert_eq!(provenance.sequence_header.offset.get(), 3);
+        }
         assert!(
             raw_of(&held) == expected,
             "held pictures changed the output"

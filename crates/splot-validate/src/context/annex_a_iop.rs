@@ -292,6 +292,7 @@ impl ValidatorContext {
     pub(super) fn note_annex_a_iop_activation(
         &mut self,
         xlayer: ExtendedLayerId,
+        activation_offset: ByteOffset,
         options: &ValidationOptions,
     ) {
         if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
@@ -306,8 +307,8 @@ impl ValidatorContext {
         let offset = self
             .hls
             .sequence(xlayer, seq_header_id)
-            .map(|stored| stored.offset)
-            .unwrap_or(ByteOffset::new(0));
+            .and_then(|stored| stored.offset)
+            .unwrap_or(activation_offset);
         let activated_global_count = self
             .lcr_associations
             .get(&(xlayer, seq_header_id))

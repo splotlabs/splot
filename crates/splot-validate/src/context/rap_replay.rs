@@ -409,30 +409,34 @@ pub(super) fn rap_replay_unavailable(
 /// Whether a § 7.3.8.1 replay finding for `key` is suppressed by `external_hls` (finding
 /// 3 — per-key external-HLS suppression). See `complete_rap_replay_tu` for the policy.
 ///
-/// For an externally-*declarable* kind ([`RapHlsKey::SequenceHeader`],
-/// [`RapHlsKey::OperatingPointSet`]) the caller's [`crate::options::ExternalHlsSet`] is
-/// authoritative: suppress only when the *exact* referenced key is declared external. For
-/// a kind the set cannot express ([`RapHlsKey::MultiFrameHeader`], LCRs, atlas segments,
-/// film-grain models, and quantizer-matrix levels), any `Provided` mode keeps the blanket
-/// suppression, since such an OBU may exist externally without being (or being expressible
-/// as) declared.
+/// Key-only declarations suppress exact sequence or OPS keys and all unlisted
+/// object kinds. A complete snapshot supplies exact extended-layer keys.
+/// Replay leaves a supplied key unresolved if the stream also defines it (§ 7.3.8.1).
 pub(super) fn rap_replay_suppressed_by_external_hls(
     key: RapHlsKey,
     external_hls: &ExternalHlsMode,
 ) -> bool {
-    let ExternalHlsMode::Provided(set) = external_hls else {
-        return false;
-    };
-    match key {
-        RapHlsKey::SequenceHeader(_, id) => set.has_sequence_header(id),
-        RapHlsKey::OperatingPointSet { xlayer, ops_id } => {
-            set.has_operating_point_set(xlayer, ops_id)
-        }
-        RapHlsKey::MultiFrameHeader(..)
-        | RapHlsKey::LayerConfigurationRecord { .. }
-        | RapHlsKey::Atlas { .. }
-        | RapHlsKey::FilmGrain { .. }
-        | RapHlsKey::QmLevel { .. } => true,
+    match external_hls {
+        ExternalHlsMode::Disabled => false,
+        ExternalHlsMode::Objects(objects) => match key {
+            RapHlsKey::SequenceHeader(xlayer, id) => SequenceHeaderId::try_new(id)
+                .is_some_and(|id| objects.sequences.contains_key(&(xlayer, id))),
+            RapHlsKey::OperatingPointSet { xlayer, ops_id } => objects
+                .operating_points
+                .contains_key(&(ExtendedLayerId::from_bits(xlayer), ops_id)),
+            _ => false,
+        },
+        ExternalHlsMode::Provided(set) => match key {
+            RapHlsKey::SequenceHeader(_, id) => set.has_sequence_header(id),
+            RapHlsKey::OperatingPointSet { xlayer, ops_id } => {
+                set.has_operating_point_set(xlayer, ops_id)
+            }
+            RapHlsKey::MultiFrameHeader(..)
+            | RapHlsKey::LayerConfigurationRecord { .. }
+            | RapHlsKey::Atlas { .. }
+            | RapHlsKey::FilmGrain { .. }
+            | RapHlsKey::QmLevel { .. } => true,
+        },
     }
 }
 
@@ -493,9 +497,7 @@ impl ValidatorContext {
     }
 
     /// Resolves and drains this TU's replay references, then applies per-key external
-    /// suppression. Provided declarations are authoritative for sequence/OPS keys;
-    /// other families remain blanket-suppressed because the partial declaration API
-    /// cannot express them. Disabled mode permits all findings (§ 7.3.8.1).
+    /// suppression for the selected external HLS mode (§ 7.3.8.1).
     pub(super) fn complete_rap_replay_tu(
         &mut self,
         completed_tu_index: u64,

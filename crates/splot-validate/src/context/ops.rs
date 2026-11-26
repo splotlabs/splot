@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// One active in-band operating point set, keyed by `(obu_xlayer_id, ops_id)`
+/// One active operating point set, keyed by `(obu_xlayer_id, ops_id)`
 /// (AV2 § 6.10, § 7.3.8.5).
 ///
 /// The parser produces exactly `ops_cnt` operating point payloads (the § 5.10 loop
@@ -20,8 +20,8 @@ pub(super) struct OperatingPointSetRecord {
     pub(super) ops_id: u8,
     /// `ops_cnt`, compared against a referencing BRT's `br_ops_cnt` (§ 6.11).
     pub(super) ops_cnt: u8,
-    /// Source byte offset of the defining OBU, surfaced in referencing diagnostics.
-    pub(super) offset: ByteOffset,
+    /// Source byte offset of an in-band definition.
+    pub(super) offset: Option<ByteOffset>,
     /// Explicitly signalled `ops_mlayer_info()` entries, retained for the § 6.10.7
     /// dependency-map agreement checks. Inherited and absent entries are not
     /// retained — § 6.10.7 binds the maps "if present", and an inherited entry's
@@ -59,7 +59,7 @@ pub(super) fn ops_explicit_entries(ops: &OperatingPointSet) -> Vec<OpsExplicitEn
     entries
 }
 
-/// Active in-band operating point sets (AV2 § 6.10.1, § 7.3.8.5).
+/// Active operating point sets (AV2 § 6.10.1, § 7.3.8.5).
 ///
 /// Unlike [`HlsAvailabilityStore`], this store is **not** monotonic: § 6.10.1 defines
 /// explicit reset/update behavior, so records are removed on reset rather than kept
@@ -239,7 +239,7 @@ impl ValidatorContext {
                 xlayer_id: ops.xlayer_id,
                 ops_id: ops.ops_id,
                 ops_cnt: ops.ops_cnt,
-                offset: obu.offset,
+                offset: Some(obu.offset),
                 explicit_entries,
             },
             ops.reset_flag,

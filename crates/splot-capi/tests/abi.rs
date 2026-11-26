@@ -212,7 +212,15 @@ fn skipped_film_grain_is_left_out_and_applied_on_request() {
                     splot_apply_grain(&raw mut with_grain, &raw const picture),
                     SPLOT_OK
                 );
+                let provenance = *picture.provenance.as_ref().unwrap();
                 splot_picture_unref(&raw mut picture);
+                assert!(picture.provenance.is_null());
+                assert_eq!(*with_grain.provenance.as_ref().unwrap(), provenance);
+                assert_eq!(provenance.coded.user_data, 0);
+                assert_eq!(provenance.coded.offset, 138);
+                assert_eq!(provenance.display, provenance.coded);
+                assert_eq!(provenance.sequence_header.user_data, 0);
+                assert_eq!(provenance.sequence_header.offset, 3);
                 assert_eq!(with_grain.has_film_grain, 1);
                 append(&with_grain, &mut applied);
                 splot_picture_unref(&raw mut with_grain);
@@ -453,6 +461,10 @@ fn the_new_fields_keep_the_struct_layouts() {
     assert_eq!(
         offset_of!(SplotPicture, atlas_count),
         offset_of!(SplotPicture, atlas) + size_of::<usize>()
+    );
+    assert_eq!(
+        offset_of!(SplotPicture, provenance),
+        offset_of!(SplotPicture, atlas) + 2 * size_of::<usize>()
     );
     assert_eq!(
         offset_of!(SplotPicture, internal),
