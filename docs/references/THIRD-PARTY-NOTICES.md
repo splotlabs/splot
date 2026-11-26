@@ -314,7 +314,7 @@ authorised by the maintainer.
 ## 12. Approved tool dependency: `fearless_simd`
 
 - **Material:** the `fearless_simd` crate from crates.io (workspace dependency
-  `fearless_simd = "1.2"`), used for portable SIMD vectors and token-gated
+  `fearless_simd = "1.3"`), used for portable SIMD vectors and token-gated
   `core::arch` intrinsics without `unsafe` in splot code.
 - **License:** `Apache-2.0 OR MIT` (permissive; on `deny.toml`'s allow list). Not
   vendored or relicensed.

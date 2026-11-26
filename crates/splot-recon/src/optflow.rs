@@ -747,8 +747,8 @@ fn unit_8x8<S: Simd>(
 }
 
 /// [`optflow_unit_8x8_u8`] of two 16-bit 8x8 predictions, each sample
-/// clipped to `bit_depth` first; the SAD is compared at eight bits, and
-/// differences that round to zero give a zero delta, as in
+/// clipped to `bit_depth` first. The SAD fits in `u16` and is compared at eight
+/// bits. Differences that round to zero give a zero delta, as in
 /// [`derive_optflow_mv_delta_8x8_strided_into`].
 ///
 /// # Errors
@@ -801,10 +801,14 @@ fn unit_8x8_u16_simd<S: Simd>(
         rows.map(|row| u16x8::load_array(simd, row).min(u16x8::splat(simd, max)))
     };
     let (first, second) = (load(&rows[0]), load(&rows[1]));
-    let sad = first.iter().zip(&second).fold(0, |sum, (a, b)| {
-        sum + u32::from((a.max(*b) - a.min(*b)).reduce_sum())
-    });
-    if sad >> downshift < threshold {
+    let sad = first
+        .iter()
+        .zip(&second)
+        .fold(u16x8::splat(simd, 0), |sum, (&a, &b)| {
+            sum + (a.cast_signed() - b.cast_signed()).unsigned_abs()
+        })
+        .reduce_sum();
+    if u32::from(sad) >> downshift < threshold {
         return Ok(None);
     }
     if distances.contains(&0) {
@@ -1401,15 +1405,26 @@ mod tests {
     /// SAD is below the threshold.
     #[test]
     fn word_8x8_units_match_the_strided_derivation() {
-        let fills: [fn(usize) -> u16; 5] = [
+        let fills: [fn(usize) -> u16; 7] = [
             |i| ((i * 73 + i / 13 * 29 + (i * i) % 7) % 1024) as u16,
             |i| if (i + i / 13) % 3 == 0 { 1023 } else { 0 },
             |i| ((i * 7919) % 1024) as u16,
             |i| (i % 2) as u16 + 500,
             |_| 700,
+            |_| 0,
+            |_| 1023,
         ];
         for distances in [[1, -1], [3, 2], [-4, 1], [0, 2]] {
-            for (first, second) in [(0, 1), (1, 2), (2, 0), (3, 3), (0, 0), (4, 4)] {
+            for (first, second) in [
+                (0, 1),
+                (1, 2),
+                (2, 0),
+                (3, 3),
+                (0, 0),
+                (4, 4),
+                (5, 6),
+                (6, 5),
+            ] {
                 let a: Vec<u16> = (0..64).map(fills[first]).collect();
                 let b: Vec<u16> = (0..64).map(|i| fills[second](i + 5)).collect();
                 let sad: u32 = a

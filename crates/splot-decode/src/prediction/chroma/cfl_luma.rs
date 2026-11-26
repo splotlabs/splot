@@ -8,10 +8,7 @@
 
 use super::cfl::{CFL_FILTERS_420, gathered_q3};
 #[cfg(target_arch = "aarch64")]
-pub(super) use neon::{
-    cfl_predict_pair_u8, cfl_predict_pair_u16, cfl_predict_u8, cfl_predict_u16, luma_420_pairs_f0,
-    luma_420_pairs_f1, luma_420_rows_f0, luma_420_rows_f1, luma_420_rows_f2,
-};
+pub(super) use neon::{cfl_predict_pair_u8, cfl_predict_pair_u16, cfl_predict_u8, cfl_predict_u16};
 
 /// The token of this target's kernels.
 #[cfg(target_arch = "x86_64")]
@@ -260,6 +257,9 @@ pub(super) fn luma_420<const F: usize>(
             && rows.len() >= 2 * stride * (out.len() >> width.trailing_zeros())
             && let Some(left) = left.as_deref_mut()
         {
+            #[cfg(target_arch = "aarch64")]
+            neon::luma_420_pairs::<F>(token, clamp_groups, rows, block, left, out);
+            #[cfg(target_arch = "x86_64")]
             if F == 0 {
                 luma_420_pairs_f0(token, clamp_groups, rows, block, left, out);
             } else {
@@ -269,6 +269,9 @@ pub(super) fn luma_420<const F: usize>(
         }
 
         let lane_out = left.as_deref_mut().filter(|_| lane_left);
+        #[cfg(target_arch = "aarch64")]
+        neon::luma_420_rows::<F>(token, clamp_groups, luma, block, lane_out, out);
+        #[cfg(target_arch = "x86_64")]
         match F {
             0 => luma_420_rows_f0(token, clamp_groups, luma, block, lane_out, out),
             1 => luma_420_rows_f1(token, clamp_groups, luma, block, lane_out, out),
@@ -955,99 +958,77 @@ mod neon {
         }
     }
 
-    /// The NEON `luma_420_rows_f*` of filter `F`.
-    #[target_feature(enable = "neon")]
-    #[inline]
-    fn rows<const F: usize>(
-        token: Neon,
-        clamp_groups: u8,
-        luma: &[u8],
-        block: Luma420Block,
-        mut left: Option<&mut [i16]>,
-        out: &mut [i16],
-    ) {
-        let weights = &WEIGHTS[F];
-        let width = block.width;
-        let first = usize::from(clamp_groups & 1);
-        let skip = usize::from(block.above.is_some());
-        for (r, out) in out.chunks_exact_mut(width).enumerate() {
-            let rows = tap_rows(&block, r);
-            if width > 8 {
-                for g in (0..width).step_by(16) {
-                    let clamped = usize::from(clamp_groups >> (g / 16) & 1);
-                    let at = rows.map(|row| row + 2 * g);
-                    let acc = taps::<F, true>(token, luma, at, &weights[clamped]);
-                    store_row16(token, acc, &mut out[g..]);
+    fearless_simd::kernel!(
+        /// Applies luma filter `F` to each row of a 4:2:0 block.
+        #[inline]
+        pub(in super::super) fn luma_420_rows<const F: usize>(
+            token: Neon,
+            clamp_groups: u8,
+            luma: &[u8],
+            block: Luma420Block,
+            left: Option<&mut [i16]>,
+            out: &mut [i16],
+        ) {
+            let mut left = left;
+            let weights = &WEIGHTS[F];
+            let width = block.width;
+            let first = usize::from(clamp_groups & 1);
+            let skip = usize::from(block.above.is_some());
+            for (r, out) in out.chunks_exact_mut(width).enumerate() {
+                let rows = tap_rows(&block, r);
+                if width > 8 {
+                    for g in (0..width).step_by(16) {
+                        let clamped = usize::from(clamp_groups >> (g / 16) & 1);
+                        let at = rows.map(|row| row + 2 * g);
+                        let acc = taps::<F, true>(token, luma, at, &weights[clamped]);
+                        store_row16(token, acc, &mut out[g..]);
+                    }
+                } else if let Some(left) = left.as_deref_mut() {
+                    let at = rows.map(|row| row - 16);
+                    let [low, high] = taps::<F, true>(token, luma, at, &weights[2 * first]);
+                    if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
+                        *slot = vgetq_lane_u16::<7>(low) as i16;
+                    }
+                    store_row8(token, high, out);
+                } else {
+                    let [low, _] = taps::<F, false>(token, luma, rows, &weights[first]);
+                    store_row8(token, low, out);
                 }
-            } else if let Some(left) = left.as_deref_mut() {
-                let at = rows.map(|row| row - 16);
-                let [low, high] = taps::<F, true>(token, luma, at, &weights[2 * first]);
+            }
+        }
+    );
+
+    fearless_simd::kernel!(
+        /// Applies luma filter `F` without top taps from consecutive row pairs.
+        #[inline]
+        pub(in super::super) fn luma_420_pairs<const F: usize>(
+            token: Neon,
+            clamp_groups: u8,
+            rows: &[u8],
+            block: Luma420Block,
+            left: &mut [i16],
+            out: &mut [i16],
+        ) {
+            let stride = block.stride;
+            if stride < 64 {
+                return;
+            }
+            let weights = &WEIGHTS[F][2 * usize::from(clamp_groups & 1)];
+            let skip = usize::from(block.above.is_some());
+            let mut rest = rows;
+            for (r, out) in out.chunks_exact_mut(block.width).enumerate() {
+                let Some((pair, tail)) = rest.split_at_checked(2 * stride) else {
+                    return;
+                };
+                rest = tail;
+                let [low, high] = taps::<F, true>(token, pair, [1, 1, stride + 1], weights);
                 if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
                     *slot = vgetq_lane_u16::<7>(low) as i16;
                 }
                 store_row8(token, high, out);
-            } else {
-                let [low, _] = taps::<F, false>(token, luma, rows, &weights[first]);
-                store_row8(token, low, out);
             }
         }
-    }
-
-    /// The NEON `luma_420_pairs_f*` of filter `F`, without top taps.
-    #[target_feature(enable = "neon")]
-    #[inline]
-    fn pairs<const F: usize>(
-        token: Neon,
-        clamp_groups: u8,
-        rows: &[u8],
-        block: Luma420Block,
-        left: &mut [i16],
-        out: &mut [i16],
-    ) {
-        let stride = block.stride;
-        if stride < 64 {
-            return;
-        }
-        let weights = &WEIGHTS[F][2 * usize::from(clamp_groups & 1)];
-        let skip = usize::from(block.above.is_some());
-        let mut rest = rows;
-        for (r, out) in out.chunks_exact_mut(block.width).enumerate() {
-            let Some((pair, tail)) = rest.split_at_checked(2 * stride) else {
-                return;
-            };
-            rest = tail;
-            let [low, high] = taps::<F, true>(token, pair, [1, 1, stride + 1], weights);
-            if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
-                *slot = vgetq_lane_u16::<7>(low) as i16;
-            }
-            store_row8(token, high, out);
-        }
-    }
-
-    /// Defines a `luma_420` kernel entry for one constant filter.
-    macro_rules! luma_420_kernel {
-        ($name:ident, $kernel:ident, $filter:literal, $left:ty) => {
-            fearless_simd::kernel!(
-                /// The NEON kernel of this name for one filter.
-                #[inline]
-                pub(in super::super) fn $name(
-                    token: Neon,
-                    clamp_groups: u8,
-                    luma: &[u8],
-                    block: Luma420Block,
-                    left: $left,
-                    out: &mut [i16],
-                ) {
-                    $kernel::<$filter>(token, clamp_groups, luma, block, left, out);
-                }
-            );
-        };
-    }
-    luma_420_kernel!(luma_420_rows_f0, rows, 0, Option<&mut [i16]>);
-    luma_420_kernel!(luma_420_rows_f1, rows, 1, Option<&mut [i16]>);
-    luma_420_kernel!(luma_420_rows_f2, rows, 2, Option<&mut [i16]>);
-    luma_420_kernel!(luma_420_pairs_f0, pairs, 0, &mut [i16]);
-    luma_420_kernel!(luma_420_pairs_f1, pairs, 1, &mut [i16]);
+    );
 
     /// The broadcast `lumaAvg`, `alpha` sign mask, `16 * |alpha|` and `dc`
     /// of a `[dc, alpha, lumaAvg, max]` model.
