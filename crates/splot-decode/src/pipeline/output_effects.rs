@@ -191,6 +191,7 @@ pub(crate) struct OutputEffectState {
     qm_seen_since_frame: u16,
     qm_obu_seen_since_frame: bool,
     content_interpretation: [Option<ContentInterpretation>; 8],
+    ci_inheritance: Option<(splot_core::headers::sequence::MLayerPresenceMap, u64)>,
     ci_in_current_tu: [Option<ContentInterpretation>; 8],
     active_xlayer: ExtendedLayerId,
     local_lcr_tu: Option<u64>,
@@ -217,6 +218,7 @@ impl OutputEffectState {
             qm_seen_since_frame: 0,
             qm_obu_seen_since_frame: false,
             content_interpretation: [None; 8],
+            ci_inheritance: None,
             ci_in_current_tu: [None; 8],
             active_xlayer,
             local_lcr_tu: None,
@@ -396,15 +398,29 @@ impl OutputEffectState {
             self.validate_annex_a_lcr(envelope, sequence)?;
             self.reset_unprotected_qm();
             self.content_interpretation = self.ci_in_current_tu;
+            self.ci_inheritance =
+                (sequence.general.max_mlayer_id != EmbeddedLayerId::BASE).then(|| {
+                    (
+                        sequence.general.mlayer_dependency_map.presence_map(),
+                        self.tu_index,
+                    )
+                });
             self.metadata.retain(|unit| unit.tu_index == self.tu_index);
         } else if let Some(content) = self.ci_in_current_tu.get(mlayer_idx).copied().flatten() {
-            if self
-                .content_interpretation
-                .get(mlayer_idx)
-                .copied()
-                .flatten()
-                .is_some_and(|active| active != content)
+            let mlayer = envelope.header.embedded_layer_id;
+            let active = if self
+                .ci_inheritance
+                .as_ref()
+                .is_some_and(|(_, tu)| *tu == self.tu_index)
             {
+                self.content_interpretation
+                    .get(mlayer_idx)
+                    .copied()
+                    .flatten()
+            } else {
+                self.effective_content_interpretation(mlayer)
+            };
+            if active.is_some_and(|active| active != content) {
                 return Err(unsupported_feature_at(
                     "content_interpretation_changed_in_cvs",
                     envelope.offset,
@@ -467,10 +483,34 @@ impl OutputEffectState {
         Ok(())
     }
 
+    fn effective_content_interpretation(
+        &self,
+        mlayer: EmbeddedLayerId,
+    ) -> Option<ContentInterpretation> {
+        let index = usize::from(mlayer.get());
+        self.content_interpretation
+            .get(index)
+            .copied()
+            .flatten()
+            .or_else(|| {
+                let (presence, _) = self.ci_inheritance.as_ref()?;
+                self.content_interpretation
+                    .get(..index)?
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(source, content)| {
+                        presence
+                            .is_present(mlayer, EmbeddedLayerId::from_bits(source as u8))
+                            .then_some(*content)
+                            .flatten()
+                    })
+            })
+    }
+
     pub(crate) fn finish_frame(&mut self, mlayer: EmbeddedLayerId) -> FrameOutputEffects {
-        let idx = usize::from(mlayer.get());
         let effects = FrameOutputEffects {
-            content_interpretation: self.content_interpretation.get(idx).copied().flatten(),
+            content_interpretation: self.effective_content_interpretation(mlayer),
             atlas: Vec::new(),
             metadata: self
                 .metadata
