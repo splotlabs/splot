@@ -404,7 +404,8 @@ impl ValidatorContext {
         }
 
         let xlayer = obu.header.extended_layer_id;
-        let external_disabled = !matches!(options.external_hls, ExternalHlsMode::Provided(_));
+        let lcr_availability_decidable =
+            !matches!(options.external_hls, ExternalHlsMode::Provided(_));
         match record {
             LayerConfigurationRecord::Global(info) => {
                 self.cmvs.note_global_lcr_present();
@@ -510,7 +511,7 @@ impl ValidatorContext {
                             xlayer,
                             obu.offset,
                         );
-                    } else if external_disabled {
+                    } else if lcr_availability_decidable {
                         report.push(
                             Diagnostic::error(
                                 "lcr/global-lcr-unavailable",
@@ -538,7 +539,7 @@ impl ValidatorContext {
                             xlayer,
                             obu.offset,
                         );
-                    } else if external_disabled {
+                    } else if lcr_availability_decidable {
                         report.push(
                             Diagnostic::error(
                                 "atlas/local-atlas-unavailable",

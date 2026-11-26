@@ -186,8 +186,8 @@ pub enum ExternalHlsMode {
     /// reference only when the exact referenced key is declared, so a reference to an
     /// expressible key the caller did not declare still fires.
     Provided(ExternalHlsSet),
-    /// The complete initial external HLS snapshot. Unlike key declarations,
-    /// these objects supply content for activation and reference checks.
+    /// The complete initial external HLS snapshot supplies content for activation
+    /// and reference checks.
     ///
     /// RAP replay does not decide availability for keys with both supplied and
     /// in-band definitions. Linear validation uses the current definition.
