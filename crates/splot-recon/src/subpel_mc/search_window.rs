@@ -752,7 +752,7 @@ pub(super) mod avx2 {
 /// The bilinear windows and blocks in generic `u16` lanes, and the SADs in
 /// generic byte lanes.
 pub(super) mod generic {
-    use fearless_simd::{Simd, prelude::*, u8x16, u16x8, u64x2};
+    use fearless_simd::{Simd, prelude::*, u8x16, u16x8, u16x16, u64x2};
 
     /// The source index, from `base`, of the left or right tap of output
     /// columns `first..first + 16` of an `m`-sample row, clamped to the row.
@@ -942,11 +942,8 @@ pub(super) mod generic {
         )
     }
 
-    /// The 16-bit refine-MV search of `STRIDE`-wide windows of `AREA`
-    /// samples: per row the full vectors from columns 0 and 8 and the last
-    /// four samples of the vector ending at the row end, each column vector
-    /// summed in its own `u16` lanes, which ten 12-bit rows keep below
-    /// `2^16`.
+    /// Searches the 16-bit windows using fixed-size spans. Each span ends
+    /// immediately after the last sampled row's vector loads.
     #[inline]
     pub(in crate::subpel_mc) fn search_u16<
         S: Simd,
@@ -964,36 +961,44 @@ pub(super) mod generic {
         else {
             return (0, 0);
         };
-        let zero = u16x8::splat(simd, 0);
-        let high = u16x8::load_array(simd, [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX]);
-        let lanes = |window: &[u16; AREA], at: usize| {
-            window
-                .get(at..)
-                .and_then(<[u16]>::first_chunk::<8>)
-                .map_or(zero, |lanes| u16x8::load_array_ref(simd, lanes))
-        };
         let width = STRIDE - 4;
+        let span = const {
+            let last_load_end = if STRIDE == 16 { 16 } else { 20 };
+            let span = (SAD_H - 2) * STRIDE + last_load_end;
+
+            assert!(4 * STRIDE + 4 + span <= AREA);
+            span
+        };
+        let high = u16x8::load_array(simd, [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX]);
         let sad = |dy: i32, dx: i32| -> u32 {
             let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
             let (a, b) = (start(dy, dx), start(-dy, -dx));
-            let mut sums = [zero; 3];
+            let (a, b) = (&first[a..a + span], &second[b..b + span]);
+            let mut head = u16x16::splat(simd, 0);
+            let mut tail = u16x8::splat(simd, 0);
             for row in (0..SAD_H).step_by(2) {
-                let diff = |at: usize| {
-                    let at = row * STRIDE + at;
-                    let (x, y) = (lanes(first, a + at), lanes(second, b + at));
-                    x.max(y) - x.min(y)
-                };
-                for (column, sum) in sums.iter_mut().enumerate().take(width / 8) {
-                    *sum += diff(8 * column);
+                let at = row * STRIDE;
+                let x = u16x16::from_slice(simd, &a[at..at + 16]);
+                let y = u16x16::from_slice(simd, &b[at..at + 16]);
+                head += x.max(y) - x.min(y);
+                if STRIDE == 24 {
+                    let x = u16x8::from_slice(simd, &a[at + 12..at + 20]);
+                    let y = u16x8::from_slice(simd, &b[at + 12..at + 20]);
+                    tail += x.max(y) - x.min(y);
                 }
-                sums[2] += diff(width - 8) & high;
             }
-            let total = sums
-                .iter()
-                .fold(fearless_simd::u32x4::splat(simd, 0), |total, sum| {
-                    let (low, high) = sum.widen();
-                    total + low + high
-                });
+
+            let (lo, mut hi) = head.split();
+            if STRIDE == 16 {
+                hi &= !high;
+            }
+            let total = [lo, hi, tail & high].into_iter().fold(
+                fearless_simd::u32x4::splat(simd, 0),
+                |total, lanes| {
+                    let (lo, hi) = lanes.widen();
+                    total + lo + hi
+                },
+            );
             total.reduce_sum() >> shift
         };
         super::best_offset(
