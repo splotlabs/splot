@@ -48,6 +48,15 @@ pub(super) fn subpel_predict_bilinear_search_window_u8<R: SubpelRunner, T: Recon
     }
     let at = [origin, view.stride];
     let phases = phases(params);
+    if phases == [0, 0] {
+        let source = &view.samples[origin..];
+        if w == 16 {
+            copy_fullpel_rows::<16>(source, view.stride, h, output);
+        } else {
+            copy_fullpel_rows::<24>(source, view.stride, h, output);
+        }
+        return true;
+    }
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = runner.avx2_token() {
         avx2::window(t, view.samples, at, [w, h], phases, output);
@@ -60,6 +69,20 @@ pub(super) fn subpel_predict_bilinear_search_window_u8<R: SubpelRunner, T: Recon
     }
     runner.search_window_generic(view.samples, at, [w, h], phases, output);
     true
+}
+
+/// Copies the inner samples and replicates the leading column and row.
+#[inline]
+fn copy_fullpel_rows<const W: usize>(source: &[u8], stride: usize, h: usize, output: &mut [u8]) {
+    let rows = &mut output[..(h - 1) * W];
+    for (row, samples) in rows.as_chunks_mut::<W>().0[1..]
+        .iter_mut()
+        .zip(source.chunks(stride))
+    {
+        row[0] = samples[0];
+        row[1..].copy_from_slice(&samples[..W - 1]); // splot-copy-ok: full-pel prediction
+    }
+    rows.copy_within(W..2 * W, 0); // splot-copy-ok: replicate the first clipped prediction row
 }
 
 /// The horizontal and vertical filter phases of `params`.

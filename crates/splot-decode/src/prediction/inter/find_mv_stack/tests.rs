@@ -2350,3 +2350,103 @@ fn local_warp_samples_include_retained_compound_list1_mv() {
         &[[120, 376, 120 + mv1.row, 376 + mv1.col]]
     );
 }
+
+#[test]
+fn requested_mv_stack_prefix_matches_the_full_stack() {
+    let mut bank = RefMvBank::new();
+    let mv = |n: i32| MotionVector {
+        row: n * 3,
+        col: -n,
+    };
+    for n in 1..=4 {
+        bank.update(0, None, mv(n), None, CWP_EQUAL, false);
+        bank.update(0, Some(1), mv(n), Some(mv(-n)), 10, false);
+    }
+    let warp_bank = WarpParamBank::new();
+    for row in [8, 16] {
+        let block = MvBlockContext {
+            bw4: 16,
+            bh4: 16,
+            mi_cols: 48,
+            mi_rows: 48,
+            ..block_at(row, 8)
+        };
+        let pair = MvBlockContext {
+            ref_frame1: Some(1),
+            ..block
+        };
+        for values in [[0; 7], [1, 2, 2, 3, 0, 0, 4], [1, 2, 2, 1, 3, 4, 2]] {
+            let mut grid = NeighbourMvGrid::new(48, 48).unwrap();
+            for (probe, n) in mv_stack_spatial_probes(&block).into_iter().zip(values) {
+                if let Some(probe) = probe
+                    && n != 0
+                {
+                    let (r, c, _) = probe.adjusted_target(&block);
+                    grid.record_block_with_newmv_lists(
+                        r as usize,
+                        c as usize,
+                        1,
+                        1,
+                        0,
+                        1,
+                        false,
+                        false,
+                        mv(n),
+                        false,
+                        SWITCHABLE_FILTERS,
+                        false,
+                    );
+                }
+            }
+            for reorder in [
+                DrlReorder::Disabled,
+                DrlReorder::Constraint,
+                DrlReorder::Always,
+            ] {
+                for limit in [1, 3, MAX_REF_MV_STACK_SIZE] {
+                    let bank = Some((&bank, limit));
+                    let single = |need| {
+                        find_mv_stack_upto(
+                            &grid,
+                            &block,
+                            mv(5),
+                            IDENTITY_WARP_PARAMS,
+                            bank,
+                            &warp_bank,
+                            false,
+                            reorder,
+                            None,
+                            None,
+                            false,
+                            need,
+                        )
+                    };
+                    let compound = |need| {
+                        find_compound_mv_stack_upto(
+                            &grid,
+                            &pair,
+                            [mv(5), mv(-5)],
+                            bank,
+                            reorder,
+                            None,
+                            need,
+                        )
+                    };
+                    let (full, full_pair) = (single(ALL_CANDIDATES), compound(ALL_CANDIDATES));
+                    for need in 0..MAX_REF_MV_STACK_SIZE {
+                        let prefix = single(need);
+                        let paired_prefix = compound(need);
+                        assert_eq!(
+                            &prefix.stack[..],
+                            &full.stack[..full.stack.len().min(need + 1)]
+                        );
+                        assert_eq!(
+                            &paired_prefix.stack[..],
+                            &full_pair.stack[..full_pair.stack.len().min(need + 1)]
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

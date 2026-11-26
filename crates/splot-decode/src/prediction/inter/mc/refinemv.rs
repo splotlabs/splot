@@ -5,7 +5,8 @@ use super::*;
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
 use fearless_simd::{
-    Bytes, Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, u8x16, u16x8, u32x4, u64x2,
+    Bytes, Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, i16x16, u8x16, u16x8, u16x16,
+    u32x4, u64x2,
 };
 
 const REFINEMV_UNIT_SIZE: usize = 16;
@@ -836,7 +837,9 @@ fn tip_search<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
         )?;
     }
     let bit_depth = luma[0].bit_depth();
-    let center = tip_refinemv_sad(backend, pred0, pred1, 0, 0, bit_depth, u32::MAX);
+    let narrow = backend.narrow();
+    let center = splot_core::with_simd!(narrow, simd => tip_refinemv_sad(simd, pred0, pred1, 0, 0))
+        >> bit_depth.bits().saturating_sub(8);
     let center_sad = center - (center >> 3);
     let (dx, dy) = if center_sad < 12 * 12 * 2 {
         (0, 0)
@@ -857,15 +860,15 @@ fn tip_search<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
                 prediction,
             )?;
         }
-        search_tip_refinemv_offset(backend, pred0, pred1, center_sad, bit_depth)
+        splot_core::with_simd!(narrow, simd => search_tip_refinemv_offset(simd, pred0, pred1, center_sad, bit_depth))
     };
     Ok((dx, dy))
 }
 
 /// The § 7.13.3.6 neighbour search of a unit whose biased centre SAD
 /// `best_sad` did not keep the centre.
-fn search_tip_refinemv_offset<B: splot_core::simd::SimdBackend>(
-    backend: B,
+fn search_tip_refinemv_offset<S: Simd>(
+    simd: S,
     pred0: &[u16; TIP_PREDICTION_AREA],
     pred1: &[u16; TIP_PREDICTION_AREA],
     mut best_sad: u32,
@@ -873,7 +876,8 @@ fn search_tip_refinemv_offset<B: splot_core::simd::SimdBackend>(
 ) -> (i32, i32) {
     let mut best = (0, 0);
     for &(dy, dx) in &SEARCH_NEIGHBORS {
-        let sad = tip_refinemv_sad(backend, pred0, pred1, dx, dy, bit_depth, best_sad);
+        let sad =
+            tip_refinemv_sad(simd, pred0, pred1, dx, dy) >> bit_depth.bits().saturating_sub(8);
         if sad < best_sad {
             best_sad = sad;
             best = (dx, dy);
@@ -882,19 +886,20 @@ fn search_tip_refinemv_offset<B: splot_core::simd::SimdBackend>(
     best
 }
 
-/// Returns `limit` early once a partial sum reaches it: later rows only add, so
-/// such a sum already loses the strict comparison.
-#[inline(always)]
-fn tip_refinemv_sad<B: splot_core::simd::SimdBackend>(
-    backend: B,
+/// The six sampled rows have twelve active columns. Load a vector at each
+/// fixed row offset. Six differences of ten-bit samples fit in a signed lane.
+/// The final dot product counts only the twelve active columns.
+#[inline]
+fn tip_refinemv_sad<S: Simd>(
+    simd: S,
     pred0: &[u16; TIP_PREDICTION_AREA],
     pred1: &[u16; TIP_PREDICTION_AREA],
     dx: i32,
     dy: i32,
-    bit_depth: splot_recon::BitDepth,
-    limit: u32,
 ) -> u32 {
-    const SPAN: usize = 10 * TIP_PREDICTION_SIZE + 12;
+    const STEP: usize = 2 * TIP_PREDICTION_SIZE;
+    const SPAN: usize = 5 * STEP + 16;
+    const ACTIVE: [i16; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0];
     let start = |dx: i32, dy: i32| ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
     let (Some(left), Some(right)) = (
         pred0
@@ -906,21 +911,17 @@ fn tip_refinemv_sad<B: splot_core::simd::SimdBackend>(
     ) else {
         return u32::MAX;
     };
-    let shift = bit_depth.bits().saturating_sub(8);
-    let rows = |range: core::ops::Range<usize>| {
-        let pairs = left[range.clone()].chunks(2 * TIP_PREDICTION_SIZE);
-        sad_rows::<_, 12>(
-            backend,
-            pairs.zip(right[range].chunks(2 * TIP_PREDICTION_SIZE)),
-            u16::MAX,
-        )
-    };
-    let half = 6 * TIP_PREDICTION_SIZE;
-    let sad = rows(0..half);
-    if sad >> shift >= limit {
-        return limit;
+    let mut sum = i16x16::splat(simd, 0);
+    for row in 0..6 {
+        let at = row * STEP;
+        if let (Some(a), Some(b)) = (left[at..].first_chunk(), right[at..].first_chunk()) {
+            let a = u16x16::load_array_ref(simd, a);
+            let b = u16x16::load_array_ref(simd, b);
+            sum += (a - b).bitcast::<i16x16<S>>().abs();
+        }
     }
-    (sad + rows(half..SPAN)) >> shift
+    simd.pairwise_dot_product_i16x16(sum, i16x16::load_array_ref(simd, &ACTIVE))
+        .reduce_sum() as u32
 }
 
 fn search_range_allowed(candidates: [MotionVector; 2]) -> bool {

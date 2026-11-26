@@ -80,6 +80,18 @@ const MAG_GRID: [[usize; 3]; 3] = {
     out
 };
 
+const _: () = {
+    let mut class = 0;
+    while class < MAG_GRID.len() {
+        let mut i = 0;
+        while i < MAG_GRID[class].len() {
+            assert!(MAG_GRID[class][i] == SIG_GRID[class][i]);
+            i += 1;
+        }
+        class += 1;
+    }
+};
+
 /// The grid word of a level: `min(level, 3)`, `min(level, 5)` and the level
 /// in bytes 0 to 2, so one sum over neighbour words sums both caps. Levels
 /// stay below 9, so five-word sums never carry between bytes. Entry
@@ -587,7 +599,16 @@ impl LevelPass<'_, '_> {
     #[inline(always)]
     fn br_ctx<const CLASS: usize, const LUMA: bool>(&self, grid: usize, lf_bump: bool) -> usize {
         let count = if LUMA || CLASS == 0 { 3 } else { 2 };
-        let mag = (self.sum(grid, &MAG_GRID[CLASS][..count]) >> 8) & 0xff;
+        Self::br_ctx_from_word_sum::<LUMA>(self.sum(grid, &MAG_GRID[CLASS][..count]), lf_bump)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "shares the packed sum in the coefficient loop"
+    )]
+    #[inline(always)]
+    fn br_ctx_from_word_sum<const LUMA: bool>(sum: u32, lf_bump: bool) -> usize {
+        let mag = (sum >> 8) & 0xff;
         if !LUMA {
             half_capped(mag, 3)
         } else {
@@ -617,17 +638,29 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = self.br_ctx::<CLASS, LUMA>(grid, LF && (!is_dc || CLASS != 0));
-        level
-            + if !LUMA {
-                let row = row_at(rows.cdf.coeff_br_uv(), ctx);
-                self.symbols.read_trusted(row)
-            } else if LF {
-                let row = row_at(rows.cdf.coeff_br_lf(), ctx);
-                self.symbols.read_trusted(row)
-            } else {
-                let row = row_at(rows.cdf.coeff_br(), ctx);
-                self.symbols.read_trusted(row)
-            }
+        level + self.read_range::<LUMA, LF>(rows, ctx)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "keeps the symbol state in the coefficient loop"
+    )]
+    #[inline(always)]
+    fn read_range<const LUMA: bool, const LF: bool>(
+        &mut self,
+        rows: &mut CoeffLevelRows<'_>,
+        ctx: usize,
+    ) -> u32 {
+        if !LUMA {
+            let row = row_at(rows.cdf.coeff_br_uv(), ctx);
+            self.symbols.read_trusted(row)
+        } else if LF {
+            let row = row_at(rows.cdf.coeff_br_lf(), ctx);
+            self.symbols.read_trusted(row)
+        } else {
+            let row = row_at(rows.cdf.coeff_br(), ctx);
+            self.symbols.read_trusted(row)
+        }
     }
 
     #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
@@ -688,31 +721,46 @@ impl LevelPass<'_, '_> {
         self.symbols.read_trusted(row)
     }
 
-    /// Reads one high-frequency base symbol.
+    /// Reads a high-frequency level, sharing the packed neighbour sum of
+    /// the base and range contexts.
     #[expect(
         clippy::inline_always,
         reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_hf_base<const CLASS: usize, const LUMA: bool>(
+    fn read_hf_level<const CLASS: usize, const LUMA: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
         entry: u32,
     ) -> u32 {
-        let mag = self.base_mag::<CLASS, LUMA, false, false>(entry_grid(entry));
-        if !LUMA {
-            let ctx = self.uv_ctx::<CLASS>(mag);
-            let row = row_at(rows.cdf.coeff_base_uv(), ctx);
-            return self.symbols.read_trusted(row);
-        }
-        let q0 = self.tcq_q0 & 1;
-        let row = if CLASS == 0 {
-            let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
-            &mut rows.base().as_flattened_mut()[(first | q0) & 31]
+        let grid = entry_grid(entry);
+        let count = if LUMA || CLASS == 0 { 3 } else { 2 };
+        let offsets = &SIG_GRID[CLASS];
+        let near = self.sum(grid, &offsets[..count]);
+        let far = if LUMA {
+            self.sum(grid, &offsets[count..])
         } else {
-            &mut row_at(rows.base(), half_capped(mag, 4) + 15)[q0]
+            0
         };
-        self.symbols.read_trusted(row)
+        let mag = (near + far) & 0xff;
+        let level = if !LUMA {
+            let row = row_at(rows.cdf.coeff_base_uv(), self.uv_ctx::<CLASS>(mag));
+            self.symbols.read_trusted(row)
+        } else {
+            let q0 = self.tcq_q0 & 1;
+            let row = if CLASS == 0 {
+                let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
+                &mut rows.base().as_flattened_mut()[(first | q0) & 31]
+            } else {
+                &mut row_at(rows.base(), half_capped(mag, 4) + 15)[q0]
+            };
+            self.symbols.read_trusted(row)
+        };
+        if level <= NUM_BASE_LEVELS {
+            return level;
+        }
+        let ctx = Self::br_ctx_from_word_sum::<LUMA>(near, false);
+        level + self.read_range::<LUMA, false>(rows, ctx)
     }
 
     /// Records a decoded level and advances the TCQ and parity state.
@@ -745,9 +793,7 @@ impl LevelPass<'_, '_> {
         hf: &[u32],
     ) {
         for &entry in hf.iter().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_hf_base::<CLASS, LUMA>(&mut rows, entry);
-            let level = self.add_range::<CLASS, LUMA, false>(&mut rows, grid, false, level);
+            let level = self.read_hf_level::<CLASS, LUMA>(&mut rows, entry);
             self.finish::<TCQ, PH>(entry, level, true);
         }
     }
