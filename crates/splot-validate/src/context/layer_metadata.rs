@@ -388,6 +388,30 @@ mod tests {
     }
 
     #[test]
+    fn content_interpretation_inherits_defaults_from_the_nearest_source() {
+        let bytes = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-mlayer3-ci-default-priority.obu"
+        );
+        let mut tracker = LayerMetadataTracker::new(ValidationOptions::default());
+        for obu in parse_annex_b_obus(bytes).unwrap() {
+            tracker.observe(&obu);
+        }
+        assert_eq!(tracker.finish(), Some(1));
+        let xlayer = ExtendedLayerId::from_bits(0);
+        assert!(matches!(
+            tracker.content_interpretation(xlayer, EmbeddedLayerId::BASE),
+            EffectiveContentInterpretation::Signaled { origin, content, .. }
+                if origin == ByteOffset::new(35) && content.derived_color().code_points.color_primaries == 1
+        ));
+        for mlayer in [1, 2] {
+            assert!(matches!(
+                tracker.content_interpretation(xlayer, EmbeddedLayerId::from_bits(mlayer)),
+                EffectiveContentInterpretation::Unspecified { .. }
+            ));
+        }
+    }
+
+    #[test]
     fn content_interpretation_inherits_and_resets_in_a_new_cvs() {
         let multilayer = include_bytes!(
             "../../../../tests/conformance/vectors/valid/syn-mlayer2-reproducible-8bit.obu"

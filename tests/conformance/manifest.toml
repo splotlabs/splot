@@ -2974,6 +2974,11 @@ description = "Six-frame 8-bit 4:2:0 Annex B stream encoded by AVM (a1ec4594d970
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-mlayer3-ci-default-priority.obu"
+description = "Three 64x64 8-bit 4:2:0 pictures in one temporal unit. Encode with the encode-temporal.c fixture 3 recipe using AVM a1ec4594d97028ebc34083ec8346616d697c2fc9, profile 2, three embedded layers, and AVM_EFLAG_FORCE_KF on the first layer 1 picture. Keep the first temporal unit. Clear the local LCR parent ID and remove the repeated LCR before the second key. Signal layer 1 independent and layer 2 dependent on both lower layers. Insert a progressive BT.709 CI OBU before the first key. AVM reports CICP primaries 1, 2, 2. Raw I420 SHA-256 is 12097703ec09269ef686ae4c30bb85dbcbc0dd9ed3ddfa8ad5d984930ebc6546."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mlayer-tlayer-sparse-state.obu"
 description = "Eight-frame 64x64 8-bit 4:2:0 Annex B stream encoded by AVM (a1ec4594d97028ebc34083ec8346616d697c2fc9) combining 2 embedded layers and 2 temporal layers (Profile 2, local LCR, OPS; TU0 has TL0 on ML0 and ML1, TUs 1..3 have TL1 on ML0 and ML1 with AVM_EFLAG_NO_UPD_ALL on ML1 TL1). Decodes identically to avmdec --all-layers across all 8 frames (49,152 bytes, SHA-256 80f2b107ff4512837e25b724f380259077ad451f73e7cb2c046e64feee8062cc); validates clean."
 expect = "clean"
