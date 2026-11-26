@@ -381,7 +381,7 @@ impl ValidatorContext {
             self.distinct_mlayer.advance_temporal_unit();
         } else if obu.header.obu_type == ObuType::ClosedLoopKey {
             self.start_cvs_for_xlayer(obu.header.extended_layer_id, report);
-            self.observe_ci_rap(obu.header.extended_layer_id, obu.offset);
+            self.observe_ci_rap(obu.header.extended_layer_id);
             self.repair_post_rap_ci_pairings(obu.header.extended_layer_id, report);
             self.cmvs.note_clk();
             self.annex_a_iop.note_clk();
@@ -389,7 +389,7 @@ impl ValidatorContext {
             self.rap_replay
                 .note_random_access_point(obu.header.extended_layer_id);
         } else if obu.header.obu_type == ObuType::OpenLoopKey {
-            self.observe_ci_rap(obu.header.extended_layer_id, obu.offset);
+            self.observe_ci_rap(obu.header.extended_layer_id);
             self.repair_post_rap_ci_pairings(obu.header.extended_layer_id, report);
             self.msdo_identity.note_random_access_point();
             self.rap_replay

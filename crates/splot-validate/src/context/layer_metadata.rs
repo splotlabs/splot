@@ -4,6 +4,7 @@
 //! Layer metadata evidence from AV2 § 6.14 and § 7.3.8.11.
 
 use super::*;
+use splot_core::obu::{ParsedObu, PayloadStatus};
 
 /// Effective content interpretation for one embedded layer at a completed TU.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,13 +60,27 @@ enum CiLayer {
 /// The tracker uses in-band CI and frame-confirmed sequence headers. It
 /// outputs evidence at completed temporal units because a later CLK or OLK
 /// in the same unit can initialize CI that appears earlier in that unit.
-/// This API does not provide HDR persistence or frame-level metadata.
+/// HDR persistence and frame-level metadata are outside this API's scope.
+/// The tracker retains one CI record per embedded layer in the current TU
+/// and one HLS definition per ID. It does not accumulate validator diagnostics.
+/// Decode output can expose a different set of metadata as picture fields.
 pub struct LayerMetadataTracker {
     context: ValidatorContext,
     options: ValidationOptions,
-    report: ValidationReport,
     active_ci: BTreeMap<ExtendedLayerId, CiEpoch>,
+    pending_ci: BTreeMap<(ExtendedLayerId, EmbeddedLayerId), CiLayer>,
+    pending_rap: BTreeMap<ExtendedLayerId, Option<Rap>>,
+    seen_frames: BTreeSet<ExtendedLayerId>,
+    tu_index: u64,
     pending: bool,
+}
+
+#[derive(Clone, Copy)]
+struct Rap {
+    reset: ByteOffset,
+    sequence_header: Option<ByteOffset>,
+    max_mlayer_id: EmbeddedLayerId,
+    presence: MLayerPresenceMap,
 }
 
 impl LayerMetadataTracker {
@@ -75,8 +90,11 @@ impl LayerMetadataTracker {
         Self {
             context: ValidatorContext::with_options(&options),
             options,
-            report: ValidationReport::new(),
             active_ci: BTreeMap::new(),
+            pending_ci: BTreeMap::new(),
+            pending_rap: BTreeMap::new(),
+            seen_frames: BTreeSet::new(),
+            tu_index: 0,
             pending: false,
         }
     }
@@ -84,14 +102,97 @@ impl LayerMetadataTracker {
     /// Observes an OBU. Returns the completed TU index when a global
     /// temporal delimiter closes a nonempty TU.
     pub fn observe(&mut self, obu: &ObuEnvelope<'_>) -> Option<u64> {
-        let delimiter = obu.header.obu_type == ObuType::TemporalDelimiter
-            && obu.header.extended_layer_id.is_global();
-        let completed = if delimiter { self.finish() } else { None };
-        self.context
-            .observe_obu(obu, &self.options, &mut self.report);
-        self.report.diagnostics.clear();
-        self.pending = !delimiter;
-        completed
+        let xlayer = obu.header.extended_layer_id;
+        let obu_type = obu.header.obu_type;
+        if obu_type == ObuType::TemporalDelimiter && xlayer.is_global() {
+            let completed = self.finish();
+            self.tu_index = self.tu_index.saturating_add(1);
+            return completed;
+        }
+        self.pending = true;
+        if xlayer.get() >= 31 || obu.header.embedded_layer_id.get() >= 8 {
+            return None;
+        }
+        match obu_type {
+            ObuType::SequenceHeader if sequence_header_can_activate(obu) => {
+                if let Ok(PayloadStatus::Parsed(ParsedObu::SequenceHeader(header))) =
+                    obu.payload_status()
+                {
+                    let id = header.general.seq_header_id;
+                    self.context.hls.layer_mut(xlayer).sequences[usize::from(id.get())] =
+                        Some(Box::new(StoredSequenceHeader {
+                            header: *header,
+                            offset: Some(obu.offset),
+                            fingerprint: payload_fingerprint(obu.payload),
+                        }));
+                }
+            }
+            ObuType::MultiFrameHeader => {
+                if let Ok(PayloadStatus::Parsed(ParsedObu::MultiFrameHeader(mfh))) =
+                    obu.payload_status()
+                {
+                    self.context.hls.save_multi_frame_header(obu, &mfh);
+                }
+            }
+            ObuType::ContentInterpretation => self.observe_ci(obu),
+            _ if is_frame_bearing(obu_type) => {
+                let first_picture = self.seen_frames.insert(xlayer);
+                if matches!(obu_type, ObuType::ClosedLoopKey | ObuType::OpenLoopKey) {
+                    let rap = self.resolve_rap(obu, first_picture);
+                    self.pending_rap.insert(xlayer, rap);
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn observe_ci(&mut self, obu: &ObuEnvelope<'_>) {
+        let key = (obu.header.extended_layer_id, obu.header.embedded_layer_id);
+        if let Ok(PayloadStatus::Parsed(ParsedObu::ContentInterpretation(content))) =
+            obu.payload_status()
+        {
+            match self.pending_ci.entry(key) {
+                Entry::Vacant(entry) => {
+                    entry.insert(CiLayer::Signaled(CiValue {
+                        origin: obu.offset,
+                        inherited_from: Vec::new(),
+                        content,
+                    }));
+                }
+                Entry::Occupied(mut entry) => {
+                    if matches!(entry.get(), CiLayer::Signaled(value) if value.content != content) {
+                        entry.insert(CiLayer::Unavailable);
+                    }
+                }
+            }
+        } else {
+            self.pending_ci.insert(key, CiLayer::Unavailable);
+        }
+    }
+
+    fn resolve_rap(&self, obu: &ObuEnvelope<'_>, first_picture: bool) -> Option<Rap> {
+        let prefix = parse_frame_prefix(obu, first_picture)?;
+        let mut report = ValidationReport::new();
+        let id = self.context.resolve_frame_header_reference(
+            &prefix,
+            obu,
+            &self.options,
+            &mut report,
+        )?;
+        if !report.is_conformant() {
+            return None;
+        }
+        let sequence = self
+            .context
+            .hls
+            .sequence(obu.header.extended_layer_id, id)?;
+        Some(Rap {
+            reset: obu.offset,
+            sequence_header: sequence.offset,
+            max_mlayer_id: sequence.header.general.max_mlayer_id,
+            presence: sequence.header.general.mlayer_dependency_map.presence_map(),
+        })
     }
 
     /// Completes the last pending TU at clean end of input.
@@ -99,18 +200,17 @@ impl LayerMetadataTracker {
         if !std::mem::take(&mut self.pending) {
             return None;
         }
-        let tu = self.context.cvs.tu_index;
-        for (&xlayer, &(rap_tu, reset)) in &self.context.ci_rap_started_in_tu {
-            if rap_tu != tu || xlayer.is_global() {
-                continue;
-            }
-            if let Some(epoch) = self.resolve_ci(xlayer, tu, reset) {
+        for (xlayer, rap) in std::mem::take(&mut self.pending_rap) {
+            if let Some(rap) = rap {
+                let epoch = self.resolve_ci(xlayer, &rap);
                 self.active_ci.insert(xlayer, epoch);
             } else {
                 self.active_ci.remove(&xlayer);
             }
         }
-        Some(tu)
+        self.pending_ci.clear();
+        self.seen_frames.clear();
+        Some(self.tu_index)
     }
 
     /// Returns CI evidence at the last completed temporal unit.
@@ -138,25 +238,12 @@ impl LayerMetadataTracker {
         }
     }
 
-    fn resolve_ci(&self, xlayer: ExtendedLayerId, tu: u64, reset: ByteOffset) -> Option<CiEpoch> {
-        if self.context.frame_confirmed_activation_tu.get(&xlayer) != Some(&tu) {
-            return None;
-        }
-        let (id, general) = self.context.frame_confirmed_activation_for(xlayer)?;
-        let sequence_header = self.context.hls.sequence(xlayer, id)?.offset;
-        let presence = general.mlayer_dependency_map.presence_map();
+    fn resolve_ci(&mut self, xlayer: ExtendedLayerId, rap: &Rap) -> CiEpoch {
         let mut layers = Vec::new();
-        for index in 0..=general.max_mlayer_id.get() {
+        for index in 0..=rap.max_mlayer_id.get() {
             let mlayer = EmbeddedLayerId::from_bits(index);
-            let value = if let Some(record) =
-                self.context.content_interpretations.get(&(xlayer, mlayer))
-                && record.tu_index == tu
-            {
-                CiLayer::Signaled(CiValue {
-                    origin: record.offset,
-                    inherited_from: Vec::new(),
-                    content: record.content,
-                })
+            let value = if let Some(declaration) = self.pending_ci.remove(&(xlayer, mlayer)) {
+                declaration
             } else if matches!(self.options.external_hls, ExternalHlsMode::Disabled) {
                 layers
                     .iter()
@@ -164,15 +251,18 @@ impl LayerMetadataTracker {
                     .rev()
                     .find_map(|(source_index, source)| {
                         let source_id = EmbeddedLayerId::from_bits(source_index as u8);
-                        if !presence.is_present(mlayer, source_id) {
+                        if !rap.presence.is_present(mlayer, source_id) {
                             return None;
                         }
-                        let CiLayer::Signaled(value) = source else {
-                            return None;
-                        };
-                        let mut value = value.clone();
-                        value.inherited_from.insert(0, source_id);
-                        Some(CiLayer::Signaled(value))
+                        match source {
+                            CiLayer::Signaled(value) => {
+                                let mut value = value.clone();
+                                value.inherited_from.insert(0, source_id);
+                                Some(CiLayer::Signaled(value))
+                            }
+                            CiLayer::Unavailable => Some(CiLayer::Unavailable),
+                            CiLayer::Unspecified => None,
+                        }
                     })
                     .unwrap_or(CiLayer::Unspecified)
             } else {
@@ -180,11 +270,11 @@ impl LayerMetadataTracker {
             };
             layers.push(value);
         }
-        Some(CiEpoch {
-            reset,
-            sequence_header,
+        CiEpoch {
+            reset: rap.reset,
+            sequence_header: rap.sequence_header,
             layers,
-        })
+        }
     }
 }
 
@@ -223,6 +313,44 @@ mod tests {
             tracker.content_interpretation(GLOBAL_XLAYER_ID, m),
             EffectiveContentInterpretation::Unavailable
         );
+    }
+
+    #[test]
+    fn content_interpretation_resets_at_olk_during_sequential_inspection() {
+        let bytes = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-frame-olk-leading-64x64.ivf"
+        );
+        let ci_fixture = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-output-ci-2frame-64x64.ivf"
+        );
+        let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(bytes) else {
+            panic!("Expected an IVF stream.");
+        };
+        let ci = parse_annex_b_obus(&ci_fixture[70..82]).unwrap()[0];
+        let mut tracker = LayerMetadataTracker::new(ValidationOptions::default());
+        let x = ExtendedLayerId::from_bits(0);
+        let m = EmbeddedLayerId::BASE;
+        for obu in &parsed.frames[0].obus[..2] {
+            tracker.observe(obu);
+        }
+        tracker.observe(&ObuEnvelope {
+            offset: ByteOffset::new(69),
+            ..ci
+        });
+        tracker.observe(&parsed.frames[0].obus[2]);
+        for obu in &parsed.frames[1].obus[..3] {
+            if tracker.observe(obu).is_some() {
+                assert!(matches!(
+                    tracker.content_interpretation(x, m),
+                    EffectiveContentInterpretation::Signaled { origin, .. } if origin.get() == 69
+                ));
+            }
+        }
+        assert_eq!(tracker.observe(&parsed.frames[1].obus[3]), Some(2));
+        assert!(matches!(
+            tracker.content_interpretation(x, m),
+            EffectiveContentInterpretation::Unspecified { reset } if reset.get() == 141
+        ));
     }
 
     #[test]
