@@ -6,13 +6,16 @@
 
 #![expect(clippy::unwrap_used, clippy::panic)]
 
+use std::sync::{Arc, Mutex};
+
 use splot_core::annexb::parse_annex_b_obus;
 use splot_core::stream_reader::{TemporalUnitReader, is_random_access_point};
 use splot_core::types::ObuType;
 use splot_decode::{
     DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig, Decoder,
     DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureFrame,
-    PictureSamples, PlaneId, SendStatus, ThreadCount, Y4mFrameRate,
+    PictureSamples, PlaneId, ReferenceFrameEvent, ReferenceMappingOrigin, ReferenceSlotState,
+    SendStatus, ThreadCount, Y4mFrameRate,
 };
 use splot_recon::{
     DecodedFrame, DecodedFrameHashInput, PlaneSize, ReconSample, Y4mError, Y4mFrameFormat,
@@ -1108,5 +1111,173 @@ fn bru_local_intrabc_vectors_match_batch_and_chunked_streaming_and_recover_on_fl
             ("local-intrabc-gdf-truncated", BRU_LOCAL_INTRABC_GDF_8BIT),
         ],
         "BRU+local-IntraBC",
+    );
+}
+
+fn reference_decoder(threads: usize, events: &Arc<Mutex<Vec<ReferenceFrameEvent>>>) -> Decoder {
+    let events = Arc::clone(events);
+    Decoder::new_with_reference_observer(
+        DecoderSettings::default().with_threads(ThreadCount::from(threads)),
+        move |event| events.lock().unwrap().push(event),
+    )
+    .unwrap()
+}
+
+#[test]
+fn reference_observer_reports_refresh_reuse_and_sequence_reset() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut decoder = reference_decoder(4, &events);
+    let mut units = units(MULTIREF);
+    units.push(units[0].clone());
+    let pictures = decode(&mut decoder, &units, |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+
+    let events = events.lock().unwrap();
+    let [key, inter, multi, reset] = events.as_slice() else {
+        panic!("expected four coded frames");
+    };
+    let retained = |state: ReferenceSlotState| match state {
+        ReferenceSlotState::Retained(picture) => picture.provenance.coded,
+        state => panic!("expected a retained reference, got {state:?}"),
+    };
+    assert!(key.resets_sequence);
+    assert!(key.mapping.is_none());
+    assert!(
+        key.before
+            .slots
+            .iter()
+            .all(|slot| *slot == ReferenceSlotState::Empty)
+    );
+    assert_eq!(retained(key.after.slots[0]), key.frame.coded);
+    assert!(
+        key.after.slots[1..]
+            .iter()
+            .all(|slot| *slot == ReferenceSlotState::Invalid)
+    );
+    assert_eq!(inter.before.slots, key.after.slots);
+    assert_eq!(inter.refresh_frame_flags, 1 << 1);
+    assert_eq!(retained(inter.after.slots[1]), inter.frame.coded);
+    let map = multi.mapping.as_ref().unwrap();
+    assert_eq!(map.origin, ReferenceMappingOrigin::Derived);
+    assert_eq!(map.slots.as_slice(), &[0, 1]);
+    assert_eq!(retained(multi.before.slots[0]), key.frame.coded);
+    assert_eq!(retained(multi.before.slots[1]), inter.frame.coded);
+    assert_eq!(multi.scaled_slots, 0);
+
+    assert!(reset.resets_sequence);
+    assert_eq!(reset.before.slots, multi.after.slots);
+    assert_eq!(retained(reset.after.slots[0]), reset.frame.coded);
+    assert_ne!(reset.frame.sequence_header, key.frame.sequence_header);
+    assert_eq!(pictures.len(), events.len());
+    for (event, picture) in events.iter().zip(pictures) {
+        assert_eq!(event.frame, picture.provenance());
+    }
+}
+
+#[test]
+fn reference_observer_reports_scaling_and_in_band_long_term_dependencies() {
+    let reference_scaling = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-2frame-refscale-inter-64x64-51x51-q80.ivf"
+    );
+    let hidden_long_term = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-hidden-clk-ras-initial-tu-64x64.ivf"
+    );
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut decoder = reference_decoder(1, &events);
+    let pictures = decode(&mut decoder, &units(reference_scaling), |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    assert_eq!(pictures.len(), 2);
+    {
+        let mut events = events.lock().unwrap();
+        let [key, scaled] = events.as_slice() else {
+            panic!("expected the key and scaled frames");
+        };
+        assert_eq!((key.frame_size.width, key.frame_size.height), (64, 64));
+        assert_eq!(
+            (scaled.frame_size.width, scaled.frame_size.height),
+            (51, 51)
+        );
+        assert_eq!(scaled.scaled_slots, 1);
+        events.clear();
+    }
+    decoder.flush();
+    let pictures = decode(&mut decoder, &units(hidden_long_term), |_| {
+        DataProps::default().with_user_data(2)
+    });
+    let events = events.lock().unwrap();
+    let [hidden, ras] = events.as_slice() else {
+        panic!("expected the hidden key and the RAS frame");
+    };
+    assert_eq!(pictures.len(), 1);
+    assert_eq!(pictures[0].provenance(), ras.frame);
+    assert_eq!(ras.required_long_term_ids, [0]);
+    let ReferenceSlotState::Retained(reference) = ras.before.slots[0] else {
+        panic!("expected the in-band long-term reference in slot zero");
+    };
+    assert_eq!(reference.long_term_id, Some(0));
+    assert_eq!(reference.provenance, hidden.frame);
+}
+
+#[test]
+fn reference_observer_uses_switch_signaling_and_omits_display_events() {
+    let switch =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-frame-switch-64x64.ivf");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut decoder = reference_decoder(1, &events);
+    let units_switch = units(switch);
+    let _ = decode(&mut decoder, &units_switch, |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    {
+        let mut events = events.lock().unwrap();
+        let event = events.last().unwrap();
+        assert_eq!(event.obu_type, ObuType::Switch);
+        assert_eq!(
+            event.mapping.as_ref().unwrap().origin,
+            ReferenceMappingOrigin::Signaled
+        );
+        assert_eq!(
+            event
+                .after
+                .slots
+                .iter()
+                .filter(|slot| matches!(slot, ReferenceSlotState::Retained(_)))
+                .count(),
+            1
+        );
+        events.clear();
+    }
+
+    decoder.flush();
+    let _ = decoder
+        .send_data(&units_switch[1], DataProps::default())
+        .unwrap();
+    assert!(decoder.wait_picture().is_err());
+    assert!(events.lock().unwrap().is_empty());
+
+    decoder.flush();
+    let pictures = decode(&mut decoder, &units(SEF_FAMILIES), |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    let events = events.lock().unwrap();
+    let show_existing = pictures
+        .iter()
+        .find(|picture| {
+            let provenance = picture.provenance();
+            provenance.display != provenance.coded
+        })
+        .unwrap()
+        .provenance();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.frame.coded == show_existing.coded)
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.frame.coded != show_existing.display)
     );
 }

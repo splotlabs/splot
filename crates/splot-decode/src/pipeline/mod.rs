@@ -1794,6 +1794,10 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
+                    let before = session
+                        .reference_observer
+                        .as_ref()
+                        .map(|_| layer.reference.snapshot(frames));
                     layer
                         .reference
                         .update(frame_index, &inter_update, inter_key_or_switch);
@@ -1802,6 +1806,19 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         &inter_update,
                     );
+                    if let Some(observe) = &session.reference_observer
+                        && let Some(before) = before
+                        && let Some(frame) = frames.get(frame_index)
+                    {
+                        observe(crate::ReferenceFrameEvent::new(
+                            frame,
+                            &inter_core,
+                            &inter_update,
+                            before,
+                            layer.reference.snapshot(frames),
+                            false,
+                        ));
+                    }
                     layer.scheduler.note_frame(
                         next_candidate.obu_type(),
                         first_picture_in_tu,
@@ -2089,6 +2106,11 @@ fn decode_frames_in_order(
                     frame_is_output(&key_core),
                     key_envelope.offset,
                 )?;
+                let before = session.reference_observer.as_ref().and_then(|_| {
+                    xlayers
+                        .get(candidate_xlayer)
+                        .map(|layer| layer.reference.snapshot(frames))
+                });
                 if starts_new_sequence && !initializing_layer {
                     let (key_reference, flushed) = {
                         let key_reference =
@@ -2274,6 +2296,19 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         &key_update,
                     );
+                    if let Some(observe) = &session.reference_observer
+                        && let Some(before) = before
+                        && let Some(frame) = frames.get(frame_index)
+                    {
+                        observe(crate::ReferenceFrameEvent::new(
+                            frame,
+                            &key_core,
+                            &key_update,
+                            before,
+                            layer.reference.snapshot(frames),
+                            starts_new_sequence,
+                        ));
+                    }
                     layer
                         .in_band_long_term_prelude
                         .note_frame(&key_core, frame_index);

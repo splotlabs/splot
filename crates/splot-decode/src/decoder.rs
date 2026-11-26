@@ -685,6 +685,7 @@ impl Drop for DriverGuard {
 }
 
 struct DriverLaunch {
+    reference_observer: Option<crate::reference::observation::ReferenceObserver>,
     atlases: crate::ExternalAtlases,
     shared: Arc<Shared>,
     limits: DecodeLimits,
@@ -718,6 +719,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
     let mut session =
         DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
     session.external_atlases = launch.atlases;
+    session.reference_observer = launch.reference_observer;
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
@@ -771,6 +773,39 @@ impl Decoder {
         settings: DecoderSettings,
         atlases: crate::ExternalAtlases,
     ) -> Result<Self> {
+        Self::open(&settings, atlases, None)
+    }
+
+    /// Opens a decoder with an observer for admitted coded frames' reference states.
+    ///
+    /// The driver calls the observer in coded order. An event can precede a later
+    /// decode error. Skipped frames and show-existing output do not generate events.
+    /// The decoder uses in-band reference pictures. Missing prerequisites still
+    /// produce the usual decode errors.
+    ///
+    /// The observer remains installed across [`Self::flush`]. Return promptly.
+    /// Do not call this decoder from the observer. Do not panic in the observer.
+    /// A panic that unwinds stops the driver permanently. Assign distinct
+    /// [`DataProps::user_data`] values to distinguish locations in different units.
+    ///
+    /// # Errors
+    /// Returns the errors from [`Self::new`].
+    pub fn new_with_reference_observer(
+        settings: DecoderSettings,
+        observer: impl Fn(crate::ReferenceFrameEvent) + Send + Sync + 'static,
+    ) -> Result<Self> {
+        Self::open(
+            &settings,
+            crate::ExternalAtlases::default(),
+            Some(Box::new(observer)),
+        )
+    }
+
+    fn open(
+        settings: &DecoderSettings,
+        atlases: crate::ExternalAtlases,
+        reference_observer: Option<crate::reference::observation::ReferenceObserver>,
+    ) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
         settings.embedded_layer_selection.validate()?;
         settings.extended_layer_selection.validate()?;
@@ -805,6 +840,7 @@ impl Decoder {
         let driver = Arc::clone(&shared);
         let rows = crate::pipeline::row_scheduler(threads, resolved)?;
         let driver = resolved.enter(DriverLaunch {
+            reference_observer,
             atlases,
             shared: driver,
             limits: settings.limits,
