@@ -864,7 +864,6 @@ mod tests {
             Some(StreamUnit::IvfFrame { .. })
         ));
         let warning = reader.next_unit().unwrap().expect("a warning");
-        assert_eq!(reader.last_ivf_payload(), None);
         assert!(matches!(
             warning,
             StreamUnit::IvfWarning(IvfWarning::TrailingPartialFrameHeader {
@@ -873,6 +872,7 @@ mod tests {
                 needed: 10,
             }) if offset == ByteOffset::new(data.len() as u64)
         ));
+        assert_eq!(reader.last_ivf_payload(), None);
         assert!(reader.next_unit().unwrap().is_none());
 
         let mut grouped = TemporalUnitReader::new(&data[..]);
