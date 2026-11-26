@@ -5,8 +5,8 @@ use super::*;
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
 use fearless_simd::{
-    Bytes, Simd, SimdBase, SimdIntWiden, SimdNarrow, SimdWiden, i16x16, u8x16, u16x8, u16x16,
-    u32x4, u64x2,
+    Bytes, Simd, SimdBase, SimdInt, SimdIntWiden, SimdNarrow, SimdWiden, i16x16, u8x16, u16x8,
+    u16x16, u32x4, u64x2,
 };
 
 const REFINEMV_UNIT_SIZE: usize = 16;
@@ -954,6 +954,7 @@ fn sad_row_lanes<'a, S: Simd, const W: usize>(
     rows: impl Iterator<Item = (&'a [u16], &'a [u16])>,
     max: u16,
 ) -> u32 {
+    let signed_difference_fits = max <= i16::MAX as u16;
     let (zero, max) = (u16x8::splat(simd, 0), u16x8::splat(simd, max));
     let mut lanes = [zero; 3];
     let mut sad = 0;
@@ -986,7 +987,11 @@ fn sad_row_lanes<'a, S: Simd, const W: usize>(
                 load(left, 8 * vector).min(max),
                 load(right, 8 * vector).min(max),
             );
-            *lanes += left.max(right) - left.min(right);
+            *lanes += if signed_difference_fits {
+                (left.cast_signed() - right.cast_signed()).unsigned_abs()
+            } else {
+                left.max(right) - left.min(right)
+            };
         }
         if row % 16 == 15 {
             sad += flush(&mut lanes);

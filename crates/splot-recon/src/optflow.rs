@@ -730,8 +730,8 @@ fn unit_8x8<S: Simd>(
     let difference: [i16x8<S>; 8] = core::array::from_fn(|row| first[row] - second[row]);
     let sad = difference
         .iter()
-        .fold(i16x8::splat(simd, 0), |sum, row| sum + row.abs());
-    if u32::from(sad.reduce_sum().unsigned_abs()) < sad_threshold {
+        .fold(u16x8::splat(simd, 0), |sum, row| sum + row.unsigned_abs());
+    if u32::from(sad.reduce_sum()) < sad_threshold {
         return Ok(None);
     }
     if distances == [0; 2] {
