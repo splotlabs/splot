@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 splot-core.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

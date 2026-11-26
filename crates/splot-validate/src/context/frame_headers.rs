@@ -69,22 +69,24 @@ impl ValidatorContext {
                 .insert(xlayer, self.cvs.cvs_epoch(xlayer));
             self.frame_confirmed_activation_tu
                 .insert(xlayer, self.cvs.tu_index);
-            if let Some(activated) = self
-                .hls
-                .sequence_header(obu.header.extended_layer_id, seq_id)
-            {
+            if let Some(activated) = self.hls.sequence(xlayer, seq_id) {
+                if activated.offset.is_none() {
+                    self.sequence_fingerprints
+                        .entry((xlayer, seq_id))
+                        .or_insert((activated.fingerprint, self.cvs.tu_index));
+                }
                 self.frame_confirmed_activated_limits.insert(
                     xlayer,
                     (
-                        activated.general.max_tlayer_id,
-                        activated.general.max_mlayer_id,
+                        activated.header.general.max_tlayer_id,
+                        activated.header.general.max_mlayer_id,
                     ),
                 );
             }
             if previous != Some(seq_id) || newly_confirmed {
-                self.on_sequence_activation(xlayer, options, report);
+                self.on_sequence_activation(xlayer, obu.offset, options, report);
             } else if obu.header.obu_type == ObuType::ClosedLoopKey {
-                self.note_annex_a_iop_activation(xlayer, options);
+                self.note_annex_a_iop_activation(xlayer, obu.offset, options);
             }
             let is_clk = obu.header.obu_type == ObuType::ClosedLoopKey;
             if previous != Some(seq_id) || newly_confirmed || is_clk {
@@ -223,8 +225,7 @@ impl ValidatorContext {
 
     /// Resolves a parsed frame header's sequence-header reference, emitting range and
     /// availability diagnostics (AV2 § 5.18.2 / § 7.3.8.6 / § 7.3.8.7). Returns the
-    /// in-band-resolved `seq_header_id` for activation, or `None` when it is out of
-    /// range, resolved only externally, or unavailable.
+    /// resolved `seq_header_id` for activation when the parsed header is available.
     pub(super) fn resolve_frame_header_reference(
         &self,
         prefix: &FrameHeaderPrefix,
@@ -266,7 +267,7 @@ impl ValidatorContext {
                 .multi_frame_header(obu.header.extended_layer_id, cur)
             else {
                 // TODO(spec: AV2-7.3.8-HLS-AVAILABILITY): let options declare external MFHs.
-                if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+                if !matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
                     report.push(frame_header_unavailable_mfh(cur, obu));
                 }
                 return None;
@@ -336,8 +337,7 @@ impl ValidatorContext {
     /// Resolves an in-range `seq_header_id` referenced by a frame header against the
     /// HLS store, emitting `hls/unavailable-sequence-header` (§ 7.3.8.6) — and the
     /// external-HLS advisory under the default — when unavailable. Returns the id only
-    /// for in-band availability (so it can be activated; an external reference has no
-    /// modeled layer limits).
+    /// when the parsed header is available.
     pub(super) fn resolve_referenced_sequence_header(
         &self,
         seq_header_id: u32,
@@ -349,8 +349,8 @@ impl ValidatorContext {
             .hls
             .resolve_sequence_header(obu.header.extended_layer_id, seq_header_id, options)
         {
-            HlsResolution::InBand => SequenceHeaderId::try_new(seq_header_id),
-            HlsResolution::External => None,
+            HlsResolution::Parsed => SequenceHeaderId::try_new(seq_header_id),
+            HlsResolution::ExternalDeclaration => None,
             HlsResolution::Unavailable => {
                 let external_note = if matches!(options.external_hls, ExternalHlsMode::Disabled) {
                     " (external HLS is disabled)"

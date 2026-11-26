@@ -77,6 +77,8 @@ mod annex_a_value_space;
 mod cmvs;
 mod content_interpretation;
 mod cvs;
+mod external_hls;
+pub(crate) use external_hls::parse_external_hls;
 mod film_grain;
 mod frame_facts;
 mod frame_header_checks;

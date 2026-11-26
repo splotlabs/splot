@@ -318,7 +318,7 @@ fn repeated_headers_replace_the_same_id_only_in_their_layer()
                     && obu.header.obu_type == ObuType::SequenceHeader
             })
             .ok_or("missing sequence header in fixture")?;
-        assert_eq!(stored.offset, last.offset);
+        assert_eq!(stored.offset, Some(last.offset));
     }
     Ok(())
 }

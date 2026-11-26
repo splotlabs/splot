@@ -127,7 +127,7 @@ fn run_stream<R: Read>(
 ) -> ValidationExecution {
     let mut execution = ValidationExecution::default();
     let mut report = ValidationReport::new();
-    let mut context = ValidatorContext::default();
+    let mut context = ValidatorContext::with_options(options);
     let mut terminal_diagnostic = None;
 
     execution.completion = 'stream: loop {

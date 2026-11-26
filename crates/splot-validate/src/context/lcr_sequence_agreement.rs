@@ -23,7 +23,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
@@ -132,7 +132,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
@@ -246,7 +246,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {
@@ -419,7 +419,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.frame_confirmed_activation_for(xlayer) else {

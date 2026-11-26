@@ -404,7 +404,7 @@ impl ValidatorContext {
         }
 
         let xlayer = obu.header.extended_layer_id;
-        let external_disabled = matches!(options.external_hls, ExternalHlsMode::Disabled);
+        let external_disabled = !matches!(options.external_hls, ExternalHlsMode::Provided(_));
         match record {
             LayerConfigurationRecord::Global(info) => {
                 self.cmvs.note_global_lcr_present();
@@ -638,7 +638,7 @@ impl ValidatorContext {
         }
         if let Some(xlayer_map) = self.hls.global_lcr_xlayer_map(seq_lcr_id) {
             let xlayer_bit = xlayer.get();
-            if matches!(options.external_hls, ExternalHlsMode::Disabled)
+            if !matches!(options.external_hls, ExternalHlsMode::Provided(_))
                 && xlayer_bit < 31
                 && xlayer_map & (1u32 << xlayer_bit) == 0
             {
@@ -659,7 +659,7 @@ impl ValidatorContext {
             return;
         }
 
-        if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if !matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             report.push(
                 Diagnostic::error(
                     "hls/unavailable-layer-configuration-record",

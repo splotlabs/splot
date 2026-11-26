@@ -420,6 +420,16 @@ pub(super) fn rap_replay_suppressed_by_external_hls(
     key: RapHlsKey,
     external_hls: &ExternalHlsMode,
 ) -> bool {
+    if let ExternalHlsMode::Objects(objects) = external_hls {
+        return match key {
+            RapHlsKey::SequenceHeader(xlayer, id) => SequenceHeaderId::try_new(id)
+                .is_some_and(|id| objects.sequences.contains_key(&(xlayer, id))),
+            RapHlsKey::OperatingPointSet { xlayer, ops_id } => objects
+                .operating_points
+                .contains_key(&(ExtendedLayerId::from_bits(xlayer), ops_id)),
+            _ => false,
+        };
+    }
     let ExternalHlsMode::Provided(set) = external_hls else {
         return false;
     };
