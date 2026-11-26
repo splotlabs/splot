@@ -116,6 +116,37 @@ impl MLayerPresenceMap {
             .copied()
             .unwrap_or(false)
     }
+
+    /// Returns the nearest source of content interpretation for each embedded layer.
+    ///
+    /// A direct declaration returns its own layer. An absent declaration
+    /// inherits from the highest lower present layer with established parameters
+    /// (AV2 § 6.14 and § 7.3.8.11). Follow the returned sources to find the
+    /// original declaration.
+    #[must_use]
+    pub fn content_interpretation_sources(
+        &self,
+        declared: [bool; MAX_NUM_MLAYERS],
+    ) -> [Option<EmbeddedLayerId>; MAX_NUM_MLAYERS] {
+        let mut sources = [None; MAX_NUM_MLAYERS];
+        for (layer, has_declaration) in declared.into_iter().enumerate() {
+            let layer_id = EmbeddedLayerId::from_bits(layer as u8);
+            sources[layer] = if has_declaration {
+                Some(layer_id)
+            } else {
+                sources[..layer]
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(source, established)| {
+                        let source_id = EmbeddedLayerId::from_bits(source as u8);
+                        (established.is_some() && self.is_present(layer_id, source_id))
+                            .then_some(source_id)
+                    })
+            };
+        }
+        sources
+    }
 }
 
 /// Derived `TLayerDependencyMap[mLayer][currTLayer][refTLayer]` (AV2 § 5.4.1):
