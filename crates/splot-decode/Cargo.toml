@@ -14,7 +14,20 @@ publish.workspace = true
 
 [features]
 default = []
+block-evidence = []
 fuzzing = []
+
+[[test]]
+name = "block_evidence"
+required-features = ["block-evidence"]
+
+[[test]]
+name = "block_chroma_prediction_evidence"
+required-features = ["block-evidence"]
+
+[[test]]
+name = "block_transform_evidence"
+required-features = ["block-evidence"]
 
 # This crate owns the reviewed unsafe decoder boundary; every other workspace
 # crate but splot-recon and splot-capi retains `unsafe_code = "forbid"`. Keep the rest

@@ -99,28 +99,51 @@ pub(crate) enum SupportedDirectionalLumaMode {
     D157,
 }
 
+/// An AV2 chroma intra mode outside of chroma-from-luma prediction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SupportedChromaMode {
+#[non_exhaustive]
+pub enum SupportedChromaMode {
+    /// DC prediction.
     Dc,
+    /// Smooth prediction in both directions.
     Smooth,
+    /// 135-degree prediction with the luma angle delta.
     D135Follow,
+    /// 113-degree prediction with the luma angle delta.
     D113Follow,
+    /// 157-degree prediction with the luma angle delta.
     D157Follow,
+    /// Vertical prediction with the luma angle delta.
     VerticalFollow,
+    /// Vertical prediction.
     Vertical,
+    /// Horizontal prediction with the luma angle delta.
     HorizontalFollow,
+    /// Horizontal prediction.
     Horizontal,
+    /// 45-degree prediction with the luma angle delta.
     D45Follow,
+    /// 67-degree prediction with the luma angle delta.
     D67Follow,
+    /// 45-degree prediction.
     D45,
+    /// 67-degree prediction.
     D67,
+    /// 135-degree prediction.
     D135,
+    /// 113-degree prediction.
     D113,
+    /// 203-degree prediction with the luma angle delta.
     D203Follow,
+    /// 203-degree prediction.
     D203,
+    /// 157-degree prediction.
     D157,
+    /// Paeth prediction.
     Paeth,
+    /// Smooth prediction in the vertical direction.
     SmoothVertical,
+    /// Smooth prediction in the horizontal direction.
     SmoothHorizontal,
 }
 

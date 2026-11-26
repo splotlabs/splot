@@ -503,6 +503,25 @@ fn run_ci(fast: bool, exclude_tests: &[String]) -> Result<()> {
             ]
             .concat(),
         )?;
+        if !exclude_tests
+            .iter()
+            .any(|package| package == "splot-decode")
+        {
+            run_cargo(&[
+                "test",
+                "--locked",
+                "-p",
+                "splot-decode",
+                "--features",
+                "block-evidence",
+                "--test",
+                "block_evidence",
+                "--test",
+                "block_chroma_prediction_evidence",
+                "--test",
+                "block_transform_evidence",
+            ])?;
+        }
         run_cargo(&[&["test", "--doc", "--workspace", "--locked"][..], &exclude].concat())?;
         run_cargo_with_env(
             &[("RUSTDOCFLAGS", "-D warnings")],

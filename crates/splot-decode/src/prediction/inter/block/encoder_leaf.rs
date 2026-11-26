@@ -829,6 +829,8 @@ impl EncoderInterTile {
     fn resolution_state(&mut self, block: &MvBlockContext) -> MvResolutionState<'_> {
         self.reset_banks(block);
         MvResolutionState {
+            #[cfg(feature = "block-evidence")]
+            evidence: None,
             grid: &mut self.grid,
             ref_mv_bank: &mut self.ref_mv_bank,
             warp_param_bank: &mut self.warp_bank,

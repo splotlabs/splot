@@ -203,10 +203,33 @@ impl TxType {
     ];
 
     pub(super) fn from_value(value: usize) -> Result<Self> {
-        Self::ALL
-            .get(value)
-            .copied()
-            .ok_or(EncoderSyntaxError::Unsupported("transform type"))
+        Self::from_ordinal(value).ok_or(EncoderSyntaxError::Unsupported("transform type"))
+    }
+
+    pub(crate) fn from_ordinal(value: usize) -> Option<Self> {
+        Self::ALL.get(value).copied()
+    }
+
+    /// The canonical AV2 name for this transform type.
+    pub const fn av2_name(self) -> &'static str {
+        match self {
+            Self::DctDct => "DCT_DCT",
+            Self::AdstDct => "ADST_DCT",
+            Self::DctAdst => "DCT_ADST",
+            Self::AdstAdst => "ADST_ADST",
+            Self::FlipadstDct => "FLIPADST_DCT",
+            Self::DctFlipadst => "DCT_FLIPADST",
+            Self::FlipadstFlipadst => "FLIPADST_FLIPADST",
+            Self::AdstFlipadst => "ADST_FLIPADST",
+            Self::FlipadstAdst => "FLIPADST_ADST",
+            Self::Idtx => "IDTX",
+            Self::VDct => "V_DCT",
+            Self::HDct => "H_DCT",
+            Self::VAdst => "V_ADST",
+            Self::HAdst => "H_ADST",
+            Self::VFlipadst => "V_FLIPADST",
+            Self::HFlipadst => "H_FLIPADST",
+        }
     }
 }
 

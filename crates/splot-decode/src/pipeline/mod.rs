@@ -465,6 +465,8 @@ pub(crate) fn decode_key_frame(
         FrameOutputEffects::empty(),
         crate::DataProps::default(),
         PictureProvenance::TEST,
+        #[cfg(feature = "block-evidence")]
+        None,
     ));
     ring.harvest_all(&mut pools);
     match ring.take_failure() {
@@ -510,6 +512,9 @@ fn decode_key_frame_with_effects(
     output_effects: FrameOutputEffects,
     props: crate::DataProps,
     provenance: PictureProvenance,
+    #[cfg(feature = "block-evidence")] block_evidence: Option<
+        Arc<crate::block_evidence::BlockEvidenceState>,
+    >,
 ) -> Result<PipelineFrame> {
     ring.reserve(pools);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
@@ -534,6 +539,8 @@ fn decode_key_frame_with_effects(
                 core,
                 empty_key_reference(frame_envelope.offset)?,
                 frame_index,
+                #[cfg(feature = "block-evidence")]
+                block_evidence,
             )?
         });
         let frame_rate = output_effects.frame_rate(frame_rate);
@@ -555,6 +562,10 @@ fn decode_key_frame_with_effects(
         });
     }
     let mut product_writers = frames.reserve_products()?;
+    #[cfg(feature = "block-evidence")]
+    {
+        product_writers.block_evidence = block_evidence;
+    }
     let (frame, frame_cdfs, ccso_header, ccso_grid, segment_ids, motion_field) =
         with_sample!(sequence, T, {
             let walk = frame_engine::walk_frame::<_, T>(
@@ -727,6 +738,9 @@ fn push_split_inter<T: SplitSample>(
     core: Arc<FrameHeaderCore>,
     reference: inter::InterReferenceState<T>,
     frame_index: usize,
+    #[cfg(feature = "block-evidence")] block_evidence: Option<
+        Arc<crate::block_evidence::BlockEvidenceState>,
+    >,
 ) -> Result<(
     inflight::PipelineFrameSlot,
     Arc<FrameHeaderCore>,
@@ -755,6 +769,12 @@ fn push_split_inter<T: SplitSample>(
             reference.motion_dependencies(&inter.ref_frame_idx)
         });
     let writers = frames.reserve_products()?;
+    #[cfg(feature = "block-evidence")]
+    let writers = {
+        let mut writers = writers;
+        writers.block_evidence = block_evidence;
+        writers
+    };
     let publications = writers.handles();
     split.push(
         rows,
@@ -1575,6 +1595,13 @@ fn decode_frames_in_order(
                     let split = rows.filter(|_| {
                         inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
                     });
+                    #[cfg(feature = "block-evidence")]
+                    let block_evidence = session.block_evidence.as_ref().and_then(|evidence| {
+                        evidence.select(
+                            PictureProvenance::direct(display, layer.sequence_location),
+                            inter_envelope.header,
+                        )
+                    });
                     let _user_qm_scope =
                         crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
                     let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
@@ -1595,6 +1622,8 @@ fn decode_frames_in_order(
                             inter_core,
                             inter_state,
                             frame_index,
+                            #[cfg(feature = "block-evidence")]
+                            block_evidence,
                         )?
                     } else if inter_envelope.header.obu_type.is_tip_frame() {
                         ring.reserve(pools);
@@ -1650,6 +1679,10 @@ fn decode_frames_in_order(
                             frame_engine::FrameSetup::Inter(&inter_state)
                         };
                         let mut product_writers = frames.reserve_products()?;
+                        #[cfg(feature = "block-evidence")]
+                        {
+                            product_writers.block_evidence = block_evidence;
+                        }
                         let walk = frame_engine::walk_frame(
                             backend,
                             &mut T::pools(pools).scratch,
@@ -1853,6 +1886,12 @@ fn decode_frames_in_order(
                         newly_immediate,
                         emit,
                     )?;
+                }
+                #[cfg(feature = "block-evidence")]
+                if let Some(evidence) = &session.block_evidence
+                    && let Some(frame) = frames.get(frame_index)
+                {
+                    evidence.finish_frame(frame);
                 }
                 reclaim_unowned_frames(
                     frames,
@@ -2227,6 +2266,13 @@ fn decode_frames_in_order(
                         key_output_effects,
                         props,
                         PictureProvenance::direct(display, sequence_location),
+                        #[cfg(feature = "block-evidence")]
+                        session.block_evidence.as_ref().and_then(|evidence| {
+                            evidence.select(
+                                PictureProvenance::direct(display, sequence_location),
+                                key_envelope.header,
+                            )
+                        }),
                     )?
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
@@ -2350,6 +2396,12 @@ fn decode_frames_in_order(
                         newly_immediate,
                         emit,
                     )?;
+                }
+                #[cfg(feature = "block-evidence")]
+                if let Some(evidence) = &session.block_evidence
+                    && let Some(frame) = frames.get(frame_index)
+                {
+                    evidence.finish_frame(frame);
                 }
                 reclaim_unowned_frames(
                     frames,

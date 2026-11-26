@@ -39,8 +39,9 @@ use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 pub(crate) use block_decoded_state::{TileBlockDecodedState, TileBlockDecodedStateError};
 #[cfg(test)]
 pub(crate) use cdf::block_context::IntraJointMode;
+pub use cdf::block_context::SupportedChromaMode;
 pub(crate) use cdf::block_context::{
-    IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
+    IntraYMode, IntraYModeClass, MrlSelection, SupportedDirectionalLumaMode,
 };
 pub(crate) use cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 pub(crate) use cdf::{
@@ -102,14 +103,14 @@ pub(crate) use intra_joint_modes::{
 pub(crate) use mi_size_state::{PartitionNeighbours, UvEdges};
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
-#[cfg(test)]
+#[cfg(any(test, feature = "block-evidence"))]
 pub(crate) use partition_allowed::PartitionTreeType;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
 pub(crate) use partition_traversal::BRU_ACTIVE;
 pub(crate) use partition_traversal::BRU_INACTIVE;
 pub(crate) use partition_traversal::LrUnitRestorationType;
-#[cfg(test)]
+#[cfg(any(test, feature = "block-evidence"))]
 pub(crate) use partition_traversal::TilePartitionCall;
 pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
