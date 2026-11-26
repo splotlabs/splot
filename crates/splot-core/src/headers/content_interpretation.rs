@@ -130,23 +130,6 @@ impl ColorDescription {
             })
     }
 
-    /// Returns whether two declarations contain different known information.
-    ///
-    /// The comparison uses the derived color and aspect ratio values (AV2
-    /// § 6.14). Reserved bits and an undecidable aspect ratio do not establish
-    /// differences.
-    #[must_use]
-    pub fn information_differs(&self, other: &Self) -> bool {
-        self.scan_type_idc != other.scan_type_idc
-            || self.chroma_sample_position != other.chroma_sample_position
-            || self.timing_info != other.timing_info
-            || self.derived_color() != other.derived_color()
-            || matches!(
-                (self.derived_sample_aspect_ratio(), other.derived_sample_aspect_ratio()),
-                (Some(a), Some(b)) if a != b
-            )
-    }
-
     /// Returns the derived color information per AV2 § 6.14 (Table 6.13): the explicit
     /// values for `idc == 0`, the preset triple for `idc` in `1..=5`, or the
     /// unspecified `(2, 2, 2)` for a reserved `idc` (`6..=127`), which decoders ignore
@@ -320,6 +303,23 @@ impl ContentInterpretation {
             timing_info: None,
             reserved_2bit: 0,
         }
+    }
+
+    /// Returns whether two declarations contain different known information.
+    ///
+    /// The comparison uses the derived color and aspect ratio values (AV2
+    /// § 6.14). Reserved bits and an undecidable aspect ratio do not establish
+    /// differences.
+    #[must_use]
+    pub fn information_differs(&self, other: &Self) -> bool {
+        self.scan_type_idc != other.scan_type_idc
+            || self.chroma_sample_position != other.chroma_sample_position
+            || self.timing_info != other.timing_info
+            || self.derived_color() != other.derived_color()
+            || matches!(
+                (self.derived_sample_aspect_ratio(), other.derived_sample_aspect_ratio()),
+                (Some(a), Some(b)) if a != b
+            )
     }
 
     /// Returns the derived color information, resolving an absent color description
