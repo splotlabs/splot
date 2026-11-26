@@ -61,6 +61,7 @@ macro_rules! baseline_simd {
 pub(crate) use baseline_simd;
 
 mod bitstream;
+pub mod block_evidence;
 pub mod context;
 mod decoder;
 pub mod diagnostic;

@@ -30,6 +30,9 @@ use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
 };
 use super::*;
+use crate::block_evidence::{
+    BlockCopyMotion, BlockEvidenceTile, BlockEvidenceTree, BlockMotion, BlockMotionPrecision,
+};
 
 impl LeafSlot {
     /// The neighbour flags the parser published for this leaf.
@@ -283,7 +286,8 @@ fn resolve_pending_intrabc(
         state.drl_reorder,
         info.ref_selection(),
     );
-    let info = resolve_pending_intrabc_info(info, pred_mv);
+    let pending_info = info;
+    let info = resolve_pending_intrabc_info(pending_info, pred_mv);
     let mv = MotionVector {
         row: info.block_mv.row,
         col: info.block_mv.col,
@@ -309,6 +313,29 @@ fn resolve_pending_intrabc(
         state.ibc_local.as_deref(),
         state.tile_offset,
     )?;
+    if let Some(evidence) = &state.evidence {
+        let tree = if frontier.is_luma_part() {
+            BlockEvidenceTree::Luma
+        } else {
+            BlockEvidenceTree::Shared
+        };
+        evidence.record_motion(
+            tree,
+            frontier.c * 4,
+            frontier.r * 4,
+            n4w * 4,
+            n4h * 4,
+            BlockMotion::IntraBlockCopy(BlockCopyMotion {
+                vector: mv,
+                precision: pending_info
+                    .difference()
+                    .and_then(|_| BlockMotionPrecision::from_decoder(pending_info.precision())),
+                difference: pending_info.difference(),
+                morph: info.morph_pred,
+                source: prediction.direct_luma_source(),
+            }),
+        );
+    }
     let command = intrabc::IntrabcReconCommand::new(
         prediction,
         residual,
@@ -475,6 +502,7 @@ pub(super) struct ResolvedInterBlock {
 /// Mutable state the § 7.12 resolution chain owns, plus the frame-level facts
 /// its derivations read.
 pub(super) struct MvResolutionState<'a> {
+    pub(super) evidence: Option<BlockEvidenceTile<'a>>,
     pub(super) grid: &'a mut NeighbourMvGrid,
     pub(super) ref_mv_bank: &'a mut Option<RefMvBank>,
     pub(super) warp_param_bank: &'a mut WarpParamBank,

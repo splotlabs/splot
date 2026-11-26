@@ -81,6 +81,13 @@ impl IntrabcReconPrediction {
         })
     }
 
+    pub(super) const fn direct_luma_source(&self) -> Option<PlaneRect> {
+        match self.luma_source {
+            IntrabcLumaSource::Copy(source) => Some(source),
+            IntrabcLumaSource::Subpel(_) => None,
+        }
+    }
+
     fn derive_chroma(
         core: &FrameHeaderCore,
         frontier: &DecodeBlockFrontier,

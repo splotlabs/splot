@@ -805,6 +805,14 @@ impl PendingIntrabcInfo {
         self.syntax.ref_selection
     }
 
+    pub(crate) const fn precision(self) -> u8 {
+        self.syntax.mv_precision
+    }
+
+    pub(crate) const fn difference(self) -> Option<MotionVector> {
+        self.mvd
+    }
+
     pub(crate) const fn morph_pred(self) -> bool {
         self.morph_pred
     }

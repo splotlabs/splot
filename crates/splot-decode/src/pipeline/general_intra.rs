@@ -14,6 +14,9 @@ use crate::bitstream::tile_payload::{
     LumaTransformTypeContext, MrlSelection, SupportedChromaMode, TileCoeffStateError,
     TransformToolResidualPolicy, classify_coeff_parse_error, read_lossless_luma_tx_size,
 };
+use crate::block_evidence::{
+    BlockChromaPrediction, BlockIntraEvidence, BlockIntraPrediction, BlockLumaPrediction,
+};
 use crate::residual::pipeline::{
     ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan, ResidualParseError,
     ResidualPlanError, ResidualPlanInput,
@@ -63,6 +66,14 @@ pub(crate) fn swap_general_intra_scratch<T: ReconSample>(
 }
 
 impl GeneralIntraReconCommand {
+    pub(crate) const fn segment_id(&self) -> u8 {
+        self.segment_id
+    }
+
+    pub(crate) const fn qindex(&self) -> u32 {
+        self.qindex
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
@@ -90,6 +101,16 @@ impl GeneralIntraReconCommand {
                 self.luma_transform_type_context,
             )
             .map_err(|error| general_intra_residual_error(error, tile_offset))
+    }
+
+    pub(crate) fn record_transforms(
+        &self,
+        arena: &crate::residual::pipeline::ResidualPlaneArena,
+        evidence: crate::block_evidence::BlockEvidenceTile<'_>,
+        frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
+    ) {
+        self.residual
+            .visit_transform_units(arena, |unit| evidence.record_transform(frontier, unit));
     }
 }
 
@@ -191,6 +212,7 @@ pub(crate) fn decode_one_general_intra_block(
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     tools: &GeneralIntraFrameTools,
     neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
+    evidence: Option<&BlockIntraEvidence<'_>>,
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let edges = neighbours.edges;
     let _qm_segment_scope =
@@ -262,6 +284,16 @@ pub(crate) fn decode_one_general_intra_block(
                 luma_tx_partition_context: None,
             },
         )?;
+        if let Some(evidence) = evidence {
+            evidence.record(
+                BlockIntraPrediction {
+                    luma: None,
+                    chroma: Some(BlockChromaPrediction::from_plan(chroma_plan)),
+                },
+                command.segment_id(),
+                command.qindex(),
+            );
+        }
         return Ok((GeneralIntraLeafMode::chroma(chroma.uv_bits()), command));
     }
 
@@ -320,6 +352,16 @@ pub(crate) fn decode_one_general_intra_block(
             ),
         },
     )?;
+    if let Some(evidence) = evidence {
+        evidence.record(
+            BlockIntraPrediction {
+                luma: Some(BlockLumaPrediction::from_plan(luma_plan, &modes)),
+                chroma: chroma_plan.map(BlockChromaPrediction::from_plan),
+            },
+            command.segment_id(),
+            command.qindex(),
+        );
+    }
     let leaf = GeneralIntraLeafMode::luma(
         modes.intra_joint_mode,
         modes.y_mode,

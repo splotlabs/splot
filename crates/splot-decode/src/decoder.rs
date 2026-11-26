@@ -27,6 +27,7 @@ use splot_recon::{
 };
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, fill_buffer};
+use crate::block_evidence::{BlockEvidenceCapture, BlockEvidenceRequest, BlockEvidenceState};
 use crate::error::{DecodeError, DecoderStateError, Result};
 use crate::pipeline::frame_store::{CodedFrameObserver, DecodeObserver};
 use crate::pipeline::{ActiveFilmGrain, DecodeSession, PipelineDecodedFrame, PipelineFrame};
@@ -739,6 +740,7 @@ impl Drop for DriverGuard {
 
 struct DriverLaunch {
     observer: Option<Box<dyn DecodeObserver>>,
+    block_evidence: Option<Arc<BlockEvidenceState>>,
     atlases: crate::ExternalAtlases,
     shared: Arc<Shared>,
     limits: DecodeLimits,
@@ -773,6 +775,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
         DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
     session.external_atlases = launch.atlases;
     session.observer = launch.observer;
+    session.block_evidence = launch.block_evidence;
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
@@ -792,6 +795,9 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
                 Ok(())
             },
         );
+        if let Some(evidence) = &session.block_evidence {
+            evidence.finish(result.is_ok());
+        }
         if !guard.0.park(result) {
             break;
         }
@@ -826,7 +832,7 @@ impl Decoder {
         settings: DecoderSettings,
         atlases: crate::ExternalAtlases,
     ) -> Result<Self> {
-        Self::open(&settings, atlases, None)
+        Self::open(&settings, atlases, None, None)
     }
 
     /// Opens a decoder with an observer for frames admitted on its decode path.
@@ -850,6 +856,7 @@ impl Decoder {
             &settings,
             crate::ExternalAtlases::default(),
             Some(Box::new(CodedFrameObserver(observer))),
+            None,
         )
     }
 
@@ -877,13 +884,36 @@ impl Decoder {
             Some(Box::new(
                 crate::reference::observation::CaptureReferences::new(observer),
             )),
+            None,
         )
+    }
+
+    /// Opens a decoder with a one-shot capture for partitions and coding blocks.
+    /// The capture does not skip prerequisite decoding.
+    /// Assign distinct [`DataProps::user_data`] values to distinguish input units.
+    /// A flush ends the capture and resets the decoder.
+    ///
+    /// # Errors
+    /// Returns the errors from [`Self::new`].
+    pub fn new_with_block_evidence(
+        settings: DecoderSettings,
+        request: BlockEvidenceRequest,
+    ) -> Result<(Self, BlockEvidenceCapture)> {
+        let evidence = Arc::new(BlockEvidenceState::new(request));
+        let decoder = Self::open(
+            &settings,
+            crate::ExternalAtlases::default(),
+            None,
+            Some(Arc::clone(&evidence)),
+        )?;
+        Ok((decoder, BlockEvidenceCapture(evidence)))
     }
 
     fn open(
         settings: &DecoderSettings,
         atlases: crate::ExternalAtlases,
         observer: Option<Box<dyn DecodeObserver>>,
+        block_evidence: Option<Arc<BlockEvidenceState>>,
     ) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
         settings.embedded_layer_selection.validate()?;
@@ -920,6 +950,7 @@ impl Decoder {
         let rows = crate::pipeline::row_scheduler(threads, resolved)?;
         let driver = resolved.enter(DriverLaunch {
             observer,
+            block_evidence,
             atlases,
             shared: driver,
             limits: settings.limits,

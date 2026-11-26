@@ -15,17 +15,23 @@ use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc;
 use super::super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
-    InterResidualBlock, PlacedInterBlock,
+    InterResidualBlock, PlacedInterBlock, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
+    SINGLE_MODE_NEWMV, block_reference_slot,
 };
 use super::compound_path::{FrameRefFacts, append_compound_temporal_motion};
 use super::resolve::{
-    InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax,
+    InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax, WarpModelSource,
     predict_by_translation_under_integer_mv, resolve_inter_block,
 };
 use super::temporal::temporal_motion_block;
 use super::tip::{self, TipReconstructScratch};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
+use crate::block_evidence::{
+    BlockCompoundBlend, BlockEvidenceTree, BlockInterMode, BlockInterMotion, BlockInterPrediction,
+    BlockMotion, BlockMotionPrecision, BlockMotionRefinement, BlockPrediction, BlockReference,
+    BlockWarpSource, InterMode,
+};
 
 #[derive(Default)]
 pub(super) struct ParsedInterBlock {
@@ -119,6 +125,90 @@ impl PendingInterCommand {
         self.syntax.flag_syntax(self.placed.block.ref_frame0)
     }
 
+    #[cold]
+    pub(super) fn prediction(
+        &self,
+        core: &FrameHeaderCore,
+        facts: &FrameRefFacts,
+    ) -> BlockPrediction {
+        let parsed = &self.placed.block;
+        let names = core
+            .inter
+            .as_ref()
+            .map_or(&[][..], |inter| &inter.ref_frame_idx[..]);
+        let reference = |index| {
+            Some(BlockReference::Frame {
+                list_index: u8::try_from(index).ok()?,
+                slot: block_reference_slot(names, index).ok()?,
+                scaled: facts.scaled(index).ok(),
+            })
+        };
+        let mut references = [None; 2];
+        let mut motion_differences = [None; 2];
+        let mut skip_mode = false;
+        let mode = match &self.syntax.motion {
+            InterMotionSyntax::Single(single) => {
+                let single_mode = match single.mode {
+                    SINGLE_MODE_NEARMV => InterMode::Near,
+                    SINGLE_MODE_GLOBALMV => InterMode::Global,
+                    SINGLE_MODE_NEWMV => {
+                        motion_differences[0] = Some(single.mvd);
+                        InterMode::New
+                    }
+                    _ => return BlockPrediction::Unavailable,
+                };
+                references[0] = if single.tip_ref {
+                    Some(BlockReference::Tip)
+                } else {
+                    reference(parsed.ref_frame0)
+                };
+                BlockInterMode::Single(single_mode)
+            }
+            InterMotionSyntax::Warp(warp) => {
+                references[0] = reference(parsed.ref_frame0);
+                motion_differences[0] = warp.mvd;
+                BlockInterMode::Warp(match warp.source {
+                    WarpModelSource::LocalSamples => BlockWarpSource::Local,
+                    WarpModelSource::Extended => BlockWarpSource::Extended,
+                    WarpModelSource::Delta(_) => BlockWarpSource::Delta,
+                    WarpModelSource::Candidate => BlockWarpSource::Candidate,
+                })
+            }
+            InterMotionSyntax::Compound(compound) => {
+                references = [reference(parsed.ref_frame0), reference(compound.ref_frame1)];
+                motion_differences = if let Some(joint) = compound.joint {
+                    if joint.base_list == 0 {
+                        [Some(compound.mvd[0]), None]
+                    } else {
+                        [None, Some(compound.mvd[0])]
+                    }
+                } else {
+                    [
+                        compound.y_mode.list0_is_newmv().then_some(compound.mvd[0]),
+                        compound.y_mode.list1_is_newmv().then_some(compound.mvd[1]),
+                    ]
+                };
+                skip_mode = compound.skip_mode;
+                BlockInterMode::Compound(compound.y_mode)
+            }
+            InterMotionSyntax::Bru => {
+                references[0] = reference(parsed.ref_frame0);
+                BlockInterMode::BlockRefresh
+            }
+        };
+        BlockPrediction::Inter(BlockInterPrediction {
+            mode,
+            references,
+            precision: BlockMotionPrecision::from_decoder(self.syntax.precision.mv_precision),
+            motion_differences,
+            interpolation: self.syntax.interp,
+            inter_intra: parsed.interintra.map(InterIntraPrediction::mode),
+            bawp: parsed.bawp.enabled,
+            skip_mode,
+            adaptive_mvd: self.syntax.use_amvd,
+        })
+    }
+
     /// Resolves the leaf's § 7.12 motion. A warp block of a
     /// `force_integer_mv` frame keeps its stored warp model but predicts by
     /// translation (`useWarp = 0`, § 7.13.3.14).
@@ -154,6 +244,16 @@ impl PendingInterCommand {
         };
         let mut resolved = resolve_inter_block(&block, &self.syntax, self.leaf, state)?;
         predict_by_translation_under_integer_mv(&self.syntax, state.core, &mut resolved);
+        if let Some(evidence) = &state.evidence {
+            evidence.record_motion(
+                BlockEvidenceTree::Shared,
+                placed.luma_x(),
+                placed.luma_y(),
+                placed.luma_w(),
+                placed.luma_h(),
+                inter_motion_evidence(&kind, &resolved, parsed.optflow_distances.is_some()),
+            );
+        }
         let placed = placed.with_block(InterBlock {
             ref_frame0: parsed.ref_frame0,
             ref_frame1,
@@ -175,6 +275,44 @@ impl PendingInterCommand {
             kind,
         })
     }
+}
+
+#[cold]
+fn inter_motion_evidence(
+    kind: &InterReconKind,
+    resolved: &super::resolve::ResolvedInterBlock,
+    optical_flow: bool,
+) -> BlockMotion {
+    let compound = matches!(kind, InterReconKind::Compound { .. });
+    let refinement = match *kind {
+        InterReconKind::Tip { .. } => BlockMotionRefinement::Tip,
+        InterReconKind::Compound { use_refinemv, .. } if use_refinemv || optical_flow => {
+            BlockMotionRefinement::Compound {
+                refine_mv: use_refinemv,
+                optical_flow,
+            }
+        }
+        _ => BlockMotionRefinement::None,
+    };
+    let blend = compound.then_some(match resolved.blend {
+        mc::CompoundBlend::Average {
+            implicit_mask,
+            cwp_weight,
+        } => BlockCompoundBlend::Average {
+            implicit_mask,
+            weight: cwp_weight,
+        },
+        mc::CompoundBlend::DiffWeighted { inverse } => {
+            BlockCompoundBlend::DifferenceWeighted { inverse }
+        }
+        mc::CompoundBlend::Wedge { index, sign } => BlockCompoundBlend::Wedge { index, sign },
+    });
+    BlockMotion::Inter(BlockInterMotion {
+        vectors: [Some(resolved.mv[0]), compound.then_some(resolved.mv[1])],
+        warp: resolved.warp_params,
+        refinement,
+        blend,
+    })
 }
 
 impl InterReconCommand {

@@ -82,6 +82,7 @@ fn resolve_without_neighbours(
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
     let order_hints = [Some(0), Some(0)];
     let state = MvResolutionState {
+        evidence: None,
         grid: &mut grid,
         ref_mv_bank: &mut None,
         warp_param_bank: &mut WarpParamBank::new(),
@@ -138,6 +139,7 @@ fn local_intrabc_replays_chroma_partition_padding_in_leaf_order() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
     let mut ibc = TileLocalIbcState::new(0..16, 0..16, 32, false).unwrap();
     let mut state = MvResolutionState {
+        evidence: None,
         grid: &mut grid,
         ref_mv_bank: &mut None,
         warp_param_bank: &mut WarpParamBank::new(),

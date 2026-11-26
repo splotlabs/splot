@@ -111,6 +111,7 @@ pub(crate) struct FrameProducts {
 }
 
 pub(crate) struct FrameProductWriters {
+    pub(crate) block_evidence: Option<Arc<crate::block_evidence::BlockEvidenceState>>,
     handles: FrameProducts,
     frame_cdfs: Option<Arc<FrameCdfSubset>>,
     ccso_grid: Option<Arc<CcsoUnitGrid>>,
@@ -144,6 +145,7 @@ impl FrameProducts {
         ccso_cell.reset();
         segment_cell.reset();
         Some(FrameProductWriters {
+            block_evidence: None,
             handles: self.clone(),
             frame_cdfs,
             ccso_grid,

@@ -109,6 +109,7 @@ impl<F: Fn(CodedFrameEvent) + Send + Sync> DecodeObserver for CodedFrameObserver
 /// between decode calls, as dav2d keeps its frame contexts.
 pub(crate) struct DecodeSession {
     pub(crate) observer: Option<Box<dyn DecodeObserver>>,
+    pub(crate) block_evidence: Option<Arc<crate::block_evidence::BlockEvidenceState>>,
     pub(crate) external_atlases: crate::ExternalAtlases,
     frame_delay: NonZeroUsize,
     /// Immutable concrete SIMD backend validated when the session opened.
@@ -143,6 +144,7 @@ impl DecodeSession {
             frame_delay,
             external_atlases: crate::ExternalAtlases::default(),
             observer: None,
+            block_evidence: None,
             backend,
             rows,
             retained: Mutex::new(None),

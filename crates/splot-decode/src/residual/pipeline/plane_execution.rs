@@ -18,6 +18,7 @@ use crate::bitstream::tile_payload::{
     luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
     luma_transform_records_for_partition, read_intra_luma_tx_partition,
 };
+use crate::block_evidence::DecodedTransformUnit;
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
 use super::transform_units::tx_size_log2;
@@ -507,6 +508,37 @@ impl ResidualPlanePlan {
 }
 
 impl ParsedGeneralIntraResidual {
+    pub(crate) fn visit_transform_units(
+        &self,
+        arena: &ResidualPlaneArena,
+        mut visit: impl FnMut(DecodedTransformUnit<'_>),
+    ) {
+        for plane in &arena.planes[self.planes.start as usize..self.planes.end as usize] {
+            let plane_id = plane.plane.plane_id;
+            match &plane.kind {
+                ParsedResidualPlaneKind::Single { coeffs, .. } => visit(DecodedTransformUnit {
+                    plane: plane_id,
+                    x: plane.plane.x as usize,
+                    y: plane.plane.y as usize,
+                    tx_size: plane.plane.tx_size,
+                    coeffs,
+                }),
+                ParsedResidualPlaneKind::Lossless(units)
+                | ParsedResidualPlaneKind::PartitionedLuma(units) => {
+                    for unit in &arena.units[units.start as usize..units.end as usize] {
+                        visit(DecodedTransformUnit {
+                            plane: plane_id,
+                            x: unit.block.x as usize,
+                            y: unit.block.y as usize,
+                            tx_size: unit.block.tx_size,
+                            coeffs: &unit.block.coeffs,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,

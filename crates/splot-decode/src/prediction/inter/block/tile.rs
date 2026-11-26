@@ -12,6 +12,7 @@ use splot_recon::{CurrentFrameSurface, PlaneId, ReconError};
 use super::*;
 
 mod admission;
+mod evidence;
 pub(super) use admission::project_temporal_band;
 
 use admission::TileCommit;
@@ -107,6 +108,7 @@ pub(super) struct TileFilterRecords {
 /// that runs after the driver moved on can rebuild its tile context.
 #[derive(Clone)]
 pub(crate) struct TileWalkParams {
+    pub(super) block_evidence: Option<crate::block_evidence::BlockEvidenceRecorder>,
     pub(super) filter_record_needs: crate::filters::wienerns_lr::FilterRecordNeeds,
     pub(super) limits: crate::DecodeLimits,
     pub(super) mi_rows: usize,
@@ -250,12 +252,30 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
             self.sink.core.frame_is_intra == Some(true),
         );
         debug_assert_eq!(frontier.bru_active(), ACTIVE);
-        if ACTIVE {
+        let leaf = if ACTIVE {
             decode_block(work_unit, symbols, frontier, self, neighbours)
         } else {
             super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
+        }?;
+        if let Some(evidence) = self.evidence(work_unit.tile_num() as usize) {
+            evidence::observe_leaf(evidence, self, frontier);
         }
-        .map(|leaf| (leaf, ()))
+        Ok((leaf, ()))
+    }
+
+    fn evidence(&self, tile: usize) -> Option<crate::block_evidence::BlockEvidenceTile<'_>> {
+        self.sink
+            .params
+            .block_evidence
+            .as_ref()
+            .and_then(|evidence| evidence.tile(tile))
+    }
+
+    fn set_evidence_parent(
+        &mut self,
+        parent: Option<crate::bitstream::tile_payload::TilePartitionCall>,
+    ) {
+        self.evidence_parent = parent;
     }
 
     #[inline]
@@ -613,6 +633,7 @@ impl<'payload> TileParser<'payload> {
             delta_q_state: &mut self.delta_q_state,
             segment_id_state: &mut self.output.segment_id_state,
             entries: &mut row.entries,
+            evidence_parent: None,
             sb_mask,
             arena: &mut row.residual_planes,
         };
@@ -782,6 +803,7 @@ impl TileResolveState {
         temporal_context: &TemporalMvContext,
         row: &mut ReconRow,
         tile_offset: ByteOffset,
+        tile: usize,
     ) -> Result<()> {
         let ibc_local = if row.local_ibc_sb_end() > 0 {
             self.ibc_local.ensure_active()?
@@ -791,6 +813,12 @@ impl TileResolveState {
         resolve_parsed_leaves(
             row,
             &mut MvResolutionState {
+                evidence: context
+                    .params
+                    .block_evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.tile(tile))
+                    .filter(|evidence| evidence.wants_blocks()),
                 grid,
                 ref_mv_bank: &mut self.ref_mv_bank,
                 warp_param_bank: &mut self.warp_param_bank,
