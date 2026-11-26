@@ -194,6 +194,7 @@ pub struct TemporalUnitReader<R: Read> {
     ivf_header: Option<IvfHeader>,
     /// Next index to assign: the IVF frame record, or the Annex B temporal unit.
     frame_index: usize,
+    last_ivf_payload_valid: bool,
     /// Once set, all further reads yield `Ok(None)`.
     done: bool,
     /// The Annex B temporal unit being collected, and the offset it starts at.
@@ -224,6 +225,7 @@ impl<R: Read> TemporalUnitReader<R> {
             format: None,
             ivf_header: None,
             frame_index: 0,
+            last_ivf_payload_valid: false,
             done: false,
             unit: Vec::new(),
             unit_offset: 0,
@@ -245,6 +247,15 @@ impl<R: Read> TemporalUnitReader<R> {
         self.ivf_header
     }
 
+    /// Borrows the most recent IVF payload from either read method.
+    ///
+    /// Returns `None` before a successful IVF read and after EOF, a warning,
+    /// an error, or a seek. A complete empty IVF payload returns `Some(&[])`.
+    #[must_use]
+    pub fn last_ivf_payload(&self) -> Option<&[u8]> {
+        self.last_ivf_payload_valid.then_some(self.buf.as_slice())
+    }
+
     /// Borrows the underlying reader.
     #[must_use]
     pub const fn get_ref(&self) -> &R {
@@ -259,6 +270,7 @@ impl<R: Read> TemporalUnitReader<R> {
     /// **not** an error here: it is returned as unit bytes whose parse produces
     /// the diagnostic.
     pub fn next_unit(&mut self) -> Result<Option<StreamUnit<'_>>, ReaderError> {
+        self.last_ivf_payload_valid = false;
         if self.done {
             return Ok(None);
         }
@@ -270,7 +282,8 @@ impl<R: Read> TemporalUnitReader<R> {
 
     /// Reads the next whole temporal unit, or `Ok(None)` at end of stream.
     ///
-    /// An IVF frame record is one unit. Annex B OBUs are collected from one
+    /// This method returns each IVF frame record as one unit, even if the
+    /// record contains multiple temporal delimiters. Annex B OBUs are collected from one
     /// temporal delimiter up to the next, so peak memory is one temporal unit.
     /// A trailing IVF container warning ends the stream here and stays in
     /// [`Self::ivf_warning`]. Use either this or [`Self::next_unit`] on one
@@ -563,6 +576,7 @@ impl<R: Read> TemporalUnitReader<R> {
             }));
         }
         self.frame_index += 1;
+        self.last_ivf_payload_valid = true;
         Ok(Some(StreamUnit::IvfFrame {
             index: self.frame_index - 1,
             pts,
@@ -583,6 +597,7 @@ impl<R: Read + Seek> TemporalUnitReader<R> {
     /// Returns [`ReaderError`] when the stream start cannot be read or the
     /// underlying seek fails.
     pub fn seek(&mut self, position: UnitPosition) -> Result<(), ReaderError> {
+        self.last_ivf_payload_valid = false;
         if self.detect_format()? == BitstreamFormat::Ivf {
             self.read_ivf_header()?;
         }
@@ -749,6 +764,7 @@ mod tests {
         data.extend_from_slice(&0u64.to_le_bytes()); // pts; no payload follows
         let mut reader = TemporalUnitReader::new(&data[..]);
         let err = reader.next_unit().unwrap_err();
+        assert_eq!(reader.last_ivf_payload(), None);
         assert!(matches!(
             err,
             ReaderError::Ivf(IvfError::TruncatedFramePayload { .. })
@@ -785,14 +801,25 @@ mod tests {
 
     #[test]
     fn ivf_yields_frame_payload_with_offset() {
-        let data = ivf_with_frame(&[0x01, 0x08]);
-        let mut reader = TemporalUnitReader::new(&data[..]);
+        let payload = [0x01, 0x08];
+        let mut data = ivf_with_frame(&payload);
+        crate::ivf::write_ivf_frame(&mut data, 7, &[]).unwrap();
+        let mut reader = TemporalUnitReader::new(io::Cursor::new(data.as_slice()));
+        assert_eq!(reader.last_ivf_payload(), None);
+        let position = reader.next_temporal_unit().unwrap().unwrap().position();
+        assert_eq!(reader.last_ivf_payload(), Some(payload.as_slice()));
+        reader.seek(position).unwrap();
+        assert_eq!(reader.last_ivf_payload(), None);
         assert!(matches!(
             reader.next_unit().unwrap(),
             Some(StreamUnit::IvfFrame { payload_offset, payload, .. })
                 if payload_offset == ByteOffset::new(44) && payload == [0x01u8, 0x08].as_slice()
         ));
+        assert_eq!(reader.last_ivf_payload(), Some(payload.as_slice()));
+        assert!(reader.next_unit().unwrap().is_some());
+        assert_eq!(reader.last_ivf_payload(), Some([].as_slice()));
         assert!(reader.next_unit().unwrap().is_none());
+        assert_eq!(reader.last_ivf_payload(), None);
     }
 
     #[test]
@@ -845,6 +872,7 @@ mod tests {
                 needed: 10,
             }) if offset == ByteOffset::new(data.len() as u64)
         ));
+        assert_eq!(reader.last_ivf_payload(), None);
         assert!(reader.next_unit().unwrap().is_none());
 
         let mut grouped = TemporalUnitReader::new(&data[..]);
@@ -886,6 +914,7 @@ mod tests {
             Some(StreamUnit::IvfFrame { .. })
         ));
         let err = reader.next_unit().unwrap_err();
+        assert_eq!(reader.last_ivf_payload(), None);
         assert!(matches!(
             err,
             ReaderError::Ivf(IvfError::TruncatedFramePayload {
