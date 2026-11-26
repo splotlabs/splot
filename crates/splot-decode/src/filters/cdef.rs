@@ -124,17 +124,19 @@ impl CdefSkipGrid {
         validate_grid_len(rows, cols, values.len())?;
         let blocks = cols.div_ceil(STEP4);
         for row in (0..rows).step_by(STEP4) {
-            let lines = [row * cols, (row + 1).min(rows - 1) * cols];
-            for col in (0..cols).step_by(STEP4) {
-                let end = (col + STEP4).min(cols);
-                let skipped = lines.iter().all(|&line| {
-                    values
-                        .get(line + col..line + end)
-                        .is_some_and(|cells| cells.iter().all(|&cell| cell == 1))
-                });
-                if let Some(block) = values.get_mut(row / STEP4 * blocks + col / STEP4) {
-                    *block = u8::from(skipped);
-                }
+            let top = row * cols;
+            let bottom = (row + 1).min(rows - 1) * cols;
+            let dst = row / STEP4 * blocks;
+            for block in 0..cols / STEP4 {
+                let col = block * STEP4;
+                let skipped = values[top + col..top + col + STEP4] == [1, 1]
+                    && values[bottom + col..bottom + col + STEP4] == [1, 1];
+                values[dst + block] = u8::from(skipped);
+            }
+            if !cols.is_multiple_of(STEP4) {
+                let col = cols - 1;
+                values[dst + col / STEP4] =
+                    u8::from(values[top + col] == 1 && values[bottom + col] == 1);
             }
         }
         values.truncate(rows.div_ceil(STEP4) * blocks);
