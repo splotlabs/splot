@@ -189,6 +189,36 @@ pub struct ObuLocation {
     pub offset: ByteOffset,
 }
 
+/// A coded frame or one of its continuation OBUs admitted by the decoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CodedFrameEvent {
+    /// A frame that supplies coded samples, whether or not it produces a picture.
+    #[non_exhaustive]
+    Frame {
+        /// The first coded OBU, also used by [`PictureProvenance::coded`].
+        coded: ObuLocation,
+        /// The active sequence header.
+        sequence_header: ObuLocation,
+        /// The coded extended layer.
+        extended_layer_id: ExtendedLayerId,
+        /// The coded embedded layer.
+        embedded_layer_id: EmbeddedLayerId,
+        /// The coded temporal layer.
+        temporal_layer_id: TemporalLayerId,
+    },
+    /// A tile group that continues a frame reported by [`Self::Frame`].
+    #[non_exhaustive]
+    Continuation {
+        /// The first coded OBU of the frame.
+        coded: ObuLocation,
+        /// The continuation OBU.
+        obu: ObuLocation,
+    },
+}
+
+pub(crate) type CodedFrameObserver = Box<dyn Fn(CodedFrameEvent) + Send + Sync>;
+
 /// The AV2 input locations for a decoded picture.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -685,6 +715,7 @@ impl Drop for DriverGuard {
 }
 
 struct DriverLaunch {
+    coded_frames: Option<CodedFrameObserver>,
     reference_observer: Option<crate::reference::observation::ReferenceObserver>,
     atlases: crate::ExternalAtlases,
     shared: Arc<Shared>,
@@ -719,6 +750,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
     let mut session =
         DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
     session.external_atlases = launch.atlases;
+    session.coded_frames = launch.coded_frames;
     session.reference_observer = launch.reference_observer;
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
@@ -773,7 +805,32 @@ impl Decoder {
         settings: DecoderSettings,
         atlases: crate::ExternalAtlases,
     ) -> Result<Self> {
-        Self::open(&settings, atlases, None)
+        Self::open(&settings, atlases, None, None)
+    }
+
+    /// Opens a decoder with an observer for frames admitted on its decode path.
+    ///
+    /// The driver calls the observer in coded order, before the corresponding
+    /// picture can be returned. An event can precede a later decode error.
+    /// Skipped frames and show-existing OBUs do not generate coded-frame events.
+    /// The observer remains installed across [`Self::flush`].
+    /// Return promptly from the observer. Do not call this decoder from it.
+    /// Do not panic in the observer. A panic that unwinds stops the driver permanently.
+    /// Assign a distinct [`DataProps::user_data`] value to each input unit if the
+    /// observer must distinguish locations in different units.
+    ///
+    /// # Errors
+    /// Returns the errors from [`Self::new`].
+    pub fn new_with_coded_frame_observer(
+        settings: DecoderSettings,
+        observer: impl Fn(CodedFrameEvent) + Send + Sync + 'static,
+    ) -> Result<Self> {
+        Self::open(
+            &settings,
+            crate::ExternalAtlases::default(),
+            Some(Box::new(observer)),
+            None,
+        )
     }
 
     /// Opens a decoder with an observer for admitted coded frames' reference states.
@@ -797,6 +854,7 @@ impl Decoder {
         Self::open(
             &settings,
             crate::ExternalAtlases::default(),
+            None,
             Some(Box::new(observer)),
         )
     }
@@ -804,6 +862,7 @@ impl Decoder {
     fn open(
         settings: &DecoderSettings,
         atlases: crate::ExternalAtlases,
+        coded_frames: Option<CodedFrameObserver>,
         reference_observer: Option<crate::reference::observation::ReferenceObserver>,
     ) -> Result<Self> {
         settings.temporal_layer_selection.validate()?;
@@ -840,6 +899,7 @@ impl Decoder {
         let driver = Arc::clone(&shared);
         let rows = crate::pipeline::row_scheduler(threads, resolved)?;
         let driver = resolved.enter(DriverLaunch {
+            coded_frames,
             reference_observer,
             atlases,
             shared: driver,

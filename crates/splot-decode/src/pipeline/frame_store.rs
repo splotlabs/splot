@@ -10,13 +10,17 @@
 //! Feature tracking: `INFRA-DECODE-FRAME-PIPELINING`.
 
 use super::PipelineFrame;
-use crate::Result;
+use crate::bitstream::byte_stream::SourceBytes;
+use crate::bitstream::stream_plan::tile_group_continuations;
+use crate::decoder::CodedFrameObserver;
 use crate::prediction::inter::{
     FrameProductWriters, FrameProducts, MotionFieldHandle, MotionFieldLayout,
 };
+use crate::{CodedFrameEvent, DecodePlannedObu, ObuLocation, PictureProvenance, Result};
 use core::num::NonZeroUsize;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::MAX_REF_FRAMES;
+use splot_core::span::ByteOffset;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -28,6 +32,7 @@ use crate::support::decode_buffers::DecodeBuffers;
 /// The frame-pipelining depth of one context and the decoder state it keeps
 /// between decode calls, as dav2d keeps its frame contexts.
 pub(crate) struct DecodeSession {
+    pub(crate) coded_frames: Option<CodedFrameObserver>,
     pub(crate) external_atlases: crate::ExternalAtlases,
     pub(crate) reference_observer: Option<crate::reference::observation::ReferenceObserver>,
     frame_delay: NonZeroUsize,
@@ -62,6 +67,7 @@ impl DecodeSession {
         Self {
             frame_delay,
             external_atlases: crate::ExternalAtlases::default(),
+            coded_frames: None,
             reference_observer: None,
             backend,
             rows,
@@ -81,6 +87,36 @@ impl DecodeSession {
         Self {
             detach_held: true,
             ..Self::new(frame_delay, rows, backend)
+        }
+    }
+
+    pub(super) fn observe_coded_frame(
+        &self,
+        provenance: PictureProvenance,
+        candidate: &DecodePlannedObu,
+        bytes: SourceBytes<'_>,
+    ) {
+        let Some(observe) = &self.coded_frames else {
+            return;
+        };
+        let header = candidate.header();
+        observe(CodedFrameEvent::Frame {
+            coded: provenance.coded,
+            sequence_header: provenance.sequence_header,
+            extended_layer_id: header.extended_layer_id,
+            embedded_layer_id: header.embedded_layer_id,
+            temporal_layer_id: header.temporal_layer_id,
+        });
+        if header.obu_type.is_tile_group() {
+            for group in tile_group_continuations(bytes, candidate) {
+                observe(CodedFrameEvent::Continuation {
+                    coded: provenance.coded,
+                    obu: ObuLocation {
+                        user_data: provenance.coded.user_data,
+                        offset: ByteOffset::new(group.offset().get() - bytes.base()),
+                    },
+                });
+            }
         }
     }
 

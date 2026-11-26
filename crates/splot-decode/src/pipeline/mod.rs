@@ -1742,7 +1742,9 @@ fn decode_frames_in_order(
                     retained_frame_bytes,
                     &inter_frame,
                 )?;
+                let provenance = inter_frame.provenance;
                 frames.push(inter_frame)?;
+                session.observe_coded_frame(provenance, next_candidate, unit.view());
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = inter_update.order_hint;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
@@ -2232,7 +2234,9 @@ fn decode_frames_in_order(
                     key_envelope.header.embedded_layer_id,
                     key_envelope.header.temporal_layer_id,
                 )?;
+                let provenance = key_frame.provenance;
                 frames.push(key_frame)?;
+                session.observe_coded_frame(provenance, next_candidate, unit.view());
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);
