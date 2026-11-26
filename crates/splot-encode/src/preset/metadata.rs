@@ -50,7 +50,6 @@ impl PresetGroup {
 
 /// The type of one preset value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum PresetValueKind {
     /// A Boolean flag.
     Bool,
@@ -77,7 +76,6 @@ pub enum PresetFieldShape {
 
 /// The value of a field in one context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum PresetFieldValue {
     /// A Boolean flag.
     Bool(bool),
