@@ -9,8 +9,8 @@
 //! Feature tracking: `DECODE-INTER-MULTIREF-RUNTIME`.
 
 use splot_core::headers::frame::{
-    GlobalMotionRef, RESTRICTED_ORDER_HINT, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
-    SlotFrameFilterTaps, WienerNsFrameFilterBank,
+    FrameSize, GlobalMotionRef, RESTRICTED_ORDER_HINT, SavedGlobalMotionOrderHints,
+    SavedGlobalMotionParams, SlotFrameFilterTaps, WienerNsFrameFilterBank,
 };
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::tile::InlineVec;
@@ -24,6 +24,7 @@ use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::frame_tasks::SplitSample;
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::{InterReferenceState, ReferenceMetadata};
+use crate::{ReferencePicture, ReferenceSlotState, ReferenceSnapshot};
 
 const NO_LR_FRAME_FILTER_TAPS: SlotFrameFilterTaps = [InlineVec::empty(InlineVec::empty(0)); 3];
 
@@ -176,6 +177,33 @@ impl RuntimeReferenceBuffer {
             open_loop: None,
             allowed_frames: None,
         })
+    }
+
+    pub(crate) fn snapshot(&self, frames: &FrameStore) -> ReferenceSnapshot {
+        let slots = self
+            .slots
+            .iter()
+            .map(|slot| match (slot.valid, slot.frame_index) {
+                (false, None) => ReferenceSlotState::Empty,
+                (false, Some(_)) => ReferenceSlotState::Invalid,
+                (true, index) => match index.and_then(|index| frames.get(index)) {
+                    Some(frame) => ReferenceSlotState::Retained(ReferencePicture {
+                        provenance: frame.provenance,
+                        embedded_layer_id: slot.embedded_layer_id,
+                        temporal_layer_id: slot.temporal_layer_id,
+                        frame_size: FrameSize::new(slot.width, slot.height),
+                        long_term_id: slot.long_term_id,
+                        restricted_order_hint: slot.order_hint == RESTRICTED_ORDER_HINT,
+                    }),
+                    None => ReferenceSlotState::Unavailable,
+                },
+            })
+            .collect();
+        ReferenceSnapshot { slots }
+    }
+
+    pub(crate) fn allowed_input_slots(&self) -> Option<u32> {
+        self.allowed_frames
     }
 
     pub(crate) fn len(&self) -> usize {

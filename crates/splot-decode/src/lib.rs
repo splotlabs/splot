@@ -107,6 +107,10 @@ pub use hash_report::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOutputVariant,
 };
 pub use pipeline::atlas::{AtlasAssociation, AtlasLayout, ExternalAtlases};
+pub use reference::observation::{
+    ReferenceFrameEvent, ReferenceMapping, ReferenceMappingOrigin, ReferencePicture,
+    ReferenceSlotState, ReferenceSnapshot,
+};
 pub use runtime::DecodeRuntimeConfig;
 pub use splot_core::headers::frame::FrameType;
 pub use splot_core::simd::{CpuCapabilities, SelectedBackend, SimdPolicy, UnsupportedBackendError};

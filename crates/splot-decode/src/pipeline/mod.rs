@@ -1808,6 +1808,9 @@ fn decode_frames_in_order(
                             "decode runtime requires an active extended layer",
                         )
                     })?;
+                    if let Some(observe) = &session.observer {
+                        observe.capture_input(&layer.reference, frames);
+                    }
                     layer
                         .reference
                         .update(frame_index, &inter_update, inter_key_or_switch);
@@ -1816,6 +1819,15 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         &inter_update,
                     );
+                    if let Some(observe) = &session.observer {
+                        observe.publish_update(
+                            frames,
+                            frame_index,
+                            &layer.reference,
+                            &inter_core,
+                            &inter_update,
+                        );
+                    }
                     layer.scheduler.note_frame(
                         next_candidate.obu_type(),
                         first_picture_in_tu,
@@ -2103,6 +2115,11 @@ fn decode_frames_in_order(
                     frame_is_output(&key_core),
                     key_envelope.offset,
                 )?;
+                if let Some(observe) = &session.observer
+                    && let Some(layer) = xlayers.get(candidate_xlayer)
+                {
+                    observe.capture_input(&layer.reference, frames);
+                }
                 if starts_new_sequence && !initializing_layer {
                     let (key_reference, flushed) = {
                         let key_reference =
@@ -2296,6 +2313,15 @@ fn decode_frames_in_order(
                         first_picture_in_tu,
                         &key_update,
                     );
+                    if let Some(observe) = &session.observer {
+                        observe.publish_update(
+                            frames,
+                            frame_index,
+                            &layer.reference,
+                            &key_core,
+                            &key_update,
+                        );
+                    }
                     layer
                         .in_band_long_term_prelude
                         .note_frame(&key_core, frame_index);
