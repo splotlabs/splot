@@ -78,6 +78,7 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     max_sample_fits: bool,
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     lr_plane_ends: [usize; 2],
+    lr_max_block_height: usize,
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     ranges: Vec<(usize, usize)>,
     filter_records: super::FrameFilterRecords,
@@ -345,6 +346,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
         let (lr_source_blocks, lr_plane_ends) =
             final_filters::lr_source_blocks_by_plane(lr_source_blocks);
+        let lr_max_block_height = lr_source_blocks
+            .iter()
+            .map(|block| block.height)
+            .max()
+            .unwrap_or(0);
         if super::lr_uses_tx_skip(&core) && lr_plane_ends[0] > 0 {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
@@ -432,6 +438,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             max_sample_fits: T::try_from_u16(bit_depth.max_sample()).is_ok(),
             lr_source_blocks,
             lr_plane_ends,
+            lr_max_block_height,
             lr_unit_filters,
             ranges,
             filter_records,
@@ -688,13 +695,19 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         let planes = [0..u, u..v, v..self.lr_source_blocks.len()];
         core::array::from_fn(|plane| {
             let shift = if plane == 0 { 0 } else { self.subsampling.1 };
+            let start_y = start >> shift;
             let range = &planes[plane];
+            let blocks = &self.lr_source_blocks[range.clone()];
+            let earliest_overlapping_y =
+                start_y.saturating_sub(self.lr_max_block_height.saturating_sub(1));
+            let first = blocks.partition_point(|block| block.y < earliest_overlapping_y);
             let near = final_filters::lr_blocks_near_rows(
-                &self.lr_source_blocks[range.clone()],
-                start >> shift,
+                &blocks[first..],
+                start_y,
                 end.div_ceil(1 << shift),
             );
-            range.start + near.start..range.start + near.end
+            let base = range.start + first;
+            base + near.start..base + near.end
         })
     }
 
