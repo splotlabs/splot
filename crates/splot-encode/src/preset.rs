@@ -990,6 +990,7 @@ impl PresetParams {
     /// changes the coded samples (RDOQ, the temporal filter, TIP output), and
     /// the tools whose lossless forms are a later search (FSC, IDTX, IST,
     /// CCTX, DDT, transform types and partitions, palette, IntraBC).
+    #[cfg(test)]
     pub(crate) fn set_lossless(&mut self) {
         self.set_lossless_with(|_| {});
     }
