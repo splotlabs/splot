@@ -86,6 +86,7 @@ mod frame_header_copy;
 mod frame_header_diagnostics;
 mod frame_headers;
 mod hls;
+pub(crate) mod layer_metadata;
 mod lcr;
 mod lcr_agreement;
 mod lcr_sequence_agreement;

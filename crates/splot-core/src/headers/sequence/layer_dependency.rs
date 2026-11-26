@@ -122,30 +122,23 @@ impl MLayerPresenceMap {
     /// A direct declaration returns its own layer. An absent declaration
     /// inherits from the highest lower present layer with established parameters
     /// (AV2 § 6.14 and § 7.3.8.11). Follow the returned sources to find the
-    /// original declaration.
+    /// original declaration or a layer with initialized defaults.
     #[must_use]
     pub fn content_interpretation_sources(
         &self,
         declared: [bool; MAX_NUM_MLAYERS],
     ) -> [Option<EmbeddedLayerId>; MAX_NUM_MLAYERS] {
-        let mut sources = [None; MAX_NUM_MLAYERS];
-        for (layer, has_declaration) in declared.into_iter().enumerate() {
+        std::array::from_fn(|layer| {
             let layer_id = EmbeddedLayerId::from_bits(layer as u8);
-            sources[layer] = if has_declaration {
+            if declared[layer] {
                 Some(layer_id)
             } else {
-                sources[..layer]
-                    .iter()
-                    .enumerate()
+                (0..layer)
                     .rev()
-                    .find_map(|(source, established)| {
-                        let source_id = EmbeddedLayerId::from_bits(source as u8);
-                        (established.is_some() && self.is_present(layer_id, source_id))
-                            .then_some(source_id)
-                    })
-            };
-        }
-        sources
+                    .map(|source| EmbeddedLayerId::from_bits(source as u8))
+                    .find(|&source| self.is_present(layer_id, source))
+            }
+        })
     }
 }
 

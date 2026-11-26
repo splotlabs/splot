@@ -141,6 +141,35 @@ impl HlsAvailabilityStore {
             Some(Box::new(record));
     }
 
+    pub(super) fn save_multi_frame_header(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        mfh: &splot_core::hls::MultiFrameHeader,
+    ) -> Option<MfhId> {
+        if !mfh.mfh_id_in_range() {
+            return None;
+        }
+        let mfh_id = MfhId::from_raw(u32::try_from(mfh.mfh_id()).ok()?);
+        self.record_multi_frame_header(
+            obu.header.extended_layer_id,
+            MultiFrameHeaderRecord {
+                mfh_id,
+                mfh_seq_header_id: SequenceHeaderId::try_new(mfh.mfh_seq_header_id)?,
+                mfh_tlayer_id: obu.header.temporal_layer_id,
+                mfh_mlayer_id: obu.header.embedded_layer_id,
+                mfh_frame_size: mfh.mfh_frame_size,
+                mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
+                mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
+                mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
+                mfh_segment_info: mfh.segment_info,
+                mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
+                mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
+                offset: obu.offset,
+            },
+        );
+        Some(mfh_id)
+    }
+
     /// Returns the in-band multi-frame-header record for `mfhId`, if available.
     ///
     /// External multi-frame-header availability is not modeled.
@@ -328,27 +357,8 @@ impl ValidatorContext {
             return;
         }
 
-        if mfh.mfh_id_in_range()
-            && let Some(seq_id) = SequenceHeaderId::try_new(mfh.mfh_seq_header_id)
-            && let Ok(mfh_id_value) = u32::try_from(mfh.mfh_id())
-        {
-            self.hls.record_multi_frame_header(
-                obu.header.extended_layer_id,
-                MultiFrameHeaderRecord {
-                    mfh_id: MfhId::from_raw(mfh_id_value),
-                    mfh_seq_header_id: seq_id,
-                    mfh_tlayer_id: obu.header.temporal_layer_id,
-                    mfh_mlayer_id: obu.header.embedded_layer_id,
-                    mfh_frame_size: mfh.mfh_frame_size,
-                    mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
-                    mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
-                    mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
-                    mfh_segment_info: mfh.segment_info,
-                    mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
-                    mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
-                    offset: obu.offset,
-                },
-            );
+        if let Some(mfh_id) = self.hls.save_multi_frame_header(obu, &mfh) {
+            let mfh_id_value = mfh_id.get();
             self.rap_replay.note_resend(
                 RapHlsKey::MultiFrameHeader(obu.header.extended_layer_id, mfh_id_value),
                 obu.header.extended_layer_id,

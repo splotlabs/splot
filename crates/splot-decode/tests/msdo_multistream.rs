@@ -300,6 +300,28 @@ fn pictures_inherit_content_interpretation_until_the_next_cvs() {
     );
 }
 
+#[test]
+fn pictures_inherit_defaults_from_the_nearest_source() {
+    let input = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-mlayer3-ci-default-priority.obu"
+    );
+    let pictures = stream_decode(input, &DecoderSettings::default()).unwrap();
+    let primaries: Vec<_> = pictures
+        .iter()
+        .map(|picture| {
+            let color = picture.content_interpretation().map_or(
+                splot_core::headers::content_interpretation::DerivedColorInfo::UNSPECIFIED,
+                splot_core::headers::content_interpretation::ContentInterpretation::derived_color,
+            );
+            (
+                picture.embedded_layer_id().get(),
+                color.code_points.color_primaries,
+            )
+        })
+        .collect();
+    assert_eq!(primaries, [(0, 1), (1, 2), (2, 2)]);
+}
+
 fn append_picture_raw(pic: &Picture, out: &mut Vec<u8>) {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         match pic.plane(plane) {
