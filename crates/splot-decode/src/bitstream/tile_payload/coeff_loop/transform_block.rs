@@ -453,10 +453,14 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         nonzero: &mut *nonzero,
         nonzero_len: 0,
     };
-    pass.levels_pass::<CLASS, LUMA, TCQ, PH>(&mut rows, scan, eob_entry, eob_level, lf_end);
+    let dc_level =
+        pass.levels_pass::<CLASS, LUMA, TCQ, PH>(&mut rows, scan, eob_entry, eob_level, lf_end);
+    let dc_q0 = TCQ && pass.tcq_q0 & 1 != 0;
     let (mut owned, ph, nonzero_len) = (pass.symbols, pass.ph, pass.nonzero_len);
     let nonzero = nonzero.get(..nonzero_len).unwrap_or_default();
     let facts = SignFacts {
+        dc_level,
+        dc_q0,
         lf_end,
         is_hidden: PH && (ph >> 1) >= PHTHRESH,
         sum_abs1: if PH { ph & 1 } else { 0 },
@@ -715,22 +719,20 @@ impl LevelPass<'_, '_> {
         level + self.read_range::<LUMA, false>(rows, ctx)
     }
 
-    /// Records a decoded level and advances the TCQ and parity state.
+    /// Records a decoded AC level and advances the TCQ and parity state.
     #[expect(clippy::inline_always, reason = "measured: per-coefficient update")]
     #[inline(always)]
-    fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32, ac: bool) {
+    fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32) {
         let nonzero = level != 0;
         let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
         self.levels[entry_grid(entry)] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
-        if ac {
-            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
-            self.nonzero_len += usize::from(nonzero);
-        }
+        self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
+        self.nonzero_len += usize::from(nonzero);
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
             self.tcq = next_tcq_state(self.tcq, level);
         }
-        if PH && ac {
+        if PH {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
             self.ph = (self.ph ^ (clipped & 1)) + (u32::from(level != 0) << 1);
         }
@@ -746,7 +748,7 @@ impl LevelPass<'_, '_> {
     ) {
         for &entry in hf.iter().rev() {
             let level = self.read_hf_level::<CLASS, LUMA>(&mut rows, entry);
-            self.finish::<TCQ, PH>(entry, level, true);
+            self.finish::<TCQ, PH>(entry, level);
         }
     }
 
@@ -762,14 +764,15 @@ impl LevelPass<'_, '_> {
             let grid = entry_grid(entry);
             let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
             let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(entry, level, true);
+            self.finish::<TCQ, PH>(entry, level);
         }
     }
 
     /// The base and range symbols of every scan index below the EOB, in
     /// reverse scan order: the high-frequency indices, the low-frequency
     /// indices above 0 (a scan prefix, see [`lf_scan_end`]), and DC, so each
-    /// phase reads one row family with its context arithmetic folded.
+    /// phase reads one row family with its context arithmetic folded. Returns
+    /// DC directly because no later context reads its grid cell.
     #[expect(clippy::inline_always, reason = "measured: one loop per tool set")]
     #[inline(always)]
     fn levels_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
@@ -779,7 +782,7 @@ impl LevelPass<'_, '_> {
         eob_entry: u32,
         eob_level: u32,
         lf_end: usize,
-    ) {
+    ) -> u32 {
         let eob_index = scan.len() - 1;
         let eob_grid = entry_grid(eob_entry);
         let eob_level = if eob_index < lf_end {
@@ -787,10 +790,10 @@ impl LevelPass<'_, '_> {
         } else {
             self.add_range::<CLASS, LUMA, false>(rows, eob_grid, false, eob_level)
         };
-        self.finish::<TCQ, PH>(eob_entry, eob_level, eob_index != 0);
         if eob_index == 0 {
-            return;
+            return eob_level;
         }
+        self.finish::<TCQ, PH>(eob_entry, eob_level);
         if lf_end < eob_index {
             self.hf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), &scan[lf_end..eob_index]);
         }
@@ -799,20 +802,21 @@ impl LevelPass<'_, '_> {
             self.lf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), &scan[1..end]);
         }
         let dc_grid = entry_grid(scan[0]);
-        let level = if PH && (self.ph >> 1) >= PHTHRESH {
+        if PH && (self.ph >> 1) >= PHTHRESH {
             let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
             let row = row_at(rows.cdf.coeff_base_ph(), half_capped(mag, 4));
             self.symbols.read_trusted(row)
         } else {
             let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
             self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)
-        };
-        self.finish::<TCQ, PH>(scan[0], level, false);
+        }
     }
 }
 
 #[derive(Clone, Copy)]
 struct SignFacts {
+    dc_level: u32,
+    dc_q0: bool,
     lf_end: usize,
     is_hidden: bool,
     sum_abs1: u32,
@@ -928,10 +932,8 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);
 
-    let (pos, grid) = (entry_pos(scan[0]), entry_grid(scan[0]));
-    let word = levels[grid];
-    levels[grid] = 0;
-    let level = (word >> 16) & 0xff;
+    let pos = entry_pos(scan[0]);
+    let level = facts.dc_level;
     if !facts.is_hidden && level != 0 {
         let sign = if LUMA {
             let dc = &block.dc;
@@ -958,7 +960,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         };
         quant_state.set_dc_sign(sign);
         let magnitude = quant_state
-            .ac_magnitude(index, dc_quant, word >> Q0_BIT != 0)
+            .ac_magnitude(index, dc_quant, facts.dc_q0)
             .map_err(CoeffQuantPassError::from)? as i32;
         if let Some(slot) = quant.get_mut(pos) {
             *slot = if sign { -magnitude } else { magnitude };
@@ -991,7 +993,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
                 },
             )
             .map_err(CoeffQuantPassError::from)?;
-        quant_state.set_tcq_q0(word >> Q0_BIT != 0);
+        quant_state.set_tcq_q0(facts.dc_q0);
         let write = quant_state
             .apply_entry(index, entry, sign.sign(), read)
             .map_err(CoeffQuantPassError::from)?;
