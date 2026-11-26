@@ -1019,9 +1019,9 @@ fn read_enabled_segment_id(
         return Ok(0);
     };
     let predicted_segment_id =
-        previous_segment_ids.map_or(0, |map| map.block_min(frontier.r, frontier.c, n4w, n4h));
+        || previous_segment_ids.map_or(0, |map| map.block_min(frontier.r, frontier.c, n4w, n4h));
     if !seg.segmentation_update_map {
-        return Ok(predicted_segment_id);
+        return Ok(predicted_segment_id());
     }
     if pre_skip && !seg.seg_id_pre_skip {
         return Ok(0);
@@ -1060,7 +1060,7 @@ fn read_enabled_segment_id(
         .get()
         != 0;
     let segment_id = if predicted {
-        predicted_segment_id
+        predicted_segment_id()
     } else {
         read_segment_id(
             work_unit,

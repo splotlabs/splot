@@ -617,11 +617,11 @@ pub(crate) fn block_neighbour_ctx(
         )
     };
     let (buf, num_buf) = first_two(present);
-    let (npos_cells, npos_count) = first_two(if block.is_sb_border() {
-        present & 0b0101
+    let (npos_cells, npos_count) = if block.is_sb_border() {
+        first_two(present & 0b0101)
     } else {
-        present
-    });
+        (buf, num_buf)
+    };
     BlockNeighbourContext {
         cells: buf,
         cell_count: num_buf,
