@@ -3,8 +3,10 @@
 
 //! Descriptions of public encoder configuration fields.
 //!
-//! The keys identify fields within the encoder option schema. Omission uses
-//! [`Config::new`] defaults, except for values from the source or first pass.
+//! The keys identify fields within the encoder option schema. Omitted settings
+//! use [`Config::new`] defaults. Source fields take values from the input when
+//! available. Absent source metadata uses the source field defaults. An empty
+//! first-pass list selects one-pass encoding.
 //! Use [`Config::validate`] to check a populated configuration. Descriptions
 //! include input constraints that depend on other fields or encoder state.
 
@@ -321,7 +323,7 @@ config_options! {
     threads, Setting, THREADS, "Set the worker-thread policy.";
     tiles, Setting, ValueShape::Choice(TILE_LAYOUTS), "Set the tile layout for each frame.";
     tile_groups, Setting, integer(1, U32_MAX, "groups per frame"), "Set the number of tile groups.",
-        "The layout must provide at least one tile per group.";
+        "The encoder limits the number of groups to the number of coded tiles.";
     keyint, Setting, integer(1, U32_MAX, "frames"), "Set the key-frame interval.";
     resize_denominator, Setting, ValueShape::Optional(&integer(
         *Config::RESIZE_DENOMINATORS.start() as u64, *Config::RESIZE_DENOMINATORS.end() as u64, "",
