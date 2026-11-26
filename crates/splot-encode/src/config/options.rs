@@ -9,6 +9,7 @@
 //! first-pass list selects one-pass encoding.
 //! Use [`Config::validate`] to check a populated configuration. Descriptions
 //! include input constraints that depend on other fields or encoder state.
+//! Each new `Config` field requires a corresponding entry in [`OPTIONS`].
 
 use splot_recon::{BitDepth, PixelFormat};
 
@@ -131,7 +132,6 @@ macro_rules! config_options {
         pub const OPTIONS: &[OptionDescription] =
             options!($($field, $class, $shape, $help $(, $conditions)?;)*);
 
-        // A new Config field requires an entry in OPTIONS.
         const _: fn(&Config) = |config| {
             let Config { $($field: _,)* } = config;
         };
