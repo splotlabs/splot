@@ -76,6 +76,7 @@ pub unsafe extern "C" fn splot_open_with_atlases(
 /// the caller releases that picture with `splot_picture_unref`.
 pub struct SplotPictureAtlas {
     pub(super) picture: Picture,
+    pub(super) provenance: super::SplotPictureProvenance,
 }
 
 /// An optional eight-bit atlas field. Read `value` only when `present` is true.

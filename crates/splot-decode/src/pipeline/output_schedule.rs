@@ -614,6 +614,7 @@ mod tests {
             embedded_layer_id: splot_core::types::EmbeddedLayerId::BASE,
             temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
             props: crate::DataProps::default(),
+            provenance: crate::PictureProvenance::TEST,
         })
     }
 

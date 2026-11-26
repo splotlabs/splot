@@ -125,6 +125,24 @@ typedef struct SplotColor {
   uint8_t full_range;
 } SplotColor;
 
+// An OBU location in one temporal unit.
+typedef struct SplotObuLocation {
+  // The `SplotDataProps.user_data` value of the unit.
+  uint64_t user_data;
+  // The byte offset from the start of the unit to the OBU header after its length prefix.
+  uint64_t offset;
+} SplotObuLocation;
+
+// The AV2 input locations for a decoded picture.
+typedef struct SplotPictureProvenance {
+  // The frame OBU that coded the samples. This is the first tile group for a tiled frame.
+  struct SplotObuLocation coded;
+  // The frame OBU that caused display. This is `coded` unless a show-existing OBU caused display.
+  struct SplotObuLocation display;
+  // The sequence header in effect when the decoder decoded the coded frame.
+  struct SplotObuLocation sequence_header;
+} SplotPictureProvenance;
+
 // A decoded picture. Valid from [`splot_get_picture`] or
 // [`splot_apply_grain`] until [`splot_picture_unref`].
 typedef struct SplotPicture {
@@ -169,8 +187,8 @@ typedef struct SplotPicture {
   const struct SplotPictureAtlas *atlas;
   // Number of associations accessible through `splot_atlas_info`.
   size_t atlas_count;
-  // Reserved.
-  size_t reserved;
+  // Immutable input locations. The picture owns this data until `splot_picture_unref`.
+  const struct SplotPictureProvenance *provenance;
   // The decoder's handle on the samples; do not touch.
   void *internal;
 } SplotPicture;
