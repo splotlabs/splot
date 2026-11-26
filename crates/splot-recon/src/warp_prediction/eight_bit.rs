@@ -197,6 +197,38 @@ impl RowProjection {
     }
 }
 
+/// The row shape `(projection, shear, sections, stride)` of [`sections`].
+type Placed<'a> = (&'a RowProjection, [i32; 4], usize, usize);
+
+/// Runs `section` on the window, phases and output of each section of a
+/// row that [`RowProjection::place`] admits, returning the mask of them.
+#[inline]
+#[cfg_attr(target_arch = "x86_64", target_feature(enable = "avx2"))]
+#[cfg_attr(target_arch = "aarch64", target_feature(enable = "neon"))]
+fn sections(
+    reference: &ReferencePlaneView<'_, u8>,
+    (projection, shear, sections, stride): Placed<'_>,
+    output: &mut [u8],
+    mut section: impl FnMut(&Window<'_>, [i32; 2], &mut [u8]),
+) -> u64 {
+    let two_tap = shear[0] == 0 && shear[1] == 0;
+    let mut written = 0;
+    for index in 0..sections {
+        let Some((origin, phases)) = projection.place(index, two_tap) else {
+            continue;
+        };
+        let (Some(window), Some(target)) = (
+            Window::new(reference, origin),
+            output.get_mut(8 * index..8 * index + 7 * stride + 8),
+        ) else {
+            continue;
+        };
+        section(&window, phases, target);
+        written |= 1 << index;
+    }
+    written
+}
+
 /// Stores the `Clip1` single-reference prediction of each full 8x8 section
 /// of one row of `sections` whose source window lies inside its bounds and
 /// the storage, into `output` rows `stride` apart from the row's top-left,
@@ -221,6 +253,9 @@ pub(super) fn put_row<R: super::WarpRunner, T: ReconSample>(
     {
         return 0;
     }
+    let (Some(reference), Some(output)) = (reference.as_u8(), T::u8_slice_mut(output)) else {
+        return 0;
+    };
     let sub = [
         u32::from(params.subsampling_x),
         u32::from(params.subsampling_y),
@@ -236,35 +271,22 @@ pub(super) fn put_row<R: super::WarpRunner, T: ReconSample>(
         size: [reference.width() as i64, reference.height() as i64],
     };
     let shear = [shear.alpha, shear.beta, shear.gamma, shear.delta];
+    let placed = (&projection, shear, sections, stride);
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = runner.avx2_token() {
-        let placed = (&projection, shear, sections, stride);
-        if let (Some(reference), Some(output)) = (reference.as_u8(), T::u8_slice_mut(output)) {
-            return avx2::put_row(token, &reference, placed, output);
-        }
-        return 0;
+        return avx2::put_row(token, &reference, placed, output);
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(token) = runner.neon_token()
-        && let (Some(reference), Some(output)) = (reference.as_u8(), T::u8_slice_mut(output))
-    {
-        return neon::put_row(
-            token,
-            &reference,
-            &projection,
-            shear,
-            sections,
-            output,
-            stride,
-        );
+    if let Some(token) = runner.neon_token() {
+        return neon::put_row(token, &reference, placed, output);
     }
-    let _ = (runner, projection, shear, output, stride);
+    let _ = (runner, placed, output);
     0
 }
 
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
-    use super::{EVEN_ODD, NATURAL, RowProjection, WARPEDDIFF_PREC_BITS, Window, key};
+    use super::{EVEN_ODD, NATURAL, Placed, WARPEDDIFF_PREC_BITS, Window, key, sections};
     use crate::gather::rows_u64;
     use crate::subpel_mc::ReferencePlaneView;
     use crate::warp_prediction::INTER_ROUND1_NON_COMPOUND;
@@ -288,9 +310,6 @@ mod avx2 {
     const SHUFFLE_A: [u8; 32] = shuffle(0);
     const SHUFFLE_B: [u8; 32] = shuffle(2);
 
-    /// The row shape `(projection, shear, sections, stride)` of [`sections`].
-    type Placed<'a> = (&'a RowProjection, [i32; 4], usize, usize);
-
     fearless_simd::kernel!(
         #[inline]
         pub(super) fn section(
@@ -301,7 +320,9 @@ mod avx2 {
             round1: u32,
         ) -> [[i32; 8]; 8] {
             let pairs = horizontal_pairs(t, window, shear, phases[0]);
-            rounded(t, sums(&pairs, shear, phases[1], round1), round1)
+            let shift = _mm_cvtsi32_si128(round1 as i32 + 8);
+            sums(&pairs, shear, phases[1], round1)
+                .map(|sum| i32x8::<Avx2>::simd_from(t, _mm256_sra_epi32(sum, shift)).to_array())
         }
     );
 
@@ -356,18 +377,6 @@ mod avx2 {
         }
     );
 
-    /// `Round2(sum, round1)` of the [`sums`] rows.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn rounded(t: Avx2, sums: [__m256i; 8], round1: u32) -> [[i32; 8]; 8] {
-        let shift = _mm_cvtsi32_si128(round1 as i32 + 8);
-        let mut out = [[0i32; 8]; 8];
-        for (out, sum) in out.iter_mut().zip(sums) {
-            i32x8::<Avx2>::simd_from(t, _mm256_sra_epi32(sum, shift)).store_array(out);
-        }
-        out
-    }
-
     fearless_simd::kernel!(
         #[inline]
         pub(super) fn put_row(
@@ -403,34 +412,6 @@ mod avx2 {
             })
         }
     );
-
-    /// Runs `section` on the window, phases and output of each section of a
-    /// row that [`RowProjection::place`] admits, returning the mask of them.
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn sections(
-        reference: &ReferencePlaneView<'_, u8>,
-        (projection, shear, sections, stride): Placed<'_>,
-        output: &mut [u8],
-        mut section: impl FnMut(&Window<'_>, [i32; 2], &mut [u8]),
-    ) -> u64 {
-        let two_tap = shear[0] == 0 && shear[1] == 0;
-        let mut written = 0;
-        for index in 0..sections {
-            let Some((origin, phases)) = projection.place(index, two_tap) else {
-                continue;
-            };
-            let (Some(window), Some(target)) = (
-                Window::new(reference, origin),
-                output.get_mut(8 * index..8 * index + 7 * stride + 8),
-            ) else {
-                continue;
-            };
-            section(&window, phases, target);
-            written |= 1 << index;
-        }
-        written
-    }
 
     /// The phase keys of output columns `0, 1 | 4, 5` and `2, 3 | 6, 7`,
     /// advanced as a vector from row to row.
@@ -575,7 +556,7 @@ mod avx2 {
 
 #[cfg(target_arch = "aarch64")]
 mod neon {
-    use super::{EVEN_ODD, RowProjection, WARPED_TAPS, WARPEDDIFF_PREC_BITS, Window, key, tap};
+    use super::{EVEN_ODD, Placed, WARPED_TAPS, WARPEDDIFF_PREC_BITS, Window, key, sections, tap};
     use crate::subpel_mc::ReferencePlaneView;
     use crate::warp_prediction::{INTER_ROUND0, INTER_ROUND1_NON_COMPOUND};
     use core::arch::aarch64::*;
@@ -626,26 +607,13 @@ mod neon {
         pub(super) fn put_row(
             t: Neon,
             reference: &ReferencePlaneView<'_, u8>,
-            projection: &RowProjection,
-            shear: [i32; 4],
-            sections: usize,
+            placed: Placed<'_>,
             output: &mut [u8],
-            stride: usize,
         ) -> u64 {
             const ROUND1: i32 = INTER_ROUND1_NON_COMPOUND as i32;
-            let two_tap = shear[0] == 0 && shear[1] == 0;
-            let mut written = 0;
-            for section in 0..sections {
-                let Some((origin, phases)) = projection.place(section, two_tap) else {
-                    continue;
-                };
-                let (Some(window), Some(target)) = (
-                    Window::new(reference, origin),
-                    output.get_mut(8 * section..8 * section + 7 * stride + 8),
-                ) else {
-                    continue;
-                };
-                for (row, [low, high]) in sums(t, &window, shear, phases).into_iter().enumerate() {
+            let (_, shear, _, stride) = placed;
+            sections(reference, placed, output, |window, phases, target| {
+                for (row, [low, high]) in sums(t, window, shear, phases).into_iter().enumerate() {
                     let words = vcombine_u16(
                         vqrshrun_n_s32::<ROUND1>(low),
                         vqrshrun_n_s32::<ROUND1>(high),
@@ -658,9 +626,7 @@ mod neon {
                         *slot = line.to_le_bytes();
                     }
                 }
-                written |= 1 << section;
-            }
-            written
+            })
         }
     );
 
