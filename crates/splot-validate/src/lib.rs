@@ -32,4 +32,7 @@ pub use options::{
     ExternalHlsError, ExternalHlsMode, ExternalHlsObjects, ExternalHlsSet, ValidationOptions,
 };
 pub use render::{RenderOptions, RenderedReport, ReportSummary, Truncation};
-pub use validator::Validator;
+pub use validator::{
+    DiagnosticCounts, StreamValidateError, ValidationCompletion, ValidationCoverage,
+    ValidationExecution, ValidationLimits, Validator,
+};
