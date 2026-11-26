@@ -1,0 +1,43 @@
+name: Combined SAD native benchmark
+on:
+  push:
+    branches: [codex/measure-combined-unsigned-abs]
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Build both revisions on the same runner
+        run: |
+          set -eu
+          test "$(uname -m)" = x86_64
+          lscpu
+          mkdir -p "$RUNNER_TEMP/results"
+          cp scripts/measure-combined.py "$RUNNER_TEMP/"
+          git checkout --detach 83e123ecefdaf1a76d1cef313152f05d91a9a14b
+          rustup show active-toolchain || rustup toolchain install
+          rustc -Vv
+          cargo fast
+          cp target/release/splot "$RUNNER_TEMP/results/baseline"
+          git checkout --detach 21f604a5ece57d7314f0e8bfaa769d946196cecc
+          cargo fast
+          cp target/release/splot "$RUNNER_TEMP/results/combined"
+          sha256sum "$RUNNER_TEMP/results/"*
+      - name: Fetch pinned inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/corpus"
+          gh release download hd-streams-2026-10 -R EwoutH/AV2 -p 'TunnelFlag*qp135*' -p 'WITCHER3*qp135*' -D "$RUNNER_TEMP/corpus"
+      - name: Check output and measure paired decoder runs
+        run: python3 "$RUNNER_TEMP/measure-combined.py" "$RUNNER_TEMP/results" "$RUNNER_TEMP/corpus" tests/conformance/ewouth-av2.toml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-x86-results
+          path: ${{ runner.temp }}/results/observations.csv
