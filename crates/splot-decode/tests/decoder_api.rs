@@ -10,9 +10,10 @@ use splot_core::annexb::parse_annex_b_obus;
 use splot_core::stream_reader::{TemporalUnitReader, is_random_access_point};
 use splot_core::types::ObuType;
 use splot_decode::{
-    CodedFrameEvent, DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig,
-    Decoder, DecoderSettings, DecoderStateError, EmbeddedLayerSelection, FrameDelay, FrameType,
-    Picture, PictureFrame, PictureSamples, PlaneId, SendStatus, ThreadCount, Y4mFrameRate,
+    BaseQuantizerOrigin, CodedFrameEvent, DataProps, DecodeContext, DecodeError, DecodeOptions,
+    DecodeRuntimeConfig, Decoder, DecoderSettings, DecoderStateError, EmbeddedLayerSelection,
+    FrameDelay, FrameType, Picture, PictureFrame, PictureSamples, PlaneId, SendStatus, ThreadCount,
+    Y4mFrameRate,
 };
 use splot_recon::{
     DecodedFrame, DecodedFrameHashInput, PlaneSize, ReconSample, Y4mError, Y4mFrameFormat,
@@ -389,6 +390,70 @@ fn coded_frame_observer_reports_hidden_frames_and_tile_group_continuations() {
                 && obu.user_data == coded.user_data
                 && obu.offset.get() == [189, 200, 190][index]
         ));
+    }
+}
+
+/// AVM 01803db6af inspection callbacks report the indexes in coded order.
+#[test]
+fn coded_frame_base_quantizer_matches_avm() {
+    use BaseQuantizerOrigin::{Derived, Inherited, Signaled};
+
+    let cases: &[(&[u8], &[_])] = &[
+        (BRIDGE, &[(21, Signaled), (21, Inherited), (57, Signaled)]),
+        (
+            TIP_FAMILIES,
+            &[
+                (166, Signaled),
+                (118, Signaled),
+                (164, Signaled),
+                (187, Signaled),
+                (210, Signaled),
+                (176, Derived),
+                (170, Derived),
+                (141, Derived),
+                (153, Derived),
+                (130, Derived),
+                (124, Derived),
+                (185, Signaled),
+                (152, Derived),
+            ],
+        ),
+        (
+            BRU_INACTIVE_REFRESH_10BIT,
+            &[
+                (234, Signaled),
+                (268, Signaled),
+                (268, Signaled),
+                (268, Signaled),
+                (268, Signaled),
+                (268, Inherited),
+                (268, Signaled),
+                (268, Signaled),
+            ],
+        ),
+        (
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-luma-palette2-row-mono-16x16-q0.ivf"
+            ),
+            &[(0, Signaled)],
+        ),
+    ];
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let mut decoder =
+        Decoder::new_with_coded_frame_observer(DecoderSettings::default(), move |event| {
+            if let CodedFrameEvent::Frame { base_quantizer, .. } = event {
+                let entry = base_quantizer.map(|quantizer| (quantizer.index, quantizer.origin));
+                observed.lock().unwrap().push(entry);
+            }
+        })
+        .unwrap();
+    for &(fixture, expected) in cases {
+        decoder.flush();
+        decode(&mut decoder, &units(fixture), |_| DataProps::default());
+        let observed = core::mem::take(&mut *events.lock().unwrap());
+        let expected: Vec<_> = expected.iter().copied().map(Some).collect();
+        assert_eq!(observed, expected);
     }
 }
 

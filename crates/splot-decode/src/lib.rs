@@ -88,9 +88,9 @@ pub use bitstream::stream_plan;
 pub use context::{DecodeContext, DecodeScope, TypedDecodeContext};
 use core::fmt;
 pub use decoder::{
-    AtlasComposite, AtlasCompositionError, AtlasCompositor, CodedFrameEvent, DataProps, Decoder,
-    DecoderSettings, ObuLocation, Picture, PictureFrame, PictureProvenance, PictureSamples,
-    SendStatus,
+    AtlasComposite, AtlasCompositionError, AtlasCompositor, BaseQuantizer, BaseQuantizerOrigin,
+    CodedFrameEvent, DataProps, Decoder, DecoderSettings, ObuLocation, Picture, PictureFrame,
+    PictureProvenance, PictureSamples, SendStatus,
 };
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,
