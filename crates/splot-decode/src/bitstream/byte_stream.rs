@@ -187,6 +187,15 @@ pub(crate) struct InputScratch {
 
 /// Copies `bytes` into a buffer of `buffers` that no task still reads.
 pub(crate) fn fill_buffer(buffers: &mut Vec<Arc<Vec<u8>>>, bytes: &[u8]) -> Arc<Vec<u8>> {
+    let buffer = free_buffer(buffers);
+    if let Some(stored) = Arc::get_mut(buffer) {
+        stored.clear();
+        stored.extend_from_slice(bytes);
+    }
+    Arc::clone(buffer)
+}
+
+fn free_buffer(buffers: &mut Vec<Arc<Vec<u8>>>) -> &mut Arc<Vec<u8>> {
     let index = buffers
         .iter_mut()
         .position(|buffer| Arc::get_mut(buffer).is_some())
@@ -194,12 +203,7 @@ pub(crate) fn fill_buffer(buffers: &mut Vec<Arc<Vec<u8>>>, bytes: &[u8]) -> Arc<
             buffers.push(Arc::default());
             buffers.len() - 1
         });
-    let buffer = &mut buffers[index];
-    if let Some(stored) = Arc::get_mut(buffer) {
-        stored.clear();
-        stored.extend_from_slice(bytes);
-    }
-    Arc::clone(buffer)
+    &mut buffers[index]
 }
 
 /// One non-empty temporal unit: an IVF frame record, or the Annex B OBUs from
@@ -213,8 +217,8 @@ pub(crate) struct SourceUnit {
 
 /// Where the decode loop reads its temporal units from.
 pub(crate) trait UnitSource: Send {
-    /// The next non-empty temporal unit, copied into a free buffer of
-    /// `buffers`; `None` at end of input.
+    /// The next non-empty temporal unit, backed by a buffer from `buffers`;
+    /// `None` at end of input.
     fn next_unit(&mut self, buffers: &mut Vec<Arc<Vec<u8>>>) -> Result<Option<SourceUnit>>;
 
     /// The IVF file header, once the first unit is read.
@@ -294,7 +298,15 @@ impl<R: Read> ReaderUnits<R> {
 impl<R: Read + Send> UnitSource for ReaderUnits<R> {
     fn next_unit(&mut self, buffers: &mut Vec<Arc<Vec<u8>>>) -> Result<Option<SourceUnit>> {
         loop {
-            let unit = match self.units.next_temporal_unit() {
+            let buffer = free_buffer(buffers);
+            let storage = Arc::get_mut(buffer).ok_or_else(|| {
+                crate::pipeline::unsupported(
+                    "shared_input_buffer",
+                    None,
+                    "internal invariant violation: selected input buffer is still shared",
+                )
+            })?;
+            let unit = match self.units.next_temporal_unit_into(storage) {
                 Ok(unit) => unit,
                 Err(error) => return Err(self.reader_error(error)),
             };
@@ -326,8 +338,9 @@ impl<R: Read + Send> UnitSource for ReaderUnits<R> {
                     pts,
                 ));
             }
+            let offset = unit.offset.get();
             let unit = SourceUnit {
-                bytes: UnitBytes::new(fill_buffer(buffers, unit.bytes), unit.offset.get()),
+                bytes: UnitBytes::new(Arc::clone(buffer), offset),
                 ivf_frame,
                 props,
             };
