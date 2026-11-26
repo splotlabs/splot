@@ -28,7 +28,7 @@ use crate::inverse_transform_2d_outer::{
 };
 use crate::reconstruct::{reconstruct_add_residual, reconstruct_add_residual_with};
 use crate::secondary_transform::{
-    SecondaryInverseTransform, SecondaryQuant, secondary_inverse_transform_prefix,
+    SecondaryInverseTransform, SecondaryOutput, SecondaryQuant, secondary_inverse_transform_prefix,
     secondary_inverse_transform_prefix_with, secondary_inverse_transform_quant,
     secondary_inverse_transform_quant_with,
 };
@@ -95,7 +95,7 @@ impl BlockRunner for BaselineBlock {
             SecondaryQuant::Raster(quant),
             quantizers,
             secondary,
-            dequant,
+            SecondaryOutput::Full(dequant),
         )
     }
 
@@ -158,7 +158,7 @@ impl<B: SimdBackend> BlockRunner for TypedBlock<B> {
             SecondaryQuant::Raster(quant),
             quantizers,
             secondary,
-            dequant,
+            SecondaryOutput::Full(dequant),
         )
     }
 

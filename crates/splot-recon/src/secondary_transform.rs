@@ -265,8 +265,15 @@ pub enum SecondaryQuant<'a> {
     Scan(&'a [i32]),
 }
 
+/// Storage layout for the secondary transform's output coefficients.
+pub(crate) enum SecondaryOutput<'a> {
+    Full(&'a mut [i32]),
+    /// The leading eight columns of a block at least 16 samples wide.
+    Rows8(&'a mut [i32; 64]),
+}
+
 /// [`secondary_inverse_transform_prefix`] of the § 7.14.4 flat dequantization
-/// of the raster `quant` prefix by `(dc_quant, ac_quant, dq_denom)`: only the
+/// of the `quant` prefix by `(dc_quant, ac_quant, dq_denom)`: only the
 /// first `n` scan positions feed the transform and every other `Dequant`
 /// entry ends zero, so only those positions are dequantized. Writes the
 /// returned whole-row prefix of `dequant`.
@@ -274,7 +281,7 @@ pub(crate) fn secondary_inverse_transform_quant(
     quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
-    dequant: &mut [i32],
+    dequant: SecondaryOutput<'_>,
 ) -> Result<usize> {
     secondary_inverse_transform_quant_with_runner(BaselineIst, quant, quantizers, params, dequant)
 }
@@ -285,7 +292,7 @@ pub(crate) fn secondary_inverse_transform_quant_with<B: SimdBackend>(
     quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
-    dequant: &mut [i32],
+    dequant: SecondaryOutput<'_>,
 ) -> Result<usize> {
     secondary_inverse_transform_quant_with_runner(
         TypedIst(backend.narrow()),
@@ -301,66 +308,32 @@ fn secondary_inverse_transform_quant_with_runner<R: IstRunner>(
     quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
-    dequant: &mut [i32],
+    dequant: SecondaryOutput<'_>,
 ) -> Result<usize> {
-    let coefs = dequantized_inputs_with_runner(runner, quant, quantizers, params, dequant.len())?;
+    let (len, output_params, dst) = match dequant {
+        SecondaryOutput::Full(dst) => (dst.len(), *params, dst),
+        SecondaryOutput::Rows8(rows) => {
+            if params.w < 16 {
+                return Err(ReconError::SecondaryTransformInvalidShape {
+                    w: params.w,
+                    h: params.h,
+                });
+            }
+            (
+                params.w.wrapping_mul(params.h),
+                SecondaryInverseTransform { w: 8, ..*params },
+                rows.as_mut_slice(),
+            )
+        }
+    };
+    let coefs = dequantized_inputs_with_runner(runner, quant, quantizers, params, len)?;
     Ok(transform_into_with_runner(
-        runner, &coefs, params, dequant, 0,
+        runner,
+        &coefs,
+        &output_params,
+        dst,
+        0,
     ))
-}
-
-/// [`secondary_inverse_transform_quant`] of a block at least 16 wide into the
-/// first 8 columns of its rows, row `r` at `rows[8 * r..]`: the output rows
-/// as the 8-wide transform writes them. Returns the written length.
-pub(crate) fn secondary_inverse_transform_quant_rows8(
-    quant: SecondaryQuant<'_>,
-    quantizers: (u32, u32, u32),
-    params: &SecondaryInverseTransform,
-    rows: &mut [i32; 64],
-) -> Result<usize> {
-    secondary_inverse_transform_quant_rows8_with_runner(
-        BaselineIst,
-        quant,
-        quantizers,
-        params,
-        rows,
-    )
-}
-
-/// Typed [`secondary_inverse_transform_quant_rows8`] using caller-selected `backend`.
-pub(crate) fn secondary_inverse_transform_quant_rows8_with<B: SimdBackend>(
-    backend: B,
-    quant: SecondaryQuant<'_>,
-    quantizers: (u32, u32, u32),
-    params: &SecondaryInverseTransform,
-    rows: &mut [i32; 64],
-) -> Result<usize> {
-    secondary_inverse_transform_quant_rows8_with_runner(
-        TypedIst(backend.narrow()),
-        quant,
-        quantizers,
-        params,
-        rows,
-    )
-}
-
-fn secondary_inverse_transform_quant_rows8_with_runner<R: IstRunner>(
-    runner: R,
-    quant: SecondaryQuant<'_>,
-    quantizers: (u32, u32, u32),
-    params: &SecondaryInverseTransform,
-    rows: &mut [i32; 64],
-) -> Result<usize> {
-    if params.w < 16 {
-        return Err(ReconError::SecondaryTransformInvalidShape {
-            w: params.w,
-            h: params.h,
-        });
-    }
-    let coefs =
-        dequantized_inputs_with_runner(runner, quant, quantizers, params, params.w * params.h)?;
-    let narrow = SecondaryInverseTransform { w: 8, ..*params };
-    Ok(transform_into_with_runner(runner, &coefs, &narrow, rows, 0))
 }
 
 macro_rules! ist_runner_methods {
@@ -1145,18 +1118,18 @@ mod tests {
                     SecondaryQuant::Raster(self.quant),
                     self.quantizers,
                     self.params,
-                    &mut q_out,
+                    SecondaryOutput::Full(&mut q_out),
                 )
                 .unwrap();
 
                 let mut rows = [0i32; 64];
                 let r_len = if self.params.w >= 16 {
-                    secondary_inverse_transform_quant_rows8_with(
+                    secondary_inverse_transform_quant_with(
                         backend,
                         SecondaryQuant::Raster(self.quant),
                         self.quantizers,
                         self.params,
-                        &mut rows,
+                        SecondaryOutput::Rows8(&mut rows),
                     )
                     .unwrap()
                 } else {
@@ -1189,16 +1162,16 @@ mod tests {
                 SecondaryQuant::Raster(&quant),
                 quantizers,
                 &p,
-                &mut c_q,
+                SecondaryOutput::Full(&mut c_q),
             )
             .unwrap();
             let mut c_rows = [0i32; 64];
             let c_r_len = if w >= 16 {
-                secondary_inverse_transform_quant_rows8(
+                secondary_inverse_transform_quant(
                     SecondaryQuant::Raster(&quant),
                     quantizers,
                     &p,
-                    &mut c_rows,
+                    SecondaryOutput::Rows8(&mut c_rows),
                 )
                 .unwrap()
             } else {
