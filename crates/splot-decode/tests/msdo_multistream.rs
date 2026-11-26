@@ -271,6 +271,35 @@ fn stream_pictures(decoder: &mut Decoder, bytes: &[u8]) -> Result<Vec<Picture>, 
     Ok(pictures)
 }
 
+#[test]
+fn pictures_inherit_content_interpretation_until_the_next_cvs() {
+    let multilayer = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-mlayer2-reproducible-8bit.obu"
+    );
+    let ci_fixture =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-output-ci-2frame-64x64.ivf");
+    let first_tu = &multilayer[..525];
+    let mut input = first_tu[..33].to_vec();
+    input.extend_from_slice(&ci_fixture[70..82]);
+    input.extend_from_slice(&first_tu[33..]);
+    input.extend_from_slice(first_tu);
+    let pictures = stream_decode(&input, &DecoderSettings::default()).unwrap();
+    assert_eq!(pictures.len(), 4);
+    assert_eq!(pictures[0].embedded_layer_id(), EmbeddedLayerId::BASE);
+    assert_eq!(
+        pictures[1].embedded_layer_id(),
+        EmbeddedLayerId::from_bits(1)
+    );
+    let direct = pictures[0].content_interpretation().unwrap();
+    assert!(direct.timing_info.is_some());
+    assert_eq!(pictures[1].content_interpretation(), Some(direct));
+    assert!(
+        pictures[2..]
+            .iter()
+            .all(|picture| picture.content_interpretation().is_none())
+    );
+}
+
 fn append_picture_raw(pic: &Picture, out: &mut Vec<u8>) {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         match pic.plane(plane) {
