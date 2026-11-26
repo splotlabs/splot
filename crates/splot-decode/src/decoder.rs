@@ -803,7 +803,7 @@ impl Decoder {
         settings: DecoderSettings,
         atlases: crate::ExternalAtlases,
     ) -> Result<Self> {
-        Self::open(settings, atlases, None)
+        Self::open(&settings, atlases, None)
     }
 
     /// Opens a decoder with an observer for frames admitted on its decode path.
@@ -824,14 +824,14 @@ impl Decoder {
         observer: impl Fn(CodedFrameEvent) + Send + Sync + 'static,
     ) -> Result<Self> {
         Self::open(
-            settings,
+            &settings,
             crate::ExternalAtlases::default(),
             Some(Box::new(observer)),
         )
     }
 
     fn open(
-        settings: DecoderSettings,
+        settings: &DecoderSettings,
         atlases: crate::ExternalAtlases,
         coded_frames: Option<CodedFrameObserver>,
     ) -> Result<Self> {
