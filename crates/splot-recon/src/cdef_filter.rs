@@ -51,13 +51,11 @@ pub use direction_backend::{
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
 const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 
-/// AV2 § 7.18.3 `Cdef_Pri_Taps[2][2]`: primary-tap weights, selected by
-/// `(priStr >> coeffShift) & 1`.
-const CDEF_PRI_TAPS: [[i32; 2]; 2] = [[4, 2], [3, 3]];
-
-/// AV2 § 7.18.3 `Cdef_Sec_Taps[2][2]`: secondary-tap weights, selected by
-/// `(priStr >> coeffShift) & 1`.
-const CDEF_SEC_TAPS: [[i32; 2]; 2] = [[2, 1], [2, 1]];
+/// AV2 § 7.18.3 primary-tap weights for the strength's parity.
+fn cdef_primary_taps(strength: i32, coeff_shift: u32) -> [i32; 2] {
+    let parity = (strength >> coeff_shift) & 1;
+    [4 - parity, 2 + parity]
+}
 
 /// AV2 § 7.18.3 `Cdef_Directions[8][2][2]`: the `(dy, dx)` neighbour offsets for
 /// direction `dir` and tap index `k` (`[dir][k][0]` is the row offset, `[dir][k][1]`
@@ -447,9 +445,8 @@ pub fn cdef_filter_sample(
     damping: i32,
     coeff_shift: u32,
 ) -> i32 {
-    let tap_row = ((pri_str >> coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
+    let pri_taps = cdef_primary_taps(pri_str, coeff_shift);
+    let sec_taps = [2, 1];
     let pri_adj = constrain_damping_adj(pri_str, damping);
     let sec_adj = constrain_damping_adj(sec_str, damping);
 
@@ -857,9 +854,8 @@ fn cdef_filter_rows<
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
+    let pri_taps = cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
+    let sec_taps = [2i16, 1];
     let pri = CdefConstrain::new(simd, filter.pri_str, filter.damping);
     let sec = CdefConstrain::new(simd, filter.sec_str, filter.damping);
     let unavailable = i16x16::splat(simd, CDEF_UNAVAILABLE as i16);
@@ -983,9 +979,8 @@ fn cdef_filter_rows_8bit<
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
+    let pri_taps = cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
+    let sec_taps = [2i16, 1];
     let pri = CdefConstrain8::new(simd, filter.pri_str, filter.damping);
     let sec = CdefConstrain8::new(simd, filter.sec_str, filter.damping);
     let base_u8 = u8x16::splat(simd, base as u8);
@@ -1136,9 +1131,8 @@ fn cdef_filter_rows_diff8<
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
+    let pri_taps = cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
+    let sec_taps = [2i16, 1];
     let pri = CdefConstrain8::new(simd, filter.pri_str, filter.damping);
     let sec = CdefConstrain8::new(simd, filter.sec_str, filter.damping);
     let pair = |view, row| cdef_row_pair_i16::<S, STRIDE, SPAN>(simd, view, row);
@@ -1246,9 +1240,8 @@ fn cdef_filter_rows_clamped<
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
+    let pri_taps = cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
+    let sec_taps = [2i16, 1];
     let weight = -12 * (i16::from(PRI) + i16::from(SEC));
     let (pri_str, sec_str) = (filter.pri_str as i16, filter.sec_str as i16);
     let pair = |view, row| cdef_row_pair_i16::<S, STRIDE, SPAN>(simd, view, row);

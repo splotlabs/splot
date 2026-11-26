@@ -562,7 +562,7 @@ pub(crate) fn read_warp_inter_intra_syntax(
         return Ok(None);
     }
     let b_size = b_size.index();
-    let bsize_group = SIZE_GROUP_LOOKUP[b_size];
+    let bsize_group = usize::from(SIZE_GROUP_LOOKUP[b_size]);
     let enabled = cdfs
         .read_block_symbol_trace(TileCdfSelector::WarpInterIntra { bsize_group }, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))?

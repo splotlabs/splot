@@ -132,7 +132,7 @@ const WARP_DELTA_STEP_BITS: u32 = 10;
 pub(crate) const WARPEDMODEL_TRANS_CLAMP: i32 =
     1 << (WARPEDMODEL_PREC_BITS + WARP_TRANS_INTEGER_BITS - 1);
 #[doc = "AV2 § 9.2 `Size_Group[BLOCK_SIZES]`."]
-const SIZE_GROUP_LOOKUP: [usize; 29] = [
+const SIZE_GROUP_LOOKUP: [u8; 29] = [
     0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2, 1, 1, 2, 2,
 ];
 #[doc = "AV2 § 9.2 `Wedge_Bits[BLOCK_SIZES] != 0`."]
@@ -2288,7 +2288,7 @@ fn read_inter_intra_syntax_enabled(
     if !frame_enables_interintra || b_size < BLOCK_8X8 || n4w.max(n4h) > CHUNK_64_N4 {
         return Ok(None);
     }
-    let bsize_group = SIZE_GROUP_LOOKUP[b_size];
+    let bsize_group = usize::from(SIZE_GROUP_LOOKUP[b_size]);
     if read_row(
         symbols,
         row_at(cdfs.block_rows_mut().inter_intra(), bsize_group),

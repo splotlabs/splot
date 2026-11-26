@@ -14,8 +14,7 @@ use splot_recon::{TransformClass, coefficient_scan_position};
 use super::super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 use super::super::cdf::coeff_context::{
     CHROMA_2D_PLANE_CONTEXT_OFFSET, HF_2D_CONTEXT_OFFSET, LF_2D_CONTEXT_CAP_AND_OFFSET,
-    LF_SIG_COEF_CONTEXTS_2D_UV, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_BASE_BR_RANGE, SIG_OFFSETS,
-    coeff_base_eob_ctx, dc_sign_ctx,
+    LF_SIG_COEF_CONTEXTS_2D_UV, MAX_BASE_BR_RANGE, SIG_OFFSETS, coeff_base_eob_ctx, dc_sign_ctx,
 };
 use super::super::cdf::{CoeffLevelRows, TileCdfSubset};
 use super::super::coeff_state::{
@@ -58,9 +57,6 @@ const SIG_GRID: [[usize; 5]; 3] = {
         while k < 5 {
             let [row, col] = SIG_OFFSETS[class][k];
             out[class][k] = grid_offset([row as usize, col as usize]);
-            if k < MAG_REF_OFFSET_WITH_TX_CLASS[class].len() {
-                assert!(out[class][k] == grid_offset(MAG_REF_OFFSET_WITH_TX_CLASS[class][k]));
-            }
             k += 1;
         }
         class += 1;
@@ -136,17 +132,11 @@ const fn min(a: usize, b: usize) -> usize {
 const SCAN_DIMS: usize = 4;
 const GRID_SCAN_LEN: usize = 3600;
 
-/// Where the `4 << wi` by `4 << hi` shape starts in [`GRID_SCANS`].
+/// Where the `4 << wi` by `4 << hi` shape starts in [`GRID_SCANS`]. Earlier widths span 60 rows each.
 pub(super) const fn scan_shape_offset(wi: usize, hi: usize) -> usize {
-    let (mut offset, mut w, mut h) = (0, 0, 0);
-    while w < wi || (w == wi && h < hi) {
-        offset += (4 << w) * (4 << h);
-        h += 1;
-        if h == SCAN_DIMS {
-            (w, h) = (w + 1, 0);
-        }
-    }
-    offset
+    let w = 4usize << wi;
+    let h = 4usize << hi;
+    (w - 4) * 60 + w * (h - 4)
 }
 
 /// The § 5.20.7.30 scan of every block shape per transform class, each

@@ -291,7 +291,7 @@ impl EncoderInterTile {
                 None => Ok(()),
             };
         }
-        let bsize_group = super::super::SIZE_GROUP_LOOKUP[frontier.b_size.index()];
+        let bsize_group = usize::from(super::super::SIZE_GROUP_LOOKUP[frontier.b_size.index()]);
         out.push((
             TileCdfSelector::InterIntra { bsize_group },
             u8::from(interintra.is_some()),

@@ -422,7 +422,7 @@ const IST_REDUCE_SET_SIZE_ADST_ADST: usize = 4;
 
 #[doc = "AV2 § 7.15.3 secondary transform process inverse IST maps."]
 #[rustfmt::skip]
-const INV_MOST_PROBABLE_STX_MAPPING: [[usize; IST_DIR_SIZE]; 12] = [
+const INV_MOST_PROBABLE_STX_MAPPING: [[u8; IST_DIR_SIZE]; 12] = [
     [6, 1, 0, 5, 4, 3, 2],
     [1, 6, 0, 4, 2, 5, 3],
     [1, 6, 0, 4, 2, 5, 3],
@@ -439,7 +439,7 @@ const INV_MOST_PROBABLE_STX_MAPPING: [[usize; IST_DIR_SIZE]; 12] = [
 
 #[doc = "AV2 § 7.15.3 secondary transform process inverse IST maps."]
 #[rustfmt::skip]
-const INV_MOST_PROBABLE_STX_MAPPING_ADST: [[usize; IST_REDUCE_SET_SIZE_ADST_ADST]; 12] = [
+const INV_MOST_PROBABLE_STX_MAPPING_ADST: [[u8; IST_REDUCE_SET_SIZE_ADST_ADST]; 12] = [
     [3, 1, 0, 2],
     [1, 3, 0, 2],
     [1, 3, 0, 2],
@@ -1647,9 +1647,7 @@ const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
 /// § 8.3.2 `InterTxTypeLong` context from the last coefficient position.
 ///
 /// `eob` is the non-zero-block end of block, which `read_nonzero_coeff_eob` builds
-/// from an `eob_pt` of 1..=11: below 3 it is the point itself, and above it
-/// starts at `EOB_GROUP_START[3]` = 3. It is never 0, so the last-position
-/// conversion is total.
+/// from a point in 1..=11. Its minimum is 1, so subtracting one is safe.
 fn inter_tx_type_long_ctx(tx_size: usize, eob: usize) -> Result<usize, GeneralIntraResidualError> {
     let eob = eob.saturating_sub(1);
     let tx = TX_GEOMETRY
@@ -1970,14 +1968,12 @@ fn intra_secondary_transform_kernel(
         return Err(invalid_reconstruction_state_error("intra IST mode"));
     }
     let base = if plane_tx_type == ADST_ADST && tx_width >= 8 && tx_height >= 8 {
-        INV_MOST_PROBABLE_STX_MAPPING_ADST[mode]
-            .get(most_probable_stx_set)
-            .copied()
+        INV_MOST_PROBABLE_STX_MAPPING_ADST[mode].get(most_probable_stx_set)
     } else {
-        INV_MOST_PROBABLE_STX_MAPPING[mode]
-            .get(most_probable_stx_set)
-            .copied()
+        INV_MOST_PROBABLE_STX_MAPPING[mode].get(most_probable_stx_set)
     }
+    .copied()
+    .map(usize::from)
     .ok_or_else(|| invalid_reconstruction_state_error("intra IST set"))?;
     if plane_tx_type == ADST_ADST {
         Ok(base + 7)

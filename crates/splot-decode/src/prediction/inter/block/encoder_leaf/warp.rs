@@ -297,7 +297,7 @@ impl EncoderInterTile {
             }
             (EncoderWarpSource::Candidate, _) if reads_interintra => {
                 let b_size = frontier.b_size.index();
-                let bsize_group = SIZE_GROUP_LOOKUP[b_size];
+                let bsize_group = usize::from(SIZE_GROUP_LOOKUP[b_size]);
                 out.push((
                     TileCdfSelector::WarpInterIntra { bsize_group },
                     u8::from(warp.interintra.is_some()),

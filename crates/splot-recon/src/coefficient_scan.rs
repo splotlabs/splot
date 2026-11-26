@@ -36,18 +36,11 @@ pub enum TransformClass {
     Vertical,
 }
 
-/// The four legal operating dimensions `Min(Tx_Width[txSz], 32)` /
-/// `Min(Tx_Height[txSz], 32)`.
-const SCAN_DIMS: [usize; 4] = [4, 8, 16, 32];
-
 /// Total scan positions over every `(w, h)` shape: `(4 + 8 + 16 + 32)^2`.
 const SCAN_TABLE_LEN: usize = 3600;
 
 /// The largest single scan, `32 * 32`.
 const MAX_SCAN_LEN: usize = 1024;
-
-/// Start of each `(w, h)` shape's run inside a packed per-class scan table.
-const SCAN_OFFSETS: [[usize; 4]; 4] = build_scan_offsets();
 
 /// `TX_CLASS_VERT` is the identity permutation, so every shape's scan is the
 /// `w * h` prefix of one shared table rather than its own packed run.
@@ -59,20 +52,10 @@ const HORIZONTAL_SCAN: [u16; SCAN_TABLE_LEN] = build_horizontal_scan();
 /// Packed `TX_CLASS_2D` scans for every `(w, h)` shape.
 const TWO_D_SCAN: [u16; SCAN_TABLE_LEN] = build_two_d_scan();
 
-const fn build_scan_offsets() -> [[usize; 4]; 4] {
-    let mut offsets = [[0usize; 4]; 4];
-    let mut offset = 0;
-    let mut wi = 0;
-    while wi < 4 {
-        let mut hi = 0;
-        while hi < 4 {
-            offsets[wi][hi] = offset;
-            offset += SCAN_DIMS[wi] * SCAN_DIMS[hi];
-            hi += 1;
-        }
-        wi += 1;
-    }
-    offsets
+/// Start of a shape's scan. Earlier widths each cover 60 rows' worth
+/// of positions, and preceding heights at this width sum to `h - 4`.
+const fn scan_offset(w: usize, h: usize) -> usize {
+    60 * (w - 4) + w * (h - 4)
 }
 
 const fn build_vertical_scan() -> [u16; MAX_SCAN_LEN] {
@@ -92,7 +75,8 @@ const fn build_horizontal_scan() -> [u16; SCAN_TABLE_LEN] {
     while wi < 4 {
         let mut hi = 0;
         while hi < 4 {
-            let (w, h, base) = (SCAN_DIMS[wi], SCAN_DIMS[hi], SCAN_OFFSETS[wi][hi]);
+            let (w, h) = (4 << wi, 4 << hi);
+            let base = scan_offset(w, h);
             let mut c = 0;
             let mut x = 0;
             while x < w {
@@ -118,8 +102,9 @@ const fn build_two_d_scan() -> [u16; SCAN_TABLE_LEN] {
     while wi < 4 {
         let mut hi = 0;
         while hi < 4 {
-            let base = SCAN_OFFSETS[wi][hi];
-            let (w, h) = (SCAN_DIMS[wi] as i32, SCAN_DIMS[hi] as i32);
+            let (w, h) = (4 << wi, 4 << hi);
+            let base = scan_offset(w, h);
+            let (w, h) = (w as i32, h as i32);
             let len = (w * h) as usize;
             let (mut x, mut y) = (0i32, 0i32);
             let mut c = 0;
@@ -153,22 +138,13 @@ pub const fn coefficient_scan_position(
     c: usize,
 ) -> u16 {
     let (wi, hi) = (if wi < 3 { wi } else { 3 }, if hi < 3 { hi } else { 3 });
-    let last = SCAN_DIMS[wi] * SCAN_DIMS[hi] - 1;
+    let (w, h) = (4 << wi, 4 << hi);
+    let last = w * h - 1;
     let c = if c < last { c } else { last };
     match class {
-        TransformClass::Vertical => VERTICAL_SCAN[c],
-        TransformClass::Horizontal => HORIZONTAL_SCAN[SCAN_OFFSETS[wi][hi] + c],
-        TransformClass::TwoD => TWO_D_SCAN[SCAN_OFFSETS[wi][hi] + c],
-    }
-}
-
-const fn scan_dim_index(d: usize) -> Option<usize> {
-    match d {
-        4 => Some(0),
-        8 => Some(1),
-        16 => Some(2),
-        32 => Some(3),
-        _ => None,
+        TransformClass::Vertical => c as u16,
+        TransformClass::Horizontal => HORIZONTAL_SCAN[scan_offset(w, h) + c],
+        TransformClass::TwoD => TWO_D_SCAN[scan_offset(w, h) + c],
     }
 }
 
@@ -188,13 +164,14 @@ const fn scan_dim_index(d: usize) -> Option<usize> {
 /// Returns [`ReconError::InvalidScanShape`] if `w` / `h` are not each 4/8/16/32.
 pub fn coefficient_scan_slice(w: usize, h: usize, class: TransformClass) -> Result<&'static [u16]> {
     let invalid = || ReconError::InvalidScanShape { w, h };
-    let wi = scan_dim_index(w).ok_or_else(invalid)?;
-    let hi = scan_dim_index(h).ok_or_else(invalid)?;
+    if !matches!(w, 4 | 8 | 16 | 32) || !matches!(h, 4 | 8 | 16 | 32) {
+        return Err(invalid());
+    }
     let len = w * h;
     let (table, base) = match class {
         TransformClass::Vertical => (VERTICAL_SCAN.as_slice(), 0),
-        TransformClass::Horizontal => (HORIZONTAL_SCAN.as_slice(), SCAN_OFFSETS[wi][hi]),
-        TransformClass::TwoD => (TWO_D_SCAN.as_slice(), SCAN_OFFSETS[wi][hi]),
+        TransformClass::Horizontal => (HORIZONTAL_SCAN.as_slice(), scan_offset(w, h)),
+        TransformClass::TwoD => (TWO_D_SCAN.as_slice(), scan_offset(w, h)),
     };
     table.get(base..base + len).ok_or_else(invalid)
 }
