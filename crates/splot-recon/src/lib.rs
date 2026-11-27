@@ -179,6 +179,8 @@ pub use intra::{
     predict_intra_dc_square, predict_intra_dc_square_into, predict_intra_dc_square_value,
     predict_intra_palette_into, predict_intra_palette_into_with,
 };
+#[cfg(target_arch = "x86_64")]
+pub use intra_basic::predict_intra_paeth_rect_into_avx512;
 pub use intra_basic::{
     IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_into,
     predict_intra_paeth_rect_into_with,

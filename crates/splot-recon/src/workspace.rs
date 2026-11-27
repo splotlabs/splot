@@ -211,6 +211,8 @@ pub struct CurrentFrameWorkspace<T: ReconSample> {
     u: Option<CurrentFramePlane<T>>,
     v: Option<CurrentFramePlane<T>>,
     intra_prediction_scratch: IntraPredictionScratch<T>,
+    #[cfg(target_arch = "x86_64")]
+    wide: Option<fearless_simd::Avx512>,
 }
 
 /// Selects one of the two reusable current-frame intra-prediction buffers.
@@ -1200,6 +1202,20 @@ pub(crate) fn subsampled_rect(
 const MAX_INTRA_PREDICTION_SAMPLES: usize = 64 * 64;
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// The AVX-512 token of a decode that selected AVX-512, for the kernels
+    /// that have a wider form.
+    #[cfg(target_arch = "x86_64")]
+    #[must_use]
+    pub fn wide_token(&self) -> Option<fearless_simd::Avx512> {
+        self.wide
+    }
+
+    /// Sets [`Self::wide_token`].
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_wide_token(&mut self, wide: Option<fearless_simd::Avx512>) {
+        self.wide = wide;
+    }
+
     /// Creates a workspace from decoded-frame metadata and an initial fill.
     ///
     /// Plane geometry is derived from [`DecodedFrameInfo`]. Y storage uses the
@@ -1264,6 +1280,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch: IntraPredictionScratch::new(),
+            #[cfg(target_arch = "x86_64")]
+            wide: None,
         })
     }
 

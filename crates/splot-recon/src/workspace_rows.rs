@@ -121,6 +121,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch,
+            #[cfg(target_arch = "x86_64")]
+            wide: None,
         })
     }
 
@@ -187,6 +189,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch: scratch,
+            #[cfg(target_arch = "x86_64")]
+            wide: None,
         })
     }
 

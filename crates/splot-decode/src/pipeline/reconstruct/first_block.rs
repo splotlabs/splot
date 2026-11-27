@@ -457,7 +457,21 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<
             above,
             left,
         )?;
+        #[cfg(target_arch = "x86_64")]
+        let wide = workspace.wide_token().filter(|_| width >= 32);
         let predict = |output: &mut [T], stride: usize| {
+            #[cfg(target_arch = "x86_64")]
+            if let Some(wide) = wide {
+                return splot_recon::predict_intra_paeth_rect_into_avx512(
+                    wide,
+                    bit_depth,
+                    block_size,
+                    IntraPaethEdges::new(left, above, top_left),
+                    output,
+                    stride,
+                )
+                .map_err(Into::into);
+            }
             predict_intra_paeth_rect_into_with(
                 backend,
                 bit_depth,

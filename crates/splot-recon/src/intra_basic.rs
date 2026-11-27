@@ -6,7 +6,7 @@
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16, i16x32, u16x32};
-use splot_core::simd::{SelectedBackend, SimdBackend};
+use splot_core::simd::SimdBackend;
 
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
@@ -134,13 +134,6 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
         output: &mut [O],
         stride_samples: usize,
     ) {
-        if B::KIND == SelectedBackend::Avx512 && size.width() >= 32 {
-            let (backend, args) = (self.0, (left, above, top_left));
-            return backend.vectorize(
-                #[inline(always)]
-                || paeth_rows_wide(backend.token(), size, args, output, stride_samples),
-            );
-        }
         let narrow = self.0.narrow();
         splot_core::with_simd!(narrow, simd => {
             paeth_rows(
@@ -154,6 +147,57 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
             );
         });
     }
+}
+
+/// The AVX-512 token of a decode that selected AVX-512: blocks 32 and 64
+/// wide take [`paeth_rows_wide`].
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+struct WidePaeth(fearless_simd::Avx512);
+
+#[cfg(target_arch = "x86_64")]
+impl PaethRunner for WidePaeth {
+    #[inline]
+    fn paeth<O: IntraLaneSample>(
+        self,
+        size: IntraRectBlockSize,
+        left: &[O],
+        above: &[O],
+        top_left: u16,
+        output: &mut [O],
+        stride_samples: usize,
+    ) {
+        let (wide, args) = (self.0, (left, above, top_left));
+        wide.vectorize(
+            #[inline(always)]
+            || paeth_rows_wide(wide, size, args, output, stride_samples),
+        );
+    }
+}
+
+/// [`predict_intra_paeth_rect_into`] for a block 32 or 64 wide on a host whose
+/// decode selected AVX-512, 32 lanes a step.
+///
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_paeth_rect_into`].
+#[cfg(target_arch = "x86_64")]
+pub fn predict_intra_paeth_rect_into_avx512<T: ReconSample>(
+    wide: fearless_simd::Avx512,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    edges: IntraPaethEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    debug_assert!(size.width() >= 32);
+    predict_intra_paeth_rect_into_with_runner(
+        WidePaeth(wide),
+        bit_depth,
+        size,
+        edges,
+        output,
+        stride_samples,
+    )
 }
 
 fn prepare_paeth_inputs<T: ReconSample>(
