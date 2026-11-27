@@ -403,8 +403,14 @@ fn facade_saves_the_ccso_parameters_of_each_slot() {
                     };
                     cases[kind] += 1;
                 }
-                crate::gop::GopStep::ShowExisting { slot, .. } => {
-                    coder.show_existing_frame(slot, None, false).unwrap();
+                crate::gop::GopStep::ShowExisting {
+                    slot,
+                    display_index,
+                    ..
+                } => {
+                    coder
+                        .show_existing_frame(slot, None, false, display_index)
+                        .unwrap();
                     assert_eq!(saved(&coder), before, "show-existing slot {slot}");
                     cases[3] += 1;
                 }

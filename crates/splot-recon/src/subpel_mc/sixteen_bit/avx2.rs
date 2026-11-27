@@ -338,16 +338,20 @@ fn weights(taps: &Taps) -> [__m256i; 4] {
     taps.full.map(|pair| _mm256_set1_epi32(pair))
 }
 
-/// The sum of `P` tap pairs `pair(p)` weighted by `weights`.
-#[inline]
-#[target_feature(enable = "avx2")]
-fn madds<const P: usize>(weights: &[__m256i; 4], pair: impl Fn(usize) -> __m256i) -> __m256i {
-    let mut sum = _mm256_madd_epi16(pair(0), weights[0]);
-    unroll!(p < P, [1 2 3] => {
-        sum = _mm256_add_epi32(sum, _mm256_madd_epi16(pair(p), weights[p]));
-    });
-    sum
+/// The sum of `$pairs` tap pairs `$pair(p)` weighted by `$weights`, expanded
+/// in its kernel: a function of an AVX2 kernel cannot be `inline(always)`,
+/// and one the compiler leaves out of line costs a call for each sum.
+macro_rules! madds {
+    ($pairs:expr, $weights:expr, $pair:expr) => {{
+        let (weights, pair): (&[__m256i; 4], _) = ($weights, $pair);
+        let mut sum = _mm256_madd_epi16(pair(0), weights[0]);
+        unroll!(p < $pairs, [1 2 3] => {
+            sum = _mm256_add_epi32(sum, _mm256_madd_epi16(pair(p), weights[p]));
+        });
+        sum
+    }};
 }
+pub(super) use madds;
 
 /// Eight samples of `row` from column `k`.
 #[inline]
@@ -375,7 +379,7 @@ fn row_sums<const P: usize>(t: Avx2, row: &[u16], weights: &[__m256i; 4]) -> Opt
         return Some(sums_of::<P>((low, one, high), weights));
     }
     let low = load2x8(t, row.first_chunk::<9>()?, 0, 1)?;
-    Some(madds::<P>(weights, |_| low))
+    Some(madds!(P, weights, |_| low))
 }
 
 /// [`row_sums`] of the samples of a row from columns 0, 1 and 8.
@@ -387,7 +391,7 @@ fn sums_of<const P: usize>(
 ) -> __m256i {
     let low = _mm256_set_m128i(at1, at0);
     let high = _mm256_set_m128i(_mm_srli_si128::<2>(at8), at8);
-    madds::<P>(weights, |p| match p {
+    madds!(P, weights, |p| match p {
         0 => low,
         1 => _mm256_alignr_epi8::<4>(high, low),
         2 => _mm256_alignr_epi8::<8>(high, low),
@@ -440,7 +444,7 @@ fn pairs_of<const P: usize>(
     weights: &[__m256i; 4],
 ) -> __m256i {
     let pattern = |p: usize| -> __m256i { u8x32::load_array_ref(t, &WORD_PAIRS[p % 2]).into() };
-    madds::<P>(weights, |p| {
+    madds!(P, weights, |p| {
         _mm256_shuffle_epi8(if p < 2 { low } else { high }, pattern(p))
     })
 }
@@ -680,7 +684,7 @@ fn vertical<const W: usize, const P: usize, O: WordOut>(
     if W == 4 {
         let line = |a: &[u16], b: &[u16]| pair_line(&last, widen4(t, a, b));
         let vertical =
-            |ring: &[__m256i; 4], next| madds::<P>(&weights, |p| pairs_pair::<P>(ring, next, p));
+            |ring: &[__m256i; 4], next| madds!(P, &weights, |p| pairs_pair::<P>(ring, next, p));
         let emit = |a: O::Row<'_>, b: O::Row<'_>, y: __m256i| {
             store::<O>(t, clip, (a, Some(b)), round::<7>(y), round::<3>(y));
         };
@@ -689,7 +693,7 @@ fn vertical<const W: usize, const P: usize, O: WordOut>(
     }
     let line = |row: &[u16]| strip_line(&last, widen8(t, row));
     let vertical = |phase, ring: &[__m256i; 8], next| {
-        madds::<P>(&weights, |p| ring_pair::<P>(phase, ring, next, p))
+        madds!(P, &weights, |p| ring_pair::<P>(phase, ring, next, p))
     };
     let emit = |r: O::Row<'_>, y: __m256i| {
         store::<O>(t, clip, (r, None), round::<7>(y), round::<3>(y));
@@ -719,7 +723,7 @@ fn two_pass<const W: usize, const H: usize, const V: usize, O: WordOut>(
             pair_line(&last, sums)
         };
         let vertical =
-            |ring: &[__m256i; 4], next| madds::<V>(&v_weights, |p| pairs_pair::<V>(ring, next, p));
+            |ring: &[__m256i; 4], next| madds!(V, &v_weights, |p| pairs_pair::<V>(ring, next, p));
         let emit = |a: O::Row<'_>, b: O::Row<'_>, y: __m256i| {
             store::<O>(t, clip, (a, Some(b)), round::<11>(y), round::<7>(y));
         };
@@ -734,7 +738,7 @@ fn two_pass<const W: usize, const H: usize, const V: usize, O: WordOut>(
         )
     };
     let vertical = |phase, ring: &[__m256i; 8], next| {
-        madds::<V>(&v_weights, |p| ring_pair::<V>(phase, ring, next, p))
+        madds!(V, &v_weights, |p| ring_pair::<V>(phase, ring, next, p))
     };
     let emit = |r: O::Row<'_>, y: __m256i| {
         let y = interleave(y);
