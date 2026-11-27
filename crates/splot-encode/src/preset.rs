@@ -334,8 +334,9 @@ pub struct PresetParams {
     pub open_loop_key: u8,
     /// `max_tlayer_id` (§ 5.4.1), `0..=3`: a frame at mini-GOP depth `d`
     /// codes `obu_tlayer_id = min(d, max_tlayer_id)` (§ 5.2.2), so dropping
-    /// the higher temporal layers leaves a decodable stream. Needs `keyint`
-    /// at most 255. `0` in every row (not measured).
+    /// the higher temporal layers leaves a decodable stream. Needs
+    /// `implicit_output`, so each hidden frame has a temporal unit of its own
+    /// (§ 7.3.6), and `keyint` at most 255. `0` in every row (not measured).
     pub max_tlayer_id: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
@@ -1148,7 +1149,21 @@ impl PresetParams {
         check!(tip)?;
         check!(cdf_update_tile)?;
         check!(long_term_id_bits)?;
-        check!(max_tlayer_id)?;
+        check(
+            "max_tlayer_id",
+            self.max_tlayer_id,
+            PresetIntegerRange::new(
+                0,
+                if self.implicit_output {
+                    ranges::max_tlayer_id.max
+                } else {
+                    0
+                },
+            ),
+            " (above 0 needs implicit_output: a temporal unit that holds a hidden frame \
+             and a higher-layer output loses its output in the lower operating points, \
+             which § 7.3.6 forbids)",
+        )?;
         check!(num_ref_frames)?;
         check(
             "open_loop_key",
@@ -1656,7 +1671,7 @@ preset_table! {
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Code every nth periodic key frame as open-loop. Zero disables open-loop key frames. Requires long_term_id_bits to be zero."
         open_loop_key:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        "Highest temporal layer: mini-GOP depths above it share it. Zero codes one layer. Requires keyint of at most 255." [0, 3]
+        "Highest temporal layer: mini-GOP depths above it share it. Zero codes one layer. Requires implicit_output and keyint of at most 255." [0, 3]
         max_tlayer_id:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select the explicit frame reference signaling mode." [0, 8]
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],

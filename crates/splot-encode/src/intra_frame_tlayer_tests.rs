@@ -22,7 +22,7 @@ const TLAYER_CASES: [(PixelFormat, BitDepth, u8); 3] = [
 ];
 
 /// 26 panning frames at preset 6 (mini-GOPs of 8, the loop filters on) with
-/// `max_tlayer_id` and the `extra` preset overrides on `threads` threads: the
+/// `max_tlayer_id`, `implicit_output` and the `extra` preset overrides on `threads` threads: the
 /// config, the packets and the encoder recon in display order.
 fn tlayer_stream(
     (chroma, bit_depth, max_tlayer_id): (PixelFormat, BitDepth, u8),
@@ -31,35 +31,45 @@ fn tlayer_stream(
 ) -> (Config, Vec<Packet>, Vec<u8>) {
     let mut config = config(72, 40, bit_depth, 6, 150);
     config.chroma = chroma;
-    config.preset_overrides = [("max_tlayer_id", max_tlayer_id.to_string().as_str())]
-        .into_iter()
-        .chain(extra.iter().copied())
-        .map(|(field, value)| (field.to_owned(), value.to_owned()))
-        .collect();
+    let max_tlayer_id = max_tlayer_id.to_string();
+    config.preset_overrides = [
+        ("max_tlayer_id", max_tlayer_id.as_str()),
+        ("implicit_output", "true"),
+    ]
+    .into_iter()
+    .chain(extra.iter().copied())
+    .map(|(field, value)| (field.to_owned(), value.to_owned()))
+    .collect();
     config.threads = splot_parallel::ThreadCount::from(threads);
     let (packets, expected) = carry::encoder_packets(&config, FRAMES, panning_frame);
     (config, packets, expected)
 }
 
-/// The Annex B bytes of `packets` without the OBUs above temporal layer `n`
-/// (the Annex F sub-bitstream of operating point `n`).
+/// The temporal units of `packets` without the OBUs above temporal layer `n`
+/// (the Annex F sub-bitstream of operating point `n`); a unit left without a
+/// frame is dropped with its temporal delimiter.
 fn sub_bitstream(packets: &[Packet], n: u8) -> Vec<Vec<u8>> {
     packets
         .iter()
-        .map(|packet| {
+        .filter_map(|packet| {
             let parsed = parse_annex_b_obus_partial(&packet.data);
             assert!(parsed.error.is_none());
-            let mut w = splot_core::write::BitWriter::new();
-            for obu in parsed
+            let kept: Vec<_> = parsed
                 .obus
                 .iter()
                 .filter(|obu| obu.header.temporal_layer_id.get() <= n)
-            {
-                splot_core::write::write_annexb_obu(&mut w, &obu.header, obu.payload).unwrap();
-            }
-            w.into_bytes()
+                .collect();
+            kept.iter()
+                .any(|obu| codes_frame(obu.header.obu_type))
+                .then(|| {
+                    let mut w = splot_core::write::BitWriter::new();
+                    for obu in kept {
+                        splot_core::write::write_annexb_obu(&mut w, &obu.header, obu.payload)
+                            .unwrap();
+                    }
+                    w.into_bytes()
+                })
         })
-        .filter(|unit| !unit.is_empty())
         .collect()
 }
 
@@ -174,46 +184,42 @@ fn temporal_layer_streams_decode_at_each_operating_point() {
     });
 }
 
-/// Temporal layers with open-loop key frames, implicit output and a
-/// key frame every 12 frames decode to the encoder recon, and their layer 0
-/// sub-bitstream outputs the layer 0 frames.
+/// Temporal layers with open-loop key frames every 12 frames decode to the
+/// encoder recon, and their layer 0 sub-bitstream outputs the layer 0 frames.
 #[test]
-fn temporal_layers_combine_with_open_loop_keys_and_implicit_output() {
-    let cases = [
-        [("open_loop_key", "1"), ("implicit_output", "false")],
-        [("open_loop_key", "0"), ("implicit_output", "true")],
-    ];
-    each_case(cases, |extra| {
-        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
-        config.keyint = core::num::NonZeroU32::new(12).unwrap();
-        config.preset_overrides = [("max_tlayer_id", "3")]
-            .into_iter()
-            .chain(extra)
-            .map(|(field, value)| (field.to_owned(), value.to_owned()))
-            .collect();
-        let (packets, expected) = carry::encoder_packets(&config, FRAMES, panning_frame);
-        let units: Vec<u8> = packets
-            .iter()
-            .flat_map(|packet| packet.data.clone())
-            .collect();
-        assert_same_samples(&decode(&units), &expected, &format!("{extra:?}"));
-        let tlayers = output_tlayers(&packets);
-        let sub: Vec<u8> = sub_bitstream(&packets, 0).concat();
-        let frames = frames_up_to(&expected, &tlayers, 0);
-        assert_same_samples(
-            &decode(&sub),
-            &frames,
-            &format!("{extra:?}: sub-bitstream 0"),
-        );
-    });
+fn temporal_layers_combine_with_open_loop_keys() {
+    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    config.keyint = core::num::NonZeroU32::new(12).unwrap();
+    config.preset_overrides = [
+        ("max_tlayer_id", "3"),
+        ("implicit_output", "true"),
+        ("open_loop_key", "1"),
+    ]
+    .into_iter()
+    .map(|(field, value)| (field.to_owned(), value.to_owned()))
+    .collect();
+    let (packets, expected) = carry::encoder_packets(&config, FRAMES, panning_frame);
+    let units: Vec<u8> = packets
+        .iter()
+        .flat_map(|packet| packet.data.clone())
+        .collect();
+    assert_same_samples(&decode(&units), &expected, "open-loop keys");
+    let tlayers = output_tlayers(&packets);
+    let sub: Vec<u8> = sub_bitstream(&packets, 0).concat();
+    let frames = frames_up_to(&expected, &tlayers, 0);
+    assert_same_samples(&decode(&sub), &frames, "open-loop keys: sub-bitstream 0");
 }
 
-/// `Config::validate` refuses a key frame interval above 255 with temporal
-/// layers and accepts 255.
+/// Temporal layers need `implicit_output`, and `Config::validate` refuses a
+/// key frame interval above 255 with temporal layers and accepts 255.
 #[test]
 fn temporal_layers_refuse_long_key_frame_intervals() {
     let mut config = config(72, 40, BitDepth::Eight, 6, 150);
     config.preset_overrides = vec![("max_tlayer_id".to_owned(), "1".to_owned())];
+    assert!(matches!(config.validate(), Err(Error::Preset(_))));
+    config
+        .preset_overrides
+        .push(("implicit_output".to_owned(), "true".to_owned()));
     config.keyint = core::num::NonZeroU32::new(256).unwrap();
     assert!(matches!(
         config.validate(),

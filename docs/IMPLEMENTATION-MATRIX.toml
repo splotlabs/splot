@@ -6666,7 +6666,7 @@ module = "crates/splot-encode/src/gop.rs"
 change_id = "enc-temporal-layers"
 owner = "encoder"
 risk = "low"
-notes = "PresetParams::max_tlayer_id (2026-11-27, 0 = off in every row, not measured): the sequence codes max_tlayer_id with the default TLayerDependencyMap; a frame at mini-GOP depth d codes obu_tlayer_id = min(d, max_tlayer_id), a show-existing frame the layer of the frame it shows, and other OBUs layer 0. A frame refreshes only an empty slot or one of its own or a higher layer, so each operating point sees the same order hints and reference maps (06:584-589). Needs keyint <= 255: below the top layer the key frame is the only shown reference of the 8-bit OrderHint derivation."
+notes = "PresetParams::max_tlayer_id (2026-11-27, 0 = off in every row, not measured): the sequence codes max_tlayer_id with the default TLayerDependencyMap; a frame at mini-GOP depth d codes obu_tlayer_id = min(d, max_tlayer_id), a show-existing frame the layer of the frame it shows, and other OBUs layer 0. A frame refreshes only an empty slot or one of its own or a higher layer, so each operating point sees the same order hints and reference maps (06:584-589). Needs implicit_output: a temporal unit with a hidden frame and a higher-layer output would lose its output at the lower operating points (7.3.6). Needs keyint <= 255: below the top layer the key frame is the only shown reference of the 8-bit OrderHint derivation. AVM decodes the stream and each lower sub-bitstream."
 
 [feature.status]
 mapped = "done"

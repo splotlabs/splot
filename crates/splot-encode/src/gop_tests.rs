@@ -573,6 +573,7 @@ fn temporal_layers_keep_the_slots_of_each_operating_point() {
                     lookahead_frames: 32,
                     num_ref_frames: slots_used,
                     max_tlayer_id,
+                    implicit_output: true,
                     ..*crate::preset::Preset::default().params()
                 };
                 if params.validate().is_err() {
@@ -581,6 +582,7 @@ fn temporal_layers_keep_the_slots_of_each_operating_point() {
                 }
                 let mut planner = GopPlanner::new(NonZeroU32::new(keyint).unwrap(), mini_gop_size)
                     .with_ref_slots(slots_used)
+                    .with_implicit_output(true)
                     .with_max_tlayer_id(max_tlayer_id);
                 let mut steps = Vec::new();
                 let mut queued = 0;
