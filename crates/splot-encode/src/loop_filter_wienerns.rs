@@ -85,12 +85,14 @@ struct Choice {
 /// their tile.
 struct Units {
     layouts: Vec<LrLayout>,
-    units: Vec<(usize, LrUnit)>,
-    /// The luma sample columns and rows of each tile, in tile order, when
-    /// the frame's filters stay inside their tile (§ 7.20.1); empty when
-    /// they read the whole picture.
-    tiles: Vec<(Range<usize>, Range<usize>)>,
+    coded: Vec<(usize, LrUnit)>,
+    /// Each tile in tile order when the filters stay inside their tile
+    /// (§ 7.20.1); empty when they read the whole picture.
+    tiles: Vec<TileSpan>,
 }
+
+/// The luma sample columns and rows of a tile.
+type TileSpan = (Range<usize>, Range<usize>);
 
 impl Units {
     /// The units every plane of the frame `core` codes.
@@ -123,14 +125,14 @@ impl Units {
         };
         Ok(Self {
             layouts,
-            units,
+            coded: units,
             tiles,
         })
     }
 
     /// The units of `plane` with all of them restoring with `kind`.
     fn all(&self, plane: usize, kind: LrUnitType) -> Vec<(LrUnit, LrUnitType)> {
-        self.units
+        self.coded
             .iter()
             .filter(|(_, unit)| unit.plane == plane)
             .map(|&(_, unit)| (unit, kind))
@@ -166,7 +168,7 @@ impl Padded {
         stride: usize,
         (width, height): (usize, usize),
         radius: usize,
-        (tiles, (sub_x, sub_y)): (&[(Range<usize>, Range<usize>)], (u8, u8)),
+        (tiles, (sub_x, sub_y)): (&[TileSpan], (u8, u8)),
     ) -> Result<Self> {
         let scaled = |span: &Range<usize>, sub: u8, len: usize| {
             (span.start >> sub).min(len)..((span.end.saturating_sub(1) >> sub) + 1).min(len)
@@ -194,12 +196,7 @@ impl Padded {
 
 impl Region {
     /// The samples `cols x rows` with row stride `stride`.
-    fn new(
-        samples: &[u16],
-        stride: usize,
-        (cols, rows): (Range<usize>, Range<usize>),
-        radius: usize,
-    ) -> Result<Self> {
+    fn new(samples: &[u16], stride: usize, (cols, rows): TileSpan, radius: usize) -> Result<Self> {
         let too_small = || Error::Unsupported {
             what: "a restoration plane smaller than the frame",
         };
@@ -309,7 +306,7 @@ impl Search<'_> {
         };
         let pc_delta = deltas(pc, &units, 0, LrUnitType::PcWiener)?;
         let luma_options = |kinds: &[(LrUnitType, &[i64])]| -> Options {
-            (0..units.units.len())
+            (0..units.coded.len())
                 .map(|index| {
                     core::iter::once((None, 0))
                         .chain(
@@ -359,7 +356,7 @@ impl Search<'_> {
             ]);
             let (cost, lr_on) = self.decide(&self.header(&params)?, &units, &options, off_bits)?;
             let taken = units
-                .units
+                .coded
                 .iter()
                 .map(|(_, unit)| lr_on.get(unit) == Some(&LrUnitType::WienerNs))
                 .collect();
@@ -482,7 +479,7 @@ impl Search<'_> {
         let probe_units = Units::new(self.seq, &self.header(&probe)?)?;
         let forced = |units: &Units, lr_on: &BTreeMap<LrUnit, LrUnitType>, plane| -> Options {
             units
-                .units
+                .coded
                 .iter()
                 .map(|(_, unit)| {
                     let kind = lr_on.get(unit).copied();
@@ -521,7 +518,7 @@ impl Search<'_> {
                 let on = self.unit_sse(&frame, &units)?;
                 let before = self.unit_sse(off, &units)?;
                 let mut options = forced(&units, &current.lr_on, plane);
-                for (index, (_, unit)) in units.units.iter().enumerate() {
+                for (index, (_, unit)) in units.coded.iter().enumerate() {
                     if unit.plane == plane {
                         let delta = on[index] as i64 - before[index] as i64;
                         options[index].push((Some(LrUnitType::WienerNs), delta));
@@ -529,7 +526,7 @@ impl Search<'_> {
                 }
                 let (value, lr_on) = self.decide(&core, &units, &options, off_bits)?;
                 let taken = units
-                    .units
+                    .coded
                     .iter()
                     .filter(|(_, unit)| unit.plane == plane)
                     .map(|(_, unit)| lr_on.contains_key(unit))
@@ -606,7 +603,7 @@ impl Search<'_> {
     /// The units' squared error in `frame`, in [`Units`] order.
     fn unit_sse(&self, frame: &DecodedFrame<u16>, units: &Units) -> Result<Vec<u64>> {
         units
-            .units
+            .coded
             .iter()
             .map(|&(layout, unit)| {
                 let rects = units.layouts[layout]
@@ -639,7 +636,7 @@ impl Search<'_> {
         let source_size = self.source.plane_sizes()[plane];
         let source = &self.source.planes()[plane];
         let jobs: Vec<_> = units
-            .units
+            .coded
             .iter()
             .filter(|(_, unit)| unit.plane == plane)
             .copied()
@@ -748,7 +745,7 @@ impl Search<'_> {
         let source = &self.source.planes()[0];
         let padded = luma_padded(off, &units.tiles)?;
         let luma_units: Vec<(usize, LrUnit)> = units
-            .units
+            .coded
             .iter()
             .filter(|(_, unit)| unit.plane == 0)
             .copied()
@@ -837,7 +834,7 @@ impl Search<'_> {
         let mut cost = rd(0, Bits::whole(header as u32), self.lambda);
         let mut lr_on = BTreeMap::new();
         let mut cdfs: BTreeMap<(usize, LrSymbol), Vec<u16>> = BTreeMap::new();
-        for (&(layout, unit), candidates) in units.units.iter().zip(options) {
+        for (&(layout, unit), candidates) in units.coded.iter().zip(options) {
             let tool = tools[unit.plane];
             let mut pick: Option<(i128, Option<LrUnitType>)> = None;
             for &(kind, delta) in candidates {
@@ -928,9 +925,8 @@ fn sum_taken(stats: &[WienerStats], taken: &[bool]) -> WienerStats {
     total
 }
 
-/// The luma of `off` over its coded size, padded for the luma taps in the
-/// regions of the luma `tiles`.
-fn luma_padded(off: &DecodedFrame<u16>, tiles: &[(Range<usize>, Range<usize>)]) -> Result<Padded> {
+/// The luma of `off` over its coded size, padded for the taps in `tiles`.
+fn luma_padded(off: &DecodedFrame<u16>, tiles: &[TileSpan]) -> Result<Padded> {
     let luma = off.plane(PlaneId::Y).ok_or(Error::Unsupported {
         what: "a frame without luma",
     })?;
