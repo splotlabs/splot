@@ -85,8 +85,10 @@ impl FrameCoder for SourceRecording {
         slot: u32,
         order_hint: Option<u32>,
         leading: bool,
+        display_index: u64,
     ) -> Result<Vec<u8>> {
-        self.coder.show_existing_frame(slot, order_hint, leading)
+        self.coder
+            .show_existing_frame(slot, order_hint, leading, display_index)
     }
 
     fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
