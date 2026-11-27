@@ -85,7 +85,27 @@ struct Choice {
 /// their tile.
 struct Units {
     layouts: Vec<LrLayout>,
-    units: Vec<(usize, LrUnit)>,
+    coded: Vec<(usize, LrUnit)>,
+    /// Each tile in tile order when the filters stay inside their tile
+    /// (§ 7.20.1); empty when they read the whole picture.
+    tiles: Vec<TileSpan>,
+}
+
+/// The luma sample columns and rows of a tile.
+type TileSpan = (Range<usize>, Range<usize>);
+
+/// The [`TileSpan`] of each tile of `info`, in tile order.
+#[cold]
+#[inline(never)]
+fn tile_spans(info: &splot_core::headers::frame::TileInfo) -> Vec<TileSpan> {
+    let mut spans = Vec::new();
+    for rows in info.mi_row_starts.windows(2) {
+        for cols in info.mi_col_starts.windows(2) {
+            let span = |pair: &[u32]| pair[0] as usize * 4..pair[1] as usize * 4;
+            spans.push((span(cols), span(rows)));
+        }
+    }
+    spans
 }
 
 impl Units {
@@ -98,12 +118,23 @@ impl Units {
                 units.push((index, unit));
             }
         }
-        Ok(Self { layouts, units })
+        let across = seq
+            .filter
+            .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
+        let tiles = match core.tile_info.as_ref().filter(|_| across) {
+            Some(info) => tile_spans(info),
+            None => Vec::new(),
+        };
+        Ok(Self {
+            layouts,
+            coded: units,
+            tiles,
+        })
     }
 
     /// The units of `plane` with all of them restoring with `kind`.
     fn all(&self, plane: usize, kind: LrUnitType) -> Vec<(LrUnit, LrUnitType)> {
-        self.units
+        self.coded
             .iter()
             .filter(|(_, unit)| unit.plane == plane)
             .map(|&(_, unit)| (unit, kind))
@@ -115,27 +146,72 @@ impl Units {
 /// error change from restoration off.
 type Options = Vec<Vec<(Option<LrUnitType>, i64)>>;
 
-/// A plane padded by clamping, `radius` samples on every side.
+/// A plane padded by clamping, `radius` samples on every side of each
+/// region: the picture, or each tile when the filters stay inside it
+/// (§ 7.20.2).
 struct Padded {
+    regions: Vec<Region>,
+}
+
+/// One clamped region of a [`Padded`] plane, at `(x0, y0)` of the plane.
+struct Region {
     samples: Vec<u16>,
     width: usize,
     radius: usize,
+    x0: usize,
+    y0: usize,
 }
 
 impl Padded {
-    /// The `width x height` samples with row stride `stride`.
+    /// The `width x height` samples with row stride `stride`, in the regions
+    /// of the luma `tiles` of `units` at subsampling `(sub_x, sub_y)`.
     fn new(
         samples: &[u16],
         stride: usize,
         (width, height): (usize, usize),
         radius: usize,
+        (tiles, (sub_x, sub_y)): (&[TileSpan], (u8, u8)),
     ) -> Result<Self> {
+        let scaled = |span: &Range<usize>, sub: u8, len: usize| {
+            (span.start >> sub).min(len)..((span.end.saturating_sub(1) >> sub) + 1).min(len)
+        };
+        let rects: Vec<_> = if tiles.is_empty() {
+            vec![(0..width, 0..height)]
+        } else {
+            tiles
+                .iter()
+                .map(|(cols, rows)| (scaled(cols, sub_x, width), scaled(rows, sub_y, height)))
+                .collect()
+        };
+        let regions = rects
+            .into_iter()
+            .map(|(cols, rows)| Region::new(samples, stride, (cols, rows), radius))
+            .collect::<Result<_>>()?;
+        Ok(Self { regions })
+    }
+
+    /// The region of tile `tile`.
+    fn region(&self, tile: usize) -> &Region {
+        &self.regions[if self.regions.len() == 1 { 0 } else { tile }]
+    }
+}
+
+impl Region {
+    /// The samples `cols x rows` with row stride `stride`.
+    fn new(samples: &[u16], stride: usize, (cols, rows): TileSpan, radius: usize) -> Result<Self> {
+        let too_small = || Error::Unsupported {
+            what: "a restoration plane smaller than the frame",
+        };
+        let (width, height) = (cols.len(), rows.len());
+        if width == 0 || height == 0 {
+            return Err(too_small());
+        }
         let mut padded = Vec::with_capacity((width + 2 * radius) * (height + 2 * radius));
         for y in 0..height + 2 * radius {
-            let row = y.saturating_sub(radius).min(height - 1) * stride;
-            let row = samples.get(row..row + width).ok_or(Error::Unsupported {
-                what: "a restoration plane smaller than the frame",
-            })?;
+            let row = (rows.start + y.saturating_sub(radius).min(height - 1)) * stride;
+            let row = samples
+                .get(row + cols.start..row + cols.end)
+                .ok_or_else(too_small)?;
             padded.extend(core::iter::repeat_n(row[0], radius));
             padded.extend_from_slice(row);
             padded.extend(core::iter::repeat_n(row[width - 1], radius));
@@ -144,19 +220,22 @@ impl Padded {
             samples: padded,
             width: width + 2 * radius,
             radius,
+            x0: cols.start,
+            y0: rows.start,
         })
     }
 
-    /// Row `y + dy` from column `-radius`.
+    /// Row `y + dy` of the plane from column `x0 - radius`.
     fn row(&self, y: usize, dy: isize) -> &[u16] {
-        let start = ((y + self.radius) as isize + dy) as usize * self.width;
+        let start = ((y - self.y0 + self.radius) as isize + dy) as usize * self.width;
         &self.samples[start..start + self.width]
     }
 
     /// `source - m` over the columns `span` of row `y`, `source` from column `0`.
     fn target(&self, y: usize, span: Range<usize>, source: &[u16], out: &mut Vec<i32>) {
         let centre = &self.row(y, 0)[self.radius..];
-        crate::kernels::wiener::differences(&source[span.clone()], &centre[span], out);
+        let local = span.start - self.x0..span.end - self.x0;
+        crate::kernels::wiener::differences(&source[span], &centre[local], out);
     }
 
     /// The pair feature `s(dy, dx) + s(-dy, -dx) - 2m` over `span` of row `y`.
@@ -164,7 +243,7 @@ impl Padded {
         let radius = self.radius as isize;
         let (plus, minus, centre) = (self.row(y, dy), self.row(y, -dy), self.row(y, 0));
         let (ahead, behind) = ((radius + dx) as usize, (radius - dx) as usize);
-        let (start, len) = (span.start, span.len());
+        let (start, len) = (span.start - self.x0, span.len());
         crate::kernels::wiener::pair_features(
             &plus[start + ahead..][..len],
             &minus[start + behind..][..len],
@@ -177,7 +256,7 @@ impl Padded {
     fn diff(&self, y: usize, span: Range<usize>, (dy, dx): (isize, isize), out: &mut Vec<i32>) {
         let (tap, centre) = (self.row(y, dy), self.row(y, 0));
         let (p, c) = ((self.radius as isize + dx) as usize, self.radius);
-        let (start, len) = (span.start, span.len());
+        let (start, len) = (span.start - self.x0, span.len());
         crate::kernels::wiener::differences(
             &tap[start + p..][..len],
             &centre[start + c..][..len],
@@ -229,7 +308,7 @@ impl Search<'_> {
         };
         let pc_delta = deltas(pc, &units, 0, LrUnitType::PcWiener)?;
         let luma_options = |kinds: &[(LrUnitType, &[i64])]| -> Options {
-            (0..units.units.len())
+            (0..units.coded.len())
                 .map(|index| {
                     core::iter::once((None, 0))
                         .chain(
@@ -279,7 +358,7 @@ impl Search<'_> {
             ]);
             let (cost, lr_on) = self.decide(&self.header(&params)?, &units, &options, off_bits)?;
             let taken = units
-                .units
+                .coded
                 .iter()
                 .map(|(_, unit)| lr_on.get(unit) == Some(&LrUnitType::WienerNs))
                 .collect();
@@ -402,7 +481,7 @@ impl Search<'_> {
         let probe_units = Units::new(self.seq, &self.header(&probe)?)?;
         let forced = |units: &Units, lr_on: &BTreeMap<LrUnit, LrUnitType>, plane| -> Options {
             units
-                .units
+                .coded
                 .iter()
                 .map(|(_, unit)| {
                     let kind = lr_on.get(unit).copied();
@@ -441,7 +520,7 @@ impl Search<'_> {
                 let on = self.unit_sse(&frame, &units)?;
                 let before = self.unit_sse(off, &units)?;
                 let mut options = forced(&units, &current.lr_on, plane);
-                for (index, (_, unit)) in units.units.iter().enumerate() {
+                for (index, (_, unit)) in units.coded.iter().enumerate() {
                     if unit.plane == plane {
                         let delta = on[index] as i64 - before[index] as i64;
                         options[index].push((Some(LrUnitType::WienerNs), delta));
@@ -449,7 +528,7 @@ impl Search<'_> {
                 }
                 let (value, lr_on) = self.decide(&core, &units, &options, off_bits)?;
                 let taken = units
-                    .units
+                    .coded
                     .iter()
                     .filter(|(_, unit)| unit.plane == plane)
                     .map(|(_, unit)| lr_on.contains_key(unit))
@@ -526,7 +605,7 @@ impl Search<'_> {
     /// The units' squared error in `frame`, in [`Units`] order.
     fn unit_sse(&self, frame: &DecodedFrame<u16>, units: &Units) -> Result<Vec<u64>> {
         units
-            .units
+            .coded
             .iter()
             .map(|&(layout, unit)| {
                 let rects = units.layouts[layout]
@@ -559,13 +638,13 @@ impl Search<'_> {
         let source_size = self.source.plane_sizes()[plane];
         let source = &self.source.planes()[plane];
         let jobs: Vec<_> = units
-            .units
+            .coded
             .iter()
             .filter(|(_, unit)| unit.plane == plane)
             .copied()
             .collect();
         if plane == 0 {
-            let padded = luma_padded(off)?;
+            let padded = luma_padded(off, &units.tiles)?;
             return map_tiles(self.pool, jobs, |(layout, unit)| {
                 let mut stats = WienerStats::new(LUMA_COEFFS);
                 let mut lanes = WienerAccumulator::<LUMA_COEFFS>::new(max_product);
@@ -573,7 +652,13 @@ impl Search<'_> {
                 let mut target = Vec::new();
                 for (y, span) in unit_rows(units, layout, unit, source_size)? {
                     let row = &source[y * source_size.width()..];
-                    luma_row(&padded, y, span, row, (&mut features, &mut target));
+                    luma_row(
+                        padded.region(layout),
+                        y,
+                        span,
+                        row,
+                        (&mut features, &mut target),
+                    );
                     let rows = core::array::from_fn(|k| features[k].as_slice());
                     lanes.add(&rows, &target, &mut stats);
                 }
@@ -593,6 +678,7 @@ impl Search<'_> {
             samples.stride_samples(),
             size,
             CHROMA_RADIUS,
+            (&units.tiles, (sub_x, sub_y)),
         )?;
         let luma = off.plane(PlaneId::Y).ok_or_else(missing)?;
         let cfl = self
@@ -612,12 +698,19 @@ impl Search<'_> {
             off.bit_depth().max_sample(),
         )
         .map_err(coding("restoration luma"))?;
-        let luma = Padded::new(&luma, size.0, size, CHROMA_RADIUS)?;
+        let luma = Padded::new(
+            &luma,
+            size.0,
+            size,
+            CHROMA_RADIUS,
+            (&units.tiles, (sub_x, sub_y)),
+        )?;
         map_tiles(self.pool, jobs, |(layout, unit)| {
             let mut stats = WienerStats::new(CHROMA_COEFFS);
             let mut lanes = WienerAccumulator::<CHROMA_COEFFS>::new(max_product);
             let mut features: [Vec<i32>; CHROMA_COEFFS] = Default::default();
             let mut target = Vec::new();
+            let (padded, luma) = (padded.region(layout), luma.region(layout));
             for (y, span) in unit_rows(units, layout, unit, source_size)? {
                 let row = &source[y * source_size.width()..];
                 padded.target(y, span.clone(), row, &mut target);
@@ -652,9 +745,9 @@ impl Search<'_> {
         let max = u64::from(off.bit_depth().max_sample());
         let source_size = self.source.plane_sizes()[0];
         let source = &self.source.planes()[0];
-        let padded = luma_padded(off)?;
+        let padded = luma_padded(off, &units.tiles)?;
         let luma_units: Vec<(usize, LrUnit)> = units
-            .units
+            .coded
             .iter()
             .filter(|(_, unit)| unit.plane == 0)
             .copied()
@@ -690,7 +783,13 @@ impl Search<'_> {
                         cells.push(map.class(x, y).ok_or_else(unclassified)?);
                     }
                     let line = &source[y * source_size.width()..];
-                    luma_row(&padded, y, span, line, (&mut features, &mut target));
+                    luma_row(
+                        padded.region(layout),
+                        y,
+                        span,
+                        line,
+                        (&mut features, &mut target),
+                    );
                     let rows = core::array::from_fn(|k| features[k].as_slice());
                     lanes.add(&rows, &target, &cells, &mut unit_classes);
                 }
@@ -737,7 +836,7 @@ impl Search<'_> {
         let mut cost = rd(0, Bits::whole(header as u32), self.lambda);
         let mut lr_on = BTreeMap::new();
         let mut cdfs: BTreeMap<(usize, LrSymbol), Vec<u16>> = BTreeMap::new();
-        for (&(layout, unit), candidates) in units.units.iter().zip(options) {
+        for (&(layout, unit), candidates) in units.coded.iter().zip(options) {
             let tool = tools[unit.plane];
             let mut pick: Option<(i128, Option<LrUnitType>)> = None;
             for &(kind, delta) in candidates {
@@ -828,8 +927,8 @@ fn sum_taken(stats: &[WienerStats], taken: &[bool]) -> WienerStats {
     total
 }
 
-/// The luma of `off` over its coded size, padded for the luma taps.
-fn luma_padded(off: &DecodedFrame<u16>) -> Result<Padded> {
+/// The luma of `off` over its coded size, padded for the taps in `tiles`.
+fn luma_padded(off: &DecodedFrame<u16>, tiles: &[TileSpan]) -> Result<Padded> {
     let luma = off.plane(PlaneId::Y).ok_or(Error::Unsupported {
         what: "a frame without luma",
     })?;
@@ -839,12 +938,13 @@ fn luma_padded(off: &DecodedFrame<u16>) -> Result<Padded> {
         luma.stride_samples(),
         (coded.width(), coded.height()),
         LUMA_RADIUS,
+        (tiles, (0, 0)),
     )
 }
 
 /// The luma features and target of the samples `span` of row `y`.
 fn luma_row(
-    padded: &Padded,
+    padded: &Region,
     y: usize,
     span: Range<usize>,
     source: &[u16],
@@ -879,3 +979,20 @@ fn unit_rows(
 #[path = "loop_filter_wienerns_fit.rs"]
 mod fit;
 use fit::one_class_bank;
+
+/// A 4:2:0 chroma plane of two luma tile columns pads each half at its edge.
+#[cfg(test)]
+#[test]
+fn padded_regions_clamp_at_tile_edges() {
+    let samples: Vec<u16> = (0..8 * 2).collect();
+    let tiles = [(0..8, 0..4), (8..16, 0..4)];
+    let tiled = Padded::new(&samples, 8, (8, 2), 2, (&tiles, (1, 1))).unwrap();
+    let whole = Padded::new(&samples, 8, (8, 2), 2, (&[], (1, 1))).unwrap();
+    let mut out = Vec::new();
+    tiled.region(1).diff(1, 4..6, (0, -1), &mut out);
+    assert_eq!(out, [0, -1], "the left tap stops at column 4");
+    whole.region(1).diff(1, 4..6, (0, -1), &mut out);
+    assert_eq!(out, [-1, -1]);
+    tiled.region(0).diff(0, 2..4, (1, 1), &mut out);
+    assert_eq!(out, [9, 8], "the right tap stops at column 3");
+}

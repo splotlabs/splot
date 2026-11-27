@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 pub const GLOBAL_XLAYER_ID: ExtendedLayerId = ExtendedLayerId::from_bits(31);
 
 /// `obu_tlayer_id`: temporal layer id of an OBU (2 bits; AV2 § 6.2.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct TemporalLayerId(u8);
 
 impl TemporalLayerId {

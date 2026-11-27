@@ -19,6 +19,7 @@ use splot_core::headers::metadata::{
 };
 use splot_core::headers::sequence::TimingInfo;
 use splot_core::span::ByteOffset;
+use splot_core::types::TemporalLayerId;
 use splot_recon::PixelFormat;
 
 use crate::error::{Error, Result};
@@ -238,12 +239,22 @@ impl ContentDescription {
                 luminance_min: display.luminance_min,
             };
             let payload = MetadataPayload::HdrMdcv(display);
-            let obu = encode_metadata_obu(MetadataType::HdrMdcv, payload, &[], 0);
+            let obu = encode_metadata_obu(
+                MetadataType::HdrMdcv,
+                payload,
+                &[],
+                (0, TemporalLayerId::BASE),
+            );
             obus.extend(obu.map_err(crate::intra_frame::coding("mastering display"))?);
         }
         if let Some(light_level) = self.content_light_level {
             let payload = MetadataPayload::HdrCll(light_level);
-            let obu = encode_metadata_obu(MetadataType::HdrCll, payload, &[], 0);
+            let obu = encode_metadata_obu(
+                MetadataType::HdrCll,
+                payload,
+                &[],
+                (0, TemporalLayerId::BASE),
+            );
             obus.extend(obu.map_err(crate::intra_frame::coding("content light level"))?);
         }
         Ok(obus)
@@ -298,7 +309,12 @@ impl KeyFrameMetadata {
     pub(crate) fn obus(&self) -> Result<Vec<u8>> {
         let mut obus = Vec::new();
         let mut push = |metadata_type, payload, passthrough: &[u8], what| -> Result<()> {
-            let obu = encode_metadata_obu(metadata_type, payload, passthrough, 0);
+            let obu = encode_metadata_obu(
+                metadata_type,
+                payload,
+                passthrough,
+                (0, TemporalLayerId::BASE),
+            );
             obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
             Ok(())
         };
@@ -382,17 +398,17 @@ impl FrameMetadata {
 
     /// The Annex B metadata OBUs of the output frame `display_index`, timed
     /// by `presentation`, at
-    /// `frame_rate`: timecode, temporal point info, scan type, then banding
-    /// hints.
+    /// `frame_rate`, in its temporal layer `tlayer`: timecode, temporal point
+    /// info, scan type, then banding hints.
     pub(crate) fn obus(
         &self,
         display_index: u64,
         presentation: PresentationClock,
-        frame_rate: (u32, u32),
+        (frame_rate, tlayer): ((u32, u32), TemporalLayerId),
     ) -> Result<Vec<u8>> {
         let mut obus = Vec::new();
         let mut push = |metadata_type, payload, what| -> Result<()> {
-            let obu = encode_metadata_obu(metadata_type, payload, &[], 2);
+            let obu = encode_metadata_obu(metadata_type, payload, &[], (2, tlayer));
             obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
             Ok(())
         };

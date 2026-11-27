@@ -353,6 +353,12 @@ thread_local! {
     /// with DPCM chroma.
     pub(crate) static DPCM_CODED: core::cell::Cell<[usize; 2]> =
         const { core::cell::Cell::new([0; 2]) };
+    /// Coded IDTX blocks of lossless inter leaves of the final passes on this
+    /// thread: 4x4 luma, larger luma (`lossless_tx_size = 1`), then chroma of
+    /// a `lossless_tx_size = 1` leaf, of another leaf at least 8x8, and of a
+    /// leaf 4 wide or high (in 4:2:0, a chroma reference in another leaf).
+    pub(crate) static LOSSLESS_IDTX_CODED: core::cell::Cell<[usize; 5]> =
+        const { core::cell::Cell::new([0; 5]) };
     /// The DIP predictions that only the wider DIP search offers (a rank
     /// below the best SATD, or a best that loses to the angular SATD), by
     /// leaf position and size.
@@ -367,6 +373,27 @@ thread_local! {
     /// `NEWMV` with `use_amvd`.
     pub(crate) static CODED_SINGLE: core::cell::Cell<[usize; 4]> =
         const { core::cell::Cell::new([0; 4]) };
+}
+
+/// Adds the coded IDTX `blocks` of a lossless inter leaf of `(width,
+/// height)` with `levels` to [`LOSSLESS_IDTX_CODED`].
+#[cfg(test)]
+fn count_lossless_idtx((w, h): (usize, usize), blocks: &[TransformBlock], levels: &[Vec<i32>]) {
+    let large = blocks.iter().any(|tx| tx.plane == 0 && tx.tx_size > 0);
+    let mut counts = LOSSLESS_IDTX_CODED.get();
+    for (tx, levels) in blocks.iter().zip(levels) {
+        if tx.tx_type != TxType::Idtx || levels.iter().all(|&l| l == 0) {
+            continue;
+        }
+        let slot = match (tx.plane, large) {
+            (0, _) => usize::from(tx.tx_size > 0),
+            (_, true) => 2,
+            _ if w.min(h) >= 8 => 3,
+            _ => 4,
+        };
+        counts[slot] += 1;
+    }
+    LOSSLESS_IDTX_CODED.set(counts);
 }
 
 #[cfg(test)]
@@ -579,6 +606,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                     self.syntax.reference_count(),
                 );
             }
+            if self.syntax.dpcm_allowed() {
+                self.syntax
+                    .set_leaf_lossless_tx_size(choice.lossless_tx_size);
+            }
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         if let Some(modes) = choice.intrabc {
@@ -711,6 +742,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             .syntax
             .plan_inter_leaf_partitioned(leaf, prediction, tx_partition)?;
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
+        #[cfg(test)]
+        if self.filters.is_some() && self.syntax.dpcm_allowed() {
+            count_lossless_idtx(leaf.dimensions()?, &blocks, &levels);
+        }
         self.syntax.write_is_inter(leaf, true, self.sink)?;
         self.syntax.write_skip_txfm(leaf, skip, self.sink)?;
         self.syntax.write_segment_id(leaf, skip, self.sink)?;

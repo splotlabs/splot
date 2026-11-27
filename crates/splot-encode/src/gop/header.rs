@@ -12,6 +12,7 @@ use splot_core::headers::frame::{
     encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
+use splot_core::types::TemporalLayerId;
 use splot_decode::encoder_syntax::EncoderReferences;
 
 use crate::error::{Error, Result};
@@ -97,16 +98,18 @@ pub(crate) type FrameTools = (
 /// A temporal delimiter, the prefix `metadata` OBUs and the
 /// `OBU_REGULAR_SEF`, or the `OBU_LEADING_SEF` when `leading`, that outputs
 /// `slot`, with the explicit `order_hint` when given, and the film grain of
-/// `grain_seed`; with `multi_frame_header` it codes `cur_mfh_id = 1`.
+/// `grain_seed`, in the temporal layer `tlayer` of the frame it shows; with
+/// `multi_frame_header` it codes `cur_mfh_id = 1`.
 pub(crate) fn show_existing_unit(
     view: &CoreSeqView,
     slot: u32,
     order_hint: Option<u32>,
     (grain_seed, multi_frame_header, leading, metadata): (Option<u16>, bool, bool, &[u8]),
+    tlayer: TemporalLayerId,
 ) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
     unit.extend_from_slice(metadata);
-    let flags = (multi_frame_header, leading);
+    let flags = (multi_frame_header, leading, tlayer);
     unit.extend(
         encode_show_existing_frame_obu(view, slot, order_hint, grain_seed, flags)
             .map_err(header_error)?,
@@ -146,10 +149,7 @@ impl GopFrame {
     ) -> Result<FrameHeaderCore> {
         let core = match self.frame_type {
             FrameType::Key if self.open_loop => {
-                let params = InterFrameParams {
-                    tx,
-                    ..self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles))
-                };
+                let params = self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles));
                 build_open_loop_key_frame_header(view, &refs.header_view(), &params)
                     .map_err(header_error)?
                     .core
@@ -269,6 +269,7 @@ impl GopFrame {
             tip_weight: Some(weight),
             tip_hole_fill: true,
             leading: self.leading,
+            tlayer: self.tlayer,
             tx: KeyFrameTxParams {
                 grain_seed,
                 plane_delta_q,
@@ -328,10 +329,7 @@ impl GopFrame {
             refresh_frame_flags: self.refresh_frame_flags,
             show_frame: self.show_frame,
             filters: *filters,
-            tx: KeyFrameTxParams {
-                allow_intrabc: !self.intra_only && inter_intrabc(),
-                ..tx
-            },
+            tx,
             tiles,
             reference_select: compound,
             skip_mode_present: compound,
@@ -352,6 +350,7 @@ impl GopFrame {
             explicit_refs,
             implicit_output: self.implicit_output,
             leading: self.leading,
+            tlayer: self.tlayer,
         }
     }
 }
@@ -413,22 +412,4 @@ fn header_error<E: std::error::Error + Send + Sync + 'static>(source: E) -> Erro
         stage: "frame header",
         source: Box::new(source),
     }
-}
-
-/// Whether inter frames code `allow_intrabc`: not yet outside tests.
-#[cfg(not(test))]
-const fn inter_intrabc() -> bool {
-    false
-}
-
-#[cfg(test)]
-fn inter_intrabc() -> bool {
-    INTER_INTRABC.get()
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Sets `allow_intrabc` in the inter frames (not `intra_only`) that this
-    /// thread codes.
-    pub(crate) static INTER_INTRABC: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }

@@ -56,6 +56,9 @@ const COPY: &[u8] = include_bytes!(
 );
 const BRIDGE: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
+const FILTERS: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
+);
 
 fn rect(x: usize, y: usize, width: usize, height: usize) -> PlaneRect {
     PlaneRect::new(x, y, width, height).unwrap()
@@ -822,9 +825,6 @@ fn selected_transform(
 fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
     use splot_decode::block_evidence::{BlockEntropyScope, EntropyCoding};
 
-    const FILTERS: &[u8] = include_bytes!(
-        "../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
-    );
     struct Case {
         fixture: &'static [u8],
         tile: usize,
@@ -1003,6 +1003,85 @@ fn entropy_capture_respects_record_byte_and_cancellation_limits() {
     assert_eq!(evidence.symbols.len(), 2);
     assert!(evidence.end_ordinal > evidence.symbols[1].ordinal);
     assert_eq!(picture_hashes(&pictures), expected);
+}
+
+#[test]
+fn entropy_start_ordinal_pages_a_scope_without_changing_records_or_output() {
+    use splot_decode::block_evidence::{BlockEntropyEvidence, BlockEntropyScope};
+
+    let owners = |evidence: &BlockEntropyEvidence| -> Vec<_> {
+        (0..evidence.symbols.len())
+            .map(|index| evidence.transform_for(index))
+            .collect()
+    };
+    let mut split_reads = 0;
+    for (fixture, coded) in [(TILES, rect(0, 0, 64, 64)), (FILTERS, rect(0, 0, 32, 32))] {
+        let transform = selected_transform(fixture, 0, PlaneId::Y, coded);
+        let mut ordinary = Decoder::new(settings(1)).unwrap();
+        let expected = picture_hashes(&decode(&mut ordinary, fixture).unwrap());
+        for scope in [
+            BlockEntropyScope::Block(transform.block),
+            BlockEntropyScope::Transform(transform),
+        ] {
+            let part = |start: u64, max_events: usize| {
+                let (report, pictures) = capture(
+                    fixture,
+                    4,
+                    BlockEvidenceRequest::new(|_| true, None, max_events, usize::MAX)
+                        .with_entropy(scope)
+                        .with_entropy_start(start),
+                );
+                assert_eq!(picture_hashes(&pictures), expected);
+                (report.status, report.entropy.unwrap())
+            };
+            let (status, full) = part(0, 100_000);
+            assert_eq!(status, BlockEvidenceStatus::Complete);
+            let page_len = full.symbols.len().div_ceil(3);
+            assert!(page_len > 1, "{scope:?}");
+            let full_owners = owners(&full);
+
+            let middle = full.symbols.len() / 2;
+            let split = full.symbols.iter().position(|read| read.bypass_bits > 1);
+            split_reads += usize::from(split.is_some());
+            for (start, first) in [(full.symbols[middle].ordinal, middle)]
+                .into_iter()
+                .chain(split.map(|index| (full.symbols[index].ordinal + 1, index + 1)))
+            {
+                let (status, tail) = part(start, 100_000);
+                assert_eq!(status, BlockEvidenceStatus::Complete);
+                assert_eq!(tail.symbols, full.symbols[first..]);
+                assert_eq!(owners(&tail), full_owners[first..]);
+                assert_eq!(tail.end_ordinal, full.end_ordinal);
+            }
+
+            let (mut start, mut index, mut truncated_middle) = (0, 0, false);
+            loop {
+                let (status, page) = part(start, page_len);
+                let end = index + page.symbols.len();
+                assert_eq!(page.symbols, full.symbols[index..end]);
+                assert_eq!(owners(&page), full_owners[index..end]);
+                assert_eq!(page.end_ordinal, full.end_ordinal);
+                index = end;
+                if status == BlockEvidenceStatus::Complete {
+                    break;
+                }
+                assert_eq!(status, BlockEvidenceStatus::Truncated);
+                truncated_middle |= start > 0;
+                let last = page.symbols[page_len - 1];
+                start = last.ordinal + u64::from(last.bypass_bits.max(1));
+            }
+            assert_eq!(index, full.symbols.len());
+            assert!(truncated_middle, "{scope:?}");
+
+            for start in [full.end_ordinal, u64::MAX] {
+                let (status, empty) = part(start, page_len);
+                assert_eq!(status, BlockEvidenceStatus::Complete);
+                assert!(empty.symbols.is_empty());
+                assert_eq!(empty.end_ordinal, full.end_ordinal);
+            }
+        }
+    }
+    assert!(split_reads > 0);
 }
 
 #[test]

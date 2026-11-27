@@ -332,6 +332,12 @@ pub struct PresetParams {
     /// long-term slots stay valid after it in sequential decoding but not at
     /// random access. `0` in every row (not measured).
     pub open_loop_key: u8,
+    /// `max_tlayer_id` (§ 5.4.1), `0..=3`: a frame at mini-GOP depth `d`
+    /// codes `obu_tlayer_id = min(d, max_tlayer_id)` (§ 5.2.2), so dropping
+    /// the higher temporal layers leaves a decodable stream. Needs
+    /// `implicit_output`, so each hidden frame has a temporal unit of its own
+    /// (§ 7.3.6), and `keyint` at most 255. `0` in every row (not measured).
+    pub max_tlayer_id: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -508,6 +514,12 @@ pub struct PresetParams {
     /// `use_dpcm_uv` (§ 5.20.5.5, § 5.20.5.6) in `V_PRED` and `H_PRED`. Off
     /// in every row; only a lossless frame codes DPCM.
     pub lossless_dpcm: bool,
+    /// A lossless inter leaf: 1 codes each 4x4 luma unit with the cheaper
+    /// of `DCT_DCT` and IDTX (`lossless_inter_tx_type`, § 5.20.8.2); 2 also
+    /// tries the leaf with `lossless_tx_size = 1` (one IDTX per 32x32,
+    /// § 5.20.6.1). 0 in every row. On, the lossless switch-off keeps
+    /// `tx_type_depth` 1 for that type choice, so `reduced_tx_set` is 0.
+    pub lossless_inter_tx: u8,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -526,6 +538,11 @@ pub struct PresetParams {
     /// the copy may come from the local area (§ 6.19.7.12). Off in every
     /// row, the screen-content rows too: not measured.
     pub intrabc_local: bool,
+    /// Inter frames code `allow_intrabc = 1` with the local area only
+    /// (§ 5.18.3.4), and their intra leaves get an IntraBC RD trial, also
+    /// with `intrabc` off. Needs `intrabc_local`. Off in every row, the
+    /// screen-content rows too: not measured.
+    pub intrabc_inter: bool,
     /// `seq_max_bvp_drl_bits_minus_1`, `0..=2`: IntraBC leaves choose the
     /// nearest of `intrabc_drl + 2` reference block vectors. 0 in every row,
     /// the screen-content rows too: not measured.
@@ -1009,7 +1026,7 @@ impl PresetParams {
             tcq = Levels::all(false);
             tcq_search_trellis = false;
             tcq_type_trellis = false;
-            tx_type_depth = 0;
+            tx_type_depth = u8::from(self.lossless_inter_tx > 0);
             tx_partition_search = Levels::all(false);
             inter_tx_split = 0;
             tpl_delta_q = 0;
@@ -1029,9 +1046,13 @@ impl PresetParams {
             idtx_intra = false;
             palette = false;
             intrabc = false;
+            intrabc_inter = false;
             y_dc_delta_q = 0;
             u_delta_q = 0;
             v_delta_q = 0;
+        }
+        if self.lossless_inter_tx > 0 {
+            force! { tx_type_model_keep = 0; }
         }
     }
 
@@ -1069,6 +1090,14 @@ impl PresetParams {
                 field: "intrabc_morph",
                 value: 1,
                 allowed: "0 without bawp (morph_pred needs enable_bawp)".to_owned(),
+            });
+        }
+        if self.intrabc_inter && !self.intrabc_local {
+            return Err(PresetError::OutOfRange {
+                field: "intrabc_inter",
+                value: 1,
+                allowed: "0 without intrabc_local (inter frames code only the local area)"
+                    .to_owned(),
             });
         }
         if i32::from(self.sb256_min_height) < ranges::sb256_min_height.min {
@@ -1113,6 +1142,7 @@ impl PresetParams {
         )?;
         check!(drl_bits)?;
         check!(intrabc_drl)?;
+        check!(lossless_inter_tx)?;
         check!(tpl_delta_q)?;
         check!(ssim_aq)?;
         check!(segmentation)?;
@@ -1143,6 +1173,21 @@ impl PresetParams {
         check!(tip)?;
         check!(cdf_update_tile)?;
         check!(long_term_id_bits)?;
+        check(
+            "max_tlayer_id",
+            self.max_tlayer_id,
+            PresetIntegerRange::new(
+                0,
+                if self.implicit_output {
+                    ranges::max_tlayer_id.max
+                } else {
+                    0
+                },
+            ),
+            " (above 0 needs implicit_output: a temporal unit that holds a hidden frame \
+             and a higher-layer output loses its output in the lower operating points, \
+             which § 7.3.6 forbids)",
+        )?;
         check!(num_ref_frames)?;
         check(
             "open_loop_key",
@@ -1159,18 +1204,33 @@ impl PresetParams {
              valid after an open-loop key frame in sequential decoding only)",
         )?;
         for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
-            let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
-                .with_ref_slots(self.num_ref_frames);
-            let fits = self.num_ref_frames == 0
-                || (0..3).all(|_| {
+            let slots = match self.num_ref_frames {
+                0 => 8,
+                slots => slots,
+            };
+            let fits = |max_tlayer_id, plans| {
+                let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
+                    .with_ref_slots(slots)
+                    .with_max_tlayer_id(max_tlayer_id);
+                (0..plans).all(|_| {
                     let len = probe.next_len(usize::MAX, true).unwrap_or(1);
                     probe.plan(len).is_ok()
-                });
-            if !fits {
+                })
+            };
+            if self.num_ref_frames > 0 && !fits(0, 3) {
                 return Err(PresetError::OutOfRange {
                     field: "num_ref_frames",
                     value: self.num_ref_frames.into(),
                     allowed: format!("the slots a mini-GOP of {mini_gop} needs"),
+                });
+            }
+            if self.max_tlayer_id > 0 && !fits(self.max_tlayer_id, 24) {
+                return Err(PresetError::OutOfRange {
+                    field: "max_tlayer_id",
+                    value: self.max_tlayer_id.into(),
+                    allowed: format!(
+                        "0, or the temporal layers {slots} slots give a mini-GOP of {mini_gop}"
+                    ),
                 });
             }
         }
@@ -1633,6 +1693,8 @@ preset_table! {
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Code every nth periodic key frame as open-loop. Zero disables open-loop key frames. Requires long_term_id_bits to be zero."
         open_loop_key:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Highest temporal layer: mini-GOP depths above it share it. Zero codes one layer. Requires implicit_output and keyint of at most 255." [0, 3]
+        max_tlayer_id:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select the explicit frame reference signaling mode." [0, 8]
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select which tile information the sequence header signals." [0, 3]
@@ -1729,6 +1791,8 @@ preset_table! {
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
         "Allow local intra block copy in key frames. Requires intrabc."
         intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Allow intra block copy in inter frames. Requires intrabc_local."
+        intrabc_inter:         [false, false, false, false, false, false, false, false, false, false, false],
         "Number of bits minus one for the intra block copy reference index." [0, 2]
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Allow intra block copy on small or chroma-offset blocks. Requires intrabc."
@@ -1743,6 +1807,8 @@ preset_table! {
     Lossless {
         "Test differential pulse-code modulation on lossless intra leaves."
         lossless_dpcm:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Test DCT_DCT or IDTX on each 4x4 luma unit of lossless inter leaves (1), and also one IDTX per 32x32 (2)." [0, 2]
+        lossless_inter_tx:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     Gop {
         "Number of frames per mini-GOP. One shows every frame directly." [1, 32]
@@ -2216,6 +2282,7 @@ mod tests {
             (&[("global_motion", "3")], "global_motion"),
             (&[("compound_types", "4")], "compound_types"),
             (&[("intrabc_morph", "1"), ("bawp", "0")], "intrabc_morph"),
+            (&[("intrabc_inter", "1")], "intrabc_inter"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

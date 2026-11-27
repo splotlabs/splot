@@ -13,12 +13,14 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
-use splot_decode::encoder_syntax::{CcsoGrid, FilterRecorder, apply_loop_filters, ccso_offset};
+use splot_decode::encoder_syntax::{
+    CcsoGrid, FilterRecorder, apply_loop_filters, ccso_offset, tile_count,
+};
 use splot_recon::BitDepth;
 
 use super::ccso::{CcsoInput, class_sums};
 use super::cdef_rate;
-use crate::config::{Config, RateControlMode};
+use crate::config::{Config, RateControlMode, TileLayout};
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::frame::SourceFrame;
 use crate::intra_frame::{IntraFrameCoder, visible_planes};
@@ -290,23 +292,44 @@ fn ccso_plane(
 /// The decoder clamps each output sample to the sample range, so a sample
 /// whose applied change differs from its class offset ends on a range
 /// limit; a class may miss at most the largest offset per output sample on
-/// a limit. The p9 key frame with RDOQ clamps one chroma sample.
+/// a limit. The p9 key frame with RDOQ clamps one chroma sample. The same
+/// holds for 2x2 tiles with `disable_loopfilters_across_tiles`, whose taps
+/// stop at the tile edges.
 #[test]
 fn ccso_search_classes_match_the_decoder_output() {
+    for tiled in [false, true] {
+        ccso_classes_match_the_decoder_output(tiled);
+    }
+}
+
+fn ccso_classes_match_the_decoder_output(tiled: bool) {
     let (width, height, qp) = (300, 270, 150);
     let mut config = Config::new(width, height);
+    if tiled {
+        config.tiles = TileLayout::Uniform {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.disable_loopfilters_across_tiles = true;
+    }
     config.bit_depth = BitDepth::Ten;
     config.preset = Preset::new(9).unwrap();
     config.preset_overrides = vec![
         ("wavefront".into(), "false".into()),
         ("rdoq".into(), "true".into()),
     ];
+    let tiles = FrameTiles {
+        cols_log2: u8::from(tiled),
+        rows_log2: u8::from(tiled),
+        ..FrameTiles::default()
+    };
     let mut coded = IntraFrameCoder::new(&config)
         .unwrap()
         .encode_wave(&[(&source(&config, 5), crate::gop::plan(0, config.keyint), qp)])
         .unwrap();
     let coded = coded.pop().unwrap();
     let (seq, _) = headers(&coded.temporal_unit);
+    assert_eq!(seq.filter.unwrap().disable_loopfilters_across_tiles, tiled);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
     let (_, recon, start, ..) = coded.reference.unwrap();
     let cases = [
@@ -326,9 +349,10 @@ fn ccso_search_classes_match_the_decoder_output() {
             0,
             &filters,
             KeyFrameTxParams::default(),
-            FrameTiles::default(),
+            tiles,
         )
         .unwrap();
+        assert_eq!(tile_count(&core), if tiled { 4 } else { 1 });
         let grid = CcsoGrid::new(&seq, &core).unwrap();
         assert!(grid.rows * grid.cols > 1, "{grid:?}");
         let on = vec![vec![1; grid.rows * grid.cols]; 3];

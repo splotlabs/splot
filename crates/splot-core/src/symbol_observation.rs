@@ -133,11 +133,12 @@ pub enum EntropyCaptureStop {
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct EntropyCapture {
-    /// The record prefix in decode order.
+    /// The recorded reads in decode order, from the observer's start ordinal.
     pub symbols: Vec<EntropySymbol>,
     /// Why capture stopped before the end of the scope, if applicable.
     pub stopped: Option<EntropyCaptureStop>,
-    /// The observed scope's end ordinal. Counts units after a recording limit.
+    /// The observed scope's end ordinal. Counts units before the start ordinal
+    /// and after a recording limit.
     pub end_ordinal: u64,
     next_syntax: Option<EntropySyntax>,
     scope_tag: Option<[u32; 4]>,
@@ -146,6 +147,7 @@ pub struct EntropyCapture {
 /// Record sink shared by an observing decoder and its temporary state copies.
 pub struct EntropyObserver {
     capture: Mutex<EntropyCapture>,
+    start: u64,
     limit: usize,
     cancelled: Box<dyn Fn() -> bool + Send + Sync>,
 }
@@ -166,9 +168,18 @@ impl EntropyObserver {
     ) -> Self {
         Self {
             capture: Mutex::default(),
+            start: 0,
             limit: max_events.min(max_bytes / size_of::<EntropySymbol>()),
             cancelled: Box::new(cancelled),
         }
+    }
+
+    /// Records only reads that begin at or after this scope ordinal.
+    /// Earlier reads advance the ordinal and do not count against the limits.
+    #[must_use]
+    pub fn with_start(mut self, ordinal: u64) -> Self {
+        self.start = ordinal;
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, EntropyCapture> {
@@ -199,7 +210,7 @@ impl EntropyObserver {
         event.syntax = capture.next_syntax.take();
         event.scope_tag = capture.scope_tag;
         capture.end_ordinal += u64::from(event.bypass_bits.max(1));
-        if capture.stopped.is_some() {
+        if event.ordinal < self.start || capture.stopped.is_some() {
             return;
         }
         capture.stopped = if (self.cancelled)() {

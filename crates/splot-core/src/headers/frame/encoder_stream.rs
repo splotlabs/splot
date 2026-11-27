@@ -189,6 +189,9 @@ pub struct EncoderToolFlags {
     /// `monotonic_output_order_flag = 0` (§ 5.4.1): hidden frames code
     /// `implicit_output_frame`.
     pub implicit_output: bool,
+    /// `max_tlayer_id` (§ 5.4.1), with the default `TLayerDependencyMap`
+    /// (`tlayer_dependency_present_flag = 0`).
+    pub max_tlayer_id: TemporalLayerId,
     /// `seq_profile_idc` (§ 5.4.1); `None` codes the lowest Annex A.2 Table A.1
     /// profile that allows the chroma format.
     pub profile: Option<ProfileIdc>,
@@ -201,6 +204,9 @@ pub struct EncoderToolFlags {
     /// `seq_tile_info_present_flag` (§ 5.4.2): the sequence codes this
     /// uniform layout, which frames reuse (§ 5.18.7.2).
     pub seq_tiles: Option<SeqTiles>,
+    /// `disable_loopfilters_across_tiles` (§ 5.4.10): the in-loop filters do
+    /// not read samples of another tile (§ 6.4.10).
+    pub disable_loopfilters_across_tiles: bool,
     /// The plane quantizer deltas `[DeltaQYDc, DeltaQU*, DeltaQV*]` frames may
     /// code (§ 5.4.8): a non-zero luma value codes `equal_ac_dc_q = 0` with
     /// `y_dc_delta_q_enabled`, a non-zero chroma value codes the chroma
@@ -619,7 +625,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_uvlc(u32::from(params.bit_depth.get()))?;
     w.write_bits(0, 3)?; // seq_lcr_id
     w.write_flag(false)?; // still_picture
-    w.write_bits(0, 2)?; // max_tlayer_id
+    w.write_bits(u32::from(tools.max_tlayer_id.get()), 2)?;
     w.write_bits(0, 3)?; // max_mlayer_id
     w.write_flag(!tools.implicit_output)?; // monotonic_output_order_flag
     w.write_bits(width_bits - 1, 4)?;
@@ -641,6 +647,9 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     }
     w.write_flag(false)?; // seq_initial_display_delay_present_flag
     w.write_flag(false)?; // decoder_model_info_present_flag
+    if tools.max_tlayer_id.get() > 0 {
+        w.write_flag(false)?; // tlayer_dependency_present_flag
+    }
 
     w.write_flag(params.sb_size == SuperblockSize::Block256x256)?;
     if params.sb_size != SuperblockSize::Block256x256 {
@@ -682,7 +691,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
 
     write_transform_quant_entropy_config(&mut w, tools, monochrome)?;
 
-    w.write_flag(false)?; // disable_loopfilters_across_tiles
+    w.write_flag(tools.disable_loopfilters_across_tiles)?;
     w.write_flag(tools.cdef)?;
     w.write_flag(tools.gdf)?;
     if tools.gdf && params.sb_size == SuperblockSize::Block64x64 {
@@ -1462,7 +1471,7 @@ pub fn encode_key_frame_temporal_unit(
         )?;
         write_annexb_obu(
             &mut w,
-            &obu_header(ObuType::SequenceHeader),
+            &obu_header(ObuType::SequenceHeader, TemporalLayerId::BASE),
             &payload.into_bytes(),
         )?;
     }
@@ -1470,7 +1479,7 @@ pub fn encode_key_frame_temporal_unit(
     unit.extend_from_slice(key_obus);
     let groups = crate::headers::frame::encoder_inter_stream::write_tile_groups(
         core,
-        core.obu_type,
+        obu_header(core.obu_type, TemporalLayerId::BASE),
         (tiles, tile_groups),
         |structure, tiles| {
             let mut payload = BitWriter::new();
@@ -1503,11 +1512,11 @@ pub(super) fn tile_framing(core: &FrameHeaderCore, tiles: &[&[u8]]) -> TileGroup
     TileGroupFraming::tiles(&sizes, size_bytes)
 }
 
-pub(super) const fn obu_header(obu_type: ObuType) -> ObuHeader {
+pub(super) const fn obu_header(obu_type: ObuType, tlayer: TemporalLayerId) -> ObuHeader {
     ObuHeader {
         has_header_extension: false,
         obu_type,
-        temporal_layer_id: TemporalLayerId::from_bits(0),
+        temporal_layer_id: tlayer,
         embedded_layer_id: EmbeddedLayerId::from_bits(0),
         extended_layer_id: ExtendedLayerId::from_bits(0),
         header_size_bytes: 1,

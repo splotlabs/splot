@@ -92,6 +92,7 @@ impl Case {
                 implicit_output: false,
                 profile: None,
                 seq_tiles: None,
+                disable_loopfilters_across_tiles: false,
                 plane_delta_q: [0; 3],
                 short_refresh: false,
                 masked_compound: false,
@@ -102,6 +103,7 @@ impl Case {
                 interintra: false,
                 bawp: false,
                 crop: None,
+                max_tlayer_id: splot_core::types::TemporalLayerId::BASE,
             },
             max_level: 12,
             chroma: ChromaFormatIdc::Yuv420,
@@ -295,6 +297,7 @@ impl RandomLevels {
             inter: None,
             intrabc: None,
             dpcm: splot_decode::encoder_syntax::Dpcm::OFF,
+            lossless_tx_size: false,
         })
     }
 }

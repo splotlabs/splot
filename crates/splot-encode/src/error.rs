@@ -88,6 +88,16 @@ pub enum Error {
         crf: u8,
     },
 
+    /// The key frame interval is above the longest one temporal layers allow
+    /// (`PresetParams::max_tlayer_id` above 0).
+    #[error("keyint {keyint} is above {max}, the longest interval with temporal layers")]
+    KeyintWithTemporalLayers {
+        /// Requested key frame interval.
+        keyint: u32,
+        /// The longest interval with temporal layers.
+        max: u32,
+    },
+
     /// [`crate::Config::cbr_padding`] is set without CBR rate control.
     #[error("CBR padding needs CBR rate control")]
     PaddingWithoutCbr,

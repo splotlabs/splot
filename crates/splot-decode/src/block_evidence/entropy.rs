@@ -45,16 +45,18 @@ pub struct BlockEntropyEvidence {
     pub scope: BlockEntropyScope,
     /// The exact byte count of the enclosing tile payload.
     pub tile_payload_bytes: u64,
-    /// Captured reads in decode order. Pair the ordinal with the scope and frame.
+    /// Captured reads in decode order, from the requested start ordinal.
+    /// Pair the ordinal with the scope and frame.
     pub symbols: Vec<EntropySymbol>,
-    /// The exclusive end ordinal, including units past the recording limit.
+    /// The exclusive end ordinal of the observed parse. It does not depend on
+    /// the start ordinal or the recording limit.
     /// A decode error can stop the parse before it reaches the end of the scope.
     pub end_ordinal: u64,
     stopped: Option<EntropyCaptureStop>,
 }
 
 impl BlockEntropyEvidence {
-    /// Returns the transform that owns the read at the zero-based record index.
+    /// Returns the transform that owns the read at the zero-based index in `symbols`.
     /// Shared or block-only reads have no transform owner.
     #[must_use]
     pub fn transform_for(&self, symbol_index: usize) -> Option<BlockTransformId> {
@@ -97,7 +99,8 @@ impl BlockEvidenceTile<'_> {
             capture.remaining_events,
             capture.remaining_bytes,
             move || owner.cancelled(),
-        );
+        )
+        .with_start(state.request.entropy_start);
         Some((scope, observer))
     }
 
