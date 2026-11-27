@@ -349,8 +349,9 @@ pub struct FrameMetadata {
     /// A full timecode (§ 6.16.7, `counting_type` 0) counted from 00:00:00
     /// frame 0 at the configured frame rate.
     pub timecode: bool,
-    /// `frame_presentation_time` (§ 6.16.11): the frames since the last key
-    /// frame, in the one-tick-per-picture units of the timing info.
+    /// `frame_presentation_time` (§ 6.16.11) in the one-tick-per-picture
+    /// units of the timing info: the frames since the last key frame, or,
+    /// for a key frame or a leading frame, since the key frame before it.
     pub temporal_point_info: bool,
     /// A progressive frame that is not a duplicate (§ 6.16.10); it makes
     /// the key frames write a content interpretation OBU.
