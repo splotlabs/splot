@@ -553,3 +553,86 @@ fn key_frames_without_leading_frames_stay_closed_loop() {
     }
     assert_eq!(keys, [0, 5, 10, 15]);
 }
+
+/// Rule R of [`GopPlanner::with_max_tlayer_id`]: for each operating point
+/// `n`, a decoder that drops the frames above temporal layer `n` sees, in
+/// every frame it keeps, the same slots of that frame's layer or below as the
+/// full decoder (§ 6.4.1: the same order hint and reference map). The
+/// combinations that `PresetParams::validate` refuses are skipped.
+#[test]
+fn temporal_layers_keep_the_slots_of_each_operating_point() {
+    for max_tlayer_id in 1..=3u8 {
+        for mini_gop_size in 1..=32u8 {
+            for (slots_used, keyint) in [(8u8, 255u32), (4, 100), (16, 64)] {
+                let case = format!(
+                    "max_tlayer_id {max_tlayer_id} mini-GOP {mini_gop_size} slots {slots_used}"
+                );
+                let mut probe = GopPlanner::new(NonZeroU32::MAX, mini_gop_size)
+                    .with_ref_slots(slots_used)
+                    .with_max_tlayer_id(max_tlayer_id);
+                let validated = (0..3).all(|_| {
+                    let len = probe.next_len(usize::MAX, true).unwrap_or(1);
+                    probe.plan(len).is_ok()
+                });
+                if !validated {
+                    eprintln!("refused: {case}");
+                    continue;
+                }
+                let mut planner = GopPlanner::new(NonZeroU32::new(keyint).unwrap(), mini_gop_size)
+                    .with_ref_slots(slots_used)
+                    .with_max_tlayer_id(max_tlayer_id);
+                let mut steps = Vec::new();
+                let mut queued = 0;
+                for ended in core::iter::repeat_n(false, 300).chain([true]) {
+                    queued += usize::from(!ended);
+                    while let Some(len) = planner.next_len(queued, ended) {
+                        let planned = planner.plan(len);
+                        let Ok(planned) = planned else {
+                            panic!("{case}: {planned:?}");
+                        };
+                        steps.extend(planned);
+                        queued -= len;
+                    }
+                }
+                // Slot contents `(display, tlayer)` of the decoders of operating points 0..=3.
+                let mut decoders = [[None::<(u64, u8)>; 16]; 4];
+                let mut coded_layers = [0usize; 4];
+                for step in &steps {
+                    let GopStep::Code(frame) = *step else {
+                        continue;
+                    };
+                    let tlayer = frame.tlayer.get();
+                    assert_eq!(tlayer, frame.layer.min(max_tlayer_id), "{case}");
+                    coded_layers[usize::from(tlayer)] += 1;
+                    let visible = |slots: &[Option<(u64, u8)>; 16]| {
+                        slots.map(|held| held.filter(|&(_, layer)| layer <= tlayer))
+                    };
+                    let full = visible(&decoders[3]);
+                    for (n, slots) in decoders.iter_mut().enumerate().skip(usize::from(tlayer)) {
+                        assert_eq!(
+                            visible(slots),
+                            full,
+                            "{case}: operating point {n}, {frame:?}"
+                        );
+                        if frame.frame_type == FrameType::Key && !frame.open_loop {
+                            *slots = [None; 16];
+                            slots[0] = Some((frame.display_index, 0));
+                        } else {
+                            for (slot, held) in slots.iter_mut().enumerate() {
+                                if frame.refresh_frame_flags >> slot & 1 == 1 {
+                                    *held = Some((frame.display_index, tlayer));
+                                }
+                            }
+                        }
+                    }
+                }
+                let layers = (mini_gop_size.max(1) - 1)
+                    .checked_ilog2()
+                    .map_or(0, |log| log + 1);
+                for layer in 0..=usize::from(max_tlayer_id).min(layers as usize) {
+                    assert!(coded_layers[layer] > 0, "{case}: no frame in layer {layer}");
+                }
+            }
+        }
+    }
+}
