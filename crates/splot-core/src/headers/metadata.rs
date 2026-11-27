@@ -940,6 +940,16 @@ fn parse_user_data_unregistered<O: SyntaxObserver>(
     })
 }
 
+/// Parses one `metadata_banding_hints()` payload (AV2 v1.0.0 § 5.17.8) from `reader`.
+///
+/// # Errors
+/// Returns an error when the payload ends early.
+pub fn parse_metadata_banding_hints(reader: &mut BitReader<'_>) -> Result<MetadataBandingHints> {
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_banding_hints(&mut sr)
+}
+
 fn parse_banding_hints<O: SyntaxObserver>(
     sr: &mut SyntaxReader<'_, '_, O>,
 ) -> Result<MetadataBandingHints> {

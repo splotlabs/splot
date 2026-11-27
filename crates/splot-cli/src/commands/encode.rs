@@ -182,6 +182,26 @@ pub(crate) struct EncodeArgs {
     /// key frame carries it unchanged in a user data metadata OBU.
     #[arg(long, value_name = "FILE")]
     user_data_unregistered: Option<PathBuf>,
+    /// Every output frame carries a full timecode metadata OBU, counted from
+    /// 00:00:00 frame 0 at the input frame rate, without dropped counts.
+    #[arg(long)]
+    timecode: bool,
+    /// Every output frame carries a temporal point info metadata OBU: its
+    /// presentation time in frames since the last key frame; a key frame or
+    /// a leading frame counts from the key frame before. Needs
+    /// `--timing-info`.
+    #[arg(long)]
+    temporal_point_info: bool,
+    /// Every output frame carries a scan type metadata OBU: a progressive
+    /// frame, not a duplicate. Every key frame then writes a content
+    /// interpretation OBU.
+    #[arg(long)]
+    scan_type_info: bool,
+    /// Banding hints file: the bytes of one metadata_banding_hints() (AV2
+    /// § 5.17.8), padded to a byte. Every output frame carries it in a
+    /// banding hints metadata OBU. The encoder does not detect banding.
+    #[arg(long, value_name = "FILE")]
+    banding_hints: Option<PathBuf>,
     /// Distance between key frames, in frames.
     #[arg(long, default_value_t = Config::DEFAULT_KEYINT)]
     keyint: NonZeroU32,
@@ -454,6 +474,11 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     metadata.icc_profile = read(&args.icc)?;
     metadata.itut_t35 = read(&args.itut_t35)?;
     metadata.user_data_unregistered = read(&args.user_data_unregistered)?;
+    let frame_metadata = &mut config.frame_metadata;
+    frame_metadata.timecode = args.timecode;
+    frame_metadata.temporal_point_info = args.temporal_point_info;
+    frame_metadata.scan_type = args.scan_type_info;
+    frame_metadata.banding_hints = read(&args.banding_hints)?;
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
     if args.low_delay {
