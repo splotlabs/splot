@@ -386,27 +386,33 @@ pub(crate) fn predict_intra_in_frame<B: SimdBackend, T: ReconSample>(
 ) -> core::result::Result<bool, GeneralIntraResidualError> {
     let predicted = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         let (samples, stride) = rows.prediction_target();
-        let predicted = predict(samples, stride);
-        #[cfg(feature = "block-evidence")]
-        if predicted.is_ok()
-            && let Some(rect) = stages::block_rect(x, y, block_size)
+        #[cfg(not(feature = "block-evidence"))]
         {
-            stages::transform_samples(
-                DecodeStage::Prediction,
-                plane_id,
-                Some(rect),
-                true,
-                |x, y| {
-                    samples
-                        .get(y * stride + x)
-                        .map(|value| i32::from(value.to_u16()))
-                },
-            );
-            if block.eob == 0 {
-                stages::skip_residual(plane_id, Some(rect));
-            }
+            predict(samples, stride)
         }
-        predicted
+        #[cfg(feature = "block-evidence")]
+        {
+            let predicted = predict(samples, stride);
+            if predicted.is_ok()
+                && let Some(rect) = stages::block_rect(x, y, block_size)
+            {
+                stages::transform_samples(
+                    DecodeStage::Prediction,
+                    plane_id,
+                    Some(rect),
+                    true,
+                    |x, y| {
+                        samples
+                            .get(y * stride + x)
+                            .map(|value| i32::from(value.to_u16()))
+                    },
+                );
+                if block.eob == 0 {
+                    stages::skip_residual(plane_id, Some(rect));
+                }
+            }
+            predicted
+        }
     })?;
     if predicted.is_none() {
         return Ok(false);

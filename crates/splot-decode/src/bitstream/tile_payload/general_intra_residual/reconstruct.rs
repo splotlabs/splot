@@ -258,8 +258,6 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
     }
     #[cfg(feature = "block-evidence")]
     let capture = capture_residual(plane_id, x, y, block_size);
-    #[cfg(not(feature = "block-evidence"))]
-    let capture = false;
     let fused = fused_intra_setup(
         block,
         plane_id,
@@ -285,8 +283,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
     let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         super::with_residual_scratch(|scratch| {
             let (dst, stride) = rows.prediction_target();
-            if !capture
-                && let Some((fused, flat)) = fused
+            if let Some((fused, flat)) = residual_capture_path!(fused, fused.filter(|_| !capture))
                 && fused.add_onto_with(
                     backend,
                     prediction,
@@ -299,8 +296,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
             {
                 return Ok(());
             }
-            if !capture
-                && let Some(luma_context) = luma_context
+            if let Some(luma_context) =
+                residual_capture_path!(luma_context, luma_context.filter(|_| !capture))
                 && has_secondary(block)
                 && add_secondary_fused(
                     backend,
@@ -500,8 +497,6 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
     let backend = backend.narrow();
     #[cfg(feature = "block-evidence")]
     let capture = capture_residual(plane_id, x, y, block_size);
-    #[cfg(not(feature = "block-evidence"))]
-    let capture = false;
     let fused = fused_intra_setup(
         block,
         plane_id,
@@ -526,8 +521,7 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
     };
     super::with_residual_scratch(|scratch| {
         let mut surface = splot_recon::CurrentFrameSurface::Frame(&mut *workspace);
-        if !capture
-            && let Some((fused, flat)) = fused
+        if let Some((fused, flat)) = residual_capture_path!(fused, fused.filter(|_| !capture))
             && let Some((dst, stride)) = surface
                 .residual_rect_mut(plane_id, x, y, block_size)
                 .map_err(reconstruct_error)?
@@ -542,8 +536,8 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
         {
             return Ok(());
         }
-        if !capture
-            && let Some(luma_context) = luma_context
+        if let Some(luma_context) =
+            residual_capture_path!(luma_context, luma_context.filter(|_| !capture))
             && has_secondary(block)
             && let Some((dst, stride)) = surface
                 .residual_rect_mut(plane_id, x, y, block_size)
@@ -729,8 +723,6 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
     let backend = backend.narrow();
     #[cfg(feature = "block-evidence")]
     let capture = capture_residual(plane_id, x, y, block_size);
-    #[cfg(not(feature = "block-evidence"))]
-    let capture = false;
     let log2_width = u32::from(block_size.log2_width());
     let log2_height = u32::from(block_size.log2_height());
     let use_block_tcq = use_tcq && block.use_tcq;
@@ -744,7 +736,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
         None,
         bit_depth,
     );
-    if !capture && let Some((fused, flat)) = fused {
+    if let Some((fused, flat)) = residual_capture_path!(fused, fused.filter(|_| !capture)) {
         if let Some(residual) = fused.flat_residual(block.quant, Some(flat), bit_depth) {
             sink.add_constant_residual_rect_block_with(
                 backend, plane_id, x, y, block_size, residual,
@@ -767,8 +759,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
             return Ok(());
         }
     }
-    if !capture
-        && has_secondary(block)
+    if residual_capture_path!(has_secondary(block), !capture && has_secondary(block))
         && let Some((dst, stride)) = sink.residual_rect_mut(plane_id, x, y, block_size)?
         && add_secondary_fused::<_, T>(
             backend,

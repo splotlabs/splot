@@ -42,6 +42,20 @@ use super::coeff_state::{
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 use splot_recon::TransformClass;
 
+#[cfg(feature = "block-evidence")]
+macro_rules! residual_capture_path {
+    ($normal:expr, $instrumented:expr) => {
+        $instrumented
+    };
+}
+
+#[cfg(not(feature = "block-evidence"))]
+macro_rules! residual_capture_path {
+    ($normal:expr, $instrumented:expr) => {
+        $normal
+    };
+}
+
 pub(crate) mod cctx;
 mod luma_transform_partition;
 pub(crate) mod reconstruct;
