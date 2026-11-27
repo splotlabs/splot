@@ -5,8 +5,8 @@
 //!
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
-use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16};
-use splot_core::simd::SimdBackend;
+use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16, i16x32, u16x32};
+use splot_core::simd::{SelectedBackend, SimdBackend};
 
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
@@ -134,6 +134,13 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
         output: &mut [O],
         stride_samples: usize,
     ) {
+        if B::KIND == SelectedBackend::Avx512 && size.width() >= 32 {
+            let (backend, args) = (self.0, (left, above, top_left));
+            return backend.vectorize(
+                #[inline(always)]
+                || paeth_rows_wide(backend.token(), size, args, output, stride_samples),
+            );
+        }
         let narrow = self.0.narrow();
         splot_core::with_simd!(narrow, simd => {
             paeth_rows(
@@ -316,6 +323,40 @@ fn paeth_rows<S: Simd, O: IntraLaneSample>(
     }
 }
 
+/// [`paeth_rows`] for a block 32 or 64 wide, 32 lanes a step. The above row
+/// and its distance to the corner are the same for every row, so they are
+/// widened and taken once per block.
+#[inline]
+fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
+    simd: S,
+    size: IntraRectBlockSize,
+    (left, above, top_left): (&[O], &[O], u16),
+    output: &mut [O],
+    stride_samples: usize,
+) {
+    let (width, height) = (size.width(), size.height());
+    let top_left = i16x32::splat(simd, top_left as i16);
+    let mut columns = [(top_left, top_left); 2];
+    for (column, above) in columns.iter_mut().zip(above.as_chunks::<32>().0) {
+        let above = above.map(ReconSample::to_u16);
+        let above = u16x32::load_array_ref(simd, &above).bitcast::<i16x32<S>>();
+        *column = (above, (above - top_left).abs());
+    }
+    for (row, &left) in left.iter().take(height).enumerate() {
+        let left = i16x32::splat(simd, left.to_u16() as i16);
+        let p_top = (left - top_left).abs();
+        let target = &mut output[row * stride_samples..row * stride_samples + width];
+        for (target, &(above, p_left)) in target.as_chunks_mut::<32>().0.iter_mut().zip(&columns) {
+            let p_top_left = (above + left - top_left - top_left).abs();
+            let take_left = p_left.simd_le(p_top) & p_left.simd_le(p_top_left);
+            let take_top = p_top.simd_le(p_top_left);
+            let value = take_left.select(left, take_top.select(above, top_left));
+            let (low, high) = simd.split_u16x32(value.bitcast());
+            O::store32(simd, low, high, target);
+        }
+    }
+}
+
 /// One lane group of [`predict_paeth_lanes`].
 #[inline]
 fn paeth_lanes<S: Simd>(above: i16x16<S>, left: i16x16<S>, top_left: i16x16<S>) -> i16x16<S> {
@@ -346,6 +387,10 @@ fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
         top_left
     }
 }
+
+#[cfg(test)]
+#[path = "intra_basic_wide_tests.rs"]
+mod wide_tests;
 
 #[cfg(test)]
 mod tests {

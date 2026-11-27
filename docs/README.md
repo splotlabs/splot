@@ -19,7 +19,8 @@ Checkout builds target `x86-64-v3` on x86-64. At startup, Auto asks
 `fearless_simd` for its Ice Lake AVX-512 capability, including OS register
 state and the required instruction extensions. On a qualifying host, display
 grain uses AVX-512 to round, add and clip groups of 32 samples on eligible
-8-bit and 10-bit rows. Other work uses AVX2. AArch64 uses NEON.
+8-bit and 10-bit rows, and PAETH intra prediction uses it for blocks 32 or 64
+samples wide. Other work uses AVX2. AArch64 uses NEON.
 
 Rust callers can request a backend through `SimdPolicy`. An unavailable
 request returns an error at startup. The C API uses Auto. A streaming decoder
